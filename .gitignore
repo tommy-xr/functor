@@ -1,0 +1,37 @@
+src/*.dart
+src/*.py
+src/*.rs
+src/*.ts
+__pycache__
+Cargo.lock
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+
+# Packages
+node_modules
+jspm_packages
+fable_modules
+
+# Binaries
+bin
+obj
+target
+
+# Output
+.ionide
+.fake
+out
+
+# perf output
+perf*
+
+# MacOS
+.DS_Store

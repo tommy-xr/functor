@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- <PublishAot>true</PublishAot> -->
+    <!-- <PublishTrimmed>true</PublishTrimmed> -->
+    <!-- <StripSymbols>true</StripSymbols> -->
+    <!-- <IlcTrimMetadata>true</IlcTrimMetadata> -->
+    <!-- <IlcDisableReflection>true</IlcDisableReflection> -->
+    <!-- <IlcOptimizationPreference>Speed</IlcOptimizationPreference> -->
+    <!-- <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies> -->
+    <!-- <IlcGenerateCompleteTypeMetadata>false</IlcGenerateCompleteTypeMetadata> -->
+    <!-- <IlcGenerateStackTraceData>false</IlcGenerateStackTraceData> -->
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <WasmMainJSPath>src/main.mjs</WasmMainJSPath>
+    <!-- enable reporting to profiler in browser dev tools -->
+    <!-- <WasmProfilers>browser;</WasmProfilers> -->
+    <!-- Put "framework" (dotnet.js, dlls, etc) files directly into the AppBundle -->
+    <!-- <WasmRuntimeAssetsLocation>./</WasmRuntimeAssetsLocation> -->
+    <!-- <RuntimeIdentifier>browser-wasm</RuntimeIdentifier> -->
+    <!-- <RunAOTCompilation>true</RunAOTCompilation> -->
+    <!-- <WasmEnableExceptionHandling>true</WasmEnableExceptionHandling> -->
+    <!-- <WasmEnableSIMD>true</WasmEnableSIMD> -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="src/Platform.fs" />
+    <Compile Include="src/RayTracer.fs" />
+    <Compile Include="src/lib.fs" />
+    <Compile Include="src/main.fs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetArchitecture)' != 'wasm'">
+    <PackageReference Include="Fable.Core" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>
