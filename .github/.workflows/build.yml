@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Separate job that verifies if all code was formatted correctly
+  # Run `dotnet fantomas .` to format all code.
+  verify-linting:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Check F# code
+        run: dotnet fantomas . --check
+
+  # Separate build job for Rust (will run in parallel)
+  build-rust:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test: ["default", "no_std", "threaded"]
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v2.4.1
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build Rust
+        run: npm run build-rust
+
+      - name: Test Rust
+        run: npm run test-rust
+
+  # Separate build job for JavaScript
+  build-javascript:
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v2.4.1
+
+      - name: Build JS
+        run: npm run build-js
