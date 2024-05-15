@@ -1,8 +1,5 @@
-src/*.dart
-src/*.py
-src/*.rs
+src/**/*.rs
 src/*.ts
-__pycache__
 Cargo.lock
 
 # Logs
@@ -35,3 +32,6 @@ perf*
 
 # MacOS
 .DS_Store
+
+# Local Journal
+.journal.md

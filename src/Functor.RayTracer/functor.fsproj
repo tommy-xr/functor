@@ -19,7 +19,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <WasmMainJSPath>src/main.mjs</WasmMainJSPath>
+    <WasmMainJSPath>main.mjs</WasmMainJSPath>
     <!-- enable reporting to profiler in browser dev tools -->
     <!-- <WasmProfilers>browser;</WasmProfilers> -->
     <!-- Put "framework" (dotnet.js, dlls, etc) files directly into the AppBundle -->
@@ -31,10 +31,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="src/Platform.fs" />
-    <Compile Include="src/RayTracer.fs" />
-    <Compile Include="src/lib.fs" />
-    <Compile Include="src/main.fs" />
+    <Compile Include="Platform.fs" />
+    <Compile Include="RayTracer.fs" />
+    <Compile Include="lib.fs" />
+    <Compile Include="main.fs" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetArchitecture)' != 'wasm'">

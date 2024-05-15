@@ -5,12 +5,12 @@ edition = "2021"
 
 [lib]
 name = "fable_raytracer"
-path = "src/main.rs"
+path = "src/Functor.RayTracer/main.rs"
 crate-type = ["cdylib"]
 
 [[bin]]
 name = "fable_raytracer"
-path = "src/main.rs"
+path = "src/Functor.RayTracer/main.rs"
 
 [dependencies]
 fable_library_rust = { path = "./fable_modules/fable-library-rust" }

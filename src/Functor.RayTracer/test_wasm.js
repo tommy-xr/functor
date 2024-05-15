@@ -1,5 +1,5 @@
 import { performance } from "perf_hooks";
-import { render_scene } from "../pkg/fable_raytracer.js";
+import { render_scene } from "../../pkg/fable_raytracer.js";
 
 function measureTime(f) {
     const t0 = performance.now();
