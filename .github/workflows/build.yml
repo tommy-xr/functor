@@ -56,3 +56,6 @@ jobs:
 
       - name: Build JS
         run: npm run build-js
+
+      - name: Test JS
+        run: npm run test-js
