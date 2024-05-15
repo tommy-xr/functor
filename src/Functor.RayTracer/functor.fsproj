@@ -41,4 +41,9 @@
     <PackageReference Include="Fable.Core" Version="4.3.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="../Functor.Game/Functor.Game.fsproj" />
+  </ItemGroup>
+
+
 </Project>

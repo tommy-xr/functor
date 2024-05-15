@@ -8,7 +8,8 @@ let render() =
     let len = w * h * 4
     let angle = 0.0
     let data = Array.create len 0uy
-    WriteLine("Raytracer running2...")
+    let hello_msg = Game.hello
+    WriteLine($"Raytracer running2: {hello_msg}")
     let _, elapsed = measureTime (fun () -> RayTracerDemo.renderScene (data, x, y, w, h, angle))
     WriteLine($"Ray tracing done2:\n - rendered image size: ({w}x{h})\n - elapsed: {elapsed} ms")
 

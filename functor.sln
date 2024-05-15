@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{7E3B96CC-EB25-4180-A82D-257646F230F3}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "functor", "src\Functor.RayTracer\functor.fsproj", "{0ECA9CE9-E0C5-4E3D-98F7-13B2B1D245AD}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Functor.Game", "src\Functor.Game\Functor.Game.fsproj", "{F7A6B887-B09D-40F1-9DCE-405B20476631}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0ECA9CE9-E0C5-4E3D-98F7-13B2B1D245AD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0ECA9CE9-E0C5-4E3D-98F7-13B2B1D245AD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0ECA9CE9-E0C5-4E3D-98F7-13B2B1D245AD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0ECA9CE9-E0C5-4E3D-98F7-13B2B1D245AD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7A6B887-B09D-40F1-9DCE-405B20476631}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7A6B887-B09D-40F1-9DCE-405B20476631}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7A6B887-B09D-40F1-9DCE-405B20476631}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7A6B887-B09D-40F1-9DCE-405B20476631}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{0ECA9CE9-E0C5-4E3D-98F7-13B2B1D245AD} = {7E3B96CC-EB25-4180-A82D-257646F230F3}
+		{F7A6B887-B09D-40F1-9DCE-405B20476631} = {7E3B96CC-EB25-4180-A82D-257646F230F3}
+	EndGlobalSection
+EndGlobal
