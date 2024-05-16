@@ -4,12 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   # Separate build job for Rust (will run in parallel)
   build-rust:
-    runs-on: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v2
@@ -38,7 +37,7 @@ jobs:
 
   # Separate build job for JavaScript
   build-javascript:
-    runs-on: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v2
