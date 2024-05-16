@@ -21,4 +21,14 @@ let local initialState =
     { state = initialState; update = update; render2d = render2d }
 
 
+let run<'model, 'msg> (_game: Game<'model, 'msg>) = 
+    printfn "Hello from Game.run!"
+    ()
+
+let draw3d<'model, 'msg> (f: 'model -> Graphics.Primitives3D.t) (_game: Game<'model, 'msg>) = 
+    printfn "Hello from Game.draw3d!"
+    _game
+
+
+
 let hello = "Hello from functor game!"

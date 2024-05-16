@@ -4,6 +4,9 @@
   "scripts": {
     "clean": "git clean -fdX",
 
+    "build:examples:pong:rust": "dotnet fable examples/Pong/Pong.fsproj --noCache --lang rust --outDir .",
+    "start:examples:pong:rust": "npm run build:examples:pong:rust && cargo run --bin pong",
+
     "build-js": "dotnet fable src/Functor.RayTracer/functor.fsproj --outDir out",
     "build-rust": "dotnet fable src/Functor.RayTracer/functor.fsproj --lang rust --outDir .",
     "build-rust-web": "npm run build-rust && wasm-pack build --target web",
@@ -13,7 +16,7 @@
     "test-rust-web": "npm run build-rust-web && npx http-server",
     "test-rust-node": "npm run build-rust-node && node src/Functor.RayTracer/test_wasm.js",
     "test-rust-target-cpu": "npm run build-rust && cargo run --config build.rustflags='\"-C target-cpu=native\"' --release",
-    "test-rust": "npm run build-rust && cargo run --release",
+    "test-rust": "npm run build-rust && cargo run --release --bin fable_raytracer",
 
     "test": "npm run test-rust && npm run test-dotnet"
   }

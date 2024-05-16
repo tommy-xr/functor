@@ -5,7 +5,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Graphics.fs" />
-    <Compile Include="hello.fs" />
+    <Compile Include="Game.fsi" />
+    <Compile Include="Game.fs" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetArchitecture)' != 'wasm'">
     <PackageReference Include="Fable.Core" Version="4.3.0" />
