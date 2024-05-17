@@ -12,6 +12,9 @@ type Game<'model, 'msg> = {
     render2d: 'model ->  Graphics.Primitives2D.t
     }
 
+
+open Fable.Core
+
 module Game =
 
     let local initialState =
@@ -28,6 +31,7 @@ module Game =
         _game
 
     let run<'model, 'msg> (_game: Game<'model, 'msg>) = 
+        Platform.hello_from_rust()
         printfn "Hello from Game.run!"
         ()
 

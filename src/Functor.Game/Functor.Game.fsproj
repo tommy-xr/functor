@@ -11,6 +11,7 @@
     <Compile Include="Time.fs" />
     <Compile Include="Duration.fsi" />
     <Compile Include="Duration.fs" />
+    <Compile Include="Platform.fs" />
     <Compile Include="Tick.fs" />
     <Compile Include="Input.fsi" />
     <Compile Include="Input.fs" />

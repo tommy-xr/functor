@@ -1,16 +1,12 @@
 [package]
-name = "fable-raytracer"
+name = "functor-examples"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "fable_raytracer"
-path = "src/Functor.RayTracer/main.rs"
+name = "pong"
+path = "examples/Pong/Pong.rs"
 crate-type = ["cdylib"]
-
-[[bin]]
-name = "fable_raytracer"
-path = "src/Functor.RayTracer/main.rs"
 
 [[bin]]
 name = "pong"
@@ -18,6 +14,7 @@ path = "examples/Pong/Pong.rs"
 
 [dependencies]
 fable_library_rust = { path = "./fable_modules/fable-library-rust" }
+functor_runtime_desktop = { path = "./runtime/functor-runtime-desktop" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

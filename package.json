@@ -5,6 +5,7 @@
     "clean": "git clean -fdX",
 
     "build:examples:pong:rust": "dotnet fable examples/Pong/Pong.fsproj --noCache --lang rust --outDir .",
+    "build:examples:pong:wasm": "npm run build:examples:pong:rust && wasm-pack build --target web",
     "start:examples:pong:rust": "npm run build:examples:pong:rust && cargo run --bin pong",
 
     "build-js": "dotnet fable src/Functor.RayTracer/functor.fsproj --outDir out",

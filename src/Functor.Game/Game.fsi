@@ -9,7 +9,6 @@ type TickFn<'model, 'msg> = 'model -> Tick.t -> ('model * effect<'msg>)
 type Game<'model, 'msg>
 
 module Game = 
-
     // GAME DEFINITION FUNCTIONS
 
     val local : initialState:'model -> Game<'model, 'msg>
