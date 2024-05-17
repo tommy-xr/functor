@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="hello.fs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetArchitecture)' != 'wasm'">
+    <PackageReference Include="Fable.Core" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>
