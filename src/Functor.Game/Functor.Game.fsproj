@@ -4,6 +4,16 @@
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Effect.fsi" />
+    <Compile Include="Effect.fs" />
+    <Compile Include="Point2.fs" />
+    <Compile Include="Vector2.fs" />
+    <Compile Include="Time.fs" />
+    <Compile Include="Duration.fsi" />
+    <Compile Include="Duration.fs" />
+    <Compile Include="Tick.fs" />
+    <Compile Include="Input.fsi" />
+    <Compile Include="Input.fs" />
     <Compile Include="Graphics.fs" />
     <Compile Include="Game.fsi" />
     <Compile Include="Game.fs" />
