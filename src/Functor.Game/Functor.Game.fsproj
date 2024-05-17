@@ -6,8 +6,8 @@
   <ItemGroup>
     <Compile Include="Effect.fsi" />
     <Compile Include="Effect.fs" />
-    <Compile Include="Point2.fs" />
-    <Compile Include="Vector2.fs" />
+    <Compile Include="Math/Vector2.fs" />
+    <Compile Include="Math/Point2.fs" />
     <Compile Include="Time.fs" />
     <Compile Include="Duration.fsi" />
     <Compile Include="Duration.fs" />

@@ -1,5 +1,8 @@
 module Tick 
-    type t = unit
+    type t = {
+        // Delta time in seconds, for convenience
+        dts: float
+    }
 
     let frame tick = 0;
     let time tick = Time.now
