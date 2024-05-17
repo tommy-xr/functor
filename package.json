@@ -9,6 +9,7 @@
     "build-rust-web": "npm run build-rust && wasm-pack build --target web",
     "build-rust-node": "npm run build-rust && wasm-pack build --target nodejs",
 
+    "test-js-node": "npm run build-js && node out/main.js",
     "test-rust-web": "npm run build-rust-web && npx http-server",
     "test-rust-node": "npm run build-rust-node && node src/Functor.RayTracer/test_wasm.js",
     "test-rust-target-cpu": "npm run build-rust && cargo run --config build.rustflags='\"-C target-cpu=native\"' --release",
