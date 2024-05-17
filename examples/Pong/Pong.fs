@@ -3,6 +3,9 @@ module Pong
 open Functor
 open Functor.Math
 
+let GAME_HEIGHT = 600.0
+let GAME_WIDTH = 800.0
+
 type Paddle = { 
     position: Point2
     size: Vector2
@@ -52,7 +55,7 @@ let tick model (tick: Tick.t) =
         { ball with position = newBallPosition }
 
     let handleCollisionWithTopAndBottomWalls ball =
-        if ball.position.y <= 0.0 || ball.position.y >= 600.0 then 
+        if ball.position.y <= 0.0 || ball.position.y >= GAME_HEIGHT then 
             { ball with velocity = Vector2.xy ball.velocity.x -ball.velocity.y }
         else ball
 
