@@ -81,11 +81,11 @@ let tick model (tick: Tick.t) =
     ( { model with ball = newBall }, Effect.none ) 
 
 
-[<EntryPoint>]
-let main _args =
-    printfn "Hello from Pong2"
-    game
-    |> Game.draw3d (fun _ -> Graphics.Primitives3D.Sphere)
-    |> Game.tick tick
-    |> Game.run
-    0
+// [<EntryPoint>]
+// let main _args =
+//     printfn "Hello from Pong2"
+//     game
+//     |> Game.draw3d (fun _ -> Graphics.Primitives3D.Sphere)
+//     |> Game.tick tick
+//     |> Game.run
+//     0

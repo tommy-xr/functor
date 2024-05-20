@@ -2,13 +2,21 @@ pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
 
-pub fn hello_from_rust() {
-    println!("Hello from Rust!");
-    start();
-}
+// pub fn hello_from_rust() {
+//     println!("Hello from Rust!");
+//     start();
+// }
 
 use glow::*;
-pub fn start() {
+use libloading::{library_filename, Library, Symbol};
+pub fn main() {
+    // Load game
+    unsafe {
+        let lib = Library::new(library_filename("pong")).unwrap(); // Load the "hello_world" library
+        let func: Symbol<fn(f64)> = lib.get(b"dynamic_call_from_rust").unwrap(); // Get the function pointer
+
+        func(42.0) // Call the function
+    }
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets
         #[cfg(target_arch = "wasm32")]

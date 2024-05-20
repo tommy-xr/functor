@@ -31,7 +31,6 @@ module Game =
         _game
 
     let run<'model, 'msg> (_game: Game<'model, 'msg>) = 
-        Platform.hello_from_rust()
         printfn "Hello from Game.run!"
         ()
 
