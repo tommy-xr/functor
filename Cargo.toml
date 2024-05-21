@@ -1,29 +1,9 @@
-[package]
-name = "functor"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+resolver = "1"
 
-[lib]
-name = "pong"
-path = "examples/Pong/Pong.rs"
-crate-type = ["dylib"]
-
-[[bin]]
-name = "functor"
-path = "runtime/functor-runtime-desktop/src/main.rs"
-
-[dependencies]
-fable_library_rust = { path = "./fable_modules/fable-library-rust" }
-glow = "0.13.1"
-
-[target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
-glfw = { version = "0.45.0" }
-libloading = "0.8.3"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features=["HtmlCanvasElement", "WebGl2RenderingContext", "Window"] }
-wasm-bindgen = { version = "0.2" }
-
-[profile.release]
-codegen-units = 1
-lto = true
+members = [
+    "runtime/functor-runtime-common",
+    "runtime/functor-runtime-desktop",
+    "src",
+    "examples",
+]

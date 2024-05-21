@@ -7,6 +7,7 @@ pub fn add(left: usize, right: usize) -> usize {
 //     start();
 // }
 
+use functor_runtime_common::Scene3D;
 use glow::*;
 use libloading::{library_filename, Library, Symbol};
 pub fn main() {
@@ -15,7 +16,11 @@ pub fn main() {
         let lib = Library::new(library_filename("pong")).unwrap(); // Load the "hello_world" library
         let func: Symbol<fn(f64)> = lib.get(b"dynamic_call_from_rust").unwrap(); // Get the function pointer
 
-        func(42.0) // Call the function
+        let test_render_func: Symbol<fn() -> Scene3D> = lib.get(b"test_render").unwrap(); // Get the function pointer
+
+        func(42.0); // Call the function
+
+        println!("Got render: {:?}", test_render_func());
     }
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets

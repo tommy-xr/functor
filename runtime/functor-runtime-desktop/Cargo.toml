@@ -1,16 +1,25 @@
 [package]
-name = "functor"
+name = "functor-runtime-desktop"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "functor"
+path = "src/main.rs"
 
 [dependencies]
+functor_runtime_common = { path = "./../functor-runtime-common" }
+fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 glow = "0.13.1"
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
 glfw = { version = "0.45.0" }
+libloading = "0.8.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features=["HtmlCanvasElement", "WebGl2RenderingContext", "Window"] }
 wasm-bindgen = { version = "0.2" }
+
+[profile.release]
+codegen-units = 1
+lto = true
