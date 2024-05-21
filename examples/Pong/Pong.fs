@@ -45,7 +45,7 @@ let initialState = {
     ball = { position = Point2.zero; velocity = Vector2.zero; radius = 0.05 }
 }
 
-let game: Game<Model, Msg> = Game.local Model.initial
+let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
 let tick model (tick: Tick.t) =
     
@@ -85,8 +85,8 @@ open Fable.Core.Rust
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
-    |> Game.draw3d (fun _ -> Graphics.Primitives3D.Sphere)
-    |> Game.tick tick
+    |> GameBuilder.draw3d (fun _ -> Graphics.Scene3D.sphere())
+    |> GameBuilder.tick tick
     |> Runtime.runGame
 
 

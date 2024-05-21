@@ -1,7 +1,9 @@
-module Scene3D
-    open Fable.Core
+namespace Graphics
 
-    [<Erase; Emit("functor_runtime_common::Scene3D")>] type Scene3D = | Noop
+open Fable.Core
+[<Erase; Emit("functor_runtime_common::Scene3D")>] type Scene3D = | Noop
+
+module Scene3D =
 
     [<Emit("functor_runtime_common::Scene3D::cube()")>]
     let cube(): Scene3D = nativeOnly
