@@ -80,6 +80,15 @@ let tick model (tick: Tick.t) =
 
     ( { model with ball = newBall }, Effect.none ) 
 
+open Fable.Core.Rust
+
+[<OuterAttr("no_mangle")>]
+let init (_args: array<string>) =
+    game
+    |> Game.draw3d (fun _ -> Graphics.Primitives3D.Sphere)
+    |> Game.tick tick
+    |> Runtime.runGame
+
 
 // [<EntryPoint>]
 // let main _args =

@@ -8,6 +8,7 @@ type InputFn<'model, 'msg> = 'model -> Input.t -> ('model * effect<'msg>)
 
 type Game<'model, 'msg> = {
     state: 'model
+    tick: TickFn<'model, 'msg>
     update: UpdateFn<'model, 'msg>
     render2d: 'model ->  Graphics.Primitives2D.t
     }
@@ -19,8 +20,9 @@ module Game =
 
     let local initialState =
         let update model msg = (model, Effect.none)
+        let tick model tick = (model, Effect.none)
         let render2d model = Graphics.Primitives2D.Square
-        { state = initialState; update = update; render2d = render2d }
+        { state = initialState; update = update; render2d = render2d; tick = tick }
 
     let update<'model, 'msg> (f: UpdateFn<'model, 'msg>) (_game: Game<'model, 'msg>) = 
         printfn "Hello from Game.update!"

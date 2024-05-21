@@ -20,7 +20,11 @@ pub fn main() {
 
         func(42.0); // Call the function
 
+        let init_func: Symbol<fn()> = lib.get(b"init").unwrap(); // Get the function pointer
+
         println!("Got render: {:?}", test_render_func());
+        println!("Running init.");
+        init_func();
     }
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets

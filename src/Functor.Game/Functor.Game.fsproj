@@ -10,6 +10,7 @@
     <Compile Include="Math/Point2.fs" />
     <Compile Include="Time.fs" />
     <Compile Include="Duration.fsi" />
+    <Compile Include="Scene3D.fs" />
     <Compile Include="Duration.fs" />
     <Compile Include="Platform.fs" />
     <Compile Include="Tick.fs" />
@@ -18,6 +19,7 @@
     <Compile Include="Graphics.fs" />
     <Compile Include="Game.fsi" />
     <Compile Include="Game.fs" />
+    <Compile Include="Runtime.fs" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetArchitecture)' != 'wasm'">
     <PackageReference Include="Fable.Core" Version="4.3.0" />

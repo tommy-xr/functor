@@ -6,7 +6,12 @@ type InputFn<'model, 'msg> = 'model -> Input.t -> ('model * effect<'msg>)
 
 type TickFn<'model, 'msg> = 'model -> Tick.t -> ('model * effect<'msg>)
 
-type Game<'model, 'msg>
+type Game<'model, 'msg> = {
+    state: 'model
+    tick: TickFn<'model, 'msg>
+    update: UpdateFn<'model, 'msg>
+    render2d: 'model ->  Graphics.Primitives2D.t
+    }
 
 module Game = 
     // GAME DEFINITION FUNCTIONS
