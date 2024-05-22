@@ -13,7 +13,7 @@ fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 glow = "0.13.1"
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
-glfw = { version = "0.45.0" }
+glfw = { version = "0.56.0" }
 libloading = "0.8.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

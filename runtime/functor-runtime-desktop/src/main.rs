@@ -52,7 +52,7 @@ pub fn main() {
         #[cfg(not(target_arch = "wasm32"))]
         let (gl, shader_version, mut window, mut glfw, events) = {
             use glfw::Context;
-            let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
+            let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
             // TODO: Figure out ANGLE
             // glfw.window_hint(glfw::WindowHint::ClientApi(glfw::OpenGlEs));
             glfw.window_hint(glfw::WindowHint::ContextVersion(4, 1));
