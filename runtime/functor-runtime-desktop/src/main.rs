@@ -7,7 +7,11 @@ pub fn add(left: usize, right: usize) -> usize {
 //     start();
 // }
 
+use core::slice;
+
+use cgmath::{conv::array4x4, Matrix, Matrix4, SquareMatrix};
 use functor_runtime_common::geometry;
+use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::Scene3D;
 use glow::*;
 use libloading::{library_filename, Library, Symbol};
@@ -101,7 +105,10 @@ pub fn main() {
         let program = gl.create_program().expect("Cannot create program");
 
         let (vertex_shader_source, fragment_shader_source) = (
-            r#"const vec2 verts[3] = vec2[3](
+            r#"
+            precision mediump float;
+            uniform mat4 world;
+            const vec2 verts[3] = vec2[3](
                 vec2(0.5f, 1.0f),
                 vec2(0.0f, 0.0f),
                 vec2(1.0f, 0.0f)
@@ -109,7 +116,7 @@ pub fn main() {
             out vec2 vert;
             void main() {
                 vert = verts[gl_VertexID];
-                gl_Position = vec4(vert - 0.5, 0.0, 1.0);
+                gl_Position = world * vec4(vert - 0.5, 0.0, 1.0);
             }"#,
             r#"precision mediump float;
             in vec2 vert;
@@ -152,6 +159,15 @@ pub fn main() {
         gl.use_program(Some(program));
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
+        // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(2.0, 0.5, 1.0);
+        // let matrix_location = unsafe {
+        //     gl.get_uniform_location(program, "world")
+        //         .expect("Cannot get uniform")
+        // };
+        // let data = (&array4x4(matrix) as *const [[f32; 4]; 4]) as *const f32;
+        // let raw = slice::from_raw_parts(data, 16);
+        // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             use glfw::Context;
@@ -165,7 +181,9 @@ pub fn main() {
                     }
                 }
                 gl.clear(glow::COLOR_BUFFER_BIT);
-                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+
+                let plane = functor_runtime_common::geometry::plane::create();
+                plane.draw(&gl);
 
                 window.swap_buffers();
             }
