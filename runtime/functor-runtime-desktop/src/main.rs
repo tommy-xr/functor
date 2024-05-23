@@ -7,6 +7,7 @@ pub fn add(left: usize, right: usize) -> usize {
 //     start();
 // }
 
+use functor_runtime_common::geometry;
 use functor_runtime_common::Scene3D;
 use glow::*;
 use libloading::{library_filename, Library, Symbol};

@@ -18,6 +18,8 @@ pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
 
+pub mod geometry;
+
 #[cfg(test)]
 mod tests {
     use super::*;
