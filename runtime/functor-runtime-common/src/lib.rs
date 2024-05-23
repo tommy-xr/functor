@@ -19,6 +19,9 @@ pub fn add(left: usize, right: usize) -> usize {
 }
 
 pub mod geometry;
+pub mod material;
+mod shader;
+mod shader_program;
 
 #[cfg(test)]
 mod tests {
