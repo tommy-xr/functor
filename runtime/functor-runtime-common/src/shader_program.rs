@@ -1,3 +1,5 @@
+use std::slice;
+
 use cgmath::{conv::array4x4, Matrix4, Vector3};
 use glow::*;
 
@@ -39,13 +41,29 @@ impl ShaderProgram {
         }
     }
 
+    pub fn get_uniform_location(&self, gl: &glow::Context, uniform_name: &str) -> UniformLocation {
+        unsafe {
+            let native_uniform_location = gl
+                .get_uniform_location(self.program_id, uniform_name)
+                .expect("Cannot get uniform location");
+            UniformLocation {
+                native_uniform_location,
+            }
+        }
+    }
+
     pub fn set_uniform_vec3(
         &self,
         gl: &glow::Context,
         uniform_location: &UniformLocation,
-        matrix: &Vector3<f32>,
+        vec: &Vector3<f32>,
     ) {
-        panic!("TODO: Set uniformation matrix");
+        unsafe {
+            gl.uniform_3_f32_slice(
+                Some(&uniform_location.native_uniform_location),
+                &[vec.x, vec.y, vec.z],
+            )
+        }
     }
 
     pub fn set_uniform_matrix4(
@@ -55,10 +73,13 @@ impl ShaderProgram {
         matrix: &Matrix4<f32>,
     ) {
         unsafe {
-            let location = gl.get_uniform_location(self.program_id, name).unwrap();
-            panic!("TODO: Set uniformation matrix");
-            // let data = (&array4x4(*matrix) as *const [[f32; 4]; 4]) as *const f32;
-            // gl.uniform_matrix_4_f32_slice(Some(location), false, data);
+            let data = (&array4x4(*matrix) as *const [[f32; 4]; 4]) as *const f32;
+            let raw = slice::from_raw_parts(data, 16);
+            gl.uniform_matrix_4_f32_slice(
+                Some(&uniform_location.native_uniform_location),
+                false,
+                raw,
+            );
         }
     }
 }

@@ -9,10 +9,11 @@ pub fn add(left: usize, right: usize) -> usize {
 
 use core::slice;
 
+use cgmath::vec3;
 use cgmath::{conv::array4x4, Matrix, Matrix4, SquareMatrix};
-use functor_runtime_common::geometry;
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::Scene3D;
+use functor_runtime_common::{geometry, material::color_material::ColorMaterial};
 use glow::*;
 use libloading::{library_filename, Library, Symbol};
 pub fn main() {
@@ -159,7 +160,8 @@ pub fn main() {
         gl.use_program(Some(program));
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
-        // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(2.0, 0.5, 1.0);
+        // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(1.0, 2.5, 1.0);
+
         // let matrix_location = unsafe {
         //     gl.get_uniform_location(program, "world")
         //         .expect("Cannot get uniform")
@@ -167,6 +169,14 @@ pub fn main() {
         // let data = (&array4x4(matrix) as *const [[f32; 4]; 4]) as *const f32;
         // let raw = slice::from_raw_parts(data, 16);
         // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
+
+        // let mut color_material = ColorMaterial::create(vec3(1.0, 0.0, 0.0));
+        // color_material.initialize(&gl, shader_version);
+
+        // let projection_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
+        // let view_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
+        // let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
+        // let skinning_data = vec![];
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -182,6 +192,13 @@ pub fn main() {
                 }
                 gl.clear(glow::COLOR_BUFFER_BIT);
 
+                // color_material.draw_opaque(
+                //     &gl,
+                //     &projection_matrix,
+                //     &view_matrix,
+                //     &world_matrix,
+                //     &skinning_data,
+                // );
                 let plane = functor_runtime_common::geometry::plane::create();
                 plane.draw(&gl);
 

@@ -12,7 +12,7 @@ pub trait Material {
     ) -> bool;
     fn draw_transparent(
         &self,
-        gl: &glow::Context,
+        _gl: &glow::Context,
         _projection_matrix: &Matrix4<f32>,
         _view_matrix: &Matrix4<f32>,
         _world_matrix: &Matrix4<f32>,
@@ -28,6 +28,7 @@ pub mod color_material {
     use once_cell::sync::OnceCell;
 
     use crate::shader_program::ShaderProgram;
+    use crate::shader_program::UniformLocation;
 
     use super::Material;
 
@@ -58,16 +59,15 @@ pub mod color_material {
 "#;
 
     struct Uniforms {
-        world_loc: i32,
-        view_loc: i32,
-        projection_loc: i32,
-        color_loc: i32,
+        world_loc: UniformLocation,
+        view_loc: UniformLocation,
+        projection_loc: UniformLocation,
+        color_loc: UniformLocation,
     }
 
     static SHADER_PROGRAM: OnceCell<(ShaderProgram, Uniforms)> = OnceCell::new();
 
     pub struct ColorMaterial {
-        has_initialized: bool,
         pub color: Vector3<f32>,
     }
 
@@ -98,32 +98,14 @@ pub mod color_material {
                     &fragment_shader,
                 );
 
-                // TODO:
-                // unsafe {
-                //     let shader = crate::shader_program::link(&vertex_shader, &fragment_shader);
-                //     let uniforms = Uniforms {
-                //         world_loc: gl::GetUniformLocation(shader.gl_id, c_str!("world").as_ptr()),
-                //         view_loc: gl::GetUniformLocation(shader.gl_id, c_str!("view").as_ptr()),
-                //         projection_loc: gl::GetUniformLocation(
-                //             shader.gl_id,
-                //             c_str!("projection").as_ptr(),
-                //         ),
-                //         color_loc: gl::GetUniformLocation(shader.gl_id, c_str!("color").as_ptr()),
-                //     };
-                //     (shader, uniforms)
-                // }
+                let uniforms = Uniforms {
+                    world_loc: shader.get_uniform_location(gl, "world"),
+                    view_loc: shader.get_uniform_location(gl, "view"),
+                    projection_loc: shader.get_uniform_location(gl, "projection"),
+                    color_loc: shader.get_uniform_location(gl, "color"),
+                };
 
-                (
-                    shader,
-                    Uniforms {
-                        world_loc: gl.get_uniform_location(shader.program_id, "world").unwrap(),
-                        view_loc: gl.get_uniform_location(shader.program_id, "view").unwrap(),
-                        projection_loc: gl
-                            .get_uniform_location(shader.program_id, "projection")
-                            .unwrap(),
-                        color_loc: gl.get_uniform_location(shader.program_id, "color").unwrap(),
-                    },
-                )
+                (shader, uniforms)
             });
         }
 
@@ -137,23 +119,20 @@ pub mod color_material {
         ) -> bool {
             let (shader_program, uniforms) = SHADER_PROGRAM.get().expect("shader not compiled");
             let p = shader_program;
-            unsafe {
-                gl::UseProgram(p.gl_id);
+            p.use_program(gl);
 
-                let projection = render_context.projection_matrix;
-                gl::UniformMatrix4fv(uniforms.world_loc, 1, gl::FALSE, world_matrix.as_ptr());
-                gl::UniformMatrix4fv(uniforms.view_loc, 1, gl::FALSE, view_matrix.as_ptr());
-                gl::UniformMatrix4fv(uniforms.projection_loc, 1, gl::FALSE, projection.as_ptr());
-                gl::Uniform3fv(uniforms.color_loc, 1, self.color.as_ptr());
-            }
+            p.set_uniform_matrix4(gl, &uniforms.world_loc, world_matrix);
+            p.set_uniform_matrix4(gl, &uniforms.view_loc, view_matrix);
+            p.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
+
+            p.set_uniform_vec3(gl, &uniforms.color_loc, &self.color);
             true
         }
     }
 
-    pub fn create(color: Vector3<f32>) -> Box<dyn Material> {
-        Box::new(ColorMaterial {
-            has_initialized: false,
-            color,
-        })
+    impl ColorMaterial {
+        pub fn create(color: Vector3<f32>) -> Box<dyn Material> {
+            Box::new(ColorMaterial { color })
+        }
     }
 }
