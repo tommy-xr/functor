@@ -9,13 +9,16 @@ pub fn add(left: usize, right: usize) -> usize {
 
 use core::slice;
 
-use cgmath::vec3;
 use cgmath::{conv::array4x4, Matrix, Matrix4, SquareMatrix};
+use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::Scene3D;
 use functor_runtime_common::{geometry, material::color_material::ColorMaterial};
 use glow::*;
 use libloading::{library_filename, Library, Symbol};
+
+const SCR_WIDTH: u32 = 800;
+const SCR_HEIGHT: u32 = 600;
 pub fn main() {
     // Load game
     unsafe {
@@ -71,7 +74,7 @@ pub fn main() {
             // glfw window creation
             // --------------------
             let (mut window, events) = glfw
-                .create_window(800, 600, "Functor", glfw::WindowMode::Windowed)
+                .create_window(SCR_WIDTH, SCR_HEIGHT, "Functor", glfw::WindowMode::Windowed)
                 .expect("Failed to create GLFW window");
 
             window.make_current();
@@ -173,8 +176,9 @@ pub fn main() {
         let mut color_material = ColorMaterial::create(vec3(1.0, 0.0, 0.0));
         color_material.initialize(&gl, shader_version);
 
-        let projection_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
-        let view_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
+        let projection_matrix: Matrix4<f32> =
+            perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
+
         let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
         let skinning_data = vec![];
 
@@ -191,6 +195,14 @@ pub fn main() {
                     }
                 }
                 gl.clear(glow::COLOR_BUFFER_BIT);
+                let radius = 5.0;
+                let camX = glfw.get_time().sin() as f32 * radius;
+                let camZ = glfw.get_time().cos() as f32 * radius;
+                let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
+                    Point3::new(camX, 0.0, camZ),
+                    Point3::new(0.0, 0.0, 0.0),
+                    vec3(0.0, 1.0, 0.0),
+                );
 
                 color_material.draw_opaque(
                     &gl,
@@ -199,6 +211,7 @@ pub fn main() {
                     &world_matrix,
                     &skinning_data,
                 );
+
                 let cube = functor_runtime_common::geometry::cube::create();
                 cube.draw(&gl);
 

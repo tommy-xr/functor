@@ -78,7 +78,7 @@ pub mod mesh {
 
             unsafe {
                 gl.bind_vertex_array(Some(vao));
-                gl.draw_arrays(glow::TRIANGLES, 0, 6);
+                gl.draw_arrays(glow::TRIANGLES, 0, self.vertices.len() as i32 / 5);
             }
         }
     }
