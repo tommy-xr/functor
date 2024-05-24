@@ -170,13 +170,13 @@ pub fn main() {
         // let raw = slice::from_raw_parts(data, 16);
         // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
 
-        // let mut color_material = ColorMaterial::create(vec3(1.0, 0.0, 0.0));
-        // color_material.initialize(&gl, shader_version);
+        let mut color_material = ColorMaterial::create(vec3(1.0, 0.0, 0.0));
+        color_material.initialize(&gl, shader_version);
 
-        // let projection_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
-        // let view_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
-        // let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
-        // let skinning_data = vec![];
+        let projection_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
+        let view_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
+        let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
+        let skinning_data = vec![];
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -192,15 +192,15 @@ pub fn main() {
                 }
                 gl.clear(glow::COLOR_BUFFER_BIT);
 
-                // color_material.draw_opaque(
-                //     &gl,
-                //     &projection_matrix,
-                //     &view_matrix,
-                //     &world_matrix,
-                //     &skinning_data,
-                // );
-                let plane = functor_runtime_common::geometry::plane::create();
-                plane.draw(&gl);
+                color_material.draw_opaque(
+                    &gl,
+                    &projection_matrix,
+                    &view_matrix,
+                    &world_matrix,
+                    &skinning_data,
+                );
+                let cube = functor_runtime_common::geometry::cube::create();
+                cube.draw(&gl);
 
                 window.swap_buffers();
             }
