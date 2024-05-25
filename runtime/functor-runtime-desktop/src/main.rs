@@ -164,6 +164,8 @@ pub fn main() {
         gl.use_program(Some(program));
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
+        gl.enable(glow::DEPTH_TEST);
+
         // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(1.0, 2.5, 1.0);
 
         // let matrix_location = unsafe {
@@ -195,7 +197,7 @@ pub fn main() {
                         _ => {}
                     }
                 }
-                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
                 let radius = 5.0;
                 let camX = glfw.get_time().sin() as f32 * radius;
                 let camZ = glfw.get_time().cos() as f32 * radius;
