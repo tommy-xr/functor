@@ -12,8 +12,9 @@ use core::slice;
 use cgmath::{conv::array4x4, Matrix, Matrix4, SquareMatrix};
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
+use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::Scene3D;
-use functor_runtime_common::{geometry, material::color_material::ColorMaterial};
+use functor_runtime_common::{geometry, material::ColorMaterial};
 use glow::*;
 use libloading::{library_filename, Library, Symbol};
 
@@ -173,8 +174,8 @@ pub fn main() {
         // let raw = slice::from_raw_parts(data, 16);
         // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
 
-        let mut color_material = ColorMaterial::create(vec3(1.0, 0.0, 0.0));
-        color_material.initialize(&gl, shader_version);
+        let mut basic_material = BasicMaterial::create();
+        basic_material.initialize(&gl, shader_version);
 
         let projection_matrix: Matrix4<f32> =
             perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
@@ -204,7 +205,7 @@ pub fn main() {
                     vec3(0.0, 1.0, 0.0),
                 );
 
-                color_material.draw_opaque(
+                basic_material.draw_opaque(
                     &gl,
                     &projection_matrix,
                     &view_matrix,
