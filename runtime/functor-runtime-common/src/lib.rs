@@ -22,6 +22,7 @@ pub mod geometry;
 pub mod material;
 mod shader;
 mod shader_program;
+pub mod texture;
 
 #[cfg(test)]
 mod tests {

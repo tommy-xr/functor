@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 cgmath = "0.18.0"
 glow = "0.13.1"
+image = "0.25.1"
 once_cell = "1.19.0"

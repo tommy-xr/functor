@@ -8,6 +8,7 @@ pub fn add(left: usize, right: usize) -> usize {
 // }
 
 use core::slice;
+use std::env;
 
 use cgmath::{conv::array4x4, Matrix, Matrix4, SquareMatrix};
 use cgmath::{perspective, vec3, Deg, Point3};
@@ -33,6 +34,9 @@ pub fn main() {
         let init_func: Symbol<fn()> = lib.get(b"init").unwrap(); // Get the function pointer
         println!("Running init.");
         init_func();
+
+        let path = env::current_dir();
+        println!("cwd: {:?}", path);
 
         println!("Got render: {:?}", test_render_func());
     }
