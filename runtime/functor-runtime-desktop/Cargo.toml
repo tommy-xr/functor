@@ -12,6 +12,9 @@ functor_runtime_common = { path = "./../functor-runtime-common" }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 glow = "0.13.1"
 cgmath = "0.18.0"
+notify = "6.1.1"
+notify-debouncer-full = "0.3.1"
+tempfile = "3.10.1"
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
 glfw = { version = "0.56.0" }

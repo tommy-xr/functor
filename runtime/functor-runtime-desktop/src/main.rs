@@ -1,30 +1,66 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
-
-// pub fn hello_from_rust() {
-//     println!("Hello from Rust!");
-//     start();
-// }
-
-use core::slice;
 use std::env;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use cgmath::{conv::array4x4, Matrix, Matrix4, SquareMatrix};
+use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::Scene3D;
-use functor_runtime_common::{geometry, material::ColorMaterial};
 use glow::*;
+use hot_reload_game::HotReloadGame;
 use libloading::{library_filename, Library, Symbol};
+use notify::{RecursiveMode, Watcher};
+
+use crate::game::Game;
 
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
+
+mod game;
+mod hot_reload_game;
+
 pub fn main() {
     // Load game
+
+    let file_changed = Arc::new(AtomicBool::new(false));
+    let file_changed_watcher = Arc::clone(&file_changed);
+    let watcher_thread = std::thread::spawn(move || {
+        // Select recommended watcher for debouncer.
+        // Using a callback here, could also be a channel.
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(tx).unwrap();
+
+        let mut had_remove_event = false;
+
+        watcher
+            .watch(
+                Path::new("target/debug/libpong.dylib"),
+                RecursiveMode::Recursive,
+            )
+            .unwrap();
+
+        println!("watcher created!");
+        loop {
+            match rx.recv() {
+                Ok(event) => {
+                    // TODO: Can we parse events here to handle create -> restore loop?
+                    println!("event: {:?}", event);
+                    file_changed_watcher.store(true, Ordering::SeqCst);
+                }
+                Err(e) => println!("watch error: {:?}", e),
+            }
+        }
+    });
+
+    let mut test_render_func2: Option<Arc<Symbol<fn() -> Scene3D>>> = None;
+
+    let game_filename = library_filename("pong");
+    let mut game = HotReloadGame::create(game_filename.to_string_lossy().to_string());
     unsafe {
-        let lib = Library::new(library_filename("pong")).unwrap(); // Load the "hello_world" library
+        let lib = Library::new(&game_filename).unwrap(); // Load the "hello_world" library
         let func: Symbol<fn(f64)> = lib.get(b"dynamic_call_from_rust").unwrap(); // Get the function pointer
 
         let test_render_func: Symbol<fn() -> Scene3D> = lib.get(b"test_render").unwrap(); // Get the function pointer
@@ -39,7 +75,8 @@ pub fn main() {
         println!("cwd: {:?}", path);
 
         println!("Got render: {:?}", test_render_func());
-    }
+        test_render_func2 = Some(Arc::new(test_render_func));
+    };
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets
         #[cfg(target_arch = "wasm32")]
@@ -194,6 +231,14 @@ pub fn main() {
             use glfw::Context;
 
             while !window.should_close() {
+                // Check if file has changed
+                if file_changed.load(Ordering::SeqCst) {
+                    println!("Reloading!");
+                    file_changed.store(false, Ordering::SeqCst);
+                    // game.reload();
+                    println!("Rendering: {:?}", game.render());
+                }
+
                 glfw.poll_events();
                 for (_, event) in glfw::flush_messages(&events) {
                     match event {
@@ -201,6 +246,7 @@ pub fn main() {
                         _ => {}
                     }
                 }
+
                 gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
                 let radius = 5.0;
                 let camX = glfw.get_time().sin() as f32 * radius;
@@ -242,16 +288,7 @@ pub fn main() {
             //         }
             //     });
         }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+        watcher_thread.join().unwrap();
     }
 }
