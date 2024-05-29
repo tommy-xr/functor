@@ -26,6 +26,7 @@ type Model = {
     paddle1: Paddle
     paddle2: Paddle
     ball: Ball
+    counter: int
 }
 
 module Model =
@@ -33,17 +34,12 @@ module Model =
         paddle1 = Paddle.initial
         paddle2 = Paddle.initial
         ball = Ball.initial
+        counter = 0
     }
 
 type Msg =
     | MovePaddle1 of float
     | MovePaddle2 of float
-
-let initialState = {
-    paddle1 = { position = Point2.zero; size = Vector2.xy 0.1 0.3 }
-    paddle2 = { position = Point2.zero; size = Vector2.xy 0.1 0.3 }
-    ball = { position = Point2.zero; velocity = Vector2.zero; radius = 0.05 }
-}
 
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
@@ -78,16 +74,17 @@ let tick model (tick: Tick.t) =
         |> handleCollisionWithPaddle model.paddle1 
         |> handleCollisionWithPaddle model.paddle2)
 
-    ( { model with ball = newBall }, Effect.none ) 
+    ( { model with ball = newBall; counter = model.counter + 3 }, Effect.none ) 
 
 open Fable.Core.Rust
 
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
-
-    |> GameBuilder.draw3d (fun _ -> Graphics.Scene3D.sphere())
-
+    |> GameBuilder.draw3d (fun model -> 
+        printfn "Tick: %d" model.counter;
+        Graphics.Scene3D.cube()
+        )
     |> GameBuilder.tick tick
     |> Runtime.runGame
 

@@ -37,9 +37,8 @@ module GameBuilder =
     let draw3d<'model, 'msg> (f: 'model -> Graphics.Scene3D) (game: Game<'model, 'msg>) = 
         { game with draw3d = f }
 
-    let tick<'model, 'msg> (f: TickFn<'model, 'msg>) (_game: Game<'model, 'msg>) = 
-        printfn "Hello from Game.tick!"
-        _game
+    let tick<'model, 'msg> (f: TickFn<'model, 'msg>) (game: Game<'model, 'msg>) = 
+        { game with tick = f}
 
 
 

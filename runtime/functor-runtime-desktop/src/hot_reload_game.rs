@@ -3,7 +3,7 @@ use std::path::Path;
 use std::{fs, process};
 use tempfile::tempdir;
 
-use functor_runtime_common::Scene3D;
+use functor_runtime_common::{OpaqueState, Scene3D};
 use libloading::{Library, Symbol};
 
 use crate::game::Game;
@@ -75,7 +75,12 @@ impl HotReloadGame {
         unsafe {
             let Self { library, .. } = self;
 
+            let mut maybe_previous_state: Option<OpaqueState> = None;
+
             if let Some(lib) = library.take() {
+                println!("Saving previous state...");
+                let get_state_fn: Symbol<fn() -> OpaqueState> = lib.get(b"emit_state").unwrap(); // Get the function pointer
+                maybe_previous_state = Some(get_state_fn());
                 lib.close().unwrap();
             }
 
@@ -91,6 +96,18 @@ impl HotReloadGame {
             let init_func: Symbol<fn()> = lib.get(b"init").unwrap(); // Get the function pointer
             println!("Running init after reload.");
             init_func();
+
+            if let Some(previous_state) = maybe_previous_state {
+                println!("Rehydrating state");
+                let set_state_fn: Symbol<fn(OpaqueState) -> ()> = lib.get(b"set_state").unwrap(); // Get the function pointer
+                set_state_fn(previous_state);
+
+                // Run a tick
+                let tick_fn: Symbol<fn() -> ()> = lib.get(b"tick").unwrap();
+                tick_fn();
+            }
+
+            // Get state and set state
 
             self.library = Some(lib); // Load the "hello_world" library
 
