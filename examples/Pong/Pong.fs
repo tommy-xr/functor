@@ -86,7 +86,7 @@ open Fable.Core.Rust
 let init (_args: array<string>) =
     game
 
-    |> GameBuilder.draw3d (fun _ -> Graphics.Scene3D.cube())
+    |> GameBuilder.draw3d (fun _ -> Graphics.Scene3D.sphere())
 
     |> GameBuilder.tick tick
     |> Runtime.runGame

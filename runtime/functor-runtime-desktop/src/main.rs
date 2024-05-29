@@ -11,7 +11,7 @@ use functor_runtime_common::Scene3D;
 use glow::*;
 use hot_reload_game::HotReloadGame;
 use libloading::{library_filename, Library, Symbol};
-use notify::{RecursiveMode, Watcher};
+use notify::{event, RecursiveMode, Watcher};
 
 use crate::game::Game;
 
@@ -46,9 +46,26 @@ pub fn main() {
         loop {
             match rx.recv() {
                 Ok(event) => {
-                    // TODO: Can we parse events here to handle create -> restore loop?
-                    println!("event: {:?}", event);
-                    file_changed_watcher.store(true, Ordering::SeqCst);
+                    match event {
+                        Ok(event) => {
+                            match event.kind {
+                                event::EventKind::Remove(_) => had_remove_event = true,
+                                event::EventKind::Create(_) => {
+                                    if had_remove_event {
+                                        had_remove_event = false;
+                                        file_changed_watcher.store(true, Ordering::SeqCst);
+                                    } else {
+                                        println!("ignoring event");
+                                    }
+                                }
+                                _ => (),
+                            };
+                            // TODO: Can we parse events here to handle create -> restore loop?
+                            println!("event: {:?}", event);
+                            //file_changed_watcher.store(true, Ordering::SeqCst);
+                        }
+                        Err(e) => println!("watch error: {:?}", e),
+                    }
                 }
                 Err(e) => println!("watch error: {:?}", e),
             }
@@ -235,7 +252,7 @@ pub fn main() {
                 if file_changed.load(Ordering::SeqCst) {
                     println!("Reloading!");
                     file_changed.store(false, Ordering::SeqCst);
-                    // game.reload();
+                    game.reload();
                     println!("Rendering: {:?}", game.render());
                 }
 
