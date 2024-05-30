@@ -282,8 +282,23 @@ pub fn main() {
                     &skinning_data,
                 );
 
-                let cube = functor_runtime_common::geometry::cube::create();
-                cube.draw(&gl);
+                let scene = game.render();
+                println!("scene: {:?}", scene);
+
+                match scene {
+                    Scene3D::Cube => {
+                        let mut cube = functor_runtime_common::geometry::Cube::create();
+                        cube.draw(&gl);
+                    }
+                    Scene3D::Cylinder => {
+                        let mut cylinder = functor_runtime_common::geometry::Cylinder::create();
+                        cylinder.draw(&gl);
+                    }
+                    Scene3D::Sphere => {
+                        let mut sphere = functor_runtime_common::geometry::Sphere::create();
+                        sphere.draw(&gl);
+                    }
+                }
 
                 window.swap_buffers();
             }

@@ -4,6 +4,7 @@ use std::any::Any;
 pub enum Scene3D {
     Cube,
     Sphere,
+    Cylinder,
 }
 
 impl Scene3D {
@@ -13,6 +14,10 @@ impl Scene3D {
 
     pub fn sphere() -> Self {
         Self::Sphere
+    }
+
+    pub fn cylinder() -> Self {
+        Self::Cylinder
     }
 }
 

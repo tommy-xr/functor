@@ -10,3 +10,6 @@ module Scene3D =
 
     [<Emit("functor_runtime_common::Scene3D::sphere()")>]
     let sphere(): Scene3D = nativeOnly
+
+    [<Emit("functor_runtime_common::Scene3D::cylinder()")>]
+    let cylinder(): Scene3D = nativeOnly
