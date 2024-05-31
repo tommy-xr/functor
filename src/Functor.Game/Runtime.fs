@@ -1,7 +1,12 @@
 module Runtime
 
-    open Platform;
+    open Fable.Core.Rust
 
+    let imports() =
+        import "wasm_bindgen::prelude::*" ""
+        ()
+
+    open Platform;
     type IRunner =
         abstract member tick: unit -> unit
         abstract member render: unit -> Graphics.Scene3D
@@ -34,6 +39,12 @@ module Runtime
     let set_state(opaqueState: OpaqueState): unit =
         if currentRunner.IsSome then 
             currentRunner.Value.setState(opaqueState)
+        else 
+            raise (System.Exception("No runner"))
+    [<OuterAttr("wasm_bindgen")>]
+    let test_render_wasm(): Graphics.Scene3D =
+        if currentRunner.IsSome then 
+            currentRunner.Value.render()
         else 
             raise (System.Exception("No runner"))
 

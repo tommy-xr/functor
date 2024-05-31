@@ -1,7 +1,7 @@
 use glow::*;
 
 pub struct Shader {
-    pub shader_id: glow::NativeShader,
+    pub shader_id: glow::Shader,
 }
 
 pub enum ShaderType {

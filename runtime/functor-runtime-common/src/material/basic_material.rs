@@ -1,7 +1,6 @@
 use cgmath::Matrix4;
 
-use cgmath::Vector3;
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
@@ -40,7 +39,7 @@ struct Uniforms {
     projection_loc: UniformLocation,
 }
 
-static SHADER_PROGRAM: OnceCell<(ShaderProgram, Uniforms)> = OnceCell::new();
+// static SHADER_PROGRAM: OnceLock<(ShaderProgram, Uniforms)> = OnceLock::new();
 
 pub struct BasicMaterial;
 
@@ -48,35 +47,35 @@ use crate::shader::Shader;
 use crate::shader::ShaderType;
 
 impl Material for BasicMaterial {
-    fn initialize(&mut self, gl: &glow::Context, opengl_version: &str) {
-        let _ = SHADER_PROGRAM.get_or_init(|| {
-            // build and compile our shader program
-            // ------------------------------------
-            // vertex shader
-            let vertex_shader =
-                Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER_SOURCE, opengl_version);
+    fn initialize(&mut self, gl: &glow::Context, opengl_version: &str) {}
+    //     let _ = SHADER_PROGRAM.get_or_init(|| {
+    //         // build and compile our shader program
+    //         // ------------------------------------
+    //         // vertex shader
+    //         let vertex_shader =
+    //             Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER_SOURCE, opengl_version);
 
-            // fragment shader
-            let fragment_shader = Shader::build(
-                gl,
-                ShaderType::Fragment,
-                FRAGMENT_SHADER_SOURCE,
-                opengl_version,
-            );
-            // link shaders
+    //         // fragment shader
+    //         let fragment_shader = Shader::build(
+    //             gl,
+    //             ShaderType::Fragment,
+    //             FRAGMENT_SHADER_SOURCE,
+    //             opengl_version,
+    //         );
+    //         // link shaders
 
-            let shader =
-                crate::shader_program::ShaderProgram::link(&gl, &vertex_shader, &fragment_shader);
+    //         let shader =
+    //             crate::shader_program::ShaderProgram::link(&gl, &vertex_shader, &fragment_shader);
 
-            let uniforms = Uniforms {
-                world_loc: shader.get_uniform_location(gl, "world"),
-                view_loc: shader.get_uniform_location(gl, "view"),
-                projection_loc: shader.get_uniform_location(gl, "projection"),
-            };
+    //         let uniforms = Uniforms {
+    //             world_loc: shader.get_uniform_location(gl, "world"),
+    //             view_loc: shader.get_uniform_location(gl, "view"),
+    //             projection_loc: shader.get_uniform_location(gl, "projection"),
+    //         };
 
-            (shader, uniforms)
-        });
-    }
+    //         (shader, uniforms)
+    //     });
+    // }
 
     fn draw_opaque(
         &self,
@@ -86,8 +85,36 @@ impl Material for BasicMaterial {
         world_matrix: &Matrix4<f32>,
         _skinning_data: &[Matrix4<f32>],
     ) -> bool {
-        let (shader_program, uniforms) = SHADER_PROGRAM.get().expect("shader not compiled");
-        let p = shader_program;
+        // TODO:
+        let opengl_version = "#version 300 es";
+        // build and compile our shader program
+        // ------------------------------------
+        // vertex shader
+        let vertex_shader =
+            Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER_SOURCE, opengl_version);
+
+        // fragment shader
+        let fragment_shader = Shader::build(
+            gl,
+            ShaderType::Fragment,
+            FRAGMENT_SHADER_SOURCE,
+            opengl_version,
+        );
+        // link shaders
+
+        let shader =
+            crate::shader_program::ShaderProgram::link(&gl, &vertex_shader, &fragment_shader);
+
+        let uniforms = Uniforms {
+            world_loc: shader.get_uniform_location(gl, "world"),
+            view_loc: shader.get_uniform_location(gl, "view"),
+            projection_loc: shader.get_uniform_location(gl, "projection"),
+        };
+
+        // (shader, uniforms)
+
+        // let (shader_program, uniforms) = SHADER_PROGRAM.get().expect("shader not compiled");
+        let p = shader;
         p.use_program(gl);
 
         p.set_uniform_matrix4(gl, &uniforms.world_loc, world_matrix);

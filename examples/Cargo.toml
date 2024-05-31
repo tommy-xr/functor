@@ -6,9 +6,23 @@ edition = "2021"
 [lib]
 name = "pong"
 path = "Pong/Pong.rs"
-crate-type = ["dylib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 functor-lib = { path = "./../src" }
 functor_runtime_common = { path = "./../runtime/functor-runtime-common" }
 fable_library_rust = { path = "./../fable_modules/fable-library-rust" }
+
+[target.'cfg(target_arch="wasm32")'.dependencies]
+web-sys = { version = "0.3.61", features = ["Document", "Text"] }
+console_error_panic_hook = "0.1.7"
+console_log = "1.0.0"
+wasm-bindgen-futures = "0.4.34" 
+wasm-bindgen = "0.2.84"
+
+[profile.release]
+opt-level = 'z'     # Optimize for size
+lto = true          # Enable link-time optimization
+codegen-units = 1   # Reduce number of codegen units to increase optimizations
+panic = 'abort'     # Abort on panic
+strip = true        # Strip symbols from binary

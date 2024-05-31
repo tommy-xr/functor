@@ -1,11 +1,11 @@
-use glow::{HasContext, NativeBuffer, NativeVertexArray};
+use glow::{Buffer, HasContext, VertexArray};
 use once_cell::sync::OnceCell;
 
 use super::Geometry;
 
 struct HydratedContext {
-    vbo: NativeBuffer,
-    vao: NativeVertexArray,
+    vbo: Buffer,
+    vao: VertexArray,
     triangle_count: i32,
 }
 
