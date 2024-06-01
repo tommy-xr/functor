@@ -49,5 +49,10 @@ jobs:
       - name: Build F#
         run: npm run build:examples:pong:rust
 
-      - name: Build Rust
+      - name: Build Runtime
         run: cargo build
+        working-directory: runtime/functor-runtime-desktop
+
+      - name: Build Pong
+        run: cargo build
+        working-directory: examples/Pong
