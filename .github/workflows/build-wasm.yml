@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-native:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v2.4.1
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - name: Build F#
+        run: npm run build:examples:pong:rust
+
+      - name: Build runtime wasm bundle
+        run: wasm-pack build --target web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build pong wasm bundle
+        run: wasm-pack build --target web
+        working-directory: examples/Pong
