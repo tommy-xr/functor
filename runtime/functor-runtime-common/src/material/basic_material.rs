@@ -86,7 +86,7 @@ impl Material for BasicMaterial {
         _skinning_data: &[Matrix4<f32>],
     ) -> bool {
         // TODO:
-        let opengl_version = "#version 300 es";
+        let opengl_version = "#version 410";
         // build and compile our shader program
         // ------------------------------------
         // vertex shader

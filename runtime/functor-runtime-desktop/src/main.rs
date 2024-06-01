@@ -53,6 +53,7 @@ pub fn main() {
                                 event::EventKind::Create(_) => {
                                     if had_remove_event {
                                         had_remove_event = false;
+                                        println!("Pushing hot reload event from thread...");
                                         file_changed_watcher.store(true, Ordering::SeqCst);
                                     } else {
                                         println!("ignoring event");
@@ -95,29 +96,6 @@ pub fn main() {
         test_render_func2 = Some(Arc::new(test_render_func));
     };
     unsafe {
-        // Create a context from a WebGL2 context on wasm32 targets
-        #[cfg(target_arch = "wasm32")]
-        let (gl, shader_version) = {
-            use wasm_bindgen::JsCast;
-            let canvas = web_sys::window()
-                .unwrap()
-                .document()
-                .unwrap()
-                .get_element_by_id("canvas")
-                .unwrap()
-                .dyn_into::<web_sys::HtmlCanvasElement>()
-                .unwrap();
-            let webgl2_context = canvas
-                .get_context("webgl2")
-                .unwrap()
-                .unwrap()
-                .dyn_into::<web_sys::WebGl2RenderingContext>()
-                .unwrap();
-            let gl = glow::Context::from_webgl2_context(webgl2_context);
-            (gl, "#version 300 es")
-        };
-
-        #[cfg(not(target_arch = "wasm32"))]
         let (gl, shader_version, mut window, mut glfw, events) = {
             use glfw::Context;
             let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
@@ -283,7 +261,7 @@ pub fn main() {
                 );
 
                 let scene = game.render();
-                println!("scene: {:?}", scene);
+                // let scene = Scene3D::cube();
 
                 match scene {
                     Scene3D::Cube => {
@@ -302,23 +280,6 @@ pub fn main() {
 
                 window.swap_buffers();
             }
-            //     use glutin::prelude::GlSurface;
-            //     use winit::event::{Event, WindowEvent};
-            //     let _ = event_loop.run(move |event, elwt| {
-            //         if let Event::WindowEvent { event, .. } = event {
-            //             match event {
-            //                 WindowEvent::CloseRequested => {
-            //                     elwt.exit();
-            //                 }
-            //                 WindowEvent::RedrawRequested => {
-            //                     gl.clear(glow::COLOR_BUFFER_BIT);
-            //                     gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            //                     gl_surface.swap_buffers(&gl_context).unwrap();
-            //                 }
-            //                 _ => (),
-            //             }
-            //         }
-            //     });
         }
 
         watcher_thread.join().unwrap();

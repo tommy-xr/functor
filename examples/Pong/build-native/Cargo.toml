@@ -1,0 +1,14 @@
+[package]
+name = "pong_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "pong_native"
+path = "../Pong.rs"
+crate-type = ["dylib"]
+
+[dependencies]
+functor-lib = { path = "./../../../src" }
+functor_runtime_common = { path = "./../../../runtime/functor-runtime-common" }
+fable_library_rust = { path = "./../../../fable_modules/fable-library-rust" }
