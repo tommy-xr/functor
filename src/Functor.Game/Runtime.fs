@@ -2,11 +2,9 @@ module Runtime
 
     open Fable.Core.Rust
 
-    let imports() =
-        import "wasm_bindgen::prelude::*" ""
-        ()
+    open Platform
+    open Functor
 
-    open Platform;
     type IRunner =
         abstract member tick: unit -> unit
         abstract member render: unit -> Graphics.Scene3D
@@ -15,45 +13,59 @@ module Runtime
 
     let mutable currentRunner: Option<IRunner> = None
 
-
     open Fable.Core.Rust
-    open Functor
-    [<OuterAttr("no_mangle")>]
-    let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
 
-    [<OuterAttr("no_mangle")>]
-    let tick() =
-        if currentRunner.IsSome then 
-            currentRunner.Value.tick()
-        else 
-            raise (System.Exception("No runner"))
+    ///////////////////////////////
+    // WebAssembly API
+    ///////////////////////////////
+    [<Fable.Core.Rust.OuterAttr("cfg", [|"target_arch = \"wasm32\""|])>]
+    module Wasm = 
+        let imports() =
+            import "wasm_bindgen::prelude::*" ""
+            ()
 
-    [<OuterAttr("no_mangle")>]
-    let emit_state(): OpaqueState=
-        if currentRunner.IsSome then 
-            currentRunner.Value.getState()
-        else 
-            raise (System.Exception("No runner"))
+        [<OuterAttr("wasm_bindgen")>]
+        let test_render_wasm(): Graphics.Scene3D =
+            if currentRunner.IsSome then 
+                currentRunner.Value.render()
+            else 
+                raise (System.Exception("No runner"))
 
-    [<OuterAttr("no_mangle")>]
-    let set_state(opaqueState: OpaqueState): unit =
-        if currentRunner.IsSome then 
-            currentRunner.Value.setState(opaqueState)
-        else 
-            raise (System.Exception("No runner"))
-    [<OuterAttr("wasm_bindgen")>]
-    let test_render_wasm(): Graphics.Scene3D =
-        if currentRunner.IsSome then 
-            currentRunner.Value.render()
-        else 
-            raise (System.Exception("No runner"))
 
-    [<OuterAttr("no_mangle")>]
-    let test_render(): Graphics.Scene3D =
-        if currentRunner.IsSome then 
-            currentRunner.Value.render()
-        else 
-            raise (System.Exception("No runner"))
+    ///////////////////////////////
+    // Native API
+    ///////////////////////////////
+    module Native = 
+        [<OuterAttr("no_mangle")>]
+        let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
+
+        [<OuterAttr("no_mangle")>]
+        let tick() =
+            if currentRunner.IsSome then 
+                currentRunner.Value.tick()
+            else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let emit_state(): OpaqueState=
+            if currentRunner.IsSome then 
+                currentRunner.Value.getState()
+            else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let set_state(opaqueState: OpaqueState): unit =
+            if currentRunner.IsSome then 
+                currentRunner.Value.setState(opaqueState)
+            else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let test_render(): Graphics.Scene3D =
+            if currentRunner.IsSome then 
+                currentRunner.Value.render()
+            else 
+                raise (System.Exception("No runner"))
 
     type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model) =
         let myGame = game
