@@ -1,5 +1,6 @@
 src/**/*.rs
 src/*.ts
+examples/**/*.rs
 Cargo.lock
 
 # Logs
