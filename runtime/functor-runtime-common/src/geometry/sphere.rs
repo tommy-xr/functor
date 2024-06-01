@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, os::macos::raw};
+use std::f32::consts::PI;
 
 use cgmath::{vec2, vec3, Vector2, Vector3};
 
@@ -19,11 +19,11 @@ fn generate_unit_sphere(slices: u32, stacks: u32) -> (Vec<Vertex>, Vec<usize>) {
 
     for stack in 0..=stacks {
         let stack_fraction = stack as f32 / stacks as f32;
-        let stack_angle = stack_fraction * std::f32::consts::PI;
+        let stack_angle = stack_fraction * PI;
 
         for slice in 0..=slices {
             let slice_fraction = slice as f32 / slices as f32;
-            let slice_angle = slice_fraction * 2.0 * std::f32::consts::PI;
+            let slice_angle = slice_fraction * 2.0 * PI;
 
             let x = slice_angle.sin() * stack_angle.sin();
             let y = stack_angle.cos();
