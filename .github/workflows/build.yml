@@ -6,8 +6,7 @@ on:
   pull_request:
 
 jobs:
-  # Separate build job for Rust (will run in parallel)
-  build-rust:
+  build-native:
     runs-on: ubuntu-latest
 
     steps:
