@@ -43,4 +43,4 @@ jobs:
 
       - name: Build pong wasm bundle
         run: wasm-pack build --target web
-        working-directory: examples/Pong
+        working-directory: examples/Pong/build-wasm
