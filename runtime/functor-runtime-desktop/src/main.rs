@@ -8,6 +8,7 @@ use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::Scene3D;
+use glfw::{init, RenderContext};
 use glow::*;
 use hot_reload_game::HotReloadGame;
 use libloading::{library_filename, Library, Symbol};
@@ -212,8 +213,12 @@ pub fn main() {
         // let raw = slice::from_raw_parts(data, 16);
         // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
 
+        let init_ctx = functor_runtime_common::RenderContext {
+            gl: &gl,
+            shader_version,
+        };
         let mut basic_material = BasicMaterial::create();
-        basic_material.initialize(&gl, shader_version);
+        basic_material.initialize(&init_ctx);
 
         let projection_matrix: Matrix4<f32> =
             perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
@@ -252,8 +257,13 @@ pub fn main() {
                     vec3(0.0, 1.0, 0.0),
                 );
 
+                let context = functor_runtime_common::RenderContext {
+                    gl: &gl,
+                    shader_version,
+                };
+
                 basic_material.draw_opaque(
-                    &gl,
+                    &context,
                     &projection_matrix,
                     &view_matrix,
                     &world_matrix,

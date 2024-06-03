@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
+use crate::RenderContext;
 
 use super::Material;
 
@@ -47,7 +48,7 @@ use crate::shader::Shader;
 use crate::shader::ShaderType;
 
 impl Material for BasicMaterial {
-    fn initialize(&mut self, gl: &glow::Context, opengl_version: &str) {}
+    fn initialize(&mut self, ctx: &RenderContext) {}
     //     let _ = SHADER_PROGRAM.get_or_init(|| {
     //         // build and compile our shader program
     //         // ------------------------------------
@@ -79,26 +80,30 @@ impl Material for BasicMaterial {
 
     fn draw_opaque(
         &self,
-        gl: &glow::Context,
+        ctx: &RenderContext,
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
         world_matrix: &Matrix4<f32>,
         _skinning_data: &[Matrix4<f32>],
     ) -> bool {
         // TODO:
-        let opengl_version = "#version 410";
+        let gl = ctx.gl;
         // build and compile our shader program
         // ------------------------------------
         // vertex shader
-        let vertex_shader =
-            Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER_SOURCE, opengl_version);
+        let vertex_shader = Shader::build(
+            gl,
+            ShaderType::Vertex,
+            VERTEX_SHADER_SOURCE,
+            ctx.shader_version,
+        );
 
         // fragment shader
         let fragment_shader = Shader::build(
             gl,
             ShaderType::Fragment,
             FRAGMENT_SHADER_SOURCE,
-            opengl_version,
+            ctx.shader_version,
         );
         // link shaders
 

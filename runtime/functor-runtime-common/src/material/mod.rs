@@ -1,10 +1,10 @@
 use cgmath::Matrix4;
 
 pub trait Material {
-    fn initialize(&mut self, gl: &glow::Context, opengl_version: &str);
+    fn initialize(&mut self, ctx: &RenderContext);
     fn draw_opaque(
         &self,
-        gl: &glow::Context,
+        ctx: &RenderContext,
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
         world_matrix: &Matrix4<f32>,
@@ -12,7 +12,7 @@ pub trait Material {
     ) -> bool;
     fn draw_transparent(
         &self,
-        _gl: &glow::Context,
+        ctx: &RenderContext,
         _projection_matrix: &Matrix4<f32>,
         _view_matrix: &Matrix4<f32>,
         _world_matrix: &Matrix4<f32>,
@@ -27,3 +27,5 @@ mod color_material;
 
 pub use basic_material::*;
 pub use color_material::*;
+
+use crate::RenderContext;

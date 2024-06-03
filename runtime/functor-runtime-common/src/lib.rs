@@ -48,9 +48,12 @@ impl OpaqueState {
 
 pub mod geometry;
 pub mod material;
+mod render_context;
 mod shader;
 mod shader_program;
 pub mod texture;
+
+pub use render_context::*;
 
 #[cfg(test)]
 mod tests {
