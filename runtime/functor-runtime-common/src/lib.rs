@@ -12,6 +12,14 @@ where
     serde_wasm_bindgen::to_value(value).unwrap()
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn from_js_value<T>(value: JsValue) -> T
+where
+    T: for<'de> Deserialize<'de>,
+{
+    serde_wasm_bindgen::from_value(value).unwrap()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Scene3D {
     Cube,

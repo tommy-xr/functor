@@ -32,6 +32,9 @@ module Runtime
             let to_js<'a>(obj): JsValue = nativeOnly
             // let from_js<'a>(jsValue: JsValue): 'a = nativeOnly
 
+            [<Emit("functor_runtime_common::from_js_value($0)")>]
+            let from_js<'a>(obj: JsValue): 'a = nativeOnly
+
 
         [<OuterAttr("wasm_bindgen")>]
         let test_render_wasm(): JsValue =
