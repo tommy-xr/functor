@@ -9,7 +9,7 @@ use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
-use functor_runtime_common::Scene3D;
+use functor_runtime_common::{RenderContext, Scene3D};
 use glow::*;
 use wasm_bindgen::JsValue;
 
@@ -144,8 +144,13 @@ pub fn main() {
             // let raw = slice::from_raw_parts(data, 16);
             // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
 
+            let render_ctx = RenderContext {
+                gl: &gl,
+                shader_version,
+            };
+
             let mut basic_material = BasicMaterial::create();
-            basic_material.initialize(&gl, shader_version);
+            basic_material.initialize(&render_ctx);
 
             let projection_matrix: Matrix4<f32> =
                 perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
@@ -167,7 +172,7 @@ pub fn main() {
             web_sys::console::log_1(&JsValue::from_str("here - 40!"));
 
             basic_material.draw_opaque(
-                &gl,
+                &render_ctx,
                 &projection_matrix,
                 &view_matrix,
                 &world_matrix,
