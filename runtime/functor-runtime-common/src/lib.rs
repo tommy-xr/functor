@@ -1,6 +1,18 @@
+use serde::*;
 use std::any::Any;
 
-#[derive(Debug, Clone)]
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+pub fn to_js_value<T>(value: &T) -> JsValue
+where
+    T: Serialize,
+{
+    serde_wasm_bindgen::to_value(value).unwrap()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Scene3D {
     Cube,
     Sphere,

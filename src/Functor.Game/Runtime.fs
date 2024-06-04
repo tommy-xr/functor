@@ -20,14 +20,23 @@ module Runtime
     ///////////////////////////////
     [<Fable.Core.Rust.OuterAttr("cfg", [|"target_arch = \"wasm32\""|])>]
     module Wasm = 
+        open Fable.Core
         let imports() =
             import "wasm_bindgen::prelude::*" ""
             ()
 
+        [<Erase; Emit("JsValue")>] type JsValue = | Noop
+
+        module UnsafeJsValue =
+            [<Emit("functor_runtime_common::to_js_value(&$0)")>]
+            let to_js<'a>(obj): JsValue = nativeOnly
+            // let from_js<'a>(jsValue: JsValue): 'a = nativeOnly
+
+
         [<OuterAttr("wasm_bindgen")>]
-        let test_render_wasm(): Graphics.Scene3D =
+        let test_render_wasm(): JsValue =
             if currentRunner.IsSome then 
-                currentRunner.Value.render()
+                currentRunner.Value.render() |> UnsafeJsValue.to_js
             else 
                 raise (System.Exception("No runner"))
 

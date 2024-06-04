@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 functor-lib = { path = "./../../../src" }
 functor_runtime_common = { path = "./../../../runtime/functor-runtime-common" }
 fable_library_rust = { path = "./../../../fable_modules/fable-library-rust" }
+wasm-bindgen = { version = "0.2" }
