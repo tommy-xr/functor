@@ -8,6 +8,7 @@ use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::Scene3D;
+use glfw::{init, RenderContext};
 use glow::*;
 use hot_reload_game::HotReloadGame;
 use libloading::{library_filename, Library, Symbol};
@@ -53,6 +54,7 @@ pub fn main() {
                                 event::EventKind::Create(_) => {
                                     if had_remove_event {
                                         had_remove_event = false;
+                                        println!("Pushing hot reload event from thread...");
                                         file_changed_watcher.store(true, Ordering::SeqCst);
                                     } else {
                                         println!("ignoring event");
@@ -95,29 +97,6 @@ pub fn main() {
         test_render_func2 = Some(Arc::new(test_render_func));
     };
     unsafe {
-        // Create a context from a WebGL2 context on wasm32 targets
-        #[cfg(target_arch = "wasm32")]
-        let (gl, shader_version) = {
-            use wasm_bindgen::JsCast;
-            let canvas = web_sys::window()
-                .unwrap()
-                .document()
-                .unwrap()
-                .get_element_by_id("canvas")
-                .unwrap()
-                .dyn_into::<web_sys::HtmlCanvasElement>()
-                .unwrap();
-            let webgl2_context = canvas
-                .get_context("webgl2")
-                .unwrap()
-                .unwrap()
-                .dyn_into::<web_sys::WebGl2RenderingContext>()
-                .unwrap();
-            let gl = glow::Context::from_webgl2_context(webgl2_context);
-            (gl, "#version 300 es")
-        };
-
-        #[cfg(not(target_arch = "wasm32"))]
         let (gl, shader_version, mut window, mut glfw, events) = {
             use glfw::Context;
             let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
@@ -234,8 +213,12 @@ pub fn main() {
         // let raw = slice::from_raw_parts(data, 16);
         // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
 
+        let init_ctx = functor_runtime_common::RenderContext {
+            gl: &gl,
+            shader_version,
+        };
         let mut basic_material = BasicMaterial::create();
-        basic_material.initialize(&gl, shader_version);
+        basic_material.initialize(&init_ctx);
 
         let projection_matrix: Matrix4<f32> =
             perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
@@ -274,8 +257,13 @@ pub fn main() {
                     vec3(0.0, 1.0, 0.0),
                 );
 
+                let context = functor_runtime_common::RenderContext {
+                    gl: &gl,
+                    shader_version,
+                };
+
                 basic_material.draw_opaque(
-                    &gl,
+                    &context,
                     &projection_matrix,
                     &view_matrix,
                     &world_matrix,
@@ -283,7 +271,7 @@ pub fn main() {
                 );
 
                 let scene = game.render();
-                println!("scene: {:?}", scene);
+                // let scene = Scene3D::cube();
 
                 match scene {
                     Scene3D::Cube => {
@@ -302,23 +290,6 @@ pub fn main() {
 
                 window.swap_buffers();
             }
-            //     use glutin::prelude::GlSurface;
-            //     use winit::event::{Event, WindowEvent};
-            //     let _ = event_loop.run(move |event, elwt| {
-            //         if let Event::WindowEvent { event, .. } = event {
-            //             match event {
-            //                 WindowEvent::CloseRequested => {
-            //                     elwt.exit();
-            //                 }
-            //                 WindowEvent::RedrawRequested => {
-            //                     gl.clear(glow::COLOR_BUFFER_BIT);
-            //                     gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            //                     gl_surface.swap_buffers(&gl_context).unwrap();
-            //                 }
-            //                 _ => (),
-            //             }
-            //         }
-            //     });
         }
 
         watcher_thread.join().unwrap();

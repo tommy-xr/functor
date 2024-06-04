@@ -1,0 +1,22 @@
+[package]
+name = "functor-runtime-web"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+functor_runtime_common = { path = "./../functor-runtime-common" }
+fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
+glow = "0.13.1"
+cgmath = "0.18.0"
+wasm-bindgen = { version = "0.2" }
+
+[dependencies.web-sys]
+version = "0.3.4"
+features = ['HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Performance', 'PerformanceTiming', 'Document', 'Element']
+
+[profile.release]
+codegen-units = 1
+lto = true

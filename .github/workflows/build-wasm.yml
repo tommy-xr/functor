@@ -1,4 +1,4 @@
-name: build
+name: Build WebAssembly
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  build-native:
+  build-wasm:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -31,23 +31,16 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install Dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libx11-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxinerama-dev \
-            libxi-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
-            libglfw3 \
-            libglfw3-dev
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
 
       - name: Build F#
         run: npm run build:examples:pong:rust
 
-      - name: Build Rust
-        run: cargo build
+      - name: Build runtime wasm bundle
+        run: wasm-pack build --target web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build pong wasm bundle
+        run: wasm-pack build --target web
+        working-directory: examples/Pong/build-wasm

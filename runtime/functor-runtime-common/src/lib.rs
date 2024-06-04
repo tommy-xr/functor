@@ -1,6 +1,26 @@
+use serde::*;
 use std::any::Any;
 
-#[derive(Debug, Clone)]
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+pub fn to_js_value<T>(value: &T) -> JsValue
+where
+    T: Serialize,
+{
+    serde_wasm_bindgen::to_value(value).unwrap()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn from_js_value<T>(value: JsValue) -> T
+where
+    T: for<'de> Deserialize<'de>,
+{
+    serde_wasm_bindgen::from_value(value).unwrap()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Scene3D {
     Cube,
     Sphere,
@@ -48,9 +68,12 @@ impl OpaqueState {
 
 pub mod geometry;
 pub mod material;
+mod render_context;
 mod shader;
 mod shader_program;
 pub mod texture;
+
+pub use render_context::*;
 
 #[cfg(test)]
 mod tests {

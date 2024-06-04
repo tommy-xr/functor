@@ -4,11 +4,11 @@ use cgmath::{conv::array4x4, Matrix4, Vector3};
 use glow::*;
 
 pub struct ShaderProgram {
-    pub program_id: NativeProgram,
+    pub program_id: Program,
 }
 
 pub struct UniformLocation {
-    native_uniform_location: NativeUniformLocation,
+    native_uniform_location: glow::UniformLocation,
 }
 
 use crate::shader::Shader;

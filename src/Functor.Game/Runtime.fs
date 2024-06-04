@@ -1,6 +1,9 @@
 module Runtime
 
-    open Platform;
+    open Fable.Core.Rust
+
+    open Platform
+    open Functor
 
     type IRunner =
         abstract member tick: unit -> unit
@@ -10,39 +13,71 @@ module Runtime
 
     let mutable currentRunner: Option<IRunner> = None
 
-
     open Fable.Core.Rust
-    open Functor
-    [<OuterAttr("no_mangle")>]
-    let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
 
-    [<OuterAttr("no_mangle")>]
-    let tick() =
-        if currentRunner.IsSome then 
-            currentRunner.Value.tick()
-        else 
-            raise (System.Exception("No runner"))
+    ///////////////////////////////
+    // WebAssembly API
+    ///////////////////////////////
+    [<Fable.Core.Rust.OuterAttr("cfg", [|"target_arch = \"wasm32\""|])>]
+    module Wasm = 
+        open Fable.Core
+        let imports() =
+            import "wasm_bindgen::prelude::*" ""
+            ()
 
-    [<OuterAttr("no_mangle")>]
-    let emit_state(): OpaqueState=
-        if currentRunner.IsSome then 
-            currentRunner.Value.getState()
-        else 
-            raise (System.Exception("No runner"))
+        [<Erase; Emit("JsValue")>] type JsValue = | Noop
 
-    [<OuterAttr("no_mangle")>]
-    let set_state(opaqueState: OpaqueState): unit =
-        if currentRunner.IsSome then 
-            currentRunner.Value.setState(opaqueState)
-        else 
-            raise (System.Exception("No runner"))
+        module UnsafeJsValue =
+            [<Emit("functor_runtime_common::to_js_value(&$0)")>]
+            let to_js<'a>(obj): JsValue = nativeOnly
+            // let from_js<'a>(jsValue: JsValue): 'a = nativeOnly
 
-    [<OuterAttr("no_mangle")>]
-    let test_render(): Graphics.Scene3D =
-        if currentRunner.IsSome then 
-            currentRunner.Value.render()
-        else 
-            raise (System.Exception("No runner"))
+            [<Emit("functor_runtime_common::from_js_value($0)")>]
+            let from_js<'a>(obj: JsValue): 'a = nativeOnly
+
+
+        [<OuterAttr("wasm_bindgen")>]
+        let test_render_wasm(): JsValue =
+            if currentRunner.IsSome then 
+                currentRunner.Value.render() |> UnsafeJsValue.to_js
+            else 
+                raise (System.Exception("No runner"))
+
+
+    ///////////////////////////////
+    // Native API
+    ///////////////////////////////
+    module Native = 
+        [<OuterAttr("no_mangle")>]
+        let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
+
+        [<OuterAttr("no_mangle")>]
+        let tick() =
+            if currentRunner.IsSome then 
+                currentRunner.Value.tick()
+            else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let emit_state(): OpaqueState=
+            if currentRunner.IsSome then 
+                currentRunner.Value.getState()
+            else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let set_state(opaqueState: OpaqueState): unit =
+            if currentRunner.IsSome then 
+                currentRunner.Value.setState(opaqueState)
+            else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let test_render(): Graphics.Scene3D =
+            if currentRunner.IsSome then 
+                currentRunner.Value.render()
+            else 
+                raise (System.Exception("No runner"))
 
     type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model) =
         let myGame = game

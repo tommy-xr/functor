@@ -4,6 +4,8 @@ resolver = "1"
 members = [
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
+    "runtime/functor-runtime-web",
     "src",
-    "examples",
+    "examples/Pong/build-native",
+    "examples/Pong/build-wasm",
 ]

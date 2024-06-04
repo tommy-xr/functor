@@ -1,0 +1,58 @@
+name: Build Native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-native:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v2.4.1
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install Dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libglfw3 \
+            libglfw3-dev
+
+      - name: Build F#
+        run: npm run build:examples:pong:rust
+
+      - name: Build Runtime
+        run: cargo build
+        working-directory: runtime/functor-runtime-desktop
+
+      - name: Build Pong
+        run: cargo build
+        working-directory: examples/Pong/build-native
