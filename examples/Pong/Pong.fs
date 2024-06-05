@@ -83,17 +83,7 @@ let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model -> 
         printfn "Tick: %d" model.counter;
-        Graphics.Scene3D.cube()
+        Graphics.Scene3D.sphere()
         )
     |> GameBuilder.tick tick
     |> Runtime.runGame
-
-
-// [<EntryPoint>]
-// let main _args =
-//     printfn "Hello from Pong2"
-//     game
-//     |> Game.draw3d (fun _ -> Graphics.Primitives3D.Sphere)
-//     |> Game.tick tick
-//     |> Game.run
-//     0
