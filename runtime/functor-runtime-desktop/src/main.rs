@@ -38,7 +38,7 @@ pub fn main() {
 
         watcher
             .watch(
-                Path::new("target/debug/libpong.dylib"),
+                Path::new("target/debug/libpong_native.dylib"),
                 RecursiveMode::Recursive,
             )
             .unwrap();
@@ -76,7 +76,7 @@ pub fn main() {
 
     let mut test_render_func2: Option<Arc<Symbol<fn() -> Scene3D>>> = None;
 
-    let game_filename = library_filename("pong");
+    let game_filename = library_filename("pong_native");
     let mut game = HotReloadGame::create(game_filename.to_string_lossy().to_string());
     unsafe {
         let lib = Library::new(&game_filename).unwrap(); // Load the "hello_world" library
