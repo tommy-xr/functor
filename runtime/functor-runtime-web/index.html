@@ -5,9 +5,22 @@
   <body>
     <canvas id="canvas" width="640" height="480"></canvas>
     <script type="module">
-      import init from "./pkg/functor_runtime_web.js";
 
-      init();
+      import init1, { test_render_wasm } from "./pkg/pong_wasm.js";
+      import startRuntime from "./pkg/functor_runtime_web.js";
+
+      const initOutput = init1();
+      initOutput.then((f) => {
+      console.log("initOutput?", f);
+        console.log(f.init());
+
+        window.game = {};
+        window.game.render = () => {
+            return test_render_wasm();
+        };
+
+        startRuntime();
+      });
     </script>
   </body>
 </html>

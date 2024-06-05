@@ -11,7 +11,9 @@ use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::{RenderContext, Scene3D};
 use glow::*;
+use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
+use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 use wasm_bindgen::prelude::*;
 
@@ -27,10 +29,23 @@ fn request_animation_frame(f: &Closure<dyn FnMut()>) {
         .expect("should register `requestAnimationFrame` OK");
 }
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = game, js_name = render)]
+    fn game_render() -> JsValue;
+}
+
 #[wasm_bindgen(start)]
 pub fn main() {
-    // Load game
+    spawn_local(async {
+        run_async().await.unwrap_throw();
+    })
+}
 
+async fn run_async() -> Result<(), JsValue> {
+    // Load game
+    // web_sys::console::log_2(&JsValue::from_str("Here: "), &three);
+    // println!("Value! {:?}", three);
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets
         let (gl, shader_version) = {
@@ -53,14 +68,10 @@ pub fn main() {
             (gl, "#version 300 es")
         };
 
-        web_sys::console::log_1(&JsValue::from_str("here!"));
-
         let vertex_array = gl
             .create_vertex_array()
             .expect("Cannot create vertex array");
         gl.bind_vertex_array(Some(vertex_array));
-
-        web_sys::console::log_1(&JsValue::from_str("here - 10!"));
 
         let program = gl.create_program().expect("Cannot create program");
 
@@ -132,8 +143,6 @@ pub fn main() {
 
         let mut i = 0;
         *g.borrow_mut() = Some(Closure::new(move || {
-            web_sys::console::log_1(&JsValue::from_str("here - 30!"));
-
             // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(1.0, 2.5, 1.0);
 
             // let matrix_location = unsafe {
@@ -169,8 +178,6 @@ pub fn main() {
                 vec3(0.0, 1.0, 0.0),
             );
 
-            web_sys::console::log_1(&JsValue::from_str("here - 40!"));
-
             basic_material.draw_opaque(
                 &render_ctx,
                 &projection_matrix,
@@ -179,11 +186,12 @@ pub fn main() {
                 &skinning_data,
             );
 
-            web_sys::console::log_1(&JsValue::from_str("here - 41!"));
-            let scene = Scene3D::cube();
-            web_sys::console::log_1(&JsValue::from_str("here - 42!"));
+            // let scene = Scene3D::cube();
 
-            web_sys::console::log_1(&JsValue::from_str("here - 50!"));
+            let val = game_render();
+            web_sys::console::log_2(&JsValue::from_str("calling render"), &val);
+
+            let scene = functor_runtime_common::from_js_value(val);
 
             match scene {
                 Scene3D::Cube => {
@@ -200,12 +208,12 @@ pub fn main() {
                 }
             }
 
-            web_sys::console::log_1(&JsValue::from_str("here - 60!"));
-
             // Schedule ourself for another requestAnimationFrame callback.
             request_animation_frame(f.borrow().as_ref().unwrap());
         }));
 
         request_animation_frame(g.borrow().as_ref().unwrap());
-    }
+    };
+
+    Ok(())
 }

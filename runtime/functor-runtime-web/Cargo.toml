@@ -11,7 +11,9 @@ functor_runtime_common = { path = "./../functor-runtime-common" }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 glow = "0.13.1"
 cgmath = "0.18.0"
-wasm-bindgen = { version = "0.2" }
+js-sys = "0.3.69"
+wasm-bindgen = { version = "0.2.92" }
+wasm-bindgen-futures = "0.4.42"
 
 [dependencies.web-sys]
 version = "0.3.4"
