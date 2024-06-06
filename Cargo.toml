@@ -2,6 +2,7 @@
 resolver = "1"
 
 members = [
+    "cli",
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
