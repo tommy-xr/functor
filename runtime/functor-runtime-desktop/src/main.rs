@@ -25,6 +25,8 @@ mod hot_reload_game;
 pub fn main() {
     // Load game
 
+    let game_path = Path::new("target/debug/libgame_native.dylib");
+
     let file_changed = Arc::new(AtomicBool::new(false));
     let file_changed_watcher = Arc::clone(&file_changed);
     let watcher_thread = std::thread::spawn(move || {
@@ -36,12 +38,7 @@ pub fn main() {
 
         let mut had_remove_event = false;
 
-        watcher
-            .watch(
-                Path::new("target/debug/libpong_native.dylib"),
-                RecursiveMode::Recursive,
-            )
-            .unwrap();
+        watcher.watch(game_path, RecursiveMode::Recursive).unwrap();
 
         println!("watcher created!");
         loop {
@@ -76,10 +73,10 @@ pub fn main() {
 
     let mut test_render_func2: Option<Arc<Symbol<fn() -> Scene3D>>> = None;
 
-    let game_filename = library_filename("pong_native");
-    let mut game = HotReloadGame::create(game_filename.to_string_lossy().to_string());
+    println!("Trying to open from: {:?}", &game_path);
+    let mut game = HotReloadGame::create(&game_path.to_str().unwrap());
     unsafe {
-        let lib = Library::new(&game_filename).unwrap(); // Load the "hello_world" library
+        let lib = Library::new(&game_path).unwrap(); // Load the "hello_world" library
         let func: Symbol<fn(f64)> = lib.get(b"dynamic_call_from_rust").unwrap(); // Get the function pointer
 
         let test_render_func: Symbol<fn() -> Scene3D> = lib.get(b"test_render").unwrap(); // Get the function pointer

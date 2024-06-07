@@ -7,6 +7,4 @@ members = [
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
     "src",
-    "examples/Pong/build-native",
-    "examples/Pong/build-wasm",
 ]
