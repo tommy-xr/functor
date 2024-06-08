@@ -8,20 +8,20 @@ use libloading::{Library, Symbol};
 
 use crate::game::Game;
 
-pub struct HotReloadGame {
+pub struct HotReloadGame<'a> {
     // Utils for constructing the next lib path
     file_stem: String,
     extension: String,
     counter: u32,
 
     // Current hot reload state
-    latest_lib_path: String,
+    latest_lib_path: &'a str,
     library: Option<Library>,
 }
 
-impl Game for HotReloadGame {
+impl<'a> Game for HotReloadGame<'a> {
     fn render(&mut self) -> Scene3D {
-        println!("Rendering");
+        // println!("Rendering");
         unsafe {
             let render_func: Symbol<fn() -> Scene3D> =
                 self.library.as_ref().unwrap().get(b"test_render").unwrap();
@@ -29,10 +29,10 @@ impl Game for HotReloadGame {
         }
     }
 }
-impl HotReloadGame {
-    pub fn create(path: String) -> HotReloadGame {
+impl<'a> HotReloadGame<'a> {
+    pub fn create(path: &str) -> HotReloadGame {
         let counter = 0;
-        let lib_path = Path::new(&path);
+        let lib_path = Path::new(path);
         let file_stem = lib_path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -85,9 +85,10 @@ impl HotReloadGame {
             }
 
             let temp_dir = tempdir().expect("Failed to create temporary directory");
+            println!("Copying to: {}", &temp_dir.path().to_str().unwrap());
             let new_file_name = temp_dir.path().join(self.get_next_destination_name());
             // TODO: Better definition of path here - don't hardcode target/debug
-            let source_path = &format!("target/debug/{}", self.latest_lib_path);
+            let source_path = self.latest_lib_path;
             fs::copy(source_path, &new_file_name).expect("Cmtpy should succeed");
             println!("Loading from: {:?}", &new_file_name);
 

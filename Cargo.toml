@@ -2,10 +2,9 @@
 resolver = "1"
 
 members = [
+    "cli",
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
     "src",
-    "examples/Pong/build-native",
-    "examples/Pong/build-wasm",
 ]

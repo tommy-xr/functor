@@ -82,8 +82,7 @@ open Fable.Core.Rust
 let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model -> 
-        printfn "Tick: %d" model.counter;
-        Graphics.Scene3D.sphere()
+        Graphics.Scene3D.cube()
         )
     |> GameBuilder.tick tick
     |> Runtime.runGame
