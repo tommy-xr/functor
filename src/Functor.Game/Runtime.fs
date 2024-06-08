@@ -28,7 +28,6 @@ module Runtime
         [<Erase; Emit("JsValue")>] type JsValue = | Noop
 
         module UnsafeJsValue =
-            [<Emit("functor_runtime_common::to_js_value(&$0)")>]
             let to_js<'a>(obj): JsValue = nativeOnly
             // let from_js<'a>(jsValue: JsValue): 'a = nativeOnly
 
@@ -38,10 +37,10 @@ module Runtime
 
         [<OuterAttr("wasm_bindgen")>]
         let test_render_wasm (frameTimeJs: JsValue): JsValue =
+            let frameTime = frameTimeJs |> UnsafeJsValue.from_js<Time.FrameTime>;
             if currentRunner.IsSome then 
                 let ret = 
-                    frameTimeJs 
-                    |> UnsafeJsValue.from_js
+                    frameTime
                     |> currentRunner.Value.render
                     |> UnsafeJsValue.to_js
                 ret
@@ -80,7 +79,6 @@ module Runtime
         [<OuterAttr("no_mangle")>]
         let test_render(frameTime: Time.FrameTime): Graphics.Scene3D =
             if currentRunner.IsSome then 
-                printf "Got frametime - dts: %f tts: %f\n" frameTime.dts frameTime.tts
                 currentRunner.Value.render(frameTime)
             else 
                 raise (System.Exception("No runner"))
