@@ -15,8 +15,8 @@
         console.log(f.init());
 
         window.game = {};
-        window.game.render = () => {
-            return test_render_wasm();
+        window.game.render = (frameTime) => {
+            return test_render_wasm(frameTime);
         };
 
         startRuntime();

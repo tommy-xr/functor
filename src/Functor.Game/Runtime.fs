@@ -39,10 +39,11 @@ module Runtime
         [<OuterAttr("wasm_bindgen")>]
         let test_render_wasm (frameTimeJs: JsValue): JsValue =
             if currentRunner.IsSome then 
-                let ret = frameTimeJs 
-                |> UnsafeJsValue.from_js
-                |> currentRunner.Value.render
-                |> UnsafeJsValue.toJs
+                let ret = 
+                    frameTimeJs 
+                    |> UnsafeJsValue.from_js
+                    |> currentRunner.Value.render
+                    |> UnsafeJsValue.to_js
                 ret
             else 
                 raise (System.Exception("No runner"))
@@ -79,6 +80,7 @@ module Runtime
         [<OuterAttr("no_mangle")>]
         let test_render(frameTime: Time.FrameTime): Graphics.Scene3D =
             if currentRunner.IsSome then 
+                printf "Got frametime - dts: %f tts: %f\n" frameTime.dts frameTime.tts
                 currentRunner.Value.render(frameTime)
             else 
                 raise (System.Exception("No runner"))
@@ -93,12 +95,12 @@ module Runtime
                 OpaqueState.to_opaque_type state
             member this.setState(incomingState) =
                 state <- OpaqueState.unsafe_coerce incomingState
-            member this.tick(frameTime: FrameTime) = 
+            member this.tick(frameTime: Time.FrameTime) = 
                 let (newState, effects) = GameRunner.tick myGame state frameTime
                 state <- newState
                 ()
-            member this.render() = 
-                GameRunner.draw3d myGame state
+            member this.render(frameTime: Time.FrameTime) = 
+                GameRunner.draw3d myGame state frameTime
                 // printfn "Hello from GameRunner.render!"
                 // Scene3D.cube()
 

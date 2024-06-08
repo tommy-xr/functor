@@ -43,9 +43,9 @@ type Msg =
 
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
-let tick model (tick: Tick.t) =
+let tick model (tick: Time.FrameTime) =
     
-    let applyVelocity (tick: Tick.t) ball = 
+    let applyVelocity (tick: Time.FrameTime) ball = 
         let newBallPosition = (ball.position
         |> Point2.add (Vector2.scale tick.dts ball.velocity));
         { ball with position = newBallPosition }
@@ -81,7 +81,7 @@ open Fable.Core.Rust
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
-    |> GameBuilder.draw3d (fun model -> 
+    |> GameBuilder.draw3d (fun model frameTime -> 
         Graphics.Scene3D.cube()
         )
     |> GameBuilder.tick tick

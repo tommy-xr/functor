@@ -1,7 +1,8 @@
+#[derive(Clone)]
 pub struct FrameTime {
     // tts - total time in seconds
-    tts: f32,
+    pub tts: f64,
 
     // dts - delta time in seconds for this frame
-    dts: f32,
+    pub dts: f64,
 }
