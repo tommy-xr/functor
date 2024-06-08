@@ -77,7 +77,7 @@ module Runtime
             if currentRunner.IsSome then 
                 currentRunner.Value.render()
             else 
-                Graphics.Scene3D.sphere()
+                raise (System.Exception("No runner"))
 
     type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model) =
         let myGame = game
