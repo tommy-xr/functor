@@ -1,5 +1,5 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -22,10 +22,25 @@ const SCR_HEIGHT: u32 = 600;
 mod game;
 mod hot_reload_game;
 
+use clap::{Parser, Subcommand};
+
+#[derive(Parser, Debug, Clone)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Directory to override the current working directory
+    #[arg(short, long)]
+    game_path: String,
+}
+
 pub fn main() {
     // Load game
 
-    let game_path = Path::new("target/debug/libgame_native.dylib");
+    let args = Args::parse();
+
+    // let game_path = Path::new("target/debug/libgame_native.dylib");
+    let game_path = Arc::new(args.game_path);
+
+    let other_game_path = game_path.clone();
 
     let file_changed = Arc::new(AtomicBool::new(false));
     let file_changed_watcher = Arc::clone(&file_changed);
@@ -38,7 +53,8 @@ pub fn main() {
 
         let mut had_remove_event = false;
 
-        watcher.watch(game_path, RecursiveMode::Recursive).unwrap();
+        let path = Path::new(game_path.as_str());
+        watcher.watch(&path, RecursiveMode::Recursive).unwrap();
 
         println!("watcher created!");
         loop {
@@ -73,10 +89,10 @@ pub fn main() {
 
     let mut test_render_func2: Option<Arc<Symbol<fn() -> Scene3D>>> = None;
 
-    println!("Trying to open from: {:?}", &game_path);
-    let mut game = HotReloadGame::create(&game_path.to_str().unwrap());
+    let mut game = HotReloadGame::create(other_game_path.as_str());
     unsafe {
-        let lib = Library::new(&game_path).unwrap(); // Load the "hello_world" library
+        let lib = Library::new(other_game_path.as_str()).unwrap(); // Load the "hello_world" library
+
         let func: Symbol<fn(f64)> = lib.get(b"dynamic_call_from_rust").unwrap(); // Get the function pointer
 
         let test_render_func: Symbol<fn() -> Scene3D> = lib.get(b"test_render").unwrap(); // Get the function pointer
