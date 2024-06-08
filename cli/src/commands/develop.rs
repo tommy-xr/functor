@@ -22,7 +22,9 @@ pub async fn execute(working_directory: &str) -> io::Result<()> {
     let functor_runner_exe =
         get_nearby_bin(&"functor-runner").expect("functor-runner should be available");
 
-    let target_dir = build_native_path.join(Path::new(&"target/debug"));
+    let target_dir = Path::new(&"target/debug");
+    let library_name = libloading::library_filename("game_native");
+    let game_lib = target_dir.join(Path::new(&library_name));
 
     let commands = vec![
         CommandSpec {
@@ -50,7 +52,7 @@ pub async fn execute(working_directory: &str) -> io::Result<()> {
             cmd: functor_runner_exe.to_str().unwrap(),
             cwd: build_native_wd.to_str().unwrap(),
             env: vec![],
-            args: vec![],
+            args: vec!["--game-path", game_lib.to_str().unwrap()],
         },
     ];
 

@@ -39,6 +39,8 @@ pub fn main() {
 
     // let game_path = Path::new("target/debug/libgame_native.dylib");
     let game_path = Arc::new(args.game_path);
+    println!("Using game path: {}", game_path.clone());
+    println!("Working directory: {:?}", env::current_dir());
 
     let other_game_path = game_path.clone();
 
