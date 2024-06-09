@@ -2,6 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
@@ -221,75 +222,95 @@ pub fn main() {
         let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
         let skinning_data = vec![];
 
-        let time: FrameTime = FrameTime {
-            dts: 99.0,
-            tts: 100.0,
-        };
+        let start_time = Instant::now();
+        let mut last_time: f32 = 0.0;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use glfw::Context;
+        use glfw::Context;
 
-            while !window.should_close() {
-                // Check if file has changed
-                if file_changed.load(Ordering::SeqCst) {
-                    println!("Reloading!");
-                    file_changed.store(false, Ordering::SeqCst);
-                    game.reload();
-                    println!("Rendering: {:?}", game.render(time.clone()));
-                }
+        while !window.should_close() {
+            let elapsed_time = start_time.elapsed().as_secs_f32();
+            let time: FrameTime = FrameTime {
+                dts: elapsed_time - last_time,
+                tts: elapsed_time,
+            };
+            last_time = elapsed_time;
 
-                glfw.poll_events();
-                for (_, event) in glfw::flush_messages(&events) {
-                    match event {
-                        glfw::WindowEvent::Close => window.set_should_close(true),
-                        _ => {}
-                    }
-                }
-
-                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-                let radius = 5.0;
-                let camX = glfw.get_time().sin() as f32 * radius;
-                let camZ = glfw.get_time().cos() as f32 * radius;
-                let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
-                    Point3::new(camX, 0.0, camZ),
-                    Point3::new(0.0, 0.0, 0.0),
-                    vec3(0.0, 1.0, 0.0),
-                );
-
-                let context = functor_runtime_common::RenderContext {
-                    gl: &gl,
-                    shader_version,
-                };
-
-                let scene = game.render(time.clone());
-                // let scene = Scene3D::cube();
-
-                match scene.obj {
-                    SceneObject::Geometry(functor_runtime_common::Shape::Cube) => {
-                        let xform = scene.xform * world_matrix;
-                        basic_material.draw_opaque(
-                            &context,
-                            &projection_matrix,
-                            &view_matrix,
-                            &xform,
-                            &skinning_data,
-                        );
-                        let mut cube = functor_runtime_common::geometry::Cube::create();
-                        cube.draw(&gl);
-                    }
-                    SceneObject::Geometry(functor_runtime_common::Shape::Cylinder) => {
-                        let mut cylinder = functor_runtime_common::geometry::Cylinder::create();
-                        cylinder.draw(&gl);
-                    }
-                    SceneObject::Geometry(functor_runtime_common::Shape::Sphere) => {
-                        let mut sphere = functor_runtime_common::geometry::Sphere::create();
-                        sphere.draw(&gl);
-                    }
-                }
-
-                window.swap_buffers();
+            // Check if file has changed
+            if file_changed.load(Ordering::SeqCst) {
+                println!("Reloading!");
+                file_changed.store(false, Ordering::SeqCst);
+                game.reload();
+                println!("Rendering: {:?}", game.render(time.clone()));
             }
+
+            glfw.poll_events();
+            for (_, event) in glfw::flush_messages(&events) {
+                match event {
+                    glfw::WindowEvent::Close => window.set_should_close(true),
+                    _ => {}
+                }
+            }
+
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            let radius = 5.0;
+            let camX = glfw.get_time().sin() as f32 * radius;
+            let camZ = glfw.get_time().cos() as f32 * radius;
+            let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
+                Point3::new(camX, 0.0, camZ),
+                Point3::new(0.0, 0.0, 0.0),
+                vec3(0.0, 1.0, 0.0),
+            );
+
+            let context = functor_runtime_common::RenderContext {
+                gl: &gl,
+                shader_version,
+            };
+
+            let scene = game.render(time.clone());
+            // let scene = Scene3D::cube();
+
+            match scene.obj {
+                SceneObject::Geometry(functor_runtime_common::Shape::Cube) => {
+                    let xform = scene.xform * world_matrix;
+                    basic_material.draw_opaque(
+                        &context,
+                        &projection_matrix,
+                        &view_matrix,
+                        &xform,
+                        &skinning_data,
+                    );
+                    let mut cube = functor_runtime_common::geometry::Cube::create();
+                    cube.draw(&gl);
+                }
+                SceneObject::Geometry(functor_runtime_common::Shape::Cylinder) => {
+                    let xform = scene.xform * world_matrix;
+                    basic_material.draw_opaque(
+                        &context,
+                        &projection_matrix,
+                        &view_matrix,
+                        &xform,
+                        &skinning_data,
+                    );
+
+                    let mut cylinder = functor_runtime_common::geometry::Cylinder::create();
+                    cylinder.draw(&gl);
+                }
+                SceneObject::Geometry(functor_runtime_common::Shape::Sphere) => {
+                    let xform = scene.xform * world_matrix;
+                    basic_material.draw_opaque(
+                        &context,
+                        &projection_matrix,
+                        &view_matrix,
+                        &xform,
+                        &skinning_data,
+                    );
+
+                    let mut sphere = functor_runtime_common::geometry::Sphere::create();
+                    sphere.draw(&gl);
+                }
+            }
+
+            window.swap_buffers();
         }
 
         watcher_thread.join().unwrap();

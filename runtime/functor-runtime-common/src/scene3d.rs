@@ -42,7 +42,7 @@ impl Scene3D {
 
     pub fn cylinder() -> Self {
         Scene3D {
-            obj: SceneObject::Geometry(Shape::Sphere),
+            obj: SceneObject::Geometry(Shape::Cylinder),
             xform: Matrix4::identity(),
         }
     }
