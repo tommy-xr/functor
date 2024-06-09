@@ -49,7 +49,14 @@ impl<'a> HotReloadGame<'a> {
 
         println!("File stem: {} extension: {}", file_stem, extension);
 
-        let library = unsafe { Some(Library::new(&path).unwrap()) };
+        let library = unsafe {
+            println!("Running initial init.");
+            let lib = Library::new(&path).unwrap();
+            let init_func: Symbol<fn()> = lib.get(b"init").unwrap(); // Get the function pointer
+            init_func();
+            Some(lib)
+        };
+
         HotReloadGame {
             file_stem,
             extension,

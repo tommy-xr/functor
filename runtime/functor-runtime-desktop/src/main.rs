@@ -89,28 +89,8 @@ pub fn main() {
         }
     });
 
-    let mut test_render_func2: Option<Arc<Symbol<fn() -> Scene3D>>> = None;
-
     let mut game = HotReloadGame::create(other_game_path.as_str());
-    unsafe {
-        let lib = Library::new(other_game_path.as_str()).unwrap(); // Load the "hello_world" library
 
-        let func: Symbol<fn(f64)> = lib.get(b"dynamic_call_from_rust").unwrap(); // Get the function pointer
-
-        let test_render_func: Symbol<fn() -> Scene3D> = lib.get(b"test_render").unwrap(); // Get the function pointer
-
-        func(42.0); // Call the function
-
-        let init_func: Symbol<fn()> = lib.get(b"init").unwrap(); // Get the function pointer
-        println!("Running init.");
-        init_func();
-
-        let path = env::current_dir();
-        println!("cwd: {:?}", path);
-
-        println!("Got render: {:?}", test_render_func());
-        test_render_func2 = Some(Arc::new(test_render_func));
-    };
     unsafe {
         let (gl, shader_version, mut window, mut glfw, events) = {
             use glfw::Context;
