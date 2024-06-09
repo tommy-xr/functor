@@ -7,7 +7,7 @@ use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
-use functor_runtime_common::{FrameTime, Scene3D};
+use functor_runtime_common::{FrameTime, Scene3D, SceneObject};
 use glfw::{init, RenderContext};
 use glow::*;
 use hot_reload_game::HotReloadGame;
@@ -273,16 +273,16 @@ pub fn main() {
                 let scene = game.render(time.clone());
                 // let scene = Scene3D::cube();
 
-                match scene {
-                    Scene3D::Cube => {
+                match scene.obj {
+                    SceneObject::Geometry(functor_runtime_common::Shape::Cube) => {
                         let mut cube = functor_runtime_common::geometry::Cube::create();
                         cube.draw(&gl);
                     }
-                    Scene3D::Cylinder => {
+                    SceneObject::Geometry(functor_runtime_common::Shape::Cylinder) => {
                         let mut cylinder = functor_runtime_common::geometry::Cylinder::create();
                         cylinder.draw(&gl);
                     }
-                    Scene3D::Sphere => {
+                    SceneObject::Geometry(functor_runtime_common::Shape::Sphere) => {
                         let mut sphere = functor_runtime_common::geometry::Sphere::create();
                         sphere.draw(&gl);
                     }
