@@ -199,11 +199,6 @@ pub fn main() {
 
         gl.enable(glow::DEPTH_TEST);
 
-        let init_ctx = functor_runtime_common::RenderContext {
-            gl: &gl,
-            shader_version,
-        };
-
         let projection_matrix: Matrix4<f32> =
             perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
 

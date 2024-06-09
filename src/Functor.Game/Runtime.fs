@@ -28,7 +28,7 @@ module Runtime
         [<Erase; Emit("JsValue")>] type JsValue = | Noop
 
         module UnsafeJsValue =
-            [<Emit("functor_runtime_common::to_js_value($0)")>]
+            [<Emit("functor_runtime_common::to_js_value(&$0)")>]
             let to_js<'a>(obj): JsValue = nativeOnly
             // let from_js<'a>(jsValue: JsValue): 'a = nativeOnly
 
