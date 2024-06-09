@@ -262,19 +262,19 @@ pub fn main() {
                     shader_version,
                 };
 
-                basic_material.draw_opaque(
-                    &context,
-                    &projection_matrix,
-                    &view_matrix,
-                    &world_matrix,
-                    &skinning_data,
-                );
-
                 let scene = game.render(time.clone());
                 // let scene = Scene3D::cube();
 
                 match scene.obj {
                     SceneObject::Geometry(functor_runtime_common::Shape::Cube) => {
+                        let xform = scene.xform * world_matrix;
+                        basic_material.draw_opaque(
+                            &context,
+                            &projection_matrix,
+                            &view_matrix,
+                            &xform,
+                            &skinning_data,
+                        );
                         let mut cube = functor_runtime_common::geometry::Cube::create();
                         cube.draw(&gl);
                     }

@@ -1,10 +1,10 @@
 namespace Functor.Math
 
-type Point2 = { x: float; y: float }
+type Point2 = { x: float32; y: float32 }
 
 module Point2 =
 
-    let zero = { x = 0.0; y = 0.0 }
+    let zero = { x = 0.0f; y = 0.0f }
 
     let xy x y = { x = x; y = y }
 

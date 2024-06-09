@@ -1,4 +1,4 @@
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::Geometry;
@@ -13,6 +13,50 @@ pub enum Shape {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneObject {
     Geometry(Shape),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Scene3D {
+    pub obj: SceneObject,
+    #[serde(
+        serialize_with = "serialize_matrix",
+        deserialize_with = "deserialize_matrix"
+    )]
+    pub xform: Matrix4<f32>,
+}
+
+impl Scene3D {
+    pub fn cube() -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Cube),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn sphere() -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Sphere),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn cylinder() -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Sphere),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn transform(self, xform: Matrix4<f32>) -> Self {
+        Scene3D {
+            xform: self.xform * xform,
+            ..self
+        }
+    }
+
+    pub fn translate_y(self, y: f32) -> Self {
+        self.transform(Matrix4::from_translation(vec3(0.0, y, 0.0)))
+    }
 }
 
 fn serialize_matrix<S>(matrix: &Matrix4<f32>, serializer: S) -> Result<S::Ok, S::Error>
@@ -51,36 +95,4 @@ where
         array[3][2],
         array[3][3],
     ))
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Scene3D {
-    pub obj: SceneObject,
-    #[serde(
-        serialize_with = "serialize_matrix",
-        deserialize_with = "deserialize_matrix"
-    )]
-    pub xform: Matrix4<f32>,
-}
-
-impl Scene3D {
-    pub fn cube() -> Self {
-        Scene3D {
-            obj: SceneObject::Geometry(Shape::Cube),
-            xform: Matrix4::identity(),
-        }
-    }
-
-    pub fn sphere() -> Self {
-        Scene3D {
-            obj: SceneObject::Geometry(Shape::Sphere),
-            xform: Matrix4::identity(),
-        }
-    }
-
-    pub fn cylinder() -> Self {
-        Scene3D {
-            obj: SceneObject::Geometry(Shape::Sphere),
-            xform: Matrix4::identity(),
-        }
-    }
 }

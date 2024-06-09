@@ -5,6 +5,6 @@ open Fable.Core
 type FrameTime =
     
     [<Emit("$0.dts")>]
-    abstract dts: float
+    abstract dts: float32
     [<Emit("$0.tts")>]
-    abstract tts: float
+    abstract tts: float32
