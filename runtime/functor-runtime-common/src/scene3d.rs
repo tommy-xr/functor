@@ -1,7 +1,11 @@
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
-use crate::geometry::Geometry;
+use crate::{
+    geometry::{self, Geometry},
+    material::BasicMaterial,
+    RenderContext,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Shape {
@@ -56,6 +60,60 @@ impl Scene3D {
 
     pub fn translate_y(self, y: f32) -> Self {
         self.transform(Matrix4::from_translation(vec3(0.0, y, 0.0)))
+    }
+
+    pub fn render(
+        &self,
+        context: &RenderContext,
+        world_matrix: &Matrix4<f32>,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+    ) {
+        // TODO: Factor out to pass in current_material
+        let mut basic_material = BasicMaterial::create();
+        basic_material.initialize(&context);
+
+        let skinning_data = vec![];
+        match self.obj {
+            SceneObject::Geometry(Shape::Cube) => {
+                let xform = self.xform * world_matrix;
+                basic_material.draw_opaque(
+                    &context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                let mut cube = geometry::Cube::create();
+                cube.draw(&context.gl);
+            }
+            SceneObject::Geometry(Shape::Cylinder) => {
+                let xform = self.xform * world_matrix;
+                basic_material.draw_opaque(
+                    &context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+
+                let mut cylinder = geometry::Cylinder::create();
+                cylinder.draw(&context.gl);
+            }
+            SceneObject::Geometry(Shape::Sphere) => {
+                let xform = self.xform * world_matrix;
+                basic_material.draw_opaque(
+                    &context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+
+                let mut sphere = geometry::Sphere::create();
+                sphere.draw(&context.gl);
+            }
+        }
     }
 }
 

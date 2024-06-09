@@ -199,28 +199,15 @@ pub fn main() {
 
         gl.enable(glow::DEPTH_TEST);
 
-        // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(1.0, 2.5, 1.0);
-
-        // let matrix_location = unsafe {
-        //     gl.get_uniform_location(program, "world")
-        //         .expect("Cannot get uniform")
-        // };
-        // let data = (&array4x4(matrix) as *const [[f32; 4]; 4]) as *const f32;
-        // let raw = slice::from_raw_parts(data, 16);
-        // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
-
         let init_ctx = functor_runtime_common::RenderContext {
             gl: &gl,
             shader_version,
         };
-        let mut basic_material = BasicMaterial::create();
-        basic_material.initialize(&init_ctx);
 
         let projection_matrix: Matrix4<f32> =
             perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
 
         let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
-        let skinning_data = vec![];
 
         let start_time = Instant::now();
         let mut last_time: f32 = 0.0;
@@ -267,48 +254,14 @@ pub fn main() {
             };
 
             let scene = game.render(time.clone());
-            // let scene = Scene3D::cube();
 
-            match scene.obj {
-                SceneObject::Geometry(functor_runtime_common::Shape::Cube) => {
-                    let xform = scene.xform * world_matrix;
-                    basic_material.draw_opaque(
-                        &context,
-                        &projection_matrix,
-                        &view_matrix,
-                        &xform,
-                        &skinning_data,
-                    );
-                    let mut cube = functor_runtime_common::geometry::Cube::create();
-                    cube.draw(&gl);
-                }
-                SceneObject::Geometry(functor_runtime_common::Shape::Cylinder) => {
-                    let xform = scene.xform * world_matrix;
-                    basic_material.draw_opaque(
-                        &context,
-                        &projection_matrix,
-                        &view_matrix,
-                        &xform,
-                        &skinning_data,
-                    );
-
-                    let mut cylinder = functor_runtime_common::geometry::Cylinder::create();
-                    cylinder.draw(&gl);
-                }
-                SceneObject::Geometry(functor_runtime_common::Shape::Sphere) => {
-                    let xform = scene.xform * world_matrix;
-                    basic_material.draw_opaque(
-                        &context,
-                        &projection_matrix,
-                        &view_matrix,
-                        &xform,
-                        &skinning_data,
-                    );
-
-                    let mut sphere = functor_runtime_common::geometry::Sphere::create();
-                    sphere.draw(&gl);
-                }
-            }
+            functor_runtime_common::Scene3D::render(
+                &scene,
+                &context,
+                &world_matrix,
+                &projection_matrix,
+                &view_matrix,
+            );
 
             window.swap_buffers();
         }
