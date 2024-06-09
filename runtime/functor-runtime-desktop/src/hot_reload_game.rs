@@ -3,7 +3,7 @@ use std::path::Path;
 use std::{fs, process};
 use tempfile::tempdir;
 
-use functor_runtime_common::{OpaqueState, Scene3D};
+use functor_runtime_common::{FrameTime, OpaqueState, Scene3D};
 use libloading::{Library, Symbol};
 
 use crate::game::Game;
@@ -20,12 +20,12 @@ pub struct HotReloadGame<'a> {
 }
 
 impl<'a> Game for HotReloadGame<'a> {
-    fn render(&mut self) -> Scene3D {
+    fn render(&mut self, frameTime: FrameTime) -> Scene3D {
         // println!("Rendering");
         unsafe {
-            let render_func: Symbol<fn() -> Scene3D> =
+            let render_func: Symbol<fn(FrameTime) -> Scene3D> =
                 self.library.as_ref().unwrap().get(b"test_render").unwrap();
-            render_func()
+            render_func(frameTime)
         }
     }
 }

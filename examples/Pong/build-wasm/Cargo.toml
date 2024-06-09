@@ -1,12 +1,12 @@
 [package]
-name = "pong_wasm"
+name = "game_wasm"
 version = "0.1.0"
 edition = "2021"
 
 [workspace]
 
 [lib]
-name = "pong_wasm"
+name = "game_wasm"
 path = "../Pong.rs"
 crate-type = ["cdylib"]
 

@@ -9,7 +9,7 @@ use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
-use functor_runtime_common::{RenderContext, Scene3D};
+use functor_runtime_common::{FrameTime, RenderContext, Scene3D};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
@@ -32,7 +32,7 @@ fn request_animation_frame(f: &Closure<dyn FnMut()>) {
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = game, js_name = render)]
-    fn game_render() -> JsValue;
+    fn game_render(frameTimeJs: JsValue) -> JsValue;
 }
 
 #[wasm_bindgen(start)]
@@ -188,7 +188,12 @@ async fn run_async() -> Result<(), JsValue> {
 
             // let scene = Scene3D::cube();
 
-            let val = game_render();
+            let frameTime = FrameTime {
+                dts: 99.0,
+                tts: 100.0,
+            };
+
+            let val = game_render(functor_runtime_common::to_js_value(&frameTime));
             web_sys::console::log_2(&JsValue::from_str("calling render"), &val);
 
             let scene = functor_runtime_common::from_js_value(val);

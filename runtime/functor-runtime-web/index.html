@@ -6,7 +6,7 @@
     <canvas id="canvas" width="640" height="480"></canvas>
     <script type="module">
 
-      import init1, { test_render_wasm } from "./pkg/pong_wasm.js";
+      import init1, { test_render_wasm } from "./pkg/game_wasm.js";
       import startRuntime from "./pkg/functor_runtime_web.js";
 
       const initOutput = init1();
@@ -15,8 +15,8 @@
         console.log(f.init());
 
         window.game = {};
-        window.game.render = () => {
-            return test_render_wasm();
+        window.game.render = (frameTime) => {
+            return test_render_wasm(frameTime);
         };
 
         startRuntime();

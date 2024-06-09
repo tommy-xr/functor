@@ -6,8 +6,8 @@ module Runtime
     open Functor
 
     type IRunner =
-        abstract member tick: unit -> unit
-        abstract member render: unit -> Graphics.Scene3D
+        abstract member tick: Time.FrameTime -> unit
+        abstract member render: Time.FrameTime -> Graphics.Scene3D
         abstract member getState: unit -> OpaqueState
         abstract member setState: OpaqueState -> unit
 
@@ -28,7 +28,6 @@ module Runtime
         [<Erase; Emit("JsValue")>] type JsValue = | Noop
 
         module UnsafeJsValue =
-            [<Emit("functor_runtime_common::to_js_value(&$0)")>]
             let to_js<'a>(obj): JsValue = nativeOnly
             // let from_js<'a>(jsValue: JsValue): 'a = nativeOnly
 
@@ -37,9 +36,14 @@ module Runtime
 
 
         [<OuterAttr("wasm_bindgen")>]
-        let test_render_wasm(): JsValue =
+        let test_render_wasm (frameTimeJs: JsValue): JsValue =
+            let frameTime = frameTimeJs |> UnsafeJsValue.from_js<Time.FrameTime>;
             if currentRunner.IsSome then 
-                currentRunner.Value.render() |> UnsafeJsValue.to_js
+                let ret = 
+                    frameTime
+                    |> currentRunner.Value.render
+                    |> UnsafeJsValue.to_js
+                ret
             else 
                 raise (System.Exception("No runner"))
 
@@ -52,9 +56,9 @@ module Runtime
         let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
 
         [<OuterAttr("no_mangle")>]
-        let tick() =
+        let tick(frameTime: Time.FrameTime) =
             if currentRunner.IsSome then 
-                currentRunner.Value.tick()
+                currentRunner.Value.tick(frameTime)
             else 
                 raise (System.Exception("No runner"))
 
@@ -73,9 +77,9 @@ module Runtime
                 raise (System.Exception("No runner"))
 
         [<OuterAttr("no_mangle")>]
-        let test_render(): Graphics.Scene3D =
+        let test_render(frameTime: Time.FrameTime): Graphics.Scene3D =
             if currentRunner.IsSome then 
-                currentRunner.Value.render()
+                currentRunner.Value.render(frameTime)
             else 
                 raise (System.Exception("No runner"))
 
@@ -89,12 +93,12 @@ module Runtime
                 OpaqueState.to_opaque_type state
             member this.setState(incomingState) =
                 state <- OpaqueState.unsafe_coerce incomingState
-            member this.tick() = 
-                let (newState, effects) = GameRunner.tick myGame state Tick.initial
+            member this.tick(frameTime: Time.FrameTime) = 
+                let (newState, effects) = GameRunner.tick myGame state frameTime
                 state <- newState
                 ()
-            member this.render() = 
-                GameRunner.draw3d myGame state
+            member this.render(frameTime: Time.FrameTime) = 
+                GameRunner.draw3d myGame state frameTime
                 // printfn "Hello from GameRunner.render!"
                 // Scene3D.cube()
 

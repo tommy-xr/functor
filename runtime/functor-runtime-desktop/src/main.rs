@@ -7,7 +7,7 @@ use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
-use functor_runtime_common::Scene3D;
+use functor_runtime_common::{FrameTime, Scene3D};
 use glfw::{init, RenderContext};
 use glow::*;
 use hot_reload_game::HotReloadGame;
@@ -221,6 +221,11 @@ pub fn main() {
         let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
         let skinning_data = vec![];
 
+        let time: FrameTime = FrameTime {
+            dts: 99.0,
+            tts: 100.0,
+        };
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             use glfw::Context;
@@ -231,7 +236,7 @@ pub fn main() {
                     println!("Reloading!");
                     file_changed.store(false, Ordering::SeqCst);
                     game.reload();
-                    println!("Rendering: {:?}", game.render());
+                    println!("Rendering: {:?}", game.render(time.clone()));
                 }
 
                 glfw.poll_events();
@@ -265,7 +270,7 @@ pub fn main() {
                     &skinning_data,
                 );
 
-                let scene = game.render();
+                let scene = game.render(time.clone());
                 // let scene = Scene3D::cube();
 
                 match scene {
