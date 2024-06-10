@@ -3,8 +3,8 @@ module Pong
 open Functor
 open Functor.Math
 
-let GAME_HEIGHT = 600.0
-let GAME_WIDTH = 800.0
+let GAME_HEIGHT = 600.0f
+let GAME_WIDTH = 800.0f
 
 type Paddle = { 
     position: Point2
@@ -12,15 +12,15 @@ type Paddle = {
 }
 
 module Paddle =
-    let initial = { position = Point2.zero; size = Vector2.xy 0.1 0.3 }
+    let initial = { position = Point2.zero; size = Vector2.xy 0.1f 0.3f }
 
 type Ball = { 
     position: Point2
     velocity: Vector2
-    radius: float }
+    radius: float32 }
 
 module Ball = 
-    let initial = { position = Point2.zero; velocity = Vector2.zero; radius = 0.05 }
+    let initial = { position = Point2.zero; velocity = Vector2.zero; radius = 0.05f }
 
 type Model = {
     paddle1: Paddle
@@ -51,7 +51,7 @@ let tick model (tick: Time.FrameTime) =
         { ball with position = newBallPosition }
 
     let handleCollisionWithTopAndBottomWalls ball =
-        if ball.position.y <= 0.0 || ball.position.y >= GAME_HEIGHT then 
+        if ball.position.y <= 0.0f || ball.position.y >= GAME_HEIGHT then 
             { ball with velocity = Vector2.xy ball.velocity.x -ball.velocity.y }
         else ball
 
@@ -60,10 +60,10 @@ let tick model (tick: Time.FrameTime) =
         let ballBottom = ball.position.y + ball.radius
         let ballLeft = ball.position.x - ball.radius
         let ballRight = ball.position.x + ball.radius
-        let paddleTop = paddle.position.y - paddle.size.y / 2.0
-        let paddleBottom = paddle.position.y + paddle.size.y / 2.0
-        let paddleLeft = paddle.position.x - paddle.size.x / 2.0
-        let paddleRight = paddle.position.x + paddle.size.x / 2.0
+        let paddleTop = paddle.position.y - paddle.size.y / 2.0f
+        let paddleBottom = paddle.position.y + paddle.size.y / 2.0f
+        let paddleLeft = paddle.position.x - paddle.size.x / 2.0f
+        let paddleRight = paddle.position.x + paddle.size.x / 2.0f
         if ballTop >= paddleBottom && ballBottom <= paddleTop && ballLeft <= paddleRight && ballRight >= paddleLeft then
             { ball with velocity = Vector2.xy -ball.velocity.x ball.velocity.y }
         else ball
@@ -82,7 +82,8 @@ open Fable.Core.Rust
 let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model frameTime -> 
-        Graphics.Scene3D.cube()
+        Graphics.Scene3D.sphere()
+        |> Graphics.Scene3D.Transform.translateX ((sin (frameTime.tts * 5.0f)) * 1.0f)
         )
     |> GameBuilder.tick tick
     |> Runtime.runGame

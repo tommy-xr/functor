@@ -142,30 +142,20 @@ async fn run_async() -> Result<(), JsValue> {
             .expect("performance should be available");
 
         let mut i = 0;
+
+        let initial_time = performance.now() as f32;
+        let mut last_time = initial_time;
+
         *g.borrow_mut() = Some(Closure::new(move || {
-            // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(1.0, 2.5, 1.0);
-
-            // let matrix_location = unsafe {
-            //     gl.get_uniform_location(program, "world")
-            //         .expect("Cannot get uniform")
-            // };
-            // let data = (&array4x4(matrix) as *const [[f32; 4]; 4]) as *const f32;
-            // let raw = slice::from_raw_parts(data, 16);
-            // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
-
             let render_ctx = RenderContext {
                 gl: &gl,
                 shader_version,
             };
 
-            let mut basic_material = BasicMaterial::create();
-            basic_material.initialize(&render_ctx);
-
             let projection_matrix: Matrix4<f32> =
                 perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
 
             let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
-            let skinning_data: Vec<Matrix4<f32>> = vec![];
 
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             let radius = 5.0;
@@ -178,40 +168,27 @@ async fn run_async() -> Result<(), JsValue> {
                 vec3(0.0, 1.0, 0.0),
             );
 
-            basic_material.draw_opaque(
-                &render_ctx,
-                &projection_matrix,
-                &view_matrix,
-                &world_matrix,
-                &skinning_data,
-            );
-
             // let scene = Scene3D::cube();
 
+            let now = performance.now() as f32;
             let frameTime = FrameTime {
-                dts: 99.0,
-                tts: 100.0,
+                dts: (now - last_time) / 1000.0,
+                tts: (now - initial_time) / 1000.0,
             };
+            last_time = now;
 
             let val = game_render(functor_runtime_common::to_js_value(&frameTime));
             web_sys::console::log_2(&JsValue::from_str("calling render"), &val);
 
-            let scene = functor_runtime_common::from_js_value(val);
+            let scene: Scene3D = functor_runtime_common::from_js_value(val);
 
-            match scene {
-                Scene3D::Cube => {
-                    let mut cube = functor_runtime_common::geometry::Cube::create();
-                    cube.draw(&gl);
-                }
-                Scene3D::Cylinder => {
-                    let mut cylinder = functor_runtime_common::geometry::Cylinder::create();
-                    cylinder.draw(&gl);
-                }
-                Scene3D::Sphere => {
-                    let mut sphere = functor_runtime_common::geometry::Sphere::create();
-                    sphere.draw(&gl);
-                }
-            }
+            functor_runtime_common::Scene3D::render(
+                &scene,
+                &render_ctx,
+                &world_matrix,
+                &projection_matrix,
+                &view_matrix,
+            );
 
             // Schedule ourself for another requestAnimationFrame callback.
             request_animation_frame(f.borrow().as_ref().unwrap());

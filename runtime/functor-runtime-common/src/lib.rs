@@ -20,27 +20,6 @@ where
     serde_wasm_bindgen::from_value(value).unwrap()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Scene3D {
-    Cube,
-    Sphere,
-    Cylinder,
-}
-
-impl Scene3D {
-    pub fn cube() -> Self {
-        Self::Cube
-    }
-
-    pub fn sphere() -> Self {
-        Self::Sphere
-    }
-
-    pub fn cylinder() -> Self {
-        Self::Cylinder
-    }
-}
-
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
@@ -70,12 +49,14 @@ mod frame_time;
 pub mod geometry;
 pub mod material;
 mod render_context;
+mod scene3d;
 mod shader;
 mod shader_program;
 pub mod texture;
 
 pub use frame_time::*;
 pub use render_context::*;
+pub use scene3d::*;
 
 #[cfg(test)]
 mod tests {
