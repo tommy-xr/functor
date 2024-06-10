@@ -1,6 +1,8 @@
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
+use fable_library_rust::{List_, NativeArray_::Array};
+
 use crate::{
     geometry::{self, Geometry},
     material::BasicMaterial,
@@ -17,6 +19,7 @@ pub enum Shape {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneObject {
     Geometry(Shape),
+    Group(Vec<Scene3D>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +54,13 @@ impl Scene3D {
         }
     }
 
+    pub fn group(items: Array<Scene3D>) -> Self {
+        Scene3D {
+            obj: SceneObject::Group(items.to_vec()),
+            xform: Matrix4::identity(),
+        }
+    }
+
     pub fn transform(self, xform: Matrix4<f32>) -> Self {
         Scene3D {
             xform: self.xform * xform,
@@ -70,7 +80,6 @@ impl Scene3D {
         self.transform(Matrix4::from_translation(vec3(0.0, 0.0, z)))
     }
 
-
     pub fn render(
         &self,
         context: &RenderContext,
@@ -83,7 +92,18 @@ impl Scene3D {
         basic_material.initialize(&context);
 
         let skinning_data = vec![];
-        match self.obj {
+        match &self.obj {
+            SceneObject::Group(items) => {
+                let new_world_matrix = self.xform * world_matrix;
+                for item in items.into_iter() {
+                    item.render(
+                        &context,
+                        &new_world_matrix,
+                        &projection_matrix,
+                        &view_matrix,
+                    )
+                }
+            }
             SceneObject::Geometry(Shape::Cube) => {
                 let xform = self.xform * world_matrix;
                 basic_material.draw_opaque(
