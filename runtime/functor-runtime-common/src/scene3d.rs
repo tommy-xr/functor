@@ -58,9 +58,18 @@ impl Scene3D {
         }
     }
 
+    pub fn translate_x(self, x: f32) -> Self {
+        self.transform(Matrix4::from_translation(vec3(x, 0.0, 0.0)))
+    }
+
     pub fn translate_y(self, y: f32) -> Self {
         self.transform(Matrix4::from_translation(vec3(0.0, y, 0.0)))
     }
+
+    pub fn translate_z(self, z: f32) -> Self {
+        self.transform(Matrix4::from_translation(vec3(0.0, 0.0, z)))
+    }
+
 
     pub fn render(
         &self,

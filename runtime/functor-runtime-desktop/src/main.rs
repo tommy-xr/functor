@@ -238,7 +238,7 @@ pub fn main() {
             let camX = glfw.get_time().sin() as f32 * radius;
             let camZ = glfw.get_time().cos() as f32 * radius;
             let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
-                Point3::new(camX, 0.0, camZ),
+                Point3::new(0.0, 0.0, -1.0 * radius),
                 Point3::new(0.0, 0.0, 0.0),
                 vec3(0.0, 1.0, 0.0),
             );

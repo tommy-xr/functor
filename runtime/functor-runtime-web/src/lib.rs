@@ -147,16 +147,6 @@ async fn run_async() -> Result<(), JsValue> {
         let mut last_time = initial_time;
 
         *g.borrow_mut() = Some(Closure::new(move || {
-            // let matrix: Matrix4<f32> = Matrix4::from_nonuniform_scale(1.0, 2.5, 1.0);
-
-            // let matrix_location = unsafe {
-            //     gl.get_uniform_location(program, "world")
-            //         .expect("Cannot get uniform")
-            // };
-            // let data = (&array4x4(matrix) as *const [[f32; 4]; 4]) as *const f32;
-            // let raw = slice::from_raw_parts(data, 16);
-            // gl.uniform_matrix_4_f32_slice(Some(&matrix_location), false, raw);
-
             let render_ctx = RenderContext {
                 gl: &gl,
                 shader_version,

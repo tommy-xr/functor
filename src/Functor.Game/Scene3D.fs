@@ -15,6 +15,9 @@ module Scene3D =
     let cylinder(): Scene3D = nativeOnly
 
     module Transform = 
-
+        [<Emit("functor_runtime_common::Scene3D::translate_x($1, $0)")>]
+        let translateX (x: float32) (scene: Scene3D): Scene3D = nativeOnly
         [<Emit("functor_runtime_common::Scene3D::translate_y($1, $0)")>]
         let translateY (y: float32) (scene: Scene3D): Scene3D = nativeOnly
+        [<Emit("functor_runtime_common::Scene3D::translate_z($1, $0)")>]
+        let translateZ (z: float32) (scene: Scene3D): Scene3D = nativeOnly
