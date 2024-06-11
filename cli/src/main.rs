@@ -1,10 +1,12 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::{env, io, process};
 
 use tokio::macros::*;
 
 mod commands;
+
+pub mod util;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -17,16 +19,28 @@ struct Args {
     command: Command,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum Environment {
+    Wasm,
+    Native,
+}
+
+impl Environment {
+    fn default(maybe_env: Option<Environment>) -> Environment {
+        maybe_env.unwrap_or(Environment::Native)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
-    #[command(aliases = ["i"])]
     Init {
         #[arg()]
         template: String,
     },
-    #[command(aliases = ["b"])]
-    Build,
-    #[command(aliases = ["d", "dev"])]
+    Build {
+        #[arg(value_enum)]
+        environment: Environment,
+    },
     Develop,
 }
 
@@ -48,7 +62,7 @@ async fn main() -> tokio::io::Result<()> {
                 template, &working_directory_str,
             )
         }
-        Command::Build => {
+        Command::Build { environment } => {
             println!("TODO: Build in directory: {}", &working_directory_str);
         }
         Command::Develop => {
