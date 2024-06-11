@@ -68,6 +68,16 @@ impl Scene3D {
         }
     }
 
+    pub fn scale_x(self, x: f32) -> Self {
+        self.transform(Matrix4::from_nonuniform_scale(x, 1.0, 1.0))
+    }
+    pub fn scale_y(self, y: f32) -> Self {
+        self.transform(Matrix4::from_nonuniform_scale(1.0, y, 1.0))
+    }
+    pub fn scale_z(self, z: f32) -> Self {
+        self.transform(Matrix4::from_nonuniform_scale(1.0, 1.0, z))
+    }
+
     pub fn translate_x(self, x: f32) -> Self {
         self.transform(Matrix4::from_translation(vec3(x, 0.0, 0.0)))
     }
@@ -94,7 +104,7 @@ impl Scene3D {
         let skinning_data = vec![];
         match &self.obj {
             SceneObject::Group(items) => {
-                let new_world_matrix = self.xform * world_matrix;
+                let new_world_matrix = world_matrix * self.xform;
                 for item in items.into_iter() {
                     item.render(
                         &context,
@@ -105,7 +115,7 @@ impl Scene3D {
                 }
             }
             SceneObject::Geometry(Shape::Cube) => {
-                let xform = self.xform * world_matrix;
+                let xform = world_matrix * self.xform;
                 basic_material.draw_opaque(
                     &context,
                     &projection_matrix,
@@ -117,7 +127,7 @@ impl Scene3D {
                 cube.draw(&context.gl);
             }
             SceneObject::Geometry(Shape::Cylinder) => {
-                let xform = self.xform * world_matrix;
+                let xform = world_matrix * self.xform;
                 basic_material.draw_opaque(
                     &context,
                     &projection_matrix,
@@ -130,7 +140,7 @@ impl Scene3D {
                 cylinder.draw(&context.gl);
             }
             SceneObject::Geometry(Shape::Sphere) => {
-                let xform = self.xform * world_matrix;
+                let xform = world_matrix * self.xform;
                 basic_material.draw_opaque(
                     &context,
                     &projection_matrix,
