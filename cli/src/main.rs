@@ -26,8 +26,8 @@ enum Environment {
 }
 
 impl Environment {
-    fn default(maybe_env: Option<Environment>) -> Environment {
-        maybe_env.unwrap_or(Environment::Native)
+    fn default(maybe_env: &Option<Environment>) -> Environment {
+        maybe_env.clone().unwrap_or(Environment::Native)
     }
 }
 
@@ -39,7 +39,7 @@ enum Command {
     },
     Build {
         #[arg(value_enum)]
-        environment: Environment,
+        environment: Option<Environment>,
     },
     Develop,
 }
@@ -54,25 +54,24 @@ async fn main() -> tokio::io::Result<()> {
     let working_directory_os_str = working_directory.into_os_string();
     let working_directory_str = working_directory_os_str.into_string().unwrap();
 
-    match &args.command {
+    println!("Running command: {:?}", args.command);
+    let res = match &args.command {
         Command::Init { template } => {
             // TODO: Handle init
             println!(
                 "TODO: Initialize with template '{}' in directory: {}",
                 template, &working_directory_str,
-            )
+            );
+            Ok(())
         }
         Command::Build { environment } => {
-            println!("TODO: Build in directory: {}", &working_directory_str);
+            commands::build::execute(&working_directory_str, &Environment::default(environment))
+                .await
         }
-        Command::Develop => {
-            println!("Running develop... {}", &working_directory_str);
-            let res = commands::develop::execute(&working_directory_str).await;
-            println!("Done!");
-        }
-    }
+        Command::Develop => commands::develop::execute(&working_directory_str).await,
+    };
+    println!("Done");
 
-    println!("Running command: {:?}", args.command);
     Ok(())
 }
 
