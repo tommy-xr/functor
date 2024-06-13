@@ -1,10 +1,12 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::{env, io, process};
 
 use tokio::macros::*;
 
 mod commands;
+
+pub mod util;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -17,16 +19,28 @@ struct Args {
     command: Command,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum Environment {
+    Wasm,
+    Native,
+}
+
+impl Environment {
+    fn default(maybe_env: &Option<Environment>) -> Environment {
+        maybe_env.clone().unwrap_or(Environment::Native)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
-    #[command(aliases = ["i"])]
     Init {
         #[arg()]
         template: String,
     },
-    #[command(aliases = ["b"])]
-    Build,
-    #[command(aliases = ["d", "dev"])]
+    Build {
+        #[arg(value_enum)]
+        environment: Option<Environment>,
+    },
     Develop,
 }
 
@@ -40,25 +54,24 @@ async fn main() -> tokio::io::Result<()> {
     let working_directory_os_str = working_directory.into_os_string();
     let working_directory_str = working_directory_os_str.into_string().unwrap();
 
-    match &args.command {
+    println!("Running command: {:?}", args.command);
+    let res = match &args.command {
         Command::Init { template } => {
             // TODO: Handle init
             println!(
                 "TODO: Initialize with template '{}' in directory: {}",
                 template, &working_directory_str,
-            )
+            );
+            Ok(())
         }
-        Command::Build => {
-            println!("TODO: Build in directory: {}", &working_directory_str);
+        Command::Build { environment } => {
+            commands::build::execute(&working_directory_str, &Environment::default(environment))
+                .await
         }
-        Command::Develop => {
-            println!("Running develop... {}", &working_directory_str);
-            let res = commands::develop::execute(&working_directory_str).await;
-            println!("Done!");
-        }
-    }
+        Command::Develop => commands::develop::execute(&working_directory_str).await,
+    };
+    println!("Done");
 
-    println!("Running command: {:?}", args.command);
     Ok(())
 }
 
