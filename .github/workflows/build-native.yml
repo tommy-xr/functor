@@ -31,6 +31,9 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
       - name: Install Dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -52,6 +55,12 @@ jobs:
       - name: Build Runtime
         run: cargo build
         working-directory: runtime/functor-runtime-desktop
+
+      # Building the web bundle is necessary for the CLI,
+      # since the cli includes the web bundle for dev server
+      - name: Build runtime wasm bundle
+        run: wasm-pack build --target web
+        working-directory: runtime/functor-runtime-web
 
       - name: Build CLI
         run: cargo build
