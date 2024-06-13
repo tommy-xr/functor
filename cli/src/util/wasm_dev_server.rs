@@ -15,10 +15,8 @@ const JS_FILE_2: &[u8] =
 impl WasmDevServer {
     pub async fn start(working_directory: &str) -> Result<(), io::Error> {
         let wd = working_directory.to_owned();
-        // Match any request and return hello world!
-        // let routes = warp::any().map(|| "Hello, World!");
 
-        println!("Starting dev server");
+        println!("Starting dev server in: {}", wd);
 
         fn create_route(
             path: &'static str,
