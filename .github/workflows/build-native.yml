@@ -62,6 +62,10 @@ jobs:
         run: wasm-pack build --target web
         working-directory: runtime/functor-runtime-web
 
+      - name: Check files
+        run: ls -la
+        working-directory: runtime/functor-runtime-web/pkg
+
       - name: Build CLI
         run: cargo build
         working-directory: cli
