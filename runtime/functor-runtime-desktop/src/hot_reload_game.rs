@@ -23,9 +23,8 @@ pub struct HotReloadGame {
     library: Option<Library>,
 
     // Hot reload state
-    owned_game_path: Arc<String>,
     file_changed: Arc<AtomicBool>,
-    watcher_thread: JoinHandle<()>,
+    watcher_thread: Option<JoinHandle<()>>,
 }
 
 impl Game for HotReloadGame {
@@ -46,9 +45,15 @@ impl Game for HotReloadGame {
             render_func(frameTime)
         }
     }
+
+    fn quit(&mut self) {
+        if let Some(handle) = self.watcher_thread.take() {
+            handle.join().expect("Failed to join watcher thread");
+        }
+    }
 }
 impl HotReloadGame {
-    pub fn create(path: &str, game_path: &str) -> HotReloadGame {
+    pub fn create(path: &str) -> HotReloadGame {
         let path = Arc::new(path.to_string());
         let counter = 0;
         let lib_path = Path::new(path.as_str());
@@ -78,8 +83,7 @@ impl HotReloadGame {
 
         let file_changed = Arc::new(AtomicBool::new(false));
         let file_changed_watcher = Arc::clone(&file_changed);
-        let owned_game_path = Arc::new(game_path.to_string());
-        let owned_game_path2 = owned_game_path.clone();
+        let owned_game_path = path.clone();
 
         let watcher_thread = std::thread::spawn(move || {
             // Select recommended watcher for debouncer.
@@ -132,8 +136,7 @@ impl HotReloadGame {
             latest_lib_path: path,
             library,
 
-            owned_game_path: owned_game_path2,
-            watcher_thread,
+            watcher_thread: Some(watcher_thread),
             file_changed,
         }
     }

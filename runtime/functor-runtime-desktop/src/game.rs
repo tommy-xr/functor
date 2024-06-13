@@ -4,4 +4,6 @@ pub trait Game {
     fn check_hot_reload(&mut self, frame_time: FrameTime);
 
     fn render(&mut self, frame_time: FrameTime) -> Scene3D;
+
+    fn quit(&mut self);
 }

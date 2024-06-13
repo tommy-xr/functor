@@ -45,51 +45,6 @@ pub fn main() {
 
     let other_game_path = game_path.clone();
 
-    let file_changed = Arc::new(AtomicBool::new(false));
-    let file_changed_watcher = Arc::clone(&file_changed);
-    let watcher_thread = std::thread::spawn(move || {
-        // Select recommended watcher for debouncer.
-        // Using a callback here, could also be a channel.
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = notify::recommended_watcher(tx).unwrap();
-
-        let mut had_remove_event = false;
-
-        let path = Path::new(game_path.as_str());
-        watcher.watch(&path, RecursiveMode::Recursive).unwrap();
-
-        println!("watcher created!");
-        loop {
-            match rx.recv() {
-                Ok(event) => {
-                    match event {
-                        Ok(event) => {
-                            match event.kind {
-                                event::EventKind::Remove(_) => had_remove_event = true,
-                                event::EventKind::Create(_) => {
-                                    if had_remove_event {
-                                        had_remove_event = false;
-                                        println!("Pushing hot reload event from thread...");
-                                        file_changed_watcher.store(true, Ordering::SeqCst);
-                                    } else {
-                                        println!("ignoring event");
-                                    }
-                                }
-                                _ => (),
-                            };
-                            // TODO: Can we parse events here to handle create -> restore loop?
-                            println!("event: {:?}", event);
-                            //file_changed_watcher.store(true, Ordering::SeqCst);
-                        }
-                        Err(e) => println!("watch error: {:?}", e),
-                    }
-                }
-                Err(e) => println!("watch error: {:?}", e),
-            }
-        }
-    });
-
     let mut game = HotReloadGame::create(other_game_path.as_str());
 
     unsafe {
@@ -217,13 +172,7 @@ pub fn main() {
             };
             last_time = elapsed_time;
 
-            // Check if file has changed
-            if file_changed.load(Ordering::SeqCst) {
-                println!("Reloading!");
-                file_changed.store(false, Ordering::SeqCst);
-                game.reload();
-                println!("Rendering: {:?}", game.render(time.clone()));
-            }
+            game.check_hot_reload(time.clone());
 
             glfw.poll_events();
             for (_, event) in glfw::flush_messages(&events) {
@@ -260,7 +209,5 @@ pub fn main() {
 
             window.swap_buffers();
         }
-
-        watcher_thread.join().unwrap();
     }
 }
