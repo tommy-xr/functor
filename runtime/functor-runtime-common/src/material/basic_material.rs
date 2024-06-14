@@ -1,8 +1,5 @@
 use cgmath::Matrix4;
 
-use std::sync::OnceLock;
-
-use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
 

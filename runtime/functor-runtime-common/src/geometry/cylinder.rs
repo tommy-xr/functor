@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 
-use cgmath::{vec2, vec3, Vector2, Vector3};
+use cgmath::{Vector2, Vector3};
 
 use super::mesh::{self, Mesh};
 
@@ -9,6 +9,7 @@ pub struct Cylinder;
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
     position: Vector3<f32>,
+    #[allow(dead_code)]
     normal: Vector3<f32>,
     tex_coords: Vector2<f32>,
 }

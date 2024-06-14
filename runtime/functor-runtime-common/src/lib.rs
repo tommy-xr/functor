@@ -1,7 +1,6 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use cgmath::Rad;
-use serde::*;
 use std::any::Any;
 
 #[cfg(target_arch = "wasm32")]

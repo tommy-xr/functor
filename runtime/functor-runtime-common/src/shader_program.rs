@@ -20,7 +20,6 @@ impl ShaderProgram {
         fragment_shader: &Shader,
     ) -> ShaderProgram {
         unsafe {
-            let mut success = 0;
             let program_id = gl.create_program().expect("Cannot create program");
             gl.attach_shader(program_id, vertex_shader.shader_id);
             gl.attach_shader(program_id, fragment_shader.shader_id);
@@ -52,19 +51,20 @@ impl ShaderProgram {
         }
     }
 
-    // pub fn set_uniform_vec3(
-    //     &self,
-    //     gl: &glow::Context,
-    //     uniform_location: &UniformLocation,
-    //     vec: &Vector3<f32>,
-    // ) {
-    //     unsafe {
-    //         gl.uniform_3_f32_slice(
-    //             Some(&uniform_location.native_uniform_location),
-    //             &[vec.x, vec.y, vec.z],
-    //         )
-    //     }
-    // }
+    #[allow(dead_code)]
+    pub fn set_uniform_vec3(
+        &self,
+        gl: &glow::Context,
+        uniform_location: &UniformLocation,
+        vec: &Vector3<f32>,
+    ) {
+        unsafe {
+            gl.uniform_3_f32_slice(
+                Some(&uniform_location.native_uniform_location),
+                &[vec.x, vec.y, vec.z],
+            )
+        }
+    }
 
     pub fn set_uniform_matrix4(
         &self,

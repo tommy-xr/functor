@@ -1,5 +1,3 @@
-use glow::*;
-
 pub trait Geometry {
     fn draw(&mut self, gl: &glow::Context);
 }

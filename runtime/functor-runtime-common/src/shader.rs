@@ -23,7 +23,6 @@ impl Shader {
 
         let shader;
         unsafe {
-            let mut success = 0;
             let shader_source = convert(shader_contents, opengl_version);
             shader = gl
                 .create_shader(gl_shader_type)
