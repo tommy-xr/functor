@@ -84,7 +84,6 @@ pub fn main() {
             (gl, "#version 410", window, glfw, events)
         };
 
-        gl.use_program(Some(program));
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
         gl.enable(glow::DEPTH_TEST);
