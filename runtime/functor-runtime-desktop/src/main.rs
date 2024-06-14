@@ -6,6 +6,7 @@ use std::time::Instant;
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::FrameTime;
+use glfw::{Action, Key};
 use glow::*;
 use hot_reload_game::HotReloadGame;
 use static_game::StaticGame;
@@ -106,6 +107,9 @@ pub fn main() {
             for (_, event) in glfw::flush_messages(&events) {
                 match event {
                     glfw::WindowEvent::Close => window.set_should_close(true),
+                    glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
+                        window.set_should_close(true)
+                    }
                     _ => {}
                 }
             }
