@@ -3,6 +3,8 @@
 use std::any::Any;
 
 #[cfg(target_arch = "wasm32")]
+use serde::*;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
