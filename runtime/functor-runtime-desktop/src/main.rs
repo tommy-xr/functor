@@ -77,6 +77,7 @@ pub fn main() {
             window.set_cursor_pos_polling(true);
             window.set_framebuffer_size_polling(true);
             // window.set_cursor_mode(glfw::CursorMode::Disabled);
+
             let gl =
                 glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _);
 
