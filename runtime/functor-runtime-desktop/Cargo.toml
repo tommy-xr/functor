@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 # Treat warnings as a buld error
-strict = []
+strict = ["functor_runtime_common/strict"]
 
 [[bin]]
 name = "functor-runner"

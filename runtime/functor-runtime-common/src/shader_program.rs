@@ -52,19 +52,19 @@ impl ShaderProgram {
         }
     }
 
-    pub fn set_uniform_vec3(
-        &self,
-        gl: &glow::Context,
-        uniform_location: &UniformLocation,
-        vec: &Vector3<f32>,
-    ) {
-        unsafe {
-            gl.uniform_3_f32_slice(
-                Some(&uniform_location.native_uniform_location),
-                &[vec.x, vec.y, vec.z],
-            )
-        }
-    }
+    // pub fn set_uniform_vec3(
+    //     &self,
+    //     gl: &glow::Context,
+    //     uniform_location: &UniformLocation,
+    //     vec: &Vector3<f32>,
+    // ) {
+    //     unsafe {
+    //         gl.uniform_3_f32_slice(
+    //             Some(&uniform_location.native_uniform_location),
+    //             &[vec.x, vec.y, vec.z],
+    //         )
+    //     }
+    // }
 
     pub fn set_uniform_matrix4(
         &self,

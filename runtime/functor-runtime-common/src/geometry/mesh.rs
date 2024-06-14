@@ -1,5 +1,4 @@
 use glow::{Buffer, HasContext, VertexArray};
-use once_cell::sync::OnceCell;
 
 use super::Geometry;
 
