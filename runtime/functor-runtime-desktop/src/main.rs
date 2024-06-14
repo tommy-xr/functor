@@ -14,6 +14,7 @@ use glow::*;
 use hot_reload_game::HotReloadGame;
 use libloading::{library_filename, Library, Symbol};
 use notify::{event, RecursiveMode, Watcher};
+use static_game::StaticGame;
 
 use crate::game::Game;
 
@@ -22,6 +23,7 @@ const SCR_HEIGHT: u32 = 600;
 
 mod game;
 mod hot_reload_game;
+mod static_game;
 
 use clap::{Parser, Subcommand};
 
@@ -31,6 +33,9 @@ struct Args {
     /// Directory to override the current working directory
     #[arg(short, long)]
     game_path: String,
+
+    #[arg(long)]
+    hot: bool,
 }
 
 pub fn main() {
@@ -38,14 +43,15 @@ pub fn main() {
 
     let args = Args::parse();
 
-    // let game_path = Path::new("target/debug/libgame_native.dylib");
-    let game_path = Arc::new(args.game_path);
-    println!("Using game path: {}", game_path.clone());
+    let game_path = args.game_path;
+    println!("Using game path: {}", game_path);
     println!("Working directory: {:?}", env::current_dir());
 
-    let other_game_path = game_path.clone();
-
-    let mut game = HotReloadGame::create(other_game_path.as_str());
+    let mut game: Box<dyn Game> = if args.hot {
+        Box::new(HotReloadGame::create(game_path.as_str()))
+    } else {
+        Box::new(StaticGame::create(game_path.as_str()))
+    };
 
     unsafe {
         let (gl, shader_version, mut window, mut glfw, events) = {
