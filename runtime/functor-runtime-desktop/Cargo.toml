@@ -3,6 +3,10 @@ name = "functor-runtime-desktop"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Treat warnings as a buld error
+strict = []
+
 [[bin]]
 name = "functor-runner"
 path = "src/main.rs"
