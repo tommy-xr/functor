@@ -2,11 +2,8 @@ use colored::*;
 use std::env;
 use std::io::{self, BufRead, Error};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command as TokioCommand;
 
-use crate::util::{self, ShellCommand};
+use crate::util::{self, get_nearby_bin, ShellCommand};
 
 pub async fn execute(working_directory: &str) -> io::Result<()> {
     let cwd_path = Path::new(working_directory);
@@ -46,21 +43,11 @@ pub async fn execute(working_directory: &str) -> io::Result<()> {
             cmd: functor_runner_exe.to_str().unwrap(),
             cwd: build_native_wd.to_str().unwrap(),
             env: vec![],
-            args: vec!["--game-path", game_lib.to_str().unwrap()],
+            args: vec!["--hot", "--game-path", game_lib.to_str().unwrap()],
         },
     ];
 
     util::ShellCommand::run_parallel(commands).await?;
 
     Ok(())
-}
-
-fn get_nearby_bin(file: &str) -> io::Result<PathBuf> {
-    let curent_exe = env::current_exe()?;
-
-    let parent = curent_exe.parent().unwrap();
-
-    let ret = parent.join(&file);
-
-    Ok(ret)
 }
