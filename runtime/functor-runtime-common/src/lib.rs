@@ -1,6 +1,5 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
-use cgmath::Rad;
 use std::any::Any;
 
 #[cfg(target_arch = "wasm32")]
