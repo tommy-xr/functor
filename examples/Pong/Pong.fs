@@ -85,8 +85,9 @@ let init (_args: array<string>) =
         Graphics.Scene3D.group([|
             Graphics.Scene3D.cylinder() |> Graphics.Scene3D.Transform.translateY -1.0f;
             Graphics.Scene3D.cube()
+            |> Graphics.Scene3D.Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))
         |])
-        |> Graphics.Scene3D.Transform.translateX ((sin (frameTime.tts * 5.0f)) * 1.0f)
+        |> Graphics.Scene3D.Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
         )
     |> GameBuilder.tick tick
     |> Runtime.runGame

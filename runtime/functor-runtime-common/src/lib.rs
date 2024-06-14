@@ -1,3 +1,4 @@
+use cgmath::Rad;
 use serde::*;
 use std::any::Any;
 
@@ -48,6 +49,7 @@ impl OpaqueState {
 mod frame_time;
 pub mod geometry;
 pub mod material;
+pub mod math;
 mod render_context;
 mod scene3d;
 mod shader;

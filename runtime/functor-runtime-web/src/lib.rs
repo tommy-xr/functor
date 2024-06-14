@@ -160,10 +160,8 @@ async fn run_async() -> Result<(), JsValue> {
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             let radius = 5.0;
             let time: f64 = performance.now() / 1000.0;
-            let camX = time.sin() as f32 * radius;
-            let camZ = time.cos() as f32 * radius;
             let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
-                Point3::new(camX, 0.0, camZ),
+                Point3::new(0.0, 0.0, -1.0 * radius),
                 Point3::new(0.0, 0.0, 0.0),
                 vec3(0.0, 1.0, 0.0),
             );

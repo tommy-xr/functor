@@ -40,7 +40,9 @@ struct Uniforms {
     projection_loc: UniformLocation,
 }
 
-// static SHADER_PROGRAM: OnceLock<(ShaderProgram, Uniforms)> = OnceLock::new();
+// TODO: We'll have to re-think this pattern
+// Maybe we need a shader repository or something to pull from
+static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 
 pub struct BasicMaterial;
 
@@ -48,35 +50,41 @@ use crate::shader::Shader;
 use crate::shader::ShaderType;
 
 impl Material for BasicMaterial {
-    fn initialize(&mut self, ctx: &RenderContext) {}
-    //     let _ = SHADER_PROGRAM.get_or_init(|| {
-    //         // build and compile our shader program
-    //         // ------------------------------------
-    //         // vertex shader
-    //         let vertex_shader =
-    //             Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER_SOURCE, opengl_version);
+    fn initialize(&mut self, ctx: &RenderContext) {
+        unsafe {
+            if SHADER_PROGRAM.is_none() {
+                let vertex_shader = Shader::build(
+                    ctx.gl,
+                    ShaderType::Vertex,
+                    VERTEX_SHADER_SOURCE,
+                    ctx.shader_version,
+                );
 
-    //         // fragment shader
-    //         let fragment_shader = Shader::build(
-    //             gl,
-    //             ShaderType::Fragment,
-    //             FRAGMENT_SHADER_SOURCE,
-    //             opengl_version,
-    //         );
-    //         // link shaders
+                // fragment shader
+                let fragment_shader = Shader::build(
+                    ctx.gl,
+                    ShaderType::Fragment,
+                    FRAGMENT_SHADER_SOURCE,
+                    ctx.shader_version,
+                );
+                // link shaders
 
-    //         let shader =
-    //             crate::shader_program::ShaderProgram::link(&gl, &vertex_shader, &fragment_shader);
+                let shader = crate::shader_program::ShaderProgram::link(
+                    &ctx.gl,
+                    &vertex_shader,
+                    &fragment_shader,
+                );
 
-    //         let uniforms = Uniforms {
-    //             world_loc: shader.get_uniform_location(gl, "world"),
-    //             view_loc: shader.get_uniform_location(gl, "view"),
-    //             projection_loc: shader.get_uniform_location(gl, "projection"),
-    //         };
+                let uniforms = Uniforms {
+                    world_loc: shader.get_uniform_location(ctx.gl, "world"),
+                    view_loc: shader.get_uniform_location(ctx.gl, "view"),
+                    projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
+                };
 
-    //         (shader, uniforms)
-    //     });
-    // }
+                SHADER_PROGRAM = Some((shader, uniforms));
+            }
+        }
+    }
 
     fn draw_opaque(
         &self,
@@ -86,45 +94,16 @@ impl Material for BasicMaterial {
         world_matrix: &Matrix4<f32>,
         _skinning_data: &[Matrix4<f32>],
     ) -> bool {
-        // TODO:
-        let gl = ctx.gl;
-        // build and compile our shader program
-        // ------------------------------------
-        // vertex shader
-        let vertex_shader = Shader::build(
-            gl,
-            ShaderType::Vertex,
-            VERTEX_SHADER_SOURCE,
-            ctx.shader_version,
-        );
+        unsafe {
+            if let Some((shader, uniforms)) = &SHADER_PROGRAM {
+                let p = shader;
+                p.use_program(ctx.gl);
 
-        // fragment shader
-        let fragment_shader = Shader::build(
-            gl,
-            ShaderType::Fragment,
-            FRAGMENT_SHADER_SOURCE,
-            ctx.shader_version,
-        );
-        // link shaders
-
-        let shader =
-            crate::shader_program::ShaderProgram::link(&gl, &vertex_shader, &fragment_shader);
-
-        let uniforms = Uniforms {
-            world_loc: shader.get_uniform_location(gl, "world"),
-            view_loc: shader.get_uniform_location(gl, "view"),
-            projection_loc: shader.get_uniform_location(gl, "projection"),
-        };
-
-        // (shader, uniforms)
-
-        // let (shader_program, uniforms) = SHADER_PROGRAM.get().expect("shader not compiled");
-        let p = shader;
-        p.use_program(gl);
-
-        p.set_uniform_matrix4(gl, &uniforms.world_loc, world_matrix);
-        p.set_uniform_matrix4(gl, &uniforms.view_loc, view_matrix);
-        p.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
+                p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
+                p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
+                p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+            }
+        }
 
         true
     }
