@@ -6,6 +6,7 @@ use fable_library_rust::{List_, NativeArray_::Array};
 use crate::{
     geometry::{self, Geometry},
     material::BasicMaterial,
+    math::Angle,
     RenderContext,
 };
 
@@ -88,6 +89,16 @@ impl Scene3D {
 
     pub fn translate_z(self, z: f32) -> Self {
         self.transform(Matrix4::from_translation(vec3(0.0, 0.0, z)))
+    }
+
+    pub fn rotate_x(self, ang: Angle) -> Self {
+        self.transform(Matrix4::from_angle_x(ang))
+    }
+    pub fn rotate_y(self, ang: Angle) -> Self {
+        self.transform(Matrix4::from_angle_y(ang))
+    }
+    pub fn rotate_z(self, ang: Angle) -> Self {
+        self.transform(Matrix4::from_angle_z(ang))
     }
 
     pub fn render(

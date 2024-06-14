@@ -25,8 +25,16 @@ module Scene3D =
         [<Emit("functor_runtime_common::Scene3D::translate_z($1, $0)")>]
         let translateZ (z: float32) (scene: Scene3D): Scene3D = nativeOnly
         [<Emit("functor_runtime_common::Scene3D::scale_x($1, $0)")>]
+
         let scaleX (x: float32) (scene: Scene3D): Scene3D = nativeOnly
         [<Emit("functor_runtime_common::Scene3D::scale_y($1, $0)")>]
         let scaleY (y: float32) (scene: Scene3D): Scene3D = nativeOnly
         [<Emit("functor_runtime_common::Scene3D::scale_z($1, $0)")>]
         let scaleZ (z: float32) (scene: Scene3D): Scene3D = nativeOnly
+
+        [<Emit("functor_runtime_common::Scene3D::rotate_x($1, $0)")>]
+        let rotateX (angle: Math.Angle) (scene: Scene3D): Scene3D = nativeOnly
+        [<Emit("functor_runtime_common::Scene3D::rotate_y($1, $0)")>]
+        let rotateY (angle: Math.Angle) (scene: Scene3D): Scene3D = nativeOnly
+        [<Emit("functor_runtime_common::Scene3D::rotate_z($1, $0)")>]
+        let rotateZ (angle: Math.Angle) (scene: Scene3D): Scene3D = nativeOnly
