@@ -5,7 +5,7 @@ pub enum PixelFormat {
 }
 
 #[derive(Clone)]
-pub struct RawTextureData {
+pub struct TextureData {
     pub bytes: std::vec::Vec<u8>,
     pub width: u32,
     pub height: u32,
@@ -13,7 +13,7 @@ pub struct RawTextureData {
 }
 
 pub trait TextureFormat {
-    fn load(&self, buffer: &std::vec::Vec<u8>) -> RawTextureData;
+    fn load(&self, buffer: &std::vec::Vec<u8>) -> TextureData;
 }
 
 pub struct FormatUsingImageCrate {
@@ -21,13 +21,13 @@ pub struct FormatUsingImageCrate {
 }
 
 impl TextureFormat for FormatUsingImageCrate {
-    fn load(&self, buffer: &std::vec::Vec<u8>) -> RawTextureData {
+    fn load(&self, buffer: &std::vec::Vec<u8>) -> TextureData {
         let img = image::load_from_memory_with_format(buffer, self.image_format)
             .expect("Failed to load texture");
         let mut data = img.to_rgba8().into_raw();
         apply_color_key(&mut data, img.width(), img.height());
 
-        RawTextureData {
+        TextureData {
             bytes: data,
             width: img.width(),
             height: img.height(),

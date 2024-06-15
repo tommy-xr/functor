@@ -27,8 +27,11 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         in vec2 texCoord;
 
+        uniform sampler2D texture1;
+
         void main() {
-            fragColor = vec4(texCoord.x, texCoord.y, 0.0, 1.0);
+            //fragColor = vec4(texCoord.x, texCoord.y, 0.0, 1.0);
+            fragColor = texture(texture1, texCoord);
         }
 "#;
 
@@ -36,6 +39,7 @@ struct Uniforms {
     world_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
+    texture_loc: UniformLocation,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -77,6 +81,7 @@ impl Material for BasicMaterial {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
+                    texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -102,6 +107,7 @@ impl Material for BasicMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0)
             }
         }
 

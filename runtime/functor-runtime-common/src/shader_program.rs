@@ -51,6 +51,12 @@ impl ShaderProgram {
         }
     }
 
+    pub fn set_uniform_1i(&self, gl: &glow::Context, uniform_location: &UniformLocation, i: i32) {
+        unsafe {
+            gl.uniform_1_i32(Some(&uniform_location.native_uniform_location), i);
+        }
+    }
+
     #[allow(dead_code)]
     pub fn set_uniform_vec3(
         &self,
