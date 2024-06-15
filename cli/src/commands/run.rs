@@ -30,6 +30,22 @@ pub async fn execute(working_directory: &str, environment: &Environment) -> Resu
             }];
             util::ShellCommand::run_sequential(commands).await
         }
-        Environment::Wasm => WasmDevServer::start(build_wasm_wd.to_str().unwrap()).await,
+        Environment::Wasm => {
+            let cmd = if std::env::consts::OS == "windows" {
+                "start"
+            } else {
+                "open"
+            };
+            let wasm_server_start = WasmDevServer::start(build_wasm_wd.to_str().unwrap());
+            let commands = vec![ShellCommand {
+                prefix: "[Open Browser]",
+                cmd,
+                cwd: working_directory,
+                env: vec![],
+                args: vec!["http://127.0.0.1:8080"],
+            }];
+            util::ShellCommand::run_sequential(commands).await?;
+            wasm_server_start.await
+        }
     }
 }
