@@ -3,11 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use fable_library_rust::NativeArray_::Array;
 
+const CRATE_BYTES: &[u8] = include_bytes!("../included-assets/crate.png");
+
 use crate::{
     geometry::{self, Geometry},
     material::BasicMaterial,
     math::Angle,
-    texture::{PixelFormat, RuntimeTexture, Texture2D, TextureData, TextureOptions},
+    texture::{
+        PixelFormat, RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
+    },
     RenderContext,
 };
 
@@ -132,7 +136,8 @@ impl Scene3D {
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
     ) {
-        let texture_data = Self::create_checkerboard_pattern(8, 8);
+        // let texture_data = Self::create_checkerboard_pattern(8, 8);
+        let texture_data = PNG.load(&CRATE_BYTES.to_vec());
         let texture = Texture2D::init_from_data(texture_data, TextureOptions::default());
         texture.bind(0, &context);
 

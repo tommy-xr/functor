@@ -3,3 +3,7 @@
 # functor
 
 Functor: A functional toolkit for building 3D games in F#
+
+# Credits
+
+- Demo assets are from [BabylonJS Assets](https://github.com/BabylonJS/Assets/)
