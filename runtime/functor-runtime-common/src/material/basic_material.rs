@@ -107,7 +107,7 @@ impl Material for BasicMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0)
+                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 1)
             }
         }
 

@@ -33,7 +33,12 @@ impl RuntimeTexture for Texture2D {
             match new_state {
                 TextureState::Loaded(tex) => unsafe {
                     let gl = render_context.gl;
-                    gl.active_texture(glow::TEXTURE0 + index);
+                    let tex_unit = if (index == 0) {
+                        glow::TEXTURE0
+                    } else {
+                        glow::TEXTURE1
+                    };
+                    gl.active_texture(tex_unit);
                     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
                 },
                 TextureState::Unloaded(_, _) => {
@@ -95,6 +100,7 @@ impl TextureState {
                     Some(&texture_data.bytes),
                 );
 
+                gl.bind_texture(glow::TEXTURE_2D, None);
                 Self::Loaded(texture)
             },
         }
