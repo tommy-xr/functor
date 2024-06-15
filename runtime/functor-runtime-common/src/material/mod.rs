@@ -12,7 +12,7 @@ pub trait Material {
     ) -> bool;
     fn draw_transparent(
         &self,
-        ctx: &RenderContext,
+        _ctx: &RenderContext,
         _projection_matrix: &Matrix4<f32>,
         _view_matrix: &Matrix4<f32>,
         _world_matrix: &Matrix4<f32>,
@@ -26,6 +26,7 @@ mod basic_material;
 mod color_material;
 
 pub use basic_material::*;
+#[allow(unused_imports)]
 pub use color_material::*;
 
 use crate::RenderContext;

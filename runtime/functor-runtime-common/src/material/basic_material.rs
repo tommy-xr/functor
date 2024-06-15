@@ -1,7 +1,5 @@
 use cgmath::Matrix4;
 
-use std::sync::OnceLock;
-
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -95,6 +93,8 @@ impl Material for BasicMaterial {
         _skinning_data: &[Matrix4<f32>],
     ) -> bool {
         unsafe {
+            // TODO: Find another approach to do this - maybe a shader repository?
+            #[allow(static_mut_refs)]
             if let Some((shader, uniforms)) = &SHADER_PROGRAM {
                 let p = shader;
                 p.use_program(ctx.gl);

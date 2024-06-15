@@ -1,5 +1,4 @@
 use notify::{event, RecursiveMode, Watcher};
-use std::env;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -10,7 +9,7 @@ use tempfile::tempdir;
 use functor_runtime_common::{FrameTime, OpaqueState, Scene3D};
 use libloading::{Library, Symbol};
 
-use crate::game::{self, Game};
+use crate::game::Game;
 
 pub struct HotReloadGame {
     // Utils for constructing the next lib path
@@ -37,12 +36,11 @@ impl Game for HotReloadGame {
         }
     }
 
-    fn render(&mut self, frameTime: FrameTime) -> Scene3D {
-        // println!("Rendering");
+    fn render(&mut self, frame_time: FrameTime) -> Scene3D {
         unsafe {
             let render_func: Symbol<fn(FrameTime) -> Scene3D> =
                 self.library.as_ref().unwrap().get(b"test_render").unwrap();
-            render_func(frameTime)
+            render_func(frame_time)
         }
     }
 

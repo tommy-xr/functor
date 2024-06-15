@@ -9,6 +9,7 @@ pub struct Sphere;
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
     position: Vector3<f32>,
+    #[allow(dead_code)]
     normal: Vector3<f32>,
     tex_coords: Vector2<f32>,
 }

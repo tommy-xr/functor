@@ -1,7 +1,9 @@
-use cgmath::Rad;
-use serde::*;
+#![cfg_attr(feature = "strict", deny(warnings))]
+
 use std::any::Any;
 
+#[cfg(target_arch = "wasm32")]
+use serde::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 

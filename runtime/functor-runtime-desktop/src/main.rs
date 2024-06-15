@@ -1,19 +1,13 @@
+#![cfg_attr(feature = "strict", deny(warnings))]
+
 use std::env;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
-use functor_runtime_common::geometry::Geometry;
-use functor_runtime_common::material::BasicMaterial;
-use functor_runtime_common::{FrameTime, Scene3D, SceneObject};
-use glfw::{init, RenderContext};
+use functor_runtime_common::FrameTime;
 use glow::*;
 use hot_reload_game::HotReloadGame;
-use libloading::{library_filename, Library, Symbol};
-use notify::{event, RecursiveMode, Watcher};
 use static_game::StaticGame;
 
 use crate::game::Game;
@@ -25,7 +19,7 @@ mod game;
 mod hot_reload_game;
 mod static_game;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -118,8 +112,6 @@ pub fn main() {
 
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             let radius = 5.0;
-            let camX = glfw.get_time().sin() as f32 * radius;
-            let camZ = glfw.get_time().cos() as f32 * radius;
             let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
                 Point3::new(0.0, 0.0, -1.0 * radius),
                 Point3::new(0.0, 0.0, 0.0),
@@ -144,4 +136,6 @@ pub fn main() {
             window.swap_buffers();
         }
     }
+
+    game.quit();
 }

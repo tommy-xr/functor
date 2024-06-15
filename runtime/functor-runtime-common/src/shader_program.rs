@@ -20,7 +20,6 @@ impl ShaderProgram {
         fragment_shader: &Shader,
     ) -> ShaderProgram {
         unsafe {
-            let mut success = 0;
             let program_id = gl.create_program().expect("Cannot create program");
             gl.attach_shader(program_id, vertex_shader.shader_id);
             gl.attach_shader(program_id, fragment_shader.shader_id);
@@ -52,6 +51,7 @@ impl ShaderProgram {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_uniform_vec3(
         &self,
         gl: &glow::Context,

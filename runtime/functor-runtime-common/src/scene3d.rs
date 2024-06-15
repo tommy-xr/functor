@@ -1,7 +1,7 @@
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
-use fable_library_rust::{List_, NativeArray_::Array};
+use fable_library_rust::NativeArray_::Array;
 
 use crate::{
     geometry::{self, Geometry},
