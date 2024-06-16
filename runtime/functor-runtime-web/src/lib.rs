@@ -4,11 +4,13 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::material::BasicMaterial;
+use functor_runtime_common::texture::{RuntimeTexture, Texture2D, TextureData, TextureOptions};
 use functor_runtime_common::{FrameTime, RenderContext, Scene3D};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
@@ -145,6 +147,12 @@ async fn run_async() -> Result<(), JsValue> {
 
         let initial_time = performance.now() as f32;
         let mut last_time = initial_time;
+        let texture_future = async {
+            sleep(Duration::from_secs(1)).await;
+            let texture_data1 = TextureData::checkerboard_pattern(8, 8, [0, 255, 0, 255]);
+            Ok(texture_data1)
+        };
+        let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
 
         *g.borrow_mut() = Some(Closure::new(move || {
             let render_ctx = RenderContext {
@@ -180,12 +188,18 @@ async fn run_async() -> Result<(), JsValue> {
 
             let scene: Scene3D = functor_runtime_common::from_js_value(val);
 
+            let mut basic_material = BasicMaterial::create();
+            basic_material.initialize(&render_ctx);
+
+            texture1.bind(0, &render_ctx);
+
             functor_runtime_common::Scene3D::render(
                 &scene,
                 &render_ctx,
                 &world_matrix,
                 &projection_matrix,
                 &view_matrix,
+                &basic_material,
             );
 
             // Schedule ourself for another requestAnimationFrame callback.
@@ -196,4 +210,17 @@ async fn run_async() -> Result<(), JsValue> {
     };
 
     Ok(())
+}
+
+async fn sleep(duration: Duration) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        window()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                &resolve,
+                duration.as_millis() as i32,
+            )
+            .expect("should register `setTimeout` OK");
+    });
+
+    let _ = JsFuture::from(promise).await;
 }

@@ -1,15 +1,9 @@
+use super::TextureData;
+
 #[derive(Clone, Copy)]
 pub enum PixelFormat {
     RGB,
     RGBA,
-}
-
-#[derive(Clone)]
-pub struct TextureData {
-    pub bytes: std::vec::Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-    pub format: PixelFormat,
 }
 
 pub trait TextureFormat {

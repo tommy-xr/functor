@@ -1,10 +1,14 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use std::env;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
+use functor_runtime_common::material::BasicMaterial;
+use functor_runtime_common::texture::{
+    PixelFormat, RuntimeTexture, Texture2D, TextureData, TextureOptions,
+};
 use functor_runtime_common::FrameTime;
 use glfw::{Action, Key};
 use glow::*;
@@ -33,7 +37,8 @@ struct Args {
     hot: bool,
 }
 
-pub fn main() {
+#[tokio::main]
+pub async fn main() {
     // Load game
 
     let args = Args::parse();
@@ -93,6 +98,18 @@ pub fn main() {
 
         use glfw::Context;
 
+        let texture_future = async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let texture_data1 = TextureData::checkerboard_pattern(8, 8, [255, 0, 0, 255]);
+            Ok(texture_data1)
+        };
+        let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
+
+        // let texture_data1 = create_checkerboard_pattern(8, 8, [255, 0, 0, 255]);
+        // let texture1 = Texture2D::init_from_data(texture_data1, TextureOptions::default());
+
+        // let texture_data = PNG.load(&CRATE_BYTES.to_vec());
+
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
             let time: FrameTime = FrameTime {
@@ -129,12 +146,19 @@ pub fn main() {
 
             let scene = game.render(time.clone());
 
+            // TODO: Factor out to pass in current_material
+            let mut basic_material = BasicMaterial::create();
+            basic_material.initialize(&context);
+
+            texture1.bind(0, &context);
+
             functor_runtime_common::Scene3D::render(
                 &scene,
                 &context,
                 &world_matrix,
                 &projection_matrix,
                 &view_matrix,
+                &basic_material,
             );
 
             window.swap_buffers();
