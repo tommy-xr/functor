@@ -50,6 +50,7 @@ impl OpaqueState {
 
 mod frame_time;
 pub mod geometry;
+pub mod io;
 pub mod material;
 pub mod math;
 mod render_context;
