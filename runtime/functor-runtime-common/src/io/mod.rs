@@ -1,9 +1,8 @@
-use js_sys::Uint8Array;
-use wasm_bindgen::JsCast;
-
 pub async fn load_bytes_async(path: &str) -> Result<Vec<u8>, String> {
     #[cfg(target_arch = "wasm32")]
     {
+        use js_sys::Uint8Array;
+        use wasm_bindgen::JsCast;
         use wasm_bindgen_futures::JsFuture;
         use web_sys::{Request, RequestInit, Response};
 

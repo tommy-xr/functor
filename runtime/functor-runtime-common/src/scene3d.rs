@@ -5,11 +5,8 @@ use fable_library_rust::NativeArray_::Array;
 
 use crate::{
     geometry::{self, Geometry},
-    material::{BasicMaterial, Material},
+    material::Material,
     math::Angle,
-    texture::{
-        PixelFormat, RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
-    },
     RenderContext,
 };
 
