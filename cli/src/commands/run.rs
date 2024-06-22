@@ -36,7 +36,7 @@ pub async fn execute(working_directory: &str, environment: &Environment) -> Resu
             } else {
                 "open"
             };
-            let wasm_server_start = WasmDevServer::start(build_wasm_wd.to_str().unwrap());
+            let wasm_server_start = WasmDevServer::start(working_directory);
             let commands = vec![ShellCommand {
                 prefix: "[Open Browser]",
                 cmd,
