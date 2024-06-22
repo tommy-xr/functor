@@ -16,9 +16,18 @@ image = "0.25.1"
 once_cell = "1.19.0"
 serde = { version = "1.0", features = ["derive"] }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
+futures = "0.3.30"
 
+[target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
+tokio = { version = "1", features = ["full"] }
 
 # Conditionally include dependencies for the WebAssembly target
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.69"
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4.42"
 serde-wasm-bindgen = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3.4"
+features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Performance', 'PerformanceTiming', 'Headers', 'Request', 'RequestInit', 'RequestMode', 'Response', 'Document', 'Element']

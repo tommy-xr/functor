@@ -5,9 +5,8 @@ use fable_library_rust::NativeArray_::Array;
 
 use crate::{
     geometry::{self, Geometry},
-    material::BasicMaterial,
+    material::Material,
     math::Angle,
-    texture::{PixelFormat, RuntimeTexture, Texture2D, TextureData, TextureOptions},
     RenderContext,
 };
 
@@ -102,44 +101,14 @@ impl Scene3D {
         self.transform(Matrix4::from_angle_z(ang))
     }
 
-    fn create_checkerboard_pattern(width: u32, height: u32) -> TextureData {
-        let mut bytes = Vec::with_capacity((width * height * 4) as usize);
-
-        for y in 0..height {
-            for x in 0..width {
-                let is_white = (x + y) % 2 == 0;
-                let color = if is_white {
-                    [255, 255, 255, 255] // White with full opacity
-                } else {
-                    [0, 0, 0, 255] // Black with full opacity
-                };
-
-                bytes.extend_from_slice(&color);
-            }
-        }
-
-        TextureData {
-            bytes,
-            width,
-            height,
-            format: PixelFormat::RGBA,
-        }
-    }
     pub fn render(
         &self,
         context: &RenderContext,
         world_matrix: &Matrix4<f32>,
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
+        current_material: &Box<dyn Material>,
     ) {
-        let texture_data = Self::create_checkerboard_pattern(8, 8);
-        let texture = Texture2D::init_from_data(texture_data, TextureOptions::default());
-        texture.bind(0, &context);
-
-        // TODO: Factor out to pass in current_material
-        let mut basic_material = BasicMaterial::create();
-        basic_material.initialize(&context);
-
         let skinning_data = vec![];
         match &self.obj {
             SceneObject::Group(items) => {
@@ -150,12 +119,13 @@ impl Scene3D {
                         &new_world_matrix,
                         &projection_matrix,
                         &view_matrix,
+                        current_material,
                     )
                 }
             }
             SceneObject::Geometry(Shape::Cube) => {
                 let xform = world_matrix * self.xform;
-                basic_material.draw_opaque(
+                current_material.draw_opaque(
                     &context,
                     &projection_matrix,
                     &view_matrix,
@@ -167,7 +137,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Cylinder) => {
                 let xform = world_matrix * self.xform;
-                basic_material.draw_opaque(
+                current_material.draw_opaque(
                     &context,
                     &projection_matrix,
                     &view_matrix,
@@ -180,7 +150,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Sphere) => {
                 let xform = world_matrix * self.xform;
-                basic_material.draw_opaque(
+                current_material.draw_opaque(
                     &context,
                     &projection_matrix,
                     &view_matrix,

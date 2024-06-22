@@ -15,7 +15,7 @@ pub async fn execute(working_directory: &str) -> io::Result<()> {
 
     let target_dir = Path::new(&"target/debug");
     let library_name = libloading::library_filename("game_native");
-    let game_lib = target_dir.join(Path::new(&library_name));
+    let game_lib = build_native_path.join(target_dir.join(Path::new(&library_name)));
 
     let commands = vec![
         ShellCommand {
@@ -41,7 +41,7 @@ pub async fn execute(working_directory: &str) -> io::Result<()> {
         ShellCommand {
             prefix: "[3: Functor Runner]",
             cmd: functor_runner_exe.to_str().unwrap(),
-            cwd: build_native_wd.to_str().unwrap(),
+            cwd: working_directory,
             env: vec![],
             args: vec!["--hot", "--game-path", game_lib.to_str().unwrap()],
         },
