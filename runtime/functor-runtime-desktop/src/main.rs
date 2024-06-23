@@ -3,8 +3,10 @@
 use std::env;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
+use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::texture::{
@@ -36,6 +38,15 @@ struct Args {
 
     #[arg(long)]
     hot: bool,
+}
+
+struct DesktopAssetLoader {}
+
+#[async_trait]
+impl AssetLoader for DesktopAssetLoader {
+    async fn load_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        Ok(vec![])
+    }
 }
 
 #[tokio::main]
@@ -98,6 +109,9 @@ pub async fn main() {
         let mut last_time: f32 = 0.0;
 
         use glfw::Context;
+
+        let loader = Box::new(DesktopAssetLoader {});
+        let asset_cache = AssetCache::new(loader);
 
         let texture_future = async {
             let bytes = load_bytes_async("crate.png").await;

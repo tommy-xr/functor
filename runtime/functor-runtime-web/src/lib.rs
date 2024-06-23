@@ -6,8 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
+use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::material::BasicMaterial;
@@ -45,6 +47,14 @@ pub fn main() {
     spawn_local(async {
         run_async().await.unwrap_throw();
     })
+}
+struct WasmAssetLoader {}
+
+#[async_trait]
+impl AssetLoader for WasmAssetLoader {
+    async fn load_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        Ok(vec![])
+    }
 }
 
 async fn run_async() -> Result<(), JsValue> {
@@ -158,6 +168,8 @@ async fn run_async() -> Result<(), JsValue> {
             Ok(texture_data)
         };
         let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
+
+        let asset_cache = AssetCache::new(Box::new(WasmAssetLoader {}));
 
         *g.borrow_mut() = Some(Closure::new(move || {
             let render_ctx = RenderContext {
