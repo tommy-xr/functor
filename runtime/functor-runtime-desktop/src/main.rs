@@ -122,6 +122,8 @@ pub async fn main() {
         };
         let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
 
+        asset_cache.load_asset_with_pipeline(pipeline, "crate.png");
+
         // let texture_data1 = create_checkerboard_pattern(8, 8, [255, 0, 0, 255]);
         // let texture1 = Texture2D::init_from_data(texture_data1, TextureOptions::default());
 
