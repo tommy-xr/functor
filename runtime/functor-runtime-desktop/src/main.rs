@@ -1,11 +1,13 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use std::env;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
+use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::material::BasicMaterial;
@@ -111,18 +113,18 @@ pub async fn main() {
         use glfw::Context;
 
         let loader = Box::new(DesktopAssetLoader {});
-        let asset_cache = AssetCache::new(loader);
+        let mut asset_cache = AssetCache::new();
 
-        let texture_future = async {
-            let bytes = load_bytes_async("crate.png").await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let texture_data = PNG.load(&bytes.unwrap());
-            // let texture_data1 = TextureData::checkerboard_pattern(8, 8, [255, 0, 0, 255]);
-            Ok(texture_data)
-        };
-        let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
+        // let texture_future = async {
+        //     let bytes = load_bytes_async("crate.png").await;
+        //     tokio::time::sleep(Duration::from_secs(1)).await;
+        //     let texture_data = PNG.load(&bytes.unwrap());
+        //     // let texture_data1 = TextureData::checkerboard_pattern(8, 8, [255, 0, 0, 255]);
+        //     Ok(texture_data)
+        // };
+        //let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
 
-        asset_cache.load_asset_with_pipeline(pipeline, "crate.png");
+        let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
 
         // let texture_data1 = create_checkerboard_pattern(8, 8, [255, 0, 0, 255]);
         // let texture1 = Texture2D::init_from_data(texture_data1, TextureOptions::default());
@@ -169,7 +171,7 @@ pub async fn main() {
             let mut basic_material = BasicMaterial::create();
             basic_material.initialize(&context);
 
-            texture1.bind(0, &context);
+            asset.get().bind(0, &context);
 
             functor_runtime_common::Scene3D::render(
                 &scene,
