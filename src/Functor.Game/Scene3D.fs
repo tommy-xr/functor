@@ -3,6 +3,8 @@ namespace Graphics
 open Fable.Core
 [<Erase; Emit("functor_runtime_common::Scene3D")>] type Scene3D = | Noop
 
+[<Erase; Emit("functor_runtime_common::Texture2DHandle")>] type Texture2D = | Noop
+
 module Scene3D =
 
     [<Emit("functor_runtime_common::Scene3D::cube()")>]
@@ -16,6 +18,10 @@ module Scene3D =
 
     [<Emit("functor_runtime_common::Scene3D::group($0)")>]
     let group (items: Scene3D[]): Scene3D = nativeOnly
+
+    module Texture2D =
+        [<Emit("functor_runtime_common::Texture2DHandle::file($0)")>]
+        let file (str: string): Texture2D = nativeOnly
 
     module Transform = 
         [<Emit("functor_runtime_common::Scene3D::translate_x($1, $0)")>]
