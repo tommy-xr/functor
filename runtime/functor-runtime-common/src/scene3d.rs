@@ -1,7 +1,7 @@
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
-use fable_library_rust::NativeArray_::Array;
+use fable_library_rust::{NativeArray_::Array, String_::LrcStr};
 
 use crate::{
     geometry::{self, Geometry},
@@ -21,6 +21,17 @@ pub enum Shape {
 pub enum SceneObject {
     Geometry(Shape),
     Group(Vec<Scene3D>),
+}
+
+#[derive(Debug)]
+pub enum Texture2DHandle {
+    File(String),
+}
+
+impl Texture2DHandle {
+    pub fn file(s: LrcStr) -> Texture2DHandle {
+        Texture2DHandle::File(s.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -45,6 +45,8 @@ let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
 let tick model (tick: Time.FrameTime) =
     
+    let handle = Graphics.Scene3D.Texture2D.file "crate.png";
+    
     let applyVelocity (tick: Time.FrameTime) ball = 
         let newBallPosition = (ball.position
         |> Point2.add (Vector2.scale tick.dts ball.velocity));
