@@ -6,8 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
+use functor_runtime_common::asset::pipelines::TexturePipeline;
+use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::material::BasicMaterial;
@@ -45,6 +48,14 @@ pub fn main() {
     spawn_local(async {
         run_async().await.unwrap_throw();
     })
+}
+struct WasmAssetLoader {}
+
+#[async_trait]
+impl AssetLoader for WasmAssetLoader {
+    async fn load_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        Ok(vec![])
+    }
 }
 
 async fn run_async() -> Result<(), JsValue> {
@@ -150,14 +161,17 @@ async fn run_async() -> Result<(), JsValue> {
 
         let initial_time = performance.now() as f32;
         let mut last_time = initial_time;
-        let texture_future = async {
-            let bytes = load_bytes_async("crate.png").await;
-            sleep(Duration::from_secs(1)).await;
-            let texture_data = PNG.load(&bytes.unwrap());
-            //let texture_data1 = TextureData::checkerboard_pattern(8, 8, [0, 255, 0, 255]);
-            Ok(texture_data)
-        };
-        let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
+        // let texture_future = async {
+        //     let bytes = load_bytes_async("crate.png").await;
+        //     sleep(Duration::from_secs(1)).await;
+        //     let texture_data = PNG.load(&bytes.unwrap());
+        //     //let texture_data1 = TextureData::checkerboard_pattern(8, 8, [0, 255, 0, 255]);
+        //     Ok(texture_data)
+        // };
+        // let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
+
+        let mut asset_cache = AssetCache::new();
+        let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
 
         *g.borrow_mut() = Some(Closure::new(move || {
             let render_ctx = RenderContext {
@@ -196,7 +210,7 @@ async fn run_async() -> Result<(), JsValue> {
             let mut basic_material = BasicMaterial::create();
             basic_material.initialize(&render_ctx);
 
-            texture1.bind(0, &render_ctx);
+            asset.get().bind(0, &render_ctx);
 
             functor_runtime_common::Scene3D::render(
                 &scene,
