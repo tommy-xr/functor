@@ -1,11 +1,11 @@
-use cgmath::{vec3, Matrix4, SquareMatrix};
+use cgmath::{vec3, vec4, Matrix4, SquareMatrix, Vector4};
 use serde::{Deserialize, Serialize};
 
 use fable_library_rust::{NativeArray_::Array, String_::LrcStr};
 
 use crate::{
     geometry::{self, Geometry},
-    material::Material,
+    material::{ColorMaterial, Material},
     math::Angle,
     RenderContext,
 };
@@ -18,8 +18,38 @@ pub enum Shape {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MaterialDescription {
+    #[serde(
+        serialize_with = "serialize_vec4",
+        deserialize_with = "deserialize_vec4"
+    )]
+    Color(Vector4<f32>),
+}
+
+impl MaterialDescription {
+    // TODO: Use color type
+    pub fn color(r: f32, g: f32, b: f32, a: f32) -> MaterialDescription {
+        MaterialDescription::Color(vec4(r, g, b, a))
+    }
+}
+
+impl MaterialDescription {
+    pub fn get(&self, context: &RenderContext) -> Box<dyn Material> {
+        match self {
+            MaterialDescription::Color(c) => {
+                // TODO: Load from cache of assets
+                let mut color_material = ColorMaterial::create(*c);
+                color_material.initialize(&context);
+                color_material
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneObject {
     Geometry(Shape),
+    Material(MaterialDescription, Vec<Scene3D>),
     Group(Vec<Scene3D>),
 }
 
@@ -62,6 +92,13 @@ impl Scene3D {
     pub fn cylinder() -> Self {
         Scene3D {
             obj: SceneObject::Geometry(Shape::Cylinder),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn material(material: MaterialDescription, items: Array<Scene3D>) -> Self {
+        Scene3D {
+            obj: SceneObject::Material(material, items.to_vec()),
             xform: Matrix4::identity(),
         }
     }
@@ -122,6 +159,19 @@ impl Scene3D {
     ) {
         let skinning_data = vec![];
         match &self.obj {
+            SceneObject::Material(material_description, items) => {
+                let material = material_description.get(context);
+                for item in items.into_iter() {
+                    item.render(
+                        &context,
+                        &world_matrix,
+                        &projection_matrix,
+                        &view_matrix,
+                        &material,
+                    )
+                }
+            }
+
             SceneObject::Group(items) => {
                 let new_world_matrix = world_matrix * self.xform;
                 for item in items.into_iter() {
@@ -174,6 +224,22 @@ impl Scene3D {
             }
         }
     }
+}
+
+fn serialize_vec4<S>(v: &Vector4<f32>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let array: [f32; 4] = [v.x, v.y, v.z, v.w];
+    array.serialize(serializer)
+}
+
+fn deserialize_vec4<'de, D>(deserializer: D) -> Result<Vector4<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let array = <[f32; 4]>::deserialize(deserializer)?;
+    Ok(Vector4::new(array[0], array[1], array[2], array[3]))
 }
 
 fn serialize_matrix<S>(matrix: &Matrix4<f32>, serializer: S) -> Result<S::Ok, S::Error>

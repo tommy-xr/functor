@@ -1,111 +1,116 @@
-// use std::sync::OnceLock;
+use cgmath::Matrix4;
+use cgmath::Vector4;
 
-// use cgmath::Matrix4;
+use crate::shader_program::ShaderProgram;
+use crate::shader_program::UniformLocation;
+use crate::RenderContext;
 
-// use cgmath::Vector3;
+use super::Material;
 
-// use crate::shader_program::ShaderProgram;
-// use crate::shader_program::UniformLocation;
+const VERTEX_SHADER_SOURCE: &str = r#"
+        layout (location = 0) in vec3 inPos;
 
-// use super::Material;
+        uniform mat4 world;
+        uniform mat4 view;
+        uniform mat4 projection;
 
-// const VERTEX_SHADER_SOURCE: &str = r#"
-//         layout (location = 0) in vec3 inPos;
+        void main() {
+            gl_Position = projection * view * world * vec4(inPos, 1.0);
+        }
+"#;
 
-//         uniform mat4 world;
-//         uniform mat4 view;
-//         uniform mat4 projection;
-//         uniform vec3 color;
+const FRAGMENT_SHADER_SOURCE: &str = r#"
+        out vec4 fragColor;
 
-//         out vec3 vertexColor;
+        uniform vec4 color;
 
-//         void main() {
-//             vertexColor = color;
-//             gl_Position = projection * view * world * vec4(inPos, 1.0);
-//         }
-// "#;
+        void main() {
+            fragColor = color;
+        }
+"#;
 
-// const FRAGMENT_SHADER_SOURCE: &str = r#"
-//         out vec4 fragColor;
+struct Uniforms {
+    world_loc: UniformLocation,
+    view_loc: UniformLocation,
+    projection_loc: UniformLocation,
+    color_loc: UniformLocation,
+}
 
-//         in vec3 vertexColor;
+// TODO: We'll have to re-think this pattern
+// Maybe we need a shader repository or something to pull from
+static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 
-//         void main() {
-//             fragColor = vec4(vertexColor.rgb, 1.0);
-//         }
-// "#;
+pub struct ColorMaterial(Vector4<f32>);
 
-// struct Uniforms {
-//     world_loc: UniformLocation,
-//     view_loc: UniformLocation,
-//     projection_loc: UniformLocation,
-//     color_loc: UniformLocation,
-// }
+use crate::shader::Shader;
+use crate::shader::ShaderType;
 
-// static SHADER_PROGRAM: OnceLock<(ShaderProgram, Uniforms)> = OnceLock::new();
+impl Material for ColorMaterial {
+    fn initialize(&mut self, ctx: &RenderContext) {
+        unsafe {
+            if SHADER_PROGRAM.is_none() {
+                let vertex_shader = Shader::build(
+                    ctx.gl,
+                    ShaderType::Vertex,
+                    VERTEX_SHADER_SOURCE,
+                    ctx.shader_version,
+                );
 
-// pub struct ColorMaterial {
-//     pub color: Vector3<f32>,
-// }
+                // fragment shader
+                let fragment_shader = Shader::build(
+                    ctx.gl,
+                    ShaderType::Fragment,
+                    FRAGMENT_SHADER_SOURCE,
+                    ctx.shader_version,
+                );
+                // link shaders
 
-// use crate::shader::Shader;
-// use crate::shader::ShaderType;
+                let shader = crate::shader_program::ShaderProgram::link(
+                    &ctx.gl,
+                    &vertex_shader,
+                    &fragment_shader,
+                );
 
-// impl Material for ColorMaterial {
-//     fn initialize(&mut self, gl: &glow::Context, opengl_version: &str) {
-//         let _ = SHADER_PROGRAM.get_or_init(|| {
-//             // build and compile our shader program
-//             // ------------------------------------
-//             // vertex shader
-//             let vertex_shader =
-//                 Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER_SOURCE, opengl_version);
+                let uniforms = Uniforms {
+                    world_loc: shader.get_uniform_location(ctx.gl, "world"),
+                    view_loc: shader.get_uniform_location(ctx.gl, "view"),
+                    projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
+                    color_loc: shader.get_uniform_location(ctx.gl, "color"),
+                };
 
-//             // fragment shader
-//             let fragment_shader = Shader::build(
-//                 gl,
-//                 ShaderType::Fragment,
-//                 FRAGMENT_SHADER_SOURCE,
-//                 opengl_version,
-//             );
-//             // link shaders
+                SHADER_PROGRAM = Some((shader, uniforms));
+            }
+        }
+    }
 
-//             let shader =
-//                 crate::shader_program::ShaderProgram::link(&gl, &vertex_shader, &fragment_shader);
+    fn draw_opaque(
+        &self,
+        ctx: &RenderContext,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+        world_matrix: &Matrix4<f32>,
+        _skinning_data: &[Matrix4<f32>],
+    ) -> bool {
+        unsafe {
+            // TODO: Find another approach to do this - maybe a shader repository?
+            #[allow(static_mut_refs)]
+            if let Some((shader, uniforms)) = &SHADER_PROGRAM {
+                let p = shader;
+                p.use_program(ctx.gl);
 
-//             let uniforms = Uniforms {
-//                 world_loc: shader.get_uniform_location(gl, "world"),
-//                 view_loc: shader.get_uniform_location(gl, "view"),
-//                 projection_loc: shader.get_uniform_location(gl, "projection"),
-//                 color_loc: shader.get_uniform_location(gl, "color"),
-//             };
+                p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
+                p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
+                p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                p.set_uniform_vec4(ctx.gl, &uniforms.color_loc, &self.0)
+            }
+        }
 
-//             (shader, uniforms)
-//         });
-//     }
+        true
+    }
+}
 
-//     fn draw_opaque(
-//         &self,
-//         gl: &glow::Context,
-//         projection_matrix: &Matrix4<f32>,
-//         view_matrix: &Matrix4<f32>,
-//         world_matrix: &Matrix4<f32>,
-//         _skinning_data: &[Matrix4<f32>],
-//     ) -> bool {
-//         let (shader_program, uniforms) = SHADER_PROGRAM.get().expect("shader not compiled");
-//         let p = shader_program;
-//         p.use_program(gl);
-
-//         p.set_uniform_matrix4(gl, &uniforms.world_loc, world_matrix);
-//         p.set_uniform_matrix4(gl, &uniforms.view_loc, view_matrix);
-//         p.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
-
-//         p.set_uniform_vec3(gl, &uniforms.color_loc, &self.color);
-//         true
-//     }
-// }
-
-// impl ColorMaterial {
-//     pub fn create(color: Vector3<f32>) -> Box<dyn Material> {
-//         Box::new(ColorMaterial { color })
-//     }
-// }
+impl ColorMaterial {
+    pub fn create(color: Vector4<f32>) -> Box<dyn Material> {
+        Box::new(ColorMaterial(color))
+    }
+}
