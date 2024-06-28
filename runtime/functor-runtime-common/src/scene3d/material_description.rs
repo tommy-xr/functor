@@ -4,9 +4,9 @@ use cgmath::{vec3, vec4, Matrix4, SquareMatrix, Vector4};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    asset::pipelines::TexturePipeline,
+    asset::{pipelines::TexturePipeline, AssetPipeline},
     material::{BasicMaterial, ColorMaterial, Material},
-    texture::RuntimeTexture,
+    texture::{RuntimeTexture, Texture2D},
     RenderContext, TextureDescription,
 };
 
@@ -43,9 +43,10 @@ impl MaterialDescription {
             MaterialDescription::Texture(t) => {
                 match t {
                     TextureDescription::File(file) => {
-                        let asset = context
-                            .asset_cache
-                            .load_asset_with_pipeline(Arc::new(TexturePipeline), &file);
+                        let asset = context.asset_cache.load_asset_with_pipeline(
+                            Arc::new(crate::asset::build::<Texture2D>(Box::new(TexturePipeline))),
+                            &file,
+                        );
 
                         asset.get().bind(0, context);
                     }

@@ -8,7 +8,7 @@ use std::{
 
 use crate::io::{load_bytes_async, load_bytes_async2};
 
-use super::{AssetHandle, AssetLoader, AssetPipeline, AssetPipelineContext};
+use super::{AssetHandle, AssetLoader, AssetPipeline, AssetPipelineContext, BuiltAssetPipeline};
 
 pub struct AssetCache {
     bytes_cache: Arc<Mutex<HashMap<String, Vec<u8>>>>,
@@ -23,9 +23,14 @@ impl AssetCache {
 
     pub fn load_asset_with_pipeline<T: 'static>(
         &self,
-        pipeline: Arc<dyn AssetPipeline<T> + 'static>,
+        pipeline: Arc<BuiltAssetPipeline<T>>,
         asset_path: &str,
     ) -> Arc<AssetHandle<T>> {
+        // First - does the pipeline already have a reference to this?
+        if let Some(asset) = pipeline.clone().get_opt(asset_path) {
+            return asset.clone();
+        }
+
         let asset_path_owned = asset_path.to_string();
         let bytes_cache = self.bytes_cache.clone();
 
@@ -49,6 +54,7 @@ impl AssetCache {
         let pipeline = pipeline.clone();
         let default_asset = pipeline.unloaded_asset(context);
 
+        let outer_pipeline = pipeline.clone();
         // If not cached, load bytes asynchronously
         let bytes_future = async move {
             let bytes = load_bytes_async2(asset_path_owned.clone()).await?;
@@ -63,6 +69,7 @@ impl AssetCache {
         };
 
         let handle = Arc::new(AssetHandle::new(bytes_future, Arc::new(default_asset)));
+        outer_pipeline.cache(asset_path, handle.clone());
         handle
     }
 }
