@@ -10,11 +10,11 @@ pub trait AssetPipeline<TRuntimeAsset> {
     fn unloaded_asset(&self, context: AssetPipelineContext) -> TRuntimeAsset;
 }
 
-pub fn build<T>(pipeline: Box<dyn AssetPipeline<T>>) -> BuiltAssetPipeline<T> {
-    BuiltAssetPipeline {
+pub fn build_pipeline<T>(pipeline: Box<dyn AssetPipeline<T>>) -> Arc<BuiltAssetPipeline<T>> {
+    Arc::new(BuiltAssetPipeline {
         asset_pipeline: pipeline,
         asset_cache: RefCell::new(HashMap::new()),
-    }
+    })
 }
 
 pub struct BuiltAssetPipeline<TRuntimeAsset> {

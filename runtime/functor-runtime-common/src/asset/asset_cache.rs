@@ -1,14 +1,11 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
-    future::Future,
-    pin::Pin,
     sync::{Arc, Mutex},
 };
 
-use crate::io::{load_bytes_async, load_bytes_async2};
+use crate::io::load_bytes_async2;
 
-use super::{AssetHandle, AssetLoader, AssetPipeline, AssetPipelineContext, BuiltAssetPipeline};
+use super::{AssetHandle, AssetPipeline, AssetPipelineContext, BuiltAssetPipeline};
 
 pub struct AssetCache {
     bytes_cache: Arc<Mutex<HashMap<String, Vec<u8>>>>,

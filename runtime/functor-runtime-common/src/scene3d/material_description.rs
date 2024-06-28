@@ -1,13 +1,10 @@
-use std::sync::Arc;
-
-use cgmath::{vec3, vec4, Matrix4, SquareMatrix, Vector4};
+use cgmath::{vec4, Vector4};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    asset::{pipelines::TexturePipeline, AssetPipeline},
     material::{BasicMaterial, ColorMaterial, Material},
-    texture::{RuntimeTexture, Texture2D},
-    RenderContext, TextureDescription,
+    texture::RuntimeTexture,
+    RenderContext, SceneContext, TextureDescription,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +29,7 @@ impl MaterialDescription {
 }
 
 impl MaterialDescription {
-    pub fn get(&self, context: &RenderContext) -> Box<dyn Material> {
+    pub fn get(&self, context: &RenderContext, scene_context: &SceneContext) -> Box<dyn Material> {
         match self {
             MaterialDescription::Color(c) => {
                 // TODO: Load from cache of assets
@@ -44,7 +41,7 @@ impl MaterialDescription {
                 match t {
                     TextureDescription::File(file) => {
                         let asset = context.asset_cache.load_asset_with_pipeline(
-                            Arc::new(crate::asset::build::<Texture2D>(Box::new(TexturePipeline))),
+                            scene_context.texture_pipeline.clone(),
                             &file,
                         );
 
