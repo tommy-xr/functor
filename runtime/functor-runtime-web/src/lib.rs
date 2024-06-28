@@ -17,7 +17,7 @@ use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
-use functor_runtime_common::{FrameTime, RenderContext, Scene3D};
+use functor_runtime_common::{FrameTime, RenderContext, Scene3D, SceneContext};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
@@ -171,12 +171,15 @@ async fn run_async() -> Result<(), JsValue> {
         // let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
 
         let mut asset_cache = AssetCache::new();
-        let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
+        // let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
+
+        let scene_context = SceneContext::new();
 
         *g.borrow_mut() = Some(Closure::new(move || {
             let render_ctx = RenderContext {
                 gl: &gl,
                 shader_version,
+                asset_cache: &asset_cache,
             };
 
             let projection_matrix: Matrix4<f32> =
@@ -210,11 +213,12 @@ async fn run_async() -> Result<(), JsValue> {
             let mut basic_material = BasicMaterial::create();
             basic_material.initialize(&render_ctx);
 
-            asset.get().bind(0, &render_ctx);
+            // asset.get().bind(0, &render_ctx);
 
             functor_runtime_common::Scene3D::render(
                 &scene,
                 &render_ctx,
+                &scene_context,
                 &world_matrix,
                 &projection_matrix,
                 &view_matrix,
