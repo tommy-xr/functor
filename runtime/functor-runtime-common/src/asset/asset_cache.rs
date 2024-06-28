@@ -22,7 +22,7 @@ impl AssetCache {
     }
 
     pub fn load_asset_with_pipeline<T: 'static>(
-        &mut self,
+        &self,
         pipeline: Arc<dyn AssetPipeline<T> + 'static>,
         asset_path: &str,
     ) -> Arc<AssetHandle<T>> {

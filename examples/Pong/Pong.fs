@@ -45,8 +45,6 @@ let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
 let tick model (tick: Time.FrameTime) =
     
-    let handle = Graphics.Scene3D.Texture2D.file "crate.png";
-    
     let applyVelocity (tick: Time.FrameTime) ball = 
         let newBallPosition = (ball.position
         |> Point2.add (Vector2.scale tick.dts ball.velocity));
@@ -88,8 +86,9 @@ let init (_args: array<string>) =
     |> GameBuilder.draw3d (fun model frameTime -> 
         
         let colorMaterial = Material.color(1.0f, 0.0f, 1.0f, 1.0f);
+        let textureMaterial = Material.texture( Texture.file("crate.png"));
 
-        material (colorMaterial, [|
+        material (textureMaterial, [|
             cylinder() |> Transform.translateY -1.0f;
             cube()
             |> Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))

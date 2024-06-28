@@ -163,6 +163,7 @@ pub async fn main() {
             let context = functor_runtime_common::RenderContext {
                 gl: &gl,
                 shader_version,
+                asset_cache: &asset_cache,
             };
 
             let scene = game.render(time.clone());
