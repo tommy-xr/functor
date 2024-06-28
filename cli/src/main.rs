@@ -45,7 +45,10 @@ enum Command {
         #[arg(value_enum)]
         environment: Option<Environment>,
     },
-    Develop,
+    Develop {
+        #[arg(value_enum)]
+        environment: Option<Environment>,
+    },
 }
 
 #[tokio::main]
@@ -75,7 +78,10 @@ async fn main() -> tokio::io::Result<()> {
         Command::Run { environment } => {
             commands::run::execute(&working_directory_str, &Environment::default(environment)).await
         }
-        Command::Develop => commands::develop::execute(&working_directory_str).await,
+        Command::Develop { environment } => {
+            commands::develop::execute(&working_directory_str, &Environment::default(environment))
+                .await
+        }
     };
     println!("Done");
 
