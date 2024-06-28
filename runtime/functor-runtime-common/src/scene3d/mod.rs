@@ -1,13 +1,13 @@
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
-use fable_library_rust::NativeArray_::Array;
+use fable_library_rust::{NativeArray_::Array, Seq_::generate};
 
 use crate::{
     asset::{self, pipelines::TexturePipeline, BuiltAssetPipeline},
-    geometry::{self, Geometry},
+    geometry::{self, Geometry, Mesh},
     material::Material,
     math::Angle,
     texture::Texture2D,
@@ -22,11 +22,17 @@ pub use texture_description::*;
 
 pub struct SceneContext {
     texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+    cube: RefCell<Mesh>,
+    cylinder: RefCell<Mesh>,
+    sphere: RefCell<Mesh>,
 }
 
 impl SceneContext {
     pub fn new() -> SceneContext {
         SceneContext {
+            cube: RefCell::new(geometry::Cube::create()),
+            sphere: RefCell::new(geometry::Sphere::create()),
+            cylinder: RefCell::new(geometry::Cylinder::create()),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
         }
     }
@@ -178,8 +184,7 @@ impl Scene3D {
                     &xform,
                     &skinning_data,
                 );
-                let mut cube = geometry::Cube::create();
-                cube.draw(&render_context.gl);
+                scene_context.cube.borrow_mut().draw(&render_context.gl);
             }
             SceneObject::Geometry(Shape::Cylinder) => {
                 let xform = world_matrix * self.xform;
@@ -191,8 +196,7 @@ impl Scene3D {
                     &skinning_data,
                 );
 
-                let mut cylinder = geometry::Cylinder::create();
-                cylinder.draw(&render_context.gl);
+                scene_context.cylinder.borrow_mut().draw(&render_context.gl);
             }
             SceneObject::Geometry(Shape::Sphere) => {
                 let xform = world_matrix * self.xform;
@@ -204,8 +208,7 @@ impl Scene3D {
                     &skinning_data,
                 );
 
-                let mut sphere = geometry::Sphere::create();
-                sphere.draw(&render_context.gl);
+                scene_context.sphere.borrow_mut().draw(&render_context.gl);
             }
         }
     }
