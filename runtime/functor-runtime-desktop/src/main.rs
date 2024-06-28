@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
+use cgmath::{vec4, Matrix4};
 use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::io::load_bytes_async;
-use functor_runtime_common::material::BasicMaterial;
+use functor_runtime_common::material::{BasicMaterial, ColorMaterial};
 use functor_runtime_common::texture::{
     PixelFormat, RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
@@ -168,10 +168,13 @@ pub async fn main() {
             let scene = game.render(time.clone());
 
             // TODO: Factor out to pass in current_material
-            let mut basic_material = BasicMaterial::create();
-            basic_material.initialize(&context);
+            // let mut basic_material = BasicMaterial::create();
+            // basic_material.initialize(&context);
 
-            asset.get().bind(0, &context);
+            // asset.get().bind(0, &context);
+
+            let mut color_material = ColorMaterial::create(vec4(1.0, 0.0, 0.0, 1.0));
+            color_material.initialize(&context);
 
             functor_runtime_common::Scene3D::render(
                 &scene,
@@ -179,7 +182,7 @@ pub async fn main() {
                 &world_matrix,
                 &projection_matrix,
                 &view_matrix,
-                &basic_material,
+                &color_material,
             );
 
             window.swap_buffers();

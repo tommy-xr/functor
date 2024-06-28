@@ -1,6 +1,6 @@
 use std::slice;
 
-use cgmath::{conv::array4x4, Matrix4, Vector3};
+use cgmath::{conv::array4x4, Matrix4, Vector3, Vector4};
 use glow::*;
 
 pub struct ShaderProgram {
@@ -68,6 +68,21 @@ impl ShaderProgram {
             gl.uniform_3_f32_slice(
                 Some(&uniform_location.native_uniform_location),
                 &[vec.x, vec.y, vec.z],
+            )
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn set_uniform_vec4(
+        &self,
+        gl: &glow::Context,
+        uniform_location: &UniformLocation,
+        vec: &Vector4<f32>,
+    ) {
+        unsafe {
+            gl.uniform_4_f32_slice(
+                Some(&uniform_location.native_uniform_location),
+                &[vec.x, vec.y, vec.z, vec.w],
             )
         }
     }

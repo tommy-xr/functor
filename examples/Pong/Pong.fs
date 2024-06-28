@@ -80,16 +80,22 @@ let tick model (tick: Time.FrameTime) =
 
 open Fable.Core.Rust
 
+open Graphics.Scene3D;
+
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model frameTime -> 
-        Graphics.Scene3D.group([|
-            Graphics.Scene3D.cylinder() |> Graphics.Scene3D.Transform.translateY -1.0f;
-            Graphics.Scene3D.cube()
-            |> Graphics.Scene3D.Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))
+        
+        let colorMaterial = Material.color(1.0f, 0.0f, 1.0f, 1.0f);
+
+        material (colorMaterial, [|
+            cylinder() |> Transform.translateY -1.0f;
+            cube()
+            |> Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))
         |])
-        |> Graphics.Scene3D.Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
-        )
+        |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
+
+    )
     |> GameBuilder.tick tick
     |> Runtime.runGame

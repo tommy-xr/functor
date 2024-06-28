@@ -26,7 +26,6 @@ mod basic_material;
 mod color_material;
 
 pub use basic_material::*;
-#[allow(unused_imports)]
 pub use color_material::*;
 
 use crate::RenderContext;

@@ -1,14 +1,20 @@
-use cgmath::{vec3, Matrix4, SquareMatrix};
+use cgmath::{vec3, vec4, Matrix4, SquareMatrix, Vector4};
 use serde::{Deserialize, Serialize};
 
 use fable_library_rust::{NativeArray_::Array, String_::LrcStr};
 
 use crate::{
     geometry::{self, Geometry},
-    material::Material,
+    material::{ColorMaterial, Material},
     math::Angle,
     RenderContext,
 };
+
+mod material_description;
+mod texture_description;
+
+pub use material_description::*;
+pub use texture_description::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Shape {
@@ -20,18 +26,8 @@ pub enum Shape {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneObject {
     Geometry(Shape),
+    Material(MaterialDescription, Vec<Scene3D>),
     Group(Vec<Scene3D>),
-}
-
-#[derive(Debug)]
-pub enum Texture2DHandle {
-    File(String),
-}
-
-impl Texture2DHandle {
-    pub fn file(s: LrcStr) -> Texture2DHandle {
-        Texture2DHandle::File(s.to_string())
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +58,13 @@ impl Scene3D {
     pub fn cylinder() -> Self {
         Scene3D {
             obj: SceneObject::Geometry(Shape::Cylinder),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn material(material: MaterialDescription, items: Array<Scene3D>) -> Self {
+        Scene3D {
+            obj: SceneObject::Material(material, items.to_vec()),
             xform: Matrix4::identity(),
         }
     }
@@ -122,6 +125,19 @@ impl Scene3D {
     ) {
         let skinning_data = vec![];
         match &self.obj {
+            SceneObject::Material(material_description, items) => {
+                let material = material_description.get(context);
+                for item in items.into_iter() {
+                    item.render(
+                        &context,
+                        &world_matrix,
+                        &projection_matrix,
+                        &view_matrix,
+                        &material,
+                    )
+                }
+            }
+
             SceneObject::Group(items) => {
                 let new_world_matrix = world_matrix * self.xform;
                 for item in items.into_iter() {
