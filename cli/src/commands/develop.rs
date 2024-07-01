@@ -4,8 +4,9 @@ use std::io::{self, BufRead, Error};
 use std::path::{Path, PathBuf};
 
 use crate::util::{self, get_nearby_bin, ShellCommand};
+use crate::Environment;
 
-pub async fn execute(working_directory: &str) -> io::Result<()> {
+pub async fn execute(working_directory: &str, environment: &Environment) -> io::Result<()> {
     let cwd_path = Path::new(working_directory);
     let build_native_path = Path::new(&"build-native");
     let build_native_wd = cwd_path.join(build_native_path);
