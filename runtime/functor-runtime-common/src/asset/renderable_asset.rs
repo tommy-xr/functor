@@ -29,6 +29,7 @@ impl<T: RenderableAsset> RuntimeRenderableAsset<T> {
             let new_state = match asset_state {
                 RenderableAssetState::Hydrated(_) => asset_state,
                 RenderableAssetState::Dehydrated(asset, options) => {
+                    println!("Hydrating asset!");
                     RenderableAssetState::Hydrated(asset.load(gl_context, &options))
                 }
             };
