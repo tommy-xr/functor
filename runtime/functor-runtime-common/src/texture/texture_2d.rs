@@ -1,9 +1,4 @@
-use std::{
-    cell::RefCell,
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::cell::RefCell;
 
 use glow::HasContext;
 
@@ -27,15 +22,6 @@ impl Texture2D {
             state: RefCell::new(Some(TextureState::Unloaded(data, opts))),
         }
     }
-
-    pub fn init_from_future<F>(future: F, opts: TextureOptions) -> Texture2D
-    where
-        F: Future<Output = Result<TextureData, String>> + 'static,
-    {
-        Texture2D {
-            state: RefCell::new(Some(TextureState::Loading(Box::pin(future), opts))),
-        }
-    }
 }
 
 impl RuntimeTexture for Texture2D {
@@ -50,11 +36,6 @@ impl RuntimeTexture for Texture2D {
                     gl.active_texture(glow::TEXTURE0 + index);
                     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
                 },
-                TextureState::Loading(_, _) => {
-                    // TODO: Have a default texture to use
-                    // While loading, we can't actually do anything
-                    println!("Still waiting for texture loading...")
-                }
                 TextureState::Unloaded(_, _) => {
                     panic!("Unable to load texture; should never happen")
                 }
@@ -67,10 +48,6 @@ impl RuntimeTexture for Texture2D {
 
 pub enum TextureState {
     Unloaded(TextureData, TextureOptions),
-    Loading(
-        Pin<Box<dyn Future<Output = Result<TextureData, String>>>>,
-        TextureOptions,
-    ),
     Loaded(glow::Texture),
 }
 
@@ -78,7 +55,6 @@ impl TextureState {
     pub fn ensure_loaded(self, render_context: &RenderContext) -> Self {
         match self {
             TextureState::Loaded(_) => self,
-            TextureState::Loading(..) => self.poll_load(render_context),
             TextureState::Unloaded(texture_data, texture_opts) => unsafe {
                 let gl = render_context.gl;
                 let texture = gl.create_texture().expect("Texture to be created");
@@ -122,29 +98,6 @@ impl TextureState {
                 gl.bind_texture(glow::TEXTURE_2D, None);
                 Self::Loaded(texture)
             },
-        }
-    }
-
-    fn poll_load(self, render_context: &RenderContext) -> Self {
-        if let Self::Loading(mut future, opts) = self {
-            let waker = futures::task::noop_waker();
-            let mut cx = Context::from_waker(&waker);
-
-            match Future::poll(Pin::new(&mut future), &mut cx) {
-                Poll::Ready(Ok(texture_data)) => {
-                    TextureState::Unloaded(texture_data, opts).ensure_loaded(render_context)
-                }
-                Poll::Ready(Err(e)) => {
-                    // TODO: More robust error handling...
-                    panic!("Failed to load texture: {}", e);
-                }
-                Poll::Pending => {
-                    println!("Waiting for texture to load...");
-                    TextureState::Loading(future, opts)
-                }
-            }
-        } else {
-            self
         }
     }
 }
