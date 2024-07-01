@@ -1,9 +1,10 @@
-use cgmath::{vec3, vec4, Matrix4, SquareMatrix, Vector4};
+use cgmath::{vec4, Vector4};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    material::{ColorMaterial, Material},
-    RenderContext,
+    material::{BasicMaterial, ColorMaterial, Material},
+    texture::RuntimeTexture,
+    RenderContext, SceneContext, TextureDescription,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,7 @@ pub enum MaterialDescription {
         deserialize_with = "deserialize_vec4"
     )]
     Color(Vector4<f32>),
+    Texture(TextureDescription),
 }
 
 impl MaterialDescription {
@@ -20,16 +22,36 @@ impl MaterialDescription {
     pub fn color(r: f32, g: f32, b: f32, a: f32) -> MaterialDescription {
         MaterialDescription::Color(vec4(r, g, b, a))
     }
+
+    pub fn texture(tex: TextureDescription) -> MaterialDescription {
+        MaterialDescription::Texture(tex)
+    }
 }
 
 impl MaterialDescription {
-    pub fn get(&self, context: &RenderContext) -> Box<dyn Material> {
+    pub fn get(&self, context: &RenderContext, scene_context: &SceneContext) -> Box<dyn Material> {
         match self {
             MaterialDescription::Color(c) => {
                 // TODO: Load from cache of assets
                 let mut color_material = ColorMaterial::create(*c);
                 color_material.initialize(&context);
                 color_material
+            }
+            MaterialDescription::Texture(t) => {
+                match t {
+                    TextureDescription::File(file) => {
+                        let asset = context.asset_cache.load_asset_with_pipeline(
+                            scene_context.texture_pipeline.clone(),
+                            &file,
+                        );
+
+                        asset.get().bind(0, context);
+                    }
+                };
+
+                let mut basic_material = BasicMaterial::create();
+                basic_material.initialize(&context);
+                basic_material
             }
         }
     }

@@ -1,12 +1,16 @@
-use cgmath::{vec3, vec4, Matrix4, SquareMatrix, Vector4};
+use std::sync::Arc;
+
+use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
-use fable_library_rust::{NativeArray_::Array, String_::LrcStr};
+use fable_library_rust::NativeArray_::Array;
 
 use crate::{
+    asset::{self, pipelines::TexturePipeline, BuiltAssetPipeline},
     geometry::{self, Geometry},
-    material::{ColorMaterial, Material},
+    material::Material,
     math::Angle,
+    texture::Texture2D,
     RenderContext,
 };
 
@@ -15,6 +19,18 @@ mod texture_description;
 
 pub use material_description::*;
 pub use texture_description::*;
+
+pub struct SceneContext {
+    texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+}
+
+impl SceneContext {
+    pub fn new() -> SceneContext {
+        SceneContext {
+            texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Shape {
@@ -117,7 +133,8 @@ impl Scene3D {
 
     pub fn render(
         &self,
-        context: &RenderContext,
+        render_context: &RenderContext,
+        scene_context: &SceneContext,
         world_matrix: &Matrix4<f32>,
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
@@ -126,10 +143,11 @@ impl Scene3D {
         let skinning_data = vec![];
         match &self.obj {
             SceneObject::Material(material_description, items) => {
-                let material = material_description.get(context);
+                let material = material_description.get(render_context, scene_context);
                 for item in items.into_iter() {
                     item.render(
-                        &context,
+                        &render_context,
+                        &scene_context,
                         &world_matrix,
                         &projection_matrix,
                         &view_matrix,
@@ -142,7 +160,8 @@ impl Scene3D {
                 let new_world_matrix = world_matrix * self.xform;
                 for item in items.into_iter() {
                     item.render(
-                        &context,
+                        &render_context,
+                        &scene_context,
                         &new_world_matrix,
                         &projection_matrix,
                         &view_matrix,
@@ -153,19 +172,19 @@ impl Scene3D {
             SceneObject::Geometry(Shape::Cube) => {
                 let xform = world_matrix * self.xform;
                 current_material.draw_opaque(
-                    &context,
+                    &render_context,
                     &projection_matrix,
                     &view_matrix,
                     &xform,
                     &skinning_data,
                 );
                 let mut cube = geometry::Cube::create();
-                cube.draw(&context.gl);
+                cube.draw(&render_context.gl);
             }
             SceneObject::Geometry(Shape::Cylinder) => {
                 let xform = world_matrix * self.xform;
                 current_material.draw_opaque(
-                    &context,
+                    &render_context,
                     &projection_matrix,
                     &view_matrix,
                     &xform,
@@ -173,12 +192,12 @@ impl Scene3D {
                 );
 
                 let mut cylinder = geometry::Cylinder::create();
-                cylinder.draw(&context.gl);
+                cylinder.draw(&render_context.gl);
             }
             SceneObject::Geometry(Shape::Sphere) => {
                 let xform = world_matrix * self.xform;
                 current_material.draw_opaque(
-                    &context,
+                    &render_context,
                     &projection_matrix,
                     &view_matrix,
                     &xform,
@@ -186,7 +205,7 @@ impl Scene3D {
                 );
 
                 let mut sphere = geometry::Sphere::create();
-                sphere.draw(&context.gl);
+                sphere.draw(&render_context.gl);
             }
         }
     }

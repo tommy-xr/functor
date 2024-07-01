@@ -1,6 +1,7 @@
 use fable_library_rust::String_::LrcStr;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TextureDescription {
     File(String),
 }

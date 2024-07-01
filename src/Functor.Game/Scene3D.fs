@@ -27,8 +27,11 @@ module Scene3D =
         [<Emit("functor_runtime_common::MaterialDescription::color($0, $1, $2, $3)")>]
         let color (r: float32, b: float32, g: float32, a: float32): Material = nativeOnly
 
+        [<Emit("functor_runtime_common::MaterialDescription::texture($0)")>]
+        let texture (texture: Texture): Material = nativeOnly
 
-    module Texture2D =
+
+    module Texture =
         [<Emit("functor_runtime_common::TextureDescription::file($0)")>]
         let file (str: string): Texture = nativeOnly
 

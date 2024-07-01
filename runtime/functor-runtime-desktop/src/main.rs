@@ -1,20 +1,13 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use std::env;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use async_trait::async_trait;
 use cgmath::{perspective, vec3, Deg, Point3};
 use cgmath::{vec4, Matrix4};
-use functor_runtime_common::asset::pipelines::TexturePipeline;
-use functor_runtime_common::asset::{AssetCache, AssetLoader};
-use functor_runtime_common::io::load_bytes_async;
-use functor_runtime_common::material::{BasicMaterial, ColorMaterial};
-use functor_runtime_common::texture::{
-    PixelFormat, RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
-};
-use functor_runtime_common::FrameTime;
+use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::material::ColorMaterial;
+use functor_runtime_common::{FrameTime, SceneContext};
 use glfw::{Action, Key};
 use glow::*;
 use hot_reload_game::HotReloadGame;
@@ -40,15 +33,6 @@ struct Args {
 
     #[arg(long)]
     hot: bool,
-}
-
-struct DesktopAssetLoader {}
-
-#[async_trait]
-impl AssetLoader for DesktopAssetLoader {
-    async fn load_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
-        Ok(vec![])
-    }
 }
 
 #[tokio::main]
@@ -112,8 +96,9 @@ pub async fn main() {
 
         use glfw::Context;
 
-        let loader = Box::new(DesktopAssetLoader {});
-        let mut asset_cache = AssetCache::new();
+        let asset_cache = AssetCache::new();
+
+        let scene_context = SceneContext::new();
 
         // let texture_future = async {
         //     let bytes = load_bytes_async("crate.png").await;
@@ -124,7 +109,7 @@ pub async fn main() {
         // };
         //let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
 
-        let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
+        // let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
 
         // let texture_data1 = create_checkerboard_pattern(8, 8, [255, 0, 0, 255]);
         // let texture1 = Texture2D::init_from_data(texture_data1, TextureOptions::default());
@@ -160,9 +145,10 @@ pub async fn main() {
                 vec3(0.0, 1.0, 0.0),
             );
 
-            let context = functor_runtime_common::RenderContext {
+            let render_context = functor_runtime_common::RenderContext {
                 gl: &gl,
                 shader_version,
+                asset_cache: &asset_cache,
             };
 
             let scene = game.render(time.clone());
@@ -174,11 +160,12 @@ pub async fn main() {
             // asset.get().bind(0, &context);
 
             let mut color_material = ColorMaterial::create(vec4(1.0, 0.0, 0.0, 1.0));
-            color_material.initialize(&context);
+            color_material.initialize(&render_context);
 
             functor_runtime_common::Scene3D::render(
                 &scene,
-                &context,
+                &render_context,
+                &scene_context,
                 &world_matrix,
                 &projection_matrix,
                 &view_matrix,

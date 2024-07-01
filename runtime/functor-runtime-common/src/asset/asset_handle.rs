@@ -1,9 +1,8 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll},
 };
 
