@@ -1,6 +1,7 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use std::env;
+use std::sync::Arc;
 use std::time::Instant;
 
 use cgmath::{perspective, vec3, Deg, Point3};
@@ -96,7 +97,7 @@ pub async fn main() {
 
         use glfw::Context;
 
-        let asset_cache = AssetCache::new();
+        let asset_cache = Arc::new(AssetCache::new());
 
         let scene_context = SceneContext::new();
 
@@ -148,7 +149,7 @@ pub async fn main() {
             let render_context = functor_runtime_common::RenderContext {
                 gl: &gl,
                 shader_version,
-                asset_cache: &asset_cache,
+                asset_cache: asset_cache.clone(),
             };
 
             let scene = game.render(time.clone());
