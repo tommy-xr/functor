@@ -1,4 +1,8 @@
-use super::PixelFormat;
+use glow::HasContext;
+
+use crate::asset::RenderableAsset;
+
+use super::{PixelFormat, Texture2D, TextureOptions};
 
 #[derive(Clone)]
 pub struct TextureData {
