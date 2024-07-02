@@ -1,17 +1,12 @@
 use crate::{
-    asset::{AssetCache, AssetPipeline},
+    asset::AssetPipeline,
     texture::{Texture2D, TextureData, TextureFormat, TextureOptions, PNG},
 };
 
-pub struct TexturePipeline;
+pub struct ModelPipeline;
 
-impl AssetPipeline<Texture2D> for TexturePipeline {
-    fn process(
-        &self,
-        bytes: Vec<u8>,
-        asset_cache: &AssetCache,
-        context: crate::asset::AssetPipelineContext,
-    ) -> Texture2D {
+impl AssetPipeline<Model> for ModelPipeline {
+    fn process(&self, bytes: Vec<u8>, context: crate::asset::AssetPipelineContext) -> Texture2D {
         let texture_data = PNG.load(&bytes);
         Texture2D::init_from_data(texture_data, TextureOptions::default())
     }

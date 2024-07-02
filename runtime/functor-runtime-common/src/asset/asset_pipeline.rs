@@ -1,11 +1,16 @@
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
-use super::AssetHandle;
+use super::{AssetCache, AssetHandle};
 
 pub struct AssetPipelineContext {}
 
 pub trait AssetPipeline<TRuntimeAsset> {
-    fn process(&self, bytes: Vec<u8>, context: AssetPipelineContext) -> TRuntimeAsset;
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        asset_cache: &AssetCache,
+        context: AssetPipelineContext,
+    ) -> TRuntimeAsset;
 
     fn unloaded_asset(&self, context: AssetPipelineContext) -> TRuntimeAsset;
 }
@@ -36,8 +41,13 @@ impl<TRuntimeAsset> BuiltAssetPipeline<TRuntimeAsset> {
 }
 
 impl<TRuntimeAsset> AssetPipeline<TRuntimeAsset> for BuiltAssetPipeline<TRuntimeAsset> {
-    fn process(&self, bytes: Vec<u8>, context: AssetPipelineContext) -> TRuntimeAsset {
-        self.asset_pipeline.process(bytes, context)
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        asset_cache: &AssetCache,
+        context: AssetPipelineContext,
+    ) -> TRuntimeAsset {
+        self.asset_pipeline.process(bytes, asset_cache, context)
     }
 
     fn unloaded_asset(&self, context: AssetPipelineContext) -> TRuntimeAsset {
