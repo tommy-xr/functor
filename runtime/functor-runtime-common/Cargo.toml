@@ -18,6 +18,7 @@ serde = { version = "1.0", features = ["derive"] }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 futures = "0.3.30"
 async-trait = "0.1.80"
+gltf = "1.4.1"
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
 tokio = { version = "1", features = ["full"] }
