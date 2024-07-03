@@ -91,6 +91,7 @@ let init (_args: array<string>) =
         material (textureMaterial, [|
             cylinder() |> Transform.translateY -1.0f;
             cube()
+            |> Transform.rotateY (Math.Angle.degrees (frameTime.tts * 20.0f))
             |> Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))
         |])
         |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
