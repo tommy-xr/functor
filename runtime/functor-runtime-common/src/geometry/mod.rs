@@ -5,11 +5,13 @@ pub trait Geometry {
 mod cube;
 mod cylinder;
 mod empty_mesh;
+mod indexed_mesh;
 mod mesh;
 mod sphere;
 pub use cube::*;
 pub use cylinder::*;
 pub use empty_mesh::*;
+pub use indexed_mesh::*;
 pub use mesh::*;
 pub use sphere::*;
 
