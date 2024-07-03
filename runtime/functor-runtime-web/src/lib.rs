@@ -170,7 +170,7 @@ async fn run_async() -> Result<(), JsValue> {
         // };
         // let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
 
-        let mut asset_cache = AssetCache::new();
+        let mut asset_cache = Arc::new(AssetCache::new());
         // let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
 
         let scene_context = SceneContext::new();
@@ -179,7 +179,7 @@ async fn run_async() -> Result<(), JsValue> {
             let render_ctx = RenderContext {
                 gl: &gl,
                 shader_version,
-                asset_cache: &asset_cache,
+                asset_cache: asset_cache.clone(),
             };
 
             let projection_matrix: Matrix4<f32> =

@@ -19,7 +19,7 @@ impl AssetCache {
     }
 
     pub fn load_asset_with_pipeline<T: 'static>(
-        &self,
+        self: &Arc<Self>,
         pipeline: Arc<BuiltAssetPipeline<T>>,
         asset_path: &str,
     ) -> Arc<AssetHandle<T>> {
@@ -30,6 +30,8 @@ impl AssetCache {
 
         let asset_path_owned = asset_path.to_string();
         let bytes_cache = self.bytes_cache.clone();
+
+        let self_arc = Arc::clone(self);
 
         // Check cache
         if let Some(cached_bytes) = self.bytes_cache.lock().unwrap().get(&asset_path_owned) {
@@ -43,7 +45,13 @@ impl AssetCache {
             let context = super::AssetPipelineContext {};
             let pipeline = pipeline.clone();
             // If bytes are already cached, return a handle immediately
-            let future = async move { Ok(Arc::new(pipeline.process(bytes, context))) };
+            let future = async move {
+                Ok(Arc::new(pipeline.process(
+                    bytes,
+                    self_arc.as_ref(),
+                    context,
+                )))
+            };
             return Arc::new(AssetHandle::new(future, Arc::new(default_asset)));
         }
 
@@ -62,7 +70,11 @@ impl AssetCache {
 
             let pipeline = pipeline.clone();
             let context = AssetPipelineContext {};
-            Ok(Arc::new(pipeline.process(bytes, context)))
+            Ok(Arc::new(pipeline.process(
+                bytes,
+                self_arc.as_ref(),
+                context,
+            )))
         };
 
         let handle = Arc::new(AssetHandle::new(bytes_future, Arc::new(default_asset)));
