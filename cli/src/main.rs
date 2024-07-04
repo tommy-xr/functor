@@ -76,9 +76,13 @@ async fn main() -> tokio::io::Result<()> {
                 .await
         }
         Command::Run { environment } => {
+            commands::build::execute(&working_directory_str, &Environment::default(environment))
+                .await?;
             commands::run::execute(&working_directory_str, &Environment::default(environment)).await
         }
         Command::Develop { environment } => {
+            commands::build::execute(&working_directory_str, &Environment::default(environment))
+                .await?;
             commands::develop::execute(&working_directory_str, &Environment::default(environment))
                 .await
         }
