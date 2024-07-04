@@ -34,13 +34,13 @@ pub struct VertexPositionTexture {
 }
 
 pub trait Vertex {
-    fn get_total_size() -> isize;
+    fn get_total_size() -> usize;
     fn get_vertex_attributes() -> Vec<VertexAttribute>;
 }
 
 impl Vertex for VertexPositionTexture {
-    fn get_total_size() -> isize {
-        size_of::<VertexPositionTexture>() as isize
+    fn get_total_size() -> usize {
+        size_of::<VertexPositionTexture>()
     }
 
     fn get_vertex_attributes() -> Vec<VertexAttribute> {

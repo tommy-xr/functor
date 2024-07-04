@@ -1,5 +1,7 @@
 use glow::{Buffer, HasContext, VertexArray};
 
+use crate::render::vertex::Vertex;
+
 use super::Geometry;
 
 struct HydratedContext {
@@ -7,14 +9,14 @@ struct HydratedContext {
     ebo: Buffer,
 }
 
-pub struct IndexedMesh {
-    vertices: Vec<f32>,
+pub struct IndexedMesh<T: Vertex> {
+    vertices: Vec<T>,
     indices: Vec<u32>,
 
     hydrated_context: Option<HydratedContext>,
 }
 
-pub fn create(vertices: Vec<f32>, indices: Vec<u32>) -> IndexedMesh {
+pub fn create<T: Vertex>(vertices: Vec<T>, indices: Vec<u32>) -> IndexedMesh<T> {
     IndexedMesh {
         vertices,
         indices,
@@ -22,13 +24,13 @@ pub fn create(vertices: Vec<f32>, indices: Vec<u32>) -> IndexedMesh {
     }
 }
 
-impl Geometry for IndexedMesh {
+impl<T: Vertex> Geometry for IndexedMesh<T> {
     fn draw(&mut self, gl: &glow::Context) {
         if self.hydrated_context.is_none() {
             let (vao, ebo) = unsafe {
                 let vertices_u8: &[u8] = core::slice::from_raw_parts(
                     self.vertices.as_ptr() as *const u8,
-                    self.vertices.len() * core::mem::size_of::<f32>(),
+                    self.vertices.len() * T::get_total_size(),
                 );
 
                 let indices_u8: &[u8] = core::slice::from_raw_parts(

@@ -1,32 +1,72 @@
+use cgmath::{vec2, vec3};
+
+use crate::render::vertex::VertexPositionTexture;
+
 use super::{
     indexed_mesh,
     mesh::{self, Mesh},
-    IndexedMesh,
+    Geometry, IndexedMesh,
 };
 
 pub struct Cube;
 
 impl Cube {
-    pub fn create() -> IndexedMesh {
-        // Vertices of a cube (position and texture coordinates)
-        let vertices: Vec<f32> = vec![
+    pub fn create() -> Box<dyn Geometry> {
+        let vertices = vec![
             // Front face
-            -0.5, -0.5, 0.5, 0.0, 0.0, 0.5, -0.5, 0.5, 1.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, -0.5, 0.5,
-            0.5, 0.0, 1.0, // Back face
-            -0.5, -0.5, -0.5, 0.0, 0.0, 0.5, -0.5, -0.5, 1.0, 0.0, 0.5, 0.5, -0.5, 1.0, 1.0, -0.5,
-            0.5, -0.5, 0.0, 1.0,
+            VertexPositionTexture {
+                position: vec3(-1.0, -1.0, 1.0),
+                uv: vec2(0.0, 0.0),
+            },
+            VertexPositionTexture {
+                position: vec3(1.0, -1.0, 1.0),
+                uv: vec2(1.0, 0.0),
+            },
+            VertexPositionTexture {
+                position: vec3(1.0, 1.0, 1.0),
+                uv: vec2(1.0, 1.0),
+            },
+            VertexPositionTexture {
+                position: vec3(-1.0, 1.0, 1.0),
+                uv: vec2(0.0, 1.0),
+            },
+            // Back face
+            VertexPositionTexture {
+                position: vec3(-1.0, -1.0, -1.0),
+                uv: vec2(1.0, 0.0),
+            },
+            VertexPositionTexture {
+                position: vec3(1.0, -1.0, -1.0),
+                uv: vec2(0.0, 0.0),
+            },
+            VertexPositionTexture {
+                position: vec3(1.0, 1.0, -1.0),
+                uv: vec2(0.0, 1.0),
+            },
+            VertexPositionTexture {
+                position: vec3(-1.0, 1.0, -1.0),
+                uv: vec2(1.0, 1.0),
+            },
         ];
 
-        // Indices of the cube (two triangles per face)
-        let indices: Vec<u32> = vec![
+        let indices = vec![
             // Front face
-            0, 1, 2, 2, 3, 0, // Back face
-            4, 5, 6, 6, 7, 4, // Left face
+            0, 1, 2, 2, 3, 0, // Top face
+            3, 2, 6, 6, 7, 3, // Back face
+            7, 6, 5, 5, 4, 7, // Bottom face
+            4, 5, 1, 1, 0, 4, // Left face
             4, 0, 3, 3, 7, 4, // Right face
-            1, 5, 6, 6, 2, 1, // Top face
-            3, 2, 6, 6, 7, 3, // Bottom face
-            4, 5, 1, 1, 0, 4,
+            1, 5, 6, 6, 2, 1,
         ];
-        indexed_mesh::create(vertices, indices)
+
+        let verts = vertices
+            .into_iter()
+            .map(|v| VertexPositionTexture {
+                position: v.position / 2.0,
+                uv: v.uv,
+            })
+            .collect();
+
+        Box::new(indexed_mesh::create(verts, indices))
     }
 }
