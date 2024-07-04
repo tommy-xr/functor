@@ -45,7 +45,7 @@ pub async fn execute(working_directory: &str, environment: &Environment) -> Resu
             cmd: "npm",
             cwd: working_directory,
             env: vec![],
-            args: vec!["run", "build:examples:pong:rust"],
+            args: vec!["run", "build:examples:hello:rust"],
         },
         build_command,
     ];

@@ -9,7 +9,7 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Functor.Game", "src\Functor
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "examples", "examples", "{6312B293-E371-48FE-834F-38AC7474FA89}"
 EndProject
-Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Pong", "examples\Pong\Pong.fsproj", "{08DF63CC-1B33-488F-9AEF-7014EB74F103}"
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "hello", "examples\hello\hello.fsproj", "{08DF63CC-1B33-488F-9AEF-7014EB74F103}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

@@ -5,6 +5,6 @@
     "clean": "git clean -fdX",
 
     "build:cli": "cargo build --bin functor-runner && wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
-    "build:examples:pong:rust": "dotnet fable examples/Pong/Pong.fsproj --lang rust --outDir ."
+    "build:examples:pong:rust": "dotnet fable examples/hello/hello.fsproj --lang rust --outDir ."
   }
 }
