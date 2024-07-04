@@ -1,4 +1,4 @@
-module Pong
+module Hello
 
 open Functor
 open Functor.Math

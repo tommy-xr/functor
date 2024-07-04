@@ -7,7 +7,7 @@ edition = "2021"
 
 [lib]
 name = "game_wasm"
-path = "../Pong.rs"
+path = "../hello.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
