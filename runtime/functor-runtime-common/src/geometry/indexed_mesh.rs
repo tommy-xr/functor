@@ -48,25 +48,23 @@ impl<T: Vertex> Geometry for IndexedMesh<T> {
                 let vao = gl.create_vertex_array().unwrap();
                 gl.bind_vertex_array(Some(vao));
 
-                gl.enable_vertex_attrib_array(0);
-                gl.vertex_attrib_pointer_f32(
-                    0,
-                    3,
-                    glow::FLOAT,
-                    false,
-                    (5 * core::mem::size_of::<f32>()) as i32,
-                    0,
-                );
+                let attributes = <T>::get_vertex_attributes();
+                let attr_len = attributes.len() as u32;
+                let total_size = <T>::get_total_size() as i32;
 
-                gl.enable_vertex_attrib_array(1);
-                gl.vertex_attrib_pointer_f32(
-                    1,
-                    2,
-                    glow::FLOAT,
-                    false,
-                    (5 * core::mem::size_of::<f32>()) as i32,
-                    (3 * core::mem::size_of::<f32>()) as i32,
-                );
+                for i in 0..attr_len {
+                    let attribute = &attributes[i as usize];
+
+                    gl.enable_vertex_attrib_array(i);
+                    gl.vertex_attrib_pointer_f32(
+                        i,
+                        attribute.size,
+                        glow::FLOAT,
+                        false,
+                        total_size,
+                        attribute.offset as i32,
+                    );
+                }
 
                 // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
                 // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
