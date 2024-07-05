@@ -35,12 +35,12 @@ jobs:
         run: npm install -g wasm-pack
 
       - name: Build F#
-        run: npm run build:examples:pong:rust
+        run: npm run build:examples:hello:rust
 
       - name: Build runtime wasm bundle
         run: wasm-pack build --target web
         working-directory: runtime/functor-runtime-web
 
-      - name: Build pong wasm bundle
+      - name: Build hello wasm bundle
         run: wasm-pack build --target web
-        working-directory: examples/Pong/build-wasm
+        working-directory: examples/hello/build-wasm

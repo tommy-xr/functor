@@ -29,7 +29,7 @@ pub async fn execute(working_directory: &str, environment: &Environment) -> io::
                 "fs",
                 "--no-process-group",
                 "--",
-                "npm run build:examples:pong:rust",
+                "npm run build:examples:hello:rust",
             ],
         },
         ShellCommand {

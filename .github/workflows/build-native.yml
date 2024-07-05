@@ -50,7 +50,7 @@ jobs:
             libglfw3-dev
 
       - name: Build F#
-        run: npm run build:examples:pong:rust
+        run: npm run build:examples:hello:rust
 
       - name: Build Runtime
         run: cargo build
@@ -66,6 +66,6 @@ jobs:
         run: cargo build
         working-directory: cli
 
-      - name: Build Pong
+      - name: Build Hello
         run: cargo build
-        working-directory: examples/Pong/build-native
+        working-directory: examples/hello/build-native
