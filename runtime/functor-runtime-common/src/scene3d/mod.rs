@@ -22,7 +22,7 @@ pub use texture_description::*;
 
 pub struct SceneContext {
     texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
-    cube: RefCell<IndexedMesh>,
+    cube: RefCell<Box<dyn Geometry>>,
     cylinder: RefCell<Mesh>,
     sphere: RefCell<Mesh>,
 }
