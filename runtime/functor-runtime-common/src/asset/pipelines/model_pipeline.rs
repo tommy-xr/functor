@@ -4,22 +4,23 @@ use cgmath::{vec2, vec3, Vector2, Vector3};
 
 use crate::{
     asset::{AssetCache, AssetPipeline},
+    geometry::{Geometry, IndexedMesh},
+    render::vertex::VertexPositionTexture,
     texture::{Texture2D, TextureData, TextureFormat, TextureOptions, PNG},
 };
 
 pub struct ModelPipeline;
 
-#[derive(Debug)]
 pub struct Model {
-    pub meshes: Vec<Mesh>,
+    pub meshes: Vec<IndexedMesh<VertexPositionTexture>>,
 }
 
-#[derive(Debug)]
-pub struct Mesh {
-    // pub transform: na::Matrix4<f32>,
-    pub name: String,
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u32>,
+impl Geometry for Model {
+    fn draw(&mut self, gl: &glow::Context) {
+        for mesh in self.meshes.iter_mut() {
+            mesh.draw(&gl)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -58,7 +59,11 @@ impl AssetPipeline<Model> for ModelPipeline {
     }
 }
 
-fn process_node(node: &gltf::Node, buffers: &[gltf::buffer::Data], meshes: &mut Vec<Mesh>) {
+fn process_node(
+    node: &gltf::Node,
+    buffers: &[gltf::buffer::Data],
+    meshes: &mut Vec<IndexedMesh<VertexPositionTexture>>,
+) {
     if let Some(mesh) = node.mesh() {
         let transform = node.transform().matrix();
         // TODO: Convert to cgmath?
@@ -83,12 +88,12 @@ fn process_node(node: &gltf::Node, buffers: &[gltf::buffer::Data], meshes: &mut 
                 .map(|v| v.into_f32().collect::<Vec<_>>())
                 .unwrap_or_default();
 
-            let vertices: Vec<Vertex> = positions
+            let vertices: Vec<VertexPositionTexture> = positions
                 .iter()
                 .zip(tex_coords.into_iter())
-                .map(|(pos, tex)| Vertex {
+                .map(|(pos, tex)| VertexPositionTexture {
                     position: vec3(pos[0], pos[1], pos[2]),
-                    tex_coords: vec2(tex[0], tex[1]),
+                    uv: vec2(tex[0], tex[1]),
                 })
                 .collect();
             println!(
@@ -98,16 +103,12 @@ fn process_node(node: &gltf::Node, buffers: &[gltf::buffer::Data], meshes: &mut 
                 indices.len()
             );
 
-            meshes.push(Mesh {
-                //transform,
-                name,
-                vertices,
-                indices,
-            });
+            let index_mesh = IndexedMesh::create(vertices, indices);
+            meshes.push(index_mesh);
         }
-    }
 
-    for child in node.children() {
-        process_node(&child, buffers, meshes);
+        for child in node.children() {
+            process_node(&child, buffers, meshes);
+        }
     }
 }
