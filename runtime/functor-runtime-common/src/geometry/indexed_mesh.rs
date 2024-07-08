@@ -9,22 +9,22 @@ struct HydratedContext {
     ebo: Buffer,
 }
 
-pub struct IndexedMesh<T: Vertex> {
+pub struct IndexedMeshData<T: Vertex> {
     vertices: Vec<T>,
     indices: Vec<u32>,
 
     hydrated_context: Option<HydratedContext>,
 }
 
-pub fn create<T: Vertex>(vertices: Vec<T>, indices: Vec<u32>) -> IndexedMesh<T> {
-    IndexedMesh {
+pub fn create<T: Vertex>(vertices: Vec<T>, indices: Vec<u32>) -> IndexedMeshData<T> {
+    IndexedMeshData {
         vertices,
         indices,
         hydrated_context: None,
     }
 }
 
-impl<T: Vertex> Geometry for IndexedMesh<T> {
+impl<T: Vertex> Geometry for IndexedMeshData<T> {
     fn draw(&mut self, gl: &glow::Context) {
         if self.hydrated_context.is_none() {
             let (vao, ebo) = unsafe {

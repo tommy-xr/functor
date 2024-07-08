@@ -7,7 +7,7 @@ use fable_library_rust::{NativeArray_::Array, Seq_::generate};
 
 use crate::{
     asset::{self, pipelines::TexturePipeline, BuiltAssetPipeline},
-    geometry::{self, Geometry, IndexedMesh, Mesh},
+    geometry::{self, Geometry, IndexedMeshData, MeshData},
     material::Material,
     math::Angle,
     texture::Texture2D,
@@ -23,8 +23,8 @@ pub use texture_description::*;
 pub struct SceneContext {
     texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     cube: RefCell<Box<dyn Geometry>>,
-    cylinder: RefCell<Mesh>,
-    sphere: RefCell<Mesh>,
+    cylinder: RefCell<MeshData>,
+    sphere: RefCell<MeshData>,
 }
 
 impl SceneContext {

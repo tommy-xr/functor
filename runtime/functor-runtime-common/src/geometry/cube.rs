@@ -4,8 +4,8 @@ use crate::render::vertex::VertexPositionTexture;
 
 use super::{
     indexed_mesh,
-    mesh::{self, Mesh},
-    Geometry, IndexedMesh,
+    mesh::{self, MeshData},
+    Geometry, IndexedMeshData,
 };
 
 pub struct Cube;

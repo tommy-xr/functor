@@ -7,20 +7,20 @@ struct HydratedContext {
     triangle_count: i32,
 }
 
-pub struct Mesh {
+pub struct MeshData {
     vertices: Vec<f32>,
 
     hydrated_context: Option<HydratedContext>,
 }
 
-pub fn create(vertices: Vec<f32>) -> Mesh {
-    Mesh {
+pub fn create(vertices: Vec<f32>) -> MeshData {
+    MeshData {
         vertices,
         hydrated_context: None,
     }
 }
 
-impl Geometry for Mesh {
+impl Geometry for MeshData {
     fn draw(&mut self, gl: &glow::Context) {
         if self.hydrated_context.is_none() {
             let vao = unsafe {

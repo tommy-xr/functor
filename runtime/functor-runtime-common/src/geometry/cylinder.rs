@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use cgmath::{Vector2, Vector3};
 
-use super::mesh::{self, Mesh};
+use super::mesh::{self, MeshData};
 
 pub struct Cylinder;
 
@@ -117,7 +117,7 @@ fn generate_cylinder(
 }
 
 impl Cylinder {
-    pub fn create() -> Mesh {
+    pub fn create() -> MeshData {
         let slices = 20;
         let stacks = 20;
         let height = 1.0;
