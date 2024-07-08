@@ -5,7 +5,7 @@ use crate::render::vertex::VertexPositionTexture;
 use super::{
     indexed_mesh,
     mesh::{self, MeshData},
-    Geometry, IndexedMeshData,
+    Geometry, IndexedMesh, IndexedMeshData,
 };
 
 pub struct Cube;
@@ -67,6 +67,6 @@ impl Cube {
             })
             .collect();
 
-        Box::new(indexed_mesh::create(verts, indices))
+        Box::new(IndexedMesh::create(verts, indices))
     }
 }
