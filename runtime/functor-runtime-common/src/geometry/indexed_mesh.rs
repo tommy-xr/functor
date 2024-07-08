@@ -86,7 +86,7 @@ impl<T: Vertex> RenderableAsset for IndexedMeshData<T> {
 }
 
 impl<T: Vertex> Geometry for IndexedMesh<T> {
-    fn draw(&mut self, gl: &glow::Context) {
+    fn draw(&self, gl: &glow::Context) {
         let ctx = self.ora.get(gl);
         unsafe {
             gl.bind_vertex_array(Some(ctx.vao));

@@ -84,7 +84,7 @@ impl RenderableAsset for MeshData {
 }
 
 impl Geometry for Mesh {
-    fn draw(&mut self, gl: &glow::Context) {
+    fn draw(&self, gl: &glow::Context) {
         let hydrated_info = self.ora.get(gl);
 
         unsafe {
