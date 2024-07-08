@@ -2,7 +2,10 @@ use std::f32::consts::PI;
 
 use cgmath::{vec2, vec3, Vector2, Vector3};
 
-use super::mesh::{self, MeshData};
+use super::{
+    mesh::{self, MeshData},
+    Mesh,
+};
 
 pub struct Sphere;
 
@@ -59,7 +62,7 @@ fn generate_unit_sphere(slices: u32, stacks: u32) -> (Vec<Vertex>, Vec<usize>) {
 }
 
 impl Sphere {
-    pub fn create() -> MeshData {
+    pub fn create() -> Mesh {
         let slices = 20;
         let stacks = 20;
         let (sphere_vertices, sphere_indices) = generate_unit_sphere(slices, stacks);
@@ -75,6 +78,6 @@ impl Sphere {
             raw_vertices.push(vertex.tex_coords.y);
         }
 
-        mesh::create(raw_vertices)
+        Mesh::create(raw_vertices)
     }
 }
