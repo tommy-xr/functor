@@ -2,10 +2,7 @@ use std::f32::consts::PI;
 
 use cgmath::{Vector2, Vector3};
 
-use super::{
-    mesh::{self, MeshData},
-    Mesh,
-};
+use super::Mesh;
 
 pub struct Cylinder;
 

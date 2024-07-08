@@ -2,11 +2,7 @@ use cgmath::{vec2, vec3};
 
 use crate::render::vertex::VertexPositionTexture;
 
-use super::{
-    indexed_mesh,
-    mesh::{self, MeshData},
-    Geometry, IndexedMesh, IndexedMeshData,
-};
+use super::{Geometry, IndexedMesh};
 
 pub struct Cube;
 
