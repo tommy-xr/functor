@@ -3,11 +3,11 @@ use std::{cell::RefCell, sync::Arc};
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
-use fable_library_rust::{NativeArray_::Array, Seq_::generate};
+use fable_library_rust::NativeArray_::Array;
 
 use crate::{
     asset::{self, pipelines::TexturePipeline, BuiltAssetPipeline},
-    geometry::{self, Geometry, IndexedMesh, Mesh},
+    geometry::{self, Geometry, Mesh},
     material::Material,
     math::Angle,
     texture::Texture2D,

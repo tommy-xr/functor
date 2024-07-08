@@ -2,11 +2,7 @@ use cgmath::{vec2, vec3};
 
 use crate::render::vertex::VertexPositionTexture;
 
-use super::{
-    indexed_mesh,
-    mesh::{self, Mesh},
-    Geometry, IndexedMesh,
-};
+use super::{Geometry, IndexedMesh};
 
 pub struct Cube;
 
@@ -67,6 +63,6 @@ impl Cube {
             })
             .collect();
 
-        Box::new(indexed_mesh::create(verts, indices))
+        Box::new(IndexedMesh::create(verts, indices))
     }
 }

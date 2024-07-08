@@ -43,7 +43,7 @@ impl<T: RenderableAsset> RuntimeRenderableAsset<T> {
     }
 
     pub fn get_opt(&self) -> Option<Ref<T::HydratedType>> {
-        if let Some(RenderableAssetState::Hydrated(ref loaded)) = *self.state.borrow() {
+        if let Some(RenderableAssetState::Hydrated(ref _loaded)) = *self.state.borrow() {
             Some(Ref::map(self.state.borrow(), |s| {
                 if let Some(RenderableAssetState::Hydrated(ref l)) = *s {
                     l

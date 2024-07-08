@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use cgmath::{Vector2, Vector3};
 
-use super::mesh::{self, Mesh};
+use super::Mesh;
 
 pub struct Cylinder;
 
@@ -135,6 +135,6 @@ impl Cylinder {
             raw_vertices.push(vertex.tex_coords.y);
         }
 
-        mesh::create(raw_vertices)
+        Mesh::create(raw_vertices)
     }
 }

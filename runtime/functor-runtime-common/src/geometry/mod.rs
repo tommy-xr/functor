@@ -1,5 +1,5 @@
 pub trait Geometry {
-    fn draw(&mut self, gl: &glow::Context);
+    fn draw(&self, gl: &glow::Context);
 }
 
 mod cube;

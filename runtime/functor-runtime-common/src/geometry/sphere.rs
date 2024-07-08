@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use cgmath::{vec2, vec3, Vector2, Vector3};
 
-use super::mesh::{self, Mesh};
+use super::Mesh;
 
 pub struct Sphere;
 
@@ -75,6 +75,6 @@ impl Sphere {
             raw_vertices.push(vertex.tex_coords.y);
         }
 
-        mesh::create(raw_vertices)
+        Mesh::create(raw_vertices)
     }
 }
