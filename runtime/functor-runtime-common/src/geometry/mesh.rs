@@ -11,14 +11,11 @@ pub struct RuntimeMeshData {
 
 pub struct MeshData {
     vertices: Vec<f32>,
-
-    hydrated_context: Option<RuntimeMeshData>,
 }
 
-pub fn create(vertices: Vec<f32>) -> MeshData {
-    MeshData {
-        vertices,
-        hydrated_context: None,
+impl MeshData {
+    fn create(vertices: Vec<f32>) -> MeshData {
+        MeshData { vertices }
     }
 }
 
@@ -29,7 +26,7 @@ pub struct Mesh {
 impl Mesh {
     pub fn create(vertices: Vec<f32>) -> Mesh {
         Mesh {
-            ora: RuntimeRenderableAsset::new(create(vertices), ()),
+            ora: RuntimeRenderableAsset::new(MeshData::create(vertices), ()),
         }
     }
 }
