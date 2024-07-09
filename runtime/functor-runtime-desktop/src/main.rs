@@ -169,8 +169,6 @@ pub async fn main() {
             let mut color_material = ColorMaterial::create(vec4(1.0, 0.0, 0.0, 1.0));
             color_material.initialize(&render_context);
 
-            model.get().borrow_mut().draw(&render_context.gl);
-
             functor_runtime_common::Scene3D::render(
                 &scene,
                 &render_context,
@@ -180,6 +178,7 @@ pub async fn main() {
                 &view_matrix,
                 &color_material,
             );
+            model.get().borrow_mut().draw(&render_context.gl);
 
             window.swap_buffers();
         }

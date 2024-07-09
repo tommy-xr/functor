@@ -16,18 +16,14 @@ pub struct Model {
 }
 
 impl Geometry for Model {
-    fn draw(&mut self, gl: &glow::Context) {
-        for mesh in self.meshes.iter_mut() {
+    fn draw(&self, gl: &glow::Context) {
+        for mesh in self.meshes.iter() {
+            // println!("Drawing mesh!");
             mesh.draw(&gl)
         }
     }
 }
 
-#[derive(Debug)]
-pub struct Vertex {
-    pub position: Vector3<f32>,
-    pub tex_coords: Vector2<f32>,
-}
 impl AssetPipeline<Model> for ModelPipeline {
     fn process(
         &self,
@@ -49,9 +45,7 @@ impl AssetPipeline<Model> for ModelPipeline {
             }
         }
 
-        //println!("{:#?}", meshes);
-
-        panic!();
+        Model { meshes }
     }
 
     fn unloaded_asset(&self, context: crate::asset::AssetPipelineContext) -> Model {
@@ -88,11 +82,13 @@ fn process_node(
                 .map(|v| v.into_f32().collect::<Vec<_>>())
                 .unwrap_or_default();
 
+            let scale = 1.0;
+
             let vertices: Vec<VertexPositionTexture> = positions
                 .iter()
                 .zip(tex_coords.into_iter())
                 .map(|(pos, tex)| VertexPositionTexture {
-                    position: vec3(pos[0], pos[1], pos[2]),
+                    position: vec3(pos[0] * scale, pos[1] * scale, pos[2] * scale),
                     uv: vec2(tex[0], tex[1]),
                 })
                 .collect();
@@ -106,9 +102,8 @@ fn process_node(
             let index_mesh = IndexedMesh::create(vertices, indices);
             meshes.push(index_mesh);
         }
-
-        for child in node.children() {
-            process_node(&child, buffers, meshes);
-        }
+    }
+    for child in node.children() {
+        process_node(&child, buffers, meshes);
     }
 }
