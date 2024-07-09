@@ -178,7 +178,6 @@ pub async fn main() {
                 &view_matrix,
                 &color_material,
             );
-            model.get().borrow_mut().draw(&render_context.gl);
 
             window.swap_buffers();
         }

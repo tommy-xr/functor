@@ -87,15 +87,18 @@ let init (_args: array<string>) =
         
         let colorMaterial = Material.color(1.0f, 0.0f, 1.0f, 1.0f);
         let textureMaterial = Material.texture( Texture.file("crate.png"));
+        let barrelModel = Model.file("ExplodingBarrel.glb");
 
-        material (textureMaterial, [|
-            cylinder() |> Transform.translateY -1.0f;
-            cube()
-            |> Transform.rotateY (Math.Angle.degrees (frameTime.tts * 20.0f))
-            |> Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))
+        group([|
+            Graphics.Scene3D.model barrelModel;
+            material (textureMaterial, [|
+                cylinder() |> Transform.translateY -1.0f;
+                cube()
+                |> Transform.rotateY (Math.Angle.degrees (frameTime.tts * 20.0f))
+                |> Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))
+            |])
+            |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
         |])
-        |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
-
     )
     |> GameBuilder.tick tick
     |> Runtime.runGame

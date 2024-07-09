@@ -6,21 +6,28 @@ use serde::{Deserialize, Serialize};
 use fable_library_rust::NativeArray_::Array;
 
 use crate::{
-    asset::{self, pipelines::TexturePipeline, BuiltAssetPipeline},
+    asset::{
+        self,
+        pipelines::{Model, ModelPipeline, TexturePipeline},
+        BuiltAssetPipeline,
+    },
     geometry::{self, Geometry, Mesh},
-    material::Material,
+    material::{BasicMaterial, Material},
     math::Angle,
-    texture::Texture2D,
+    texture::{RuntimeTexture, Texture2D},
     RenderContext,
 };
 
 mod material_description;
+mod model_description;
 mod texture_description;
 
 pub use material_description::*;
+pub use model_description::*;
 pub use texture_description::*;
 
 pub struct SceneContext {
+    model_pipeline: Arc<BuiltAssetPipeline<Model>>,
     texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     cube: RefCell<Box<dyn Geometry>>,
     cylinder: RefCell<Mesh>,
@@ -34,6 +41,7 @@ impl SceneContext {
             sphere: RefCell::new(geometry::Sphere::create()),
             cylinder: RefCell::new(geometry::Cylinder::create()),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
+            model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
         }
     }
 }
@@ -48,6 +56,7 @@ pub enum Shape {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SceneObject {
     Geometry(Shape),
+    Model(ModelDescription),
     Material(MaterialDescription, Vec<Scene3D>),
     Group(Vec<Scene3D>),
 }
@@ -87,6 +96,13 @@ impl Scene3D {
     pub fn material(material: MaterialDescription, items: Array<Scene3D>) -> Self {
         Scene3D {
             obj: SceneObject::Material(material, items.to_vec()),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn model(model: ModelDescription) -> Self {
+        Scene3D {
+            obj: SceneObject::Model(model),
             xform: Matrix4::identity(),
         }
     }
@@ -148,6 +164,36 @@ impl Scene3D {
     ) {
         let skinning_data = vec![];
         match &self.obj {
+            SceneObject::Model(model_description) => {
+                let mut basic_material = BasicMaterial::create();
+                basic_material.initialize(&render_context);
+
+                match model_description {
+                    ModelDescription::File(str) => {
+                        let model = render_context
+                            .asset_cache
+                            .load_asset_with_pipeline(scene_context.model_pipeline.clone(), str);
+
+                        let hydrated_model = model.get();
+
+                        for mesh in hydrated_model.meshes.iter() {
+                            // Bind textures
+                            mesh.base_color_texture.bind(0, &render_context);
+
+                            basic_material.draw_opaque(
+                                &render_context,
+                                projection_matrix,
+                                view_matrix,
+                                world_matrix,
+                                &[],
+                            );
+
+                            mesh.mesh.draw(&render_context.gl)
+                        }
+                    }
+                }
+            }
+
             SceneObject::Material(material_description, items) => {
                 let material = material_description.get(render_context, scene_context);
                 for item in items.into_iter() {
