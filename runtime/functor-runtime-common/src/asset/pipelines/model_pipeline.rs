@@ -1,9 +1,12 @@
-use std::io::Cursor;
+use std::io::{self, Write};
+use std::{fs::File, io::Cursor};
 
-use cgmath::{vec2, vec3, vec4, Vector2, Vector3};
+use cgmath::{vec2, vec3, vec4, Matrix4, Vector2, Vector3};
 use fable_library_rust::System::Text;
+use gltf::image::Format;
 use gltf::Scene;
 
+use crate::texture::PixelFormat;
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::{Geometry, IndexedMesh},
@@ -19,6 +22,8 @@ pub struct ModelMesh {
     pub base_color_texture: Texture2D,
 
     pub mesh: IndexedMesh<VertexPositionTexture>,
+
+    pub transform: Matrix4<f32>,
 }
 
 pub struct Model {
@@ -61,8 +66,8 @@ fn process_node(
     meshes: &mut Vec<ModelMesh>,
 ) {
     if let Some(mesh) = node.mesh() {
-        let transform = node.transform().matrix();
-        // TODO: Convert to cgmath?
+        let transform_array = node.transform().matrix();
+        let transform = Matrix4::from(transform_array);
 
         for primitive in mesh.primitives() {
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
@@ -102,8 +107,20 @@ fn process_node(
             );
 
             // Parse material
+            // Parse material
             let material = primitive.material();
-            let base_color_texture = material.pbr_metallic_roughness().base_color_texture();
+
+            let base_color_texture =
+                if let Some(specular_glossiness_material) = material.pbr_specular_glossiness() {
+                    println!(
+                        "Diffuse factor: {:?}",
+                        specular_glossiness_material.diffuse_factor()
+                    );
+                    specular_glossiness_material.diffuse_texture()
+                } else {
+                    let material = material.pbr_metallic_roughness();
+                    material.base_color_texture()
+                };
 
             let texture = if let Some(texture) = base_color_texture {
                 let texture_info = texture.texture();
@@ -118,18 +135,21 @@ fn process_node(
 
                 // Access the bytes and format
                 let texture_bytes = &image.pixels;
-                let texture_format = image.format;
+
+                let format = match image.format {
+                    Format::R8G8B8 => PixelFormat::RGB,
+                    Format::R8G8B8A8 => PixelFormat::RGBA,
+                    _ => unimplemented!("Pixel format: {:?} not implemented", image.format),
+                };
 
                 let texture_data = TextureData {
                     bytes: texture_bytes.clone(),
                     width: image.width,
                     height: image.height,
-                    format: crate::texture::PixelFormat::RGB,
+                    format,
                 };
 
                 Texture2D::init_from_data(texture_data, TextureOptions::default())
-
-                // You can use the texture_bytes and texture_format as needed
             } else {
                 let data = TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255]);
                 Texture2D::init_from_data(data, TextureOptions::default())
@@ -139,6 +159,7 @@ fn process_node(
             let model_mesh = ModelMesh {
                 mesh,
                 base_color_texture: texture,
+                transform,
             };
 
             meshes.push(model_mesh);

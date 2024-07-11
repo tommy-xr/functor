@@ -176,15 +176,19 @@ impl Scene3D {
 
                         let hydrated_model = model.get();
 
+                        let matrix = world_matrix * self.xform;
+
                         for mesh in hydrated_model.meshes.iter() {
                             // Bind textures
                             mesh.base_color_texture.bind(0, &render_context);
+
+                            let matrix = matrix * mesh.transform;
 
                             basic_material.draw_opaque(
                                 &render_context,
                                 projection_matrix,
                                 view_matrix,
-                                world_matrix,
+                                &matrix,
                                 &[],
                             );
 

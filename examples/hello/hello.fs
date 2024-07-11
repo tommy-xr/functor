@@ -83,17 +83,18 @@ open Graphics.Scene3D;
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
-    |> GameBuilder.draw3d (fun model frameTime -> 
+    |> GameBuilder.draw3d (fun world frameTime -> 
         
         let colorMaterial = Material.color(1.0f, 0.0f, 1.0f, 1.0f);
         let textureMaterial = Material.texture( Texture.file("crate.png"));
         let barrelModel = Model.file("ExplodingBarrel.glb");
 
+        let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 1f;
+
         group([|
-            Graphics.Scene3D.model barrelModel;
             material (textureMaterial, [|
                 cylinder() |> Transform.translateY -1.0f;
-                cube()
+                renderModel
                 |> Transform.rotateY (Math.Angle.degrees (frameTime.tts * 20.0f))
                 |> Transform.rotateZ (Math.Angle.degrees (frameTime.tts * 40.0f))
             |])
