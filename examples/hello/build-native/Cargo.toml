@@ -10,7 +10,7 @@ target-dir = "../target"
 
 [lib]
 name = "game_native"
-path = "../Hello.rs"
+path = "../hello.rs"
 crate-type = ["dylib"]
 
 [dependencies]
