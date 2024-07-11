@@ -1,15 +1,12 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
-use std::borrow::BorrowMut;
 use std::env;
 use std::sync::Arc;
 use std::time::Instant;
 
 use cgmath::{perspective, vec3, Deg, Point3};
 use cgmath::{vec4, Matrix4};
-use functor_runtime_common::asset::pipelines::ModelPipeline;
-use functor_runtime_common::asset::{self, AssetCache, AssetPipeline};
-use functor_runtime_common::geometry::Geometry;
+use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::material::ColorMaterial;
 use functor_runtime_common::{FrameTime, SceneContext};
 use glfw::{Action, Key};
@@ -103,9 +100,6 @@ pub async fn main() {
         let asset_cache = Arc::new(AssetCache::new());
 
         let scene_context = SceneContext::new();
-
-        let model_pipeline = asset::build_pipeline(Box::new(ModelPipeline));
-        let model = asset_cache.load_asset_with_pipeline(model_pipeline, "ExplodingBarrel.glb");
 
         // let texture_future = async {
         //     let bytes = load_bytes_async("crate.png").await;

@@ -87,7 +87,7 @@ let init (_args: array<string>) =
         
         let colorMaterial = Material.color(1.0f, 0.0f, 1.0f, 1.0f);
         let textureMaterial = Material.texture( Texture.file("crate.png"));
-        let barrelModel = Model.file("shark.glb");
+        let barrelModel = Model.file("ExplodingBarrel.glb");
 
         let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 0.01f;
 
