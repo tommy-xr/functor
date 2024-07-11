@@ -8,12 +8,13 @@ use fable_library_rust::NativeArray_::Array;
 use crate::{
     asset::{
         self,
-        pipelines::{Model, ModelPipeline, TexturePipeline},
-        BuiltAssetPipeline,
+        pipelines::{ModelPipeline, TexturePipeline},
+        AssetHandle, BuiltAssetPipeline,
     },
     geometry::{self, Geometry, Mesh},
     material::{BasicMaterial, Material},
     math::Angle,
+    model::Model,
     texture::{RuntimeTexture, Texture2D},
     RenderContext,
 };
@@ -170,7 +171,7 @@ impl Scene3D {
 
                 match model_description {
                     ModelDescription::File(str) => {
-                        let model = render_context
+                        let model: Arc<AssetHandle<Model>> = render_context
                             .asset_cache
                             .load_asset_with_pipeline(scene_context.model_pipeline.clone(), str);
 

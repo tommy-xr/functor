@@ -1,41 +1,25 @@
-use std::io::{self, Write};
-use std::{fs::File, io::Cursor};
+use std::io::Cursor;
 
-use cgmath::{vec2, vec3, vec4, Matrix4, Vector2, Vector3};
-use fable_library_rust::System::Text;
+use cgmath::{vec2, vec3, Matrix4};
 use gltf::image::Format;
-use gltf::Scene;
 
+use crate::model::{Model, ModelMesh};
 use crate::texture::PixelFormat;
 use crate::{
     asset::{AssetCache, AssetPipeline},
-    geometry::{Geometry, IndexedMesh},
+    geometry::IndexedMesh,
     render::vertex::VertexPositionTexture,
-    texture::{Texture2D, TextureData, TextureFormat, TextureOptions, PNG},
-    Scene3D,
+    texture::{Texture2D, TextureData, TextureOptions},
 };
 
 pub struct ModelPipeline;
-
-pub struct ModelMesh {
-    // Material info
-    pub base_color_texture: Texture2D,
-
-    pub mesh: IndexedMesh<VertexPositionTexture>,
-
-    pub transform: Matrix4<f32>,
-}
-
-pub struct Model {
-    pub meshes: Vec<ModelMesh>,
-}
 
 impl AssetPipeline<Model> for ModelPipeline {
     fn process(
         &self,
         bytes: Vec<u8>,
-        asset_cache: &AssetCache,
-        context: crate::asset::AssetPipelineContext,
+        _asset_cache: &AssetCache,
+        _context: crate::asset::AssetPipelineContext,
     ) -> Model {
         let cursor = Cursor::new(bytes);
         let (document, buffers, images) = gltf::import_slice(cursor.get_ref()).unwrap();
@@ -54,7 +38,7 @@ impl AssetPipeline<Model> for ModelPipeline {
         Model { meshes }
     }
 
-    fn unloaded_asset(&self, context: crate::asset::AssetPipelineContext) -> Model {
+    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Model {
         Model { meshes: vec![] }
     }
 }
@@ -72,7 +56,7 @@ fn process_node(
         for primitive in mesh.primitives() {
             let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-            let name = mesh.name().unwrap_or(&"<no name>").to_owned();
+            let _name = mesh.name().unwrap_or(&"<no name>").to_owned();
 
             let positions = reader
                 .read_positions()
