@@ -89,7 +89,7 @@ let init (_args: array<string>) =
         let textureMaterial = Material.texture( Texture.file("crate.png"));
         let barrelModel = Model.file("ExplodingBarrel.glb");
 
-        let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 0.01f;
+        let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 1f;
 
         group([|
             material (textureMaterial, [|
