@@ -76,7 +76,7 @@ impl RenderableAsset for TextureData {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGBA as i32,
+                format as i32,
                 self.width as i32,
                 self.height as i32,
                 0,

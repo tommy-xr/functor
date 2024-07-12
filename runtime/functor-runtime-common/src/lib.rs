@@ -54,6 +54,7 @@ pub mod geometry;
 pub mod io;
 pub mod material;
 pub mod math;
+pub mod model;
 pub mod render;
 mod render_context;
 mod scene3d;

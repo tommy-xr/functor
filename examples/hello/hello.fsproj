@@ -1,10 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
-
   <PropertyGroup>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- <PublishAot>true</PublishAot> -->
@@ -17,7 +15,6 @@
     <!-- <IlcGenerateCompleteTypeMetadata>false</IlcGenerateCompleteTypeMetadata> -->
     <!-- <IlcGenerateStackTraceData>false</IlcGenerateStackTraceData> -->
   </PropertyGroup>
-
   <PropertyGroup>
     <WasmMainJSPath>main.mjs</WasmMainJSPath>
     <!-- enable reporting to profiler in browser dev tools -->
@@ -29,18 +26,13 @@
     <!-- <WasmEnableExceptionHandling>true</WasmEnableExceptionHandling> -->
     <!-- <WasmEnableSIMD>true</WasmEnableSIMD> -->
   </PropertyGroup>
-
   <ItemGroup>
-    <Compile Include="Hello.fs" />
+    <Compile Include="hello.fs" />
   </ItemGroup>
-
   <ItemGroup Condition="'$(TargetArchitecture)' != 'wasm'">
     <PackageReference Include="Fable.Core" Version="4.3.0" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="../../src/Functor.Game/Functor.Game.fsproj" />
   </ItemGroup>
-
-
 </Project>
