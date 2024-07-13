@@ -75,6 +75,8 @@ impl AssetPipeline<Model> for ModelPipeline {
             }
         }
 
+        process_animations(&document, &buffers);
+
         Model { meshes }
     }
 
@@ -115,6 +117,16 @@ fn process_node(
 
             let scale = 1.0;
 
+            let joints = reader
+                .read_joints(0)
+                .map(|v| v.into_u16().collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            let weights = reader
+                .read_weights(0)
+                .map(|v| v.into_f32().collect::<Vec<_>>())
+                .unwrap_or_default();
+
             let vertices: Vec<VertexPositionTexture> = positions
                 .iter()
                 .zip(tex_coords.into_iter())
@@ -124,10 +136,12 @@ fn process_node(
                 })
                 .collect();
             println!(
-                "-- Mesh: {:?} vertices: {} indices: {}",
+                "-- Mesh: {:?} vertices: {} indices: {} joints: {} weights: {}",
                 mesh.name(),
                 vertices.len(),
-                indices.len()
+                indices.len(),
+                joints.len(),
+                weights.len(),
             );
 
             // Parse material
@@ -167,7 +181,65 @@ fn process_node(
             meshes.push(model_mesh);
         }
     }
+
+    // Process skinning data
+    if let Some(skin) = node.skin() {
+        println!("Skin: {:?}", skin.name());
+        let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
+        let inverse_bind_matrices = reader
+            .read_inverse_bind_matrices()
+            .map(|v| v.collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        for (i, joint) in skin.joints().enumerate() {
+            println!("Joint {}: {:?}", i, joint.name().unwrap_or("<no name>"));
+            // Process joint transformation and hierarchy
+        }
+    }
+
     for child in node.children() {
         process_node(&child, buffers, images, meshes);
+    }
+}
+
+fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) {
+    // Load animations
+    // From: https://whoisryosuke.com/blog/2022/importing-gltf-with-wgpu-and-rust
+    for animation in document.animations() {
+        println!("!! Animation: {:?}", animation.name());
+        for channel in animation.channels() {
+            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+            let keyframe_timestamps = if let Some(inputs) = reader.read_inputs() {
+                match inputs {
+                    gltf::accessor::Iter::Standard(times) => {
+                        let times: Vec<f32> = times.collect();
+                        println!("Time: {}", times.len());
+                        // dbg!(times);
+                    }
+                    gltf::accessor::Iter::Sparse(_) => {
+                        println!("Sparse keyframes not supported");
+                    }
+                }
+            };
+
+            let mut keyframes_vec: Vec<Vec<f32>> = Vec::new();
+            let keyframes = if let Some(outputs) = reader.read_outputs() {
+                match outputs {
+                    gltf::animation::util::ReadOutputs::Translations(translation) => {
+                        translation.for_each(|tr| {
+                            // println!("Translation:");
+                            // dbg!(tr);
+                            let vector: Vec<f32> = tr.into();
+                            keyframes_vec.push(vector);
+                        });
+                    }
+                    other => (), // gltf::animation::util::ReadOutputs::Rotations(_) => todo!(),
+                                 // gltf::animation::util::ReadOutputs::Scales(_) => todo!(),
+                                 // gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => todo!(),
+                }
+            };
+
+            println!("Keyframes: {}", keyframes_vec.len());
+        }
     }
 }
