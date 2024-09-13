@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use cgmath::{vec2, vec3, Matrix4};
 use gltf::image::Format;
+use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::model::{Model, ModelMesh};
 use crate::texture::PixelFormat;
@@ -22,18 +23,52 @@ impl AssetPipeline<Model> for ModelPipeline {
         _context: crate::asset::AssetPipelineContext,
     ) -> Model {
         let cursor = Cursor::new(bytes);
-        let (document, buffers, images) = gltf::import_slice(cursor.get_ref()).unwrap();
+        let gltf = gltf::Gltf::from_slice(cursor.get_ref()).unwrap();
+        let document = gltf.document;
+        let blob = gltf.blob;
+
+        // Manually process buffers
+        let mut buffers_data = Vec::new();
+        for buffer in document.buffers() {
+            let data = match buffer.source() {
+                BufferSource::Bin => blob.as_ref().expect("No binary blob in GLB file").clone(),
+                BufferSource::Uri(uri) => {
+                    panic!("External buffer: {}", uri);
+                }
+            };
+            buffers_data.push(gltf::buffer::Data(data));
+        }
+
+        // Manually process images
+        let mut images_data = Vec::new();
+        for image in document.images() {
+            let data = match image.source() {
+                ImageSource::View { view, .. } => {
+                    // Get data from buffer view
+                    let buffer = &buffers_data[view.buffer().index()];
+                    let start = view.offset();
+                    let end = start + view.length();
+                    buffer[start..end].to_vec()
+                }
+                ImageSource::Uri { uri, .. } => {
+                    // Manually resolve the image data
+                    panic!("External image: {}", uri)
+                }
+            };
+            images_data.push(data);
+        }
 
         let mut meshes = Vec::new();
 
         for scene in document.scenes() {
-            print!("Scene {}", scene.index());
-            println!();
+            println!("Scene {}", scene.index());
             for node in scene.nodes() {
                 println!("- Node: {:?}", node.name());
-                process_node(&node, &buffers, &images, &mut meshes);
+                //process_node(&node, &buffers_data, &images_data, &mut meshes);
             }
         }
+
+        panic!("done");
 
         Model { meshes }
     }
