@@ -48,11 +48,14 @@ impl AssetPipeline<Model> for ModelPipeline {
                     let buffer = &buffers_data[view.buffer().index()];
                     let start = view.offset();
                     let end = start + view.length();
-                    buffer[start..end].to_vec()
+                    println!("Random image loaded: {}", view.length());
+                    buffer[start..end].to_vec();
+                    TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255])
                 }
                 ImageSource::Uri { uri, .. } => {
                     // Manually resolve the image data
-                    panic!("External image: {}", uri)
+                    println!("External image: {}", uri);
+                    TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255])
                 }
             };
             images_data.push(data);
@@ -64,11 +67,9 @@ impl AssetPipeline<Model> for ModelPipeline {
             println!("Scene {}", scene.index());
             for node in scene.nodes() {
                 println!("- Node: {:?}", node.name());
-                //process_node(&node, &buffers_data, &images_data, &mut meshes);
+                process_node(&node, &buffers_data, &images_data, &mut meshes);
             }
         }
-
-        panic!("done");
 
         Model { meshes }
     }
@@ -81,7 +82,7 @@ impl AssetPipeline<Model> for ModelPipeline {
 fn process_node(
     node: &gltf::Node,
     buffers: &[gltf::buffer::Data],
-    images: &[gltf::image::Data],
+    images: &[TextureData],
     meshes: &mut Vec<ModelMesh>,
 ) {
     if let Some(mesh) = node.mesh() {
@@ -126,7 +127,6 @@ fn process_node(
             );
 
             // Parse material
-            // Parse material
             let material = primitive.material();
 
             let base_color_texture =
@@ -146,27 +146,29 @@ fn process_node(
                 let source = texture_info.source();
                 let image = &images[source.index()];
 
-                println!("Material base color texture index: {:?}", source.index());
-                println!("Texture width: {:?}", image.width);
-                println!("Texture height: {:?}", image.height);
-                println!("Texture format: {:?}", image.format);
-                println!("Texture data length: {:?}", image.pixels.len());
+                // println!("Material base color texture index: {:?}", source.index());
+                // println!("Texture width: {:?}", image.width);
+                // println!("Texture height: {:?}", image.height);
+                // println!("Texture format: {:?}", image.format);
+                // println!("Texture data length: {:?}", image.pixels.len());
 
-                // Access the bytes and format
-                let texture_bytes = &image.pixels;
+                // // Access the bytes and format
+                // let texture_bytes = &image.pixels;
 
-                let format = match image.format {
-                    Format::R8G8B8 => PixelFormat::RGB,
-                    Format::R8G8B8A8 => PixelFormat::RGBA,
-                    _ => unimplemented!("Pixel format: {:?} not implemented", image.format),
-                };
+                // let format = match image.format {
+                //     Format::R8G8B8 => PixelFormat::RGB,
+                //     Format::R8G8B8A8 => PixelFormat::RGBA,
+                //     _ => unimplemented!("Pixel format: {:?} not implemented", image.format),
+                // };
 
-                let texture_data = TextureData {
-                    bytes: texture_bytes.clone(),
-                    width: image.width,
-                    height: image.height,
-                    format,
-                };
+                // let texture_data = TextureData {
+                //     bytes: texture_bytes.clone(),
+                //     width: image.width,
+                //     height: image.height,
+                //     format,
+                // };
+
+                let texture_data = image.clone();
 
                 Texture2D::init_from_data(texture_data, TextureOptions::default())
             } else {
