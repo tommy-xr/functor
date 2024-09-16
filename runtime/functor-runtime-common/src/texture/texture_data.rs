@@ -1,3 +1,7 @@
+use std::io::Read;
+
+use image::DynamicImage;
+
 use super::PixelFormat;
 
 #[derive(Clone)]
@@ -9,6 +13,17 @@ pub struct TextureData {
 }
 
 impl TextureData {
+    pub fn from_image(image: DynamicImage) -> TextureData {
+        let bytes = image.to_rgba8();
+
+        TextureData {
+            bytes: bytes.to_vec(),
+            width: image.width(),
+            height: image.height(),
+            format: PixelFormat::RGBA,
+        }
+    }
+
     pub fn checkerboard_pattern(width: u32, height: u32, color: [u8; 4]) -> TextureData {
         let mut bytes = Vec::with_capacity((width * height * 4) as usize);
 

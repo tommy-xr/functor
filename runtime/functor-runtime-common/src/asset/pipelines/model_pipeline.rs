@@ -48,9 +48,16 @@ impl AssetPipeline<Model> for ModelPipeline {
                     let buffer = &buffers_data[view.buffer().index()];
                     let start = view.offset();
                     let end = start + view.length();
-                    println!("Random image loaded: {}", view.length());
-                    buffer[start..end].to_vec();
-                    TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255])
+                    println!("Random image loaded: {} {}", start, end);
+                    let buf = buffer[start..end].to_vec();
+                    let maybe_image = image::load_from_memory(&buf);
+
+                    if let Ok(image) = maybe_image {
+                        TextureData::from_image(image)
+                    } else {
+                        panic!("unable to load webp?");
+                        TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255])
+                    }
                 }
                 ImageSource::Uri { uri, .. } => {
                     // Manually resolve the image data
@@ -169,7 +176,6 @@ fn process_node(
                 // };
 
                 let texture_data = image.clone();
-
                 Texture2D::init_from_data(texture_data, TextureOptions::default())
             } else {
                 let data = TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255]);
