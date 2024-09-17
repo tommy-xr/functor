@@ -180,18 +180,35 @@ impl Scene3D {
                         let matrix = world_matrix * self.xform;
 
                         for mesh in hydrated_model.meshes.iter() {
-                            // Bind textures
-                            mesh.base_color_texture.bind(0, &render_context);
+                            // Go through selectors, and adjust
+                            let override_material_description = Some(MaterialDescription::Texture(
+                                TextureDescription::File("vr_glove_color.jpg".to_string()),
+                            ));
+                            // let override_material_description: Option<MaterialDescription> = None;
 
                             let matrix = matrix * mesh.transform;
 
-                            basic_material.draw_opaque(
-                                &render_context,
-                                projection_matrix,
-                                view_matrix,
-                                &matrix,
-                                &[],
-                            );
+                            if let Some(material_description) = override_material_description {
+                                let material =
+                                    material_description.get(render_context, scene_context);
+                                material.draw_opaque(
+                                    &render_context,
+                                    projection_matrix,
+                                    view_matrix,
+                                    &matrix,
+                                    &[],
+                                );
+                            } else {
+                                // Bind textures
+                                mesh.base_color_texture.bind(0, &render_context);
+                                basic_material.draw_opaque(
+                                    &render_context,
+                                    projection_matrix,
+                                    view_matrix,
+                                    &matrix,
+                                    &[],
+                                );
+                            };
 
                             mesh.mesh.draw(&render_context.gl)
                         }
