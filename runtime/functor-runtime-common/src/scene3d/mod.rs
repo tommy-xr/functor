@@ -169,9 +169,8 @@ impl Scene3D {
                 let mut basic_material = BasicMaterial::create();
                 basic_material.initialize(&render_context);
 
-                match model_description {
-                    ModelDescription::File(str) => {
-                        println!("Trying to load: {}", str);
+                match &model_description.handle {
+                    ModelHandle::File(str) => {
                         let model: Arc<AssetHandle<Model>> = render_context
                             .asset_cache
                             .load_asset_with_pipeline(scene_context.model_pipeline.clone(), str);
