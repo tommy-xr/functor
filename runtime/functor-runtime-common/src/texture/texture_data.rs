@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use image::DynamicImage;
 
 use super::PixelFormat;
