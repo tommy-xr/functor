@@ -171,6 +171,7 @@ impl Scene3D {
 
                 match model_description {
                     ModelDescription::File(str) => {
+                        println!("Trying to load: {}", str);
                         let model: Arc<AssetHandle<Model>> = render_context
                             .asset_cache
                             .load_asset_with_pipeline(scene_context.model_pipeline.clone(), str);
