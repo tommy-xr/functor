@@ -6,6 +6,8 @@ open Fable.Core
 [<Erase; Emit("functor_runtime_common::TextureDescription")>] type Texture = | Noop
 [<Erase; Emit("functor_runtime_common::ModelDescription")>] type Model = | Noop
 [<Erase; Emit("functor_runtime_common::MaterialDescription")>] type Material = | Noop
+[<Erase; Emit("functor_runtime_common::MeshSelector")>] type MeshSelector = | Noop
+[<Erase; Emit("functor_runtime_common::MeshOverride")>] type MeshOverride = | Noop
 
 module Scene3D =
 
@@ -34,9 +36,20 @@ module Scene3D =
         [<Emit("functor_runtime_common::MaterialDescription::texture($0)")>]
         let texture (texture: Texture): Material = nativeOnly
 
+    module MeshSelector =
+        [<Emit("functor_runtime_common::MeshSelector::all()")>]
+        let all (): MeshSelector = nativeOnly
+
+    module MeshOverride =
+        [<Emit("functor_runtime_common::MeshOverride::material($0)")>]
+        let material (material: Material): MeshOverride = nativeOnly
+
     module Model =
         [<Emit("functor_runtime_common::ModelDescription::file($0)")>]
         let file (str: string): Model = nativeOnly
+
+        [<Emit("functor_runtime_common::ModelDescription::modify($2, $0, $1)")>]
+        let modify (selector: MeshSelector) (meshOverride: MeshOverride) (model: Model): Model = nativeOnly
 
     module Texture =
         [<Emit("functor_runtime_common::TextureDescription::file($0)")>]

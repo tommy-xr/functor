@@ -181,16 +181,30 @@ impl Scene3D {
 
                         for mesh in hydrated_model.meshes.iter() {
                             // Go through selectors, and adjust
-                            let override_material_description = Some(MaterialDescription::Texture(
-                                TextureDescription::File("vr_glove_color.jpg".to_string()),
-                            ));
-                            // let override_material_description: Option<MaterialDescription> = None;
+                            // let override_material_description = Some(MaterialDescription::Texture(
+                            //     TextureDescription::File("vr_glove_color.jpg".to_string()),
+                            // ));
 
-                            let matrix = matrix * mesh.transform;
+                            let mut override_material_description: Option<&MaterialDescription> =
+                                None;
+
+                            let mut matrix = matrix * mesh.transform;
+
+                            for (_selector, override_) in &model_description.overrides {
+                                match override_ {
+                                    MeshOverride::Material(material) => {
+                                        override_material_description = Some(material);
+                                    }
+                                    MeshOverride::Transform(xform) => {
+                                        matrix = matrix * xform;
+                                    }
+                                }
+                            }
 
                             if let Some(material_description) = override_material_description {
                                 let material =
                                     material_description.get(render_context, scene_context);
+
                                 material.draw_opaque(
                                     &render_context,
                                     projection_matrix,
