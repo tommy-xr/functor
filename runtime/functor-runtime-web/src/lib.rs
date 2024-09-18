@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "strict", deny(warnings))]
+
 use std::cell::RefCell;
 use std::env;
 use std::path::Path;
