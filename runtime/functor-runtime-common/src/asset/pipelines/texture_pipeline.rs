@@ -24,7 +24,13 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
         };
 
         let texture_data = format_loader.load(&bytes);
-        Texture2D::init_from_data(texture_data, TextureOptions::default())
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                wrap: true,
+                linear: true,
+            },
+        )
     }
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
