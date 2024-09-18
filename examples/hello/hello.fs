@@ -92,7 +92,13 @@ let init (_args: array<string>) =
         // let renderModel = Model.file ("ExplodingBarrel.glb") |> Graphics.Scene3D.model |> Transform.scale 0.5f;
         let modify = Model.modify (MeshSelector.all ()) (MeshOverride.material (textureMaterial));
         let renderModel = Model.file ("vr_glove_model2.glb") |> modify |> Graphics.Scene3D.model |> Transform.scale 5f;
-        // let renderModel = Model.file ("shark.glb") |> Graphics.Scene3D.model |> Transform.scale 0.001f;
+
+        // let renderModel = 
+        //     "shark.glb"
+        //     |> Model.file 
+        //     |> Graphics.Scene3D.model 
+        //     |> Transform.scale 0.001f;
+
         group([|
             material (textureMaterial, [|
                 cylinder() |> Transform.translateY -1.0f;

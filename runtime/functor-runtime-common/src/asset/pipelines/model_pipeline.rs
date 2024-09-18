@@ -115,9 +115,6 @@ fn process_node(
 
             let scale = 1.0;
 
-            let tx_len = tex_coords.len();
-            let slice = &tex_coords[0..5].to_vec();
-
             let vertices: Vec<VertexPositionTexture> = positions
                 .iter()
                 .zip(tex_coords.into_iter())
@@ -127,14 +124,11 @@ fn process_node(
                 })
                 .collect();
             println!(
-                "-- Mesh: {:?} vertices: {} indices: {} texcoords: {}",
+                "-- Mesh: {:?} vertices: {} indices: {}",
                 mesh.name(),
                 vertices.len(),
-                indices.len(),
-                tx_len,
+                indices.len()
             );
-
-            println!("First few texcoords: {:?}", slice);
 
             // Parse material
             let material = primitive.material();
