@@ -13,12 +13,7 @@ use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
-use functor_runtime_common::geometry::Geometry;
-use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::material::BasicMaterial;
-use functor_runtime_common::texture::{
-    RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
-};
 use functor_runtime_common::{FrameTime, RenderContext, Scene3D, SceneContext};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};

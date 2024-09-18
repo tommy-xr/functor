@@ -31,6 +31,9 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Build wasm
+        run: cargo build --features=strict --target=wasm32-unknown-unknown
+
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
