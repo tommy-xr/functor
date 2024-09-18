@@ -31,14 +31,14 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Build wasm
-        run: cargo build --features=strict --target=wasm32-unknown-unknown
-
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
       - name: Build F#
         run: npm run build:examples:hello:rust
+
+      - name: Check warnings
+        run: cargo build --features=strict --target=wasm32-unknown-unknown
 
       - name: Build runtime wasm bundle
         run: wasm-pack build --target web
