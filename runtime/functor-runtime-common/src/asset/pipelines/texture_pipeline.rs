@@ -26,6 +26,8 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
         let texture_data = format_loader.load(&bytes);
         Texture2D::init_from_data(
             texture_data,
+            // Default to `wrap: true` so that model textures load correctly
+            // TODO: Consider how to pass options to pipeline
             TextureOptions {
                 wrap: true,
                 linear: true,
