@@ -169,9 +169,8 @@ impl Scene3D {
                 let mut basic_material = BasicMaterial::create();
                 basic_material.initialize(&render_context);
 
-                match model_description {
-                    ModelDescription::File(str) => {
-                        println!("Trying to load: {}", str);
+                match &model_description.handle {
+                    ModelHandle::File(str) => {
                         let model: Arc<AssetHandle<Model>> = render_context
                             .asset_cache
                             .load_asset_with_pipeline(scene_context.model_pipeline.clone(), str);
@@ -181,18 +180,49 @@ impl Scene3D {
                         let matrix = world_matrix * self.xform;
 
                         for mesh in hydrated_model.meshes.iter() {
-                            // Bind textures
-                            mesh.base_color_texture.bind(0, &render_context);
+                            // Go through selectors, and adjust
+                            // let override_material_description = Some(MaterialDescription::Texture(
+                            //     TextureDescription::File("vr_glove_color.jpg".to_string()),
+                            // ));
 
-                            let matrix = matrix * mesh.transform;
+                            let mut override_material_description: Option<&MaterialDescription> =
+                                None;
 
-                            basic_material.draw_opaque(
-                                &render_context,
-                                projection_matrix,
-                                view_matrix,
-                                &matrix,
-                                &[],
-                            );
+                            let mut matrix = matrix * mesh.transform;
+
+                            for (_selector, override_) in &model_description.overrides {
+                                match override_ {
+                                    MeshOverride::Material(material) => {
+                                        override_material_description = Some(material);
+                                    }
+                                    MeshOverride::Transform(xform) => {
+                                        matrix = matrix * xform;
+                                    }
+                                }
+                            }
+
+                            if let Some(material_description) = override_material_description {
+                                let material =
+                                    material_description.get(render_context, scene_context);
+
+                                material.draw_opaque(
+                                    &render_context,
+                                    projection_matrix,
+                                    view_matrix,
+                                    &matrix,
+                                    &[],
+                                );
+                            } else {
+                                // Bind textures
+                                mesh.base_color_texture.bind(0, &render_context);
+                                basic_material.draw_opaque(
+                                    &render_context,
+                                    projection_matrix,
+                                    view_matrix,
+                                    &matrix,
+                                    &[],
+                                );
+                            };
 
                             mesh.mesh.draw(&render_context.gl)
                         }
