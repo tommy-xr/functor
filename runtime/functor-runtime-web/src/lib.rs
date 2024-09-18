@@ -1,24 +1,17 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use std::cell::RefCell;
-use std::env;
-use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use async_trait::async_trait;
 use cgmath::Matrix4;
 use cgmath::{perspective, vec3, Deg, Point3};
-use functor_runtime_common::asset::pipelines::TexturePipeline;
-use functor_runtime_common::asset::{AssetCache, AssetLoader};
+use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::{FrameTime, RenderContext, Scene3D, SceneContext};
 use glow::*;
-use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
-use wasm_bindgen_futures::{spawn_local, JsFuture};
+use wasm_bindgen_futures::spawn_local;
 
 use wasm_bindgen::prelude::*;
 
@@ -46,15 +39,6 @@ pub fn main() {
         run_async().await.unwrap_throw();
     })
 }
-struct WasmAssetLoader {}
-
-#[async_trait]
-impl AssetLoader for WasmAssetLoader {
-    async fn load_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
-        Ok(vec![])
-    }
-}
-
 async fn run_async() -> Result<(), JsValue> {
     // Load game
     // web_sys::console::log_2(&JsValue::from_str("Here: "), &three);
@@ -154,8 +138,6 @@ async fn run_async() -> Result<(), JsValue> {
             .performance()
             .expect("performance should be available");
 
-        let mut i = 0;
-
         let initial_time = performance.now() as f32;
         let mut last_time = initial_time;
         // let texture_future = async {
@@ -167,7 +149,7 @@ async fn run_async() -> Result<(), JsValue> {
         // };
         // let texture1 = Texture2D::init_from_future(texture_future, TextureOptions::default());
 
-        let mut asset_cache = Arc::new(AssetCache::new());
+        let asset_cache = Arc::new(AssetCache::new());
         // let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
 
         let scene_context = SceneContext::new();
@@ -186,7 +168,6 @@ async fn run_async() -> Result<(), JsValue> {
 
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             let radius = 5.0;
-            let time: f64 = performance.now() / 1000.0;
             let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
                 Point3::new(0.0, 0.0, -1.0 * radius),
                 Point3::new(0.0, 0.0, 0.0),
@@ -196,13 +177,13 @@ async fn run_async() -> Result<(), JsValue> {
             // let scene = Scene3D::cube();
 
             let now = performance.now() as f32;
-            let frameTime = FrameTime {
+            let frame_time = FrameTime {
                 dts: (now - last_time) / 1000.0,
                 tts: (now - initial_time) / 1000.0,
             };
             last_time = now;
 
-            let val = game_render(functor_runtime_common::to_js_value(&frameTime));
+            let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             web_sys::console::log_2(&JsValue::from_str("calling render"), &val);
 
             let scene: Scene3D = functor_runtime_common::from_js_value(val);
@@ -230,17 +211,4 @@ async fn run_async() -> Result<(), JsValue> {
     };
 
     Ok(())
-}
-
-async fn sleep(duration: Duration) {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        window()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                &resolve,
-                duration.as_millis() as i32,
-            )
-            .expect("should register `setTimeout` OK");
-    });
-
-    let _ = JsFuture::from(promise).await;
 }
