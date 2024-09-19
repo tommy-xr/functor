@@ -1,6 +1,7 @@
 use std::io::Cursor;
 
 use cgmath::{vec2, vec3, Matrix4};
+use gltf::camera::Projection;
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::model::{Model, ModelMesh};
@@ -75,7 +76,7 @@ impl AssetPipeline<Model> for ModelPipeline {
             }
         }
 
-        process_animations(&document, &buffers);
+        process_animations(&document, &buffers_data);
 
         Model { meshes }
     }
@@ -191,8 +192,21 @@ fn process_node(
             .map(|v| v.collect::<Vec<_>>())
             .unwrap_or_default();
 
+        let maybe_root = skin.skeleton();
+
+        if let Some(root) = maybe_root {
+            println!("Root: {:?}", root.name());
+            process_joints(&root);
+        }
+
         for (i, joint) in skin.joints().enumerate() {
-            println!("Joint {}: {:?}", i, joint.name().unwrap_or("<no name>"));
+            println!(
+                "Joint {} -> {}: {:?} -> {:?}",
+                i,
+                joint.index(),
+                joint.name().unwrap_or("<no name>"),
+                joint.transform(),
+            );
             // Process joint transformation and hierarchy
         }
     }
@@ -202,18 +216,26 @@ fn process_node(
     }
 }
 
+fn process_joints(node: &gltf::Node) {
+    println!("visiting node: {:?} : {:?}", node.name(), node.transform());
+
+    for node in node.children() {
+        process_joints(&node);
+    }
+}
+
 fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) {
     // Load animations
     // From: https://whoisryosuke.com/blog/2022/importing-gltf-with-wgpu-and-rust
     for animation in document.animations() {
-        println!("!! Animation: {:?}", animation.name());
+        // println!("!! Animation: {:?}", animation.name());
         for channel in animation.channels() {
             let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
             let keyframe_timestamps = if let Some(inputs) = reader.read_inputs() {
                 match inputs {
                     gltf::accessor::Iter::Standard(times) => {
                         let times: Vec<f32> = times.collect();
-                        println!("Time: {}", times.len());
+                        // println!("Time: {}", times.len());
                         // dbg!(times);
                     }
                     gltf::accessor::Iter::Sparse(_) => {
@@ -239,7 +261,7 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
                 }
             };
 
-            println!("Keyframes: {}", keyframes_vec.len());
+            // println!("Keyframes: {}", keyframes_vec.len());
         }
     }
 }

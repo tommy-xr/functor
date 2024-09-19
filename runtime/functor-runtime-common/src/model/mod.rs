@@ -1,6 +1,9 @@
-use cgmath::Matrix4;
+mod skin;
 
 use crate::{geometry::IndexedMesh, render::vertex::VertexPositionTexture, texture::Texture2D};
+use cgmath::Matrix4;
+
+pub use skin::*;
 
 pub struct ModelMesh {
     // Material info
