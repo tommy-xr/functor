@@ -2,22 +2,31 @@ use std::collections::{HashMap, HashSet};
 
 use cgmath::{Matrix4, SquareMatrix};
 
+#[derive(Debug)]
 pub struct Joint {
     pub name: String,
     pub transform: Matrix4<f32>,
     pub parent: Option<i32>,
 }
 
-pub struct Skin {
+#[derive(Debug)]
+pub struct Skeleton {
     num_joints: i32,
-    inv_bind_matrix: Vec<Matrix4<f32>>,
 
     // Use HashMap for joints because they could be sparse
     joint_info: HashMap<i32, Joint>,
     joint_absolute_transform: HashMap<i32, Matrix4<f32>>,
 }
 
-impl Skin {
+impl Skeleton {
+    pub fn empty() -> Skeleton {
+        Skeleton {
+            num_joints: 0,
+            joint_info: HashMap::new(),
+            joint_absolute_transform: HashMap::new(),
+        }
+    }
+
     pub fn get_joint_count(&self) -> i32 {
         self.num_joints
     }
@@ -33,21 +42,31 @@ impl Skin {
             .unwrap_or(Matrix4::identity())
     }
 
-    pub fn get_joint_absolute_transform(&self, idx: i32) -> Option<&Matrix4<f32>> {
-        self.joint_absolute_transform.get(&idx)
+    pub fn get_joint_absolute_transform(&self, idx: i32) -> Matrix4<f32> {
+        self.joint_absolute_transform
+            .get(&idx)
+            .map(|m| *m)
+            .unwrap_or(Matrix4::identity())
+    }
+
+    pub fn get_transforms(&self) -> Vec<Matrix4<f32>> {
+        let mut vec = Vec::new();
+        for i in 0..self.num_joints {
+            vec.push(self.get_joint_absolute_transform(i))
+        }
+        vec
     }
 }
 
-pub struct SkinBuilder {
-    skin: Skin,
+pub struct SkeletonBuilder {
+    skeleton: Skeleton,
 }
 
-impl SkinBuilder {
-    pub fn create(inv_bind_matrices: Vec<Matrix4<f32>>) -> SkinBuilder {
-        SkinBuilder {
-            skin: Skin {
-                num_joints: inv_bind_matrices.len() as i32,
-                inv_bind_matrix: inv_bind_matrices,
+impl SkeletonBuilder {
+    pub fn create() -> SkeletonBuilder {
+        SkeletonBuilder {
+            skeleton: Skeleton {
+                num_joints: 0,
                 joint_info: HashMap::new(),
                 joint_absolute_transform: HashMap::new(),
             },
@@ -55,30 +74,34 @@ impl SkinBuilder {
     }
 
     pub fn add_joint(
-        mut self,
+        &mut self,
         joint_index: i32,
         name: String,
         parent_index: Option<i32>,
         transform: Matrix4<f32>,
-    ) -> Self {
+    ) {
         let joint = Joint {
             name,
             transform,
             parent: parent_index,
         };
-        self.skin.joint_info.insert(joint_index, joint);
-        self
+        self.skeleton.joint_info.insert(joint_index, joint);
     }
 
-    pub fn build(mut self) -> Skin {
+    pub fn build(mut self) -> Skeleton {
         // Compute absolute transforms
-        let joint_absolute_transform = compute_absolute_transforms(&self.skin.joint_info);
+        let joint_absolute_transform = compute_absolute_transforms(&self.skeleton.joint_info);
 
-        // Update the skin with the computed absolute transforms
-        self.skin.joint_absolute_transform = joint_absolute_transform;
+        // Update the skeleton with the computed absolute transforms
+        self.skeleton.joint_absolute_transform = joint_absolute_transform;
 
-        // Return the built skin
-        self.skin
+        let num_joints = self.skeleton.joint_info.keys().max();
+
+        // Return the built skeleton
+        Skeleton {
+            num_joints: num_joints.map(|n| n + 1).unwrap_or(0),
+            ..self.skeleton
+        }
     }
 }
 
@@ -147,19 +170,17 @@ mod tests {
 
     #[test]
     fn test_absolute_transforms() {
-        // Sample inverse bind matrices (identity matrices for simplicity)
-        let inv_bind_matrices = vec![Matrix4::identity(); 3];
-
         // Define the transforms
         let transform_joint_0 = Matrix4::from_translation(Vector3::new(1.0, 0.0, 0.0));
         let transform_joint_1 = Matrix4::from_translation(Vector3::new(0.0, 2.0, 0.0));
         let transform_joint_2 = Matrix4::from_translation(Vector3::new(0.0, 0.0, 3.0));
 
         // Create the SkinBuilder
-        let skin_builder = SkinBuilder::create(inv_bind_matrices)
-            .add_joint(0, "Joint0".to_string(), None, transform_joint_0)
-            .add_joint(1, "Joint1".to_string(), Some(0), transform_joint_1)
-            .add_joint(2, "Joint2".to_string(), Some(1), transform_joint_2);
+        let mut skin_builder = SkeletonBuilder::create();
+
+        skin_builder.add_joint(0, "Joint0".to_string(), None, transform_joint_0);
+        skin_builder.add_joint(1, "Joint1".to_string(), Some(0), transform_joint_1);
+        skin_builder.add_joint(2, "Joint2".to_string(), Some(1), transform_joint_2);
 
         // Build the Skin
         let skin = skin_builder.build();
@@ -171,15 +192,9 @@ mod tests {
         let expected_abs_transform_joint_2 = expected_abs_transform_joint_1 * transform_joint_2;
 
         // Retrieve computed absolute transforms
-        let abs_transform_joint_0 = skin
-            .get_joint_absolute_transform(0)
-            .expect("Joint 0 missing");
-        let abs_transform_joint_1 = skin
-            .get_joint_absolute_transform(1)
-            .expect("Joint 1 missing");
-        let abs_transform_joint_2 = skin
-            .get_joint_absolute_transform(2)
-            .expect("Joint 2 missing");
+        let abs_transform_joint_0 = skin.get_joint_absolute_transform(0);
+        let abs_transform_joint_1 = skin.get_joint_absolute_transform(1);
+        let abs_transform_joint_2 = skin.get_joint_absolute_transform(2);
 
         // Helper function to compare matrices
         fn matrices_approx_equal(a: &Matrix4<f32>, b: &Matrix4<f32>) -> bool {

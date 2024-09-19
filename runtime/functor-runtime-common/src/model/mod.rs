@@ -1,9 +1,9 @@
-mod skin;
+mod skeleton;
 
 use crate::{geometry::IndexedMesh, render::vertex::VertexPositionTexture, texture::Texture2D};
 use cgmath::Matrix4;
 
-pub use skin::*;
+pub use skeleton::*;
 
 pub struct ModelMesh {
     // Material info
@@ -16,4 +16,6 @@ pub struct ModelMesh {
 
 pub struct Model {
     pub meshes: Vec<ModelMesh>,
+
+    pub skeleton: Skeleton,
 }

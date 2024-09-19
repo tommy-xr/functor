@@ -1,10 +1,11 @@
 use std::io::Cursor;
 
+use cgmath::num_traits::ToPrimitive;
 use cgmath::{vec2, vec3, Matrix4};
 use gltf::camera::Projection;
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
-use crate::model::{Model, ModelMesh};
+use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::IndexedMesh,
@@ -68,21 +69,34 @@ impl AssetPipeline<Model> for ModelPipeline {
 
         let mut meshes = Vec::new();
 
+        let mut maybe_skeleton: Option<Skeleton> = None;
+
         for scene in document.scenes() {
             println!("Scene {}", scene.index());
             for node in scene.nodes() {
                 println!("- Node: {:?}", node.name());
-                process_node(&node, &buffers_data, &images_data, &mut meshes);
+                process_node(
+                    &node,
+                    &buffers_data,
+                    &images_data,
+                    &mut meshes,
+                    &mut maybe_skeleton,
+                );
             }
         }
 
         process_animations(&document, &buffers_data);
 
-        Model { meshes }
+        let skeleton = maybe_skeleton.unwrap_or(Skeleton::empty());
+
+        Model { meshes, skeleton }
     }
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Model {
-        Model { meshes: vec![] }
+        Model {
+            meshes: vec![],
+            skeleton: Skeleton::empty(),
+        }
     }
 }
 
@@ -91,6 +105,7 @@ fn process_node(
     buffers: &[gltf::buffer::Data],
     images: &[TextureData],
     meshes: &mut Vec<ModelMesh>,
+    maybe_skeleton: &mut Option<Skeleton>,
 ) {
     if let Some(mesh) = node.mesh() {
         let transform_array = node.transform().matrix();
@@ -192,12 +207,16 @@ fn process_node(
             .map(|v| v.collect::<Vec<_>>())
             .unwrap_or_default();
 
+        let mut skeleton_builder = SkeletonBuilder::create();
+
         let maybe_root = skin.skeleton();
 
         if let Some(root) = maybe_root {
             println!("Root: {:?}", root.name());
-            process_joints(&root);
+            process_joints(&root, None, &mut skeleton_builder);
         }
+
+        *maybe_skeleton = Some(skeleton_builder.build());
 
         for (i, joint) in skin.joints().enumerate() {
             println!(
@@ -212,15 +231,24 @@ fn process_node(
     }
 
     for child in node.children() {
-        process_node(&child, buffers, images, meshes);
+        process_node(&child, buffers, images, meshes, maybe_skeleton);
     }
 }
 
-fn process_joints(node: &gltf::Node) {
+fn process_joints(
+    node: &gltf::Node,
+    parent_id: Option<i32>,
+    skeleton_builder: &mut SkeletonBuilder,
+) {
     println!("visiting node: {:?} : {:?}", node.name(), node.transform());
 
+    let id = node.index().to_i32().unwrap();
+    let name = node.name().unwrap_or("None");
+    let transform = node.transform().matrix().into();
+    skeleton_builder.add_joint(id, name.to_owned(), parent_id, transform);
+
     for node in node.children() {
-        process_joints(&node);
+        process_joints(&node, Some(id), skeleton_builder);
     }
 }
 
