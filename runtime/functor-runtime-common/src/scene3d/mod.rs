@@ -1,7 +1,6 @@
 use std::{cell::RefCell, sync::Arc};
 
 use cgmath::{point3, vec3, vec4, Matrix4, SquareMatrix, Transform};
-use gltf::json::extensions::scene;
 use serde::{Deserialize, Serialize};
 
 use fable_library_rust::NativeArray_::Array;
@@ -230,6 +229,7 @@ impl Scene3D {
                             mesh.mesh.draw(&render_context.gl)
                         }
 
+                        // TEMPORARY: Render joints
                         let joints = hydrated_model.skeleton.get_transforms();
                         for joint_transform in joints {
                             let mut color_material =

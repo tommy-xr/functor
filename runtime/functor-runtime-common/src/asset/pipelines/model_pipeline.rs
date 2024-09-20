@@ -2,7 +2,6 @@ use std::io::Cursor;
 
 use cgmath::num_traits::ToPrimitive;
 use cgmath::{vec2, vec3, Matrix4};
-use gltf::camera::Projection;
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
@@ -200,9 +199,10 @@ fn process_node(
 
     // Process skinning data
     if let Some(skin) = node.skin() {
-        println!("Skin: {:?}", skin.name());
         let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
-        let inverse_bind_matrices = reader
+
+        // TODO: Save inverse bind matrices with model
+        let _inverse_bind_matrices = reader
             .read_inverse_bind_matrices()
             .map(|v| v.collect::<Vec<_>>())
             .unwrap_or_default();
@@ -212,22 +212,10 @@ fn process_node(
         let maybe_root = skin.skeleton();
 
         if let Some(root) = maybe_root {
-            println!("Root: {:?}", root.name());
             process_joints(&root, None, &mut skeleton_builder);
         }
 
         *maybe_skeleton = Some(skeleton_builder.build());
-
-        for (i, joint) in skin.joints().enumerate() {
-            println!(
-                "Joint {} -> {}: {:?} -> {:?}",
-                i,
-                joint.index(),
-                joint.name().unwrap_or("<no name>"),
-                joint.transform(),
-            );
-            // Process joint transformation and hierarchy
-        }
     }
 
     for child in node.children() {
@@ -240,8 +228,6 @@ fn process_joints(
     parent_id: Option<i32>,
     skeleton_builder: &mut SkeletonBuilder,
 ) {
-    println!("visiting node: {:?} : {:?}", node.name(), node.transform());
-
     let id = node.index().to_i32().unwrap();
     let name = node.name().unwrap_or("None");
     let transform = node.transform().matrix().into();
@@ -259,10 +245,11 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
         // println!("!! Animation: {:?}", animation.name());
         for channel in animation.channels() {
             let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
-            let keyframe_timestamps = if let Some(inputs) = reader.read_inputs() {
+            // TODO:
+            let _keyframe_timestamps = if let Some(inputs) = reader.read_inputs() {
                 match inputs {
                     gltf::accessor::Iter::Standard(times) => {
-                        let times: Vec<f32> = times.collect();
+                        let _times: Vec<f32> = times.collect();
                         // println!("Time: {}", times.len());
                         // dbg!(times);
                     }
@@ -272,8 +259,9 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
                 }
             };
 
+            // TODO:
             let mut keyframes_vec: Vec<Vec<f32>> = Vec::new();
-            let keyframes = if let Some(outputs) = reader.read_outputs() {
+            let _keyframes = if let Some(outputs) = reader.read_outputs() {
                 match outputs {
                     gltf::animation::util::ReadOutputs::Translations(translation) => {
                         translation.for_each(|tr| {
@@ -283,9 +271,9 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
                             keyframes_vec.push(vector);
                         });
                     }
-                    other => (), // gltf::animation::util::ReadOutputs::Rotations(_) => todo!(),
-                                 // gltf::animation::util::ReadOutputs::Scales(_) => todo!(),
-                                 // gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => todo!(),
+                    _other => (), // gltf::animation::util::ReadOutputs::Rotations(_) => todo!(),
+                                  // gltf::animation::util::ReadOutputs::Scales(_) => todo!(),
+                                  // gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => todo!(),
                 }
             };
 
