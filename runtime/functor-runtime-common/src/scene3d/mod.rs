@@ -1,6 +1,6 @@
 use std::{cell::RefCell, sync::Arc};
 
-use cgmath::{vec3, Matrix4, SquareMatrix};
+use cgmath::{point3, vec3, vec4, Matrix4, SquareMatrix, Transform};
 use serde::{Deserialize, Serialize};
 
 use fable_library_rust::NativeArray_::Array;
@@ -12,7 +12,7 @@ use crate::{
         AssetHandle, BuiltAssetPipeline,
     },
     geometry::{self, Geometry, Mesh},
-    material::{BasicMaterial, Material},
+    material::{BasicMaterial, ColorMaterial, Material},
     math::Angle,
     model::Model,
     texture::{RuntimeTexture, Texture2D},
@@ -179,6 +179,8 @@ impl Scene3D {
 
                         let matrix = world_matrix * self.xform;
 
+                        // println!("SKELETON: {:#?}", hydrated_model.skeleton);
+
                         for mesh in hydrated_model.meshes.iter() {
                             // Go through selectors, and adjust
                             // let override_material_description = Some(MaterialDescription::Texture(
@@ -225,6 +227,29 @@ impl Scene3D {
                             };
 
                             mesh.mesh.draw(&render_context.gl)
+                        }
+
+                        // TEMPORARY: Render joints
+                        let joints = hydrated_model.skeleton.get_transforms();
+                        for joint_transform in joints {
+                            let mut color_material =
+                                ColorMaterial::create(vec4(0.0, 1.0, 0.0, 1.0));
+                            color_material.initialize(&render_context);
+
+                            let xform = &(matrix * joint_transform);
+                            let point = xform.transform_point(point3(0.0, 0.0, 0.0));
+                            let xform2 = Matrix4::from_translation(vec3(point.x, point.y, point.z))
+                                * Matrix4::from_scale(0.1);
+
+                            color_material.draw_opaque(
+                                &render_context,
+                                projection_matrix,
+                                view_matrix,
+                                &xform2,
+                                &[],
+                            );
+
+                            scene_context.sphere.borrow().draw(render_context.gl);
                         }
                     }
                 }

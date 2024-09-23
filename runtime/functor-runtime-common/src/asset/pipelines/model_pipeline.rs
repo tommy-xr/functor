@@ -1,9 +1,10 @@
 use std::io::Cursor;
 
+use cgmath::num_traits::ToPrimitive;
 use cgmath::{vec2, vec3, Matrix4};
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
-use crate::model::{Model, ModelMesh};
+use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::IndexedMesh,
@@ -67,19 +68,34 @@ impl AssetPipeline<Model> for ModelPipeline {
 
         let mut meshes = Vec::new();
 
+        let mut maybe_skeleton: Option<Skeleton> = None;
+
         for scene in document.scenes() {
             println!("Scene {}", scene.index());
             for node in scene.nodes() {
                 println!("- Node: {:?}", node.name());
-                process_node(&node, &buffers_data, &images_data, &mut meshes);
+                process_node(
+                    &node,
+                    &buffers_data,
+                    &images_data,
+                    &mut meshes,
+                    &mut maybe_skeleton,
+                );
             }
         }
 
-        Model { meshes }
+        process_animations(&document, &buffers_data);
+
+        let skeleton = maybe_skeleton.unwrap_or(Skeleton::empty());
+
+        Model { meshes, skeleton }
     }
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Model {
-        Model { meshes: vec![] }
+        Model {
+            meshes: vec![],
+            skeleton: Skeleton::empty(),
+        }
     }
 }
 
@@ -88,6 +104,7 @@ fn process_node(
     buffers: &[gltf::buffer::Data],
     images: &[TextureData],
     meshes: &mut Vec<ModelMesh>,
+    maybe_skeleton: &mut Option<Skeleton>,
 ) {
     if let Some(mesh) = node.mesh() {
         let transform_array = node.transform().matrix();
@@ -115,6 +132,16 @@ fn process_node(
 
             let scale = 1.0;
 
+            let joints = reader
+                .read_joints(0)
+                .map(|v| v.into_u16().collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            let weights = reader
+                .read_weights(0)
+                .map(|v| v.into_f32().collect::<Vec<_>>())
+                .unwrap_or_default();
+
             let vertices: Vec<VertexPositionTexture> = positions
                 .iter()
                 .zip(tex_coords.into_iter())
@@ -124,10 +151,12 @@ fn process_node(
                 })
                 .collect();
             println!(
-                "-- Mesh: {:?} vertices: {} indices: {}",
+                "-- Mesh: {:?} vertices: {} indices: {} joints: {} weights: {}",
                 mesh.name(),
                 vertices.len(),
-                indices.len()
+                indices.len(),
+                joints.len(),
+                weights.len(),
             );
 
             // Parse material
@@ -167,7 +196,88 @@ fn process_node(
             meshes.push(model_mesh);
         }
     }
+
+    // Process skinning data
+    if let Some(skin) = node.skin() {
+        let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
+
+        // TODO: Save inverse bind matrices with model
+        let _inverse_bind_matrices = reader
+            .read_inverse_bind_matrices()
+            .map(|v| v.collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let mut skeleton_builder = SkeletonBuilder::create();
+
+        let maybe_root = skin.skeleton();
+
+        if let Some(root) = maybe_root {
+            process_joints(&root, None, &mut skeleton_builder);
+        }
+
+        *maybe_skeleton = Some(skeleton_builder.build());
+    }
+
     for child in node.children() {
-        process_node(&child, buffers, images, meshes);
+        process_node(&child, buffers, images, meshes, maybe_skeleton);
+    }
+}
+
+fn process_joints(
+    node: &gltf::Node,
+    parent_id: Option<i32>,
+    skeleton_builder: &mut SkeletonBuilder,
+) {
+    let id = node.index().to_i32().unwrap();
+    let name = node.name().unwrap_or("None");
+    let transform = node.transform().matrix().into();
+    skeleton_builder.add_joint(id, name.to_owned(), parent_id, transform);
+
+    for node in node.children() {
+        process_joints(&node, Some(id), skeleton_builder);
+    }
+}
+
+fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) {
+    // Load animations
+    // From: https://whoisryosuke.com/blog/2022/importing-gltf-with-wgpu-and-rust
+    for animation in document.animations() {
+        // println!("!! Animation: {:?}", animation.name());
+        for channel in animation.channels() {
+            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+            // TODO:
+            let _keyframe_timestamps = if let Some(inputs) = reader.read_inputs() {
+                match inputs {
+                    gltf::accessor::Iter::Standard(times) => {
+                        let _times: Vec<f32> = times.collect();
+                        // println!("Time: {}", times.len());
+                        // dbg!(times);
+                    }
+                    gltf::accessor::Iter::Sparse(_) => {
+                        println!("Sparse keyframes not supported");
+                    }
+                }
+            };
+
+            // TODO:
+            let mut keyframes_vec: Vec<Vec<f32>> = Vec::new();
+            let _keyframes = if let Some(outputs) = reader.read_outputs() {
+                match outputs {
+                    gltf::animation::util::ReadOutputs::Translations(translation) => {
+                        translation.for_each(|tr| {
+                            // println!("Translation:");
+                            // dbg!(tr);
+                            let vector: Vec<f32> = tr.into();
+                            keyframes_vec.push(vector);
+                        });
+                    }
+                    _other => (), // gltf::animation::util::ReadOutputs::Rotations(_) => todo!(),
+                                  // gltf::animation::util::ReadOutputs::Scales(_) => todo!(),
+                                  // gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => todo!(),
+                }
+            };
+
+            // println!("Keyframes: {}", keyframes_vec.len());
+        }
     }
 }
