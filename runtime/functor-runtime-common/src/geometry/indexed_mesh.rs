@@ -2,7 +2,7 @@ use glow::{Buffer, HasContext, VertexArray};
 
 use crate::{
     asset::{RenderableAsset, RuntimeRenderableAsset},
-    render::vertex::Vertex,
+    render::vertex::{Vertex, VertexAttributeType},
 };
 
 use super::Geometry;
@@ -65,15 +65,20 @@ impl<T: Vertex> RenderableAsset for IndexedMeshData<T> {
             for i in 0..attr_len {
                 let attribute = &attributes[i as usize];
 
-                gl.enable_vertex_attrib_array(i);
-                gl.vertex_attrib_pointer_f32(
-                    i,
-                    attribute.size,
-                    glow::FLOAT,
-                    false,
-                    total_size,
-                    attribute.offset as i32,
-                );
+                match attribute.attribute_type {
+                    VertexAttributeType::Float => {
+                        gl.vertex_attrib_pointer_f32(
+                            i as u32,
+                            attribute.size as i32,
+                            glow::FLOAT,
+                            false,
+                            total_size as i32,
+                            attribute.offset as i32,
+                        );
+                    }
+                    // Handle other attribute types here
+                    _ => panic!("Unsupported attribute type"),
+                }
             }
 
             // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
