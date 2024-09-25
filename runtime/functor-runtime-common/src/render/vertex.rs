@@ -1,6 +1,3 @@
-use cgmath::{Vector2, Vector3};
-use std::mem::{offset_of, size_of};
-
 pub enum VertexAttributeType {
     Float,
 }

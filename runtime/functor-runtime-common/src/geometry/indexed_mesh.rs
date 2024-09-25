@@ -77,8 +77,6 @@ impl<T: Vertex> RenderableAsset for IndexedMeshData<T> {
                             attribute.offset as i32,
                         );
                     }
-                    // Handle other attribute types here
-                    _ => panic!("Unsupported attribute type"),
                 }
             }
 
