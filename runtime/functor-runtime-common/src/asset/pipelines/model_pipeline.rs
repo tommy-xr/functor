@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::io::Cursor;
 
 use cgmath::num_traits::ToPrimitive;
@@ -6,8 +7,7 @@ use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
-
-use crate::render::VertexPositionTexture;
+use crate::render::{VertexPositionTexture, VertexPositionTextureSkinned};
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::IndexedMesh,
@@ -149,12 +149,27 @@ fn process_node(
                 .map(|v| v.into_f32().collect::<Vec<_>>())
                 .unwrap_or_default();
 
-            let vertices: Vec<VertexPositionTexture> = positions
-                .iter()
-                .zip(tex_coords.into_iter())
-                .map(|(pos, tex)| VertexPositionTexture {
-                    position: vec3(pos[0] * scale, pos[1] * scale, pos[2] * scale),
-                    uv: vec2(tex[0], tex[1]),
+            // Ensure all attribute vectors have the same length
+            let vertex_count = min(
+                positions.len(),
+                min(tex_coords.len(), min(joints.len(), weights.len())),
+            );
+
+            let vertices: Vec<VertexPositionTextureSkinned> = (0..vertex_count)
+                .map(|i| VertexPositionTextureSkinned {
+                    position: vec3(
+                        positions[i][0] * scale,
+                        positions[i][1] * scale,
+                        positions[i][2] * scale,
+                    ),
+                    uv: vec2(tex_coords[i][0], tex_coords[i][1]),
+                    joint_indices: vec4(
+                        joints[i][0] as f32,
+                        joints[i][1] as f32,
+                        joints[i][2] as f32,
+                        joints[i][3] as f32,
+                    ),
+                    weights: vec4(weights[i][0], weights[i][1], weights[i][2], weights[i][3]),
                 })
                 .collect();
             println!(
