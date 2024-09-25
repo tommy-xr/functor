@@ -65,6 +65,7 @@ impl<T: Vertex> RenderableAsset for IndexedMeshData<T> {
             for i in 0..attr_len {
                 let attribute = &attributes[i as usize];
 
+                gl.enable_vertex_attrib_array(i);
                 match attribute.attribute_type {
                     VertexAttributeType::Float => {
                         gl.vertex_attrib_pointer_f32(
