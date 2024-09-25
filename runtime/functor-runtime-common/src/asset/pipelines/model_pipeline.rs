@@ -7,7 +7,7 @@ use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
-use crate::render::{VertexPositionTexture, VertexPositionTextureSkinned};
+use crate::render::VertexPositionTextureSkinned;
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::IndexedMesh,
