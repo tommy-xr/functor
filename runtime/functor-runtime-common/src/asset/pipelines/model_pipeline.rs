@@ -1,11 +1,12 @@
 use std::io::Cursor;
 
 use cgmath::num_traits::ToPrimitive;
-use cgmath::{vec2, vec3, Matrix4};
+use cgmath::{vec2, vec3, Matrix4, Quaternion};
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
+use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
-use crate::render::VertexPositionTexture;
+
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::IndexedMesh,
@@ -84,17 +85,22 @@ impl AssetPipeline<Model> for ModelPipeline {
             }
         }
 
-        process_animations(&document, &buffers_data);
+        let animations = process_animations(&document, &buffers_data);
 
         let skeleton = maybe_skeleton.unwrap_or(Skeleton::empty());
 
-        Model { meshes, skeleton }
+        Model {
+            meshes,
+            skeleton,
+            animations,
+        }
     }
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Model {
         Model {
             meshes: vec![],
             skeleton: Skeleton::empty(),
+            animations: vec![],
         }
     }
 }
@@ -280,4 +286,125 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
             // println!("Keyframes: {}", keyframes_vec.len());
         }
     }
+}
+
+fn process_joints(
+    node: &gltf::Node,
+    parent_id: Option<i32>,
+    skeleton_builder: &mut SkeletonBuilder,
+) {
+    let id = node.index().to_i32().unwrap();
+    let name = node.name().unwrap_or("None");
+    let transform = node.transform().matrix().into();
+    skeleton_builder.add_joint(id, name.to_owned(), parent_id, transform);
+
+    for node in node.children() {
+        process_joints(&node, Some(id), skeleton_builder);
+    }
+}
+
+fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<Animation> {
+    let mut animations = Vec::new();
+    // Load animations
+    // From: https://whoisryosuke.com/blog/2022/importing-gltf-with-wgpu-and-rust
+    for animation in document.animations() {
+        let animation_name = animation.name().unwrap_or("Unnamed Animation").to_owned();
+        let mut channels = Vec::new();
+        let mut max_time = 0.0;
+
+        for channel in animation.channels() {
+            // TODO: Proper interpolation
+            //let sampler = channel.sampler();
+            let target = channel.target();
+            let node_index = target.node().index();
+            let property = match target.property() {
+                gltf::animation::Property::Translation => AnimationProperty::Translation,
+                gltf::animation::Property::Rotation => AnimationProperty::Rotation,
+                gltf::animation::Property::Scale => AnimationProperty::Scale,
+                gltf::animation::Property::MorphTargetWeights => AnimationProperty::Weights,
+            };
+
+            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+
+            let input_times: Vec<f32> = reader
+                .read_inputs()
+                .expect("Failed to read animation input")
+                .collect();
+
+            let output_values = reader
+                .read_outputs()
+                .expect("Failed to read animation output");
+
+            let mut keyframes = Vec::new();
+            max_time = input_times
+                .iter()
+                .cloned()
+                .fold(max_time, |a: f32, b: f32| a.max(b));
+
+            match output_values {
+                gltf::animation::util::ReadOutputs::Translations(translations) => {
+                    for (i, translation) in translations.enumerate() {
+                        let time = input_times[i];
+                        keyframes.push(Keyframe {
+                            time,
+                            value: AnimationValue::Translation(vec3(
+                                translation[0],
+                                translation[1],
+                                translation[2],
+                            )),
+                        });
+                    }
+                }
+                gltf::animation::util::ReadOutputs::Rotations(rotations) => {
+                    for (i, rotation) in rotations.into_f32().enumerate() {
+                        let time = input_times[i];
+                        keyframes.push(Keyframe {
+                            time,
+                            // TODO: Does w come first or last?
+                            value: AnimationValue::Rotation(Quaternion {
+                                v: vec3(rotation[0], rotation[1], rotation[2]),
+                                s: rotation[3],
+                            }),
+                        });
+                    }
+                }
+                gltf::animation::util::ReadOutputs::Scales(scales) => {
+                    for (i, scale) in scales.enumerate() {
+                        let time = input_times[i];
+                        keyframes.push(Keyframe {
+                            time,
+                            value: AnimationValue::Scale(vec3(scale[0], scale[1], scale[2])),
+                        });
+                    }
+                }
+                gltf::animation::util::ReadOutputs::MorphTargetWeights(_weights) => {
+                    // TODO:
+                    println!("WARN: ignoring morph target weights; not implemented");
+                    // for (i, weight) in weights.enumerate() {
+                    //     let time = input_times[i];
+                    //     keyframes.push(Keyframe {
+                    //         time,
+                    //         value: AnimationValue::Weights(weight.to_vec()),
+                    //     });
+                    // }
+                }
+            }
+
+            channels.push(AnimationChannel {
+                target_node_index: node_index,
+                target_property: property,
+                keyframes,
+                // TODO:
+                //interpolation,
+            });
+        }
+
+        animations.push(Animation {
+            name: animation_name,
+            channels,
+            duration: max_time,
+        });
+    }
+    // panic!("animations");
+    animations
 }

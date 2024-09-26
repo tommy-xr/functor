@@ -150,6 +150,7 @@ pub async fn main() {
                 gl: &gl,
                 shader_version,
                 asset_cache: asset_cache.clone(),
+                frame_time: time.clone(),
             };
 
             let scene = game.render(time.clone());

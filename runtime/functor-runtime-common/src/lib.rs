@@ -48,6 +48,7 @@ impl OpaqueState {
     }
 }
 
+pub mod animation;
 pub mod asset;
 mod frame_time;
 pub mod geometry;

@@ -1,6 +1,9 @@
 mod skeleton;
 
-use crate::{geometry::IndexedMesh, render::VertexPositionTexture, texture::Texture2D};
+use crate::{
+    animation::Animation, geometry::IndexedMesh, render::vertex::VertexPositionTexture,
+    texture::Texture2D,
+};
 use cgmath::Matrix4;
 
 pub use skeleton::*;
@@ -18,4 +21,6 @@ pub struct Model {
     pub meshes: Vec<ModelMesh>,
 
     pub skeleton: Skeleton,
+
+    pub animations: Vec<Animation>,
 }

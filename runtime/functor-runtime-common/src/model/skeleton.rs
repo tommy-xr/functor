@@ -1,15 +1,17 @@
 use std::collections::{HashMap, HashSet};
 
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::{InnerSpace, Matrix3, Matrix4, Quaternion, SquareMatrix, Vector3, VectorSpace};
 
-#[derive(Debug)]
+use crate::animation::{Animation, AnimationValue, Keyframe};
+
+#[derive(Clone, Debug)]
 pub struct Joint {
     pub name: String,
     pub transform: Matrix4<f32>,
     pub parent: Option<i32>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Skeleton {
     num_joints: i32,
 
@@ -25,6 +27,88 @@ impl Skeleton {
             joint_info: HashMap::new(),
             joint_absolute_transform: HashMap::new(),
         }
+    }
+
+    pub fn animate(skeleton: &Skeleton, animation: &Animation, time: f32) -> Skeleton {
+        // Start by cloning the existing skeleton
+        let mut new_skeleton = skeleton.clone();
+
+        // For each joint, store the base T, R, S, and the animated T, R, S
+        let mut joint_base_trs = HashMap::new();
+        let mut joint_animated_trs = HashMap::new();
+
+        // First, for each joint, extract base T, R, S
+        for (&joint_index, joint) in &skeleton.joint_info {
+            // Extract translation
+            let base_t = joint.transform.w.truncate(); // last column
+
+            // Extract the upper-left 3x3 matrix
+            let m = Matrix3::from_cols(
+                joint.transform.x.truncate(),
+                joint.transform.y.truncate(),
+                joint.transform.z.truncate(),
+            );
+
+            // Extract scale factors
+            let scale_x = m.x.magnitude();
+            let scale_y = m.y.magnitude();
+            let scale_z = m.z.magnitude();
+            let base_s = Vector3::new(scale_x, scale_y, scale_z);
+
+            // Normalize the columns to get the rotation matrix
+            let rotation_matrix = Matrix3::from_cols(m.x / scale_x, m.y / scale_y, m.z / scale_z);
+
+            // Convert rotation matrix to Quaternion
+            let base_r = Quaternion::from(rotation_matrix);
+
+            joint_base_trs.insert(joint_index, (base_t, base_r, base_s));
+            // Initialize animated T, R, S to base T, R, S
+            joint_animated_trs.insert(joint_index, (base_t, base_r, base_s));
+        }
+
+        // For each animation channel
+        for channel in &animation.channels {
+            let target_node_index = channel.target_node_index as i32;
+            // Get the animated value at time t
+            if let Some(value) = interpolate_keyframes(&channel.keyframes, time) {
+                // Update the animated T, R, S for the joint
+                if let Some((animated_t, animated_r, animated_s)) =
+                    joint_animated_trs.get_mut(&target_node_index)
+                {
+                    match value {
+                        AnimationValue::Translation(translation) => {
+                            *animated_t = translation;
+                        }
+                        AnimationValue::Rotation(rotation) => {
+                            *animated_r = rotation;
+                        }
+                        AnimationValue::Scale(scale) => {
+                            *animated_s = scale;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // For each joint, reconstruct the animated transform
+        for (&joint_index, joint) in new_skeleton.joint_info.iter_mut() {
+            if let Some((animated_t, animated_r, animated_s)) = joint_animated_trs.get(&joint_index)
+            {
+                // Construct the transform from animated_T, animated_R, animated_S
+                let transform = Matrix4::from_translation(*animated_t)
+                    * Matrix4::from(*animated_r)
+                    * Matrix4::from_nonuniform_scale(animated_s.x, animated_s.y, animated_s.z);
+                joint.transform = transform;
+            }
+        }
+
+        // Recompute absolute transforms
+        new_skeleton.joint_absolute_transform =
+            compute_absolute_transforms(&new_skeleton.joint_info);
+
+        // Return the new skeleton
+        new_skeleton
     }
 
     pub fn get_joint_count(&self) -> i32 {
@@ -161,6 +245,50 @@ fn compute_joint_absolute_transform(
     visited.remove(&joint_index);
 
     abs_transform
+}
+
+fn interpolate_keyframes(keyframes: &Vec<Keyframe>, time: f32) -> Option<AnimationValue> {
+    if keyframes.is_empty() {
+        return None;
+    }
+    // If time is before the first keyframe, return the first value
+    if time <= keyframes[0].time {
+        return Some(keyframes[0].value.clone());
+    }
+    // If time is after the last keyframe, return the last value
+    if time >= keyframes[keyframes.len() - 1].time {
+        return Some(keyframes[keyframes.len() - 1].value.clone());
+    }
+    // Find the keyframes surrounding the given time
+    for i in 0..keyframes.len() - 1 {
+        let kf0 = &keyframes[i];
+        let kf1 = &keyframes[i + 1];
+        if time >= kf0.time && time <= kf1.time {
+            let t = (time - kf0.time) / (kf1.time - kf0.time);
+            return Some(interpolate_values(&kf0.value, &kf1.value, t));
+        }
+    }
+    None
+}
+fn interpolate_values(v0: &AnimationValue, v1: &AnimationValue, t: f32) -> AnimationValue {
+    match (v0, v1) {
+        (AnimationValue::Translation(tr0), AnimationValue::Translation(tr1)) => {
+            let value = tr0.lerp(*tr1, t);
+            AnimationValue::Translation(value)
+        }
+        (AnimationValue::Rotation(r0), AnimationValue::Rotation(r1)) => {
+            let value = r0.slerp(*r1, t);
+            AnimationValue::Rotation(value)
+        }
+        (AnimationValue::Scale(s0), AnimationValue::Scale(s1)) => {
+            let value = s0.lerp(*s1, t);
+            AnimationValue::Scale(value)
+        }
+        _ => {
+            // Unsupported interpolation
+            v0.clone()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -176,10 +176,18 @@ async fn run_async() -> Result<(), JsValue> {
         let scene_context = SceneContext::new();
 
         *g.borrow_mut() = Some(Closure::new(move || {
+            let now = performance.now() as f32;
+            let frame_time = FrameTime {
+                dts: (now - last_time) / 1000.0,
+                tts: (now - initial_time) / 1000.0,
+            };
+
+            last_time = now;
             let render_ctx = RenderContext {
                 gl: &gl,
                 shader_version,
                 asset_cache: asset_cache.clone(),
+                frame_time: frame_time.clone(),
             };
 
             let projection_matrix: Matrix4<f32> =
@@ -198,14 +206,7 @@ async fn run_async() -> Result<(), JsValue> {
 
             // let scene = Scene3D::cube();
 
-            let now = performance.now() as f32;
-            let frameTime = FrameTime {
-                dts: (now - last_time) / 1000.0,
-                tts: (now - initial_time) / 1000.0,
-            };
-            last_time = now;
-
-            let val = game_render(functor_runtime_common::to_js_value(&frameTime));
+            let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             web_sys::console::log_2(&JsValue::from_str("calling render"), &val);
 
             let scene: Scene3D = functor_runtime_common::from_js_value(val);
