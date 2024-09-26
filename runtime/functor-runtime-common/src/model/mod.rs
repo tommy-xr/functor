@@ -1,7 +1,8 @@
 mod skeleton;
 
 use crate::{
-    animation::Animation, geometry::IndexedMesh, render::VertexPositionTexture, texture::Texture2D,
+    animation::Animation, geometry::IndexedMesh, render::VertexPositionTextureSkinned,
+    texture::Texture2D,
 };
 use cgmath::Matrix4;
 
@@ -11,7 +12,7 @@ pub struct ModelMesh {
     // Material info
     pub base_color_texture: Texture2D,
 
-    pub mesh: IndexedMesh<VertexPositionTexture>,
+    pub mesh: IndexedMesh<VertexPositionTextureSkinned>,
 
     pub transform: Matrix4<f32>,
 }
