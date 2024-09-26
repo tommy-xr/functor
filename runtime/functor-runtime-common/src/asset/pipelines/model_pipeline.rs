@@ -1,10 +1,12 @@
 use std::io::Cursor;
 
 use cgmath::num_traits::ToPrimitive;
-use cgmath::{vec2, vec3, Matrix4};
+use cgmath::{vec2, vec3, Matrix4, Quaternion};
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
+use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
+
 use crate::render::VertexPositionTexture;
 use crate::{
     asset::{AssetCache, AssetPipeline},
@@ -84,17 +86,22 @@ impl AssetPipeline<Model> for ModelPipeline {
             }
         }
 
-        process_animations(&document, &buffers_data);
+        let animations = process_animations(&document, &buffers_data);
 
         let skeleton = maybe_skeleton.unwrap_or(Skeleton::empty());
 
-        Model { meshes, skeleton }
+        Model {
+            meshes,
+            skeleton,
+            animations,
+        }
     }
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Model {
         Model {
             meshes: vec![],
             skeleton: Skeleton::empty(),
+            animations: vec![],
         }
     }
 }
@@ -238,46 +245,108 @@ fn process_joints(
     }
 }
 
-fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) {
+fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<Animation> {
+    let mut animations = Vec::new();
     // Load animations
     // From: https://whoisryosuke.com/blog/2022/importing-gltf-with-wgpu-and-rust
     for animation in document.animations() {
-        // println!("!! Animation: {:?}", animation.name());
+        let animation_name = animation.name().unwrap_or("Unnamed Animation").to_owned();
+        let mut channels = Vec::new();
+        let mut max_time = 0.0;
+
         for channel in animation.channels() {
-            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
-            // TODO:
-            let _keyframe_timestamps = if let Some(inputs) = reader.read_inputs() {
-                match inputs {
-                    gltf::accessor::Iter::Standard(times) => {
-                        let _times: Vec<f32> = times.collect();
-                        // println!("Time: {}", times.len());
-                        // dbg!(times);
-                    }
-                    gltf::accessor::Iter::Sparse(_) => {
-                        println!("Sparse keyframes not supported");
-                    }
-                }
+            // TODO: Proper interpolation
+            //let sampler = channel.sampler();
+            let target = channel.target();
+            let node_index = target.node().index();
+            let property = match target.property() {
+                gltf::animation::Property::Translation => AnimationProperty::Translation,
+                gltf::animation::Property::Rotation => AnimationProperty::Rotation,
+                gltf::animation::Property::Scale => AnimationProperty::Scale,
+                gltf::animation::Property::MorphTargetWeights => AnimationProperty::Weights,
             };
 
-            // TODO:
-            let mut keyframes_vec: Vec<Vec<f32>> = Vec::new();
-            let _keyframes = if let Some(outputs) = reader.read_outputs() {
-                match outputs {
-                    gltf::animation::util::ReadOutputs::Translations(translation) => {
-                        translation.for_each(|tr| {
-                            // println!("Translation:");
-                            // dbg!(tr);
-                            let vector: Vec<f32> = tr.into();
-                            keyframes_vec.push(vector);
+            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+
+            let input_times: Vec<f32> = reader
+                .read_inputs()
+                .expect("Failed to read animation input")
+                .collect();
+
+            let output_values = reader
+                .read_outputs()
+                .expect("Failed to read animation output");
+
+            let mut keyframes = Vec::new();
+            max_time = input_times
+                .iter()
+                .cloned()
+                .fold(max_time, |a: f32, b: f32| a.max(b));
+
+            match output_values {
+                gltf::animation::util::ReadOutputs::Translations(translations) => {
+                    for (i, translation) in translations.enumerate() {
+                        let time = input_times[i];
+                        keyframes.push(Keyframe {
+                            time,
+                            value: AnimationValue::Translation(vec3(
+                                translation[0],
+                                translation[1],
+                                translation[2],
+                            )),
                         });
                     }
-                    _other => (), // gltf::animation::util::ReadOutputs::Rotations(_) => todo!(),
-                                  // gltf::animation::util::ReadOutputs::Scales(_) => todo!(),
-                                  // gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => todo!(),
                 }
-            };
+                gltf::animation::util::ReadOutputs::Rotations(rotations) => {
+                    for (i, rotation) in rotations.into_f32().enumerate() {
+                        let time = input_times[i];
+                        keyframes.push(Keyframe {
+                            time,
+                            // TODO: Does w come first or last?
+                            value: AnimationValue::Rotation(Quaternion {
+                                v: vec3(rotation[0], rotation[1], rotation[2]),
+                                s: rotation[3],
+                            }),
+                        });
+                    }
+                }
+                gltf::animation::util::ReadOutputs::Scales(scales) => {
+                    for (i, scale) in scales.enumerate() {
+                        let time = input_times[i];
+                        keyframes.push(Keyframe {
+                            time,
+                            value: AnimationValue::Scale(vec3(scale[0], scale[1], scale[2])),
+                        });
+                    }
+                }
+                gltf::animation::util::ReadOutputs::MorphTargetWeights(_weights) => {
+                    // TODO:
+                    println!("WARN: ignoring morph target weights; not implemented");
+                    // for (i, weight) in weights.enumerate() {
+                    //     let time = input_times[i];
+                    //     keyframes.push(Keyframe {
+                    //         time,
+                    //         value: AnimationValue::Weights(weight.to_vec()),
+                    //     });
+                    // }
+                }
+            }
 
-            // println!("Keyframes: {}", keyframes_vec.len());
+            channels.push(AnimationChannel {
+                target_node_index: node_index,
+                target_property: property,
+                keyframes,
+                // TODO:
+                //interpolation,
+            });
         }
+
+        animations.push(Animation {
+            name: animation_name,
+            channels,
+            duration: max_time,
+        });
     }
+    // panic!("animations");
+    animations
 }

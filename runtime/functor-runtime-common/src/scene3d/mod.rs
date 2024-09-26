@@ -14,7 +14,7 @@ use crate::{
     geometry::{self, Geometry, Mesh},
     material::{BasicMaterial, ColorMaterial, Material},
     math::Angle,
-    model::Model,
+    model::{Model, Skeleton},
     texture::{RuntimeTexture, Texture2D},
     RenderContext,
 };
@@ -226,30 +226,44 @@ impl Scene3D {
                                 );
                             };
 
+                            // TODO: Bring back drawing
                             mesh.mesh.draw(&render_context.gl)
                         }
 
                         // TEMPORARY: Render joints
-                        let joints = hydrated_model.skeleton.get_transforms();
-                        for joint_transform in joints {
-                            let mut color_material =
-                                ColorMaterial::create(vec4(0.0, 1.0, 0.0, 1.0));
-                            color_material.initialize(&render_context);
+                        let maybe_animation = hydrated_model.animations.get(0);
+                        if let Some(animation) = maybe_animation {
+                            let time = render_context.frame_time.tts % animation.duration;
+                            let animated_skeleton =
+                                Skeleton::animate(&hydrated_model.skeleton, animation, time);
 
-                            let xform = &(matrix * joint_transform);
-                            let point = xform.transform_point(point3(0.0, 0.0, 0.0));
-                            let xform2 = Matrix4::from_translation(vec3(point.x, point.y, point.z))
-                                * Matrix4::from_scale(0.1);
-
-                            color_material.draw_opaque(
-                                &render_context,
-                                projection_matrix,
-                                view_matrix,
-                                &xform2,
-                                &[],
+                            println!(
+                                "Animating {} {} {}",
+                                animation.name, animation.duration, time,
                             );
 
-                            scene_context.sphere.borrow().draw(render_context.gl);
+                            let joints = animated_skeleton.get_transforms();
+                            for joint_transform in joints {
+                                let mut color_material =
+                                    ColorMaterial::create(vec4(0.0, 1.0, 0.0, 1.0));
+                                color_material.initialize(&render_context);
+
+                                let xform = &(matrix * joint_transform);
+                                let point = xform.transform_point(point3(0.0, 0.0, 0.0));
+                                let xform2 =
+                                    Matrix4::from_translation(vec3(point.x, point.y, point.z))
+                                        * Matrix4::from_scale(0.1);
+
+                                color_material.draw_opaque(
+                                    &render_context,
+                                    projection_matrix,
+                                    view_matrix,
+                                    &xform2,
+                                    &[],
+                                );
+
+                                scene_context.sphere.borrow().draw(render_context.gl);
+                            }
                         }
                     }
                 }
