@@ -2,7 +2,7 @@ use std::cmp::min;
 use std::io::Cursor;
 
 use cgmath::num_traits::ToPrimitive;
-use cgmath::{vec2, vec3, Matrix4, Quaternion};
+use cgmath::{vec2, vec3, vec4, Matrix4, Quaternion};
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
