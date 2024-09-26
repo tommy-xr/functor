@@ -1,8 +1,7 @@
 mod skeleton;
 
 use crate::{
-    animation::Animation, geometry::IndexedMesh, render::vertex::VertexPositionTexture,
-    texture::Texture2D,
+    animation::Animation, geometry::IndexedMesh, render::VertexPositionTexture, texture::Texture2D,
 };
 use cgmath::Matrix4;
 

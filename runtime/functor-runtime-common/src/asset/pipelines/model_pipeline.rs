@@ -7,6 +7,7 @@ use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
 
+use crate::render::VertexPositionTexture;
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::IndexedMesh,
@@ -226,65 +227,6 @@ fn process_node(
 
     for child in node.children() {
         process_node(&child, buffers, images, meshes, maybe_skeleton);
-    }
-}
-
-fn process_joints(
-    node: &gltf::Node,
-    parent_id: Option<i32>,
-    skeleton_builder: &mut SkeletonBuilder,
-) {
-    let id = node.index().to_i32().unwrap();
-    let name = node.name().unwrap_or("None");
-    let transform = node.transform().matrix().into();
-    skeleton_builder.add_joint(id, name.to_owned(), parent_id, transform);
-
-    for node in node.children() {
-        process_joints(&node, Some(id), skeleton_builder);
-    }
-}
-
-fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) {
-    // Load animations
-    // From: https://whoisryosuke.com/blog/2022/importing-gltf-with-wgpu-and-rust
-    for animation in document.animations() {
-        // println!("!! Animation: {:?}", animation.name());
-        for channel in animation.channels() {
-            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
-            // TODO:
-            let _keyframe_timestamps = if let Some(inputs) = reader.read_inputs() {
-                match inputs {
-                    gltf::accessor::Iter::Standard(times) => {
-                        let _times: Vec<f32> = times.collect();
-                        // println!("Time: {}", times.len());
-                        // dbg!(times);
-                    }
-                    gltf::accessor::Iter::Sparse(_) => {
-                        println!("Sparse keyframes not supported");
-                    }
-                }
-            };
-
-            // TODO:
-            let mut keyframes_vec: Vec<Vec<f32>> = Vec::new();
-            let _keyframes = if let Some(outputs) = reader.read_outputs() {
-                match outputs {
-                    gltf::animation::util::ReadOutputs::Translations(translation) => {
-                        translation.for_each(|tr| {
-                            // println!("Translation:");
-                            // dbg!(tr);
-                            let vector: Vec<f32> = tr.into();
-                            keyframes_vec.push(vector);
-                        });
-                    }
-                    _other => (), // gltf::animation::util::ReadOutputs::Rotations(_) => todo!(),
-                                  // gltf::animation::util::ReadOutputs::Scales(_) => todo!(),
-                                  // gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => todo!(),
-                }
-            };
-
-            // println!("Keyframes: {}", keyframes_vec.len());
-        }
     }
 }
 
