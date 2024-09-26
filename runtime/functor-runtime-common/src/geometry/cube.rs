@@ -1,6 +1,6 @@
 use cgmath::{vec2, vec3};
 
-use crate::render::vertex::VertexPositionTexture;
+use crate::render::VertexPositionTexture;
 
 use super::{Geometry, IndexedMesh};
 

@@ -1,6 +1,6 @@
 mod skeleton;
 
-use crate::{geometry::IndexedMesh, render::vertex::VertexPositionTexture, texture::Texture2D};
+use crate::{geometry::IndexedMesh, render::VertexPositionTexture, texture::Texture2D};
 use cgmath::Matrix4;
 
 pub use skeleton::*;

@@ -5,10 +5,10 @@ use cgmath::{vec2, vec3, Matrix4};
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
+use crate::render::VertexPositionTexture;
 use crate::{
     asset::{AssetCache, AssetPipeline},
     geometry::IndexedMesh,
-    render::vertex::VertexPositionTexture,
     texture::{Texture2D, TextureData, TextureOptions},
 };
 
