@@ -235,6 +235,8 @@ fn process_node(
 
         let joints = skin.joints().collect::<Vec<_>>();
 
+        println!("SKIN: {}", skin.name().unwrap_or("NO NAME"));
+
         // Map joint index to position in the array
         let mut joint_index_to_array_index: HashMap<usize, usize> = HashMap::new();
         for (i, joint) in joints.iter().enumerate() {

@@ -7,7 +7,7 @@ use crate::RenderContext;
 use super::Material;
 
 const VERTEX_SHADER_SOURCE: &str = r#"
-        #define MAX_JOINTS 50
+        #define MAX_JOINTS 200
 
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
