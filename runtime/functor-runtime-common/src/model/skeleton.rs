@@ -18,6 +18,10 @@ pub struct Skeleton {
     // Use HashMap for joints because they could be sparse
     joint_info: HashMap<i32, Joint>,
     joint_absolute_transform: HashMap<i32, Matrix4<f32>>,
+
+    array_index_to_joint_id: HashMap<usize, i32>,
+
+    inverse_bind_matrices: Vec<Matrix4<f32>>,
 }
 
 impl Skeleton {
@@ -26,6 +30,8 @@ impl Skeleton {
             num_joints: 0,
             joint_info: HashMap::new(),
             joint_absolute_transform: HashMap::new(),
+            inverse_bind_matrices: Vec::new(),
+            array_index_to_joint_id: HashMap::new(),
         }
     }
 
@@ -140,6 +146,18 @@ impl Skeleton {
         }
         vec
     }
+
+    pub fn get_skinning_transforms(&self) -> Vec<Matrix4<f32>> {
+        let mut vec = Vec::new();
+        for i in 0..self.inverse_bind_matrices.len() {
+            let joint_idx = self.array_index_to_joint_id.get(&i).unwrap();
+            vec.push(
+                self.get_joint_absolute_transform(*joint_idx)
+                    * self.inverse_bind_matrices.get(i as usize).unwrap(),
+            )
+        }
+        vec
+    }
 }
 
 pub struct SkeletonBuilder {
@@ -147,10 +165,12 @@ pub struct SkeletonBuilder {
 }
 
 impl SkeletonBuilder {
-    pub fn create() -> SkeletonBuilder {
+    pub fn create(inverse_bind_matrices: Vec<Matrix4<f32>>) -> SkeletonBuilder {
         SkeletonBuilder {
             skeleton: Skeleton {
-                num_joints: 0,
+                array_index_to_joint_id: HashMap::new(),
+                num_joints: inverse_bind_matrices.len() as i32,
+                inverse_bind_matrices,
                 joint_info: HashMap::new(),
                 joint_absolute_transform: HashMap::new(),
             },
@@ -159,11 +179,15 @@ impl SkeletonBuilder {
 
     pub fn add_joint(
         &mut self,
+        array_index: usize,
         joint_index: i32,
         name: String,
         parent_index: Option<i32>,
         transform: Matrix4<f32>,
     ) {
+        self.skeleton
+            .array_index_to_joint_id
+            .insert(array_index, joint_index);
         let joint = Joint {
             name,
             transform,
@@ -303,12 +327,18 @@ mod tests {
         let transform_joint_1 = Matrix4::from_translation(Vector3::new(0.0, 2.0, 0.0));
         let transform_joint_2 = Matrix4::from_translation(Vector3::new(0.0, 0.0, 3.0));
 
-        // Create the SkinBuilder
-        let mut skin_builder = SkeletonBuilder::create();
+        let inv_bind_matrices = vec![
+            Matrix4::identity(),
+            Matrix4::identity(),
+            Matrix4::identity(),
+        ];
 
-        skin_builder.add_joint(0, "Joint0".to_string(), None, transform_joint_0);
-        skin_builder.add_joint(1, "Joint1".to_string(), Some(0), transform_joint_1);
-        skin_builder.add_joint(2, "Joint2".to_string(), Some(1), transform_joint_2);
+        // Create the SkinBuilder
+        let mut skin_builder = SkeletonBuilder::create(inv_bind_matrices);
+
+        skin_builder.add_joint(0, 0, "Joint0".to_string(), None, transform_joint_0);
+        skin_builder.add_joint(1, 1, "Joint1".to_string(), Some(0), transform_joint_1);
+        skin_builder.add_joint(2, 2, "Joint2".to_string(), Some(1), transform_joint_2);
 
         // Build the Skin
         let skin = skin_builder.build();

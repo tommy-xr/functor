@@ -1,6 +1,4 @@
 use cgmath::Matrix4;
-use cgmath::SquareMatrix;
-use gltf::Skin;
 
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
@@ -120,7 +118,7 @@ impl Material for SkinnedMaterial {
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
         world_matrix: &Matrix4<f32>,
-        _skinning_data: &[Matrix4<f32>],
+        skinning_data: &[Matrix4<f32>],
     ) -> bool {
         unsafe {
             // TODO: Find another approach to do this - maybe a shader repository?
@@ -134,11 +132,10 @@ impl Material for SkinnedMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
 
-                let num_joints = 50;
+                let num_joints = skinning_data.len();
                 let mut joint_matrices = Vec::with_capacity(num_joints * 16);
-                for i in 0..50 {
-                    let matrix = Matrix4::identity();
-                    let matrix_array: &[f32; 16] = matrix.as_ref();
+                for i in 0..num_joints {
+                    let matrix_array: &[f32; 16] = skinning_data[i].as_ref();
                     joint_matrices.extend_from_slice(matrix_array);
                 }
 

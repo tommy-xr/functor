@@ -215,6 +215,28 @@ impl Scene3D {
                                     &[],
                                 );
                             } else {
+                                let maybe_animation = hydrated_model.animations.get(0);
+                                let joints = if let Some(animation) = maybe_animation {
+                                    let time = render_context.frame_time.tts % animation.duration;
+                                    let animated_skeleton = Skeleton::animate(
+                                        &hydrated_model.skeleton,
+                                        animation,
+                                        time,
+                                    );
+                                    animated_skeleton.get_skinning_transforms()
+                                } else {
+                                    let mut joints = Vec::new();
+
+                                    for i in 0..50 {
+                                        joints.push(Matrix4::from_translation(vec3(
+                                            0.0,
+                                            100.0 * i as f32,
+                                            0.0,
+                                        )));
+                                    }
+                                    joints
+                                };
+
                                 // Bind textures
                                 mesh.base_color_texture.bind(0, &render_context);
                                 basic_material.draw_opaque(
@@ -222,7 +244,7 @@ impl Scene3D {
                                     projection_matrix,
                                     view_matrix,
                                     &matrix,
-                                    &[],
+                                    &joints,
                                 );
                             };
 
