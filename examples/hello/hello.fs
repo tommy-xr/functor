@@ -94,11 +94,18 @@ let init (_args: array<string>) =
         // let renderModel = Model.file ("vr_glove_model2.glb") |> Graphics.Scene3D.model |> Transform.scale 5f;
 
         let renderModel = 
-            "shark.glb"
+            "fish.glb"
             |> Model.file 
             |> Graphics.Scene3D.model 
             |> Transform.translateZ 10.0f
             |> Transform.scale 0.004f;
+
+        // let renderModel = 
+        //     "shark.glb"
+        //     |> Model.file 
+        //     |> Graphics.Scene3D.model 
+        //     |> Transform.translateZ 10.0f
+        //     |> Transform.scale 0.004f;
 
         group([|
             material (textureMaterial, [|
