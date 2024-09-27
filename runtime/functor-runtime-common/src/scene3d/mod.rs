@@ -12,7 +12,7 @@ use crate::{
         AssetHandle, BuiltAssetPipeline,
     },
     geometry::{self, Geometry, Mesh},
-    material::{BasicMaterial, ColorMaterial, Material},
+    material::{ColorMaterial, Material, SkinnedMaterial},
     math::Angle,
     model::{Model, Skeleton},
     texture::{RuntimeTexture, Texture2D},
@@ -166,7 +166,7 @@ impl Scene3D {
         let skinning_data = vec![];
         match &self.obj {
             SceneObject::Model(model_description) => {
-                let mut basic_material = BasicMaterial::create();
+                let mut basic_material = SkinnedMaterial::create();
                 basic_material.initialize(&render_context);
 
                 match &model_description.handle {
