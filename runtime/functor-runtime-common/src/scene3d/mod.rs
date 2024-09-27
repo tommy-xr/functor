@@ -228,11 +228,7 @@ impl Scene3D {
                                     let mut joints = Vec::new();
 
                                     for i in 0..50 {
-                                        joints.push(Matrix4::from_translation(vec3(
-                                            0.0,
-                                            100.0 * i as f32,
-                                            0.0,
-                                        )));
+                                        joints.push(Matrix4::identity());
                                     }
                                     joints
                                 };
