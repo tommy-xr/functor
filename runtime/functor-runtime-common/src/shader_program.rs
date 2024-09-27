@@ -44,7 +44,7 @@ impl ShaderProgram {
         unsafe {
             let native_uniform_location = gl
                 .get_uniform_location(self.program_id, uniform_name)
-                .expect("Cannot get uniform location");
+                .expect(&format!("Cannot get uniform location: {}", &uniform_name));
             UniformLocation {
                 native_uniform_location,
             }
@@ -101,6 +101,17 @@ impl ShaderProgram {
                 false,
                 raw,
             );
+        }
+    }
+
+    pub fn set_uniform_matrix4fv(
+        &self,
+        gl: &glow::Context,
+        location: &UniformLocation,
+        values: &[f32],
+    ) {
+        unsafe {
+            gl.uniform_matrix_4_f32_slice(Some(&location.native_uniform_location), false, values)
         }
     }
 }
