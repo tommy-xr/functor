@@ -180,6 +180,7 @@ impl Scene3D {
                         let matrix = world_matrix * self.xform;
 
                         // println!("SKELETON: {:#?}", hydrated_model.skeleton);
+                        let animation_index = 0;
 
                         for mesh in hydrated_model.meshes.iter() {
                             // Go through selectors, and adjust
@@ -215,7 +216,8 @@ impl Scene3D {
                                     &[],
                                 );
                             } else {
-                                let maybe_animation = hydrated_model.animations.get(0);
+                                let maybe_animation =
+                                    hydrated_model.animations.get(animation_index);
                                 let joints = if let Some(animation) = maybe_animation {
                                     let time = render_context.frame_time.tts % animation.duration;
                                     let animated_skeleton = Skeleton::animate(
@@ -249,7 +251,7 @@ impl Scene3D {
                         }
 
                         // TEMPORARY: Render joints
-                        let maybe_animation = hydrated_model.animations.get(0);
+                        let maybe_animation = hydrated_model.animations.get(animation_index);
                         if let Some(animation) = maybe_animation {
                             let time = render_context.frame_time.tts % animation.duration;
                             let animated_skeleton =

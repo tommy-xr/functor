@@ -97,21 +97,23 @@ let init (_args: array<string>) =
             "fish.glb"
             |> Model.file 
             |> Graphics.Scene3D.model 
+            |> Transform.translateY -5.0f
             |> Transform.translateZ 10.0f
             |> Transform.scale 0.004f;
 
-        // let renderModel = 
-        //     "shark.glb"
-        //     |> Model.file 
-        //     |> Graphics.Scene3D.model 
-        //     |> Transform.translateZ 10.0f
-        //     |> Transform.scale 0.004f;
+        let sharkModel = 
+            "shark.glb"
+            |> Model.file 
+            |> Graphics.Scene3D.model 
+            |> Transform.translateZ 10.0f
+            |> Transform.scale 0.004f;
 
         group([|
             material (textureMaterial, [|
                 cylinder() |> Transform.translateY -1.0f;
+                sharkModel;
                 renderModel
-                |> Transform.rotateY (Math.Angle.degrees (180.0f + 10.0f * frameTime.tts * 0.5f))
+                |> Transform.rotateY (Math.Angle.degrees (90.0f + 10.0f * frameTime.tts * 0.5f))
                 |> Transform.rotateX (Math.Angle.degrees (0.0f * sin frameTime.tts * 2.0f))
             |])
             |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
