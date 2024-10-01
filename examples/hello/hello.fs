@@ -74,7 +74,7 @@ let tick model (tick: Time.FrameTime) =
         |> handleCollisionWithPaddle model.paddle1 
         |> handleCollisionWithPaddle model.paddle2)
 
-    ( { model with ball = newBall; counter = model.counter + 3 }, Effect.none ) 
+    ( { model with ball = newBall; counter = model.counter + 3 }, Effect.none () ) 
 
 open Fable.Core.Rust
 
