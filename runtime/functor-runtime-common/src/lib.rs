@@ -50,6 +50,7 @@ impl OpaqueState {
 
 pub mod animation;
 pub mod asset;
+mod effect;
 mod frame_time;
 pub mod geometry;
 pub mod io;
@@ -63,6 +64,7 @@ mod shader;
 mod shader_program;
 pub mod texture;
 
+pub use effect::*;
 pub use frame_time::*;
 pub use render_context::*;
 pub use scene3d::*;

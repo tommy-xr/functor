@@ -20,10 +20,10 @@ open Fable.Core
 module GameBuilder =
 
     let local initialState =
-        let update model msg = (model, Effect.none)
-        let tick model tick = (model, Effect.none)
+        let update model msg = (model, Effect.none ())
+        let tick model tick = (model, Effect.none ())
         let draw3d model frametime = Graphics.Scene3D.cube()
-        let input model input = (model, Effect.none)
+        let input model input = (model, Effect.none ())
         { initialState = initialState; update = update; tick = tick; input = input; draw3d = draw3d}
 
     let update<'model, 'msg> (f: UpdateFn<'model, 'msg>) (game: Game<'model, 'msg>) = 
