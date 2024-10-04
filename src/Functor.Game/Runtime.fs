@@ -38,6 +38,15 @@ module Runtime
 
 
         [<OuterAttr("wasm_bindgen")>]
+        let tick (frameTimeJs: JsValue): unit =
+            let frameTime = frameTimeJs |> UnsafeJsValue.from_js<Time.FrameTime>;
+            if currentRunner.IsSome then 
+                frameTime
+                |> currentRunner.Value.tick
+            else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("wasm_bindgen")>]
         let test_render_wasm (frameTimeJs: JsValue): JsValue =
             let frameTime = frameTimeJs |> UnsafeJsValue.from_js<Time.FrameTime>;
             if currentRunner.IsSome then 
