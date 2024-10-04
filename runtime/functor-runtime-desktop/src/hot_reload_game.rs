@@ -44,6 +44,14 @@ impl Game for HotReloadGame {
         }
     }
 
+    fn tick(&mut self, frame_time: FrameTime) {
+        unsafe {
+            let tick_func: Symbol<fn(FrameTime)> =
+                self.library.as_ref().unwrap().get(b"tick").unwrap();
+            tick_func(frame_time)
+        }
+    }
+
     fn quit(&mut self) {
         if let Some(handle) = self.watcher_thread.take() {
             handle.join().expect("Failed to join watcher thread");

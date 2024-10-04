@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Effect.fs" />
+    <Compile Include="EffectQueue.fs" />
     <Compile Include="Math/Angle.fs" />
     <Compile Include="Math/Vector2.fs" />
     <Compile Include="Math/Point2.fs" />

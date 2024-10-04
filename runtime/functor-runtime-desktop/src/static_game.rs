@@ -21,6 +21,13 @@ impl Game for StaticGame {
         }
     }
 
+    fn tick(&mut self, frame_time: FrameTime) {
+        unsafe {
+            let tick_func: Symbol<fn(FrameTime)> = self.library.get(b"tick").unwrap();
+            tick_func(frame_time)
+        }
+    }
+
     fn quit(&mut self) {
         // Noop - nothing to do yet
     }

@@ -14,6 +14,7 @@ module Runtime
     let mutable currentRunner: Option<IRunner> = None
 
     open Fable.Core.Rust
+    open System.Collections.Generic
 
     ///////////////////////////////
     // WebAssembly API
@@ -87,6 +88,7 @@ module Runtime
     type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model) =
         let myGame = game
         let mutable state: 'Model = initialState
+        let mutable effectQueue: EffectQueue<'Msg> = EffectQueue.empty()
         do
             printfn "Hello from GameRunner!"
         interface IRunner with
@@ -98,9 +100,21 @@ module Runtime
                 
                 // Todo: If first frame, run 'init'
 
+                printfn "Effect count: %d" (EffectQueue.count effectQueue)
                 // Todo: Run any pending effects
+                // Print the number of pending effects in the queue
 
-                let (newState, effects) = GameRunner.tick myGame state frameTime
+                let maybe_effect = EffectQueue.dequeue effectQueue;
+
+                match maybe_effect with 
+                | None -> printfn "No effect"
+                | Some _e -> printfn "Got effect"
+
+                let (newState, effect) = GameRunner.tick myGame state frameTime
+
+                EffectQueue.enqueue effect effectQueue;
+
+                // effectQueue <- Array.insertAt effectQueue.Length effect effectQueue
 
                 // Todo: Run tick effects
 
