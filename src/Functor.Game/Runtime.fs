@@ -95,7 +95,15 @@ module Runtime
             member this.setState(incomingState) =
                 state <- OpaqueState.unsafe_coerce incomingState
             member this.tick(frameTime: Time.FrameTime) = 
+                
+                // Todo: If first frame, run 'init'
+
+                // Todo: Run any pending effects
+
                 let (newState, effects) = GameRunner.tick myGame state frameTime
+
+                // Todo: Run tick effects
+
                 state <- newState
                 ()
             member this.render(frameTime: Time.FrameTime) = 

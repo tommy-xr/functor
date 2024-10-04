@@ -38,8 +38,8 @@ module Model =
     }
 
 type Msg =
-    | MovePaddle1 of float
-    | MovePaddle2 of float
+    | MovePaddle1
+    | MovePaddle2
 
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
@@ -74,7 +74,7 @@ let tick model (tick: Time.FrameTime) =
         |> handleCollisionWithPaddle model.paddle1 
         |> handleCollisionWithPaddle model.paddle2)
 
-    ( { model with ball = newBall; counter = model.counter + 3 }, Effect.none () ) 
+    ( { model with ball = newBall; counter = model.counter + 3 }, Effect.wrapped (MovePaddle2) |> Effect.map(fun _a -> MovePaddle1)  ) 
 
 open Fable.Core.Rust
 
@@ -85,6 +85,7 @@ let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun world frameTime -> 
         
+        let eff = Effect.wrapped (MovePaddle2) |> Effect.map (fun _a -> MovePaddle1);
         let colorMaterial = Material.color(0.0f, 1.0f, 0.0f, 1.0f);
         let textureMaterial = Material.texture( Texture.file("vr_glove_color.jpg"));
         // let barrelModel = Model.file("ExplodingBarrel.glb");
