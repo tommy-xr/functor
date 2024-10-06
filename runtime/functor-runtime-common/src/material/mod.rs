@@ -24,8 +24,10 @@ pub trait Material {
 
 mod basic_material;
 mod color_material;
+mod skinned_material;
 
 pub use basic_material::*;
 pub use color_material::*;
+pub use skinned_material::*;
 
 use crate::RenderContext;

@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::collections::HashMap;
 use std::io::Cursor;
 
 use cgmath::num_traits::ToPrimitive;
@@ -224,17 +225,64 @@ fn process_node(
         let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
 
         // TODO: Save inverse bind matrices with model
-        let _inverse_bind_matrices = reader
+        let inverse_bind_matrices = reader
             .read_inverse_bind_matrices()
-            .map(|v| v.collect::<Vec<_>>())
+            .map(|v| {
+                v.map(|mat_array| Matrix4::from(mat_array))
+                    .collect::<Vec<Matrix4<f32>>>()
+            })
             .unwrap_or_default();
 
-        let mut skeleton_builder = SkeletonBuilder::create();
+        let joints = skin.joints().collect::<Vec<_>>();
 
-        let maybe_root = skin.skeleton();
+        println!("SKIN: {}", skin.name().unwrap_or("NO NAME"));
 
-        if let Some(root) = maybe_root {
-            process_joints(&root, None, &mut skeleton_builder);
+        // Map joint index to position in the array
+        let mut joint_index_to_array_index: HashMap<usize, usize> = HashMap::new();
+        for (i, joint) in joints.iter().enumerate() {
+            joint_index_to_array_index.insert(joint.index(), i);
+            println!(
+                "-- joint name: {} idx: {} i: {}",
+                joint.name().unwrap_or("None"),
+                joint.index(),
+                i
+            );
+        }
+
+        // Figure out the parent index from joint index
+        let mut joint_index_to_parent_index: HashMap<usize, usize> = HashMap::new();
+        for joint in joints.iter() {
+            for children in joint.children() {
+                joint_index_to_parent_index.insert(children.index(), joint.index());
+            }
+        }
+
+        let mut skeleton_builder = SkeletonBuilder::create(inverse_bind_matrices);
+
+        for (i, joint) in joints.iter().enumerate() {
+            let name = node.name().unwrap_or("None");
+            let transform = node.transform().matrix().into();
+
+            // let parent_index = joint_index_to_parent_index.get(&joint.index());
+            // let parent_id = if let Some(parent_index) = parent_index {
+            //     Some(*joint_index_to_array_index.get(parent_index).unwrap() as i32)
+            // } else {
+            //     None
+            // };
+
+            // skeleton_builder.add_joint(i as i32, name.to_owned(), parent_id, transform);
+
+            let parent_index_i32 = joint_index_to_parent_index
+                .get(&joint.index())
+                .map(|u| *u as i32);
+
+            skeleton_builder.add_joint(
+                i,
+                joint.index() as i32,
+                name.to_owned(),
+                parent_index_i32,
+                transform,
+            );
         }
 
         *maybe_skeleton = Some(skeleton_builder.build());
@@ -245,20 +293,12 @@ fn process_node(
     }
 }
 
-fn process_joints(
-    node: &gltf::Node,
-    parent_id: Option<i32>,
-    skeleton_builder: &mut SkeletonBuilder,
-) {
-    let id = node.index().to_i32().unwrap();
-    let name = node.name().unwrap_or("None");
-    let transform = node.transform().matrix().into();
-    skeleton_builder.add_joint(id, name.to_owned(), parent_id, transform);
-
-    for node in node.children() {
-        process_joints(&node, Some(id), skeleton_builder);
-    }
-}
+// fn process_joints(
+//     node: &gltf::Node,
+//     parent_id: Option<i32>,
+//     skeleton_builder: &mut SkeletonBuilder,
+// ) {
+// }
 
 fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Vec<Animation> {
     let mut animations = Vec::new();
