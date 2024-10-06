@@ -115,15 +115,23 @@ module Runtime
 
                 let maybe_effect = EffectQueue.dequeue effectQueue;
 
-                match maybe_effect with 
-                | None -> printfn "No effect"
-                | Some _e -> printfn "Got effect"
+                let finalState = 
+                    match maybe_effect with 
+                    | None -> 
+                        printfn "No effect"
+                        state
+                    | Some _e -> 
+                        let arr: 'Msg array = Effect.run _e
 
-                let (newState, effect) = GameRunner.tick myGame state frameTime
+                        Array.fold (fun (currentState) msg ->
+                            let (newState, effect) = GameRunner.update myGame state msg
+                            EffectQueue.enqueue effect effectQueue
+                            newState
+                        ) (state) arr
+
+                let (newState, effect) = GameRunner.tick myGame finalState frameTime
 
                 EffectQueue.enqueue effect effectQueue;
-
-                // effectQueue <- Array.insertAt effectQueue.Length effect effectQueue
 
                 // Todo: Run tick effects
 

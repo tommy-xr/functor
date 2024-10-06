@@ -1,4 +1,4 @@
-use fable_library_rust::Native_::Func1;
+use fable_library_rust::{NativeArray_, Native_::Func1};
 
 #[derive(Clone)]
 pub enum Effect<T: Clone + 'static> {
@@ -7,6 +7,13 @@ pub enum Effect<T: Clone + 'static> {
 }
 
 impl<T: Clone + 'static> Effect<T> {
+    pub fn is_none(effect: &Effect<T>) -> bool {
+        match effect {
+            Effect::None => true,
+            _ => false,
+        }
+    }
+
     pub fn none() -> Effect<T> {
         Effect::None
     }
@@ -19,6 +26,13 @@ impl<T: Clone + 'static> Effect<T> {
         match source {
             Effect::None => Effect::None,
             Effect::Wrapped(v) => Effect::Wrapped(mapping(v)),
+        }
+    }
+
+    pub fn run(effect: Effect<T>) -> NativeArray_::Array<T> {
+        match effect {
+            Effect::None => NativeArray_::array_from(vec![]),
+            Effect::Wrapped(v) => NativeArray_::array_from(vec![v]),
         }
     }
 }

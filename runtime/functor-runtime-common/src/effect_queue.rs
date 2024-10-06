@@ -19,7 +19,9 @@ impl<T: Clone + 'static> EffectQueue<T> {
     }
 
     pub fn enqueue(effect_queue: &EffectQueue<T>, effect: Effect<T>) {
-        effect_queue.queue.borrow_mut().push_front(effect);
+        if !Effect::is_none(&effect) {
+            effect_queue.queue.borrow_mut().push_front(effect);
+        }
     }
 
     pub fn dequeue(effect_queue: &EffectQueue<T>) -> Option<Effect<T>> {

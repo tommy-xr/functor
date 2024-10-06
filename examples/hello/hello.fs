@@ -43,6 +43,10 @@ type Msg =
 
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
+let update model msg =
+    printfn "Running update"
+    (model, Effect.none())
+
 let tick model (tick: Time.FrameTime) =
     
     let applyVelocity (tick: Time.FrameTime) ball = 
@@ -111,5 +115,6 @@ let init (_args: array<string>) =
             |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
         |])
     )
+    |> GameBuilder.update update
     |> GameBuilder.tick tick
     |> Runtime.runGame
