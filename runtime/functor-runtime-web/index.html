@@ -6,7 +6,7 @@
     <canvas id="canvas" width="640" height="480"></canvas>
     <script type="module">
 
-      import init1, { test_render_wasm } from "./build-wasm/pkg/game_wasm.js";
+      import init1, { test_render_wasm, tick_wasm } from "./build-wasm/pkg/game_wasm.js";
       import startRuntime from "./pkg/functor_runtime_web.js";
 
       const initOutput = init1();
@@ -18,6 +18,10 @@
         window.game.render = (frameTime) => {
             return test_render_wasm(frameTime);
         };
+
+        window.game.tick = (frameTime) => {
+          return tick_wasm(frameTime);
+        }
 
         startRuntime();
       });

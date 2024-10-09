@@ -41,6 +41,9 @@ fn request_animation_frame(f: &Closure<dyn FnMut()>) {
 extern "C" {
     #[wasm_bindgen(js_namespace = game, js_name = render)]
     fn game_render(frameTimeJs: JsValue) -> JsValue;
+
+    #[wasm_bindgen(js_namespace = game, js_name = tick)]
+    fn game_tick(frameTimeJs: JsValue);
 }
 
 #[wasm_bindgen(start)]
@@ -205,6 +208,8 @@ async fn run_async() -> Result<(), JsValue> {
             );
 
             // let scene = Scene3D::cube();
+
+            game_tick(functor_runtime_common::to_js_value(&frame_time));
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             web_sys::console::log_2(&JsValue::from_str("calling render"), &val);
