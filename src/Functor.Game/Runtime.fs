@@ -14,6 +14,7 @@ module Runtime
     let mutable currentRunner: Option<IRunner> = None
 
     open Fable.Core.Rust
+    open System.Collections.Generic
 
     ///////////////////////////////
     // WebAssembly API
@@ -35,6 +36,15 @@ module Runtime
             [<Emit("functor_runtime_common::from_js_value($0)")>]
             let from_js<'a>(obj: JsValue): 'a = nativeOnly
 
+
+        [<OuterAttr("wasm_bindgen")>]
+        let tick_wasm (frameTimeJs: JsValue): unit =
+            let frameTime = frameTimeJs |> UnsafeJsValue.from_js<Time.FrameTime>;
+            if currentRunner.IsSome then 
+                frameTime
+                |> currentRunner.Value.tick
+            else 
+                raise (System.Exception("No runner"))
 
         [<OuterAttr("wasm_bindgen")>]
         let test_render_wasm (frameTimeJs: JsValue): JsValue =
@@ -87,6 +97,7 @@ module Runtime
     type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model) =
         let myGame = game
         let mutable state: 'Model = initialState
+        let mutable effectQueue: EffectQueue<'Msg> = EffectQueue.empty()
         do
             printfn "Hello from GameRunner!"
         interface IRunner with
@@ -98,9 +109,29 @@ module Runtime
                 
                 // Todo: If first frame, run 'init'
 
+                printfn "Effect count: %d" (EffectQueue.count effectQueue)
                 // Todo: Run any pending effects
+                // Print the number of pending effects in the queue
 
-                let (newState, effects) = GameRunner.tick myGame state frameTime
+                let maybe_effect = EffectQueue.dequeue effectQueue;
+
+                let finalState = 
+                    match maybe_effect with 
+                    | None -> 
+                        printfn "No effect"
+                        state
+                    | Some _e -> 
+                        let arr: 'Msg array = Effect.run _e
+
+                        Array.fold (fun (currentState) msg ->
+                            let (newState, effect) = GameRunner.update myGame state msg
+                            EffectQueue.enqueue effect effectQueue
+                            newState
+                        ) (state) arr
+
+                let (newState, effect) = GameRunner.tick myGame finalState frameTime
+
+                EffectQueue.enqueue effect effectQueue;
 
                 // Todo: Run tick effects
 

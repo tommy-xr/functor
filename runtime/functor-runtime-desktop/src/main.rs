@@ -138,6 +138,8 @@ pub async fn main() {
                 }
             }
 
+            game.tick(time.clone());
+
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             let radius = 5.0;
             let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(

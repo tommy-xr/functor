@@ -47,5 +47,9 @@ module GameRunner =
         let (newModel, effect) = game.tick model tick
         (newModel, effect)
 
+    let update<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (msg: 'msg) = 
+        let (newModel, effect) = game.update model msg
+        (newModel, effect)
+
     let draw3d<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime) =
         game.draw3d model tick

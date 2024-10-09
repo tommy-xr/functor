@@ -25,4 +25,5 @@ module GameBuilder =
 module GameRunner =
     val initialState: Game<'model, 'msg> -> 'model
     val tick: Game<'model, 'msg> -> 'model -> Time.FrameTime -> ('model * effect<'msg>)
+    val update: Game<'model, 'msg> -> 'model -> 'msg -> ('model * effect<'msg>)
     val draw3d: Game<'model, 'msg> -> 'model -> Time.FrameTime -> Graphics.Scene3D

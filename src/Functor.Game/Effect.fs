@@ -14,3 +14,9 @@ module Effect =
 
     [<Emit("functor_runtime_common::Effect::map($0, $1)")>]
     let map (fn: 'a -> 'b)  (eff: effect<'a>) : effect<'b> = nativeOnly
+
+    
+    // TODO: These should live elsewhere because they aren't user space
+
+    [<Emit("functor_runtime_common::Effect::run($0)")>]
+    let run (eff: effect<'a>) : 'a array = nativeOnly
