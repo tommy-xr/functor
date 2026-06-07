@@ -1,5 +1,5 @@
 use fable_library_rust::{NativeArray_, Native_::Func1};
-use std::cell::UnsafeCell;
+use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -16,25 +16,53 @@ pub trait EffectFuture<T> {
     fn poll(&self, cx: &mut Context<'_>) -> Poll<T>;
 }
 
-struct UnsafeFuture<F>(UnsafeCell<F>);
+/// A shared, fused future backing a `Pending` effect.
+///
+/// `Effect` derives `Clone` and `Pending` holds the future behind an `Rc`, so
+/// multiple effect clones can poll the *same* future. To keep that sound we:
+///   1. resolve the inner future at most once, then cache its output, and
+///   2. serve every later poll (from any clone) the cached value rather than
+///      re-polling a completed future (which most futures panic on).
+/// `RefCell` enforces a single `&mut` to the future at a time; the runtime only
+/// ever polls single-threaded, so this type is intentionally `!Send`/`!Sync`.
+struct FusedFuture<F: Future> {
+    state: RefCell<FusedState<F>>,
+}
 
-impl<F> UnsafeFuture<F> {
+enum FusedState<F: Future> {
+    Pending(F),
+    Ready(F::Output),
+}
+
+impl<F: Future> FusedFuture<F> {
     fn new(future: F) -> Self {
-        UnsafeFuture(UnsafeCell::new(future))
+        FusedFuture {
+            state: RefCell::new(FusedState::Pending(future)),
+        }
     }
 }
 
-unsafe impl<F: Future + Send> Send for UnsafeFuture<F> {}
-unsafe impl<F: Future + Sync> Sync for UnsafeFuture<F> {}
-
-impl<F: Future> EffectFuture<F::Output> for UnsafeFuture<F> {
+impl<F: Future> EffectFuture<F::Output> for FusedFuture<F>
+where
+    F::Output: Clone,
+{
     fn poll(&self, cx: &mut Context<'_>) -> Poll<F::Output> {
-        // SAFETY: We know that no other references to the future exist
-        // because `poll` takes `&self`, not `&mut self`.
-        unsafe {
-            let future = &mut *self.0.get();
-            Pin::new_unchecked(future).poll(cx)
+        let mut state = self.state.borrow_mut();
+        let polled = match &mut *state {
+            // Already resolved: hand back the cached output, never re-poll.
+            FusedState::Ready(value) => return Poll::Ready(value.clone()),
+            FusedState::Pending(future) => {
+                // SAFETY: the future is owned by this `RefCell` inside an `Rc`
+                // and is never moved while pending; `RefCell` guarantees a single
+                // `&mut` at a time and polling is single-threaded.
+                let pinned = unsafe { Pin::new_unchecked(future) };
+                pinned.poll(cx)
+            }
+        };
+        if let Poll::Ready(value) = &polled {
+            *state = FusedState::Ready(value.clone());
         }
+        polled
     }
 }
 
@@ -58,7 +86,7 @@ impl<T: Clone + 'static> Effect<T> {
     where
         F: Future<Output = T> + 'static,
     {
-        Effect::Pending(Rc::new(UnsafeFuture::new(future)))
+        Effect::Pending(Rc::new(FusedFuture::new(future)))
     }
 
     pub fn map<U: Clone + 'static>(mapping: Func1<T, U>, source: Effect<T>) -> Effect<U> {
@@ -66,7 +94,7 @@ impl<T: Clone + 'static> Effect<T> {
             Effect::None => Effect::None,
             Effect::Wrapped(v) => Effect::Wrapped(mapping(v)),
             Effect::Pending(fut) => {
-                let mapped_fut = Rc::new(UnsafeFuture::new(MappedFuture {
+                let mapped_fut = Rc::new(FusedFuture::new(MappedFuture {
                     inner: fut,
                     mapping: Rc::new(mapping),
                 }));
@@ -96,10 +124,13 @@ impl<T: Clone + 'static> Effect<T> {
         match effect {
             Effect::None => NativeArray_::array_from(vec![]),
             Effect::Wrapped(v) => NativeArray_::array_from(vec![v]),
-            // A pending effect has not resolved yet, so it produces no messages
-            // on this pass. NOTE: the runtime drain loop discards the effect it
-            // dequeues, so a Pending effect run this way is dropped before it can
-            // resolve. Polling pending effects needs to be wired into the loop.
+            // TODO(#61): Pending effects are silently dropped here. `run` is what
+            // the runtime drain loop (Runtime.fs `GameExecutor.tick`) calls, and
+            // it discards the dequeued effect — so a `Pending` yields no message
+            // and is never polled to completion or re-enqueued. Wiring async
+            // effects into the loop (poll + re-enqueue while pending, à la
+            // asset_handle.rs's noop_waker) is tracked by the cmd/data-model
+            // refactor in issue #61.
             Effect::Pending(_) => NativeArray_::array_from(vec![]),
         }
     }
@@ -142,5 +173,24 @@ mod tests {
         let msgs = Effect::run(Effect::wrapped(42));
         assert_eq!(NativeArray_::count(msgs.clone()), 1);
         assert!(NativeArray_::contains(msgs, 42));
+    }
+
+    #[test]
+    fn pending_resolves_once_and_caches_across_clones() {
+        use std::future::ready;
+        use std::task::{Context, Poll};
+
+        let eff = Effect::pending(ready(7));
+        let mut first = eff.clone();
+        let mut second = eff;
+
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        // One clone drives the shared future to completion.
+        assert_eq!(first.poll(&mut cx), Poll::Ready(Some(7)));
+        // The other clone must read the cached result rather than re-poll the
+        // already-completed future (std::future::Ready panics if polled twice).
+        assert_eq!(second.poll(&mut cx), Poll::Ready(Some(7)));
     }
 }
