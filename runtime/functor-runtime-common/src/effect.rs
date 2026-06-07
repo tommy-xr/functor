@@ -36,3 +36,27 @@ impl<T: Clone + 'static> Effect<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_none_distinguishes_variants() {
+        assert!(Effect::is_none(&Effect::<i32>::none()));
+        assert!(!Effect::is_none(&Effect::wrapped(1)));
+    }
+
+    #[test]
+    fn run_none_yields_no_messages() {
+        let msgs = Effect::<i32>::run(Effect::none());
+        assert_eq!(NativeArray_::count(msgs), 0);
+    }
+
+    #[test]
+    fn run_wrapped_yields_single_message() {
+        let msgs = Effect::run(Effect::wrapped(42));
+        assert_eq!(NativeArray_::count(msgs.clone()), 1);
+        assert!(NativeArray_::contains(msgs, 42));
+    }
+}
