@@ -42,7 +42,7 @@ impl<T: RenderableAsset> RuntimeRenderableAsset<T> {
         self
     }
 
-    pub fn get_opt(&self) -> Option<Ref<T::HydratedType>> {
+    pub fn get_opt(&self) -> Option<Ref<'_, T::HydratedType>> {
         if let Some(RenderableAssetState::Hydrated(ref _loaded)) = *self.state.borrow() {
             Some(Ref::map(self.state.borrow(), |s| {
                 if let Some(RenderableAssetState::Hydrated(ref l)) = *s {
@@ -56,7 +56,7 @@ impl<T: RenderableAsset> RuntimeRenderableAsset<T> {
         }
     }
 
-    pub fn get(&self, context: &glow::Context) -> Ref<T::HydratedType> {
+    pub fn get(&self, context: &glow::Context) -> Ref<'_, T::HydratedType> {
         self.ensure_hydrated(context);
         self.get_opt().unwrap()
     }

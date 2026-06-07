@@ -54,6 +54,7 @@ use crate::shader::ShaderType;
 impl Material for BasicMaterial {
     fn initialize(&mut self, ctx: &RenderContext) {
         unsafe {
+            #[allow(static_mut_refs)]
             if SHADER_PROGRAM.is_none() {
                 let vertex_shader = Shader::build(
                     ctx.gl,
