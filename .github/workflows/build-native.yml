@@ -8,7 +8,9 @@ on:
 jobs:
   build-native:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
@@ -23,6 +25,11 @@ jobs:
       - name: Restore tools
         run: dotnet tool restore
 
+      - name: .NET SDK info
+        run: |
+          dotnet --info
+          dotnet --list-sdks
+
       - name: Setup Node.js environment
         uses: actions/setup-node@v2.4.1
 
@@ -30,6 +37,13 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            examples/hello/build-native -> ../target
 
       - name: Install wasm-pack
         run: npm install -g wasm-pack
@@ -50,7 +64,7 @@ jobs:
             libglfw3-dev
 
       - name: Build F#
-        run: npm run build:examples:hello:rust
+        run: npm run build:examples:hello:rust -- --verbose
 
       - name: Build Runtime
         run: cargo build --features=strict
