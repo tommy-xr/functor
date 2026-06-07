@@ -102,38 +102,49 @@ module Runtime
             printfn "Hello from GameRunner!"
         interface IRunner with
             member this.getState() =
-                OpaqueState.to_opaque_type state
+                // Bundle the pending effect queue with the model so in-flight
+                // effects survive a hot reload (the new runner starts with an
+                // empty queue otherwise, dropping effects enqueued across frames).
+                OpaqueState.to_opaque_type (state, effectQueue)
             member this.setState(incomingState) =
-                state <- OpaqueState.unsafe_coerce incomingState
+                let (restoredState, restoredQueue): ('Model * EffectQueue<'Msg>) =
+                    OpaqueState.unsafe_coerce incomingState
+                state <- restoredState
+                effectQueue <- restoredQueue
             member this.tick(frameTime: Time.FrameTime) = 
                 
                 // Todo: If first frame, run 'init'
 
-                printfn "Effect count: %d" (EffectQueue.count effectQueue)
-                // Todo: Run any pending effects
-                // Print the number of pending effects in the queue
+                // Drain the effect queue to a fixed point, feeding each resulting
+                // message through 'update' and accumulating state. Capped per frame
+                // so a runaway synchronous effect cascade can't hang the loop; any
+                // overflow is deferred to the next frame.
+                let maxEffectsPerFrame = 1000
 
-                let maybe_effect = EffectQueue.dequeue effectQueue;
+                let mutable processed = 0
+                let mutable settledState = state
+                let mutable draining = true
 
-                let finalState = 
-                    match maybe_effect with 
-                    | None -> 
-                        printfn "No effect"
-                        state
-                    | Some _e -> 
-                        let arr: 'Msg array = Effect.run _e
+                while draining do
+                    match EffectQueue.dequeue effectQueue with
+                    | None -> draining <- false
+                    | Some eff ->
+                        let messages: 'Msg array = Effect.run eff
+                        settledState <-
+                            Array.fold (fun currentState msg ->
+                                let (newState, effect) = GameRunner.update myGame currentState msg
+                                EffectQueue.enqueue effect effectQueue
+                                newState
+                            ) settledState messages
 
-                        Array.fold (fun (currentState) msg ->
-                            let (newState, effect) = GameRunner.update myGame state msg
-                            EffectQueue.enqueue effect effectQueue
-                            newState
-                        ) (state) arr
+                        processed <- processed + 1
+                        if processed >= maxEffectsPerFrame then
+                            printfn "[Functor] WARNING: effect queue hit per-frame cap (%d); deferring %d remaining effect(s) to next frame" maxEffectsPerFrame (EffectQueue.count effectQueue)
+                            draining <- false
 
-                let (newState, effect) = GameRunner.tick myGame finalState frameTime
-
-                EffectQueue.enqueue effect effectQueue;
-
-                // Todo: Run tick effects
+                // Step the simulation on the settled state, queueing any effect it produces.
+                let (newState, effect) = GameRunner.tick myGame settledState frameTime
+                EffectQueue.enqueue effect effectQueue
 
                 state <- newState
                 ()
