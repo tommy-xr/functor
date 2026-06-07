@@ -36,3 +36,40 @@ impl<T: Clone + 'static> fmt::Debug for EffectQueue<T> {
         f.debug_struct("EffectQueue").finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_queue_is_empty() {
+        let q = EffectQueue::<i32>::new();
+        assert_eq!(EffectQueue::count(&q), 0);
+        assert!(EffectQueue::dequeue(&q).is_none());
+    }
+
+    #[test]
+    fn enqueue_dequeue_is_fifo() {
+        let q = EffectQueue::new();
+        EffectQueue::enqueue(&q, Effect::wrapped(1));
+        EffectQueue::enqueue(&q, Effect::wrapped(2));
+        EffectQueue::enqueue(&q, Effect::wrapped(3));
+        assert_eq!(EffectQueue::count(&q), 3);
+
+        for expected in [1, 2, 3] {
+            match EffectQueue::dequeue(&q) {
+                Some(Effect::Wrapped(v)) => assert_eq!(v, expected),
+                _ => panic!("expected Wrapped({expected})"),
+            }
+        }
+        assert_eq!(EffectQueue::count(&q), 0);
+    }
+
+    #[test]
+    fn enqueue_ignores_none_effects() {
+        let q = EffectQueue::<i32>::new();
+        EffectQueue::enqueue(&q, Effect::none());
+        assert_eq!(EffectQueue::count(&q), 0);
+        assert!(EffectQueue::dequeue(&q).is_none());
+    }
+}
