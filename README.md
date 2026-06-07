@@ -11,6 +11,16 @@ transpiles that F# to **Rust**, which is then compiled to one of two targets:
   with hot-reloading for fast iteration.
 - **wasm** — a WebAssembly bundle (built with `wasm-pack`) served to the browser (WebGL2).
 
+## Design principles
+
+- **Functional-core, imperative shell.** As much functionality as possible lives in the pure
+  functional core; side effects are pushed to a thin imperative shell.
+- **LLM-native.** Functor functionality is introspectable by LLMs at runtime — favoring live
+  evaluation, a text-only runtime, and inspectable state.
+- **Simplicity and incrementality.** Prefer small, incremental PRs, leveraging stacked PRs where
+  applicable.
+- **Fast inner loop.** Iterating and experimenting is fast for both humans and LLMs.
+
 ## Repository layout
 
 | Path | What it is |
@@ -95,18 +105,6 @@ The CLI operates on a directory containing a `functor.json`. Point it at the exa
    `wasm-pack build` in `examples/hello/build-wasm` (wasm) — compiles the game.
 3. (native) `functor-runner` loads the resulting `libgame_native` dylib;
    (wasm) a dev server serves the bundle to the browser.
-
-## Troubleshooting
-
-**`wasm-pack build` fails with `could not find RngImp in imp` (in the `uuid` crate).**
-The generated `fable_library_rust` depends on `uuid = "1.8"` with default features off.
-Left unconstrained, Cargo resolves this to `uuid >= 1.12`, which pulls in `getrandom 0.3+`
-and needs an explicit RNG backend for `wasm32-unknown-unknown`.
-
-This repo constrains uuid to `>=1.8, <1.12` in `runtime/functor-runtime-common/Cargo.toml`
-(a shared dependency of every workspace, so the constraint applies everywhere). If you
-still hit this after changing dependencies, confirm the constraint is present, or pin
-manually with `cargo update -p uuid --precise 1.11.1`.
 
 # Credits
 
