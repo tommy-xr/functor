@@ -91,7 +91,7 @@ let init (_args: array<string>) =
         
         let eff = Effect.wrapped (MovePaddle2) |> Effect.map (fun _a -> MovePaddle1);
         let colorMaterial = Material.color(0.0f, 1.0f, 0.0f, 1.0f);
-        let textureMaterial = Material.texture( Texture.file("vr_glove_color.jpg"));
+        let textureMaterial = Material.texture( Texture.file("crate.png"));
         // let barrelModel = Model.file("ExplodingBarrel.glb");
         // let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 1f;
         // let renderModel = Model.file ("ExplodingBarrel.glb") |> Graphics.Scene3D.model |> Transform.scale 0.5f;
