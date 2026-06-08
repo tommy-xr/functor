@@ -8,6 +8,7 @@ type InputFn<'model, 'msg> = 'model -> Input.t -> ('model * effect<'msg>)
 
 type Game<'model, 'msg> = {
     initialState: 'model
+    init: effect<'msg>
     input: InputFn<'model, 'msg>
     tick: TickFn<'model, 'msg>
     update: UpdateFn<'model, 'msg>
@@ -24,9 +25,15 @@ module GameBuilder =
         let tick model tick = (model, Effect.none ())
         let draw3d model frametime = Graphics.Scene3D.cube()
         let input model input = (model, Effect.none ())
-        { initialState = initialState; update = update; tick = tick; input = input; draw3d = draw3d}
+        { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; draw3d = draw3d}
 
-    let update<'model, 'msg> (f: UpdateFn<'model, 'msg>) (game: Game<'model, 'msg>) = 
+    /// Set the startup effect, run once when the game first loads. Unlike 'tick'
+    /// effects, this fires before the first frame and is *not* re-run across a
+    /// hot reload (the persisted effect queue is restored instead).
+    let init (effect: effect<'msg>) (game: Game<'model, 'msg>) =
+        { game with init = effect }
+
+    let update<'model, 'msg> (f: UpdateFn<'model, 'msg>) (game: Game<'model, 'msg>) =
         { game with update = f }
 
     let input<'model, 'msg> (f: InputFn<'model, 'msg>) (game: Game<'model, 'msg>) =     
@@ -40,8 +47,10 @@ module GameBuilder =
 
 
 
-module GameRunner = 
+module GameRunner =
     let initialState (game: Game<'model, 'msg>) = game.initialState
+
+    let init (game: Game<'model, 'msg>) = game.init
 
     let tick<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime) = 
         let (newModel, effect) = game.tick model tick
