@@ -38,13 +38,6 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            examples/hello/build-native -> ../target
-
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
@@ -66,9 +59,30 @@ jobs:
       - name: Build F#
         run: npm run build:examples:hello:rust -- --verbose
 
+      # Cache AFTER Build F#: that step generates fable_modules/, which contains
+      # the fable_library_rust workspace dependency. If caching runs first,
+      # rust-cache's `cargo metadata` fails to resolve the workspace, falls back
+      # to an empty lockfile hash (sha1("") = da39a3ee), and produces a static
+      # key that always "full matches" and never re-saves - silently freezing
+      # the cache. Caching here still precedes the heavy cargo builds below.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            examples/hello/build-native -> ../target
+
       - name: Build Runtime
         run: cargo build --features=strict
         working-directory: runtime/functor-runtime-desktop
+
+      # Run the unit tests here (rather than a standalone job) to get coverage
+      # across the whole OS matrix for free: this job already sets up .NET/Fable
+      # - which materializes the fable_library_rust dependency - and has the
+      # common runtime compiled. Scoped to functor_runtime_common, the only crate
+      # with tests.
+      - name: Run tests
+        run: cargo test -p functor_runtime_common
 
       # Building the web bundle is necessary for the CLI,
       # since the cli includes the web bundle for dev server
