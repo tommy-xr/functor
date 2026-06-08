@@ -38,18 +38,24 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - name: Build F#
+        run: npm run build:examples:hello:rust -- --verbose
+
+      # Cache AFTER Build F#: that step generates fable_modules/, which contains
+      # the fable_library_rust workspace dependency. If caching runs first,
+      # rust-cache's `cargo metadata` fails to resolve the workspace, falls back
+      # to an empty lockfile hash (sha1("") = da39a3ee), and produces a static
+      # key that always "full matches" and never re-saves - silently freezing
+      # the cache. Caching here still precedes the heavy wasm builds below.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             examples/hello/build-wasm
-
-      - name: Install wasm-pack
-        run: npm install -g wasm-pack
-
-      - name: Build F#
-        run: npm run build:examples:hello:rust -- --verbose
 
       - name: Build runtime wasm bundle
         run: wasm-pack build --target web
