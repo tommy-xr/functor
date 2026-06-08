@@ -117,4 +117,5 @@ let init (_args: array<string>) =
     )
     |> GameBuilder.update update
     |> GameBuilder.tick tick
+    |> GameBuilder.init (Effect.wrapped MovePaddle1)
     |> Runtime.runGame

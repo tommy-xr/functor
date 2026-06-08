@@ -13,6 +13,8 @@ module GameBuilder =
 
     val local : initialState:'model -> Game<'model, 'msg>
 
+    val init : effect<'msg> -> Game<'model, 'msg> -> Game<'model, 'msg>
+
     val update : UpdateFn<'model, 'msg> -> Game<'model, 'msg> -> Game<'model, 'msg>
 
     val input : InputFn<'model, 'msg> -> Game<'model, 'msg> -> Game<'model, 'msg>
@@ -24,6 +26,7 @@ module GameBuilder =
 
 module GameRunner =
     val initialState: Game<'model, 'msg> -> 'model
+    val init: Game<'model, 'msg> -> effect<'msg>
     val tick: Game<'model, 'msg> -> 'model -> Time.FrameTime -> ('model * effect<'msg>)
     val update: Game<'model, 'msg> -> 'model -> 'msg -> ('model * effect<'msg>)
     val draw3d: Game<'model, 'msg> -> 'model -> Time.FrameTime -> Graphics.Scene3D

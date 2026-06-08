@@ -97,7 +97,11 @@ module Runtime
     type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model) =
         let myGame = game
         let mutable state: 'Model = initialState
-        let mutable effectQueue: EffectQueue<'Msg> = EffectQueue.empty()
+        // Seed the queue with the game's startup ('init') effect. Because this
+        // happens at construction, a genuine first load drains it on the first
+        // tick, while a hot reload immediately overwrites the queue via setState
+        // - so the startup effect runs exactly once, never on reload.
+        let mutable effectQueue: EffectQueue<'Msg> = EffectQueue.seeded (GameRunner.init game)
         do
             printfn "Hello from GameRunner!"
         interface IRunner with
@@ -111,9 +115,10 @@ module Runtime
                     OpaqueState.unsafe_coerce incomingState
                 state <- restoredState
                 effectQueue <- restoredQueue
-            member this.tick(frameTime: Time.FrameTime) = 
-                
-                // Todo: If first frame, run 'init'
+            member this.tick(frameTime: Time.FrameTime) =
+
+                // The game's 'init' effect is seeded into the queue at construction
+                // (see above), so it drains here on the first tick like any other effect.
 
                 // Drain the effect queue to a fixed point, feeding each resulting
                 // message through 'update' and accumulating state. Capped per frame
