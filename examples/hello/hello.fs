@@ -40,12 +40,24 @@ module Model =
 type Msg =
     | MovePaddle1
     | MovePaddle2
+    | Tick
 
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
 let update model msg =
-    printfn "Running update"
-    (model, Effect.none())
+    match msg with
+    | Tick ->
+        // Driven by the `Sub.every` subscription below: a message produced by a
+        // subscription arrives here every second, just like any other message.
+        let newModel = { model with counter = model.counter + 1 }
+        printfn "Tick! counter = %d" newModel.counter
+        (newModel, Effect.none())
+    | _ ->
+        printfn "Running update"
+        (model, Effect.none())
+
+let subscriptions model =
+    Sub.every (Duration.fromSeconds 1.0) Tick
 
 let tick model (tick: Time.FrameTime) =
     
@@ -117,4 +129,5 @@ let init (_args: array<string>) =
     )
     |> GameBuilder.update update
     |> GameBuilder.tick tick
+    |> GameBuilder.subscriptions subscriptions
     |> Runtime.runGame

@@ -98,6 +98,11 @@ module Runtime
         let myGame = game
         let mutable state: 'Model = initialState
         let mutable effectQueue: EffectQueue<'Msg> = EffectQueue.empty()
+        // Total-time (seconds) seen on the previous frame, used to detect timer
+        // boundary crossings for `Sub.every`. None until the first frame
+        // establishes a baseline (and after a hot reload), so we never report a
+        // spurious crossing across a discontinuous jump in the clock.
+        let mutable lastTts: Option<float> = None
         do
             printfn "Hello from GameRunner!"
         interface IRunner with
@@ -111,9 +116,22 @@ module Runtime
                     OpaqueState.unsafe_coerce incomingState
                 state <- restoredState
                 effectQueue <- restoredQueue
-            member this.tick(frameTime: Time.FrameTime) = 
-                
+            member this.tick(frameTime: Time.FrameTime) =
+
                 // Todo: If first frame, run 'init'
+
+                // Poll subscriptions before draining. We recompute the Sub tree
+                // from the current model each frame and enqueue a message for any
+                // timer that crossed a boundary since last frame; those messages
+                // then flow through the same drain -> update path as effects.
+                let tts = float frameTime.tts
+                match lastTts with
+                | Some prevTts ->
+                    GameRunner.subscriptions myGame state
+                    |> Sub.messagesForFrame prevTts tts
+                    |> Array.iter (fun msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue)
+                | None -> ()
+                lastTts <- Some tts
 
                 // Drain the effect queue to a fixed point, feeding each resulting
                 // message through 'update' and accumulating state. Capped per frame
