@@ -70,6 +70,7 @@ mod effect;
 mod effect_queue;
 mod frame_time;
 pub mod geometry;
+mod input;
 pub mod io;
 pub mod material;
 pub mod math;
@@ -84,6 +85,7 @@ pub mod texture;
 pub use effect::*;
 pub use effect_queue::*;
 pub use frame_time::*;
+pub use input::*;
 pub use render_context::*;
 pub use scene3d::*;
 

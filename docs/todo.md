@@ -67,6 +67,31 @@ MVP:
           (Cmd), not a Sub; a long-poll/SSE stream is the Sub. Same async
           inbox dependency.
 
+  - Input (`Input`) — discrete keyboard/mouse events fed through the pure
+    `input : model -> Input.t -> model * effect` seam, mirroring `update`.
+    Events cross the F#/Rust boundary as primitives; the runtime builds the
+    `Input.t` DU F#-side so game code can pattern-match it.
+
+    - [x] `key_event` / `mouse_move` / `mouse_wheel` boundary exports (native +
+          parallel wasm), desktop GLFW event dispatch, canonical `Key` enum in
+          functor-runtime-common mirrored by `Input.ofKeyCode`.
+    - [x] Interactive `hello` sample: WASD / arrows move the scene (held-key
+          state reconstructed in the model, integrated in `tick`).
+    - [ ] Polling snapshot (fast follow): an `Input.State` (keys currently down
+          + mouse pos/scroll), maintained by the runtime from the same event
+          stream, handed to the pure core — most likely into `tick`
+          (`model -> FrameTime -> Input.State -> ...`) so movement code can ask
+          `Input.State.isKeyDown state Key.W` instead of every game rebuilding
+          held-key state from up/down events. Keep events too (press/release
+          edges still matter for discrete actions). Open: snapshot in `tick`
+          signature vs. a queryable accessor; held-set is derived state so
+          rebuild from events rather than persist in `OpaqueState`.
+    - [ ] Web runtime: translate browser keyboard/mouse events into the
+          `key_event_wasm` / `mouse_move_wasm` / `mouse_wheel_wasm` exports (the
+          exports exist; the JS glue that calls them does not yet).
+    - [ ] Game controller and VR controller events (`Input` has TODO
+          placeholders).
+
   - The machinery `Effect.after` / web sockets / http all share (build once
     when the first resource-backed sub/effect lands):
 

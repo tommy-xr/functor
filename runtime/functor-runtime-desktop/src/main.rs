@@ -9,6 +9,7 @@ use cgmath::{vec4, Matrix4};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::material::ColorMaterial;
 use functor_runtime_common::{FrameTime, SceneContext};
+use functor_runtime_common::Key as InputKey;
 use glfw::{Action, Key};
 use glow::*;
 use hot_reload_game::HotReloadGame;
@@ -22,6 +23,47 @@ const SCR_HEIGHT: u32 = 600;
 mod game;
 mod hot_reload_game;
 mod static_game;
+
+/// Translate a GLFW key into the canonical engine key code passed across the
+/// game boundary. Unmapped keys become InputKey::Unknown.
+fn map_key(key: Key) -> InputKey {
+    match key {
+        Key::A => InputKey::A,
+        Key::B => InputKey::B,
+        Key::C => InputKey::C,
+        Key::D => InputKey::D,
+        Key::E => InputKey::E,
+        Key::F => InputKey::F,
+        Key::G => InputKey::G,
+        Key::H => InputKey::H,
+        Key::I => InputKey::I,
+        Key::J => InputKey::J,
+        Key::K => InputKey::K,
+        Key::L => InputKey::L,
+        Key::M => InputKey::M,
+        Key::N => InputKey::N,
+        Key::O => InputKey::O,
+        Key::P => InputKey::P,
+        Key::Q => InputKey::Q,
+        Key::R => InputKey::R,
+        Key::S => InputKey::S,
+        Key::T => InputKey::T,
+        Key::U => InputKey::U,
+        Key::V => InputKey::V,
+        Key::W => InputKey::W,
+        Key::X => InputKey::X,
+        Key::Y => InputKey::Y,
+        Key::Z => InputKey::Z,
+        Key::Up => InputKey::Up,
+        Key::Down => InputKey::Down,
+        Key::Left => InputKey::Left,
+        Key::Right => InputKey::Right,
+        Key::Space => InputKey::Space,
+        Key::Enter => InputKey::Enter,
+        Key::Escape => InputKey::Escape,
+        _ => InputKey::Unknown,
+    }
+}
 
 use clap::Parser;
 
@@ -74,6 +116,7 @@ pub async fn main() {
             window.make_current();
             window.set_key_polling(true);
             window.set_cursor_pos_polling(true);
+            window.set_scroll_polling(true);
             window.set_framebuffer_size_polling(true);
             // window.set_cursor_mode(glfw::CursorMode::Disabled);
 
@@ -134,6 +177,16 @@ pub async fn main() {
                     glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                         window.set_should_close(true)
                     }
+                    glfw::WindowEvent::Key(key, _, action, _) => match action {
+                        Action::Press | Action::Repeat => {
+                            game.key_event(map_key(key) as i32, true)
+                        }
+                        Action::Release => game.key_event(map_key(key) as i32, false),
+                    },
+                    glfw::WindowEvent::CursorPos(x, y) => {
+                        game.mouse_move(x as i32, y as i32)
+                    }
+                    glfw::WindowEvent::Scroll(_, y) => game.mouse_wheel(y as i32),
                     _ => {}
                 }
             }

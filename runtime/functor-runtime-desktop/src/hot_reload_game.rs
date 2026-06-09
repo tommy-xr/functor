@@ -52,6 +52,30 @@ impl Game for HotReloadGame {
         }
     }
 
+    fn key_event(&mut self, code: i32, is_down: bool) {
+        unsafe {
+            let func: Symbol<fn(i32, bool)> =
+                self.library.as_ref().unwrap().get(b"key_event").unwrap();
+            func(code, is_down)
+        }
+    }
+
+    fn mouse_move(&mut self, x: i32, y: i32) {
+        unsafe {
+            let func: Symbol<fn(i32, i32)> =
+                self.library.as_ref().unwrap().get(b"mouse_move").unwrap();
+            func(x, y)
+        }
+    }
+
+    fn mouse_wheel(&mut self, delta: i32) {
+        unsafe {
+            let func: Symbol<fn(i32)> =
+                self.library.as_ref().unwrap().get(b"mouse_wheel").unwrap();
+            func(delta)
+        }
+    }
+
     fn quit(&mut self) {
         if let Some(handle) = self.watcher_thread.take() {
             handle.join().expect("Failed to join watcher thread");
