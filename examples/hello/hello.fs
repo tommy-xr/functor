@@ -22,11 +22,28 @@ type Ball = {
 module Ball = 
     let initial = { position = Point2.zero; velocity = Vector2.zero; radius = 0.05f }
 
+/// Which movement keys are currently held. Reconstructed from KeyDown/KeyUp
+/// events in `input` so `tick` can apply smooth, frame-rate-independent
+/// movement. (A future input *snapshot* will let the runtime hand this to the
+/// game directly — see todo.md.)
+type HeldKeys = {
+    up: bool
+    down: bool
+    left: bool
+    right: bool
+}
+
+module HeldKeys =
+    let none = { up = false; down = false; left = false; right = false }
+
 type Model = {
     paddle1: Paddle
     paddle2: Paddle
     ball: Ball
     counter: int
+    // Player-controlled offset applied to the rendered scene, driven by input.
+    offset: Point2
+    held: HeldKeys
 }
 
 module Model =
@@ -35,6 +52,8 @@ module Model =
         paddle2 = Paddle.initial
         ball = Ball.initial
         counter = 0
+        offset = Point2.zero
+        held = HeldKeys.none
     }
 
 type Msg =
@@ -58,6 +77,24 @@ let update model msg =
 
 let subscriptions model =
     Sub.every (Duration.fromSeconds 1.0) Tick
+
+// Map WASD and the arrow keys onto the held-key flags. Both KeyDown and KeyUp
+// flow through here; we just record whether each direction is currently held.
+let private setHeld (held: HeldKeys) (key: Input.Key) (isDown: bool) =
+    match key with
+    | Input.W | Input.Up -> { held with up = isDown }
+    | Input.S | Input.Down -> { held with down = isDown }
+    | Input.A | Input.Left -> { held with left = isDown }
+    | Input.D | Input.Right -> { held with right = isDown }
+    | _ -> held
+
+let input model (event: Input.t) =
+    match event with
+    | Input.Keyboard (Input.KeyboardEvent.KeyDown key) ->
+        ({ model with held = setHeld model.held key true }, Effect.none())
+    | Input.Keyboard (Input.KeyboardEvent.KeyUp key) ->
+        ({ model with held = setHeld model.held key false }, Effect.none())
+    | Input.Mouse _ -> (model, Effect.none())
 
 let tick model (tick: Time.FrameTime) =
     
@@ -84,13 +121,24 @@ let tick model (tick: Time.FrameTime) =
             { ball with velocity = Vector2.xy -ball.velocity.x ball.velocity.y }
         else ball
 
-    let newBall = (model.ball 
-        |> applyVelocity tick 
+    let newBall = (model.ball
+        |> applyVelocity tick
         |> handleCollisionWithTopAndBottomWalls
-        |> handleCollisionWithPaddle model.paddle1 
+        |> handleCollisionWithPaddle model.paddle1
         |> handleCollisionWithPaddle model.paddle2)
 
-    ( { model with ball = newBall; counter = model.counter + 3 }, Effect.wrapped (MovePaddle2) |> Effect.map(fun _a -> MovePaddle1)  ) 
+    // Integrate the player offset from the currently held keys. Scaling by
+    // tick.dts keeps the speed frame-rate-independent.
+    let speed = 2.0f
+    let axis neg pos = (if pos then 1.0f else 0.0f) - (if neg then 1.0f else 0.0f)
+    let velocity =
+        Vector2.xy
+            (axis model.held.left model.held.right)
+            (axis model.held.down model.held.up)
+        |> Vector2.scale speed
+    let newOffset = model.offset |> Point2.add (Vector2.scale tick.dts velocity)
+
+    ( { model with ball = newBall; counter = model.counter + 3; offset = newOffset }, Effect.wrapped (MovePaddle2) |> Effect.map(fun _a -> MovePaddle1)  )
 
 open Fable.Core.Rust
 
@@ -126,8 +174,12 @@ let init (_args: array<string>) =
             |])
             |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
         |])
+        // Apply the input-driven offset: WASD / arrow keys move the scene.
+        |> Transform.translateX world.offset.x
+        |> Transform.translateY world.offset.y
     )
     |> GameBuilder.update update
+    |> GameBuilder.input input
     |> GameBuilder.tick tick
     |> GameBuilder.init (Effect.wrapped MovePaddle1)
     |> GameBuilder.subscriptions subscriptions
