@@ -41,9 +41,14 @@ type Model = {
     paddle2: Paddle
     ball: Ball
     counter: int
-    // Player-controlled offset applied to the rendered scene, driven by input.
-    offset: Point2
+    // First-person camera state, driven by input: WASD moves the eye, the
+    // mouse turns it (yaw/pitch). lastMouse holds the previous cursor position
+    // so we can turn by the per-frame delta (None until the first event).
     held: HeldKeys
+    eye: Vector3
+    yaw: float32
+    pitch: float32
+    lastMouse: (float32 * float32) option
 }
 
 module Model =
@@ -52,8 +57,11 @@ module Model =
         paddle2 = Paddle.initial
         ball = Ball.initial
         counter = 0
-        offset = Point2.zero
         held = HeldKeys.none
+        eye = Vector3.xyz 0.0f 0.0f -5.0f
+        yaw = 0.0f
+        pitch = 0.0f
+        lastMouse = None
     }
 
 type Msg =
@@ -88,12 +96,34 @@ let private setHeld (held: HeldKeys) (key: Input.Key) (isDown: bool) =
     | Input.D | Input.Right -> { held with right = isDown }
     | _ -> held
 
+// Mouse sensitivity, radians of rotation per pixel of motion.
+let private mouseSensitivity = 0.003f
+// Clamp pitch just short of straight up/down (~85 degrees) to avoid flipping.
+let private pitchLimit = 1.5f
+
 let input model (event: Input.t) =
     match event with
     | Input.Keyboard (Input.KeyboardEvent.KeyDown key) ->
         ({ model with held = setHeld model.held key true }, Effect.none())
     | Input.Keyboard (Input.KeyboardEvent.KeyUp key) ->
         ({ model with held = setHeld model.held key false }, Effect.none())
+    | Input.Mouse (Input.MouseEvent.MouseMove (x, y)) ->
+        let mx = float32 x
+        let my = float32 y
+        match model.lastMouse with
+        | None ->
+            // First sample: just record the position, don't jump the view.
+            ({ model with lastMouse = Some (mx, my) }, Effect.none())
+        | Some (lastX, lastY) ->
+            let dx = mx - lastX
+            let dy = my - lastY
+            // Mouse right turns the view right; mouse up looks up.
+            let newYaw = model.yaw - dx * mouseSensitivity
+            let newPitch =
+                model.pitch - dy * mouseSensitivity
+                |> min pitchLimit
+                |> max -pitchLimit
+            ({ model with yaw = newYaw; pitch = newPitch; lastMouse = Some (mx, my) }, Effect.none())
     | Input.Mouse _ -> (model, Effect.none())
 
 let tick model (tick: Time.FrameTime) =
@@ -127,18 +157,20 @@ let tick model (tick: Time.FrameTime) =
         |> handleCollisionWithPaddle model.paddle1
         |> handleCollisionWithPaddle model.paddle2)
 
-    // Integrate the player offset from the currently held keys. Scaling by
-    // tick.dts keeps the speed frame-rate-independent.
-    let speed = 2.0f
+    // Move the eye from the held keys, relative to where we're looking.
+    // Scaling by tick.dts keeps the speed frame-rate-independent.
+    let speed = 3.0f
     let axis neg pos = (if pos then 1.0f else 0.0f) - (if neg then 1.0f else 0.0f)
-    let velocity =
-        Vector2.xy
-            (axis model.held.left model.held.right)
-            (axis model.held.down model.held.up)
-        |> Vector2.scale speed
-    let newOffset = model.offset |> Point2.add (Vector2.scale tick.dts velocity)
+    // Forward/right in the ground plane from the current yaw (yaw = 0 -> +Z).
+    let forward = Vector3.xyz (sin model.yaw) 0.0f (cos model.yaw)
+    let right = Vector3.xyz -(cos model.yaw) 0.0f (sin model.yaw)
+    let move =
+        Vector3.add
+            (Vector3.scale (axis model.held.down model.held.up) forward)
+            (Vector3.scale (axis model.held.left model.held.right) right)
+    let newEye = model.eye |> Vector3.add (Vector3.scale (speed * tick.dts) move)
 
-    ( { model with ball = newBall; counter = model.counter + 3; offset = newOffset }, Effect.wrapped (MovePaddle2) |> Effect.map(fun _a -> MovePaddle1)  )
+    ( { model with ball = newBall; counter = model.counter + 3; eye = newEye }, Effect.wrapped (MovePaddle2) |> Effect.map(fun _a -> MovePaddle1)  )
 
 open Fable.Core.Rust
 
@@ -175,17 +207,14 @@ let init (_args: array<string>) =
                 |])
                 |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
             |])
-            // Apply the input-driven offset: WASD / arrow keys move the scene.
-            |> Transform.translateX world.offset.x
-            |> Transform.translateY world.offset.y
 
-        // Static camera for now; mouse free-look arrives in the next PR.
+        // First-person camera: WASD moves world.eye, the mouse turns yaw/pitch.
         let camera =
-            Graphics.Camera.lookAt
-                (Vector3.xyz 0.0f 0.0f -5.0f)
-                Vector3.zero
-                (Vector3.xyz 0.0f 1.0f 0.0f)
-                (Math.Angle.degrees 45.0f)
+            Graphics.Camera.firstPerson
+                world.eye
+                (Math.Angle.radians world.yaw)
+                (Math.Angle.radians world.pitch)
+                (Math.Angle.degrees 60.0f)
 
         Graphics.Frame.create camera scene
     )

@@ -117,7 +117,10 @@ pub async fn main() {
             window.set_cursor_pos_polling(true);
             window.set_scroll_polling(true);
             window.set_framebuffer_size_polling(true);
-            // window.set_cursor_mode(glfw::CursorMode::Disabled);
+            // Capture and hide the cursor so the game gets continuous relative
+            // mouse motion (free-look) instead of the pointer stopping at the
+            // window edges. Escape still closes the window.
+            window.set_cursor_mode(glfw::CursorMode::Disabled);
 
             let gl =
                 glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _);
