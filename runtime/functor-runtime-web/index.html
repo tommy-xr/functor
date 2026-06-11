@@ -6,8 +6,72 @@
     <canvas id="canvas" width="640" height="480"></canvas>
     <script type="module">
 
-      import init1, { test_render_wasm, tick_wasm } from "./build-wasm/pkg/game_wasm.js";
+      import init1, {
+        test_render_wasm,
+        tick_wasm,
+        key_event_wasm,
+        mouse_move_wasm,
+        mouse_wheel_wasm
+      } from "./build-wasm/pkg/game_wasm.js";
       import startRuntime from "./pkg/functor_runtime_web.js";
+
+      // Map a browser KeyboardEvent.code to the canonical key code expected by
+      // the game (functor_runtime_common::Key as i32, decoded by
+      // Input.ofKeyCode). Keep in sync with that enum: A=1..Z=26, then the
+      // entries below. 0 = Unknown.
+      const keyCode = (code) => {
+        // "KeyA".."KeyZ" -> 1..26 ('A' is char code 65).
+        if (code.length === 4 && code.startsWith("Key")) {
+          return code.charCodeAt(3) - 64;
+        }
+        switch (code) {
+          case "ArrowUp": return 27;
+          case "ArrowDown": return 28;
+          case "ArrowLeft": return 29;
+          case "ArrowRight": return 30;
+          case "Space": return 31;
+          case "Enter": return 32;
+          case "Escape": return 33;
+          default: return 0;
+        }
+      };
+
+      const setupInput = () => {
+        const canvas = document.getElementById("canvas");
+
+        // Keyboard. Ignore auto-repeat (the game tracks held state itself), and
+        // swallow keys we handle so Space/arrows don't scroll the page.
+        window.addEventListener("keydown", (e) => {
+          const code = keyCode(e.code);
+          if (code === 0) return;
+          e.preventDefault();
+          if (!e.repeat) key_event_wasm(code, true);
+        });
+        window.addEventListener("keyup", (e) => {
+          const code = keyCode(e.code);
+          if (code === 0) return;
+          key_event_wasm(code, false);
+        });
+
+        // Mouse free-look. Pointer Lock is the browser equivalent of the
+        // desktop runtime's GLFW cursor capture: click the canvas to lock, then
+        // movementX/Y give relative motion. We accumulate it into a running
+        // position so the game's "delta = current - lastMouse" logic works the
+        // same as on native. Esc releases the lock (browser default).
+        canvas.addEventListener("click", () => canvas.requestPointerLock());
+        let ax = 0;
+        let ay = 0;
+        document.addEventListener("mousemove", (e) => {
+          ax += e.movementX;
+          ay += e.movementY;
+          mouse_move_wasm(ax, ay);
+        });
+
+        canvas.addEventListener("wheel", (e) => {
+          e.preventDefault();
+          mouse_wheel_wasm(Math.sign(e.deltaY));
+        });
+      };
 
       const initOutput = init1();
       initOutput.then((f) => {
@@ -23,6 +87,7 @@
           return tick_wasm(frameTime);
         }
 
+        setupInput();
         startRuntime();
       });
     </script>
