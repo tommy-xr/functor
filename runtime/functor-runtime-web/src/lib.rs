@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use cgmath::Matrix4;
-use cgmath::{perspective, vec3, Deg, Point3};
 use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
@@ -17,7 +16,7 @@ use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
-use functor_runtime_common::{FrameTime, RenderContext, Scene3D, SceneContext};
+use functor_runtime_common::{Frame, FrameTime, RenderContext, SceneContext};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
@@ -189,27 +188,19 @@ async fn run_async() -> Result<(), JsValue> {
                 frame_time: frame_time.clone(),
             };
 
-            let projection_matrix: Matrix4<f32> =
-                perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
-
             let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
 
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-            let radius = 5.0;
-            let time: f64 = performance.now() / 1000.0;
-            let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
-                Point3::new(0.0, 0.0, -1.0 * radius),
-                Point3::new(0.0, 0.0, 0.0),
-                vec3(0.0, 1.0, 0.0),
-            );
-
-            // let scene = Scene3D::cube();
 
             game_tick(functor_runtime_common::to_js_value(&frame_time));
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
+            let frame: Frame = functor_runtime_common::from_js_value(val);
 
-            let scene: Scene3D = functor_runtime_common::from_js_value(val);
+            // The game supplies the camera; derive view/projection from it.
+            let aspect = SCR_WIDTH as f32 / SCR_HEIGHT as f32;
+            let view_matrix = frame.camera.view_matrix();
+            let projection_matrix = frame.camera.projection_matrix(aspect);
 
             let mut basic_material = BasicMaterial::create();
             basic_material.initialize(&render_ctx);
@@ -217,7 +208,7 @@ async fn run_async() -> Result<(), JsValue> {
             // asset.get().bind(0, &render_ctx);
 
             functor_runtime_common::Scene3D::render(
-                &scene,
+                &frame.scene,
                 &render_ctx,
                 &scene_context,
                 &world_matrix,

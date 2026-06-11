@@ -25,7 +25,7 @@ module GameBuilder =
 
     val subscriptions: SubFn<'model, 'msg> -> Game<'model, 'msg> -> Game<'model, 'msg>
 
-    val draw3d: ('model -> Time.FrameTime -> Graphics.Scene3D) -> Game<'model, 'msg> -> Game<'model, 'msg>
+    val draw3d: ('model -> Time.FrameTime -> Graphics.Frame) -> Game<'model, 'msg> -> Game<'model, 'msg>
 
 
 module GameRunner =
@@ -35,4 +35,4 @@ module GameRunner =
     val update: Game<'model, 'msg> -> 'model -> 'msg -> ('model * effect<'msg>)
     val subscriptions: Game<'model, 'msg> -> 'model -> Sub<'msg>
     val input: Game<'model, 'msg> -> 'model -> Input.t -> ('model * effect<'msg>)
-    val draw3d: Game<'model, 'msg> -> 'model -> Time.FrameTime -> Graphics.Scene3D
+    val draw3d: Game<'model, 'msg> -> 'model -> Time.FrameTime -> Graphics.Frame

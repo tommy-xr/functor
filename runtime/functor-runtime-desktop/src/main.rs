@@ -4,7 +4,6 @@ use std::env;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cgmath::{perspective, vec3, Deg, Point3};
 use cgmath::{vec4, Matrix4};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::material::ColorMaterial;
@@ -130,9 +129,6 @@ pub async fn main() {
 
         gl.enable(glow::DEPTH_TEST);
 
-        let projection_matrix: Matrix4<f32> =
-            perspective(Deg(45.0), SCR_WIDTH as f32 / SCR_HEIGHT as f32, 0.1, 100.0);
-
         let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
 
         let start_time = Instant::now();
@@ -194,12 +190,6 @@ pub async fn main() {
             game.tick(time.clone());
 
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-            let radius = 5.0;
-            let view_matrix: Matrix4<f32> = Matrix4::look_at_rh(
-                Point3::new(0.0, 0.0, -1.0 * radius),
-                Point3::new(0.0, 0.0, 0.0),
-                vec3(0.0, 1.0, 0.0),
-            );
 
             let render_context = functor_runtime_common::RenderContext {
                 gl: &gl,
@@ -208,7 +198,12 @@ pub async fn main() {
                 frame_time: time.clone(),
             };
 
-            let scene = game.render(time.clone());
+            // The game supplies the camera as part of its frame; derive the
+            // view/projection matrices from it.
+            let frame = game.render(time.clone());
+            let aspect = SCR_WIDTH as f32 / SCR_HEIGHT as f32;
+            let view_matrix = frame.camera.view_matrix();
+            let projection_matrix = frame.camera.projection_matrix(aspect);
 
             // TODO: Factor out to pass in current_material
             // let mut basic_material = BasicMaterial::create();
@@ -220,7 +215,7 @@ pub async fn main() {
             color_material.initialize(&render_context);
 
             functor_runtime_common::Scene3D::render(
-                &scene,
+                &frame.scene,
                 &render_context,
                 &scene_context,
                 &world_matrix,

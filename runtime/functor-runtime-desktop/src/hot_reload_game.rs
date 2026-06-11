@@ -6,7 +6,7 @@ use std::thread::JoinHandle;
 use std::{fs, process};
 use tempfile::tempdir;
 
-use functor_runtime_common::{FrameTime, OpaqueState, Scene3D};
+use functor_runtime_common::{Frame, FrameTime, OpaqueState};
 use libloading::{Library, Symbol};
 
 use crate::game::Game;
@@ -36,9 +36,9 @@ impl Game for HotReloadGame {
         }
     }
 
-    fn render(&mut self, frame_time: FrameTime) -> Scene3D {
+    fn render(&mut self, frame_time: FrameTime) -> Frame {
         unsafe {
-            let render_func: Symbol<fn(FrameTime) -> Scene3D> =
+            let render_func: Symbol<fn(FrameTime) -> Frame> =
                 self.library.as_ref().unwrap().get(b"test_render").unwrap();
             render_func(frame_time)
         }

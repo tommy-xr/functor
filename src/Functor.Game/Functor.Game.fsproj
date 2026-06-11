@@ -8,10 +8,13 @@
     <Compile Include="EffectQueue.fs" />
     <Compile Include="Math/Angle.fs" />
     <Compile Include="Math/Vector2.fs" />
+    <Compile Include="Math/Vector3.fs" />
     <Compile Include="Math/Point2.fs" />
     <Compile Include="Time.fs" />
     <Compile Include="Duration.fsi" />
     <Compile Include="Scene3D.fs" />
+    <Compile Include="Camera.fs" />
+    <Compile Include="Frame.fs" />
     <Compile Include="Duration.fs" />
     <Compile Include="Platform.fs" />
     <Compile Include="Debug.fs" />

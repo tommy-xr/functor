@@ -165,18 +165,29 @@ let init (_args: array<string>) =
             |> Transform.translateZ 10.0f
             |> Transform.scale 0.004f;
 
-        group([|
-            material (textureMaterial, [|
-                cylinder() |> Transform.translateY -1.0f;
-                renderModel
-                |> Transform.rotateY (Math.Angle.degrees (180.0f + 10.0f * frameTime.tts * 0.5f))
-                |> Transform.rotateX (Math.Angle.degrees (0.0f * sin frameTime.tts * 2.0f))
+        let scene =
+            group([|
+                material (textureMaterial, [|
+                    cylinder() |> Transform.translateY -1.0f;
+                    renderModel
+                    |> Transform.rotateY (Math.Angle.degrees (180.0f + 10.0f * frameTime.tts * 0.5f))
+                    |> Transform.rotateX (Math.Angle.degrees (0.0f * sin frameTime.tts * 2.0f))
+                |])
+                |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
             |])
-            |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
-        |])
-        // Apply the input-driven offset: WASD / arrow keys move the scene.
-        |> Transform.translateX world.offset.x
-        |> Transform.translateY world.offset.y
+            // Apply the input-driven offset: WASD / arrow keys move the scene.
+            |> Transform.translateX world.offset.x
+            |> Transform.translateY world.offset.y
+
+        // Static camera for now; mouse free-look arrives in the next PR.
+        let camera =
+            Graphics.Camera.lookAt
+                (Vector3.xyz 0.0f 0.0f -5.0f)
+                Vector3.zero
+                (Vector3.xyz 0.0f 1.0f 0.0f)
+                (Math.Angle.degrees 45.0f)
+
+        Graphics.Frame.create camera scene
     )
     |> GameBuilder.update update
     |> GameBuilder.input input
