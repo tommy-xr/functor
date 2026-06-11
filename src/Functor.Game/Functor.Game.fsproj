@@ -14,6 +14,7 @@
     <Compile Include="Scene3D.fs" />
     <Compile Include="Duration.fs" />
     <Compile Include="Platform.fs" />
+    <Compile Include="Debug.fs" />
     <Compile Include="FrameTime.fs" />
     <Compile Include="Input.fsi" />
     <Compile Include="Input.fs" />

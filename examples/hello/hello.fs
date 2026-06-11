@@ -50,7 +50,7 @@ let update model msg =
         // Driven by the `Sub.every` subscription below: a message produced by a
         // subscription arrives here every second, just like any other message.
         let newModel = { model with counter = model.counter + 1 }
-        printfn "Tick! counter = %d" newModel.counter
+        Debug.log (sprintf "Tick! counter = %d" newModel.counter)
         (newModel, Effect.none())
     | _ ->
         printfn "Running update"
