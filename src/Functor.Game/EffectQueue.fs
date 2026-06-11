@@ -9,6 +9,9 @@ module EffectQueue =
     [<Emit("functor_runtime_common::EffectQueue::new()")>]
     let empty (): EffectQueue<_> = nativeOnly
 
+    [<Emit("functor_runtime_common::EffectQueue::seeded($0)")>]
+    let seeded (eff: effect<'a>): EffectQueue<'a> = nativeOnly
+
     [<Emit("functor_runtime_common::EffectQueue::count(&$0)")>]
     let count (effectQueue: EffectQueue<'a>): int = nativeOnly
 

@@ -14,6 +14,15 @@ impl<T: Clone + 'static> EffectQueue<T> {
         }
     }
 
+    /// Build a queue pre-seeded with a single startup effect. A `None` effect
+    /// yields an empty queue. Used to inject a game's `init` effect at runner
+    /// construction so it drains on the first tick (see Runtime.fs GameExecutor).
+    pub fn seeded(effect: Effect<T>) -> EffectQueue<T> {
+        let queue = EffectQueue::new();
+        EffectQueue::enqueue(&queue, effect);
+        queue
+    }
+
     pub fn count(effect_queue: &EffectQueue<T>) -> i32 {
         effect_queue.queue.borrow().len() as i32
     }
@@ -69,6 +78,27 @@ mod tests {
     fn enqueue_ignores_none_effects() {
         let q = EffectQueue::<i32>::new();
         EffectQueue::enqueue(&q, Effect::none());
+        assert_eq!(EffectQueue::count(&q), 0);
+        assert!(EffectQueue::dequeue(&q).is_none());
+    }
+
+    #[test]
+    fn seeded_with_wrapped_holds_single_startup_effect() {
+        // A game's `init` effect is seeded into the queue at construction and
+        // must be delivered exactly once when the runner drains on first tick.
+        let q = EffectQueue::seeded(Effect::wrapped(7));
+        assert_eq!(EffectQueue::count(&q), 1);
+        match EffectQueue::dequeue(&q) {
+            Some(Effect::Wrapped(v)) => assert_eq!(v, 7),
+            _ => panic!("expected the seeded startup effect"),
+        }
+        assert_eq!(EffectQueue::count(&q), 0);
+    }
+
+    #[test]
+    fn seeded_with_none_is_empty() {
+        // A game without an `init` effect (Effect::none) starts with nothing queued.
+        let q = EffectQueue::<i32>::seeded(Effect::none());
         assert_eq!(EffectQueue::count(&q), 0);
         assert!(EffectQueue::dequeue(&q).is_none());
     }

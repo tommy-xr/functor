@@ -313,10 +313,10 @@ mod tests {
         // Build the Skin
         let skin = skin_builder.build();
 
-        // Expected absolute transforms
+        // Expected absolute transforms: each joint's absolute transform is its
+        // parent's absolute transform composed with its own local transform.
         let expected_abs_transform_joint_0 = transform_joint_0;
-        let expected_abs_transform_joint_1 =
-            expected_abs_transform_joint_0 * transform_joint_1 * transform_joint_2;
+        let expected_abs_transform_joint_1 = expected_abs_transform_joint_0 * transform_joint_1;
         let expected_abs_transform_joint_2 = expected_abs_transform_joint_1 * transform_joint_2;
 
         // Retrieve computed absolute transforms

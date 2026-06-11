@@ -1,9 +1,23 @@
+use std::fmt;
+
 use fable_library_rust::{NativeArray_, Native_::Func1};
 
 #[derive(Clone)]
 pub enum Effect<T: Clone + 'static> {
     None,
     Wrapped(T),
+}
+
+// Implement Debug manually so it doesn't require `T: Debug`. This lets types
+// that embed an Effect (e.g. the generated Game record) derive Debug, while
+// keeping effects opaque - the payload is plain data but not necessarily printable.
+impl<T: Clone + 'static> fmt::Debug for Effect<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Effect::None => f.write_str("Effect::None"),
+            Effect::Wrapped(_) => f.write_str("Effect::Wrapped(..)"),
+        }
+    }
 }
 
 impl<T: Clone + 'static> Effect<T> {

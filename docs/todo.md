@@ -105,7 +105,7 @@ MVP:
   `Assets.Effect.load(texturePipeline, "my_texture.png"): AssetHandle<Texture>`
   `Assets.Effect.load(animationPipeline, "my_texture.png"): AssetHandle<Animations>`
 
-  - `init` function
+  - [x] `init` function (startup effect via `GameBuilder.init`, seeded into the effect queue at construction)
 
   - Get update function working
 
