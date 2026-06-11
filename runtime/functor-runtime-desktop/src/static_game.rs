@@ -1,4 +1,4 @@
-use functor_runtime_common::{FrameTime, Scene3D};
+use functor_runtime_common::{Frame, FrameTime};
 use libloading::{Library, Symbol};
 
 use crate::game::Game;
@@ -12,10 +12,10 @@ impl Game for StaticGame {
         // Noop - nothing to do
     }
 
-    fn render(&mut self, frame_time: FrameTime) -> Scene3D {
+    fn render(&mut self, frame_time: FrameTime) -> Frame {
         // println!("Rendering");
         unsafe {
-            let render_func: Symbol<fn(FrameTime) -> Scene3D> =
+            let render_func: Symbol<fn(FrameTime) -> Frame> =
                 self.library.get(b"test_render").unwrap();
             render_func(frame_time)
         }

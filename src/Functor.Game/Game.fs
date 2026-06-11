@@ -15,7 +15,7 @@ type Game<'model, 'msg> = {
     tick: TickFn<'model, 'msg>
     update: UpdateFn<'model, 'msg>
     subscriptions: SubFn<'model, 'msg>
-    draw3d: 'model -> Time.FrameTime -> Graphics.Scene3D
+    draw3d: 'model -> Time.FrameTime -> Graphics.Frame
     }
 
 
@@ -26,7 +26,7 @@ module GameBuilder =
     let local initialState =
         let update model msg = (model, Effect.none ())
         let tick model tick = (model, Effect.none ())
-        let draw3d model frametime = Graphics.Scene3D.cube()
+        let draw3d model frametime = Graphics.Frame.create (Graphics.Camera.initial ()) (Graphics.Scene3D.cube())
         let input model input = (model, Effect.none ())
         let subscriptions model = Sub.none ()
         { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; subscriptions = subscriptions; draw3d = draw3d}
@@ -43,7 +43,7 @@ module GameBuilder =
     let input<'model, 'msg> (f: InputFn<'model, 'msg>) (game: Game<'model, 'msg>) =     
         { game with input = f }
 
-    let draw3d<'model, 'msg> (f: 'model -> Time.FrameTime -> Graphics.Scene3D) (game: Game<'model, 'msg>) = 
+    let draw3d<'model, 'msg> (f: 'model -> Time.FrameTime -> Graphics.Frame) (game: Game<'model, 'msg>) =
         { game with draw3d = f }
 
     let tick<'model, 'msg> (f: TickFn<'model, 'msg>) (game: Game<'model, 'msg>) =
@@ -74,5 +74,5 @@ module GameRunner =
         let (newModel, effect) = game.input model event
         (newModel, effect)
 
-    let draw3d<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime) =
+    let draw3d<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime): Graphics.Frame =
         game.draw3d model tick

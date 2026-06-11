@@ -8,7 +8,7 @@ module Runtime
     type IRunner =
         abstract member tick: Time.FrameTime -> unit
         abstract member input: Input.t -> unit
-        abstract member render: Time.FrameTime -> Graphics.Scene3D
+        abstract member render: Time.FrameTime -> Graphics.Frame
         abstract member getState: unit -> OpaqueState
         abstract member setState: OpaqueState -> unit
 
@@ -135,7 +135,7 @@ module Runtime
                 raise (System.Exception("No runner"))
 
         [<OuterAttr("no_mangle")>]
-        let test_render(frameTime: Time.FrameTime): Graphics.Scene3D =
+        let test_render(frameTime: Time.FrameTime): Graphics.Frame =
             if currentRunner.IsSome then 
                 currentRunner.Value.render(frameTime)
             else 

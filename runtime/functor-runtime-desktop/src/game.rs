@@ -1,4 +1,4 @@
-use functor_runtime_common::{FrameTime, Scene3D};
+use functor_runtime_common::{Frame, FrameTime};
 
 pub trait Game {
     fn check_hot_reload(&mut self, frame_time: FrameTime);
@@ -14,7 +14,7 @@ pub trait Game {
     /// Deliver a mouse-wheel event (vertical scroll offset).
     fn mouse_wheel(&mut self, delta: i32);
 
-    fn render(&mut self, frame_time: FrameTime) -> Scene3D;
+    fn render(&mut self, frame_time: FrameTime) -> Frame;
 
     fn quit(&mut self);
 }
