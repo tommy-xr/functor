@@ -2,10 +2,26 @@
 
 use std::any::Any;
 
+use fable_library_rust::String_::LrcStr;
+
 #[cfg(target_arch = "wasm32")]
 use serde::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+
+// Log a line so it is visible on every target. On wasm, Rust's `println!`
+// writes to stdout, which isn't connected to anything in the browser
+// (wasm32-unknown-unknown has no WASI), so F# `printfn` output is silently
+// dropped; route it to `console.log` instead. On native, `println!` is fine.
+#[cfg(target_arch = "wasm32")]
+pub fn log(message: LrcStr) {
+    web_sys::console::log_1(&JsValue::from_str(&message));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn log(message: LrcStr) {
+    println!("{}", message);
+}
 
 #[cfg(target_arch = "wasm32")]
 pub fn to_js_value<T>(value: &T) -> JsValue

@@ -6,12 +6,15 @@ type UpdateFn<'model, 'msg> = 'model -> 'msg -> ('model * effect<'msg>)
 
 type InputFn<'model, 'msg> = 'model -> Input.t -> ('model * effect<'msg>)
 
+type SubFn<'model, 'msg> = 'model -> Sub<'msg>
+
 type Game<'model, 'msg> = {
     initialState: 'model
     init: effect<'msg>
     input: InputFn<'model, 'msg>
     tick: TickFn<'model, 'msg>
     update: UpdateFn<'model, 'msg>
+    subscriptions: SubFn<'model, 'msg>
     draw3d: 'model -> Time.FrameTime -> Graphics.Scene3D
     }
 
@@ -25,7 +28,8 @@ module GameBuilder =
         let tick model tick = (model, Effect.none ())
         let draw3d model frametime = Graphics.Scene3D.cube()
         let input model input = (model, Effect.none ())
-        { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; draw3d = draw3d}
+        let subscriptions model = Sub.none ()
+        { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; subscriptions = subscriptions; draw3d = draw3d}
 
     /// Set the startup effect, run once when the game first loads. Unlike 'tick'
     /// effects, this fires before the first frame and is *not* re-run across a
@@ -42,8 +46,11 @@ module GameBuilder =
     let draw3d<'model, 'msg> (f: 'model -> Time.FrameTime -> Graphics.Scene3D) (game: Game<'model, 'msg>) = 
         { game with draw3d = f }
 
-    let tick<'model, 'msg> (f: TickFn<'model, 'msg>) (game: Game<'model, 'msg>) = 
+    let tick<'model, 'msg> (f: TickFn<'model, 'msg>) (game: Game<'model, 'msg>) =
         { game with tick = f}
+
+    let subscriptions<'model, 'msg> (f: SubFn<'model, 'msg>) (game: Game<'model, 'msg>) =
+        { game with subscriptions = f }
 
 
 
@@ -56,9 +63,12 @@ module GameRunner =
         let (newModel, effect) = game.tick model tick
         (newModel, effect)
 
-    let update<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (msg: 'msg) = 
+    let update<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (msg: 'msg) =
         let (newModel, effect) = game.update model msg
         (newModel, effect)
+
+    let subscriptions<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) =
+        game.subscriptions model
 
     let draw3d<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime) =
         game.draw3d model tick

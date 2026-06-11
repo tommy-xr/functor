@@ -102,6 +102,11 @@ module Runtime
         // tick, while a hot reload immediately overwrites the queue via setState
         // - so the startup effect runs exactly once, never on reload.
         let mutable effectQueue: EffectQueue<'Msg> = EffectQueue.seeded (GameRunner.init game)
+        // Total-time (seconds) seen on the previous frame, used to detect timer
+        // boundary crossings for `Sub.every`. None until the first frame
+        // establishes a baseline (and after a hot reload), so we never report a
+        // spurious crossing across a discontinuous jump in the clock.
+        let mutable lastTts: Option<float> = None
         do
             printfn "Hello from GameRunner!"
         interface IRunner with
@@ -120,32 +125,54 @@ module Runtime
                 // The game's 'init' effect is seeded into the queue at construction
                 // (see above), so it drains here on the first tick like any other effect.
 
+                let tts = float frameTime.tts
+
                 // Drain the effect queue to a fixed point, feeding each resulting
-                // message through 'update' and accumulating state. Capped per frame
+                // message through 'update' and accumulating state. Capped per call
                 // so a runaway synchronous effect cascade can't hang the loop; any
                 // overflow is deferred to the next frame.
                 let maxEffectsPerFrame = 1000
+                let drain (startState: 'Model) : 'Model =
+                    let mutable processed = 0
+                    let mutable settledState = startState
+                    let mutable draining = true
+                    while draining do
+                        match EffectQueue.dequeue effectQueue with
+                        | None -> draining <- false
+                        | Some eff ->
+                            let messages: 'Msg array = Effect.run eff
+                            settledState <-
+                                Array.fold (fun currentState msg ->
+                                    let (newState, effect) = GameRunner.update myGame currentState msg
+                                    EffectQueue.enqueue effect effectQueue
+                                    newState
+                                ) settledState messages
 
-                let mutable processed = 0
-                let mutable settledState = state
-                let mutable draining = true
+                            processed <- processed + 1
+                            if processed >= maxEffectsPerFrame then
+                                printfn "[Functor] WARNING: effect queue hit per-frame cap (%d); deferring %d remaining effect(s) to next frame" maxEffectsPerFrame (EffectQueue.count effectQueue)
+                                draining <- false
+                    settledState
 
-                while draining do
-                    match EffectQueue.dequeue effectQueue with
-                    | None -> draining <- false
-                    | Some eff ->
-                        let messages: 'Msg array = Effect.run eff
-                        settledState <-
-                            Array.fold (fun currentState msg ->
-                                let (newState, effect) = GameRunner.update myGame currentState msg
-                                EffectQueue.enqueue effect effectQueue
-                                newState
-                            ) settledState messages
+                // Settle effects carried over from previous frames first, so that
+                // subscriptions are evaluated against an up-to-date model (an
+                // effect processed this frame may change what the game subscribes
+                // to -- e.g. disable a timer).
+                let settledBeforeSubs = drain state
 
-                        processed <- processed + 1
-                        if processed >= maxEffectsPerFrame then
-                            printfn "[Functor] WARNING: effect queue hit per-frame cap (%d); deferring %d remaining effect(s) to next frame" maxEffectsPerFrame (EffectQueue.count effectQueue)
-                            draining <- false
+                // Poll subscriptions on the settled model: recompute the Sub tree
+                // and enqueue a message for any timer that crossed a boundary since
+                // last frame, then drain those through the same update path. A sub
+                // disabled by the effects above no longer fires this frame.
+                match lastTts with
+                | Some prevTts ->
+                    GameRunner.subscriptions myGame settledBeforeSubs
+                    |> Sub.messagesForFrame prevTts tts
+                    |> Array.iter (fun msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue)
+                | None -> ()
+                lastTts <- Some tts
+
+                let settledState = drain settledBeforeSubs
 
                 // Step the simulation on the settled state, queueing any effect it produces.
                 let (newState, effect) = GameRunner.tick myGame settledState frameTime

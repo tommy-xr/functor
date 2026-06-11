@@ -63,8 +63,6 @@ impl AssetLoader for WasmAssetLoader {
 
 async fn run_async() -> Result<(), JsValue> {
     // Load game
-    // web_sys::console::log_2(&JsValue::from_str("Here: "), &three);
-    // println!("Value! {:?}", three);
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets
         let (gl, shader_version) = {
@@ -115,8 +113,6 @@ async fn run_async() -> Result<(), JsValue> {
                 color = vec4(vert, 0.5, 1.0);
             }"#,
         );
-
-        web_sys::console::log_1(&JsValue::from_str("here - 20!"));
 
         let shader_sources = [
             (glow::VERTEX_SHADER, vertex_shader_source),
@@ -212,7 +208,6 @@ async fn run_async() -> Result<(), JsValue> {
             game_tick(functor_runtime_common::to_js_value(&frame_time));
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
-            web_sys::console::log_2(&JsValue::from_str("calling render"), &val);
 
             let scene: Scene3D = functor_runtime_common::from_js_value(val);
 

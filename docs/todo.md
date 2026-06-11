@@ -46,15 +46,38 @@ MVP:
 
 - ## Materials
 
-  - Sub.ofMsg
-    - dispatch message to game
-    - Create a 'poll' method for Subs
-    - Just fires once
-  - Sub.renderFrame
-    - Always returns a message via poll
-  - Sub.timer
-  - Sub.Net.httpRequest
-  - Sub.Net.webSocket
+  - Subscriptions (`Sub`) — the dual of Effect/Cmd: a standing source of
+    messages, recomputed from the model each frame and fed back through the
+    same enqueue -> drain -> update path as effects. (PR #69)
+
+    - [x] `subscriptions : model -> Sub msg` seam wired into the runtime loop
+    - [x] `Sub.every` (recurring timer) — stateless: fires on the global time
+          grid, so it needs no per-sub identity or diffing and survives hot
+          reload for free. `Sub.none` / `Sub.batch` / `Sub.map` too.
+    - [ ] `Effect.after duration msg` — one-shot delay. This is a *command*,
+          not a sub (needs creation-time state), so it can't use the stateless
+          clock trick. Blocked on the async inbox below.
+    - [ ] `Sub.renderFrame` — always returns a message via poll (per-frame Sub)
+    - [ ] `Sub.Net.webSocket` — first resource-backed sub. Unlike `every`, a
+          live socket DOES need identity (it must be matched across
+          recomputations so it isn't torn down/reopened every frame; key on the
+          resource descriptor, e.g. URL, which is hashable — not the generic
+          msg). Blocked on the keyed resource registry + async inbox below.
+    - [ ] `Sub.Net.httpRequest` — note: a one-shot request is really an Effect
+          (Cmd), not a Sub; a long-poll/SSE stream is the Sub. Same async
+          inbox dependency.
+
+  - The machinery `Effect.after` / web sockets / http all share (build once
+    when the first resource-backed sub/effect lands):
+
+    - [ ] Async inbox: a channel the runtime drains each frame into the
+          EffectQueue, so messages can arrive on a *later* frame (today Effect
+          is synchronous — `Effect.run` yields in-frame). The seam already has
+          the right shape (walk subs -> enqueue -> drain); the inbox is just
+          empty for now.
+    - [ ] Keyed resource registry: each frame, diff the desired sub set against
+          live resources; spawn new, tear down gone. Identity = resource
+          descriptor.
 
   - Add test project
 
@@ -71,12 +94,13 @@ MVP:
   - EffectRunner::get_completed_result(): Array<T>
 
   - Are we going to have to re-think our approach to async IO on desktop runtime?
+    (This is the "async inbox" item under Subscriptions above — same work.)
 
     - Maybe we create a tokio runtime in a separate thread
     - Use the receiver / channel to push state
 
-  - Add timeout effect to implement futures
-    `Effect.timeout(~duration, msg)`
+  - Add timeout effect to implement futures — now tracked as `Effect.after`
+    under Subscriptions above (one-shot command, blocked on the async inbox).
 
   `Assets.Effect.load(texturePipeline, "my_texture.png"): AssetHandle<Texture>`
   `Assets.Effect.load(animationPipeline, "my_texture.png"): AssetHandle<Animations>`
