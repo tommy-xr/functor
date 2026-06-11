@@ -7,6 +7,7 @@ module Runtime
 
     type IRunner =
         abstract member tick: Time.FrameTime -> unit
+        abstract member input: Input.t -> unit
         abstract member render: Time.FrameTime -> Graphics.Scene3D
         abstract member getState: unit -> OpaqueState
         abstract member setState: OpaqueState -> unit
@@ -47,6 +48,29 @@ module Runtime
                 raise (System.Exception("No runner"))
 
         [<OuterAttr("wasm_bindgen")>]
+        let key_event_wasm (code: int, isDown: bool): unit =
+            if currentRunner.IsSome then
+                let key = Input.ofKeyCode code
+                let kev = if isDown then Input.KeyboardEvent.KeyDown key else Input.KeyboardEvent.KeyUp key
+                currentRunner.Value.input(Input.Keyboard kev)
+            else
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("wasm_bindgen")>]
+        let mouse_move_wasm (x: int, y: int): unit =
+            if currentRunner.IsSome then
+                currentRunner.Value.input(Input.Mouse (Input.MouseEvent.MouseMove (x, y)))
+            else
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("wasm_bindgen")>]
+        let mouse_wheel_wasm (delta: int): unit =
+            if currentRunner.IsSome then
+                currentRunner.Value.input(Input.Mouse (Input.MouseEvent.MouseWheel delta))
+            else
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("wasm_bindgen")>]
         let test_render_wasm (frameTimeJs: JsValue): JsValue =
             let frameTime = frameTimeJs |> UnsafeJsValue.from_js<Time.FrameTime>;
             if currentRunner.IsSome then 
@@ -71,6 +95,29 @@ module Runtime
             if currentRunner.IsSome then 
                 currentRunner.Value.tick(frameTime)
             else 
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let key_event(code: int, isDown: bool) =
+            if currentRunner.IsSome then
+                let key = Input.ofKeyCode code
+                let kev = if isDown then Input.KeyboardEvent.KeyDown key else Input.KeyboardEvent.KeyUp key
+                currentRunner.Value.input(Input.Keyboard kev)
+            else
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let mouse_move(x: int, y: int) =
+            if currentRunner.IsSome then
+                currentRunner.Value.input(Input.Mouse (Input.MouseEvent.MouseMove (x, y)))
+            else
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let mouse_wheel(delta: int) =
+            if currentRunner.IsSome then
+                currentRunner.Value.input(Input.Mouse (Input.MouseEvent.MouseWheel delta))
+            else
                 raise (System.Exception("No runner"))
 
         [<OuterAttr("no_mangle")>]
@@ -180,7 +227,15 @@ module Runtime
 
                 state <- newState
                 ()
-            member this.render(frameTime: Time.FrameTime) = 
+            member this.input(event: Input.t) =
+                // Feed the event through the game's pure 'input' handler. The
+                // resulting model is applied immediately; any effect it produces
+                // is enqueued and drained by the next 'tick' (alongside its own).
+                let (newState, effect) = GameRunner.input myGame state event
+                EffectQueue.enqueue effect effectQueue
+                state <- newState
+                ()
+            member this.render(frameTime: Time.FrameTime) =
                 GameRunner.draw3d myGame state frameTime
                 // printfn "Hello from GameRunner.render!"
                 // Scene3D.cube()

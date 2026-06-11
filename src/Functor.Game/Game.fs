@@ -70,5 +70,9 @@ module GameRunner =
     let subscriptions<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) =
         game.subscriptions model
 
+    let input<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (event: Input.t) =
+        let (newModel, effect) = game.input model event
+        (newModel, effect)
+
     let draw3d<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime) =
         game.draw3d model tick
