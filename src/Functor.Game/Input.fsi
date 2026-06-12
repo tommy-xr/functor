@@ -16,7 +16,9 @@ module Input
 
     module MouseEvent =
         type t =
-            | MouseMove of int * int
+            // Single (int * int) tuple field (not two) to avoid a Fable Rust
+            // codegen bug when matching multi-field union cases.
+            | MouseMove of (int * int)
             | MouseWheel of int
 
     // TODO: Game Controller event

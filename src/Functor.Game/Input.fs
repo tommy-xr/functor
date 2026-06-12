@@ -16,7 +16,12 @@ module Input
 
     module MouseEvent =
         type t =
-            | MouseMove of int * int
+            // Note: MouseMove carries a single (int * int) tuple field, not two
+            // separate fields. Fable's Rust backend miscompiles a *match* on a
+            // union case that has multiple fields (it emits a constructor test
+            // with the wrong arity); a single tuple field sidesteps that while
+            // construction/destructuring read identically.
+            | MouseMove of (int * int)
             | MouseWheel of int
 
     // TODO: Game Controller event
