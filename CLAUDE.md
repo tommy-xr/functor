@@ -35,15 +35,21 @@ These shape how features should be built. Weigh changes against them.
 built fluently via `GameBuilder` and handed to `Runtime.runGame`:
 
 - `initialState: 'model`
-- `input : 'model -> Input.t -> 'model * effect<'msg>`
+- `init  : effect<'msg>` — startup effect, seeded into the queue at construction so it drains
+  before the first frame; **not** re-run across a hot reload (the persisted queue is restored)
+- `input : 'model -> Input.t -> 'model * effect<'msg>` — keyboard/mouse events, applied immediately
 - `tick  : 'model -> FrameTime -> 'model * effect<'msg>` — per-frame simulation step
 - `update: 'model -> 'msg -> 'model * effect<'msg>` — handles messages produced by effects
-- `draw3d: 'model -> FrameTime -> Graphics.Scene3D` — pure scene description
+- `subscriptions: 'model -> Sub<'msg>` — declarative timers (`Sub.every`), polled each frame
+- `draw3d: 'model -> FrameTime -> Graphics.Frame` — pure frame description: a `Camera` plus a
+  `Scene3D` (`Frame.create camera scene`)
 
-`Runtime.GameExecutor` (`src/Functor.Game/Runtime.fs`) is the heart of the loop. Each `tick` it
-**drains the effect queue to a fixed point** (capped at `maxEffectsPerFrame = 1000` to avoid
-hangs), feeding each resulting message through `update`, then runs `tick` on the settled state.
-Effects produce `'msg` arrays via `Effect.run`; new effects are re-enqueued.
+`Runtime.GameExecutor` (`src/Functor.Game/Runtime.fs`) is the heart of the loop. Each `tick` it:
+(1) **drains the effect queue to a fixed point** (capped at `maxEffectsPerFrame = 1000` to avoid
+hangs), feeding each resulting message through `update`; (2) polls `subscriptions` on the settled
+model, enqueueing a message for each timer that crossed a boundary since last frame, and drains
+again; (3) runs `tick` on the settled state. Effects produce `'msg` arrays via `Effect.run`; new
+effects are re-enqueued.
 
 **The F#→Rust boundary is thin bindings, not reimplementations.** Many `Functor.Game` types are
 `[<Erase; Emit(...)>]` shims over Rust runtime types. For example `EffectQueue.fs` and the
@@ -57,22 +63,23 @@ lives in the Rust runtime, with an F# `Emit` binding mirroring its signature —
 **both the model and the pending effect queue** into an `OpaqueState` so in-flight effects survive
 the reload. Preserve this contract when touching executor state.
 
-**Two runtime exports.** `Runtime.Native` exposes `no_mangle` functions (`tick`, `test_render`,
-`emit_state`, `set_state`) for the dylib; `Runtime.Wasm` exposes `wasm_bindgen` functions
-(`tick_wasm`, `test_render_wasm`) that marshal `FrameTime`/`Scene3D` through JsValue. New runtime
-entry points generally need a parallel native + wasm pair.
+**Two runtime exports.** `Runtime.Native` exposes `no_mangle` functions (`tick`, `key_event`,
+`mouse_move`, `mouse_wheel`, `test_render`, `emit_state`, `set_state`) for the dylib;
+`Runtime.Wasm` exposes `wasm_bindgen` equivalents with a `_wasm` suffix (no state pair —
+hot-reload is native-only) that marshal `FrameTime`/`Frame` through JsValue. New runtime entry
+points generally need a parallel native + wasm pair.
 
 ### Layout
 
 | Path | What it is |
 | --- | --- |
-| `src/Functor.Game/` | The F# game framework (`Game`, `Runtime`, `Scene3D`/`Graphics`, `Input`, `Effect`, `EffectQueue`, `Math`, `Time`) |
+| `src/Functor.Game/` | The F# game framework (`Game`, `Runtime`, `Scene3D`/`Graphics`, `Frame`, `Camera`, `Input`, `Effect`, `EffectQueue`, `Sub`, `Math`, `Time`) |
 | `src/` | `functor-lib` — Rust crate Fable emits from `Functor.Game` (lib path is the generated `Platform.rs`) |
 | `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, `Effect`/`EffectQueue` |
 | `runtime/functor-runtime-desktop/` | Desktop runtime → the `functor-runner` binary (GLFW/OpenGL) |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle |
 | `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`) |
-| `examples/hello/` | Sample game (Pong-style demo in `hello.fs`); `build-native/` and `build-wasm/` are the per-target compile crates |
+| `examples/hello/` | Sample game (`hello.fs` — Pong-style scene with a WASD + mouse free-look camera); `build-native/` and `build-wasm/` are the per-target compile crates |
 
 The `.fs`/`.fsi` pairs in `src/Functor.Game/` use the `.fsi` signature file as the public API — update both when changing a module's surface.
 
@@ -136,3 +143,4 @@ Test modules live alongside source (`effect.rs`, `effect_queue.rs`, `model/skele
   that compile the generated `../hello.rs` as a `dylib`/`cdylib` respectively; they are not part of
   the root workspace.
 - `cli/src/main.rs`'s `Init` command is currently a TODO stub.
+- `AGENTS.md` is a symlink to this file — edit `CLAUDE.md` only.
