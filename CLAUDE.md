@@ -44,12 +44,11 @@ built fluently via `GameBuilder` and handed to `Runtime.runGame`:
 - `draw3d: 'model -> FrameTime -> Graphics.Frame` — pure frame description: a `Camera` plus a
   `Scene3D` (`Frame.create camera scene`)
 
-`Runtime.GameExecutor` (`src/Functor.Game/Runtime.fs`) is the heart of the loop. Each `tick` it:
-(1) **drains the effect queue to a fixed point** (capped at `maxEffectsPerFrame = 1000` to avoid
-hangs), feeding each resulting message through `update`; (2) polls `subscriptions` on the settled
-model, enqueueing a message for each timer that crossed a boundary since last frame, and drains
-again; (3) runs `tick` on the settled state. Effects produce `'msg` arrays via `Effect.run`; new
-effects are re-enqueued.
+`Runtime.GameExecutor` (`src/Functor.Game/Runtime.fs`) is the heart of the loop: each frame it
+**drains the effect queue to a fixed point** (capped at `maxEffectsPerFrame = 1000` to avoid
+hangs), feeding messages through `update` and re-enqueueing new effects, before running `tick` on
+the settled state. The exact per-frame ordering (subscriptions are polled between drains) is
+documented by comments in the executor itself.
 
 **The F#→Rust boundary is thin bindings, not reimplementations.** Many `Functor.Game` types are
 `[<Erase; Emit(...)>]` shims over Rust runtime types. For example `EffectQueue.fs` and the
@@ -63,11 +62,10 @@ lives in the Rust runtime, with an F# `Emit` binding mirroring its signature —
 **both the model and the pending effect queue** into an `OpaqueState` so in-flight effects survive
 the reload. Preserve this contract when touching executor state.
 
-**Two runtime exports.** `Runtime.Native` exposes `no_mangle` functions (`tick`, `key_event`,
-`mouse_move`, `mouse_wheel`, `test_render`, `emit_state`, `set_state`) for the dylib;
-`Runtime.Wasm` exposes `wasm_bindgen` equivalents with a `_wasm` suffix (no state pair —
-hot-reload is native-only) that marshal `FrameTime`/`Frame` through JsValue. New runtime entry
-points generally need a parallel native + wasm pair.
+**Two runtime exports.** `Runtime.Native` exposes `no_mangle` functions for the dylib;
+`Runtime.Wasm` exposes `wasm_bindgen` equivalents (`_wasm` suffix, marshalling through JsValue;
+no state pair — hot-reload is native-only). New runtime entry points generally need a parallel
+native + wasm pair — see both modules in `Runtime.fs` for the current list.
 
 ### Layout
 
@@ -96,11 +94,7 @@ dotnet tool restore           # one-time: install the Fable local tool
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
 
 ```sh
-npm run build:cli
-# equivalent to, in order:
-#   cargo build --bin functor-runner
-#   wasm-pack build runtime/functor-runtime-web --target=web
-#   cargo build --bin functor
+npm run build:cli   # functor-runner, then the wasm bundle, then the functor CLI
 ```
 
 Produces `target/debug/functor` (CLI) and `target/debug/functor-runner` (desktop runtime). The CLI
@@ -122,15 +116,8 @@ dylib via `functor-runner`, wasm serves the bundle.
 **Transpile F# only:** `npm run build:examples:hello:rust`
 (`dotnet fable examples/hello/hello.fsproj --lang rust --outDir .`).
 
-**Tests** (Rust, in `functor-runtime-common`):
-
-```sh
-cargo test                                    # whole workspace
-cargo test -p functor_runtime_common          # one crate
-cargo test -p functor_runtime_common effect    # tests matching "effect"
-```
-
-Test modules live alongside source (`effect.rs`, `effect_queue.rs`, `model/skeleton.rs`, `lib.rs`).
+**Tests** are Rust, in `functor-runtime-common`, with test modules alongside source:
+`cargo test -p functor_runtime_common`.
 
 ## Gotchas
 
