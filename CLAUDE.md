@@ -139,6 +139,6 @@ dylib via `functor-runner`, wasm serves the bundle.
   [BabylonJS/Assets](https://github.com/BabylonJS/Assets/) (`meshes/*.glb`): `ExplodingBarrel.glb`
   is ~72 units tall, Mixamo-style humanoids (`Xbot.glb`) are centimeter scale, and `fish.glb` is an
   entire multi-fish scene — hence the per-model `Transform.scale` values in `examples/hello`. Only
-  `shark.glb`/`ExplodingBarrel.glb` are checked in; other models referenced by the sample must be
-  downloaded from that repo (they're gitignored).
+  `shark.glb`/`ExplodingBarrel.glb` are checked in; fetch the rest with `npm run fetch:assets`
+  (they're gitignored). A missing asset logs an error and renders as the fallback (empty) asset.
 - `AGENTS.md` is a symlink to this file — edit `CLAUDE.md` only.

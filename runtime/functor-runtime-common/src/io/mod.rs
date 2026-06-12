@@ -46,7 +46,9 @@ pub async fn load_bytes_async(path: &str) -> Result<Vec<u8>, String> {
 pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
     #[cfg(target_arch = "wasm32")]
     {
-        load_bytes_async(&path).await
+        load_bytes_async(&path)
+            .await
+            .map_err(|e| format!("{}: {}", path, e))
     }
     // AssetHandle polls asset futures manually with a noop waker, once per
     // frame on the render thread. A chunked tokio::fs read only advances one
@@ -56,6 +58,6 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
     // one frame hitch instead of a minutes-long stall.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::fs::read(&path).map_err(|e| e.to_string())
+        std::fs::read(&path).map_err(|e| format!("{}: {}", path, e))
     }
 }

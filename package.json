@@ -5,6 +5,7 @@
     "clean": "git clean -fdX",
 
     "build:cli": "cargo build --bin functor-runner && wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
+    "fetch:assets": "node scripts/fetch-assets.mjs",
     "build:examples:hello:rust": "dotnet fable examples/hello/hello.fsproj --lang rust --outDir ."
   }
 }

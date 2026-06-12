@@ -96,6 +96,13 @@ together.
 
 ## Running the sample (`examples/hello`)
 
+First, fetch the sample's model assets (only some are checked in; the rest download from
+[BabylonJS Assets](https://github.com/BabylonJS/Assets/)):
+
+```sh
+npm run fetch:assets
+```
+
 The CLI operates on a directory containing a `functor.json`. Point it at the example with
 `-d`. The `run` command transpiles the F#, compiles the game, and launches it:
 
