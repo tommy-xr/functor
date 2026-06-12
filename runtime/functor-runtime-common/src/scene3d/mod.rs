@@ -227,12 +227,7 @@ impl Scene3D {
                                     );
                                     animated_skeleton.get_skinning_transforms()
                                 } else {
-                                    let mut joints = Vec::new();
-
-                                    for i in 0..50 {
-                                        joints.push(Matrix4::identity());
-                                    }
-                                    joints
+                                    vec![Matrix4::identity(); 50]
                                 };
 
                                 // Bind textures
