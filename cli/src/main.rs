@@ -87,9 +87,17 @@ async fn main() -> tokio::io::Result<()> {
                 .await
         }
     };
-    println!("Done");
 
-    Ok(())
+    match res {
+        Ok(()) => {
+            println!("Done");
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("Failed: {}", error);
+            process::exit(1);
+        }
+    }
 }
 
 fn validate_metadata_path(working_directory: &PathBuf) -> PathBuf {

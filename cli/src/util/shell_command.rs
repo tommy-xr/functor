@@ -44,6 +44,21 @@ impl<'A> ShellCommand<'A> {
             // Wait for process to finish
             tokio::spawn(stdout_handle).await?;
             tokio::spawn(stderr_handle).await?;
+
+            let status = child.wait().await?;
+            if !status.success() {
+                let detail = describe_exit(&status);
+                eprintln!(
+                    "{}: {} {}",
+                    command_spec.prefix.red(),
+                    command_spec.cmd,
+                    detail
+                );
+                return Err(Error::new(
+                    io::ErrorKind::Other,
+                    format!("{} {}", command_spec.cmd, detail),
+                ));
+            }
         }
 
         Ok(())
@@ -85,6 +100,30 @@ impl<'A> ShellCommand<'A> {
 
         Ok(())
     }
+}
+
+fn describe_exit(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("failed with exit code {}", code);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            let name = match signal {
+                4 => " (SIGILL: illegal instruction)",
+                6 => " (SIGABRT: abort — often a Rust panic)",
+                8 => " (SIGFPE: arithmetic error)",
+                10 => " (SIGBUS: bus error)",
+                11 => " (SIGSEGV: segmentation fault)",
+                _ => "",
+            };
+            return format!("terminated by signal {}{}", signal, name);
+        }
+    }
+
+    "exited abnormally".to_string()
 }
 
 async fn handle_output(prefix: String, stream: impl tokio::io::AsyncRead + Unpin, is_stdout: bool) {
