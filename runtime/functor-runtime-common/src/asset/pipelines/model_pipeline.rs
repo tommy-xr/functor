@@ -188,16 +188,15 @@ fn process_node(
             // Parse material
             let material = primitive.material();
 
-            let base_color_texture =
+            let (base_color_texture, base_color_factor) =
                 if let Some(specular_glossiness_material) = material.pbr_specular_glossiness() {
-                    println!(
-                        "Diffuse factor: {:?}",
-                        specular_glossiness_material.diffuse_factor()
-                    );
-                    specular_glossiness_material.diffuse_texture()
+                    (
+                        specular_glossiness_material.diffuse_texture(),
+                        specular_glossiness_material.diffuse_factor(),
+                    )
                 } else {
                     let material = material.pbr_metallic_roughness();
-                    material.base_color_texture()
+                    (material.base_color_texture(), material.base_color_factor())
                 };
 
             let texture = if let Some(texture) = base_color_texture {
@@ -208,7 +207,16 @@ fn process_node(
                 let texture_data = image.clone();
                 Texture2D::init_from_data(texture_data, TextureOptions::default())
             } else {
-                let data = TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255]);
+                // No texture: glTF defines the color as the base color factor
+                // alone, so sample a 1x1 solid of it (untextured materials —
+                // e.g. Xbot.glb, HVGirl.glb — are flat factor colors).
+                let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0) as u8;
+                let data = TextureData::solid_color([
+                    to_u8(base_color_factor[0]),
+                    to_u8(base_color_factor[1]),
+                    to_u8(base_color_factor[2]),
+                    to_u8(base_color_factor[3]),
+                ]);
                 Texture2D::init_from_data(data, TextureOptions::default())
             };
 

@@ -22,6 +22,15 @@ impl TextureData {
         }
     }
 
+    pub fn solid_color(color: [u8; 4]) -> TextureData {
+        TextureData {
+            bytes: color.to_vec(),
+            width: 1,
+            height: 1,
+            format: PixelFormat::RGBA,
+        }
+    }
+
     pub fn checkerboard_pattern(width: u32, height: u32, color: [u8; 4]) -> TextureData {
         let mut bytes = Vec::with_capacity((width * height * 4) as usize);
 
