@@ -35,15 +35,20 @@ These shape how features should be built. Weigh changes against them.
 built fluently via `GameBuilder` and handed to `Runtime.runGame`:
 
 - `initialState: 'model`
-- `input : 'model -> Input.t -> 'model * effect<'msg>`
+- `init  : effect<'msg>` — startup effect, seeded into the queue at construction so it drains
+  before the first frame; **not** re-run across a hot reload (the persisted queue is restored)
+- `input : 'model -> Input.t -> 'model * effect<'msg>` — keyboard/mouse events, applied immediately
 - `tick  : 'model -> FrameTime -> 'model * effect<'msg>` — per-frame simulation step
 - `update: 'model -> 'msg -> 'model * effect<'msg>` — handles messages produced by effects
-- `draw3d: 'model -> FrameTime -> Graphics.Scene3D` — pure scene description
+- `subscriptions: 'model -> Sub<'msg>` — declarative timers (`Sub.every`), polled each frame
+- `draw3d: 'model -> FrameTime -> Graphics.Frame` — pure frame description: a `Camera` plus a
+  `Scene3D` (`Frame.create camera scene`)
 
-`Runtime.GameExecutor` (`src/Functor.Game/Runtime.fs`) is the heart of the loop. Each `tick` it
+`Runtime.GameExecutor` (`src/Functor.Game/Runtime.fs`) is the heart of the loop: each frame it
 **drains the effect queue to a fixed point** (capped at `maxEffectsPerFrame = 1000` to avoid
-hangs), feeding each resulting message through `update`, then runs `tick` on the settled state.
-Effects produce `'msg` arrays via `Effect.run`; new effects are re-enqueued.
+hangs), feeding messages through `update` and re-enqueueing new effects, before running `tick` on
+the settled state. The exact per-frame ordering (subscriptions are polled between drains) is
+documented by comments in the executor itself.
 
 **The F#→Rust boundary is thin bindings, not reimplementations.** Many `Functor.Game` types are
 `[<Erase; Emit(...)>]` shims over Rust runtime types. For example `EffectQueue.fs` and the
@@ -57,22 +62,22 @@ lives in the Rust runtime, with an F# `Emit` binding mirroring its signature —
 **both the model and the pending effect queue** into an `OpaqueState` so in-flight effects survive
 the reload. Preserve this contract when touching executor state.
 
-**Two runtime exports.** `Runtime.Native` exposes `no_mangle` functions (`tick`, `test_render`,
-`emit_state`, `set_state`) for the dylib; `Runtime.Wasm` exposes `wasm_bindgen` functions
-(`tick_wasm`, `test_render_wasm`) that marshal `FrameTime`/`Scene3D` through JsValue. New runtime
-entry points generally need a parallel native + wasm pair.
+**Two runtime exports.** `Runtime.Native` exposes `no_mangle` functions for the dylib;
+`Runtime.Wasm` exposes `wasm_bindgen` equivalents (`_wasm` suffix, marshalling through JsValue;
+no state pair — hot-reload is native-only). New runtime entry points generally need a parallel
+native + wasm pair — see both modules in `Runtime.fs` for the current list.
 
 ### Layout
 
 | Path | What it is |
 | --- | --- |
-| `src/Functor.Game/` | The F# game framework (`Game`, `Runtime`, `Scene3D`/`Graphics`, `Input`, `Effect`, `EffectQueue`, `Math`, `Time`) |
+| `src/Functor.Game/` | The F# game framework (`Game`, `Runtime`, `Scene3D`/`Graphics`, `Frame`, `Camera`, `Input`, `Effect`, `EffectQueue`, `Sub`, `Math`, `Time`) |
 | `src/` | `functor-lib` — Rust crate Fable emits from `Functor.Game` (lib path is the generated `Platform.rs`) |
 | `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, `Effect`/`EffectQueue` |
 | `runtime/functor-runtime-desktop/` | Desktop runtime → the `functor-runner` binary (GLFW/OpenGL) |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle |
 | `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`) |
-| `examples/hello/` | Sample game (Pong-style demo in `hello.fs`); `build-native/` and `build-wasm/` are the per-target compile crates |
+| `examples/hello/` | Sample game (`hello.fs` — Pong-style scene with a WASD + mouse free-look camera); `build-native/` and `build-wasm/` are the per-target compile crates |
 
 The `.fs`/`.fsi` pairs in `src/Functor.Game/` use the `.fsi` signature file as the public API — update both when changing a module's surface.
 
@@ -89,11 +94,7 @@ dotnet tool restore           # one-time: install the Fable local tool
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
 
 ```sh
-npm run build:cli
-# equivalent to, in order:
-#   cargo build --bin functor-runner
-#   wasm-pack build runtime/functor-runtime-web --target=web
-#   cargo build --bin functor
+npm run build:cli   # functor-runner, then the wasm bundle, then the functor CLI
 ```
 
 Produces `target/debug/functor` (CLI) and `target/debug/functor-runner` (desktop runtime). The CLI
@@ -115,15 +116,8 @@ dylib via `functor-runner`, wasm serves the bundle.
 **Transpile F# only:** `npm run build:examples:hello:rust`
 (`dotnet fable examples/hello/hello.fsproj --lang rust --outDir .`).
 
-**Tests** (Rust, in `functor-runtime-common`):
-
-```sh
-cargo test                                    # whole workspace
-cargo test -p functor_runtime_common          # one crate
-cargo test -p functor_runtime_common effect    # tests matching "effect"
-```
-
-Test modules live alongside source (`effect.rs`, `effect_queue.rs`, `model/skeleton.rs`, `lib.rs`).
+**Tests** are Rust, in `functor-runtime-common`, with test modules alongside source:
+`cargo test -p functor_runtime_common`.
 
 ## Gotchas
 
@@ -136,3 +130,4 @@ Test modules live alongside source (`effect.rs`, `effect_queue.rs`, `model/skele
   that compile the generated `../hello.rs` as a `dylib`/`cdylib` respectively; they are not part of
   the root workspace.
 - `cli/src/main.rs`'s `Init` command is currently a TODO stub.
+- `AGENTS.md` is a symlink to this file — edit `CLAUDE.md` only.
