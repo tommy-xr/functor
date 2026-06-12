@@ -1,4 +1,3 @@
-use std::cmp::min;
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -149,27 +148,32 @@ fn process_node(
                 .map(|v| v.into_f32().collect::<Vec<_>>())
                 .unwrap_or_default();
 
-            // Ensure all attribute vectors have the same length
-            let vertex_count = min(
-                positions.len(),
-                min(tex_coords.len(), min(joints.len(), weights.len())),
-            );
-
-            let vertices: Vec<VertexPositionTextureSkinned> = (0..vertex_count)
-                .map(|i| VertexPositionTextureSkinned {
-                    position: vec3(
-                        positions[i][0] * scale,
-                        positions[i][1] * scale,
-                        positions[i][2] * scale,
-                    ),
-                    uv: vec2(tex_coords[i][0], tex_coords[i][1]),
-                    joint_indices: vec4(
-                        joints[i][0] as f32,
-                        joints[i][1] as f32,
-                        joints[i][2] as f32,
-                        joints[i][3] as f32,
-                    ),
-                    weights: vec4(weights[i][0], weights[i][1], weights[i][2], weights[i][3]),
+            // Every vertex carries skinning attributes. Meshes without
+            // JOINTS_0/WEIGHTS_0 get all their weight on joint 0, which the
+            // renderer feeds an identity transform — truncating to the
+            // shortest attribute list instead would leave the vertex buffer
+            // empty while the index buffer still references it (GL reads out
+            // of bounds: a segfault natively, GL_INVALID_OPERATION on WebGL).
+            let vertices: Vec<VertexPositionTextureSkinned> = (0..positions.len())
+                .map(|i| {
+                    let uv = tex_coords.get(i).copied().unwrap_or([0.0, 0.0]);
+                    let joint = joints.get(i).copied().unwrap_or([0, 0, 0, 0]);
+                    let weight = weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+                    VertexPositionTextureSkinned {
+                        position: vec3(
+                            positions[i][0] * scale,
+                            positions[i][1] * scale,
+                            positions[i][2] * scale,
+                        ),
+                        uv: vec2(uv[0], uv[1]),
+                        joint_indices: vec4(
+                            joint[0] as f32,
+                            joint[1] as f32,
+                            joint[2] as f32,
+                            joint[3] as f32,
+                        ),
+                        weights: vec4(weight[0], weight[1], weight[2], weight[3]),
+                    }
                 })
                 .collect();
             println!(
