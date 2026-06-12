@@ -83,6 +83,7 @@ mod scene3d;
 mod shader;
 mod shader_program;
 pub mod texture;
+mod viewport;
 
 pub use camera::*;
 pub use effect::*;
@@ -92,6 +93,7 @@ pub use frame_time::*;
 pub use input::*;
 pub use render_context::*;
 pub use scene3d::*;
+pub use viewport::*;
 
 #[cfg(test)]
 mod tests {

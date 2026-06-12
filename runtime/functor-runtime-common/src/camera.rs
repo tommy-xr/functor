@@ -72,3 +72,39 @@ impl Default for Camera {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    // Resizing should reveal more of the scene horizontally, not stretch it:
+    // a wider aspect leaves the vertical scale untouched and shrinks the
+    // horizontal scale proportionally (cgmath puts f/aspect in m[0][0], f in
+    // m[1][1]). This is the property that makes window/canvas resize correct.
+    #[test]
+    fn wider_aspect_widens_horizontally_without_stretching() {
+        let cam = Camera::default();
+        let square = cam.projection_matrix(1.0);
+        let wide = cam.projection_matrix(2.0);
+
+        // Vertical scale unchanged across aspect ratios.
+        assert!(approx(wide.y.y, square.y.y));
+        // Horizontal scale shrinks by exactly the aspect ratio (so geometry
+        // keeps its proportions; you just see more to the sides).
+        assert!(approx(wide.x.x, square.x.x / 2.0));
+    }
+
+    #[test]
+    fn projection_uses_viewport_aspect() {
+        let cam = Camera::default();
+        let viewport = crate::Viewport::new(1600, 400); // aspect 4.0
+        let direct = cam.projection_matrix(4.0);
+        let via_viewport = cam.projection_matrix(viewport.aspect());
+        assert!(approx(direct.x.x, via_viewport.x.x));
+        assert!(approx(direct.y.y, via_viewport.y.y));
+    }
+}
