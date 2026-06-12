@@ -210,11 +210,11 @@ let init (_args: array<string>) =
                 |> Transform.translateX -3.0f |> Transform.translateY 1.0f |> Transform.translateZ 3.0f
                 |> Transform.scale 0.002f;
                 sample "Xbot.glb"
-                |> Transform.translateX 1.5f |> Transform.translateY -1.5f |> Transform.translateZ 3.0f
-                |> Transform.scale 0.04f;
+                |> Transform.translateX 1.5f |> Transform.translateY -1.0f |> Transform.translateZ 3.0f
+                |> Transform.scale 0.015f;
                 sample "HVGirl.glb"
-                |> Transform.translateX -1.5f |> Transform.translateY -1.5f |> Transform.translateZ 3.0f
-                |> Transform.scale 0.06f;
+                |> Transform.translateX -1.5f |> Transform.translateY -1.0f |> Transform.translateZ 3.0f
+                |> Transform.scale 0.03f;
                 sample "ExplodingBarrel.glb"
                 |> Transform.translateY -1.5f |> Transform.translateZ 3.0f
                 |> Transform.scale 0.02f;
