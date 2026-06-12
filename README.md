@@ -96,7 +96,7 @@ together.
 
 ## Running the sample (`examples/hello`)
 
-First, fetch the sample's model assets (only some are checked in; the rest download from
+First, fetch the sample's model assets (they aren't checked in; they download from
 [BabylonJS Assets](https://github.com/BabylonJS/Assets/)):
 
 ```sh

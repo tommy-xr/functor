@@ -1,7 +1,7 @@
-// Fetch the sample glTF assets that are referenced by examples/hello but not
-// checked into the repo (they're gitignored). Source: BabylonJS/Assets, which
-// is already credited in the README. Existing files are left alone, so this is
-// safe to re-run.
+// Fetch the sample glTF assets referenced by examples/hello. None are checked
+// into the repo (*.glb is gitignored there). Source: BabylonJS/Assets, which
+// is credited in the README. Existing files are left alone, so this is safe
+// to re-run.
 //
 // Usage: npm run fetch:assets
 
@@ -12,8 +12,8 @@ const BASE_URL = "https://raw.githubusercontent.com/BabylonJS/Assets/master/mesh
 const TARGET_DIR = "examples/hello";
 
 const ASSETS = [
-  "shark.glb", // checked in; listed for completeness
-  "ExplodingBarrel.glb", // checked in; listed for completeness
+  "shark.glb",
+  "ExplodingBarrel.glb",
   "fish.glb",
   "Xbot.glb",
   "HVGirl.glb",
