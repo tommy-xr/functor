@@ -1,9 +1,15 @@
 <html>
   <head>
     <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      /* Fill the window; the runtime sizes the drawable buffer (and GL
+         viewport) to match this displayed size each frame, scaled for HiDPI. */
+      #canvas { display: block; width: 100%; height: 100%; }
+    </style>
   </head>
   <body>
-    <canvas id="canvas" width="640" height="480"></canvas>
+    <canvas id="canvas"></canvas>
     <script type="module">
 
       import init1, {

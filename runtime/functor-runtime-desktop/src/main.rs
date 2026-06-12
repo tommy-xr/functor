@@ -192,6 +192,13 @@ pub async fn main() {
 
             game.tick(time.clone());
 
+            // Follow window resizes: query the drawable size each frame and set
+            // the GL viewport to match. Framebuffer size is in pixels, so this
+            // handles HiDPI/retina correctly.
+            let (fb_width, fb_height) = window.get_framebuffer_size();
+            let viewport = functor_runtime_common::Viewport::new(fb_width as u32, fb_height as u32);
+            gl.viewport(0, 0, fb_width, fb_height);
+
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
             let render_context = functor_runtime_common::RenderContext {
@@ -204,9 +211,8 @@ pub async fn main() {
             // The game supplies the camera as part of its frame; derive the
             // view/projection matrices from it.
             let frame = game.render(time.clone());
-            let aspect = SCR_WIDTH as f32 / SCR_HEIGHT as f32;
             let view_matrix = frame.camera.view_matrix();
-            let projection_matrix = frame.camera.projection_matrix(aspect);
+            let projection_matrix = frame.camera.projection_matrix(viewport.aspect());
 
             // TODO: Factor out to pass in current_material
             // let mut basic_material = BasicMaterial::create();

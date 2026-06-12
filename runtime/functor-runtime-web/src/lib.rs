@@ -24,8 +24,6 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 use wasm_bindgen::prelude::*;
 
-const SCR_WIDTH: u32 = 800;
-const SCR_HEIGHT: u32 = 600;
 fn window() -> web_sys::Window {
     web_sys::window().expect("no global `window` exists")
 }
@@ -64,7 +62,7 @@ async fn run_async() -> Result<(), JsValue> {
     // Load game
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets
-        let (gl, shader_version) = {
+        let (gl, shader_version, canvas) = {
             use wasm_bindgen::JsCast;
             let canvas = web_sys::window()
                 .unwrap()
@@ -81,7 +79,7 @@ async fn run_async() -> Result<(), JsValue> {
                 .dyn_into::<web_sys::WebGl2RenderingContext>()
                 .unwrap();
             let gl = glow::Context::from_webgl2_context(webgl2_context);
-            (gl, "#version 300 es")
+            (gl, "#version 300 es", canvas)
         };
 
         let vertex_array = gl
@@ -197,10 +195,23 @@ async fn run_async() -> Result<(), JsValue> {
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
 
+            // Match the drawable buffer to the canvas's displayed (CSS) size,
+            // scaled for HiDPI, so the view follows browser/window resizes.
+            let dpr = web_sys::window().unwrap().device_pixel_ratio();
+            let draw_w = ((canvas.client_width() as f64) * dpr).round().max(0.0) as u32;
+            let draw_h = ((canvas.client_height() as f64) * dpr).round().max(0.0) as u32;
+            if canvas.width() != draw_w {
+                canvas.set_width(draw_w);
+            }
+            if canvas.height() != draw_h {
+                canvas.set_height(draw_h);
+            }
+            let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
+            gl.viewport(0, 0, viewport.width as i32, viewport.height as i32);
+
             // The game supplies the camera; derive view/projection from it.
-            let aspect = SCR_WIDTH as f32 / SCR_HEIGHT as f32;
             let view_matrix = frame.camera.view_matrix();
-            let projection_matrix = frame.camera.projection_matrix(aspect);
+            let projection_matrix = frame.camera.projection_matrix(viewport.aspect());
 
             let mut basic_material = BasicMaterial::create();
             basic_material.initialize(&render_ctx);
