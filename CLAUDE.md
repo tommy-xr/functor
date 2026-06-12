@@ -130,4 +130,15 @@ dylib via `functor-runner`, wasm serves the bundle.
   that compile the generated `../hello.rs` as a `dylib`/`cdylib` respectively; they are not part of
   the root workspace.
 - `cli/src/main.rs`'s `Init` command is currently a TODO stub.
+- **`functor run` does not rebuild the runtimes.** It only rebuilds the *game* (Fable transpile +
+  dylib / wasm-pack). The asset pipeline and rendering execute in the shells, which are prebuilt:
+  natively in the `functor-runner` binary, and on wasm in the web-runtime bundle that is
+  `include_bytes!`-embedded into the `functor` CLI. After changing `runtime/` crates, run
+  `npm run build:cli` first or the running shell silently won't have your change.
+- **Sample glTF assets vary wildly in units.** The demo assets come from
+  [BabylonJS/Assets](https://github.com/BabylonJS/Assets/) (`meshes/*.glb`): `ExplodingBarrel.glb`
+  is ~72 units tall, Mixamo-style humanoids (`Xbot.glb`) are centimeter scale, and `fish.glb` is an
+  entire multi-fish scene — hence the per-model `Transform.scale` values in `examples/hello`. Only
+  `shark.glb`/`ExplodingBarrel.glb` are checked in; other models referenced by the sample must be
+  downloaded from that repo (they're gitignored).
 - `AGENTS.md` is a symlink to this file — edit `CLAUDE.md` only.

@@ -190,22 +190,34 @@ let init (_args: array<string>) =
         // let modify = Model.modify (MeshSelector.all ()) (MeshOverride.material (textureMaterial));
         // let renderModel = Model.file ("vr_glove_model2.glb") |> modify |> Graphics.Scene3D.model |> Transform.scale 5f;
 
-        let renderModel = 
-            "shark.glb"
-            |> Model.file 
-            |> Graphics.Scene3D.model 
-            |> Transform.translateZ 10.0f
-            |> Transform.scale 0.004f;
+        // A lineup of glTF samples from BabylonJS/Assets exercising the model
+        // pipeline. Skinned + animated: shark, fish, Xbot, HVGirl. Non-skinned:
+        // ExplodingBarrel. Raw model units vary wildly (the barrel is ~72 units
+        // tall, the humanoids are Mixamo-style cm scale), hence the per-model
+        // scales.
+        let sample (path: string) = path |> Model.file |> Graphics.Scene3D.model
 
         let scene =
             group([|
                 material (textureMaterial, [|
-                    cylinder() |> Transform.translateY -1.0f;
-                    renderModel
-                    |> Transform.rotateY (Math.Angle.degrees (180.0f + 10.0f * frameTime.tts * 0.5f))
-                    |> Transform.rotateX (Math.Angle.degrees (0.0f * sin frameTime.tts * 2.0f))
-                |])
-                |> Transform.translateZ ((sin (frameTime.tts * 5.0f)) * 1.0f)
+                    cylinder() |> Transform.translateY -2.5f;
+                |]);
+                sample "shark.glb"
+                |> Transform.translateX 3.0f |> Transform.translateY 1.0f |> Transform.translateZ 3.0f
+                |> Transform.rotateY (Math.Angle.degrees 180.0f)
+                |> Transform.scale 0.002f;
+                sample "fish.glb"
+                |> Transform.translateX -3.0f |> Transform.translateY 1.0f |> Transform.translateZ 3.0f
+                |> Transform.scale 0.002f;
+                sample "Xbot.glb"
+                |> Transform.translateX 1.5f |> Transform.translateY -1.5f |> Transform.translateZ 3.0f
+                |> Transform.scale 0.04f;
+                sample "HVGirl.glb"
+                |> Transform.translateX -1.5f |> Transform.translateY -1.5f |> Transform.translateZ 3.0f
+                |> Transform.scale 0.06f;
+                sample "ExplodingBarrel.glb"
+                |> Transform.translateY -1.5f |> Transform.translateZ 3.0f
+                |> Transform.scale 0.02f;
             |])
 
         // First-person camera: WASD moves world.eye, the mouse turns yaw/pitch.

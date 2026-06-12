@@ -2,6 +2,30 @@
 
 - Does CI run tests?
 
+## Validation tooling (make runtime changes easy to verify)
+
+In order of value-per-effort (learned the hard way validating the skinned-material
+PR: macOS Screen Recording permission blocks capturing the native window from
+outside, and wasm needed a hand-rolled Playwright script):
+
+1. - [ ] **Screenshot from inside the runtime.** A `glReadPixels`→PNG dump in
+         `functor-runner` (flag like `--capture-frame out.png --at-time 2.0`, plus an
+         HTTP/stdin trigger later). Sidesteps OS screen-capture permissions entirely
+         because the app reads its own framebuffer, and works headless-ish. Pair with
+         an injectable frame time for deterministic captures — golden-image tests
+         fall out for free (subsumes the "Image verification test" idea below).
+2. - [ ] **Debug runtime (north star).** Like shock2quest's HTTP-controlled
+         `debug_runtime` (`/screenshot`, raycast, entity-state queries) — the
+         "LLM-native" principle made real. Grow it out of screenshot/state endpoints
+         on `functor-runner` rather than a separate binary; MVU already makes state
+         serializable (`emit_state` exists).
+3. - [ ] **Model inspector for asset bugs.** `functor inspect model shark.glb
+         [--time 0.5]`: run the asset pipeline CPU-side and print per-mesh
+         vertex/index/joint counts and skinned AABBs — no GPU, text-only, diffable.
+         Would have caught both skinned-material bugs (zero-vertex meshes, wrong
+         joint rest pose) instantly. Mostly just a CLI entry point over existing
+         pipeline code.
+
 ## Games to build
 
 - 3D: Simple Terrain (synthwave vibes)
