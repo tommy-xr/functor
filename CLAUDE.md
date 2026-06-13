@@ -77,7 +77,7 @@ native + wasm pair — see both modules in `Runtime.fs` for the current list.
 | `runtime/functor-runtime-desktop/` | Desktop runtime → the `functor-runner` binary (GLFW/OpenGL) |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle |
 | `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`) |
-| `examples/hello/` | Sample game (`hello.fs` — Pong-style scene with a WASD + mouse free-look camera); `build-native/` and `build-wasm/` are the per-target compile crates |
+| `examples/hello/` | Sample game (`hello.fs` — a lineup of glTF sample models with a WASD + mouse free-look camera); `build-native/` and `build-wasm/` are the per-target compile crates |
 
 The `.fs`/`.fsi` pairs in `src/Functor.Game/` use the `.fsi` signature file as the public API — update both when changing a module's surface.
 
@@ -115,6 +115,23 @@ dylib via `functor-runner`, wasm serves the bundle.
 
 **Transpile F# only:** `npm run build:examples:hello:rust`
 (`dotnet fable examples/hello/hello.fsproj --lang rust --outDir .`).
+
+**Capture a frame to PNG** (no OS screen-recording permission needed — the runner reads back its
+own framebuffer; ideal for verifying rendering changes). The CLI forwards extra args to
+`functor-runner` (a leading `--` is optional):
+
+```sh
+./target/debug/functor -d examples/hello run native \
+  --capture-frame /tmp/frame.png --capture-time 3        # capture after 3s of wall-clock, then exit
+```
+
+Add `--fixed-time T` to pin the game's frame time to a constant `T`, making the rendered pose
+deterministic (byte-identical PNGs) for reproducible captures and golden images.
+
+**Golden-image test:** `npm run test:golden` renders `hello` at a fixed time and compares the
+capture to a committed reference (`runtime/functor-runtime-desktop/tests/golden.rs`). It's
+`#[ignore]`d (needs a GL display + the built dylib), so it runs locally/manually, not in CI.
+Goldens are renderer/display-specific — the regeneration command is in the test's doc comment.
 
 **Tests** are Rust, in `functor-runtime-common`, with test modules alongside source:
 `cargo test -p functor_runtime_common`.

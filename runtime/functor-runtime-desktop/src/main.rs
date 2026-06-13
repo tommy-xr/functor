@@ -75,6 +75,57 @@ struct Args {
 
     #[arg(long)]
     hot: bool,
+
+    /// Write a PNG of the rendered frame to this path, then exit. The capture
+    /// happens on the first frame after --capture-time seconds of wall-clock
+    /// time, so assets have a chance to load.
+    #[arg(long)]
+    capture_frame: Option<String>,
+
+    /// Wall-clock seconds to run before --capture-frame takes the shot.
+    #[arg(long, default_value_t = 2.0)]
+    capture_time: f32,
+
+    /// Pin the game's frame time (seconds) to a constant so the rendered pose
+    /// is deterministic — for reproducible captures / golden images.
+    #[arg(long)]
+    fixed_time: Option<f32>,
+}
+
+/// Read back the framebuffer just rendered (called before swap_buffers, so the
+/// back buffer) and write it as a PNG. Exits the process with an error if the
+/// capture cannot be written, so scripts don't mistake a failed capture for a
+/// pass.
+unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path: &str) {
+    let stride = (width * 4) as usize;
+    let mut pixels = vec![0u8; stride * height as usize];
+    gl.read_pixels(
+        0,
+        0,
+        width as i32,
+        height as i32,
+        glow::RGBA,
+        glow::UNSIGNED_BYTE,
+        glow::PixelPackData::Slice(&mut pixels),
+    );
+
+    // GL rows are bottom-up; flip into image (top-down) order.
+    let mut flipped = vec![0u8; pixels.len()];
+    for row in 0..height as usize {
+        let src = (height as usize - 1 - row) * stride;
+        flipped[row * stride..(row + 1) * stride].copy_from_slice(&pixels[src..src + stride]);
+    }
+
+    let result = image::RgbaImage::from_raw(width, height, flipped)
+        .ok_or_else(|| "framebuffer size mismatch".to_string())
+        .and_then(|img| img.save(path).map_err(|e| e.to_string()));
+    match result {
+        Ok(()) => println!("Captured frame to {}", path),
+        Err(e) => {
+            eprintln!("Failed to capture frame to {}: {}", path, e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[tokio::main]
@@ -161,9 +212,21 @@ pub async fn main() {
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
-            let time: FrameTime = FrameTime {
-                dts: elapsed_time - last_time,
-                tts: elapsed_time,
+            // --fixed-time pins the time handed to the game to a constant, so
+            // the rendered pose (animations, anything driven by FrameTime) is
+            // deterministic regardless of frame rate or asset-load timing. Used
+            // with --capture-frame for reproducible golden images. The capture
+            // trigger below still keys off wall-clock elapsed, so the loop runs
+            // long enough for assets to load before the shot is taken.
+            let time: FrameTime = match args.fixed_time {
+                Some(fixed) => FrameTime {
+                    dts: 0.0,
+                    tts: fixed,
+                },
+                None => FrameTime {
+                    dts: elapsed_time - last_time,
+                    tts: elapsed_time,
+                },
             };
             last_time = elapsed_time;
 
@@ -232,6 +295,18 @@ pub async fn main() {
                 &view_matrix,
                 &color_material,
             );
+
+            if let Some(capture_path) = &args.capture_frame {
+                if elapsed_time >= args.capture_time {
+                    capture_framebuffer(
+                        &gl,
+                        fb_width as u32,
+                        fb_height as u32,
+                        capture_path.as_str(),
+                    );
+                    window.set_should_close(true);
+                }
+            }
 
             window.swap_buffers();
         }
