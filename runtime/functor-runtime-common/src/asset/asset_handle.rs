@@ -18,7 +18,7 @@ impl<T> AssetHandle<T> {
             let new_state = asset_state.ensure_loaded();
             let ret = match &new_state {
                 AssetState::Loaded(asset) => asset.clone(),
-                AssetState::Loading(_) => self.fallback_asset.clone(),
+                AssetState::Loading(_) | AssetState::Failed => self.fallback_asset.clone(),
             };
             *state = Some(new_state);
             ret
@@ -41,12 +41,15 @@ impl<T> AssetHandle<T> {
 pub enum AssetState<T> {
     Loading(Pin<Box<dyn Future<Output = Result<Arc<T>, String>>>>),
     Loaded(Arc<T>),
+    // Loading failed (e.g. the file is missing); the handle keeps serving
+    // the fallback asset instead of crashing the runtime.
+    Failed,
 }
 
 impl<T> AssetState<T> {
     pub fn ensure_loaded(self) -> Self {
         match self {
-            AssetState::Loaded(_) => self,
+            AssetState::Loaded(_) | AssetState::Failed => self,
             AssetState::Loading(..) => self.poll_load(),
         }
     }
@@ -59,8 +62,8 @@ impl<T> AssetState<T> {
             match Future::poll(Pin::new(&mut future), &mut cx) {
                 Poll::Ready(Ok(texture_data)) => AssetState::Loaded(texture_data),
                 Poll::Ready(Err(e)) => {
-                    // TODO: More robust error handling...
-                    panic!("Failed to load asset: {}", e);
+                    eprintln!("Failed to load asset, using fallback: {}", e);
+                    AssetState::Failed
                 }
                 Poll::Pending => {
                     println!("Waiting for texture to load...");

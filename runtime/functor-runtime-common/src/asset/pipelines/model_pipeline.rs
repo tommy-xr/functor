@@ -1,7 +1,6 @@
-use std::cmp::min;
+use std::collections::HashMap;
 use std::io::Cursor;
 
-use cgmath::num_traits::ToPrimitive;
 use cgmath::{vec2, vec3, vec4, Matrix4, Quaternion};
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
@@ -149,27 +148,32 @@ fn process_node(
                 .map(|v| v.into_f32().collect::<Vec<_>>())
                 .unwrap_or_default();
 
-            // Ensure all attribute vectors have the same length
-            let vertex_count = min(
-                positions.len(),
-                min(tex_coords.len(), min(joints.len(), weights.len())),
-            );
-
-            let vertices: Vec<VertexPositionTextureSkinned> = (0..vertex_count)
-                .map(|i| VertexPositionTextureSkinned {
-                    position: vec3(
-                        positions[i][0] * scale,
-                        positions[i][1] * scale,
-                        positions[i][2] * scale,
-                    ),
-                    uv: vec2(tex_coords[i][0], tex_coords[i][1]),
-                    joint_indices: vec4(
-                        joints[i][0] as f32,
-                        joints[i][1] as f32,
-                        joints[i][2] as f32,
-                        joints[i][3] as f32,
-                    ),
-                    weights: vec4(weights[i][0], weights[i][1], weights[i][2], weights[i][3]),
+            // Every vertex carries skinning attributes. Meshes without
+            // JOINTS_0/WEIGHTS_0 get all their weight on joint 0, which the
+            // renderer feeds an identity transform — truncating to the
+            // shortest attribute list instead would leave the vertex buffer
+            // empty while the index buffer still references it (GL reads out
+            // of bounds: a segfault natively, GL_INVALID_OPERATION on WebGL).
+            let vertices: Vec<VertexPositionTextureSkinned> = (0..positions.len())
+                .map(|i| {
+                    let uv = tex_coords.get(i).copied().unwrap_or([0.0, 0.0]);
+                    let joint = joints.get(i).copied().unwrap_or([0, 0, 0, 0]);
+                    let weight = weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+                    VertexPositionTextureSkinned {
+                        position: vec3(
+                            positions[i][0] * scale,
+                            positions[i][1] * scale,
+                            positions[i][2] * scale,
+                        ),
+                        uv: vec2(uv[0], uv[1]),
+                        joint_indices: vec4(
+                            joint[0] as f32,
+                            joint[1] as f32,
+                            joint[2] as f32,
+                            joint[3] as f32,
+                        ),
+                        weights: vec4(weight[0], weight[1], weight[2], weight[3]),
+                    }
                 })
                 .collect();
             println!(
@@ -184,16 +188,15 @@ fn process_node(
             // Parse material
             let material = primitive.material();
 
-            let base_color_texture =
+            let (base_color_texture, base_color_factor) =
                 if let Some(specular_glossiness_material) = material.pbr_specular_glossiness() {
-                    println!(
-                        "Diffuse factor: {:?}",
-                        specular_glossiness_material.diffuse_factor()
-                    );
-                    specular_glossiness_material.diffuse_texture()
+                    (
+                        specular_glossiness_material.diffuse_texture(),
+                        specular_glossiness_material.diffuse_factor(),
+                    )
                 } else {
                     let material = material.pbr_metallic_roughness();
-                    material.base_color_texture()
+                    (material.base_color_texture(), material.base_color_factor())
                 };
 
             let texture = if let Some(texture) = base_color_texture {
@@ -204,7 +207,16 @@ fn process_node(
                 let texture_data = image.clone();
                 Texture2D::init_from_data(texture_data, TextureOptions::default())
             } else {
-                let data = TextureData::checkerboard_pattern(4, 4, [255, 0, 255, 255]);
+                // No texture: glTF defines the color as the base color factor
+                // alone, so sample a 1x1 solid of it (untextured materials —
+                // e.g. Xbot.glb, HVGirl.glb — are flat factor colors).
+                let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0) as u8;
+                let data = TextureData::solid_color([
+                    to_u8(base_color_factor[0]),
+                    to_u8(base_color_factor[1]),
+                    to_u8(base_color_factor[2]),
+                    to_u8(base_color_factor[3]),
+                ]);
                 Texture2D::init_from_data(data, TextureOptions::default())
             };
 
@@ -223,18 +235,41 @@ fn process_node(
     if let Some(skin) = node.skin() {
         let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
 
-        // TODO: Save inverse bind matrices with model
-        let _inverse_bind_matrices = reader
+        let inverse_bind_matrices = reader
             .read_inverse_bind_matrices()
-            .map(|v| v.collect::<Vec<_>>())
+            .map(|v| {
+                v.map(|mat_array| Matrix4::from(mat_array))
+                    .collect::<Vec<Matrix4<f32>>>()
+            })
             .unwrap_or_default();
 
-        let mut skeleton_builder = SkeletonBuilder::create();
+        let joints = skin.joints().collect::<Vec<_>>();
 
-        let maybe_root = skin.skeleton();
+        // Figure out the parent index from joint index
+        let mut joint_index_to_parent_index: HashMap<usize, usize> = HashMap::new();
+        for joint in joints.iter() {
+            for children in joint.children() {
+                joint_index_to_parent_index.insert(children.index(), joint.index());
+            }
+        }
 
-        if let Some(root) = maybe_root {
-            process_joints(&root, None, &mut skeleton_builder);
+        let mut skeleton_builder = SkeletonBuilder::create(inverse_bind_matrices);
+
+        for (i, joint) in joints.iter().enumerate() {
+            let name = joint.name().unwrap_or("None");
+            let transform = joint.transform().matrix().into();
+
+            let parent_index_i32 = joint_index_to_parent_index
+                .get(&joint.index())
+                .map(|u| *u as i32);
+
+            skeleton_builder.add_joint(
+                i,
+                joint.index() as i32,
+                name.to_owned(),
+                parent_index_i32,
+                transform,
+            );
         }
 
         *maybe_skeleton = Some(skeleton_builder.build());
@@ -242,21 +277,6 @@ fn process_node(
 
     for child in node.children() {
         process_node(&child, buffers, images, meshes, maybe_skeleton);
-    }
-}
-
-fn process_joints(
-    node: &gltf::Node,
-    parent_id: Option<i32>,
-    skeleton_builder: &mut SkeletonBuilder,
-) {
-    let id = node.index().to_i32().unwrap();
-    let name = node.name().unwrap_or("None");
-    let transform = node.transform().matrix().into();
-    skeleton_builder.add_joint(id, name.to_owned(), parent_id, transform);
-
-    for node in node.children() {
-        process_joints(&node, Some(id), skeleton_builder);
     }
 }
 

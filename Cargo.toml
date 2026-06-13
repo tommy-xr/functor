@@ -8,3 +8,26 @@ members = [
     "runtime/functor-runtime-web",
     "src",
 ]
+
+# Image decoding runs in the asset pipeline at game load; unoptimized it is
+# 10-100x slower, which makes texture-heavy models (e.g. a 47MB fish.glb)
+# appear to never load in debug builds of functor-runner. Optimize just the
+# decoder crates so dev builds stay fast to compile but assets load quickly.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.image-webp]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.zune-inflate]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3
