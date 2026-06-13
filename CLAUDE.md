@@ -116,6 +116,16 @@ dylib via `functor-runner`, wasm serves the bundle.
 **Transpile F# only:** `npm run build:examples:hello:rust`
 (`dotnet fable examples/hello/hello.fsproj --lang rust --outDir .`).
 
+**Capture a frame to PNG** (no OS screen-recording permission needed — the runner reads back its
+own framebuffer; ideal for verifying rendering changes):
+
+```sh
+./target/debug/functor -d examples/hello build native   # build the game dylib
+cd examples/hello && ../../target/debug/functor-runner \
+  --game-path build-native/target/debug/libgame_native.dylib \
+  --capture-frame /tmp/frame.png --capture-time 3   # capture at t=3s, then exit
+```
+
 **Tests** are Rust, in `functor-runtime-common`, with test modules alongside source:
 `cargo test -p functor_runtime_common`.
 
