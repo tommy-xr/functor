@@ -44,6 +44,11 @@ enum Command {
     Run {
         #[arg(value_enum)]
         environment: Option<Environment>,
+
+        /// Extra arguments forwarded to functor-runner, after a `--` separator
+        /// (native only). E.g. `run native -- --fixed-time 2 --capture-frame f.png`.
+        #[arg(last = true)]
+        runner_args: Vec<String>,
     },
     Develop {
         #[arg(value_enum)]
@@ -75,10 +80,18 @@ async fn main() -> tokio::io::Result<()> {
             commands::build::execute(&working_directory_str, &Environment::default(environment))
                 .await
         }
-        Command::Run { environment } => {
+        Command::Run {
+            environment,
+            runner_args,
+        } => {
             commands::build::execute(&working_directory_str, &Environment::default(environment))
                 .await?;
-            commands::run::execute(&working_directory_str, &Environment::default(environment)).await
+            commands::run::execute(
+                &working_directory_str,
+                &Environment::default(environment),
+                runner_args,
+            )
+            .await
         }
         Command::Develop { environment } => {
             commands::build::execute(&working_directory_str, &Environment::default(environment))
