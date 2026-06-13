@@ -117,11 +117,11 @@ dylib via `functor-runner`, wasm serves the bundle.
 (`dotnet fable examples/hello/hello.fsproj --lang rust --outDir .`).
 
 **Capture a frame to PNG** (no OS screen-recording permission needed — the runner reads back its
-own framebuffer; ideal for verifying rendering changes). Runner flags are forwarded through the
-CLI after a `--` separator:
+own framebuffer; ideal for verifying rendering changes). The CLI forwards extra args to
+`functor-runner` (a leading `--` is optional):
 
 ```sh
-./target/debug/functor -d examples/hello run native -- \
+./target/debug/functor -d examples/hello run native \
   --capture-frame /tmp/frame.png --capture-time 3        # capture after 3s of wall-clock, then exit
 ```
 
