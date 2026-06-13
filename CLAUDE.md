@@ -117,14 +117,21 @@ dylib via `functor-runner`, wasm serves the bundle.
 (`dotnet fable examples/hello/hello.fsproj --lang rust --outDir .`).
 
 **Capture a frame to PNG** (no OS screen-recording permission needed — the runner reads back its
-own framebuffer; ideal for verifying rendering changes):
+own framebuffer; ideal for verifying rendering changes). Runner flags are forwarded through the
+CLI after a `--` separator:
 
 ```sh
-./target/debug/functor -d examples/hello build native   # build the game dylib
-cd examples/hello && ../../target/debug/functor-runner \
-  --game-path build-native/target/debug/libgame_native.dylib \
-  --capture-frame /tmp/frame.png --capture-time 3   # capture at t=3s, then exit
+./target/debug/functor -d examples/hello run native -- \
+  --capture-frame /tmp/frame.png --capture-time 3        # capture after 3s of wall-clock, then exit
 ```
+
+Add `--fixed-time T` to pin the game's frame time to a constant `T`, making the rendered pose
+deterministic (byte-identical PNGs) for reproducible captures and golden images.
+
+**Golden-image test:** `npm run test:golden` renders `hello` at a fixed time and compares the
+capture to a committed reference (`runtime/functor-runtime-desktop/tests/golden.rs`). It's
+`#[ignore]`d (needs a GL display + the built dylib), so it runs locally/manually, not in CI.
+Goldens are renderer/display-specific — the regeneration command is in the test's doc comment.
 
 **Tests** are Rust, in `functor-runtime-common`, with test modules alongside source:
 `cargo test -p functor_runtime_common`.

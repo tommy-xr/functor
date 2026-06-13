@@ -77,14 +77,19 @@ struct Args {
     hot: bool,
 
     /// Write a PNG of the rendered frame to this path, then exit. The capture
-    /// happens on the first frame whose total time reaches --capture-time, so
-    /// assets have a chance to load and animations to advance.
+    /// happens on the first frame after --capture-time seconds of wall-clock
+    /// time, so assets have a chance to load.
     #[arg(long)]
     capture_frame: Option<String>,
 
-    /// Total time (seconds since launch) at which --capture-frame captures.
+    /// Wall-clock seconds to run before --capture-frame takes the shot.
     #[arg(long, default_value_t = 2.0)]
     capture_time: f32,
+
+    /// Pin the game's frame time (seconds) to a constant so the rendered pose
+    /// is deterministic — for reproducible captures / golden images.
+    #[arg(long)]
+    fixed_time: Option<f32>,
 }
 
 /// Read back the framebuffer just rendered (called before swap_buffers, so the
@@ -207,9 +212,21 @@ pub async fn main() {
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
-            let time: FrameTime = FrameTime {
-                dts: elapsed_time - last_time,
-                tts: elapsed_time,
+            // --fixed-time pins the time handed to the game to a constant, so
+            // the rendered pose (animations, anything driven by FrameTime) is
+            // deterministic regardless of frame rate or asset-load timing. Used
+            // with --capture-frame for reproducible golden images. The capture
+            // trigger below still keys off wall-clock elapsed, so the loop runs
+            // long enough for assets to load before the shot is taken.
+            let time: FrameTime = match args.fixed_time {
+                Some(fixed) => FrameTime {
+                    dts: 0.0,
+                    tts: fixed,
+                },
+                None => FrameTime {
+                    dts: elapsed_time - last_time,
+                    tts: elapsed_time,
+                },
             };
             last_time = elapsed_time;
 
@@ -280,7 +297,7 @@ pub async fn main() {
             );
 
             if let Some(capture_path) = &args.capture_frame {
-                if time.tts >= args.capture_time {
+                if elapsed_time >= args.capture_time {
                     capture_framebuffer(
                         &gl,
                         fb_width as u32,
