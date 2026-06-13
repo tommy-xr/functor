@@ -51,7 +51,7 @@ See `examples/hello/hello.fs` for a complete game using all of these.
 | `runtime/functor-runtime-desktop/` | Desktop runtime; builds the `functor-runner` binary (native/GLFW) |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle |
 | `cli/` | The `functor` CLI (`build` / `run` / `develop`; `init` is not yet implemented) |
-| `examples/hello/` | Sample game (`hello.fs`) — a Pong-style scene with a WASD + mouse free-look camera |
+| `examples/hello/` | Sample game (`hello.fs`) — a lineup of glTF sample models with a WASD + mouse free-look camera |
 
 ## Prerequisites
 

@@ -77,7 +77,7 @@ native + wasm pair — see both modules in `Runtime.fs` for the current list.
 | `runtime/functor-runtime-desktop/` | Desktop runtime → the `functor-runner` binary (GLFW/OpenGL) |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle |
 | `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`) |
-| `examples/hello/` | Sample game (`hello.fs` — Pong-style scene with a WASD + mouse free-look camera); `build-native/` and `build-wasm/` are the per-target compile crates |
+| `examples/hello/` | Sample game (`hello.fs` — a lineup of glTF sample models with a WASD + mouse free-look camera); `build-native/` and `build-wasm/` are the per-target compile crates |
 
 The `.fs`/`.fsi` pairs in `src/Functor.Game/` use the `.fsi` signature file as the public API — update both when changing a module's surface.
 
