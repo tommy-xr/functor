@@ -49,6 +49,14 @@ impl Game for StaticGame {
         }
     }
 
+    fn state_debug(&self) -> String {
+        unsafe {
+            let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> =
+                self.library.get(b"emit_state_debug").unwrap();
+            func().to_string()
+        }
+    }
+
     fn quit(&mut self) {
         // Noop - nothing to do yet
     }

@@ -18,24 +18,29 @@ use std::thread;
 use tiny_http::{Header, Method, Response, Server};
 
 /// A snapshot of runtime state the GL loop can read on the main thread, returned
-/// for `GET /state`. Kept deliberately small for this first slice — model/game
-/// state is opaque across the dylib boundary (`emit_state` bundles model + effect
-/// queue into binary `OpaqueState` for hot-reload, not JSON), so we report the
-/// runtime status the shell owns.
+/// for `GET /state`. `model` is the live game model rendered with Rust's
+/// pretty-`Debug` formatter (via the dylib's `emit_state_debug` export) — readable
+/// for any game with zero game-author effort, since Fable derives `Debug` on every
+/// generated type. (The model isn't `Serialize`, so this is Debug text, not JSON.)
 pub struct RuntimeState {
     pub frame: u64,
     pub tts: f32,
     pub width: u32,
     pub height: u32,
+    pub model: String,
 }
 
 impl RuntimeState {
-    /// Hand-rolled JSON so we don't pull in serde just for this.
+    /// Built with `serde_json` so the (multi-line, quote-bearing) `model` debug
+    /// string is correctly escaped into the JSON.
     pub fn to_json(&self) -> String {
-        format!(
-            "{{\"frame\":{},\"tts\":{},\"viewport\":{{\"width\":{},\"height\":{}}}}}",
-            self.frame, self.tts, self.width, self.height
-        )
+        serde_json::json!({
+            "frame": self.frame,
+            "tts": self.tts,
+            "viewport": { "width": self.width, "height": self.height },
+            "model": self.model,
+        })
+        .to_string()
     }
 }
 
@@ -47,6 +52,8 @@ pub enum DebugRequest {
     Capture(Sender<Vec<u8>>),
     /// `GET /state` — reply with the current runtime state.
     State(Sender<RuntimeState>),
+    /// `GET /scene` — reply with the current frame (camera + scene) as JSON.
+    Scene(Sender<String>),
 }
 
 /// Start the debug HTTP server on a background thread. Returns the receiving end
@@ -111,6 +118,28 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                         Err(_) => {
                             let _ = request
                                 .respond(Response::from_string("state failed").with_status_code(500));
+                        }
+                    }
+                }
+                (Method::Get, "/scene") => {
+                    let (resp_tx, resp_rx) = mpsc::channel::<String>();
+                    if tx.send(DebugRequest::Scene(resp_tx)).is_err() {
+                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        continue;
+                    }
+                    match resp_rx.recv() {
+                        Ok(json) => {
+                            let header = Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"application/json"[..],
+                            )
+                            .unwrap();
+                            let resp = Response::from_string(json).with_header(header);
+                            let _ = request.respond(resp);
+                        }
+                        Err(_) => {
+                            let _ = request
+                                .respond(Response::from_string("scene failed").with_status_code(500));
                         }
                     }
                 }

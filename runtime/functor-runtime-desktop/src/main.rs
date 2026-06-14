@@ -363,7 +363,16 @@ pub async fn main() {
                                 tts: time.tts,
                                 width: fb_width as u32,
                                 height: fb_height as u32,
+                                model: game.state_debug(),
                             });
+                        }
+                        debug_server::DebugRequest::Scene(resp) => {
+                            // Serialize the frame we just rendered (camera +
+                            // scene). Frame derives Serialize for the wasm path,
+                            // so this is real JSON, not Debug text.
+                            let json = serde_json::to_string_pretty(&frame)
+                                .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
+                            let _ = resp.send(json);
                         }
                     }
                 }

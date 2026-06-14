@@ -76,6 +76,18 @@ impl Game for HotReloadGame {
         }
     }
 
+    fn state_debug(&self) -> String {
+        unsafe {
+            let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"emit_state_debug")
+                .unwrap();
+            func().to_string()
+        }
+    }
+
     fn quit(&mut self) {
         if let Some(handle) = self.watcher_thread.take() {
             handle.join().expect("Failed to join watcher thread");
