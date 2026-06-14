@@ -1,6 +1,6 @@
 use std::{cell::RefCell, sync::Arc};
 
-use cgmath::{point3, vec3, vec4, Matrix4, SquareMatrix, Transform};
+use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
 use fable_library_rust::NativeArray_::Array;
@@ -12,7 +12,7 @@ use crate::{
         AssetHandle, BuiltAssetPipeline,
     },
     geometry::{self, Geometry, Mesh},
-    material::{ColorMaterial, Material, SkinnedMaterial},
+    material::{BasicMaterial, Material, SkinnedMaterial},
     math::Angle,
     model::{Model, Skeleton},
     texture::{RuntimeTexture, Texture2D},
@@ -166,9 +166,6 @@ impl Scene3D {
         let skinning_data = vec![];
         match &self.obj {
             SceneObject::Model(model_description) => {
-                let mut basic_material = SkinnedMaterial::create();
-                basic_material.initialize(&render_context);
-
                 match &model_description.handle {
                     ModelHandle::File(str) => {
                         let model: Arc<AssetHandle<Model>> = render_context
@@ -179,7 +176,17 @@ impl Scene3D {
 
                         let matrix = world_matrix * self.xform;
 
-                        // println!("SKELETON: {:#?}", hydrated_model.skeleton);
+                        // Skinned models pay for the joint-matrix uniform array;
+                        // static models (no skeleton) render with the basic
+                        // material instead.
+                        let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
+                        let mut model_material: Box<dyn Material> = if is_skinned {
+                            SkinnedMaterial::create()
+                        } else {
+                            BasicMaterial::create()
+                        };
+                        model_material.initialize(&render_context);
+
                         let animation_index = 0;
 
                         for mesh in hydrated_model.meshes.iter() {
@@ -216,23 +223,27 @@ impl Scene3D {
                                     &[],
                                 );
                             } else {
-                                let maybe_animation =
-                                    hydrated_model.animations.get(animation_index);
-                                let joints = if let Some(animation) = maybe_animation {
-                                    let time = render_context.frame_time.tts % animation.duration;
-                                    let animated_skeleton = Skeleton::animate(
-                                        &hydrated_model.skeleton,
-                                        animation,
-                                        time,
-                                    );
-                                    animated_skeleton.get_skinning_transforms()
+                                let joints = if is_skinned {
+                                    match hydrated_model.animations.get(animation_index) {
+                                        Some(animation) => {
+                                            let time = render_context.frame_time.tts
+                                                % animation.duration;
+                                            let animated_skeleton = Skeleton::animate(
+                                                &hydrated_model.skeleton,
+                                                animation,
+                                                time,
+                                            );
+                                            animated_skeleton.get_skinning_transforms()
+                                        }
+                                        None => vec![Matrix4::identity(); 50],
+                                    }
                                 } else {
-                                    vec![Matrix4::identity(); 50]
+                                    vec![]
                                 };
 
                                 // Bind textures
                                 mesh.base_color_texture.bind(0, &render_context);
-                                basic_material.draw_opaque(
+                                model_material.draw_opaque(
                                     &render_context,
                                     projection_matrix,
                                     view_matrix,
@@ -243,42 +254,6 @@ impl Scene3D {
 
                             // TODO: Bring back drawing
                             mesh.mesh.draw(&render_context.gl)
-                        }
-
-                        // TEMPORARY: Render joints
-                        let maybe_animation = hydrated_model.animations.get(animation_index);
-                        if let Some(animation) = maybe_animation {
-                            let time = render_context.frame_time.tts % animation.duration;
-                            let animated_skeleton =
-                                Skeleton::animate(&hydrated_model.skeleton, animation, time);
-
-                            println!(
-                                "Animating {} {} {}",
-                                animation.name, animation.duration, time,
-                            );
-
-                            let joints = animated_skeleton.get_transforms();
-                            for joint_transform in joints {
-                                let mut color_material =
-                                    ColorMaterial::create(vec4(0.0, 1.0, 0.0, 1.0));
-                                color_material.initialize(&render_context);
-
-                                let xform = &(matrix * joint_transform);
-                                let point = xform.transform_point(point3(0.0, 0.0, 0.0));
-                                let xform2 =
-                                    Matrix4::from_translation(vec3(point.x, point.y, point.z))
-                                        * Matrix4::from_scale(0.1);
-
-                                color_material.draw_opaque(
-                                    &render_context,
-                                    projection_matrix,
-                                    view_matrix,
-                                    &xform2,
-                                    &[],
-                                );
-
-                                scene_context.sphere.borrow().draw(render_context.gl);
-                            }
                         }
                     }
                 }
