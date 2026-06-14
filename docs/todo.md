@@ -8,12 +8,24 @@ In order of value-per-effort (learned the hard way validating the skinned-materi
 PR: macOS Screen Recording permission blocks capturing the native window from
 outside, and wasm needed a hand-rolled Playwright script):
 
-1. - [ ] **Screenshot from inside the runtime.** A `glReadPixels`→PNG dump in
-         `functor-runner` (flag like `--capture-frame out.png --at-time 2.0`, plus an
-         HTTP/stdin trigger later). Sidesteps OS screen-capture permissions entirely
-         because the app reads its own framebuffer, and works headless-ish. Pair with
-         an injectable frame time for deterministic captures — golden-image tests
-         fall out for free (subsumes the "Image verification test" idea below).
+1. - [x] **Screenshot from inside the runtime.** `functor-runner --capture-frame
+         out.png --capture-time 2.0` renders normally, reads back the framebuffer
+         (`glReadPixels`) after `--capture-time` wall-clock seconds, writes a PNG,
+         and exits (non-zero if the write fails). Sidesteps OS screen-capture
+         permissions entirely because the app reads its own framebuffer. Forwarded
+         through the CLI: `functor run native -- --capture-frame ...`.
+   - [x] **Deterministic frame time.** `--fixed-time T` pins the game's frame time
+         to a constant, so the rendered pose is identical run-to-run (verified
+         byte-identical PNGs) regardless of frame rate / asset-load timing.
+   - [x] **Golden-image test.** `npm run test:golden` renders `hello` at a fixed
+         time, captures, and compares to a committed reference with a tolerance
+         (`runtime/functor-runtime-desktop/tests/golden.rs`). `#[ignore]`d (needs a
+         GL display + built dylib), so it's local/manual, not in CI yet. Goldens
+         are renderer/display-specific; regen command is in the test's doc comment.
+   - [ ] Still to do: an HTTP/stdin trigger for captures on demand; a headless/
+         offscreen render path so goldens can run in CI (e.g. llvmpipe under xvfb);
+         a wasm capture path (today wasm screenshots need an external headless
+         browser). (Subsumes the "Image verification test" idea below.)
 2. - [ ] **Debug runtime (north star).** Like shock2quest's HTTP-controlled
          `debug_runtime` (`/screenshot`, raycast, entity-state queries) — the
          "LLM-native" principle made real. Grow it out of screenshot/state endpoints
