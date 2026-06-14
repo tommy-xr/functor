@@ -19,6 +19,7 @@ use crate::game::Game;
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
 
+mod debug_server;
 mod game;
 mod hot_reload_game;
 mod static_game;
@@ -90,13 +91,24 @@ struct Args {
     /// is deterministic — for reproducible captures / golden images.
     #[arg(long)]
     fixed_time: Option<f32>,
+
+    /// Start an HTTP control server on 127.0.0.1:<PORT> (localhost only) exposing
+    /// POST /capture (image/png of the next frame) and GET /state (runtime JSON).
+    /// Omit to disable the server entirely.
+    #[arg(long)]
+    debug_port: Option<u16>,
 }
 
 /// Read back the framebuffer just rendered (called before swap_buffers, so the
-/// back buffer) and write it as a PNG. Exits the process with an error if the
-/// capture cannot be written, so scripts don't mistake a failed capture for a
-/// pass.
-unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path: &str) {
+/// back buffer) and encode it as PNG bytes. Returns an error string if the
+/// readback can't be turned into a valid image. Shared by `--capture-frame`
+/// (writes the bytes to a file) and the debug server's `POST /capture` (streams
+/// the bytes back over HTTP), so both produce byte-identical PNGs.
+unsafe fn encode_framebuffer_png(
+    gl: &glow::Context,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
     let stride = (width * 4) as usize;
     let mut pixels = vec![0u8; stride * height as usize];
     gl.read_pixels(
@@ -116,9 +128,23 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
         flipped[row * stride..(row + 1) * stride].copy_from_slice(&pixels[src..src + stride]);
     }
 
-    let result = image::RgbaImage::from_raw(width, height, flipped)
-        .ok_or_else(|| "framebuffer size mismatch".to_string())
-        .and_then(|img| img.save(path).map_err(|e| e.to_string()));
+    let img = image::RgbaImage::from_raw(width, height, flipped)
+        .ok_or_else(|| "framebuffer size mismatch".to_string())?;
+    let mut bytes: Vec<u8> = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+
+/// Read back the framebuffer and write it as a PNG file. Exits the process with
+/// an error if the capture cannot be written, so scripts don't mistake a failed
+/// capture for a pass.
+unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path: &str) {
+    let result = encode_framebuffer_png(gl, width, height)
+        .and_then(|bytes| std::fs::write(path, bytes).map_err(|e| e.to_string()));
     match result {
         Ok(()) => println!("Captured frame to {}", path),
         Err(e) => {
@@ -143,6 +169,11 @@ pub async fn main() {
     } else {
         Box::new(StaticGame::create(game_path.as_str()))
     };
+
+    // Optional debug control server. Runs on its own thread; the GL loop drains
+    // its request channel once per frame (see below). None when --debug-port is
+    // not given, so behavior is unchanged.
+    let debug_requests = args.debug_port.map(debug_server::spawn);
 
     unsafe {
         let (gl, shader_version, mut window, mut glfw, events) = {
@@ -187,6 +218,7 @@ pub async fn main() {
 
         let start_time = Instant::now();
         let mut last_time: f32 = 0.0;
+        let mut frame_count: u64 = 0;
 
         use glfw::Context;
 
@@ -308,7 +340,37 @@ pub async fn main() {
                 }
             }
 
+            // Service any pending debug-server requests now that the frame is
+            // fully rendered into the back buffer (same point --capture-frame
+            // reads from). GL stays on this thread; we only reply over channels.
+            if let Some(rx) = &debug_requests {
+                while let Ok(req) = rx.try_recv() {
+                    match req {
+                        debug_server::DebugRequest::Capture(resp) => {
+                            match encode_framebuffer_png(&gl, fb_width as u32, fb_height as u32) {
+                                Ok(png) => {
+                                    let _ = resp.send(png);
+                                }
+                                Err(e) => {
+                                    eprintln!("[debug-server] capture failed: {}", e);
+                                    // Dropping `resp` signals failure to the handler.
+                                }
+                            }
+                        }
+                        debug_server::DebugRequest::State(resp) => {
+                            let _ = resp.send(debug_server::RuntimeState {
+                                frame: frame_count,
+                                tts: time.tts,
+                                width: fb_width as u32,
+                                height: fb_height as u32,
+                            });
+                        }
+                    }
+                }
+            }
+
             window.swap_buffers();
+            frame_count += 1;
         }
     }
 
