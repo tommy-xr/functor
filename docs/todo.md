@@ -1,491 +1,110 @@
-# NOTES
+# Backlog
 
-- Does CI run tests?
+Incomplete work only. For what already exists (rendering, textures, camera, gltf
+model loading + skinning/animation, effects/`EffectQueue`, subscriptions seam +
+`Sub.every`, input plumbing native + web, hot reload, the CLI, frame capture +
+golden tests), see `CLAUDE.md` and `git log`.
 
-## Validation tooling (make runtime changes easy to verify)
+## Validation tooling
 
-In order of value-per-effort (learned the hard way validating the skinned-material
-PR: macOS Screen Recording permission blocks capturing the native window from
-outside, and wasm needed a hand-rolled Playwright script):
+- [ ] **Debug runtime** (north star): an HTTP/stdin trigger on `functor-runner`
+      for on-demand capture + state queries, à la shock2quest's `debug_runtime`
+      (`/screenshot`, raycast, entity-state). Grow it out of the existing capture
+      path rather than a separate binary; MVU already makes state serializable
+      (`emit_state`).
+- [ ] **Model inspector** — `functor inspect model <file.glb> [--time T]`: run the
+      asset pipeline CPU-side and print per-mesh vertex/index/joint counts and
+      skinned AABBs. Text-only, no GPU, diffable. Would have caught both
+      skinned-material bugs (zero-vertex meshes, wrong joint rest pose).
+- [ ] Headless/offscreen render path (e.g. llvmpipe under xvfb) at a fixed
+      resolution so the golden-image test can run in CI (today it's `#[ignore]`d).
+- [ ] WASM capture path (today wasm screenshots need an external headless browser).
 
-1. - [x] **Screenshot from inside the runtime.** `functor-runner --capture-frame
-         out.png --capture-time 2.0` renders normally, reads back the framebuffer
-         (`glReadPixels`) after `--capture-time` wall-clock seconds, writes a PNG,
-         and exits (non-zero if the write fails). Sidesteps OS screen-capture
-         permissions entirely because the app reads its own framebuffer. Forwarded
-         through the CLI: `functor run native -- --capture-frame ...`.
-   - [x] **Deterministic frame time.** `--fixed-time T` pins the game's frame time
-         to a constant, so the rendered pose is identical run-to-run (verified
-         byte-identical PNGs) regardless of frame rate / asset-load timing.
-   - [x] **Golden-image test.** `npm run test:golden` renders `hello` at a fixed
-         time, captures, and compares to a committed reference with a tolerance
-         (`runtime/functor-runtime-desktop/tests/golden.rs`). `#[ignore]`d (needs a
-         GL display + built dylib), so it's local/manual, not in CI yet. Goldens
-         are renderer/display-specific; regen command is in the test's doc comment.
-   - [ ] Still to do: an HTTP/stdin trigger for captures on demand; a headless/
-         offscreen render path so goldens can run in CI (e.g. llvmpipe under xvfb);
-         a wasm capture path (today wasm screenshots need an external headless
-         browser). (Subsumes the "Image verification test" idea below.)
-2. - [ ] **Debug runtime (north star).** Like shock2quest's HTTP-controlled
-         `debug_runtime` (`/screenshot`, raycast, entity-state queries) — the
-         "LLM-native" principle made real. Grow it out of screenshot/state endpoints
-         on `functor-runner` rather than a separate binary; MVU already makes state
-         serializable (`emit_state` exists).
-3. - [ ] **Model inspector for asset bugs.** `functor inspect model shark.glb
-         [--time 0.5]`: run the asset pipeline CPU-side and print per-mesh
-         vertex/index/joint counts and skinned AABBs — no GPU, text-only, diffable.
-         Would have caught both skinned-material bugs (zero-vertex meshes, wrong
-         joint rest pose) instantly. Mostly just a CLI entry point over existing
-         pipeline code.
+## Rendering
+
+- [ ] Skinned-material cleanup: select the material per-mesh by skin presence
+      instead of forcing `SkinnedMaterial` on every model; move the green joint
+      debug-markers and per-frame `Animating` println off the render path;
+      revisit `MAX_JOINTS 200` (800 uniform vec4s) vs the WebGL2 minimum guarantee.
+- [ ] Mesh primitives: quad, plane, heightmap (cube/cylinder/sphere exist).
+- [ ] Dynamic mesh (+ emissive texture material).
+- [ ] Lighting: ambient, point, directional, ambient/positional fog, spot →
+      shadow mapping.
+- [ ] Cubemap / skybox (emissive lighting + reflection).
+- [ ] Camera middleware: FPSCamera, OrbitCamera.
+- [ ] In-built hands models.
+- [ ] Synthwave-ground demo scene.
+
+## Effects & subscriptions
+
+Build the shared machinery once when the first resource-backed sub/effect lands:
+
+- [ ] **Async inbox**: a channel the runtime drains each frame into the
+      `EffectQueue`, so messages can arrive on a *later* frame (today `Effect` is
+      synchronous — `Effect.run` yields in-frame). Prereq for everything below.
+- [ ] **Keyed resource registry**: each frame, diff the desired sub set against
+      live resources; spawn new, tear down gone. Identity = resource descriptor
+      (e.g. a socket URL), not the generic msg.
+- [ ] `Effect.after duration msg` — one-shot delay; a command (needs creation-time
+      state), so it can't use `Sub.every`'s stateless clock trick. Needs the inbox.
+- [ ] `Sub.renderFrame` — per-frame Sub (always returns a message via poll).
+- [ ] `Sub.Net.webSocket` — first resource-backed sub; needs identity so it isn't
+      reopened every frame.
+- [ ] `Sub.Net.httpRequest` — one-shot request is really an `Effect`; a
+      long-poll/SSE stream is the Sub.
+
+## Input
+
+- [ ] Polling snapshot: an `Input.State` (keys currently down + mouse pos/scroll)
+      maintained by the runtime from the event stream and handed to the pure core
+      — most likely `tick : model -> FrameTime -> Input.State -> ...` — so games
+      ask `Input.State.isKeyDown state Key.W` instead of rebuilding held-key state
+      from up/down events. Keep events too (press/release edges matter). Held-set
+      is derived state: rebuild from events, don't persist in `OpaqueState`.
+- [ ] Game-controller and VR-controller events (`Input` has TODO placeholders).
+
+## CLI
+
+- [ ] `functor init [3d|fps]` — scaffold a new game (rust-embed a template folder;
+      `init` is currently a stub).
+- [ ] `functor develop wasm` — hot-reload over a websocket: push changes, save
+      state, reload, rehydrate (native `develop` hot-reload already works).
+
+## Physics
+
+- [ ] Use the rapier library.
+- [ ] A `physics : model -> PhysicsScene` function; sync physics positions back
+      into the model (or feed the physics scene to the renderer).
+
+## Live variables / fast iteration
+
+- [ ] Live-variable debugging: a `Constant`-style function (name + value) editable
+      at runtime, backed by a string→value map. See
+      [const-tweaker](https://github.com/tversteeg/const-tweaker); may need a
+      custom Fable build for token reloading.
+
+## Audio
+
+- [ ] Sound-effect playback (no audio yet).
+
+## 2D
+
+- [ ] Sprites.
+
+## VR runtime
+
+- [ ] (placeholder — VR head/controller rendering + input)
 
 ## Games to build
 
 - 3D: Simple Terrain (synthwave vibes)
 - 3D: Multiplayer Asteroids
-- 3D: Simple FPS (Weapons / recoil) Shooting Range
-- 3D: Multiplayer FPS (Weapons / recoil)
-
-Goals?
-
-- Address deficiencies in previous approach:
-  - Rapid iteration!!!
-  - Have in-built shadows + lighting
-  - Have in-built cubemap (emissive lighting + reflection)
-  - Have in-built hands models
-
-## Presentation Brainstorming
-
-- Do a 3d-focused presentation - showcasing the architecture
-
-## VR Dev experience brainstorming
-
-- Table-top / light-table-esque experience?
-
-## CLI Tool Brainstorming
-
-- `functor init`
-  - `functor init 3d`
-  - `functor init fps`
-
-MVP:
-
-- 1p Asteroids game
-  - [ ] Model loading
-  - [ ] Lighting
-  - [ ] Sprites
-  - [ ] Sound effect
-  - [ ] Input
-- Battle royale asteroids
-  - [ ] 1p bots
-
-## Next
-
-- ## Materials
-
-  - Subscriptions (`Sub`) — the dual of Effect/Cmd: a standing source of
-    messages, recomputed from the model each frame and fed back through the
-    same enqueue -> drain -> update path as effects. (PR #69)
-
-    - [x] `subscriptions : model -> Sub msg` seam wired into the runtime loop
-    - [x] `Sub.every` (recurring timer) — stateless: fires on the global time
-          grid, so it needs no per-sub identity or diffing and survives hot
-          reload for free. `Sub.none` / `Sub.batch` / `Sub.map` too.
-    - [ ] `Effect.after duration msg` — one-shot delay. This is a *command*,
-          not a sub (needs creation-time state), so it can't use the stateless
-          clock trick. Blocked on the async inbox below.
-    - [ ] `Sub.renderFrame` — always returns a message via poll (per-frame Sub)
-    - [ ] `Sub.Net.webSocket` — first resource-backed sub. Unlike `every`, a
-          live socket DOES need identity (it must be matched across
-          recomputations so it isn't torn down/reopened every frame; key on the
-          resource descriptor, e.g. URL, which is hashable — not the generic
-          msg). Blocked on the keyed resource registry + async inbox below.
-    - [ ] `Sub.Net.httpRequest` — note: a one-shot request is really an Effect
-          (Cmd), not a Sub; a long-poll/SSE stream is the Sub. Same async
-          inbox dependency.
-
-  - Input (`Input`) — discrete keyboard/mouse events fed through the pure
-    `input : model -> Input.t -> model * effect` seam, mirroring `update`.
-    Events cross the F#/Rust boundary as primitives; the runtime builds the
-    `Input.t` DU F#-side so game code can pattern-match it.
-
-    - [x] `key_event` / `mouse_move` / `mouse_wheel` boundary exports (native +
-          parallel wasm), desktop GLFW event dispatch, canonical `Key` enum in
-          functor-runtime-common mirrored by `Input.ofKeyCode`.
-    - [x] Interactive `hello` sample: WASD / arrows move the scene (held-key
-          state reconstructed in the model, integrated in `tick`).
-    - [ ] Polling snapshot (fast follow): an `Input.State` (keys currently down
-          + mouse pos/scroll), maintained by the runtime from the same event
-          stream, handed to the pure core — most likely into `tick`
-          (`model -> FrameTime -> Input.State -> ...`) so movement code can ask
-          `Input.State.isKeyDown state Key.W` instead of every game rebuilding
-          held-key state from up/down events. Keep events too (press/release
-          edges still matter for discrete actions). Open: snapshot in `tick`
-          signature vs. a queryable accessor; held-set is derived state so
-          rebuild from events rather than persist in `OpaqueState`.
-    - [ ] Web runtime: translate browser keyboard/mouse events into the
-          `key_event_wasm` / `mouse_move_wasm` / `mouse_wheel_wasm` exports (the
-          exports exist; the JS glue that calls them does not yet).
-    - [ ] Game controller and VR controller events (`Input` has TODO
-          placeholders).
-
-  - The machinery `Effect.after` / web sockets / http all share (build once
-    when the first resource-backed sub/effect lands):
-
-    - [ ] Async inbox: a channel the runtime drains each frame into the
-          EffectQueue, so messages can arrive on a *later* frame (today Effect
-          is synchronous — `Effect.run` yields in-frame). The seam already has
-          the right shape (walk subs -> enqueue -> drain); the inbox is just
-          empty for now.
-    - [ ] Keyed resource registry: each frame, diff the desired sub set against
-          live resources; spawn new, tear down gone. Identity = resource
-          descriptor.
-
-  - Add test project
-
-  - Start processing effects
-
-    - Implement effect queue - going to need a custom type that codes debug
-      - EffectQueue
-        - length
-        - enqueue
-        - dequeue
-      - Implement debug
-
-  - EffectRunner::poll
-  - EffectRunner::get_completed_result(): Array<T>
-
-  - Are we going to have to re-think our approach to async IO on desktop runtime?
-    (This is the "async inbox" item under Subscriptions above — same work.)
-
-    - Maybe we create a tokio runtime in a separate thread
-    - Use the receiver / channel to push state
-
-  - Add timeout effect to implement futures — now tracked as `Effect.after`
-    under Subscriptions above (one-shot command, blocked on the async inbox).
-
-  `Assets.Effect.load(texturePipeline, "my_texture.png"): AssetHandle<Texture>`
-  `Assets.Effect.load(animationPipeline, "my_texture.png"): AssetHandle<Animations>`
-
-  - [x] `init` function (startup effect via `GameBuilder.init`, seeded into the effect queue at construction)
-
-  - Get update function working
-
-  - Create SkinnedModel material - can it be just vertex shader? Probably
-
-    - Render weights in rgba
-
-  - Hopefully get animating!
-  - API Design:
-
-    - Effect to load model
-    - Actual model object
-    - animatedModel bones
-    - Debug.skeleton bones
-
-  - Assets -> Add options to the pipeline
-
-  - Add transform override
-
-    - Include name in model info
-    - Add Mesh Selector by name
-    - Test with Glock model
-
-  - example assets folder
-
-  - quad
-
-  - Prototype input API
-
-    <!-- - System.Input.render(world) -> InputState
-    - System.Input.Effect.rumble(amount, inputDevice)
-    - System.Input.Sub.onKeyDown()
-    - System.Input.Sub.onKeyUp() -->
-
-    - System.Input.update(input: InputState, world) -> world
-    - input.keyboard
-    - input.mouse
-    - input.vr.head
-    - input.vr.controllers
-    <!-- - System.Input.event(event, world) -> msg -->
-
-  Asset Brainstorming:
-
-  - When bringing in an asset, automatically generate types (joint names, animations, etc)
-  - Have an opionated structure on asset loading?
-
-    - Content that is immediately available vs not
-
-  - Animation
-
-    - Load skinning data
-      - Refresh on inverse bind pose - how does that work again?
-      - Create new vertex format
-      - Add joints and weights
-      - Render bones
-    - Bring over shader to handle skinning
-      - Hard code some transforms - can we play with specific tweaks?
-      - How to test in pure rust land?
-    - Create animation pipeline
-      - Info here: https://gabormakesgames.com/blog_animation_skinspace.html#:~:text=The%20inverse%20bind%20pose%20matrix%20maps%20a%20vertex%20from%20model,the%20bone%20it%20belongs%20to.
-      - Load animations from gltf
-      - Shark animating
-        - Test out particular frames of the animation
-    - Test out hand pose data
-
-  - Image verification test, to verify hasn't changed?
-
-    - Command line option for test (--test testName)
-      - If test mode:
-        - Use software rendering
-      - Set up actions for the test
-    - Implement way to check if assets are pending being loaded
-    - Wait for all assets to be loaded
-    - Render single frame
-    - Run with output
-
-  - Interface for input?
-  - Manually create module?
-
-    - rust
-    - fs
-
-  - Chore:
-
-    - Load materials ahead of time for scene context
-
-      - Happens in two places:
-        - The place where we initialize `basic_material` as a default for models
-        - The place where we actually load supplied materials
-      - We have to rethink how we actually load these, because they take arguments
-      - We may need to move away from the <dyn Material> and have a separate way to set parameters
-
-    - F# API
-      - So we can iterate quickly!
-
-  - Steam VR models
-
-    - Does animation work for these too?
-
-  - Preliminary mesh improvements
-
-    - Update primitives
-    - Add quad
-    - Add plane
-    - Add heightmap
-
-  - 'hello' example
-
-    - Synthwave ground
-    - Model loading:
-    - Dynamic mesh:
-    - Quad with texture
-    - Skybox
-
-  - Pass assetCache to scene
-  - Get crate example working via F#
-  - Color primitive
-
-  ### Material Definition
-
-  - Texture2D.color in Scene3D -> test rendering the shapes diff colors via the F# API
-  - Texture2D.dynamic -> hook up the raw stuff from above
-
-  - Add F# API for texture
-    Asset.Texture.raw({ width, height, format, bytes})
-    Asset.Texture.path("jjk")
-
-  - Use Asset.Texture.path("proto") as a prototype
-
-  ### Material Definition
-
-  - Scene3D:
-
-    - MaterialDefinition
-      - basic
-        - diffuse
-        - normal
-    - TextureDefinition
-      - path('')
-      - raw(width, height, format, '');
-
-  ### Hot reloading of assets
-
-  - How to manage, along with time travel?
-
-  - Runtime:
-
-    - Material
-    - Texture
-
-  - Load asset
-  - Add asset loading for textures
-    - Create loader trait that takes a path &str and is async and returns an array of bytes
-  - Add texture material
-  - Implement loading solution that works on both platforms
-
-- ## Transform / Visuals
-
-  - Add 'transform' as Mat4 to the Scene3D outside the type
-    - 4. Add vector3 + translate + scale
-    - 5. Add quaternion + rotate
-  - Add plane and quad primitives
-
-- ## VR Runtime
-
-- ## Model Loading
-
-  - gltf loader
-  - custom loaders?
-
-- ## Physics
-
-- ## Live Variables
-
-  - Set up live variable debugging
-  - Temporary project
-
-    - Use
-    - Create temporary folder w/ scaffolding
-      - Copy over fs/fsproj
-    - Copy FS files on change (for transform)
-    - `.functor` folder with some context
-
-  - Materials
-    - Add color material, where color can be specified
-    - Add materials - default material is the prototype one
-    - See the scene start to come to life!
-  - Figure out textures
-
-- Build commands for wasm:
-
-  - functor cli
-    - set up build.rs to build functor runtime desktop, functor runtime web
-    - simplify CI
-  - Add `functor develop wasm`
-    - Add a special 'hot-reload' websocket
-      - Push changes
-      - On change, save state, reload, and rehydrate state
-
-- ## Mesh
-
-  - Add dynamic mesh
-
-    - Add texture material w/ emissive
-
-  - CLI Part 3:
-    - `functor init`
-      - Use rust-embed along with template folder
-      - Bundle up entire template folder
-      - cargo install to get in path
-    - Create template
-  - Lighting
-    - Ambient Light
-    - Multi-pass lighting
-    - Point light
-    - Directional light
-    - Ambient fog
-    - Positional fog
-    - Spot light -> shadow mapping
-  - Camera
-  - How could we get the experience of dynamically editing a value?
-
-    - 'Constant' function that we manually add, with a rust implementation
-      - name
-      - value
-    - Maintain map to string any value
-    - Example of similar project: https://github.com/tversteeg/const-tweaker
-    - Token reloading here: https://github.com/fable-compiler/Fable/blob/76a33dc107ce2009acac3429b27999f8776597d2/src/Fable.Transforms/Rust/AST/Rust.AST.Helpers.fs#L323
-    - Can we do a custom build of fable compiler?
-
-  -
-
-  - Middleware
-    - FPSCamera
-    - OrbitCamera
-
-- Simple rendering
-
-  - Add transform
-  - Run through and render tree
-
-- Rendering: Textures
-
-  - Get basic primitives working from shock2quest
-
-    - How to load for both native and web?
-
-    - In-memory texture
-      - Port over TextureTrait
-        - bind0
-        - bind1
-      - Port over Texture
-      - Port over RawTextureData
-      - Port over TextureOptions
-      - Port over init_from_memory2
-    - Port over TextureFormat, Texture trait
-    - Port over PixelFormat
-    - Port over RawTextureData
-
-    - Get textures loading
-
-      - Do a hard-coded texture
-      - Load a texture from files
-
-    - Use a basic camera example
-
-      - maybe this one is a good one: https://github.com/bwasty/learn-opengl-rs/blob/6357f7ca55508cd8ed9389a73207a8b954d362b4/src/_1_getting_started/_7_1_camera_circle.rs#L227
-
-    - Game loop:
-      - https://gafferongames.com/post/fix_your_timestep/
-
-  - Webassembly
-
-    - Loading textures: https://github.com/kettle11/LD46/blob/365613e6089e29921a36b672217c245d9980e078/src/image.rs#L27
-
-  - Bring in basic camera
-  - Move cube up and down
-
-  - Add a mouselook primitive
-
-  - Review rendering primitives in my old project (citadel)
-
-    - Geometry
-      - Plane
-      - Cube
-      - Sphere
-      - Cylinder
-      - HeightMap
-      - Custom
-    - Material
-      - Color
-    - Primitive
-
-      - Mesh (Geometry, Material)
-      - SkinnedMesh
-      - Transform
-      - Group []
-      - PointLight
-
-      - Scene3d
-        - camera
-        - Primitive
-
-  - Get basic rendering primitives working
-  - Bring back in this project
-
-- Complete Pong
-  - Add `Key` type -> interop with glfw key type?
-  - Add input function to pong
-  - Add update function to pong
-- Runtime
-  - Get pong running on desktop
-    - Create a window using GLFW
-    - Add game loop in F#
-      - Call game update
-      - Call game render
-      - Default loading spinner
-  - Get pong running on webasm
-    - Render to canvas in web assembly
-    - How will game loop work?
-  -
-  - How to interface with runtime? Can we compile and load web assembly?
+- 3D: Simple FPS (shooting range; weapons / recoil)
+- 3D: Multiplayer FPS (weapons / recoil)
+- MVP — 1p Asteroids (model loading, lighting, sprites, sound, input), then
+  battle-royale asteroids with bots.
+
+## Presentation / brainstorming
+
+- A 3D-focused presentation showcasing the architecture.
+- VR dev experience: a table-top / light-table-esque editing experience.
