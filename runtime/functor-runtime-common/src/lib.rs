@@ -73,6 +73,7 @@ mod frame;
 mod frame_time;
 pub mod geometry;
 mod input;
+pub mod inspect;
 pub mod io;
 pub mod material;
 pub mod math;

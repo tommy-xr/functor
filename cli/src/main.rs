@@ -49,11 +49,41 @@ enum Command {
         #[arg(value_enum)]
         environment: Option<Environment>,
     },
+    /// Inspect assets headlessly (no GPU/GL context).
+    Inspect {
+        #[command(subcommand)]
+        target: InspectTarget,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum InspectTarget {
+    /// Load a glTF/glb model and print a CPU-side text report.
+    Model {
+        /// Path to the .glb / .gltf file.
+        #[arg()]
+        path: String,
+
+        /// Sample the skinned AABB at this time (seconds) for animated models.
+        #[arg(long)]
+        time: Option<f32>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> tokio::io::Result<()> {
     let args = Args::parse();
+
+    // `inspect` operates on an arbitrary asset path and does not need a game
+    // project, so handle it before the functor.json validation below.
+    if let Command::Inspect { target } = &args.command {
+        let res = match target {
+            InspectTarget::Model { path, time } => {
+                commands::inspect::execute_model(path, *time).await
+            }
+        };
+        return finish(res);
+    }
 
     let working_directory = get_working_directory(&args);
     let functor_json_path = validate_metadata_path(&working_directory);
@@ -86,8 +116,14 @@ async fn main() -> tokio::io::Result<()> {
             commands::develop::execute(&working_directory_str, &Environment::default(environment))
                 .await
         }
+        // Handled earlier (before functor.json validation).
+        Command::Inspect { .. } => unreachable!(),
     };
 
+    finish(res)
+}
+
+fn finish(res: io::Result<()>) -> tokio::io::Result<()> {
     match res {
         Ok(()) => {
             println!("Done");
