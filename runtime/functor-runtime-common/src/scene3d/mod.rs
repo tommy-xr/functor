@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::{cell::RefCell, sync::Arc};
 
 use cgmath::{vec3, Matrix4, SquareMatrix};
@@ -35,6 +36,9 @@ pub struct SceneContext {
     sphere: RefCell<Mesh>,
     quad: RefCell<Box<dyn Geometry>>,
     plane: RefCell<Box<dyn Geometry>>,
+    // Heightmaps are parameterized, so they're cached by a content hash (rows,
+    // cols, heights) — static terrain builds its GL mesh once and reuses it.
+    heightmaps: RefCell<HashMap<u64, Box<dyn Geometry>>>,
 }
 
 impl SceneContext {
@@ -45,6 +49,7 @@ impl SceneContext {
             cylinder: RefCell::new(geometry::Cylinder::create()),
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
+            heightmaps: RefCell::new(HashMap::new()),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
         }
@@ -58,6 +63,13 @@ pub enum Shape {
     Cylinder,
     Quad,
     Plane,
+    /// A subdivided XZ grid displaced by per-vertex heights (row-major,
+    /// length `rows * cols`).
+    Heightmap {
+        rows: u32,
+        cols: u32,
+        heights: Vec<f32>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +122,17 @@ impl Scene3D {
     pub fn cylinder() -> Self {
         Scene3D {
             obj: SceneObject::Geometry(Shape::Cylinder),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn heightmap(rows: i32, cols: i32, heights: Array<f32>) -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Heightmap {
+                rows: rows.max(0) as u32,
+                cols: cols.max(0) as u32,
+                heights: heights.to_vec(),
+            }),
             xform: Matrix4::identity(),
         }
     }
@@ -363,8 +386,41 @@ impl Scene3D {
                 );
                 scene_context.plane.borrow_mut().draw(&render_context.gl);
             }
+            SceneObject::Geometry(Shape::Heightmap { rows, cols, heights }) => {
+                let xform = world_matrix * self.xform;
+                current_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                // Build the grid mesh once per unique (rows, cols, heights) and
+                // cache it; static terrain reuses the same GL buffers each frame.
+                let key = heightmap_key(*rows, *cols, heights);
+                scene_context
+                    .heightmaps
+                    .borrow_mut()
+                    .entry(key)
+                    .or_insert_with(|| {
+                        geometry::Heightmap::create(*rows as usize, *cols as usize, heights)
+                    });
+                scene_context.heightmaps.borrow()[&key].draw(&render_context.gl);
+            }
         }
     }
+}
+
+/// Content hash of a heightmap's parameters, used to cache its built GL mesh.
+fn heightmap_key(rows: u32, cols: u32, heights: &[f32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    rows.hash(&mut hasher);
+    cols.hash(&mut hasher);
+    for h in heights {
+        h.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn serialize_matrix<S>(matrix: &Matrix4<f32>, serializer: S) -> Result<S::Ok, S::Error>

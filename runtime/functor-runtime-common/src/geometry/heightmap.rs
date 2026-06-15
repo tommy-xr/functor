@@ -1,0 +1,47 @@
+use cgmath::{vec2, vec3};
+
+use crate::render::VertexPositionTexture;
+
+use super::{Geometry, IndexedMesh};
+
+/// A subdivided grid in the XZ plane (Y-up), centered on the origin and spanning
+/// the unit square (-0.5..0.5); size it with `Transform.scale`. Each vertex's Y
+/// comes from `heights` (row-major, length `rows * cols`). UVs tile one full
+/// texture cell per grid quad (textures load with REPEAT wrap).
+pub struct Heightmap;
+
+impl Heightmap {
+    pub fn create(rows: usize, cols: usize, heights: &[f32]) -> Box<dyn Geometry> {
+        // Need at least a 2x2 grid to form a quad.
+        let rows = rows.max(2);
+        let cols = cols.max(2);
+        let height_at = |r: usize, c: usize| heights.get(r * cols + c).copied().unwrap_or(0.0);
+
+        let mut vertices = Vec::with_capacity(rows * cols);
+        for r in 0..rows {
+            for c in 0..cols {
+                let x = c as f32 / (cols - 1) as f32 - 0.5;
+                let z = r as f32 / (rows - 1) as f32 - 0.5;
+                vertices.push(VertexPositionTexture {
+                    position: vec3(x, height_at(r, c), z),
+                    uv: vec2(c as f32, r as f32),
+                });
+            }
+        }
+
+        let mut indices = Vec::with_capacity((rows - 1) * (cols - 1) * 6);
+        for r in 0..rows - 1 {
+            for c in 0..cols - 1 {
+                let i = (r * cols + c) as u32;
+                let right = i + 1;
+                let down = i + cols as u32;
+                let down_right = down + 1;
+                // Two triangles per cell. (Backface culling is off, so winding
+                // only matters if it's enabled later.)
+                indices.extend_from_slice(&[i, down, down_right, i, down_right, right]);
+            }
+        }
+
+        Box::new(IndexedMesh::create(vertices, indices))
+    }
+}
