@@ -1,4 +1,4 @@
-use cgmath::{vec2, vec3};
+use cgmath::{vec2, vec3, InnerSpace};
 
 use crate::render::VertexPositionTexture;
 
@@ -17,14 +17,30 @@ impl Heightmap {
         let cols = cols.max(2);
         let height_at = |r: usize, c: usize| heights.get(r * cols + c).copied().unwrap_or(0.0);
 
+        // World spacing between adjacent grid samples (the grid spans 1 unit).
+        let cell_dx = 1.0 / (cols - 1) as f32;
+        let cell_dz = 1.0 / (rows - 1) as f32;
+
         let mut vertices = Vec::with_capacity(rows * cols);
         for r in 0..rows {
             for c in 0..cols {
                 let x = c as f32 / (cols - 1) as f32 - 0.5;
                 let z = r as f32 / (rows - 1) as f32 - 0.5;
+
+                // Normal from central differences of the height field, clamped
+                // to one-sided differences at the edges.
+                let (left, right) = (c.saturating_sub(1), (c + 1).min(cols - 1));
+                let (up, down) = (r.saturating_sub(1), (r + 1).min(rows - 1));
+                let dhdx = (height_at(r, right) - height_at(r, left))
+                    / ((right - left) as f32 * cell_dx);
+                let dhdz = (height_at(down, c) - height_at(up, c))
+                    / ((down - up) as f32 * cell_dz);
+                let normal = vec3(-dhdx, 1.0, -dhdz).normalize();
+
                 vertices.push(VertexPositionTexture {
                     position: vec3(x, height_at(r, c), z),
                     uv: vec2(c as f32, r as f32),
+                    normal,
                 });
             }
         }

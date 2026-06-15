@@ -12,12 +12,12 @@ use crate::{
         pipelines::{ModelPipeline, TexturePipeline},
         AssetHandle, BuiltAssetPipeline,
     },
-    geometry::{self, Geometry, Mesh},
-    material::{BasicMaterial, Material, SkinnedMaterial},
+    geometry::{self, Geometry},
+    material::{BasicMaterial, Material, NormalDebugMaterial, SkinnedMaterial},
     math::Angle,
     model::{Model, Skeleton},
     texture::{RuntimeTexture, Texture2D},
-    RenderContext,
+    DebugRenderMode, RenderContext,
 };
 
 mod material_description;
@@ -32,8 +32,8 @@ pub struct SceneContext {
     model_pipeline: Arc<BuiltAssetPipeline<Model>>,
     texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     cube: RefCell<Box<dyn Geometry>>,
-    cylinder: RefCell<Mesh>,
-    sphere: RefCell<Mesh>,
+    cylinder: RefCell<Box<dyn Geometry>>,
+    sphere: RefCell<Box<dyn Geometry>>,
     quad: RefCell<Box<dyn Geometry>>,
     plane: RefCell<Box<dyn Geometry>>,
     // Heightmaps are parameterized, so they're cached by a content hash (rows,
@@ -207,6 +207,21 @@ impl Scene3D {
         current_material: &Box<dyn Material>,
     ) {
         let skinning_data = vec![];
+
+        // In a debug render mode, primitive geometry is drawn with a diagnostic
+        // shader instead of its own material. glTF models use the skinned vertex
+        // format (no normals until that import lands), so they're left on their
+        // own materials and aren't overridden here.
+        let debug_material: Option<Box<dyn Material>> = match render_context.debug_render_mode {
+            DebugRenderMode::Default => None,
+            DebugRenderMode::Normals => {
+                let mut m = NormalDebugMaterial::create();
+                m.initialize(render_context);
+                Some(m)
+            }
+        };
+        let geometry_material = debug_material.as_ref().unwrap_or(current_material);
+
         match &self.obj {
             SceneObject::Model(model_description) => {
                 match &model_description.handle {
@@ -331,7 +346,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Cube) => {
                 let xform = world_matrix * self.xform;
-                current_material.draw_opaque(
+                geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
                     &view_matrix,
@@ -342,7 +357,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Cylinder) => {
                 let xform = world_matrix * self.xform;
-                current_material.draw_opaque(
+                geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
                     &view_matrix,
@@ -354,7 +369,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Sphere) => {
                 let xform = world_matrix * self.xform;
-                current_material.draw_opaque(
+                geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
                     &view_matrix,
@@ -366,7 +381,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Quad) => {
                 let xform = world_matrix * self.xform;
-                current_material.draw_opaque(
+                geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
                     &view_matrix,
@@ -377,7 +392,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Plane) => {
                 let xform = world_matrix * self.xform;
-                current_material.draw_opaque(
+                geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
                     &view_matrix,
@@ -388,7 +403,7 @@ impl Scene3D {
             }
             SceneObject::Geometry(Shape::Heightmap { rows, cols, heights }) => {
                 let xform = world_matrix * self.xform;
-                current_material.draw_opaque(
+                geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
                     &view_matrix,

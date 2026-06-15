@@ -1,4 +1,4 @@
-use cgmath::{vec2, vec3};
+use cgmath::{vec2, vec3, Vector3};
 
 use crate::render::VertexPositionTexture;
 
@@ -8,61 +8,89 @@ pub struct Cube;
 
 impl Cube {
     pub fn create() -> Box<dyn Geometry> {
-        let vertices = vec![
-            // Front face
-            VertexPositionTexture {
-                position: vec3(-1.0, -1.0, 1.0),
-                uv: vec2(0.0, 0.0),
-            },
-            VertexPositionTexture {
-                position: vec3(1.0, -1.0, 1.0),
-                uv: vec2(1.0, 0.0),
-            },
-            VertexPositionTexture {
-                position: vec3(1.0, 1.0, 1.0),
-                uv: vec2(1.0, 1.0),
-            },
-            VertexPositionTexture {
-                position: vec3(-1.0, 1.0, 1.0),
-                uv: vec2(0.0, 1.0),
-            },
-            // Back face
-            VertexPositionTexture {
-                position: vec3(-1.0, -1.0, -1.0),
-                uv: vec2(1.0, 0.0),
-            },
-            VertexPositionTexture {
-                position: vec3(1.0, -1.0, -1.0),
-                uv: vec2(0.0, 0.0),
-            },
-            VertexPositionTexture {
-                position: vec3(1.0, 1.0, -1.0),
-                uv: vec2(0.0, 1.0),
-            },
-            VertexPositionTexture {
-                position: vec3(-1.0, 1.0, -1.0),
-                uv: vec2(1.0, 1.0),
-            },
+        // 24 vertices (4 per face) so each face carries its own flat normal —
+        // shared corner vertices could only hold averaged/radial normals, which
+        // would smooth-shade the cube under lighting. Extents are -0.5..0.5.
+        let faces: [(Vector3<f32>, [Vector3<f32>; 4]); 6] = [
+            // +Z (front)
+            (
+                vec3(0.0, 0.0, 1.0),
+                [
+                    vec3(-0.5, -0.5, 0.5),
+                    vec3(0.5, -0.5, 0.5),
+                    vec3(0.5, 0.5, 0.5),
+                    vec3(-0.5, 0.5, 0.5),
+                ],
+            ),
+            // -Z (back)
+            (
+                vec3(0.0, 0.0, -1.0),
+                [
+                    vec3(0.5, -0.5, -0.5),
+                    vec3(-0.5, -0.5, -0.5),
+                    vec3(-0.5, 0.5, -0.5),
+                    vec3(0.5, 0.5, -0.5),
+                ],
+            ),
+            // +X (right)
+            (
+                vec3(1.0, 0.0, 0.0),
+                [
+                    vec3(0.5, -0.5, 0.5),
+                    vec3(0.5, -0.5, -0.5),
+                    vec3(0.5, 0.5, -0.5),
+                    vec3(0.5, 0.5, 0.5),
+                ],
+            ),
+            // -X (left)
+            (
+                vec3(-1.0, 0.0, 0.0),
+                [
+                    vec3(-0.5, -0.5, -0.5),
+                    vec3(-0.5, -0.5, 0.5),
+                    vec3(-0.5, 0.5, 0.5),
+                    vec3(-0.5, 0.5, -0.5),
+                ],
+            ),
+            // +Y (top)
+            (
+                vec3(0.0, 1.0, 0.0),
+                [
+                    vec3(-0.5, 0.5, 0.5),
+                    vec3(0.5, 0.5, 0.5),
+                    vec3(0.5, 0.5, -0.5),
+                    vec3(-0.5, 0.5, -0.5),
+                ],
+            ),
+            // -Y (bottom)
+            (
+                vec3(0.0, -1.0, 0.0),
+                [
+                    vec3(-0.5, -0.5, -0.5),
+                    vec3(0.5, -0.5, -0.5),
+                    vec3(0.5, -0.5, 0.5),
+                    vec3(-0.5, -0.5, 0.5),
+                ],
+            ),
         ];
 
-        let indices = vec![
-            // Front face
-            0, 1, 2, 2, 3, 0, // Top face
-            3, 2, 6, 6, 7, 3, // Back face
-            7, 6, 5, 5, 4, 7, // Bottom face
-            4, 5, 1, 1, 0, 4, // Left face
-            4, 0, 3, 3, 7, 4, // Right face
-            1, 5, 6, 6, 2, 1,
-        ];
+        let uvs = [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)];
 
-        let verts = vertices
-            .into_iter()
-            .map(|v| VertexPositionTexture {
-                position: v.position / 2.0,
-                uv: v.uv,
-            })
-            .collect();
+        let mut vertices: Vec<VertexPositionTexture> = Vec::with_capacity(24);
+        let mut indices: Vec<u32> = Vec::with_capacity(36);
 
-        Box::new(IndexedMesh::create(verts, indices))
+        for (normal, corners) in faces {
+            let base = vertices.len() as u32;
+            for (corner, uv) in corners.iter().zip(uvs.iter()) {
+                vertices.push(VertexPositionTexture {
+                    position: *corner,
+                    uv: *uv,
+                    normal,
+                });
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+        }
+
+        Box::new(IndexedMesh::create(vertices, indices))
     }
 }

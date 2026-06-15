@@ -2,14 +2,15 @@ use std::f32::consts::PI;
 
 use cgmath::{vec2, vec3, Vector2, Vector3};
 
-use super::Mesh;
+use crate::render::VertexPositionTexture;
+
+use super::{Geometry, IndexedMesh};
 
 pub struct Sphere;
 
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
     position: Vector3<f32>,
-    #[allow(dead_code)]
     normal: Vector3<f32>,
     tex_coords: Vector2<f32>,
 }
@@ -59,22 +60,21 @@ fn generate_unit_sphere(slices: u32, stacks: u32) -> (Vec<Vertex>, Vec<usize>) {
 }
 
 impl Sphere {
-    pub fn create() -> Mesh {
+    pub fn create() -> Box<dyn Geometry> {
         let slices = 20;
         let stacks = 20;
         let (sphere_vertices, sphere_indices) = generate_unit_sphere(slices, stacks);
 
-        let mut raw_vertices: Vec<f32> = Vec::new();
+        let vertices = sphere_vertices
+            .into_iter()
+            .map(|v| VertexPositionTexture {
+                position: v.position,
+                uv: v.tex_coords,
+                normal: v.normal,
+            })
+            .collect();
+        let indices = sphere_indices.into_iter().map(|i| i as u32).collect();
 
-        for idx in sphere_indices {
-            let vertex = sphere_vertices[idx];
-            raw_vertices.push(vertex.position.x);
-            raw_vertices.push(vertex.position.y);
-            raw_vertices.push(vertex.position.z);
-            raw_vertices.push(vertex.tex_coords.x);
-            raw_vertices.push(vertex.tex_coords.y);
-        }
-
-        Mesh::create(raw_vertices)
+        Box::new(IndexedMesh::create(vertices, indices))
     }
 }
