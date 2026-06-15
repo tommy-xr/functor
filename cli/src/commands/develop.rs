@@ -1,14 +1,14 @@
-use colored::*;
-use std::env;
-use std::io::{self, BufRead, Error};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::Path;
 
 use crate::util::{self, get_nearby_bin, ShellCommand};
 use crate::Environment;
 
+// `develop` is native-only (it always runs the hot-reload runner), so the
+// environment is currently ignored.
 pub async fn execute(
     working_directory: &str,
-    environment: &Environment,
+    _environment: &Environment,
     runner_args: &[String],
 ) -> io::Result<()> {
     let cwd_path = Path::new(working_directory);
