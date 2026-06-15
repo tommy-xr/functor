@@ -184,7 +184,7 @@ let init (_args: array<string>) =
         let eff = Effect.wrapped (MovePaddle2) |> Effect.map (fun _a -> MovePaddle1);
         let colorMaterial = Material.color(0.0f, 1.0f, 0.0f, 1.0f);
         let textureMaterial = Material.texture( Texture.file("crate.png"));
-        let groundMaterial = Material.texture( Texture.file("dirt.png"));
+        let gridMaterial = Material.texture( Texture.file("grid.png"));
         // let barrelModel = Model.file("ExplodingBarrel.glb");
         // let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 1f;
         // let renderModel = Model.file ("ExplodingBarrel.glb") |> Graphics.Scene3D.model |> Transform.scale 0.5f;
@@ -199,9 +199,12 @@ let init (_args: array<string>) =
 
         let scene =
             group([|
-                // Ground plane (XZ, Y-up) beneath the lineup.
-                material (groundMaterial, [|
-                    plane() |> Transform.translateY -2.5f |> Transform.translateZ 4.0f |> Transform.scale 30.0f;
+                // Synthwave terrain: a grid-textured heightmap (XZ, Y-up) with
+                // gentle static ripples, beneath the lineup.
+                material (gridMaterial, [|
+                    heightmapFn 32 32 (fun r c ->
+                        0.05f * (sin (float32 c * 0.5f) + cos (float32 r * 0.5f)))
+                    |> Transform.translateY -2.5f |> Transform.translateZ 4.0f |> Transform.scale 30.0f;
                 |]);
                 material (textureMaterial, [|
                     cylinder() |> Transform.translateY -2.5f;

@@ -28,6 +28,17 @@ module Scene3D =
     [<Emit("functor_runtime_common::Scene3D::quad()")>]
     let quad(): Scene3D = nativeOnly
 
+    // A subdivided grid in the XZ plane (the ground) displaced by `heights`
+    // (row-major, length rows*cols). Spans the unit square; size with
+    // Transform.scale. UVs tile one texture cell per grid quad.
+    [<Emit("functor_runtime_common::Scene3D::heightmap($0, $1, $2)")>]
+    let heightmap (rows: int) (cols: int) (heights: float32[]): Scene3D = nativeOnly
+
+    // Build a heightmap whose height at grid coords (row, col) is `f row col`.
+    let heightmapFn (rows: int) (cols: int) (f: int -> int -> float32): Scene3D =
+        let heights = Array.init (rows * cols) (fun i -> f (i / cols) (i % cols))
+        heightmap rows cols heights
+
     [<Emit("functor_runtime_common::Scene3D::group($0)")>]
     let group (items: Scene3D[]): Scene3D = nativeOnly
 
