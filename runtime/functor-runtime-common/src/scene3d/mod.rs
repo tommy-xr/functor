@@ -33,6 +33,8 @@ pub struct SceneContext {
     cube: RefCell<Box<dyn Geometry>>,
     cylinder: RefCell<Mesh>,
     sphere: RefCell<Mesh>,
+    quad: RefCell<Box<dyn Geometry>>,
+    plane: RefCell<Box<dyn Geometry>>,
 }
 
 impl SceneContext {
@@ -41,6 +43,8 @@ impl SceneContext {
             cube: RefCell::new(geometry::Cube::create()),
             sphere: RefCell::new(geometry::Sphere::create()),
             cylinder: RefCell::new(geometry::Cylinder::create()),
+            quad: RefCell::new(geometry::Quad::create()),
+            plane: RefCell::new(geometry::Plane::create()),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
         }
@@ -52,6 +56,8 @@ pub enum Shape {
     Cube,
     Sphere,
     Cylinder,
+    Quad,
+    Plane,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +89,20 @@ impl Scene3D {
     pub fn sphere() -> Self {
         Scene3D {
             obj: SceneObject::Geometry(Shape::Sphere),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn quad() -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Quad),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    pub fn plane() -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Plane),
             xform: Matrix4::identity(),
         }
     }
@@ -320,6 +340,28 @@ impl Scene3D {
                 );
 
                 scene_context.sphere.borrow_mut().draw(&render_context.gl);
+            }
+            SceneObject::Geometry(Shape::Quad) => {
+                let xform = world_matrix * self.xform;
+                current_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                scene_context.quad.borrow_mut().draw(&render_context.gl);
+            }
+            SceneObject::Geometry(Shape::Plane) => {
+                let xform = world_matrix * self.xform;
+                current_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                scene_context.plane.borrow_mut().draw(&render_context.gl);
             }
         }
     }

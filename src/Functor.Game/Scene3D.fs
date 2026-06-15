@@ -20,6 +20,14 @@ module Scene3D =
     [<Emit("functor_runtime_common::Scene3D::cylinder()")>]
     let cylinder(): Scene3D = nativeOnly
 
+    // A unit square in the XZ plane (the ground); size it with Transform.scale.
+    [<Emit("functor_runtime_common::Scene3D::plane()")>]
+    let plane(): Scene3D = nativeOnly
+
+    // A unit square in the XY plane (screen/wall-facing); for sprites/billboards.
+    [<Emit("functor_runtime_common::Scene3D::quad()")>]
+    let quad(): Scene3D = nativeOnly
+
     [<Emit("functor_runtime_common::Scene3D::group($0)")>]
     let group (items: Scene3D[]): Scene3D = nativeOnly
 
