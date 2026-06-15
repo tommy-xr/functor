@@ -54,6 +54,11 @@ enum Command {
     Develop {
         #[arg(value_enum)]
         environment: Option<Environment>,
+
+        /// Extra arguments forwarded to functor-runner (native only). E.g.
+        /// `develop native --debug-port 8077`. A leading `--` is also accepted.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        runner_args: Vec<String>,
     },
     /// Inspect assets headlessly (no GPU/GL context).
     Inspect {
@@ -124,11 +129,18 @@ async fn main() -> tokio::io::Result<()> {
             )
             .await
         }
-        Command::Develop { environment } => {
+        Command::Develop {
+            environment,
+            runner_args,
+        } => {
             commands::build::execute(&working_directory_str, &Environment::default(environment))
                 .await?;
-            commands::develop::execute(&working_directory_str, &Environment::default(environment))
-                .await
+            commands::develop::execute(
+                &working_directory_str,
+                &Environment::default(environment),
+                runner_args,
+            )
+            .await
         }
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
