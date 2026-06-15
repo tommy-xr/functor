@@ -1,6 +1,7 @@
 module Runtime
 
     open Fable.Core.Rust
+    open Fable.Core
 
     open Platform
     open Functor
@@ -11,6 +12,7 @@ module Runtime
         abstract member render: Time.FrameTime -> Graphics.Frame
         abstract member getState: unit -> OpaqueState
         abstract member setState: OpaqueState -> unit
+        abstract member stateDebug: unit -> string
 
     let mutable currentRunner: Option<IRunner> = None
 
@@ -129,9 +131,16 @@ module Runtime
 
         [<OuterAttr("no_mangle")>]
         let set_state(opaqueState: OpaqueState): unit =
-            if currentRunner.IsSome then 
+            if currentRunner.IsSome then
                 currentRunner.Value.setState(opaqueState)
-            else 
+            else
+                raise (System.Exception("No runner"))
+
+        [<OuterAttr("no_mangle")>]
+        let emit_state_debug(): string =
+            if currentRunner.IsSome then
+                currentRunner.Value.stateDebug()
+            else
                 raise (System.Exception("No runner"))
 
         [<OuterAttr("no_mangle")>]
@@ -141,7 +150,12 @@ module Runtime
             else 
                 raise (System.Exception("No runner"))
 
-    type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model) =
+    // `formatState` renders the live model for introspection (the debug server's
+    // /state). It is supplied by `runGame` (which is `inline`, so the `sprintf
+    // "%A"` is emitted at the game's concrete call site where the model's derived
+    // Debug is available) — keeping this generic executor free of a Debug bound
+    // that Fable can't express on a type parameter.
+    type GameExecutor<'Msg, 'Model>(game: Game<'Model, 'Msg>, initialState: 'Model, formatState: 'Model -> string) =
         let myGame = game
         let mutable state: 'Model = initialState
         // Seed the queue with the game's startup ('init') effect. Because this
@@ -167,6 +181,7 @@ module Runtime
                     OpaqueState.unsafe_coerce incomingState
                 state <- restoredState
                 effectQueue <- restoredQueue
+            member this.stateDebug() = formatState state
             member this.tick(frameTime: Time.FrameTime) =
 
                 // The game's 'init' effect is seeded into the queue at construction
@@ -241,9 +256,16 @@ module Runtime
                 // Scene3D.cube()
 
 
-    let runGame<'Msg, 'Model>(game: Game<'Model, 'Msg>) =
+    // Holds the module-level mutable assignment so it is emitted in this module
+    // rather than inlined into the game's crate (where Fable can't assign to it).
+    let setRunner (runner: IRunner) =
+        currentRunner <- Some(runner)
+
+    // `inline` so the model formatter below is generated at the game's concrete
+    // call site, where the model's Fable-derived Debug instance is available.
+    let inline runGame<'Msg, 'Model>(game: Game<'Model, 'Msg>) =
         printfn "runGame"
-        let runner = GameExecutor<'Msg, 'Model>(game, GameRunner.initialState game)
-        currentRunner <- Some(runner :> IRunner)
-        ()
+        let formatState = fun (m: 'Model) -> sprintf "%A" m
+        let runner = GameExecutor<'Msg, 'Model>(game, GameRunner.initialState game, formatState)
+        setRunner (runner :> IRunner)
 

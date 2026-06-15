@@ -16,5 +16,10 @@ pub trait Game {
 
     fn render(&mut self, frame_time: FrameTime) -> Frame;
 
+    /// A pretty-printed (Rust `Debug`) view of the live game model, for
+    /// introspection. Produced by the game dylib's `emit_state_debug` export;
+    /// works for any game because Fable derives `Debug` on every generated type.
+    fn state_debug(&self) -> String;
+
     fn quit(&mut self);
 }
