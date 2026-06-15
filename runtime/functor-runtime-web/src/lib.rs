@@ -184,6 +184,7 @@ async fn run_async() -> Result<(), JsValue> {
                 shader_version,
                 asset_cache: asset_cache.clone(),
                 frame_time: frame_time.clone(),
+                debug_render_mode: functor_runtime_common::DebugRenderMode::Default,
             };
 
             let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);

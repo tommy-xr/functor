@@ -91,6 +91,24 @@ fn key_code_from_str(name: &str) -> Option<i32> {
 
 use clap::Parser;
 
+/// CLI spelling of `functor_runtime_common::DebugRenderMode`.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, Default)]
+enum DebugRenderArg {
+    #[default]
+    Default,
+    /// Visualize world-space surface normals as RGB.
+    Normals,
+}
+
+impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
+    fn from(arg: DebugRenderArg) -> Self {
+        match arg {
+            DebugRenderArg::Default => functor_runtime_common::DebugRenderMode::Default,
+            DebugRenderArg::Normals => functor_runtime_common::DebugRenderMode::Normals,
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -121,6 +139,12 @@ struct Args {
     /// Omit to disable the server entirely.
     #[arg(long)]
     debug_port: Option<u16>,
+
+    /// Override shading with a diagnostic view across the whole frame (e.g.
+    /// `normals` to visualize surface normals as color). Primitives only for
+    /// now; glTF models are unaffected until normal import lands.
+    #[arg(long, value_enum, default_value_t = DebugRenderArg::Default)]
+    debug_render: DebugRenderArg,
 }
 
 /// Read back the framebuffer just rendered (called before swap_buffers, so the
@@ -337,6 +361,7 @@ pub async fn main() {
                 shader_version,
                 asset_cache: asset_cache.clone(),
                 frame_time: time.clone(),
+                debug_render_mode: args.debug_render.into(),
             };
 
             // The game supplies the camera as part of its frame; derive the

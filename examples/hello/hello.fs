@@ -206,8 +206,13 @@ let init (_args: array<string>) =
                         0.05f * (sin (float32 c * 0.5f) + cos (float32 r * 0.5f)))
                     |> Transform.translateY -2.5f |> Transform.translateZ 4.0f |> Transform.scale 30.0f;
                 |]);
+                // A row of primitives in front of the lineup — the clearest
+                // subjects for the `--debug-render normals` view (a sphere reads
+                // as a smooth RGB gradient; a cube as six flat face colors).
                 material (textureMaterial, [|
                     cylinder() |> Transform.translateY -2.5f;
+                    sphere() |> Transform.translateX -2.0f |> Transform.translateY 1.0f |> Transform.translateZ 2.0f |> Transform.scale 0.7f;
+                    cube() |> Transform.translateX 2.0f |> Transform.translateY 1.0f |> Transform.translateZ 2.0f;
                 |]);
                 sample "shark.glb"
                 |> Transform.translateX 3.0f |> Transform.translateY 1.0f |> Transform.translateZ 3.0f
