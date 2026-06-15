@@ -15,6 +15,7 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use serde::Deserialize;
 use tiny_http::{Header, Method, Response, Server};
 
 /// A snapshot of runtime state the GL loop can read on the main thread, returned
@@ -44,6 +45,29 @@ impl RuntimeState {
     }
 }
 
+/// An input event to inject via `POST /input`. JSON is tagged by `type`:
+/// `{"type":"key","key":"w","down":true}`,
+/// `{"type":"mouse_move","x":10,"y":20}`,
+/// `{"type":"mouse_wheel","delta":1}`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InputCommand {
+    Key { key: String, down: bool },
+    MouseMove { x: i32, y: i32 },
+    MouseWheel { delta: i32 },
+}
+
+/// A clock command via `POST /time`: `{"type":"set","tts":2.0}` pins the frame
+/// time, `{"type":"advance","dts":0.5}` steps it once (with that dt), and
+/// `{"type":"resume"}` returns to wall-clock.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TimeCommand {
+    Set { tts: f32 },
+    Advance { dts: f32 },
+    Resume,
+}
+
 /// A request from the HTTP thread to the GL loop. Each variant carries a
 /// one-shot `Sender` the GL loop uses to reply; the HTTP handler blocks on the
 /// matching `Receiver`.
@@ -54,6 +78,10 @@ pub enum DebugRequest {
     State(Sender<RuntimeState>),
     /// `GET /scene` — reply with the current frame (camera + scene) as JSON.
     Scene(Sender<String>),
+    /// `POST /input` — inject a key/mouse event; reply Ok or an error message.
+    Input(InputCommand, Sender<Result<(), String>>),
+    /// `POST /time` — set/advance/resume the clock; reply once applied.
+    Time(TimeCommand, Sender<()>),
 }
 
 /// Start the debug HTTP server on a background thread. Returns the receiving end
@@ -73,7 +101,7 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
     println!("[debug-server] listening on http://{}", addr);
 
     thread::spawn(move || {
-        for request in server.incoming_requests() {
+        for mut request in server.incoming_requests() {
             let method = request.method().clone();
             let url = request.url().to_string();
             // Strip any query string for routing.
@@ -140,6 +168,71 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                         Err(_) => {
                             let _ = request
                                 .respond(Response::from_string("scene failed").with_status_code(500));
+                        }
+                    }
+                }
+                (Method::Post, "/input") => {
+                    let mut body = String::new();
+                    if request.as_reader().read_to_string(&mut body).is_err() {
+                        let _ = request.respond(Response::from_string("bad body").with_status_code(400));
+                        continue;
+                    }
+                    let cmd: InputCommand = match serde_json::from_str(&body) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = request.respond(
+                                Response::from_string(format!("bad input json: {}", e))
+                                    .with_status_code(400),
+                            );
+                            continue;
+                        }
+                    };
+                    let (resp_tx, resp_rx) = mpsc::channel();
+                    if tx.send(DebugRequest::Input(cmd, resp_tx)).is_err() {
+                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        continue;
+                    }
+                    match resp_rx.recv() {
+                        Ok(Ok(())) => {
+                            let _ = request.respond(Response::from_string("ok"));
+                        }
+                        Ok(Err(msg)) => {
+                            let _ = request.respond(Response::from_string(msg).with_status_code(400));
+                        }
+                        Err(_) => {
+                            let _ = request
+                                .respond(Response::from_string("input failed").with_status_code(500));
+                        }
+                    }
+                }
+                (Method::Post, "/time") => {
+                    let mut body = String::new();
+                    if request.as_reader().read_to_string(&mut body).is_err() {
+                        let _ = request.respond(Response::from_string("bad body").with_status_code(400));
+                        continue;
+                    }
+                    let cmd: TimeCommand = match serde_json::from_str(&body) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = request.respond(
+                                Response::from_string(format!("bad time json: {}", e))
+                                    .with_status_code(400),
+                            );
+                            continue;
+                        }
+                    };
+                    let (resp_tx, resp_rx) = mpsc::channel();
+                    if tx.send(DebugRequest::Time(cmd, resp_tx)).is_err() {
+                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        continue;
+                    }
+                    match resp_rx.recv() {
+                        Ok(()) => {
+                            let _ = request.respond(Response::from_string("ok"));
+                        }
+                        Err(_) => {
+                            let _ = request
+                                .respond(Response::from_string("time failed").with_status_code(500));
                         }
                     }
                 }

@@ -65,6 +65,30 @@ fn map_key(key: Key) -> InputKey {
     }
 }
 
+/// Map a key name (case-insensitive: "w", "Up", "space", …) to the engine key
+/// code passed across the game boundary, for the debug server's POST /input.
+/// Letters rely on the contiguous A..Z discriminants.
+fn key_code_from_str(name: &str) -> Option<i32> {
+    let name = name.to_ascii_lowercase();
+    if name.len() == 1 {
+        let c = name.as_bytes()[0];
+        if c.is_ascii_lowercase() {
+            return Some((c - b'a') as i32 + InputKey::A as i32);
+        }
+    }
+    let key = match name.as_str() {
+        "up" => InputKey::Up,
+        "down" => InputKey::Down,
+        "left" => InputKey::Left,
+        "right" => InputKey::Right,
+        "space" => InputKey::Space,
+        "enter" => InputKey::Enter,
+        "escape" => InputKey::Escape,
+        _ => return None,
+    };
+    Some(key as i32)
+}
+
 use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
@@ -219,6 +243,11 @@ pub async fn main() {
         let start_time = Instant::now();
         let mut last_time: f32 = 0.0;
         let mut frame_count: u64 = 0;
+        // Debug-server clock control (POST /time). `held_time` pins the frame
+        // time to a constant (None = follow wall clock); `pending_step` applies a
+        // one-shot dt advance on the next frame. Seeded from --fixed-time.
+        let mut held_time: Option<f32> = args.fixed_time;
+        let mut pending_step: Option<f32> = None;
 
         use glfw::Context;
 
@@ -244,21 +273,28 @@ pub async fn main() {
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
-            // --fixed-time pins the time handed to the game to a constant, so
-            // the rendered pose (animations, anything driven by FrameTime) is
-            // deterministic regardless of frame rate or asset-load timing. Used
-            // with --capture-frame for reproducible golden images. The capture
-            // trigger below still keys off wall-clock elapsed, so the loop runs
-            // long enough for assets to load before the shot is taken.
-            let time: FrameTime = match args.fixed_time {
-                Some(fixed) => FrameTime {
-                    dts: 0.0,
-                    tts: fixed,
-                },
-                None => FrameTime {
-                    dts: elapsed_time - last_time,
-                    tts: elapsed_time,
-                },
+            // The frame time handed to the game. Pinning it (--fixed-time, or the
+            // debug server's /time) makes the rendered pose deterministic — used
+            // for reproducible captures / golden images. The capture trigger
+            // below still keys off wall-clock elapsed, so the loop runs long
+            // enough for assets to load before a shot is taken.
+            let time: FrameTime = if let Some(step) = pending_step.take() {
+                // One-shot /time advance: step the clock by `step` with a matching
+                // dts so the simulation integrates the interval, then stay held.
+                let new_tts = held_time.unwrap_or(last_time) + step;
+                held_time = Some(new_tts);
+                FrameTime {
+                    dts: step,
+                    tts: new_tts,
+                }
+            } else {
+                match held_time {
+                    Some(tts) => FrameTime { dts: 0.0, tts },
+                    None => FrameTime {
+                        dts: elapsed_time - last_time,
+                        tts: elapsed_time,
+                    },
+                }
             };
             last_time = elapsed_time;
 
@@ -373,6 +409,46 @@ pub async fn main() {
                             let json = serde_json::to_string_pretty(&frame)
                                 .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
                             let _ = resp.send(json);
+                        }
+                        debug_server::DebugRequest::Input(cmd, resp) => {
+                            // Inject input as if it came from the window; the game
+                            // applies it immediately, so the next /state reflects it.
+                            let result = match cmd {
+                                debug_server::InputCommand::Key { key, down } => {
+                                    match key_code_from_str(&key) {
+                                        Some(code) => {
+                                            game.key_event(code, down);
+                                            Ok(())
+                                        }
+                                        None => Err(format!("unknown key: {}", key)),
+                                    }
+                                }
+                                debug_server::InputCommand::MouseMove { x, y } => {
+                                    game.mouse_move(x, y);
+                                    Ok(())
+                                }
+                                debug_server::InputCommand::MouseWheel { delta } => {
+                                    game.mouse_wheel(delta);
+                                    Ok(())
+                                }
+                            };
+                            let _ = resp.send(result);
+                        }
+                        debug_server::DebugRequest::Time(cmd, resp) => {
+                            match cmd {
+                                debug_server::TimeCommand::Set { tts } => {
+                                    held_time = Some(tts);
+                                    pending_step = None;
+                                }
+                                debug_server::TimeCommand::Advance { dts } => {
+                                    pending_step = Some(dts);
+                                }
+                                debug_server::TimeCommand::Resume => {
+                                    held_time = None;
+                                    pending_step = None;
+                                }
+                            }
+                            let _ = resp.send(());
                         }
                     }
                 }
