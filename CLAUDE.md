@@ -44,6 +44,12 @@ built fluently via `GameBuilder` and handed to `Runtime.runGame`:
 - `draw3d: 'model -> FrameTime -> Graphics.Frame` — pure frame description: a `Camera` plus a
   `Scene3D` (`Frame.create camera scene`)
 
+**Coordinates: Y-up, right-handed** (like OpenGL / glTF / Unity / Godot; *not* Unreal's Z-up). +Y
+is up, +X is right, and the ground is the XZ plane. The camera's up is `[0,1,0]` and view uses
+`look_at_rh`; `Camera.firstPerson` treats yaw = 0 / pitch = 0 as looking down **+Z**, with positive
+pitch looking up. glTF models are authored Y-up, so this matches imported assets with no conversion.
+By convention, `plane` geometry lies in XZ (ground) and `quad` in XY (screen/wall-facing).
+
 `Runtime.GameExecutor` (`src/Functor.Game/Runtime.fs`) is the heart of the loop: each frame it
 **drains the effect queue to a fixed point** (capped at `maxEffectsPerFrame = 1000` to avoid
 hangs), feeding messages through `update` and re-enqueueing new effects, before running `tick` on

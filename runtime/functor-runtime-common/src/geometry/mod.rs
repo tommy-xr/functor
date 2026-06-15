@@ -7,12 +7,16 @@ mod cylinder;
 mod empty_mesh;
 mod indexed_mesh;
 mod mesh;
+mod plane;
+mod quad;
 mod sphere;
 pub use cube::*;
 pub use cylinder::*;
 pub use empty_mesh::*;
 pub use indexed_mesh::*;
 pub use mesh::*;
+pub use plane::*;
+pub use quad::*;
 pub use sphere::*;
 
 // pub mod plane {
