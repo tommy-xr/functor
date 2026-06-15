@@ -109,6 +109,15 @@ impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
     }
 }
 
+/// The wire/label spelling of a render mode, for `GET /state` and `POST
+/// /render-mode`. Kept in sync with the `POST /render-mode` parser.
+fn render_mode_label(mode: functor_runtime_common::DebugRenderMode) -> &'static str {
+    match mode {
+        functor_runtime_common::DebugRenderMode::Default => "default",
+        functor_runtime_common::DebugRenderMode::Normals => "normals",
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -272,6 +281,10 @@ pub async fn main() {
         // one-shot dt advance on the next frame. Seeded from --fixed-time.
         let mut held_time: Option<f32> = args.fixed_time;
         let mut pending_step: Option<f32> = None;
+        // Debug-server render-mode control (POST /render-mode). Seeded from
+        // --debug-render; mutated live by the debug server.
+        let mut current_debug_render_mode: functor_runtime_common::DebugRenderMode =
+            args.debug_render.into();
 
         use glfw::Context;
 
@@ -361,7 +374,7 @@ pub async fn main() {
                 shader_version,
                 asset_cache: asset_cache.clone(),
                 frame_time: time.clone(),
-                debug_render_mode: args.debug_render.into(),
+                debug_render_mode: current_debug_render_mode,
             };
 
             // The game supplies the camera as part of its frame; derive the
@@ -424,6 +437,8 @@ pub async fn main() {
                                 tts: time.tts,
                                 width: fb_width as u32,
                                 height: fb_height as u32,
+                                render_mode: render_mode_label(current_debug_render_mode)
+                                    .to_string(),
                                 model: game.state_debug(),
                             });
                         }
@@ -474,6 +489,26 @@ pub async fn main() {
                                 }
                             }
                             let _ = resp.send(());
+                        }
+                        debug_server::DebugRequest::RenderMode(cmd, resp) => {
+                            // Takes effect on the next frame's render_context.
+                            let result = match cmd.mode.to_ascii_lowercase().as_str() {
+                                "default" => {
+                                    current_debug_render_mode =
+                                        functor_runtime_common::DebugRenderMode::Default;
+                                    Ok(())
+                                }
+                                "normals" => {
+                                    current_debug_render_mode =
+                                        functor_runtime_common::DebugRenderMode::Normals;
+                                    Ok(())
+                                }
+                                other => Err(format!(
+                                    "unknown render mode: {} (expected default|normals)",
+                                    other
+                                )),
+                            };
+                            let _ = resp.send(result);
                         }
                     }
                 }
