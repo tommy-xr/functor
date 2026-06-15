@@ -136,6 +136,11 @@ fn process_node(
                 .map(|v| v.into_f32().collect::<Vec<_>>())
                 .unwrap_or_default();
 
+            let normals = reader
+                .read_normals()
+                .map(|v| v.collect::<Vec<_>>())
+                .unwrap_or_default();
+
             let scale = 1.0;
 
             let joints = reader
@@ -159,6 +164,10 @@ fn process_node(
                     let uv = tex_coords.get(i).copied().unwrap_or([0.0, 0.0]);
                     let joint = joints.get(i).copied().unwrap_or([0, 0, 0, 0]);
                     let weight = weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+                    // glTF authors normals Y-up (our convention), so no axis
+                    // conversion. Meshes without NORMAL fall back to +Y — the
+                    // sample assets all provide normals.
+                    let normal = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
                     VertexPositionTextureSkinned {
                         position: vec3(
                             positions[i][0] * scale,
@@ -166,6 +175,7 @@ fn process_node(
                             positions[i][2] * scale,
                         ),
                         uv: vec2(uv[0], uv[1]),
+                        normal: vec3(normal[0], normal[1], normal[2]),
                         joint_indices: vec4(
                             joint[0] as f32,
                             joint[1] as f32,

@@ -6,6 +6,10 @@ use crate::RenderContext;
 
 use super::Material;
 
+// The skinned counterpart of `NormalDebugMaterial`: deforms the normal by the
+// same joint blend as the position (rotation only — `mat3`), then rotates it
+// into world space and visualizes it as RGB. Used by `DebugRenderMode::Normals`
+// for skinned glTF meshes; static meshes use the non-skinned variant.
 const VERTEX_SHADER_SOURCE: &str = r#"
         #define MAX_JOINTS 200
 
@@ -20,24 +24,18 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 view;
         uniform mat4 projection;
 
-        out vec2 texCoord;
-        out vec3 weights;
+        out vec3 worldNormal;
 
         void main() {
-
-            // Compute the skinning matrix
-            mat4 skinMatrix = 
+            mat4 skinMatrix =
                 inWeights.x * jointTransforms[int(inJointIndices.x)] +
                 inWeights.y * jointTransforms[int(inJointIndices.y)] +
                 inWeights.z * jointTransforms[int(inJointIndices.z)] +
                 inWeights.w * jointTransforms[int(inJointIndices.w)];
 
-            texCoord = inTex;
-            weights = inJointIndices.xyz;
+            worldNormal = mat3(world) * mat3(skinMatrix) * inNormal;
 
-            // Apply the skinning transformation
             vec4 skinnedPos = skinMatrix * vec4(inPos, 1.0);
-
             gl_Position = projection * view * world * skinnedPos;
         }
 "#;
@@ -45,15 +43,11 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
-        in vec2 texCoord;
-        in vec3 weights;
-
-        uniform sampler2D texture1;
+        in vec3 worldNormal;
 
         void main() {
-            //fragColor = vec4(texCoord.x, texCoord.y, 0.0, 1.0);
-            fragColor = texture(texture1, texCoord);
-            //fragColor = vec4(weights.x / 50.0, weights.y / 50.0, weights.z / 50.0, 1.0);
+            vec3 n = normalize(worldNormal);
+            fragColor = vec4(n * 0.5 + 0.5, 1.0);
         }
 "#;
 
@@ -61,20 +55,17 @@ struct Uniforms {
     world_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
-    texture_loc: UniformLocation,
     joint_transforms_loc: UniformLocation,
 }
 
-// TODO: We'll have to re-think this pattern
-// Maybe we need a shader repository or something to pull from
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 
-pub struct SkinnedMaterial;
+pub struct SkinnedNormalDebugMaterial;
 
 use crate::shader::Shader;
 use crate::shader::ShaderType;
 
-impl Material for SkinnedMaterial {
+impl Material for SkinnedNormalDebugMaterial {
     fn initialize(&mut self, ctx: &RenderContext) {
         unsafe {
             #[allow(static_mut_refs)]
@@ -86,14 +77,12 @@ impl Material for SkinnedMaterial {
                     ctx.shader_version,
                 );
 
-                // fragment shader
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
                     FRAGMENT_SHADER_SOURCE,
                     ctx.shader_version,
                 );
-                // link shaders
 
                 let shader = crate::shader_program::ShaderProgram::link(
                     &ctx.gl,
@@ -105,7 +94,6 @@ impl Material for SkinnedMaterial {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
-                    texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
                 };
 
@@ -123,7 +111,6 @@ impl Material for SkinnedMaterial {
         skinning_data: &[Matrix4<f32>],
     ) -> bool {
         unsafe {
-            // TODO: Find another approach to do this - maybe a shader repository?
             #[allow(static_mut_refs)]
             if let Some((shader, uniforms)) = &SHADER_PROGRAM {
                 let p = shader;
@@ -132,7 +119,6 @@ impl Material for SkinnedMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
 
                 let num_joints = skinning_data.len();
                 let mut joint_matrices = Vec::with_capacity(num_joints * 16);
@@ -149,8 +135,8 @@ impl Material for SkinnedMaterial {
     }
 }
 
-impl SkinnedMaterial {
+impl SkinnedNormalDebugMaterial {
     pub fn create() -> Box<dyn Material> {
-        Box::new(SkinnedMaterial)
+        Box::new(SkinnedNormalDebugMaterial)
     }
 }
