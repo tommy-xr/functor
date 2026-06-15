@@ -16,7 +16,6 @@ const ASSETS = [
   "ExplodingBarrel.glb",
   "fish.glb",
   "Xbot.glb",
-  "HVGirl.glb",
 ];
 
 async function exists(filePath) {

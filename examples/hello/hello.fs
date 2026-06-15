@@ -184,6 +184,7 @@ let init (_args: array<string>) =
         let eff = Effect.wrapped (MovePaddle2) |> Effect.map (fun _a -> MovePaddle1);
         let colorMaterial = Material.color(0.0f, 1.0f, 0.0f, 1.0f);
         let textureMaterial = Material.texture( Texture.file("crate.png"));
+        let groundMaterial = Material.texture( Texture.file("dirt.png"));
         // let barrelModel = Model.file("ExplodingBarrel.glb");
         // let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 1f;
         // let renderModel = Model.file ("ExplodingBarrel.glb") |> Graphics.Scene3D.model |> Transform.scale 0.5f;
@@ -191,14 +192,17 @@ let init (_args: array<string>) =
         // let renderModel = Model.file ("vr_glove_model2.glb") |> modify |> Graphics.Scene3D.model |> Transform.scale 5f;
 
         // A lineup of glTF samples from BabylonJS/Assets exercising the model
-        // pipeline. Skinned + animated: shark, fish, Xbot, HVGirl. Non-skinned:
+        // pipeline. Skinned + animated: shark, fish, Xbot. Non-skinned:
         // ExplodingBarrel. Raw model units vary wildly (the barrel is ~72 units
-        // tall, the humanoids are Mixamo-style cm scale), hence the per-model
-        // scales.
+        // tall, Xbot is Mixamo-style cm scale), hence the per-model scales.
         let sample (path: string) = path |> Model.file |> Graphics.Scene3D.model
 
         let scene =
             group([|
+                // Ground plane (XZ, Y-up) beneath the lineup.
+                material (groundMaterial, [|
+                    plane() |> Transform.translateY -2.5f |> Transform.translateZ 4.0f |> Transform.scale 30.0f;
+                |]);
                 material (textureMaterial, [|
                     cylinder() |> Transform.translateY -2.5f;
                 |]);
@@ -212,9 +216,6 @@ let init (_args: array<string>) =
                 sample "Xbot.glb"
                 |> Transform.translateX 1.5f |> Transform.translateY -1.0f |> Transform.translateZ 3.0f
                 |> Transform.scale 0.015f;
-                sample "HVGirl.glb"
-                |> Transform.translateX -1.5f |> Transform.translateY -1.0f |> Transform.translateZ 3.0f
-                |> Transform.scale 0.03f;
                 sample "ExplodingBarrel.glb"
                 |> Transform.translateY -1.5f |> Transform.translateZ 3.0f
                 |> Transform.scale 0.02f;
