@@ -18,7 +18,7 @@ async-trait = "0.1.80"
 
 [dependencies.web-sys]
 version = "0.3.4"
-features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Performance', 'PerformanceTiming', 'Document', 'Element']
+features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Location', 'Performance', 'PerformanceTiming', 'Document', 'Element']
 
 [profile.release]
 codegen-units = 1

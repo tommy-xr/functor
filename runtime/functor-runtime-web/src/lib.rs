@@ -34,6 +34,30 @@ fn request_animation_frame(f: &Closure<dyn FnMut()>) {
         .expect("should register `requestAnimationFrame` OK");
 }
 
+/// The wasm counterpart of the desktop `--debug-render` flag: read the mode
+/// from the page URL's `?debug-render=<mode>` query (e.g.
+/// `?debug-render=normals`). Defaults to `Default`; an unrecognized value logs
+/// a console warning and falls back to `Default`.
+fn debug_render_mode_from_url() -> functor_runtime_common::DebugRenderMode {
+    use functor_runtime_common::DebugRenderMode;
+
+    let search = window().location().search().unwrap_or_default();
+    let query = search.trim_start_matches('?');
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        if kv.next() == Some("debug-render") {
+            let value = kv.next().unwrap_or("");
+            return DebugRenderMode::from_label(value).unwrap_or_else(|| {
+                web_sys::console::warn_1(
+                    &format!("unknown debug-render mode '{}', using default", value).into(),
+                );
+                DebugRenderMode::Default
+            });
+        }
+    }
+    DebugRenderMode::Default
+}
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = game, js_name = render)]
@@ -171,6 +195,10 @@ async fn run_async() -> Result<(), JsValue> {
 
         let scene_context = SceneContext::new();
 
+        // Read once from the page URL; it doesn't change over the session. The
+        // `move` closure below captures it (the mode is `Copy`).
+        let debug_render_mode = debug_render_mode_from_url();
+
         *g.borrow_mut() = Some(Closure::new(move || {
             let now = performance.now() as f32;
             let frame_time = FrameTime {
@@ -184,7 +212,7 @@ async fn run_async() -> Result<(), JsValue> {
                 shader_version,
                 asset_cache: asset_cache.clone(),
                 frame_time: frame_time.clone(),
-                debug_render_mode: functor_runtime_common::DebugRenderMode::Default,
+                debug_render_mode,
             };
 
             let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
