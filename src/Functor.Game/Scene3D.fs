@@ -55,6 +55,13 @@ module Scene3D =
         [<Emit("functor_runtime_common::MaterialDescription::texture($0)")>]
         let texture (texture: Texture): Material = nativeOnly
 
+        // Self-lit surfaces (neon / UI): rendered fullbright, unaffected by lighting.
+        [<Emit("functor_runtime_common::MaterialDescription::emissive($0, $1, $2, $3)")>]
+        let emissive (r: float32, g: float32, b: float32, a: float32): Material = nativeOnly
+
+        [<Emit("functor_runtime_common::MaterialDescription::emissive_texture($0)")>]
+        let emissiveTexture (texture: Texture): Material = nativeOnly
+
     module MeshSelector =
         [<Emit("functor_runtime_common::MeshSelector::all()")>]
         let all (): MeshSelector = nativeOnly

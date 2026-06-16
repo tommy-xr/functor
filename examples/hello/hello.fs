@@ -185,6 +185,11 @@ let init (_args: array<string>) =
         let colorMaterial = Material.color(0.0f, 1.0f, 0.0f, 1.0f);
         let textureMaterial = Material.texture( Texture.file("crate.png"));
         let gridMaterial = Material.texture( Texture.file("grid.png"));
+        // Self-lit (emissive) materials: a solid neon color, and a glowing
+        // textured panel. Rendered fullbright today; once lighting lands these
+        // stay bright while lit surfaces darken around them.
+        let neonMaterial = Material.emissive(1.0f, 0.2f, 0.8f, 1.0f);
+        let neonSignMaterial = Material.emissiveTexture( Texture.file("grid.png"));
         // let barrelModel = Model.file("ExplodingBarrel.glb");
         // let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 1f;
         // let renderModel = Model.file ("ExplodingBarrel.glb") |> Graphics.Scene3D.model |> Transform.scale 0.5f;
@@ -213,6 +218,14 @@ let init (_args: array<string>) =
                     cylinder() |> Transform.translateY -2.5f;
                     sphere() |> Transform.translateX -2.0f |> Transform.translateY 1.0f |> Transform.translateZ 2.0f |> Transform.scale 0.7f;
                     cube() |> Transform.translateX 2.0f |> Transform.translateY 1.0f |> Transform.translateZ 2.0f;
+                |]);
+                // Self-lit neon: a solid-color glowing sphere and a glowing
+                // grid panel, both rendered fullbright (emissive material).
+                material (neonMaterial, [|
+                    sphere() |> Transform.translateX 0.0f |> Transform.translateY 2.3f |> Transform.translateZ 2.0f |> Transform.scale 0.5f;
+                |]);
+                material (neonSignMaterial, [|
+                    quad() |> Transform.translateX 0.0f |> Transform.translateY 0.3f |> Transform.translateZ 1.5f |> Transform.scale 1.2f;
                 |]);
                 sample "shark.glb"
                 |> Transform.translateX 3.0f |> Transform.translateY 1.0f |> Transform.translateZ 3.0f
