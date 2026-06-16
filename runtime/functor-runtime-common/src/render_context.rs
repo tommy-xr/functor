@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{asset::AssetCache, FrameTime};
+use crate::{asset::AssetCache, FrameTime, Light};
 
 /// Global override for how the scene is shaded — a debug aid, not a per-material
 /// choice. `Default` uses each node's own material; the others replace it with a
@@ -67,4 +67,6 @@ pub struct RenderContext<'a> {
     pub asset_cache: Arc<AssetCache>,
     pub frame_time: FrameTime,
     pub debug_render_mode: DebugRenderMode,
+    /// Frame-level lights (from `Frame.lights`), read by `LitMaterial`.
+    pub lights: &'a [Light],
 }

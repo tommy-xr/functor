@@ -11,3 +11,7 @@ module Frame =
 
     [<Emit("functor_runtime_common::Frame::new($0, $1)")>]
     let create (camera: Camera) (scene: Scene3D): Frame = nativeOnly
+
+    /// Like `create`, plus the lights affecting the scene (ambient / directional).
+    [<Emit("functor_runtime_common::Frame::new_lit($0, $1, $2)")>]
+    let createLit (camera: Camera) (scene: Scene3D) (lights: Light[]): Frame = nativeOnly

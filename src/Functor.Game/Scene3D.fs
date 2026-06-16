@@ -8,6 +8,7 @@ open Fable.Core
 [<Erase; Emit("functor_runtime_common::MaterialDescription")>] type Material = | Noop
 [<Erase; Emit("functor_runtime_common::MeshSelector")>] type MeshSelector = | Noop
 [<Erase; Emit("functor_runtime_common::MeshOverride")>] type MeshOverride = | Noop
+[<Erase; Emit("functor_runtime_common::Light")>] type Light = | Noop
 
 module Scene3D =
 
@@ -61,6 +62,22 @@ module Scene3D =
 
         [<Emit("functor_runtime_common::MaterialDescription::emissive_texture($0)")>]
         let emissiveTexture (texture: Texture): Material = nativeOnly
+
+        // Diffuse-lit surfaces: shaded by the frame's ambient + directional lights.
+        [<Emit("functor_runtime_common::MaterialDescription::lit($0, $1, $2, $3)")>]
+        let lit (r: float32, g: float32, b: float32, a: float32): Material = nativeOnly
+
+        [<Emit("functor_runtime_common::MaterialDescription::lit_texture($0)")>]
+        let litTexture (texture: Texture): Material = nativeOnly
+
+    module Light =
+        // A "sun": parallel rays travelling along (dx,dy,dz), colored (r,g,b) * intensity.
+        [<Emit("functor_runtime_common::Light::directional($0, $1, $2, $3, $4, $5, $6)")>]
+        let directional (dx: float32, dy: float32, dz: float32, r: float32, g: float32, b: float32, intensity: float32): Light = nativeOnly
+
+        // Uniform light added to every lit surface regardless of orientation.
+        [<Emit("functor_runtime_common::Light::ambient($0, $1, $2)")>]
+        let ambient (r: float32, g: float32, b: float32): Light = nativeOnly
 
     module MeshSelector =
         [<Emit("functor_runtime_common::MeshSelector::all()")>]

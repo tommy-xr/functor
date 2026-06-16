@@ -2,7 +2,7 @@ use cgmath::{vec4, Vector4};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    material::{BasicMaterial, ColorMaterial, EmissiveMaterial, Material},
+    material::{BasicMaterial, ColorMaterial, EmissiveMaterial, LitMaterial, Material},
     texture::RuntimeTexture,
     RenderContext, SceneContext, TextureDescription,
 };
@@ -18,6 +18,16 @@ pub enum MaterialDescription {
     /// A self-lit surface: a constant `color`, optionally modulated by a texture
     /// (neon signage). Rendered fullbright — unaffected by lighting.
     Emissive {
+        #[serde(
+            serialize_with = "serialize_vec4",
+            deserialize_with = "deserialize_vec4"
+        )]
+        color: Vector4<f32>,
+        texture: Option<TextureDescription>,
+    },
+    /// A diffuse-lit surface: albedo `color` (optionally modulated by a texture)
+    /// shaded by the frame's ambient + directional lights (Lambert).
+    Lit {
         #[serde(
             serialize_with = "serialize_vec4",
             deserialize_with = "deserialize_vec4"
@@ -52,6 +62,22 @@ impl MaterialDescription {
             texture: Some(tex),
         }
     }
+
+    /// A diffuse-lit solid color.
+    pub fn lit(r: f32, g: f32, b: f32, a: f32) -> MaterialDescription {
+        MaterialDescription::Lit {
+            color: vec4(r, g, b, a),
+            texture: None,
+        }
+    }
+
+    /// A diffuse-lit texture (white albedo tint).
+    pub fn lit_texture(tex: TextureDescription) -> MaterialDescription {
+        MaterialDescription::Lit {
+            color: vec4(1.0, 1.0, 1.0, 1.0),
+            texture: Some(tex),
+        }
+    }
 }
 
 impl MaterialDescription {
@@ -80,25 +106,37 @@ impl MaterialDescription {
                 basic_material
             }
             MaterialDescription::Emissive { color, texture } => {
-                // Bind the texture to unit 0 if present; the shader samples it
-                // only when `use_texture` is set.
-                let use_texture = match texture {
-                    Some(TextureDescription::File(file)) => {
-                        let asset = context.asset_cache.load_asset_with_pipeline(
-                            scene_context.texture_pipeline.clone(),
-                            file,
-                        );
-                        asset.get().bind(0, context);
-                        true
-                    }
-                    None => false,
-                };
-
+                let use_texture = bind_optional_texture(texture, context, scene_context);
                 let mut emissive_material = EmissiveMaterial::create(*color, use_texture);
                 emissive_material.initialize(&context);
                 emissive_material
             }
+            MaterialDescription::Lit { color, texture } => {
+                let use_texture = bind_optional_texture(texture, context, scene_context);
+                let mut lit_material = LitMaterial::create(*color, use_texture);
+                lit_material.initialize(&context);
+                lit_material
+            }
         }
+    }
+}
+
+/// Bind an optional albedo texture to unit 0; returns whether one was bound (the
+/// shaders sample `texture1` only when their `useTexture` uniform is set).
+fn bind_optional_texture(
+    texture: &Option<TextureDescription>,
+    context: &RenderContext,
+    scene_context: &SceneContext,
+) -> bool {
+    match texture {
+        Some(TextureDescription::File(file)) => {
+            let asset = context
+                .asset_cache
+                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+            asset.get().bind(0, context);
+            true
+        }
+        None => false,
     }
 }
 

@@ -190,6 +190,12 @@ let init (_args: array<string>) =
         // stay bright while lit surfaces darken around them.
         let neonMaterial = Material.emissive(1.0f, 0.2f, 0.8f, 1.0f);
         let neonSignMaterial = Material.emissiveTexture( Texture.file("grid.png"));
+        // Diffuse-lit materials: shaded by the frame's ambient + directional
+        // lights. A dirt-textured ground shows both the texture and the sun on
+        // its slopes (a mostly-black grid texture would swallow the shading);
+        // the primitive row shows Lambert shading too (clearest on the sphere).
+        let litGround = Material.litTexture( Texture.file("dirt.png"));
+        let litMaterial = Material.lit(0.85f, 0.85f, 0.9f, 1.0f);
         // let barrelModel = Model.file("ExplodingBarrel.glb");
         // let renderModel = (Graphics.Scene3D.model barrelModel) |> Transform.scale 1f;
         // let renderModel = Model.file ("ExplodingBarrel.glb") |> Graphics.Scene3D.model |> Transform.scale 0.5f;
@@ -205,16 +211,15 @@ let init (_args: array<string>) =
         let scene =
             group([|
                 // Synthwave terrain: a grid-textured heightmap (XZ, Y-up) with
-                // gentle static ripples, beneath the lineup.
-                material (gridMaterial, [|
+                // gentle static ripples, lit so the slopes catch the sun.
+                material (litGround, [|
                     heightmapFn 32 32 (fun r c ->
                         0.05f * (sin (float32 c * 0.5f) + cos (float32 r * 0.5f)))
                     |> Transform.translateY -2.5f |> Transform.translateZ 4.0f |> Transform.scale 30.0f;
                 |]);
-                // A row of primitives in front of the lineup — the clearest
-                // subjects for the `--debug-render normals` view (a sphere reads
-                // as a smooth RGB gradient; a cube as six flat face colors).
-                material (textureMaterial, [|
+                // A row of lit primitives in front of the lineup — Lambert
+                // shading reads clearly on the sphere (and the cube's faces).
+                material (litMaterial, [|
                     cylinder() |> Transform.translateY -2.5f;
                     sphere() |> Transform.translateX -2.0f |> Transform.translateY 1.0f |> Transform.translateZ 2.0f |> Transform.scale 0.7f;
                     cube() |> Transform.translateX 2.0f |> Transform.translateY 1.0f |> Transform.translateZ 2.0f;
@@ -250,7 +255,14 @@ let init (_args: array<string>) =
                 (Math.Angle.radians world.pitch)
                 (Math.Angle.degrees 60.0f)
 
-        Graphics.Frame.create camera scene
+        // A low blue-ish ambient plus a warm "sun" angled down from the upper
+        // right; lit surfaces shade by orientation, emissive ones stay bright.
+        let lights = [|
+            Graphics.Scene3D.Light.ambient(0.2f, 0.2f, 0.28f);
+            Graphics.Scene3D.Light.directional(-0.5f, -1.0f, -0.35f, 1.0f, 0.96f, 0.85f, 1.1f);
+        |]
+
+        Graphics.Frame.createLit camera scene lights
     )
     |> GameBuilder.update update
     |> GameBuilder.input input

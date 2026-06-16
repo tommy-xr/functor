@@ -207,14 +207,6 @@ async fn run_async() -> Result<(), JsValue> {
             };
 
             last_time = now;
-            let render_ctx = RenderContext {
-                gl: &gl,
-                shader_version,
-                asset_cache: asset_cache.clone(),
-                frame_time: frame_time.clone(),
-                debug_render_mode,
-            };
-
             let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
 
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
@@ -223,6 +215,16 @@ async fn run_async() -> Result<(), JsValue> {
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
+
+            // Built after the frame so it can carry the frame's lights.
+            let render_ctx = RenderContext {
+                gl: &gl,
+                shader_version,
+                asset_cache: asset_cache.clone(),
+                frame_time: frame_time.clone(),
+                debug_render_mode,
+                lights: &frame.lights,
+            };
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes.
