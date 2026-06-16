@@ -28,6 +28,9 @@ pub struct RuntimeState {
     pub tts: f32,
     pub width: u32,
     pub height: u32,
+    /// The active debug render mode (e.g. `"default"`, `"normals"`), so the
+    /// toggle set via `POST /render-mode` is observable.
+    pub render_mode: String,
     pub model: String,
 }
 
@@ -39,6 +42,7 @@ impl RuntimeState {
             "frame": self.frame,
             "tts": self.tts,
             "viewport": { "width": self.width, "height": self.height },
+            "renderMode": self.render_mode,
             "model": self.model,
         })
         .to_string()
@@ -68,6 +72,14 @@ pub enum TimeCommand {
     Resume,
 }
 
+/// A render-mode command via `POST /render-mode`: `{"mode":"normals"}` or
+/// `{"mode":"default"}`. The string is validated against the runtime's known
+/// modes on the GL thread (an unknown mode replies 400).
+#[derive(Debug, Deserialize)]
+pub struct RenderModeCommand {
+    pub mode: String,
+}
+
 /// A request from the HTTP thread to the GL loop. Each variant carries a
 /// one-shot `Sender` the GL loop uses to reply; the HTTP handler blocks on the
 /// matching `Receiver`.
@@ -82,6 +94,8 @@ pub enum DebugRequest {
     Input(InputCommand, Sender<Result<(), String>>),
     /// `POST /time` — set/advance/resume the clock; reply once applied.
     Time(TimeCommand, Sender<()>),
+    /// `POST /render-mode` — switch the debug render mode; reply Ok or an error.
+    RenderMode(RenderModeCommand, Sender<Result<(), String>>),
 }
 
 /// Start the debug HTTP server on a background thread. Returns the receiving end
@@ -233,6 +247,41 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                         Err(_) => {
                             let _ = request
                                 .respond(Response::from_string("time failed").with_status_code(500));
+                        }
+                    }
+                }
+                (Method::Post, "/render-mode") => {
+                    let mut body = String::new();
+                    if request.as_reader().read_to_string(&mut body).is_err() {
+                        let _ = request.respond(Response::from_string("bad body").with_status_code(400));
+                        continue;
+                    }
+                    let cmd: RenderModeCommand = match serde_json::from_str(&body) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = request.respond(
+                                Response::from_string(format!("bad render-mode json: {}", e))
+                                    .with_status_code(400),
+                            );
+                            continue;
+                        }
+                    };
+                    let (resp_tx, resp_rx) = mpsc::channel();
+                    if tx.send(DebugRequest::RenderMode(cmd, resp_tx)).is_err() {
+                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        continue;
+                    }
+                    match resp_rx.recv() {
+                        Ok(Ok(())) => {
+                            let _ = request.respond(Response::from_string("ok"));
+                        }
+                        Ok(Err(msg)) => {
+                            let _ = request.respond(Response::from_string(msg).with_status_code(400));
+                        }
+                        Err(_) => {
+                            let _ = request.respond(
+                                Response::from_string("render-mode failed").with_status_code(500),
+                            );
                         }
                     }
                 }
