@@ -8,6 +8,7 @@ use super::vertex::{BuiltInVertexChannel, Vertex, VertexAttribute, VertexAttribu
 pub struct VertexPositionTextureSkinned {
     pub position: Vector3<f32>,
     pub uv: Vector2<f32>,
+    pub normal: Vector3<f32>,
     pub joint_indices: Vector4<f32>,
     pub weights: Vector4<f32>,
 }
@@ -18,6 +19,9 @@ impl Vertex for VertexPositionTextureSkinned {
     }
 
     fn get_vertex_attributes() -> Vec<VertexAttribute> {
+        // Order is the shader attribute location. Normal sits at location 2 to
+        // match `VertexPositionTexture`, so a normal at location 2 means the
+        // same thing in both formats; joints/weights follow at 3/4.
         let vec = vec![
             VertexAttribute {
                 attribute_channel: BuiltInVertexChannel::Position,
@@ -30,6 +34,12 @@ impl Vertex for VertexPositionTextureSkinned {
                 attribute_type: VertexAttributeType::Float,
                 offset: offset_of!(VertexPositionTextureSkinned, uv),
                 size: 2,
+            },
+            VertexAttribute {
+                attribute_channel: BuiltInVertexChannel::Normal,
+                attribute_type: VertexAttributeType::Float,
+                offset: offset_of!(VertexPositionTextureSkinned, normal),
+                size: 3,
             },
             VertexAttribute {
                 attribute_channel: BuiltInVertexChannel::JointIndices,

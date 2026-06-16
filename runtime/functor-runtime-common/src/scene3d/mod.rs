@@ -13,7 +13,9 @@ use crate::{
         AssetHandle, BuiltAssetPipeline,
     },
     geometry::{self, Geometry},
-    material::{BasicMaterial, Material, NormalDebugMaterial, SkinnedMaterial},
+    material::{
+        BasicMaterial, Material, NormalDebugMaterial, SkinnedMaterial, SkinnedNormalDebugMaterial,
+    },
     math::Angle,
     model::{Model, Skeleton},
     texture::{RuntimeTexture, Texture2D},
@@ -236,12 +238,18 @@ impl Scene3D {
 
                         // Skinned models pay for the joint-matrix uniform array;
                         // static models (no skeleton) render with the basic
-                        // material instead.
+                        // material instead. In a debug render mode, both swap to
+                        // the matching diagnostic material (the skinned variant
+                        // deforms the normal by the joint blend).
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
-                        let mut model_material: Box<dyn Material> = if is_skinned {
-                            SkinnedMaterial::create()
-                        } else {
-                            BasicMaterial::create()
+                        let normals_debug =
+                            render_context.debug_render_mode == DebugRenderMode::Normals;
+                        let mut model_material: Box<dyn Material> = match (is_skinned, normals_debug)
+                        {
+                            (true, false) => SkinnedMaterial::create(),
+                            (false, false) => BasicMaterial::create(),
+                            (true, true) => SkinnedNormalDebugMaterial::create(),
+                            (false, true) => NormalDebugMaterial::create(),
                         };
                         model_material.initialize(&render_context);
 
@@ -267,6 +275,13 @@ impl Scene3D {
                                         matrix = matrix * xform;
                                     }
                                 }
+                            }
+
+                            // A debug render mode overrides everything — ignore
+                            // per-mesh material selectors so the whole model is
+                            // visualized (and skinned meshes still get joints).
+                            if normals_debug {
+                                override_material_description = None;
                             }
 
                             if let Some(material_description) = override_material_description {
