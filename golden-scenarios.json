@@ -16,6 +16,13 @@
       "targets": ["native"]
     },
     {
+      "name": "hello-tangents-t2",
+      "sample": "hello",
+      "fixedTime": 2.0,
+      "debugRender": "tangents",
+      "targets": ["native"]
+    },
+    {
       "name": "lighting-t2",
       "sample": "lighting",
       "fixedTime": 2.0,

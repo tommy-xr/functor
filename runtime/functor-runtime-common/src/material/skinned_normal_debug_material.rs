@@ -16,8 +16,8 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
         layout (location = 2) in vec3 inNormal;
-        layout (location = 3) in vec4 inJointIndices;
-        layout (location = 4) in vec4 inWeights;
+        layout (location = 4) in vec4 inJointIndices;
+        layout (location = 5) in vec4 inWeights;
 
         uniform mat4 jointTransforms[MAX_JOINTS];
         uniform mat4 world;

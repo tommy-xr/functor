@@ -37,11 +37,11 @@ impl Heightmap {
                     / ((down - up) as f32 * cell_dz);
                 let normal = vec3(-dhdx, 1.0, -dhdz).normalize();
 
-                vertices.push(VertexPositionTexture {
-                    position: vec3(x, height_at(r, c), z),
-                    uv: vec2(c as f32, r as f32),
+                vertices.push(VertexPositionTexture::new(
+                    vec3(x, height_at(r, c), z),
+                    vec2(c as f32, r as f32),
                     normal,
-                });
+                ));
             }
         }
 
@@ -58,6 +58,7 @@ impl Heightmap {
             }
         }
 
+        super::compute_tangents(&mut vertices, &indices);
         Box::new(IndexedMesh::create(vertices, indices))
     }
 }

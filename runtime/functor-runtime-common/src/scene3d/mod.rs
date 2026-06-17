@@ -15,7 +15,8 @@ use crate::{
     geometry::{self, Geometry},
     material::{
         BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
-        SkinnedMaterial, SkinnedNormalDebugMaterial,
+        SkinnedMaterial, SkinnedNormalDebugMaterial, SkinnedTangentDebugMaterial,
+        TangentDebugMaterial,
     },
     math::Angle,
     model::{Model, Skeleton},
@@ -229,6 +230,11 @@ impl Scene3D {
                     m.initialize(render_context);
                     Some(m)
                 }
+                DebugRenderMode::Tangents => {
+                    let mut m = TangentDebugMaterial::create();
+                    m.initialize(render_context);
+                    Some(m)
+                }
             }
         };
         let geometry_material = override_material.as_ref().unwrap_or(current_material);
@@ -251,19 +257,27 @@ impl Scene3D {
                         // the matching diagnostic material (the skinned variant
                         // deforms the normal by the joint blend).
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
-                        let normals_debug =
-                            render_context.debug_render_mode == DebugRenderMode::Normals;
+                        let debug_override =
+                            render_context.debug_render_mode != DebugRenderMode::Default;
                         // In the depth pass, draw the model with a depth material
                         // that still skins (so animated models cast a correctly
-                        // deforming shadow), else the normal/debug material.
+                        // deforming shadow), else the lit material or the matching
+                        // diagnostic material (skinned variants deform the
+                        // normal/tangent by the joint blend).
                         let mut model_material: Box<dyn Material> = match (depth_pass, is_skinned) {
                             (true, true) => SkinnedDepthMaterial::create(),
                             (true, false) => DepthMaterial::create(),
-                            (false, _) => match (is_skinned, normals_debug) {
-                                (true, false) => SkinnedMaterial::create(),
-                                (false, false) => BasicMaterial::create(),
-                                (true, true) => SkinnedNormalDebugMaterial::create(),
-                                (false, true) => NormalDebugMaterial::create(),
+                            (false, _) => match render_context.debug_render_mode {
+                                DebugRenderMode::Default if is_skinned => SkinnedMaterial::create(),
+                                DebugRenderMode::Default => BasicMaterial::create(),
+                                DebugRenderMode::Normals if is_skinned => {
+                                    SkinnedNormalDebugMaterial::create()
+                                }
+                                DebugRenderMode::Normals => NormalDebugMaterial::create(),
+                                DebugRenderMode::Tangents if is_skinned => {
+                                    SkinnedTangentDebugMaterial::create()
+                                }
+                                DebugRenderMode::Tangents => TangentDebugMaterial::create(),
                             },
                         };
                         model_material.initialize(&render_context);
@@ -295,7 +309,7 @@ impl Scene3D {
                             // A debug render mode or the depth pass overrides
                             // everything — ignore per-mesh material selectors so
                             // the whole model is drawn with the override material.
-                            if normals_debug || depth_pass {
+                            if debug_override || depth_pass {
                                 override_material_description = None;
                             }
 

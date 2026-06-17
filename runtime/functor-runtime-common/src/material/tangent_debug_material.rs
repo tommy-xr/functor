@@ -6,46 +6,36 @@ use crate::RenderContext;
 
 use super::Material;
 
-// The skinned counterpart of `DepthMaterial`: deforms positions by the joint
-// matrices (like `SkinnedMaterial`) before the light's MVP, then writes packed
-// depth. Lets animated models cast correct (deforming) shadows.
+// Visualizes world-space tangents as color (`tangent * 0.5 + 0.5`), the
+// counterpart to `NormalDebugMaterial`. Reads the tangent attribute at location
+// 3 (xyz tangent + handedness w); used by `DebugRenderMode::Tangents` as a
+// global override to verify the tangent vertex attribute is present and sane.
 const VERTEX_SHADER_SOURCE: &str = r#"
-        #define MAX_JOINTS 200
-
         layout (location = 0) in vec3 inPos;
-        layout (location = 4) in vec4 inJointIndices;
-        layout (location = 5) in vec4 inWeights;
+        layout (location = 1) in vec2 inTex;
+        layout (location = 2) in vec3 inNormal;
+        layout (location = 3) in vec4 inTangent;
 
-        uniform mat4 jointTransforms[MAX_JOINTS];
         uniform mat4 world;
         uniform mat4 view;
         uniform mat4 projection;
 
-        void main() {
-            mat4 skinMatrix =
-                inWeights.x * jointTransforms[int(inJointIndices.x)] +
-                inWeights.y * jointTransforms[int(inJointIndices.y)] +
-                inWeights.z * jointTransforms[int(inJointIndices.z)] +
-                inWeights.w * jointTransforms[int(inJointIndices.w)];
+        out vec3 worldTangent;
 
-            vec4 skinnedPos = skinMatrix * vec4(inPos, 1.0);
-            gl_Position = projection * view * world * skinnedPos;
+        void main() {
+            worldTangent = mat3(world) * inTangent.xyz;
+            gl_Position = projection * view * world * vec4(inPos, 1.0);
         }
 "#;
 
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
-        // Matches DepthMaterial::packDepth.
-        vec4 packDepth(float depth) {
-            vec4 enc = vec4(1.0, 255.0, 65025.0, 16581375.0) * depth;
-            enc = fract(enc);
-            enc -= enc.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
-            return enc;
-        }
+        in vec3 worldTangent;
 
         void main() {
-            fragColor = packDepth(gl_FragCoord.z);
+            vec3 t = normalize(worldTangent);
+            fragColor = vec4(t * 0.5 + 0.5, 1.0);
         }
 "#;
 
@@ -53,17 +43,16 @@ struct Uniforms {
     world_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
-    joint_transforms_loc: UniformLocation,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 
-pub struct SkinnedDepthMaterial;
+pub struct TangentDebugMaterial;
 
 use crate::shader::Shader;
 use crate::shader::ShaderType;
 
-impl Material for SkinnedDepthMaterial {
+impl Material for TangentDebugMaterial {
     fn initialize(&mut self, ctx: &RenderContext) {
         unsafe {
             #[allow(static_mut_refs)]
@@ -92,7 +81,6 @@ impl Material for SkinnedDepthMaterial {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
-                    joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -106,7 +94,7 @@ impl Material for SkinnedDepthMaterial {
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
         world_matrix: &Matrix4<f32>,
-        skinning_data: &[Matrix4<f32>],
+        _skinning_data: &[Matrix4<f32>],
     ) -> bool {
         unsafe {
             #[allow(static_mut_refs)]
@@ -117,14 +105,6 @@ impl Material for SkinnedDepthMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-
-                let num_joints = skinning_data.len();
-                let mut joint_matrices = Vec::with_capacity(num_joints * 16);
-                for i in 0..num_joints {
-                    let matrix_array: &[f32; 16] = skinning_data[i].as_ref();
-                    joint_matrices.extend_from_slice(matrix_array);
-                }
-                p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);
             }
         }
 
@@ -132,8 +112,8 @@ impl Material for SkinnedDepthMaterial {
     }
 }
 
-impl SkinnedDepthMaterial {
+impl TangentDebugMaterial {
     pub fn create() -> Box<dyn Material> {
-        Box::new(SkinnedDepthMaterial)
+        Box::new(TangentDebugMaterial)
     }
 }
