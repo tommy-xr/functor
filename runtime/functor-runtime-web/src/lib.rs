@@ -216,6 +216,10 @@ async fn run_async() -> Result<(), JsValue> {
         let debug_render_mode = debug_render_mode_from_url();
         let fixed_time = fixed_time_from_url();
 
+        // The directional shadow map, rendered from the casting light each frame
+        // and sampled by the lit material (mirrors the desktop runtime).
+        let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
+
         *g.borrow_mut() = Some(Closure::new(move || {
             let now = performance.now() as f32;
             // Pin the frame time when `?fixed-time` is set (deterministic capture).
@@ -230,25 +234,39 @@ async fn run_async() -> Result<(), JsValue> {
             last_time = now;
             let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
 
-            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-
             game_tick(functor_runtime_common::to_js_value(&frame_time));
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
 
-            // Built after the frame so it can carry the frame's lights.
-            let render_ctx = RenderContext {
-                gl: &gl,
-                shader_version,
-                asset_cache: asset_cache.clone(),
-                frame_time: frame_time.clone(),
-                debug_render_mode,
-                lights: &frame.lights,
-                // Shadows are native-only for now; the wasm runtime renders unshadowed.
-                render_pass: functor_runtime_common::RenderPass::Forward,
-                shadow: None,
-            };
+            // Shadow pass: render the scene into the shadow map from the first
+            // shadow-casting directional light, before the main pass.
+            let shadow = frame
+                .lights
+                .iter()
+                .find_map(|l| match l {
+                    functor_runtime_common::Light::Directional { direction, .. } => Some(*direction),
+                    _ => None,
+                })
+                .map(|direction| {
+                    let light_space_matrix =
+                        functor_runtime_common::shadow::directional_light_space_matrix(direction);
+                    functor_runtime_common::shadow::render_directional_shadow(
+                        &gl,
+                        shader_version,
+                        asset_cache.clone(),
+                        frame_time.clone(),
+                        &frame.lights,
+                        &frame.scene,
+                        &scene_context,
+                        &shadow_map,
+                        light_space_matrix,
+                    );
+                    functor_runtime_common::ShadowUniforms {
+                        depth_texture: shadow_map.depth_texture,
+                        light_space_matrix,
+                    }
+                });
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes.
@@ -262,7 +280,24 @@ async fn run_async() -> Result<(), JsValue> {
                 canvas.set_height(draw_h);
             }
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
+
+            // Main (forward) pass into the canvas. Reset the clear color (the
+            // shadow pass cleared its depth-color buffer to white).
             gl.viewport(0, 0, viewport.width as i32, viewport.height as i32);
+            gl.clear_color(0.1, 0.2, 0.3, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+
+            // Built after the frame so it can carry the frame's lights + shadow.
+            let render_ctx = RenderContext {
+                gl: &gl,
+                shader_version,
+                asset_cache: asset_cache.clone(),
+                frame_time: frame_time.clone(),
+                debug_render_mode,
+                lights: &frame.lights,
+                render_pass: functor_runtime_common::RenderPass::Forward,
+                shadow,
+            };
 
             // The game supplies the camera; derive view/projection from it.
             let view_matrix = frame.camera.view_matrix();
