@@ -4,9 +4,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cgmath::{vec4, Matrix4};
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::material::ColorMaterial;
 use functor_runtime_common::{FrameTime, SceneContext};
 use functor_runtime_common::Key as InputKey;
 use glfw::{Action, Key};
@@ -262,8 +260,6 @@ pub async fn main() {
 
         gl.enable(glow::DEPTH_TEST);
 
-        let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
-
         let start_time = Instant::now();
         let mut last_time: f32 = 0.0;
         let mut frame_count: u64 = 0;
@@ -366,71 +362,17 @@ pub async fn main() {
             // The game supplies the camera/scene/lights as part of its frame.
             let frame = game.render(time.clone());
 
-            // Shadow pass: render the scene into the shadow map from the first
-            // shadow-casting light (directional or spot), before the main pass.
-            let shadow = frame
-                .lights
-                .iter()
-                .enumerate()
-                .find_map(|(i, l)| {
-                    functor_runtime_common::shadow::light_space_matrix(l).map(|m| (i, m))
-                })
-                .map(|(light_index, light_space_matrix)| {
-                    functor_runtime_common::shadow::render_shadow_pass(
-                        &gl,
-                        shader_version,
-                        asset_cache.clone(),
-                        time.clone(),
-                        &frame.lights,
-                        &frame.scene,
-                        &scene_context,
-                        &shadow_map,
-                        light_space_matrix,
-                    );
-                    functor_runtime_common::ShadowUniforms {
-                        depth_texture: shadow_map.depth_texture,
-                        light_space_matrix,
-                        light_index: light_index as i32,
-                    }
-                });
-
-            // Main (forward) pass into the window framebuffer. Reset the clear
-            // color (the shadow pass cleared its depth-color buffer to white).
-            gl.viewport(0, 0, fb_width, fb_height);
-            gl.clear_color(0.1, 0.2, 0.3, 1.0);
-            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-
-            let render_context = functor_runtime_common::RenderContext {
-                gl: &gl,
+            // Shadow + forward passes, shared with the web runtime.
+            functor_runtime_common::render_frame(
+                &gl,
                 shader_version,
-                asset_cache: asset_cache.clone(),
-                frame_time: time.clone(),
-                debug_render_mode: args.debug_render.into(),
-                lights: &frame.lights,
-                render_pass: functor_runtime_common::RenderPass::Forward,
-                shadow,
-            };
-
-            let view_matrix = frame.camera.view_matrix();
-            let projection_matrix = frame.camera.projection_matrix(viewport.aspect());
-
-            // TODO: Factor out to pass in current_material
-            // let mut basic_material = BasicMaterial::create();
-            // basic_material.initialize(&context);
-
-            // asset.get().bind(0, &context);
-
-            let mut color_material = ColorMaterial::create(vec4(1.0, 0.0, 0.0, 1.0));
-            color_material.initialize(&render_context);
-
-            functor_runtime_common::Scene3D::render(
-                &frame.scene,
-                &render_context,
+                asset_cache.clone(),
                 &scene_context,
-                &world_matrix,
-                &projection_matrix,
-                &view_matrix,
-                &color_material,
+                &shadow_map,
+                &frame,
+                time.clone(),
+                viewport,
+                args.debug_render.into(),
             );
 
             if let Some(capture_path) = &args.capture_frame {

@@ -81,6 +81,7 @@ pub mod math;
 pub mod model;
 pub mod render;
 mod render_context;
+mod renderer;
 mod scene3d;
 mod shader;
 pub mod shadow;
@@ -96,6 +97,7 @@ pub use frame_time::*;
 pub use input::*;
 pub use light::*;
 pub use render_context::*;
+pub use renderer::*;
 pub use scene3d::*;
 pub use viewport::*;
 

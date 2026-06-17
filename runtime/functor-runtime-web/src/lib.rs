@@ -7,16 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cgmath::Matrix4;
 use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
-use functor_runtime_common::material::BasicMaterial;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
-use functor_runtime_common::{Frame, FrameTime, RenderContext, SceneContext};
+use functor_runtime_common::{Frame, FrameTime, SceneContext};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
@@ -232,42 +230,11 @@ async fn run_async() -> Result<(), JsValue> {
             };
 
             last_time = now;
-            let world_matrix = Matrix4::from_nonuniform_scale(1.0, 1.0, 1.0);
 
             game_tick(functor_runtime_common::to_js_value(&frame_time));
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
-
-            // Shadow pass: render the scene into the shadow map from the first
-            // shadow-casting light (directional or spot), before the main pass.
-            // Mirrors the desktop runtime; skinned casters come for free via the
-            // shared depth pass in Scene3D::render.
-            let shadow = frame
-                .lights
-                .iter()
-                .enumerate()
-                .find_map(|(i, l)| {
-                    functor_runtime_common::shadow::light_space_matrix(l).map(|m| (i, m))
-                })
-                .map(|(light_index, light_space_matrix)| {
-                    functor_runtime_common::shadow::render_shadow_pass(
-                        &gl,
-                        shader_version,
-                        asset_cache.clone(),
-                        frame_time.clone(),
-                        &frame.lights,
-                        &frame.scene,
-                        &scene_context,
-                        &shadow_map,
-                        light_space_matrix,
-                    );
-                    functor_runtime_common::ShadowUniforms {
-                        depth_texture: shadow_map.depth_texture,
-                        light_space_matrix,
-                        light_index: light_index as i32,
-                    }
-                });
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes.
@@ -282,41 +249,17 @@ async fn run_async() -> Result<(), JsValue> {
             }
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
 
-            // Main (forward) pass into the canvas. Reset the clear color (the
-            // shadow pass cleared its depth-color buffer to white).
-            gl.viewport(0, 0, viewport.width as i32, viewport.height as i32);
-            gl.clear_color(0.1, 0.2, 0.3, 1.0);
-            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-
-            // Built after the frame so it can carry the frame's lights + shadow.
-            let render_ctx = RenderContext {
-                gl: &gl,
+            // Shadow + forward passes, shared with the desktop runtime.
+            functor_runtime_common::render_frame(
+                &gl,
                 shader_version,
-                asset_cache: asset_cache.clone(),
-                frame_time: frame_time.clone(),
-                debug_render_mode,
-                lights: &frame.lights,
-                render_pass: functor_runtime_common::RenderPass::Forward,
-                shadow,
-            };
-
-            // The game supplies the camera; derive view/projection from it.
-            let view_matrix = frame.camera.view_matrix();
-            let projection_matrix = frame.camera.projection_matrix(viewport.aspect());
-
-            let mut basic_material = BasicMaterial::create();
-            basic_material.initialize(&render_ctx);
-
-            // asset.get().bind(0, &render_ctx);
-
-            functor_runtime_common::Scene3D::render(
-                &frame.scene,
-                &render_ctx,
+                asset_cache.clone(),
                 &scene_context,
-                &world_matrix,
-                &projection_matrix,
-                &view_matrix,
-                &basic_material,
+                &shadow_map,
+                &frame,
+                frame_time.clone(),
+                viewport,
+                debug_render_mode,
             );
 
             // Schedule ourself for another requestAnimationFrame callback.
