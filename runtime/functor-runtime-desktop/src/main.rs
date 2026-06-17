@@ -356,17 +356,20 @@ pub async fn main() {
 
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
+            // The game supplies the camera/scene/lights as part of its frame;
+            // build the render context (which carries the lights) from it, then
+            // derive the view/projection matrices from the camera.
+            let frame = game.render(time.clone());
+
             let render_context = functor_runtime_common::RenderContext {
                 gl: &gl,
                 shader_version,
                 asset_cache: asset_cache.clone(),
                 frame_time: time.clone(),
                 debug_render_mode: args.debug_render.into(),
+                lights: &frame.lights,
             };
 
-            // The game supplies the camera as part of its frame; derive the
-            // view/projection matrices from it.
-            let frame = game.render(time.clone());
             let view_matrix = frame.camera.view_matrix();
             let projection_matrix = frame.camera.projection_matrix(viewport.aspect());
 
