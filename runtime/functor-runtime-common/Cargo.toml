@@ -26,6 +26,9 @@ gltf = { version = "1.4.1", features = ["names", "KHR_materials_pbrSpecularGloss
 # We don't use uuid directly; this only constrains version resolution.
 uuid = { version = ">=1.8, <1.12", default-features = false, features = ["v4"] }
 
+[dev-dependencies]
+serde_json = "1.0"
+
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
 tokio = { version = "1", features = ["full"] }
 

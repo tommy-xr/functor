@@ -9,8 +9,10 @@
 //! `ConnectionId` vocabulary, so game code and the connection manager are
 //! identical whether they run over a real network or the virtual one.
 
+mod inbox;
 mod virtual_net;
 
+pub use inbox::*;
 pub use virtual_net::*;
 
 /// Stable identifier for one connection, assigned by the runtime and reported to
