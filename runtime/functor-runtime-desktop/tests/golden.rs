@@ -1,22 +1,24 @@
-//! Golden-image regression tests for the `hello` sample.
+//! Golden-image regression tests for the `hello` and `lighting` samples.
 //!
-//! Each test renders the sample at a fixed frame time (so the pose is
+//! Each test renders a sample at a fixed frame time (so the pose is
 //! deterministic) via `functor-runner --fixed-time`, captures the framebuffer
 //! to a PNG, and compares it to a committed reference with a small tolerance.
-//! `hello_matches_golden` covers default shading; `hello_normals_matches_golden`
-//! covers the `--debug-render normals` view (the regression guard for vertex
-//! normals + the normal-debug shaders).
+//! `hello_matches_golden` covers default shading, `hello_normals_matches_golden`
+//! the `--debug-render normals` view (the guard for vertex normals + the
+//! normal-debug shaders), and `lighting_matches_golden` the lit material gamut
+//! (ambient/directional/point/spot).
 //!
-//! Ignored by default: they need a GL display and the game dylib built first
-//! (`functor build native`). Run them with:
+//! Ignored by default: they need a GL display and each sample's game dylib built
+//! first. Run them with:
 //!
 //! ```sh
 //! ./target/debug/functor -d examples/hello build native
+//! ./target/debug/functor -d examples/lighting build native
 //! cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture
 //! ```
 //!
 //! Goldens are renderer/display-specific (GPU, driver, HiDPI scale). To
-//! regenerate the references on your machine:
+//! regenerate the references on your machine (from each sample's directory):
 //!
 //! ```sh
 //! cd examples/hello
@@ -24,6 +26,9 @@
 //!   --fixed-time 2.0 --capture-frame golden/hello-t2.png --capture-time 1.0
 //! ../../target/debug/functor-runner --game-path build-native/target/debug/libgame_native.dylib \
 //!   --fixed-time 2.0 --debug-render normals --capture-frame golden/hello-normals-t2.png --capture-time 1.0
+//! cd ../lighting
+//! ../../target/debug/functor-runner --game-path build-native/target/debug/libgame_native.dylib \
+//!   --fixed-time 2.0 --capture-frame golden/lighting-t2.png --capture-time 1.0
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -42,11 +47,11 @@ fn repo_root() -> PathBuf {
         .expect("resolve repo root")
 }
 
-/// Render `hello` at a fixed time (plus any `extra_args`, e.g.
-/// `--debug-render normals`), capture to `out_name`, and assert it matches the
-/// committed `golden/<golden_name>` within tolerance.
-fn assert_hello_matches(out_name: &str, golden_name: &str, extra_args: &[&str]) {
-    let hello = repo_root().join("examples/hello");
+/// Render the sample under `examples/<sample>` at a fixed time (plus any
+/// `extra_args`, e.g. `--debug-render normals`), capture to `out_name`, and
+/// assert it matches the committed `golden/<golden_name>` within tolerance.
+fn assert_sample_matches(sample: &str, out_name: &str, golden_name: &str, extra_args: &[&str]) {
+    let sample_dir = repo_root().join("examples").join(sample);
     let dylib = format!(
         "{}game_native{}",
         std::env::consts::DLL_PREFIX,
@@ -54,9 +59,9 @@ fn assert_hello_matches(out_name: &str, golden_name: &str, extra_args: &[&str]) 
     );
     let dylib_rel = format!("build-native/target/debug/{}", dylib);
     assert!(
-        hello.join(&dylib_rel).exists(),
-        "game dylib not found at {} — run `functor build native` first",
-        hello.join(&dylib_rel).display()
+        sample_dir.join(&dylib_rel).exists(),
+        "game dylib not found at {} — run `functor -d examples/{sample} build native` first",
+        sample_dir.join(&dylib_rel).display()
     );
 
     let out = std::env::temp_dir().join(out_name);
@@ -75,13 +80,13 @@ fn assert_hello_matches(out_name: &str, golden_name: &str, extra_args: &[&str]) 
     args.extend_from_slice(extra_args);
 
     let status = Command::new(env!("CARGO_BIN_EXE_functor-runner"))
-        .current_dir(&hello)
+        .current_dir(&sample_dir)
         .args(&args)
         .status()
         .expect("spawn functor-runner");
     assert!(status.success(), "functor-runner exited with {status}");
 
-    assert_images_match(&out, &hello.join("golden").join(golden_name));
+    assert_images_match(&out, &sample_dir.join("golden").join(golden_name));
 }
 
 fn assert_images_match(actual_path: &Path, golden_path: &Path) {
@@ -129,13 +134,25 @@ fn assert_images_match(actual_path: &Path, golden_path: &Path) {
 #[test]
 #[ignore = "needs a GL display and a built game dylib; run after `functor build native` with --ignored"]
 fn hello_matches_golden() {
-    assert_hello_matches("functor-golden-hello.png", "hello-t2.png", &[]);
+    assert_sample_matches("hello", "functor-golden-hello.png", "hello-t2.png", &[]);
+}
+
+#[test]
+#[ignore = "needs a GL display and a built game dylib; run after `functor build native` with --ignored"]
+fn lighting_matches_golden() {
+    assert_sample_matches(
+        "lighting",
+        "functor-golden-lighting.png",
+        "lighting-t2.png",
+        &[],
+    );
 }
 
 #[test]
 #[ignore = "needs a GL display and a built game dylib; run after `functor build native` with --ignored"]
 fn hello_normals_matches_golden() {
-    assert_hello_matches(
+    assert_sample_matches(
+        "hello",
         "functor-golden-hello-normals.png",
         "hello-normals-t2.png",
         &["--debug-render", "normals"],

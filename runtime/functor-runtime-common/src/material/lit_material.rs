@@ -1,7 +1,7 @@
 use cgmath::Matrix4;
 use cgmath::Vector4;
 
-use crate::light::resolve_lighting;
+use crate::light::{pack_lights, MAX_LIGHTS};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -9,8 +9,10 @@ use crate::RenderContext;
 use super::Material;
 
 // Diffuse-lit surface: albedo (a color, optionally modulated by a texture) shaded
-// by ambient + a single directional ("sun") light via Lambert. Reads the frame's
-// lights from `RenderContext`. Needs the vertex normal (attribute location 2).
+// by a bounded array of lights (ambient / directional / point / spot) via Lambert
+// plus distance + cone falloff. Reads the frame's lights from `RenderContext`.
+// Needs the vertex normal (attribute location 2). `MAX_LIGHTS` must match the
+// `pack_lights` cap.
 const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
@@ -22,32 +24,74 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         out vec2 texCoord;
         out vec3 worldNormal;
+        out vec3 worldPos;
 
         void main() {
             texCoord = inTex;
             worldNormal = mat3(world) * inNormal;
-            gl_Position = projection * view * world * vec4(inPos, 1.0);
+            vec4 wp = world * vec4(inPos, 1.0);
+            worldPos = wp.xyz;
+            gl_Position = projection * view * wp;
         }
 "#;
 
-const FRAGMENT_SHADER_SOURCE: &str = r#"
+// `__MAX_LIGHTS__` is substituted at build time so the GLSL array size matches
+// the Rust cap.
+const FRAGMENT_SHADER_TEMPLATE: &str = r#"
+        #define MAX_LIGHTS __MAX_LIGHTS__
+
         out vec4 fragColor;
 
         in vec2 texCoord;
         in vec3 worldNormal;
+        in vec3 worldPos;
 
         uniform vec4 baseColor;
         uniform sampler2D texture1;
         uniform int useTexture;
 
-        uniform vec3 ambientColor;
-        uniform vec3 lightDir;   // direction the light travels (a "sun" ray)
-        uniform vec3 lightColor; // already multiplied by intensity
+        uniform int numLights;
+        uniform int lightType[MAX_LIGHTS];      // 0=ambient 1=directional 2=point 3=spot
+        uniform vec3 lightColor[MAX_LIGHTS];     // already * intensity
+        uniform vec3 lightPosition[MAX_LIGHTS];  // point / spot
+        uniform vec3 lightDirection[MAX_LIGHTS]; // directional / spot (travel dir)
+        uniform float lightRange[MAX_LIGHTS];    // point / spot falloff distance
+        uniform float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
 
         void main() {
             vec3 n = normalize(worldNormal);
-            float ndotl = max(dot(n, -normalize(lightDir)), 0.0);
-            vec3 lighting = ambientColor + lightColor * ndotl;
+            vec3 lighting = vec3(0.0);
+
+            for (int i = 0; i < numLights; i++) {
+                int t = lightType[i];
+                if (t == 0) {
+                    lighting += lightColor[i];
+                } else if (t == 1) {
+                    float ndotl = max(dot(n, -normalize(lightDirection[i])), 0.0);
+                    lighting += lightColor[i] * ndotl;
+                } else {
+                    // Point (t == 2) or spot (t == 3): both attenuate by distance.
+                    vec3 toLight = lightPosition[i] - worldPos;
+                    float dist = length(toLight);
+                    vec3 l = toLight / max(dist, 1e-4);
+                    float ndotl = max(dot(n, l), 0.0);
+
+                    float range = max(lightRange[i], 1e-4);
+                    float att = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
+                    att *= att;
+
+                    float spot = 1.0;
+                    if (t == 3) {
+                        float cosAngle = dot(-l, normalize(lightDirection[i]));
+                        // Soft edge over a small band inside the cone.
+                        float outer = lightConeCos[i];
+                        float inner = mix(1.0, outer, 0.85);
+                        spot = clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
+                    }
+
+                    lighting += lightColor[i] * ndotl * att * spot;
+                }
+            }
 
             vec4 albedo = baseColor;
             if (useTexture == 1) {
@@ -64,9 +108,13 @@ struct Uniforms {
     base_color_loc: UniformLocation,
     texture_loc: UniformLocation,
     use_texture_loc: UniformLocation,
-    ambient_color_loc: UniformLocation,
-    light_dir_loc: UniformLocation,
+    num_lights_loc: UniformLocation,
+    light_type_loc: UniformLocation,
     light_color_loc: UniformLocation,
+    light_position_loc: UniformLocation,
+    light_direction_loc: UniformLocation,
+    light_range_loc: UniformLocation,
+    light_cone_cos_loc: UniformLocation,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -91,12 +139,10 @@ impl Material for LitMaterial {
                     ctx.shader_version,
                 );
 
-                let fragment_shader = Shader::build(
-                    ctx.gl,
-                    ShaderType::Fragment,
-                    FRAGMENT_SHADER_SOURCE,
-                    ctx.shader_version,
-                );
+                let fragment_source =
+                    FRAGMENT_SHADER_TEMPLATE.replace("__MAX_LIGHTS__", &MAX_LIGHTS.to_string());
+                let fragment_shader =
+                    Shader::build(ctx.gl, ShaderType::Fragment, &fragment_source, ctx.shader_version);
 
                 let shader = crate::shader_program::ShaderProgram::link(
                     &ctx.gl,
@@ -111,9 +157,13 @@ impl Material for LitMaterial {
                     base_color_loc: shader.get_uniform_location(ctx.gl, "baseColor"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     use_texture_loc: shader.get_uniform_location(ctx.gl, "useTexture"),
-                    ambient_color_loc: shader.get_uniform_location(ctx.gl, "ambientColor"),
-                    light_dir_loc: shader.get_uniform_location(ctx.gl, "lightDir"),
+                    num_lights_loc: shader.get_uniform_location(ctx.gl, "numLights"),
+                    light_type_loc: shader.get_uniform_location(ctx.gl, "lightType"),
                     light_color_loc: shader.get_uniform_location(ctx.gl, "lightColor"),
+                    light_position_loc: shader.get_uniform_location(ctx.gl, "lightPosition"),
+                    light_direction_loc: shader.get_uniform_location(ctx.gl, "lightDirection"),
+                    light_range_loc: shader.get_uniform_location(ctx.gl, "lightRange"),
+                    light_cone_cos_loc: shader.get_uniform_location(ctx.gl, "lightConeCos"),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -129,7 +179,7 @@ impl Material for LitMaterial {
         world_matrix: &Matrix4<f32>,
         _skinning_data: &[Matrix4<f32>],
     ) -> bool {
-        let lighting = resolve_lighting(ctx.lights);
+        let lights = pack_lights(ctx.lights);
         unsafe {
             #[allow(static_mut_refs)]
             if let Some((shader, uniforms)) = &SHADER_PROGRAM {
@@ -142,9 +192,14 @@ impl Material for LitMaterial {
                 p.set_uniform_vec4(ctx.gl, &uniforms.base_color_loc, &self.color);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
-                p.set_uniform_vec3(ctx.gl, &uniforms.ambient_color_loc, &lighting.ambient);
-                p.set_uniform_vec3(ctx.gl, &uniforms.light_dir_loc, &lighting.directional_dir);
-                p.set_uniform_vec3(ctx.gl, &uniforms.light_color_loc, &lighting.directional_color);
+
+                p.set_uniform_1i(ctx.gl, &uniforms.num_lights_loc, lights.count);
+                p.set_uniform_1iv(ctx.gl, &uniforms.light_type_loc, &lights.types);
+                p.set_uniform_vec3v(ctx.gl, &uniforms.light_color_loc, &lights.colors);
+                p.set_uniform_vec3v(ctx.gl, &uniforms.light_position_loc, &lights.positions);
+                p.set_uniform_vec3v(ctx.gl, &uniforms.light_direction_loc, &lights.directions);
+                p.set_uniform_1fv(ctx.gl, &uniforms.light_range_loc, &lights.ranges);
+                p.set_uniform_1fv(ctx.gl, &uniforms.light_cone_cos_loc, &lights.cone_cos);
             }
         }
 

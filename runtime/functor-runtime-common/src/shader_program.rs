@@ -57,6 +57,27 @@ impl ShaderProgram {
         }
     }
 
+    /// Upload an `int[]` uniform (the slice sets `array[0..len]`).
+    pub fn set_uniform_1iv(&self, gl: &glow::Context, uniform_location: &UniformLocation, v: &[i32]) {
+        unsafe {
+            gl.uniform_1_i32_slice(Some(&uniform_location.native_uniform_location), v);
+        }
+    }
+
+    /// Upload a `float[]` uniform.
+    pub fn set_uniform_1fv(&self, gl: &glow::Context, uniform_location: &UniformLocation, v: &[f32]) {
+        unsafe {
+            gl.uniform_1_f32_slice(Some(&uniform_location.native_uniform_location), v);
+        }
+    }
+
+    /// Upload a `vec3[]` uniform from a flattened slice (length = 3 × count).
+    pub fn set_uniform_vec3v(&self, gl: &glow::Context, uniform_location: &UniformLocation, v: &[f32]) {
+        unsafe {
+            gl.uniform_3_f32_slice(Some(&uniform_location.native_uniform_location), v);
+        }
+    }
+
     #[allow(dead_code)]
     pub fn set_uniform_vec3(
         &self,

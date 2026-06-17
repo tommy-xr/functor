@@ -258,8 +258,8 @@ let init (_args: array<string>) =
         // A low blue-ish ambient plus a warm "sun" angled down from the upper
         // right; lit surfaces shade by orientation, emissive ones stay bright.
         let lights = [|
-            Graphics.Scene3D.Light.ambient(0.2f, 0.2f, 0.28f);
-            Graphics.Scene3D.Light.directional(-0.5f, -1.0f, -0.35f, 1.0f, 0.96f, 0.85f, 1.1f);
+            Light.ambient(Color.rgb 0.2f 0.2f 0.28f)
+            Light.directional({ Direction = Vector3.xyz -0.5f -1.0f -0.35f; Color = Color.rgb 1.0f 0.96f 0.85f; Intensity = 1.1f })
         |]
 
         Graphics.Frame.createLit camera scene lights
