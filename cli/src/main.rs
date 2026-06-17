@@ -47,7 +47,8 @@ enum Command {
 
         /// Extra arguments forwarded to functor-runner (native only). E.g.
         /// `run native --fixed-time 2 --capture-frame f.png`. A leading `--` is
-        /// also accepted.
+        /// also accepted. On wasm these are ignored except `--no-open`, which
+        /// keeps the dev server but skips launching the browser.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },

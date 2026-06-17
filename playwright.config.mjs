@@ -39,8 +39,10 @@ export default defineConfig({
   ],
   webServer: {
     // Builds the lighting game wasm and serves it at :8080. Needs the CLI built
-    // with the current web runtime bundle (`npm run build:cli`).
-    command: "./target/debug/functor -d examples/lighting run wasm",
+    // with the current web runtime bundle (`npm run build:cli`). `--no-open`
+    // keeps the headless run from popping a stray system browser tab (Playwright
+    // drives its own browser).
+    command: "./target/debug/functor -d examples/lighting run wasm --no-open",
     url: "http://127.0.0.1:8080",
     timeout: 300_000,
     reuseExistingServer: true,
