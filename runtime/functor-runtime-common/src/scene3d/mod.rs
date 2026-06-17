@@ -14,12 +14,13 @@ use crate::{
     },
     geometry::{self, Geometry},
     material::{
-        BasicMaterial, Material, NormalDebugMaterial, SkinnedMaterial, SkinnedNormalDebugMaterial,
+        BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedMaterial,
+        SkinnedNormalDebugMaterial,
     },
     math::Angle,
     model::{Model, Skeleton},
     texture::{RuntimeTexture, Texture2D},
-    DebugRenderMode, RenderContext,
+    DebugRenderMode, RenderContext, RenderPass,
 };
 
 mod material_description;
@@ -210,21 +211,34 @@ impl Scene3D {
     ) {
         let skinning_data = vec![];
 
-        // In a debug render mode, primitive geometry is drawn with a diagnostic
-        // shader instead of its own material. glTF models use the skinned vertex
-        // format (no normals until that import lands), so they're left on their
-        // own materials and aren't overridden here.
-        let debug_material: Option<Box<dyn Material>> = match render_context.debug_render_mode {
-            DebugRenderMode::Default => None,
-            DebugRenderMode::Normals => {
-                let mut m = NormalDebugMaterial::create();
-                m.initialize(render_context);
-                Some(m)
+        // A pass/mode can replace every node's own material with one shared
+        // shader: the depth pass (filling a shadow map) uses DepthMaterial for
+        // all geometry; the normals debug mode uses NormalDebugMaterial. The
+        // depth override also keeps the lit shader from sampling the shadow map
+        // while it is being written.
+        let depth_pass = render_context.render_pass == RenderPass::DepthOnly;
+        let override_material: Option<Box<dyn Material>> = if depth_pass {
+            let mut m = DepthMaterial::create();
+            m.initialize(render_context);
+            Some(m)
+        } else {
+            match render_context.debug_render_mode {
+                DebugRenderMode::Default => None,
+                DebugRenderMode::Normals => {
+                    let mut m = NormalDebugMaterial::create();
+                    m.initialize(render_context);
+                    Some(m)
+                }
             }
         };
-        let geometry_material = debug_material.as_ref().unwrap_or(current_material);
+        let geometry_material = override_material.as_ref().unwrap_or(current_material);
 
         match &self.obj {
+            // Skip models entirely in the depth pass: skinned shadow casters
+            // (deforming the depth-pass geometry by the joint matrices) are a
+            // follow-up, and a rest-pose shadow under an animated model looks
+            // worse than none. Primitives and the terrain cast shadows.
+            SceneObject::Model(_) if depth_pass => {}
             SceneObject::Model(model_description) => {
                 match &model_description.handle {
                     ModelHandle::File(str) => {
@@ -244,13 +258,14 @@ impl Scene3D {
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
                         let normals_debug =
                             render_context.debug_render_mode == DebugRenderMode::Normals;
-                        let mut model_material: Box<dyn Material> = match (is_skinned, normals_debug)
-                        {
-                            (true, false) => SkinnedMaterial::create(),
-                            (false, false) => BasicMaterial::create(),
-                            (true, true) => SkinnedNormalDebugMaterial::create(),
-                            (false, true) => NormalDebugMaterial::create(),
-                        };
+                        // (Models are skipped in the depth pass above.)
+                        let mut model_material: Box<dyn Material> =
+                            match (is_skinned, normals_debug) {
+                                (true, false) => SkinnedMaterial::create(),
+                                (false, false) => BasicMaterial::create(),
+                                (true, true) => SkinnedNormalDebugMaterial::create(),
+                                (false, true) => NormalDebugMaterial::create(),
+                            };
                         model_material.initialize(&render_context);
 
                         let animation_index = 0;
@@ -277,10 +292,10 @@ impl Scene3D {
                                 }
                             }
 
-                            // A debug render mode overrides everything — ignore
-                            // per-mesh material selectors so the whole model is
-                            // visualized (and skinned meshes still get joints).
-                            if normals_debug {
+                            // A debug render mode or the depth pass overrides
+                            // everything — ignore per-mesh material selectors so
+                            // the whole model is drawn with the override material.
+                            if normals_debug || depth_pass {
                                 override_material_description = None;
                             }
 

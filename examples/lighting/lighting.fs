@@ -153,16 +153,18 @@ let init (_args: array<string>) =
         let pointLights =
             pointColors
             |> Array.mapi (fun i c ->
-                Light.point({ Position = pointPos i; Color = c; Intensity = 4.0f; Range = 7.0f }))
+                Light.point({ Position = pointPos i; Color = c; Intensity = 2.0f; Range = 5.0f }))
 
         let lights =
             Array.append
                 [|
-                    Light.ambient(Color.rgb 0.06f 0.06f 0.09f)
-                    Light.directional({ Direction = Vector3.xyz 0.2f -1.0f 0.25f; Color = Color.rgb 1.0f 0.97f 0.9f; Intensity = 0.3f })
+                    Light.ambient(Color.rgb 0.1f 0.1f 0.14f)
+                    // The "sun" — casts the shadows; kept moderate so the lit
+                    // ground stays mid-tone and the shadows read by contrast.
+                    Light.directional({ Direction = Vector3.xyz 0.4f -1.0f 0.3f; Color = Color.rgb 1.0f 0.97f 0.9f; Intensity = 0.75f })
                 |]
                 (Array.append pointLights [|
-                    Light.spot({ Position = Vector3.xyz 0.0f 5.0f 2.5f; Direction = Vector3.xyz 0.0f -1.0f 0.0f; Color = Color.rgb 1.0f 1.0f 0.95f; Intensity = 6.0f; Range = 14.0f; ConeAngle = 0.45f })
+                    Light.spot({ Position = Vector3.xyz 0.0f 5.0f 2.5f; Direction = Vector3.xyz 0.0f -1.0f 0.0f; Color = Color.rgb 1.0f 1.0f 0.95f; Intensity = 4.0f; Range = 14.0f; ConeAngle = 0.45f })
                 |])
 
         Graphics.Frame.createLit camera scene lights

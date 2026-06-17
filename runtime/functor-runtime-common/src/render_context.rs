@@ -1,6 +1,27 @@
 use std::sync::Arc;
 
+use cgmath::Matrix4;
+
 use crate::{asset::AssetCache, FrameTime, Light};
+
+/// Which rendering pass is in flight. `DepthOnly` (e.g. filling a shadow map)
+/// draws geometry with a trivial depth material from the light's viewpoint;
+/// `Forward` is the normal shaded pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderPass {
+    #[default]
+    Forward,
+    DepthOnly,
+}
+
+/// Shadow data made available to the forward pass: the directional light's depth
+/// map and the matrix that projects a world position into that light's clip
+/// space (for sampling the map).
+#[derive(Clone, Copy)]
+pub struct ShadowUniforms {
+    pub depth_texture: glow::Texture,
+    pub light_space_matrix: Matrix4<f32>,
+}
 
 /// Global override for how the scene is shaded — a debug aid, not a per-material
 /// choice. `Default` uses each node's own material; the others replace it with a
@@ -69,4 +90,9 @@ pub struct RenderContext<'a> {
     pub debug_render_mode: DebugRenderMode,
     /// Frame-level lights (from `Frame.lights`), read by `LitMaterial`.
     pub lights: &'a [Light],
+    /// Which pass is rendering (forward vs. a depth-only shadow pass).
+    pub render_pass: RenderPass,
+    /// The directional shadow map + light matrix, when shadows are active.
+    /// `None` during the depth pass and when no light casts shadows.
+    pub shadow: Option<ShadowUniforms>,
 }

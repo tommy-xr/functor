@@ -224,6 +224,9 @@ async fn run_async() -> Result<(), JsValue> {
                 frame_time: frame_time.clone(),
                 debug_render_mode,
                 lights: &frame.lights,
+                // Shadows are native-only for now; the wasm runtime renders unshadowed.
+                render_pass: functor_runtime_common::RenderPass::Forward,
+                shadow: None,
             };
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,

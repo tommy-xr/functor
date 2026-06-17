@@ -1,5 +1,6 @@
 use cgmath::Matrix4;
 use cgmath::Vector4;
+use glow::HasContext;
 
 use crate::light::{pack_lights, MAX_LIGHTS};
 use crate::shader_program::ShaderProgram;
@@ -58,6 +59,37 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
         uniform float lightRange[MAX_LIGHTS];    // point / spot falloff distance
         uniform float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
 
+        // Directional shadow map (the first casting directional light only, for now).
+        uniform sampler2D shadowMap;
+        uniform mat4 lightSpaceMatrix;
+        uniform int shadowEnabled;
+
+        // Inverse of the depth material's packDepth (RGBA8 -> [0,1] depth).
+        float unpackDepth(vec4 rgba) {
+            return dot(rgba, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+        }
+
+        // 0 = fully lit, 1 = fully shadowed. 3x3 PCF; out-of-frustum reads as lit.
+        float directionalShadow(vec3 n, vec3 lightDir) {
+            vec4 lightSpacePos = lightSpaceMatrix * vec4(worldPos, 1.0);
+            vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
+            proj = proj * 0.5 + 0.5;
+            if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
+                return 0.0;
+            }
+            // Slope-scaled bias to fight shadow acne on grazing surfaces.
+            float bias = max(0.0015 * (1.0 - dot(n, -lightDir)), 0.0008);
+            vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
+            float shadow = 0.0;
+            for (int x = -1; x <= 1; x++) {
+                for (int y = -1; y <= 1; y++) {
+                    float closest = unpackDepth(texture(shadowMap, proj.xy + vec2(x, y) * texelSize));
+                    shadow += (proj.z - bias > closest) ? 1.0 : 0.0;
+                }
+            }
+            return shadow / 9.0;
+        }
+
         void main() {
             vec3 n = normalize(worldNormal);
             vec3 lighting = vec3(0.0);
@@ -67,8 +99,10 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
                 if (t == 0) {
                     lighting += lightColor[i];
                 } else if (t == 1) {
-                    float ndotl = max(dot(n, -normalize(lightDirection[i])), 0.0);
-                    lighting += lightColor[i] * ndotl;
+                    vec3 ld = normalize(lightDirection[i]);
+                    float ndotl = max(dot(n, -ld), 0.0);
+                    float shadow = (shadowEnabled == 1) ? directionalShadow(n, ld) : 0.0;
+                    lighting += lightColor[i] * ndotl * (1.0 - shadow);
                 } else {
                     // Point (t == 2) or spot (t == 3): both attenuate by distance.
                     vec3 toLight = lightPosition[i] - worldPos;
@@ -115,6 +149,9 @@ struct Uniforms {
     light_direction_loc: UniformLocation,
     light_range_loc: UniformLocation,
     light_cone_cos_loc: UniformLocation,
+    shadow_map_loc: UniformLocation,
+    light_space_matrix_loc: UniformLocation,
+    shadow_enabled_loc: UniformLocation,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -164,6 +201,10 @@ impl Material for LitMaterial {
                     light_direction_loc: shader.get_uniform_location(ctx.gl, "lightDirection"),
                     light_range_loc: shader.get_uniform_location(ctx.gl, "lightRange"),
                     light_cone_cos_loc: shader.get_uniform_location(ctx.gl, "lightConeCos"),
+                    shadow_map_loc: shader.get_uniform_location(ctx.gl, "shadowMap"),
+                    light_space_matrix_loc: shader
+                        .get_uniform_location(ctx.gl, "lightSpaceMatrix"),
+                    shadow_enabled_loc: shader.get_uniform_location(ctx.gl, "shadowEnabled"),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -200,6 +241,26 @@ impl Material for LitMaterial {
                 p.set_uniform_vec3v(ctx.gl, &uniforms.light_direction_loc, &lights.directions);
                 p.set_uniform_1fv(ctx.gl, &uniforms.light_range_loc, &lights.ranges);
                 p.set_uniform_1fv(ctx.gl, &uniforms.light_cone_cos_loc, &lights.cone_cos);
+
+                // Directional shadow map on texture unit 1 (unit 0 is albedo).
+                p.set_uniform_1i(ctx.gl, &uniforms.shadow_map_loc, 1);
+                match ctx.shadow {
+                    Some(shadow) => {
+                        p.set_uniform_1i(ctx.gl, &uniforms.shadow_enabled_loc, 1);
+                        p.set_uniform_matrix4(
+                            ctx.gl,
+                            &uniforms.light_space_matrix_loc,
+                            &shadow.light_space_matrix,
+                        );
+                        ctx.gl.active_texture(glow::TEXTURE0 + 1);
+                        ctx.gl
+                            .bind_texture(glow::TEXTURE_2D, Some(shadow.depth_texture));
+                        ctx.gl.active_texture(glow::TEXTURE0);
+                    }
+                    None => {
+                        p.set_uniform_1i(ctx.gl, &uniforms.shadow_enabled_loc, 0);
+                    }
+                }
             }
         }
 
