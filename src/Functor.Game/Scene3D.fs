@@ -1,6 +1,17 @@
 namespace Graphics
 
 open Fable.Core
+open Functor.Math
+
+/// A directional ("sun") light: parallel rays travelling along `Direction`.
+type DirectionalLight = { Direction: Vector3; Color: Color; Intensity: float32 }
+/// An omnidirectional point light at `Position`, fading to nothing by `Range`.
+type PointLight = { Position: Vector3; Color: Color; Intensity: float32; Range: float32 }
+/// A cone of light from `Position` aimed along `Direction`. `ConeAngle` is the
+/// half-angle of the cone in radians; `Range` is the distance falloff.
+type SpotLight =
+    { Position: Vector3; Direction: Vector3; Color: Color; Intensity: float32; Range: float32; ConeAngle: float32 }
+
 [<Erase; Emit("functor_runtime_common::Scene3D")>] type Scene3D = | Noop
 
 [<Erase; Emit("functor_runtime_common::TextureDescription")>] type Texture = | Noop
@@ -71,21 +82,35 @@ module Scene3D =
         let litTexture (texture: Texture): Material = nativeOnly
 
     module Light =
-        // A "sun": parallel rays travelling along (dx,dy,dz), colored (r,g,b) * intensity.
-        [<Emit("functor_runtime_common::Light::directional($0, $1, $2, $3, $4, $5, $6)")>]
-        let directional (dx: float32, dy: float32, dz: float32, r: float32, g: float32, b: float32, intensity: float32): Light = nativeOnly
-
-        // Uniform light added to every lit surface regardless of orientation.
+        // Private float-based FFI shims; the public record API destructures into
+        // these so the Rust boundary stays simple and the records stay pure F#.
         [<Emit("functor_runtime_common::Light::ambient($0, $1, $2)")>]
-        let ambient (r: float32, g: float32, b: float32): Light = nativeOnly
+        let private ambientRaw (r: float32, g: float32, b: float32): Light = nativeOnly
 
-        // An omnidirectional point light at (px,py,pz), fading to nothing by `range`.
+        [<Emit("functor_runtime_common::Light::directional($0, $1, $2, $3, $4, $5, $6)")>]
+        let private directionalRaw (dx: float32, dy: float32, dz: float32, r: float32, g: float32, b: float32, intensity: float32): Light = nativeOnly
+
         [<Emit("functor_runtime_common::Light::point($0, $1, $2, $3, $4, $5, $6, $7)")>]
-        let point (px: float32, py: float32, pz: float32, r: float32, g: float32, b: float32, intensity: float32, range: float32): Light = nativeOnly
+        let private pointRaw (px: float32, py: float32, pz: float32, r: float32, g: float32, b: float32, intensity: float32, range: float32): Light = nativeOnly
 
-        // A cone of light from (px,py,pz) along (dx,dy,dz); `coneAngle` in radians, `range` is falloff distance.
         [<Emit("functor_runtime_common::Light::spot($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")>]
-        let spot (px: float32, py: float32, pz: float32, dx: float32, dy: float32, dz: float32, r: float32, g: float32, b: float32, intensity: float32, range: float32, coneAngle: float32): Light = nativeOnly
+        let private spotRaw (px: float32, py: float32, pz: float32, dx: float32, dy: float32, dz: float32, r: float32, g: float32, b: float32, intensity: float32, range: float32, coneAngle: float32): Light = nativeOnly
+
+        /// Uniform light added to every lit surface regardless of orientation.
+        let ambient (color: Color): Light =
+            ambientRaw (color.r, color.g, color.b)
+
+        /// A "sun": parallel rays travelling along `Direction`.
+        let directional (l: DirectionalLight): Light =
+            directionalRaw (l.Direction.x, l.Direction.y, l.Direction.z, l.Color.r, l.Color.g, l.Color.b, l.Intensity)
+
+        /// An omnidirectional point light, fading to nothing by `Range`.
+        let point (l: PointLight): Light =
+            pointRaw (l.Position.x, l.Position.y, l.Position.z, l.Color.r, l.Color.g, l.Color.b, l.Intensity, l.Range)
+
+        /// A cone of light from `Position` along `Direction`; `ConeAngle` in radians.
+        let spot (l: SpotLight): Light =
+            spotRaw (l.Position.x, l.Position.y, l.Position.z, l.Direction.x, l.Direction.y, l.Direction.z, l.Color.r, l.Color.g, l.Color.b, l.Intensity, l.Range, l.ConeAngle)
 
     module MeshSelector =
         [<Emit("functor_runtime_common::MeshSelector::all()")>]

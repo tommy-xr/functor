@@ -9,6 +9,7 @@
     <Compile Include="Math/Angle.fs" />
     <Compile Include="Math/Vector2.fs" />
     <Compile Include="Math/Vector3.fs" />
+    <Compile Include="Math/Color.fs" />
     <Compile Include="Math/Point2.fs" />
     <Compile Include="Time.fs" />
     <Compile Include="Duration.fsi" />

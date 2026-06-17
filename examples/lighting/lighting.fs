@@ -95,38 +95,50 @@ open Graphics.Scene3D
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
-    |> GameBuilder.draw3d (fun world _frameTime ->
+    |> GameBuilder.draw3d (fun world frameTime ->
 
         // Lit (diffuse) materials — shaded by the frame's lights. Near-white so
-        // the colored lights tint them; the ground is a neutral grey. Small
-        // emissive marker spheres (self-lit) sit at each point light to show
-        // where it is.
+        // the colored lights tint them; the ground is a neutral grey.
         let litWhite = Material.lit(0.9f, 0.9f, 0.9f, 1.0f)
         let litGround = Material.lit(0.6f, 0.6f, 0.62f, 1.0f)
-        let redMarker = Material.emissive(1.0f, 0.2f, 0.2f, 1.0f)
-        let blueMarker = Material.emissive(0.3f, 0.4f, 1.0f, 1.0f)
 
-        // Point-light positions (markers + the lights reference the same spots).
-        let redPos = struct (-2.5f, 2.6f, 0.0f)
-        let bluePos = struct (2.5f, 2.6f, 0.0f)
-        let marker (struct (x, y, z)) mat =
-            material (mat, [| sphere() |> Transform.translateX x |> Transform.translateY y |> Transform.translateZ z |> Transform.scale 0.12f |])
+        // Three colored point lights orbiting the scene (120 degrees apart),
+        // animated by total time. Each has an emissive marker sphere at its
+        // position so you can see where the light is.
+        let pointColors = [|
+            Color.rgb 1.0f 0.25f 0.2f   // red
+            Color.rgb 0.3f 1.0f 0.35f   // green
+            Color.rgb 0.4f 0.5f 1.0f    // blue
+        |]
+        let orbitRadius = 3.5f
+        let orbitHeight = 2.6f
+        let spin = frameTime.tts * 0.6f
+        let tau = 6.2831855f
+        let pointPos i =
+            let a = spin + float32 i * (tau / 3.0f)
+            Vector3.xyz (cos a * orbitRadius) orbitHeight (sin a * orbitRadius)
 
-        // A flat ground plane with a few objects sitting on it (each centered at
-        // y = its half-height so it rests on y = 0).
-        let scene =
+        // Ground + a few objects sitting on it (each centered at y = its
+        // half-height so it rests on y = 0).
+        let objects =
             group([|
-                material (litGround, [|
-                    plane() |> Transform.scale 24.0f
-                |])
+                material (litGround, [| plane() |> Transform.scale 24.0f |])
                 material (litWhite, [|
                     sphere()   |> Transform.translateX -2.5f |> Transform.translateY 0.8f |> Transform.scale 0.8f
                     cube()     |> Transform.translateX 2.5f  |> Transform.translateY 0.5f
                     cylinder() |> Transform.translateZ 2.5f  |> Transform.translateY 0.5f
                 |])
-                marker redPos redMarker
-                marker bluePos blueMarker
             |])
+
+        let markers =
+            pointColors
+            |> Array.mapi (fun i c ->
+                let p = pointPos i
+                material (Material.emissive(c.r, c.g, c.b, 1.0f), [|
+                    sphere() |> Transform.translateX p.x |> Transform.translateY p.y |> Transform.translateZ p.z |> Transform.scale 0.12f
+                |]))
+
+        let scene = group(Array.append [| objects |] markers)
 
         let camera =
             Graphics.Camera.firstPerson
@@ -135,18 +147,23 @@ let init (_args: array<string>) =
                 (Math.Angle.radians world.pitch)
                 (Math.Angle.degrees 60.0f)
 
-        // The full gamut: a dim cool ambient, a soft directional fill, two
-        // colored point lights over the sphere/cube, and a white spot angled
-        // down at the cylinder.
-        let struct (rx, ry, rz) = redPos
-        let struct (bx, by, bz) = bluePos
-        let lights = [|
-            Light.ambient(0.06f, 0.06f, 0.09f)
-            Light.directional(0.2f, -1.0f, 0.25f, 1.0f, 0.97f, 0.9f, 0.35f)
-            Light.point(rx, ry, rz, 1.0f, 0.25f, 0.2f, 4.0f, 7.0f)
-            Light.point(bx, by, bz, 0.3f, 0.45f, 1.0f, 4.0f, 7.0f)
-            Light.spot(0.0f, 5.0f, 2.5f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.95f, 6.0f, 14.0f, 0.45f)
-        |]
+        // The full gamut: a dim cool ambient, a soft directional fill, the three
+        // orbiting colored point lights, and a white spot angled down at the
+        // cylinder.
+        let pointLights =
+            pointColors
+            |> Array.mapi (fun i c ->
+                Light.point({ Position = pointPos i; Color = c; Intensity = 4.0f; Range = 7.0f }))
+
+        let lights =
+            Array.append
+                [|
+                    Light.ambient(Color.rgb 0.06f 0.06f 0.09f)
+                    Light.directional({ Direction = Vector3.xyz 0.2f -1.0f 0.25f; Color = Color.rgb 1.0f 0.97f 0.9f; Intensity = 0.3f })
+                |]
+                (Array.append pointLights [|
+                    Light.spot({ Position = Vector3.xyz 0.0f 5.0f 2.5f; Direction = Vector3.xyz 0.0f -1.0f 0.0f; Color = Color.rgb 1.0f 1.0f 0.95f; Intensity = 6.0f; Range = 14.0f; ConeAngle = 0.45f })
+                |])
 
         Graphics.Frame.createLit camera scene lights
     )
