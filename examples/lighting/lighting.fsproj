@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <PropertyGroup>
+    <WasmMainJSPath>main.mjs</WasmMainJSPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="lighting.fs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetArchitecture)' != 'wasm'">
+    <PackageReference Include="Fable.Core" Version="4.3.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Functor.Game/Functor.Game.fsproj" />
+  </ItemGroup>
+</Project>

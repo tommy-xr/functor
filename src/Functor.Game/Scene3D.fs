@@ -79,6 +79,14 @@ module Scene3D =
         [<Emit("functor_runtime_common::Light::ambient($0, $1, $2)")>]
         let ambient (r: float32, g: float32, b: float32): Light = nativeOnly
 
+        // An omnidirectional point light at (px,py,pz), fading to nothing by `range`.
+        [<Emit("functor_runtime_common::Light::point($0, $1, $2, $3, $4, $5, $6, $7)")>]
+        let point (px: float32, py: float32, pz: float32, r: float32, g: float32, b: float32, intensity: float32, range: float32): Light = nativeOnly
+
+        // A cone of light from (px,py,pz) along (dx,dy,dz); `coneAngle` in radians, `range` is falloff distance.
+        [<Emit("functor_runtime_common::Light::spot($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")>]
+        let spot (px: float32, py: float32, pz: float32, dx: float32, dy: float32, dz: float32, r: float32, g: float32, b: float32, intensity: float32, range: float32, coneAngle: float32): Light = nativeOnly
+
     module MeshSelector =
         [<Emit("functor_runtime_common::MeshSelector::all()")>]
         let all (): MeshSelector = nativeOnly
