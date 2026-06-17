@@ -106,7 +106,17 @@ ride on `Scene3D` (like `xform`) and thread down the render walk.
    `castsShadow` / `receivesShadow`; then point/spot shadows. Introduces the
    shared **render-to-texture / FBO** foundation that cubemaps and user
    [render targets](render-targets.md) also build on (shadow maps and cubemaps
-   are effectively special-case render targets).
+   are effectively special-case render targets). Refinements beyond the
+   directional MVP, in rough order:
+   - **Skinned shadow casters** — the depth pass must deform geometry by the
+     joint matrices (as the lit pass does), or skinned models cast a wrong
+     rest-pose shadow. Until then they're skipped (no shadow).
+   - **Scene-fit ortho frustum** — fit the directional light's orthographic box
+     to the visible scene (or a cascaded split) instead of a fixed box, so
+     resolution isn't wasted and nothing clips out of the map.
+   - **Web/wasm path** — the shadow pass is desktop-only at first; the web
+     runtime renders unshadowed until the FBO pass is ported (WebGL2 supports
+     it). Keep depth portable (RGBA8-packed, not a sampled depth texture).
 6. **Normal mapping + specular** (the Doom 3 bump look) — needs tangents
    (glTF provides; compute otherwise).
 7. **Multi-pass additive path** — the fallback when a surface exceeds N lights
