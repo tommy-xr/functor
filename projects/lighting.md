@@ -94,6 +94,31 @@ shadows appear with no per-node work. You only annotate the exceptions (emissive
 signage, skybox, first-person weapon, etc.). Implementation-wise the two flags
 ride on `Scene3D` (like `xform`) and thread down the render walk.
 
+**Forward-compatible: booleans are a 1-bit shadow mask.** The boolean model is
+deliberately the degenerate case of *shadow channels* (cf. Unreal "Lighting
+Channels" / Unity "Rendering Layer Mask") — a small bitmask per light, caster,
+and receiver, where a caster enters a light's map (and a receiver is darkened by
+it) only when their masks overlap:
+
+```
+caster C in light L's map   iff  L.shadowMask & C.casterMask   != 0
+receiver R darkened by L     iff  L.shadowMask & R.receiverMask != 0
+```
+
+The booleans map exactly onto this — `castShadows` ⟺ `shadowMask != 0`,
+`castsShadows false` ⟺ `casterMask = 0`, `receivesShadows false` ⟺
+`receiverMask = 0`, default all-ones ⟺ everything interacts. So we **ship the
+booleans now** and can add a `shadowLayers`/mask modifier later with the
+booleans as presets — no breakage.
+
+Grow into the full mask when there's a concrete multi-group need (a first-person
+weapon or "hero" object shadowed by its own light only; separately-lit indoor /
+outdoor zones). It only becomes *usable* once there's more than one
+shadow-casting light (a follow-up), and it's an **authoring** feature, not a
+perf one — masks add selectivity, not cheaper passes (still one map per casting
+light). Likely candidate when the VR target leans on per-light/per-zone shadow
+scoping; a fixed 8-channel mask (Unreal-style) is the probable shape.
+
 ## Roadmap (small, ordered PRs)
 
 1. **Normals** — vertex-format attribute + generation/import + a debug
@@ -106,7 +131,17 @@ ride on `Scene3D` (like `xform`) and thread down the render walk.
    `castsShadow` / `receivesShadow`; then point/spot shadows. Introduces the
    shared **render-to-texture / FBO** foundation that cubemaps and user
    [render targets](render-targets.md) also build on (shadow maps and cubemaps
-   are effectively special-case render targets).
+   are effectively special-case render targets). Refinements beyond the
+   directional MVP, in rough order:
+   - **Skinned shadow casters** — the depth pass must deform geometry by the
+     joint matrices (as the lit pass does), or skinned models cast a wrong
+     rest-pose shadow. Until then they're skipped (no shadow).
+   - **Scene-fit ortho frustum** — fit the directional light's orthographic box
+     to the visible scene (or a cascaded split) instead of a fixed box, so
+     resolution isn't wasted and nothing clips out of the map.
+   - **Web/wasm path** — the shadow pass is desktop-only at first; the web
+     runtime renders unshadowed until the FBO pass is ported (WebGL2 supports
+     it). Keep depth portable (RGBA8-packed, not a sampled depth texture).
 6. **Normal mapping + specular** (the Doom 3 bump look) — needs tangents
    (glTF provides; compute otherwise).
 7. **Multi-pass additive path** — the fallback when a surface exceeds N lights
