@@ -138,7 +138,15 @@ let init (_args: array<string>) =
                     sphere() |> Transform.translateX p.x |> Transform.translateY p.y |> Transform.translateZ p.z |> Transform.scale 0.12f
                 |]))
 
-        let scene = group(Array.append [| objects |] markers)
+        // An animated (skinned) shark swimming above the ground — it casts a
+        // deforming shadow as it swims (skinned shadow caster).
+        let shark =
+            Model.file "shark.glb" |> Graphics.Scene3D.model
+            |> Transform.translateX 1.5f |> Transform.translateY 1.8f |> Transform.translateZ 0.5f
+            |> Transform.rotateY (Math.Angle.degrees 90.0f)
+            |> Transform.scale 0.003f
+
+        let scene = group(Array.append [| objects; shark |] markers)
 
         let camera =
             Graphics.Camera.firstPerson

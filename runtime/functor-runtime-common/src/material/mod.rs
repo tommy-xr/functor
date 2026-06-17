@@ -28,6 +28,7 @@ mod depth_material;
 mod emissive_material;
 mod lit_material;
 mod normal_debug_material;
+mod skinned_depth_material;
 mod skinned_material;
 mod skinned_normal_debug_material;
 
@@ -37,6 +38,7 @@ pub use depth_material::*;
 pub use emissive_material::*;
 pub use lit_material::*;
 pub use normal_debug_material::*;
+pub use skinned_depth_material::*;
 pub use skinned_material::*;
 pub use skinned_normal_debug_material::*;
 
