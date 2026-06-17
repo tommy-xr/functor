@@ -1,15 +1,16 @@
-//! Golden-image regression tests for the `hello` and `lighting` samples.
+//! Golden-image regression tests for the sample games.
 //!
-//! Each test renders a sample at a fixed frame time (so the pose is
-//! deterministic) via `functor-runner --fixed-time`, captures the framebuffer
-//! to a PNG, and compares it to a committed reference with a small tolerance.
-//! `hello_matches_golden` covers default shading, `hello_normals_matches_golden`
-//! the `--debug-render normals` view (the guard for vertex normals + the
-//! normal-debug shaders), and `lighting_matches_golden` the lit material gamut
-//! (ambient/directional/point/spot).
+//! The scenarios are defined once in `golden-scenarios.json` at the repo root
+//! and **shared** with the wasm Playwright test (`e2e/golden-wasm.spec.mjs`), so
+//! a scenario added there is validated on both targets. Each scenario renders a
+//! sample at a fixed frame time (so the pose is deterministic) via
+//! `functor-runner --fixed-time`, optionally with a `--debug-render` mode,
+//! captures the framebuffer to a PNG, and compares it to a committed reference
+//! with a small tolerance. This test runs every scenario whose `targets`
+//! includes `"native"`.
 //!
-//! Ignored by default: they need a GL display and each sample's game dylib built
-//! first. Run them with:
+//! Ignored by default: it needs a GL display and each sample's game dylib built
+//! first. Run it with:
 //!
 //! ```sh
 //! ./target/debug/functor -d examples/hello build native
@@ -18,27 +19,44 @@
 //! ```
 //!
 //! Goldens are renderer/display-specific (GPU, driver, HiDPI scale). To
-//! regenerate the references on your machine (from each sample's directory):
-//!
-//! ```sh
-//! cd examples/hello
-//! ../../target/debug/functor-runner --game-path build-native/target/debug/libgame_native.dylib \
-//!   --fixed-time 2.0 --capture-frame golden/hello-t2.png --capture-time 1.0
-//! ../../target/debug/functor-runner --game-path build-native/target/debug/libgame_native.dylib \
-//!   --fixed-time 2.0 --debug-render normals --capture-frame golden/hello-normals-t2.png --capture-time 1.0
-//! cd ../lighting
-//! ../../target/debug/functor-runner --game-path build-native/target/debug/libgame_native.dylib \
-//!   --fixed-time 2.0 --capture-frame golden/lighting-t2.png --capture-time 1.0
-//! ```
+//! regenerate the native references on your machine, run the same scenarios with
+//! `--capture-frame examples/<sample>/golden/<name>.png` (the runner invocation
+//! below, pointed at the golden path instead of a temp file).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::Deserialize;
+
 // A pixel "differs" if any channel is off by more than this (0-255). Absorbs
 // minor antialiasing/driver wobble between runs on the same machine.
 const TOLERANCE: u8 = 16;
-// Allow this fraction of pixels to exceed the tolerance before failing.
+// Allow this fraction of pixels to exceed the tolerance before failing. (The
+// wasm harness uses the analogous `maxDiffPixelRatio` in playwright.config.mjs.)
 const MAX_DIFF_FRACTION: f64 = 0.01;
+
+/// One golden scenario, deserialized from `golden-scenarios.json`. Mirrors the
+/// shape consumed by the wasm Playwright harness.
+#[derive(Debug, Deserialize)]
+struct Scenario {
+    /// Reference-image basename (native: `examples/<sample>/golden/<name>.png`).
+    name: String,
+    /// Sample directory under `examples/`.
+    sample: String,
+    /// Frame time to pin (seconds) for a deterministic pose.
+    #[serde(rename = "fixedTime")]
+    fixed_time: f64,
+    /// Optional debug-render mode (e.g. `"normals"`); `None` = default shading.
+    #[serde(rename = "debugRender")]
+    debug_render: Option<String>,
+    /// Harnesses that run this scenario (`"native"` / `"wasm"`).
+    targets: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Manifest {
+    scenarios: Vec<Scenario>,
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -47,11 +65,20 @@ fn repo_root() -> PathBuf {
         .expect("resolve repo root")
 }
 
-/// Render the sample under `examples/<sample>` at a fixed time (plus any
-/// `extra_args`, e.g. `--debug-render normals`), capture to `out_name`, and
-/// assert it matches the committed `golden/<golden_name>` within tolerance.
-fn assert_sample_matches(sample: &str, out_name: &str, golden_name: &str, extra_args: &[&str]) {
-    let sample_dir = repo_root().join("examples").join(sample);
+fn load_scenarios() -> Vec<Scenario> {
+    let manifest_path = repo_root().join("golden-scenarios.json");
+    let raw = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
+    let manifest: Manifest = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", manifest_path.display()));
+    manifest.scenarios
+}
+
+/// Render `scenario`'s sample at its fixed time (plus any debug-render mode),
+/// capture to a temp PNG, and assert it matches the committed
+/// `examples/<sample>/golden/<name>.png` within tolerance.
+fn assert_scenario_matches(scenario: &Scenario) {
+    let sample_dir = repo_root().join("examples").join(&scenario.sample);
     let dylib = format!(
         "{}game_native{}",
         std::env::consts::DLL_PREFIX,
@@ -60,33 +87,44 @@ fn assert_sample_matches(sample: &str, out_name: &str, golden_name: &str, extra_
     let dylib_rel = format!("build-native/target/debug/{}", dylib);
     assert!(
         sample_dir.join(&dylib_rel).exists(),
-        "game dylib not found at {} — run `functor -d examples/{sample} build native` first",
-        sample_dir.join(&dylib_rel).display()
+        "game dylib not found at {} — run `functor -d examples/{} build native` first",
+        sample_dir.join(&dylib_rel).display(),
+        scenario.sample
     );
 
-    let out = std::env::temp_dir().join(out_name);
+    let out = std::env::temp_dir().join(format!("functor-golden-{}.png", scenario.name));
     let _ = std::fs::remove_file(&out);
 
+    let fixed_time = scenario.fixed_time.to_string();
     let mut args = vec![
         "--game-path",
         &dylib_rel,
         "--fixed-time",
-        "2.0",
+        &fixed_time,
         "--capture-frame",
         out.to_str().unwrap(),
         "--capture-time",
         "1.0",
     ];
-    args.extend_from_slice(extra_args);
+    if let Some(mode) = &scenario.debug_render {
+        args.extend_from_slice(&["--debug-render", mode]);
+    }
 
     let status = Command::new(env!("CARGO_BIN_EXE_functor-runner"))
         .current_dir(&sample_dir)
         .args(&args)
         .status()
         .expect("spawn functor-runner");
-    assert!(status.success(), "functor-runner exited with {status}");
+    assert!(
+        status.success(),
+        "functor-runner exited with {status} for scenario '{}'",
+        scenario.name
+    );
 
-    assert_images_match(&out, &sample_dir.join("golden").join(golden_name));
+    let golden = sample_dir
+        .join("golden")
+        .join(format!("{}.png", scenario.name));
+    assert_images_match(&out, &golden);
 }
 
 fn assert_images_match(actual_path: &Path, golden_path: &Path) {
@@ -99,7 +137,7 @@ fn assert_images_match(actual_path: &Path, golden_path: &Path) {
         actual.dimensions(),
         golden.dimensions(),
         "dimensions differ: captured {:?} vs golden {:?} — goldens are display-specific; \
-         regenerate with the commands in tests/golden.rs",
+         regenerate them on this machine",
         actual.dimensions(),
         golden.dimensions()
     );
@@ -132,29 +170,16 @@ fn assert_images_match(actual_path: &Path, golden_path: &Path) {
 }
 
 #[test]
-#[ignore = "needs a GL display and a built game dylib; run after `functor build native` with --ignored"]
-fn hello_matches_golden() {
-    assert_sample_matches("hello", "functor-golden-hello.png", "hello-t2.png", &[]);
-}
+#[ignore = "needs a GL display and built game dylibs; run after `functor build native` with --ignored"]
+fn native_scenarios_match_golden() {
+    let scenarios: Vec<_> = load_scenarios()
+        .into_iter()
+        .filter(|s| s.targets.iter().any(|t| t == "native"))
+        .collect();
+    assert!(!scenarios.is_empty(), "no native golden scenarios in manifest");
 
-#[test]
-#[ignore = "needs a GL display and a built game dylib; run after `functor build native` with --ignored"]
-fn lighting_matches_golden() {
-    assert_sample_matches(
-        "lighting",
-        "functor-golden-lighting.png",
-        "lighting-t2.png",
-        &[],
-    );
-}
-
-#[test]
-#[ignore = "needs a GL display and a built game dylib; run after `functor build native` with --ignored"]
-fn hello_normals_matches_golden() {
-    assert_sample_matches(
-        "hello",
-        "functor-golden-hello-normals.png",
-        "hello-normals-t2.png",
-        &["--debug-render", "normals"],
-    );
+    for scenario in &scenarios {
+        println!("--- golden scenario: {} ---", scenario.name);
+        assert_scenario_matches(scenario);
+    }
 }

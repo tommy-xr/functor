@@ -1,0 +1,26 @@
+{
+  "_comment": "Single source of truth for golden-image regression scenarios, shared by BOTH harnesses: the native runner test (runtime/functor-runtime-desktop/tests/golden.rs) and the wasm Playwright test (e2e/golden-wasm.spec.mjs). Each scenario renders a sample at a fixed frame time (deterministic pose) with an optional debug-render mode, and is compared to a per-target reference image. `targets` lists which harnesses run it (native captures the runner framebuffer; wasm screenshots the WebGL2 canvas). Adding a scenario here covers both targets at once. Reference images: native at examples/<sample>/golden/<name>.png, wasm at e2e/golden-wasm.spec.mjs-snapshots/<name>-wasm-<platform>.png.",
+  "scenarios": [
+    {
+      "name": "hello-t2",
+      "sample": "hello",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": ["native"]
+    },
+    {
+      "name": "hello-normals-t2",
+      "sample": "hello",
+      "fixedTime": 2.0,
+      "debugRender": "normals",
+      "targets": ["native"]
+    },
+    {
+      "name": "lighting-t2",
+      "sample": "lighting",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": ["native", "wasm"]
+    }
+  ]
+}
