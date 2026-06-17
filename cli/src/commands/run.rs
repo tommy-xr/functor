@@ -37,26 +37,43 @@ pub async fn execute(
             util::ShellCommand::run_sequential(commands).await
         }
         Environment::Wasm => {
-            if !runner_args.is_empty() {
+            // `--no-open` keeps the dev server but skips launching the system
+            // browser — for headless/scripted runs (e.g. the Playwright golden,
+            // which drives its own browser; otherwise every run pops a stray
+            // tab). Other args are still ignored on wasm.
+            let no_open = runner_args.iter().any(|a| a == "--no-open");
+            let ignored: Vec<&str> = runner_args
+                .iter()
+                .filter(|a| a.as_str() != "--no-open")
+                .map(|s| s.as_str())
+                .collect();
+            if !ignored.is_empty() {
                 eprintln!(
                     "warning: ignoring runner args (not supported for wasm): {}",
-                    runner_args.join(" ")
+                    ignored.join(" ")
                 );
             }
-            let cmd = if std::env::consts::OS == "windows" {
-                "start"
-            } else {
-                "open"
-            };
+
             let wasm_server_start = WasmDevServer::start(working_directory);
-            let commands = vec![ShellCommand {
-                prefix: "[Open Browser]",
-                cmd,
-                cwd: working_directory,
-                env: vec![],
-                args: vec!["http://127.0.0.1:8080"],
-            }];
-            util::ShellCommand::run_sequential(commands).await?;
+            if no_open {
+                println!(
+                    "[Functor] wasm server at http://127.0.0.1:8080 (--no-open: skipping browser)"
+                );
+            } else {
+                let cmd = if std::env::consts::OS == "windows" {
+                    "start"
+                } else {
+                    "open"
+                };
+                let commands = vec![ShellCommand {
+                    prefix: "[Open Browser]",
+                    cmd,
+                    cwd: working_directory,
+                    env: vec![],
+                    args: vec!["http://127.0.0.1:8080"],
+                }];
+                util::ShellCommand::run_sequential(commands).await?;
+            }
             wasm_server_start.await
         }
     }
