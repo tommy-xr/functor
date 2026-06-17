@@ -240,18 +240,18 @@ async fn run_async() -> Result<(), JsValue> {
             let frame: Frame = functor_runtime_common::from_js_value(val);
 
             // Shadow pass: render the scene into the shadow map from the first
-            // shadow-casting directional light, before the main pass.
+            // shadow-casting light (directional or spot), before the main pass.
+            // Mirrors the desktop runtime; skinned casters come for free via the
+            // shared depth pass in Scene3D::render.
             let shadow = frame
                 .lights
                 .iter()
-                .find_map(|l| match l {
-                    functor_runtime_common::Light::Directional { direction, .. } => Some(*direction),
-                    _ => None,
+                .enumerate()
+                .find_map(|(i, l)| {
+                    functor_runtime_common::shadow::light_space_matrix(l).map(|m| (i, m))
                 })
-                .map(|direction| {
-                    let light_space_matrix =
-                        functor_runtime_common::shadow::directional_light_space_matrix(direction);
-                    functor_runtime_common::shadow::render_directional_shadow(
+                .map(|(light_index, light_space_matrix)| {
+                    functor_runtime_common::shadow::render_shadow_pass(
                         &gl,
                         shader_version,
                         asset_cache.clone(),
@@ -265,6 +265,7 @@ async fn run_async() -> Result<(), JsValue> {
                     functor_runtime_common::ShadowUniforms {
                         depth_texture: shadow_map.depth_texture,
                         light_space_matrix,
+                        light_index: light_index as i32,
                     }
                 });
 
