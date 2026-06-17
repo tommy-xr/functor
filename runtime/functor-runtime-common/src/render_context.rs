@@ -21,6 +21,9 @@ pub enum RenderPass {
 pub struct ShadowUniforms {
     pub depth_texture: glow::Texture,
     pub light_space_matrix: Matrix4<f32>,
+    /// Index (into the packed light array) of the light that cast this map, so
+    /// the lit shader applies the shadow to that light's contribution only.
+    pub light_index: i32,
 }
 
 /// Global override for how the scene is shaded — a debug aid, not a per-material

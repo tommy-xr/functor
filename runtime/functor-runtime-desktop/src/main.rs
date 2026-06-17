@@ -329,12 +329,19 @@ pub async fn main() {
             game.check_hot_reload(time.clone());
 
             glfw.poll_events();
+            // When time is pinned (`--fixed-time` or the debug server's /time),
+            // we're in a deterministic/capture mode — ignore user window input so
+            // the pose stays reproducible (e.g. a stray mouse-over during a golden
+            // capture can't turn the camera). Window close/escape and the debug
+            // server's /input still work.
+            let ignore_user_input = held_time.is_some();
             for (_, event) in glfw::flush_messages(&events) {
                 match event {
                     glfw::WindowEvent::Close => window.set_should_close(true),
                     glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                         window.set_should_close(true)
                     }
+                    _ if ignore_user_input => {}
                     glfw::WindowEvent::Key(key, _, action, _) => match action {
                         Action::Press | Action::Repeat => {
                             game.key_event(map_key(key) as i32, true)
@@ -360,18 +367,16 @@ pub async fn main() {
             let frame = game.render(time.clone());
 
             // Shadow pass: render the scene into the shadow map from the first
-            // shadow-casting directional light, before the main pass.
+            // shadow-casting light (directional or spot), before the main pass.
             let shadow = frame
                 .lights
                 .iter()
-                .find_map(|l| match l {
-                    functor_runtime_common::Light::Directional { direction, .. } => Some(*direction),
-                    _ => None,
+                .enumerate()
+                .find_map(|(i, l)| {
+                    functor_runtime_common::shadow::light_space_matrix(l).map(|m| (i, m))
                 })
-                .map(|direction| {
-                    let light_space_matrix =
-                        functor_runtime_common::shadow::directional_light_space_matrix(direction);
-                    functor_runtime_common::shadow::render_directional_shadow(
+                .map(|(light_index, light_space_matrix)| {
+                    functor_runtime_common::shadow::render_shadow_pass(
                         &gl,
                         shader_version,
                         asset_cache.clone(),
@@ -385,6 +390,7 @@ pub async fn main() {
                     functor_runtime_common::ShadowUniforms {
                         depth_texture: shadow_map.depth_texture,
                         light_space_matrix,
+                        light_index: light_index as i32,
                     }
                 });
 

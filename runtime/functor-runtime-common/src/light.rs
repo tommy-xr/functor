@@ -8,19 +8,24 @@ pub enum Light {
     /// surface regardless of orientation.
     Ambient { color: [f32; 3] },
     /// A distant "sun": parallel rays travelling along `direction`. `intensity`
-    /// scales `color`.
+    /// scales `color`. `casts_shadows` opts it into rendering a shadow map.
     Directional {
         direction: [f32; 3],
         color: [f32; 3],
         intensity: f32,
+        #[serde(default)]
+        casts_shadows: bool,
     },
     /// An omnidirectional point light at `position`, fading to nothing by
-    /// `range` (world units).
+    /// `range` (world units). (`casts_shadows` is carried for the API, but point
+    /// shadows — a cube map — are not implemented yet.)
     Point {
         position: [f32; 3],
         color: [f32; 3],
         intensity: f32,
         range: f32,
+        #[serde(default)]
+        casts_shadows: bool,
     },
     /// A cone of light from `position` aimed along `direction`, with a soft edge
     /// at `cone_angle` (radians from the axis) and distance falloff to `range`.
@@ -31,6 +36,8 @@ pub enum Light {
         intensity: f32,
         range: f32,
         cone_angle: f32,
+        #[serde(default)]
+        casts_shadows: bool,
     },
 }
 
@@ -52,6 +59,7 @@ impl Light {
             direction: [dx, dy, dz],
             color: [r, g, b],
             intensity,
+            casts_shadows: false,
         }
     }
 
@@ -61,6 +69,7 @@ impl Light {
             color: [r, g, b],
             intensity,
             range,
+            casts_shadows: false,
         }
     }
 
@@ -86,6 +95,66 @@ impl Light {
             intensity,
             range,
             cone_angle,
+            casts_shadows: false,
+        }
+    }
+
+    /// Opt this light into casting shadows (renders a shadow map). No-op for
+    /// ambient lights.
+    pub fn cast_shadows(self) -> Light {
+        match self {
+            Light::Directional {
+                direction,
+                color,
+                intensity,
+                ..
+            } => Light::Directional {
+                direction,
+                color,
+                intensity,
+                casts_shadows: true,
+            },
+            Light::Point {
+                position,
+                color,
+                intensity,
+                range,
+                ..
+            } => Light::Point {
+                position,
+                color,
+                intensity,
+                range,
+                casts_shadows: true,
+            },
+            Light::Spot {
+                position,
+                direction,
+                color,
+                intensity,
+                range,
+                cone_angle,
+                ..
+            } => Light::Spot {
+                position,
+                direction,
+                color,
+                intensity,
+                range,
+                cone_angle,
+                casts_shadows: true,
+            },
+            Light::Ambient { .. } => self,
+        }
+    }
+
+    /// Whether this light is opted into casting shadows.
+    pub fn casts_shadows(&self) -> bool {
+        match self {
+            Light::Directional { casts_shadows, .. }
+            | Light::Point { casts_shadows, .. }
+            | Light::Spot { casts_shadows, .. } => *casts_shadows,
+            Light::Ambient { .. } => false,
         }
     }
 }
@@ -142,6 +211,7 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
                 direction,
                 color,
                 intensity,
+                ..
             } => {
                 u.types[i] = TYPE_DIRECTIONAL;
                 set_color(color, *intensity);
@@ -152,6 +222,7 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
                 color,
                 intensity,
                 range,
+                ..
             } => {
                 u.types[i] = TYPE_POINT;
                 set_color(color, *intensity);
@@ -165,6 +236,7 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
                 intensity,
                 range,
                 cone_angle,
+                ..
             } => {
                 u.types[i] = TYPE_SPOT;
                 set_color(color, *intensity);

@@ -59,10 +59,13 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
         uniform float lightRange[MAX_LIGHTS];    // point / spot falloff distance
         uniform float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
 
-        // Directional shadow map (the first casting directional light only, for now).
+        // Shadow map of the single casting light (directional or spot for now).
+        // `shadowLightIndex` is which light it belongs to, so only that light's
+        // contribution is shadowed.
         uniform sampler2D shadowMap;
         uniform mat4 lightSpaceMatrix;
         uniform int shadowEnabled;
+        uniform int shadowLightIndex;
 
         // Inverse of the depth material's packDepth (RGBA8 -> [0,1] depth).
         float unpackDepth(vec4 rgba) {
@@ -70,7 +73,9 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
         }
 
         // 0 = fully lit, 1 = fully shadowed. 3x3 PCF; out-of-frustum reads as lit.
-        float directionalShadow(vec3 n, vec3 lightDir) {
+        // Works for ortho (directional) and perspective (spot) light matrices —
+        // the divide by w handles the perspective case.
+        float sampleShadow(float ndotl) {
             vec4 lightSpacePos = lightSpaceMatrix * vec4(worldPos, 1.0);
             vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
             proj = proj * 0.5 + 0.5;
@@ -78,7 +83,7 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
                 return 0.0;
             }
             // Slope-scaled bias to fight shadow acne on grazing surfaces.
-            float bias = max(0.0015 * (1.0 - dot(n, -lightDir)), 0.0008);
+            float bias = max(0.0015 * (1.0 - ndotl), 0.0008);
             vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
             float shadow = 0.0;
             for (int x = -1; x <= 1; x++) {
@@ -96,19 +101,21 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
 
             for (int i = 0; i < numLights; i++) {
                 int t = lightType[i];
+                vec3 contrib = vec3(0.0);
+                float ndotl = 0.0;
                 if (t == 0) {
-                    lighting += lightColor[i];
+                    lighting += lightColor[i]; // ambient: never shadowed
+                    continue;
                 } else if (t == 1) {
                     vec3 ld = normalize(lightDirection[i]);
-                    float ndotl = max(dot(n, -ld), 0.0);
-                    float shadow = (shadowEnabled == 1) ? directionalShadow(n, ld) : 0.0;
-                    lighting += lightColor[i] * ndotl * (1.0 - shadow);
+                    ndotl = max(dot(n, -ld), 0.0);
+                    contrib = lightColor[i] * ndotl;
                 } else {
                     // Point (t == 2) or spot (t == 3): both attenuate by distance.
                     vec3 toLight = lightPosition[i] - worldPos;
                     float dist = length(toLight);
                     vec3 l = toLight / max(dist, 1e-4);
-                    float ndotl = max(dot(n, l), 0.0);
+                    ndotl = max(dot(n, l), 0.0);
 
                     float range = max(lightRange[i], 1e-4);
                     float att = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
@@ -123,8 +130,14 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
                         spot = clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
                     }
 
-                    lighting += lightColor[i] * ndotl * att * spot;
+                    contrib = lightColor[i] * ndotl * att * spot;
                 }
+
+                // Shadow only the casting light's contribution.
+                if (shadowEnabled == 1 && i == shadowLightIndex) {
+                    contrib *= (1.0 - sampleShadow(ndotl));
+                }
+                lighting += contrib;
             }
 
             vec4 albedo = baseColor;
@@ -152,6 +165,7 @@ struct Uniforms {
     shadow_map_loc: UniformLocation,
     light_space_matrix_loc: UniformLocation,
     shadow_enabled_loc: UniformLocation,
+    shadow_light_index_loc: UniformLocation,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -205,6 +219,8 @@ impl Material for LitMaterial {
                     light_space_matrix_loc: shader
                         .get_uniform_location(ctx.gl, "lightSpaceMatrix"),
                     shadow_enabled_loc: shader.get_uniform_location(ctx.gl, "shadowEnabled"),
+                    shadow_light_index_loc: shader
+                        .get_uniform_location(ctx.gl, "shadowLightIndex"),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -247,6 +263,11 @@ impl Material for LitMaterial {
                 match ctx.shadow {
                     Some(shadow) => {
                         p.set_uniform_1i(ctx.gl, &uniforms.shadow_enabled_loc, 1);
+                        p.set_uniform_1i(
+                            ctx.gl,
+                            &uniforms.shadow_light_index_loc,
+                            shadow.light_index,
+                        );
                         p.set_uniform_matrix4(
                             ctx.gl,
                             &uniforms.light_space_matrix_loc,

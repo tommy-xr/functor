@@ -112,6 +112,10 @@ module Scene3D =
         let spot (l: SpotLight): Light =
             spotRaw (l.Position.x, l.Position.y, l.Position.z, l.Direction.x, l.Direction.y, l.Direction.z, l.Color.r, l.Color.g, l.Color.b, l.Intensity, l.Range, l.ConeAngle)
 
+        /// Opt a light into casting shadows (directional or spot for now).
+        [<Emit("functor_runtime_common::Light::cast_shadows($0)")>]
+        let castShadows (light: Light): Light = nativeOnly
+
     module MeshSelector =
         [<Emit("functor_runtime_common::MeshSelector::all()")>]
         let all (): MeshSelector = nativeOnly
