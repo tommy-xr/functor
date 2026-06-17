@@ -19,6 +19,12 @@ node_modules
 jspm_packages
 fable_modules
 
+# Playwright (wasm golden test) — transient run artifacts; the spec and the
+# committed snapshots under e2e/ are kept.
+test-results
+playwright-report
+.last-run.json
+
 # Binaries
 bin
 obj

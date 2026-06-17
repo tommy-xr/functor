@@ -58,6 +58,22 @@ fn debug_render_mode_from_url() -> functor_runtime_common::DebugRenderMode {
     DebugRenderMode::Default
 }
 
+/// The wasm counterpart of the desktop `--fixed-time` flag: read
+/// `?fixed-time=<seconds>` from the page URL to pin the frame time, so the
+/// render is deterministic (for headless golden screenshots). Returns `None`
+/// when absent or unparseable (normal wall-clock animation).
+fn fixed_time_from_url() -> Option<f32> {
+    let search = window().location().search().unwrap_or_default();
+    let query = search.trim_start_matches('?');
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        if kv.next() == Some("fixed-time") {
+            return kv.next().and_then(|v| v.parse::<f32>().ok());
+        }
+    }
+    None
+}
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = game, js_name = render)]
@@ -195,15 +211,20 @@ async fn run_async() -> Result<(), JsValue> {
 
         let scene_context = SceneContext::new();
 
-        // Read once from the page URL; it doesn't change over the session. The
-        // `move` closure below captures it (the mode is `Copy`).
+        // Read once from the page URL; they don't change over the session. The
+        // `move` closure below captures them (both are `Copy`).
         let debug_render_mode = debug_render_mode_from_url();
+        let fixed_time = fixed_time_from_url();
 
         *g.borrow_mut() = Some(Closure::new(move || {
             let now = performance.now() as f32;
-            let frame_time = FrameTime {
-                dts: (now - last_time) / 1000.0,
-                tts: (now - initial_time) / 1000.0,
+            // Pin the frame time when `?fixed-time` is set (deterministic capture).
+            let frame_time = match fixed_time {
+                Some(t) => FrameTime { dts: 0.0, tts: t },
+                None => FrameTime {
+                    dts: (now - last_time) / 1000.0,
+                    tts: (now - initial_time) / 1000.0,
+                },
             };
 
             last_time = now;

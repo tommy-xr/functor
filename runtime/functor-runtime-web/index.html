@@ -93,7 +93,10 @@
           return tick_wasm(frameTime);
         }
 
-        setupInput();
+        // In a deterministic capture (?fixed-time), don't wire up input — a
+        // stray mouse move would turn the camera, like on native.
+        const deterministic = new URLSearchParams(window.location.search).has("fixed-time");
+        if (!deterministic) setupInput();
         startRuntime();
       });
     </script>
