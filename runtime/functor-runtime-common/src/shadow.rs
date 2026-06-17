@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cgmath::{ortho, vec3, InnerSpace, Matrix4, Point3, SquareMatrix};
+use cgmath::{ortho, perspective, vec3, InnerSpace, Matrix4, Point3, Rad, SquareMatrix};
 use glow::HasContext;
 
 use crate::{
@@ -38,6 +38,11 @@ impl ShadowMap {
             );
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+            // Declare a single mip level so the texture is unambiguously complete
+            // (some drivers — macOS — otherwise intermittently treat the FBO color
+            // texture as "unloadable" and sample zero).
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_BASE_LEVEL, 0);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, 0);
             // Clamp so samples outside the light frustum read the edge; the
             // shader additionally treats out-of-range projections as lit.
             gl.tex_parameter_i32(
@@ -116,11 +121,68 @@ pub fn directional_light_space_matrix(direction: [f32; 3]) -> Matrix4<f32> {
     proj * view
 }
 
+/// World→light-clip matrix for a spot light: a perspective frustum from
+/// `position` along `direction`, with a field of view covering the cone (plus a
+/// small margin so PCF near the cone edge stays inside the map) and the far
+/// plane at `range`.
+pub fn spot_light_space_matrix(
+    position: [f32; 3],
+    direction: [f32; 3],
+    cone_angle: f32,
+    range: f32,
+) -> Matrix4<f32> {
+    let pos = vec3(position[0], position[1], position[2]);
+    let dir = vec3(direction[0], direction[1], direction[2]).normalize();
+    let target = pos + dir;
+
+    let up = if dir.y.abs() > 0.99 {
+        vec3(0.0, 0.0, 1.0)
+    } else {
+        vec3(0.0, 1.0, 0.0)
+    };
+
+    let view = Matrix4::look_at_rh(
+        Point3::new(pos.x, pos.y, pos.z),
+        Point3::new(target.x, target.y, target.z),
+        up,
+    );
+    // FOV is the full cone angle (cone_angle is the half-angle), with a margin,
+    // clamped below pi.
+    let fovy = (cone_angle * 2.0 * 1.1).min(3.0);
+    let proj = perspective(Rad(fovy), 1.0, 0.1, range.max(1.0));
+    proj * view
+}
+
+/// The world→light-clip matrix for a shadow-casting light (`None` if the light
+/// does not cast, or for types without a shadow path yet — point/ambient).
+pub fn light_space_matrix(light: &Light) -> Option<Matrix4<f32>> {
+    if !light.casts_shadows() {
+        return None;
+    }
+    match light {
+        Light::Directional { direction, .. } => Some(directional_light_space_matrix(*direction)),
+        Light::Spot {
+            position,
+            direction,
+            cone_angle,
+            range,
+            ..
+        } => Some(spot_light_space_matrix(
+            *position,
+            *direction,
+            *cone_angle,
+            *range,
+        )),
+        // Point shadows need a cube map (a later step); ambient never casts.
+        _ => None,
+    }
+}
+
 /// Render the scene into `shadow_map` from the light's viewpoint (a depth-only
 /// pass). Restores the framebuffer binding afterward; the caller restores the
 /// viewport for the main pass.
 #[allow(clippy::too_many_arguments)]
-pub fn render_directional_shadow(
+pub fn render_shadow_pass(
     gl: &glow::Context,
     shader_version: &str,
     asset_cache: Arc<AssetCache>,

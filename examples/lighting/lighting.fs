@@ -147,24 +147,31 @@ let init (_args: array<string>) =
                 (Math.Angle.radians world.pitch)
                 (Math.Angle.degrees 60.0f)
 
-        // The full gamut: a dim cool ambient, a soft directional fill, the three
-        // orbiting colored point lights, and a white spot angled down at the
-        // cylinder.
+        // A "searchlight" spot high above, slowly sweeping across the objects —
+        // this is the shadow caster, so the object shadows rake across the ground
+        // and track as it sweeps.
+        // High and behind the objects, angled forward so shadows rake toward the
+        // camera (and aren't hidden directly under each object).
+        let spotPos = Vector3.xyz 0.0f 7.0f 5.0f
+        let sweepX = sin (frameTime.tts * 0.5f) * 3.0f
+        let spotDir = Vector3.xyz (sweepX - spotPos.x) (0.3f - spotPos.y) (0.0f - spotPos.z)
+
         let pointLights =
             pointColors
             |> Array.mapi (fun i c ->
-                Light.point({ Position = pointPos i; Color = c; Intensity = 2.0f; Range = 5.0f }))
+                Light.point({ Position = pointPos i; Color = c; Intensity = 1.4f; Range = 4.0f }))
 
         let lights =
             Array.append
                 [|
-                    Light.ambient(Color.rgb 0.1f 0.1f 0.14f)
-                    // The "sun" — casts the shadows; kept moderate so the lit
-                    // ground stays mid-tone and the shadows read by contrast.
-                    Light.directional({ Direction = Vector3.xyz 0.4f -1.0f 0.3f; Color = Color.rgb 1.0f 0.97f 0.9f; Intensity = 0.75f })
+                    Light.ambient(Color.rgb 0.08f 0.08f 0.11f)
+                    // A dim, non-casting fill so areas outside the spot aren't black.
+                    Light.directional({ Direction = Vector3.xyz 0.4f -1.0f 0.3f; Color = Color.rgb 0.9f 0.92f 1.0f; Intensity = 0.25f })
                 |]
                 (Array.append pointLights [|
-                    Light.spot({ Position = Vector3.xyz 0.0f 5.0f 2.5f; Direction = Vector3.xyz 0.0f -1.0f 0.0f; Color = Color.rgb 1.0f 1.0f 0.95f; Intensity = 4.0f; Range = 14.0f; ConeAngle = 0.45f })
+                    // The shadow-casting searchlight.
+                    Light.spot({ Position = spotPos; Direction = spotDir; Color = Color.rgb 1.0f 1.0f 0.95f; Intensity = 5.0f; Range = 18.0f; ConeAngle = 0.5f })
+                    |> Light.castShadows
                 |])
 
         Graphics.Frame.createLit camera scene lights

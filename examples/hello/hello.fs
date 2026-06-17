@@ -259,7 +259,7 @@ let init (_args: array<string>) =
         // right; lit surfaces shade by orientation, emissive ones stay bright.
         let lights = [|
             Light.ambient(Color.rgb 0.2f 0.2f 0.28f)
-            Light.directional({ Direction = Vector3.xyz -0.5f -1.0f -0.35f; Color = Color.rgb 1.0f 0.96f 0.85f; Intensity = 1.1f })
+            Light.directional({ Direction = Vector3.xyz -0.5f -1.0f -0.35f; Color = Color.rgb 1.0f 0.96f 0.85f; Intensity = 1.1f }) |> Light.castShadows
         |]
 
         Graphics.Frame.createLit camera scene lights
