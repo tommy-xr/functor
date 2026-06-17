@@ -279,6 +279,10 @@ pub async fn main() {
 
         let scene_context = SceneContext::new();
 
+        // The directional shadow map: a depth texture rendered from the casting
+        // light each frame, sampled by the lit material.
+        let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
+
         // let texture_future = async {
         //     let bytes = load_bytes_async("crate.png").await;
         //     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -347,19 +351,48 @@ pub async fn main() {
 
             game.tick(time.clone());
 
-            // Follow window resizes: query the drawable size each frame and set
-            // the GL viewport to match. Framebuffer size is in pixels, so this
-            // handles HiDPI/retina correctly.
+            // Follow window resizes: query the drawable size each frame.
+            // Framebuffer size is in pixels, so this handles HiDPI/retina.
             let (fb_width, fb_height) = window.get_framebuffer_size();
             let viewport = functor_runtime_common::Viewport::new(fb_width as u32, fb_height as u32);
-            gl.viewport(0, 0, fb_width, fb_height);
 
-            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-
-            // The game supplies the camera/scene/lights as part of its frame;
-            // build the render context (which carries the lights) from it, then
-            // derive the view/projection matrices from the camera.
+            // The game supplies the camera/scene/lights as part of its frame.
             let frame = game.render(time.clone());
+
+            // Shadow pass: render the scene into the shadow map from the first
+            // shadow-casting directional light, before the main pass.
+            let shadow = frame
+                .lights
+                .iter()
+                .find_map(|l| match l {
+                    functor_runtime_common::Light::Directional { direction, .. } => Some(*direction),
+                    _ => None,
+                })
+                .map(|direction| {
+                    let light_space_matrix =
+                        functor_runtime_common::shadow::directional_light_space_matrix(direction);
+                    functor_runtime_common::shadow::render_directional_shadow(
+                        &gl,
+                        shader_version,
+                        asset_cache.clone(),
+                        time.clone(),
+                        &frame.lights,
+                        &frame.scene,
+                        &scene_context,
+                        &shadow_map,
+                        light_space_matrix,
+                    );
+                    functor_runtime_common::ShadowUniforms {
+                        depth_texture: shadow_map.depth_texture,
+                        light_space_matrix,
+                    }
+                });
+
+            // Main (forward) pass into the window framebuffer. Reset the clear
+            // color (the shadow pass cleared its depth-color buffer to white).
+            gl.viewport(0, 0, fb_width, fb_height);
+            gl.clear_color(0.1, 0.2, 0.3, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
             let render_context = functor_runtime_common::RenderContext {
                 gl: &gl,
@@ -368,6 +401,8 @@ pub async fn main() {
                 frame_time: time.clone(),
                 debug_render_mode: args.debug_render.into(),
                 lights: &frame.lights,
+                render_pass: functor_runtime_common::RenderPass::Forward,
+                shadow,
             };
 
             let view_matrix = frame.camera.view_matrix();

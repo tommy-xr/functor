@@ -24,6 +24,7 @@ pub trait Material {
 
 mod basic_material;
 mod color_material;
+mod depth_material;
 mod emissive_material;
 mod lit_material;
 mod normal_debug_material;
@@ -32,6 +33,7 @@ mod skinned_normal_debug_material;
 
 pub use basic_material::*;
 pub use color_material::*;
+pub use depth_material::*;
 pub use emissive_material::*;
 pub use lit_material::*;
 pub use normal_debug_material::*;

@@ -83,6 +83,7 @@ pub mod render;
 mod render_context;
 mod scene3d;
 mod shader;
+pub mod shadow;
 mod shader_program;
 pub mod texture;
 mod viewport;
