@@ -88,9 +88,38 @@ module Runtime
     ///////////////////////////////
     // Native API
     ///////////////////////////////
-    module Native = 
+    module Native =
+        // Networking bridge. The outbound command queue and async inbox live on
+        // this (dylib) side; the host reaches them only through these exports,
+        // never by sharing the static across the dylib boundary. The host drains
+        // pending commands, performs the I/O, and pushes results back in.
+        [<Emit("functor_runtime_common::net::drain_commands_json().into()")>]
+        let private drainCommandsJson () : string = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_http_response($0 as u64, $1 as u16, $2.to_string().into_bytes())")>]
+        let private pushHttpResponse (token: int) (status: int) (body: string) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_http_error($0 as u64, $1.to_string())")>]
+        let private pushHttpError (token: int) (message: string) : unit = nativeOnly
+
         [<OuterAttr("no_mangle")>]
         let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
+
+        /// Host: take the networking commands the game has queued this frame, as a
+        /// JSON array of NetCommand. The host performs the I/O and reports results
+        /// back via `net_push_http_response` / `net_push_http_error`.
+        [<OuterAttr("no_mangle")>]
+        let net_drain_commands_json () : string = drainCommandsJson ()
+
+        /// Host: deliver a completed HTTP response into the game's async inbox.
+        [<OuterAttr("no_mangle")>]
+        let net_push_http_response (token: int, status: int, body: string) : unit =
+            pushHttpResponse token status body
+
+        /// Host: deliver a transport-level failure for a request into the inbox.
+        [<OuterAttr("no_mangle")>]
+        let net_push_http_error (token: int, message: string) : unit =
+            pushHttpError token message
 
         [<OuterAttr("no_mangle")>]
         let tick(frameTime: Time.FrameTime) =
@@ -233,6 +262,17 @@ module Runtime
                     |> Array.iter (fun msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue)
                 | None -> ()
                 lastTts <- Some tts
+
+                // Drain the async inbox: HTTP results that arrived (on some later
+                // frame) since the request effect ran. Route each to the game's
+                // `Sub.httpResponses` decoders, enqueueing through the same update
+                // path. Unlike timers this is gated on results existing, so the
+                // common no-network case adds only an empty-array drain.
+                let httpResults = Net.drainHttpResults ()
+                if httpResults.Length > 0 then
+                    GameRunner.subscriptions myGame settledBeforeSubs
+                    |> Sub.inboundMessagesForFrame httpResults
+                    |> Array.iter (fun msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue)
 
                 let settledState = drain settledBeforeSubs
 

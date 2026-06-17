@@ -20,6 +20,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use fable_library_rust::NativeArray_;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +60,57 @@ pub enum NetInbound {
         token: u64,
         message: String,
     },
+}
+
+/// Flattened, F#-facing view of a [`NetInbound`]: one struct the game's `Sub`
+/// decoder reads via field accessors, instead of a two-variant enum. A transport
+/// error is `status == 0` with `error` set (`is_ok() == false`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpResult {
+    pub token: u64,
+    pub status: u16,
+    pub body: Vec<u8>,
+    pub error: Option<String>,
+}
+
+impl HttpResult {
+    /// The response body decoded as UTF-8 (lossy). Phase 1 games are text/JSON;
+    /// a raw-bytes accessor can come later.
+    pub fn body_text(&self) -> String {
+        String::from_utf8_lossy(&self.body).to_string()
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.error.is_none()
+    }
+
+    /// The error message, or an empty string on success.
+    pub fn error_text(&self) -> String {
+        self.error.clone().unwrap_or_default()
+    }
+}
+
+impl From<NetInbound> for HttpResult {
+    fn from(inbound: NetInbound) -> HttpResult {
+        match inbound {
+            NetInbound::HttpResponse {
+                token,
+                status,
+                body,
+            } => HttpResult {
+                token,
+                status,
+                body,
+                error: None,
+            },
+            NetInbound::HttpError { token, message } => HttpResult {
+                token,
+                status: 0,
+                body: Vec::new(),
+                error: Some(message),
+            },
+        }
+    }
 }
 
 /// A thread-safe FIFO queue of plain-data items. Native I/O completes on tokio
@@ -122,9 +174,37 @@ pub fn push_inbound(item: NetInbound) {
     INBOX.push(item);
 }
 
+/// Host (primitive ABI): deliver a successful HTTP response. Kept to plain scalars
+/// + bytes so the dylib's exported `no_mangle` shim stays trivial.
+pub fn push_http_response(token: u64, status: u16, body: Vec<u8>) {
+    push_inbound(NetInbound::HttpResponse {
+        token,
+        status,
+        body,
+    });
+}
+
+/// Host (primitive ABI): deliver a transport-level failure for a request.
+pub fn push_http_error(token: u64, message: String) {
+    push_inbound(NetInbound::HttpError { token, message });
+}
+
+/// Host: drain the outbound commands as a JSON array. Used both by the real
+/// dispatcher and by the debug server to show what the game has requested.
+pub fn drain_commands_json() -> String {
+    serde_json::to_string(&drain_commands()).unwrap_or_else(|_| "[]".to_string())
+}
+
 /// Executor: take every inbound result queued since the last frame.
 pub fn drain_inbound() -> Vec<NetInbound> {
     INBOX.drain()
+}
+
+/// Executor (F#-facing): drain the inbox as an array of [`HttpResult`], ready for
+/// a `Sub` decoder. Returns a Fable `NativeArray` so it crosses to F# as `array`.
+pub fn drain_http_results() -> NativeArray_::Array<HttpResult> {
+    let results: Vec<HttpResult> = INBOX.drain().into_iter().map(HttpResult::from).collect();
+    NativeArray_::array_from(results)
 }
 
 #[cfg(test)]
@@ -167,6 +247,29 @@ mod tests {
         let json = serde_json::to_string(&cmd).unwrap();
         let back: NetCommand = serde_json::from_str(&json).unwrap();
         assert_eq!(cmd, back);
+    }
+
+    #[test]
+    fn http_result_flattens_response_and_error() {
+        let ok: HttpResult = NetInbound::HttpResponse {
+            token: 1,
+            status: 200,
+            body: b"hi".to_vec(),
+        }
+        .into();
+        assert!(ok.is_ok());
+        assert_eq!(ok.status, 200);
+        assert_eq!(ok.body_text(), "hi");
+        assert_eq!(ok.error_text(), "");
+
+        let err: HttpResult = NetInbound::HttpError {
+            token: 2,
+            message: "boom".to_string(),
+        }
+        .into();
+        assert!(!err.is_ok());
+        assert_eq!(err.status, 0);
+        assert_eq!(err.error_text(), "boom");
     }
 
     #[test]
