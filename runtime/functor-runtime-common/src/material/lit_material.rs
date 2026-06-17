@@ -1,4 +1,6 @@
 use cgmath::Matrix4;
+use cgmath::SquareMatrix;
+use cgmath::Vector3;
 use cgmath::Vector4;
 use glow::HasContext;
 
@@ -59,6 +61,11 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
         uniform float lightRange[MAX_LIGHTS];    // point / spot falloff distance
         uniform float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
 
+        // Camera world position, for the Blinn-Phong specular view direction.
+        uniform vec3 viewPos;
+        const float shininess = 32.0;
+        const float specularStrength = 0.4;
+
         // Shadow map of the single casting light (directional or spot for now).
         // `shadowLightIndex` is which light it belongs to, so only that light's
         // contribution is shadowed.
@@ -97,54 +104,66 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
 
         void main() {
             vec3 n = normalize(worldNormal);
-            vec3 lighting = vec3(0.0);
+            vec3 viewDir = normalize(viewPos - worldPos);
+            // Kept separate so specular highlights are the light's color, not
+            // tinted by albedo (only the diffuse term is multiplied by albedo).
+            vec3 diffuseLight = vec3(0.0);
+            vec3 specularLight = vec3(0.0);
 
             for (int i = 0; i < numLights; i++) {
                 int t = lightType[i];
-                vec3 contrib = vec3(0.0);
-                float ndotl = 0.0;
                 if (t == 0) {
-                    lighting += lightColor[i]; // ambient: never shadowed
+                    diffuseLight += lightColor[i]; // ambient: never shadowed
                     continue;
-                } else if (t == 1) {
-                    vec3 ld = normalize(lightDirection[i]);
-                    ndotl = max(dot(n, -ld), 0.0);
-                    contrib = lightColor[i] * ndotl;
+                }
+
+                // Unit vector toward the light, and an attenuation factor.
+                vec3 l;
+                float atten = 1.0;
+                if (t == 1) {
+                    l = -normalize(lightDirection[i]);
                 } else {
                     // Point (t == 2) or spot (t == 3): both attenuate by distance.
                     vec3 toLight = lightPosition[i] - worldPos;
                     float dist = length(toLight);
-                    vec3 l = toLight / max(dist, 1e-4);
-                    ndotl = max(dot(n, l), 0.0);
+                    l = toLight / max(dist, 1e-4);
 
                     float range = max(lightRange[i], 1e-4);
-                    float att = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
-                    att *= att;
+                    float a = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
+                    atten = a * a;
 
-                    float spot = 1.0;
                     if (t == 3) {
                         float cosAngle = dot(-l, normalize(lightDirection[i]));
                         // Soft edge over a small band inside the cone.
                         float outer = lightConeCos[i];
                         float inner = mix(1.0, outer, 0.85);
-                        spot = clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
+                        atten *= clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
                     }
-
-                    contrib = lightColor[i] * ndotl * att * spot;
                 }
 
-                // Shadow only the casting light's contribution.
+                float ndotl = max(dot(n, l), 0.0);
+                vec3 diffuse = lightColor[i] * ndotl * atten;
+                // Blinn-Phong specular, only where the surface faces the light.
+                float spec = (ndotl > 0.0)
+                    ? pow(max(dot(n, normalize(l + viewDir)), 0.0), shininess)
+                    : 0.0;
+                vec3 specular = lightColor[i] * spec * specularStrength * atten;
+
+                // Shadow only the casting light's contribution (diffuse + spec).
                 if (shadowEnabled == 1 && i == shadowLightIndex) {
-                    contrib *= (1.0 - sampleShadow(ndotl));
+                    float lit = 1.0 - sampleShadow(ndotl);
+                    diffuse *= lit;
+                    specular *= lit;
                 }
-                lighting += contrib;
+                diffuseLight += diffuse;
+                specularLight += specular;
             }
 
             vec4 albedo = baseColor;
             if (useTexture == 1) {
                 albedo = texture(texture1, texCoord) * baseColor;
             }
-            fragColor = vec4(albedo.rgb * lighting, albedo.a);
+            fragColor = vec4(albedo.rgb * diffuseLight + specularLight, albedo.a);
         }
 "#;
 
@@ -166,6 +185,7 @@ struct Uniforms {
     light_space_matrix_loc: UniformLocation,
     shadow_enabled_loc: UniformLocation,
     shadow_light_index_loc: UniformLocation,
+    view_pos_loc: UniformLocation,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -221,6 +241,7 @@ impl Material for LitMaterial {
                     shadow_enabled_loc: shader.get_uniform_location(ctx.gl, "shadowEnabled"),
                     shadow_light_index_loc: shader
                         .get_uniform_location(ctx.gl, "shadowLightIndex"),
+                    view_pos_loc: shader.get_uniform_location(ctx.gl, "viewPos"),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -246,6 +267,15 @@ impl Material for LitMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+
+                // Camera world position (inverse-view translation) for the
+                // specular view direction.
+                let view_pos = view_matrix
+                    .invert()
+                    .map(|inv| inv.w.truncate())
+                    .unwrap_or(Vector3::new(0.0, 0.0, 0.0));
+                p.set_uniform_vec3(ctx.gl, &uniforms.view_pos_loc, &view_pos);
+
                 p.set_uniform_vec4(ctx.gl, &uniforms.base_color_loc, &self.color);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
