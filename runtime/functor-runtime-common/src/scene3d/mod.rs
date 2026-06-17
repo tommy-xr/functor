@@ -14,8 +14,8 @@ use crate::{
     },
     geometry::{self, Geometry},
     material::{
-        BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedMaterial,
-        SkinnedNormalDebugMaterial,
+        BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
+        SkinnedMaterial, SkinnedNormalDebugMaterial,
     },
     math::Angle,
     model::{Model, Skeleton},
@@ -234,11 +234,6 @@ impl Scene3D {
         let geometry_material = override_material.as_ref().unwrap_or(current_material);
 
         match &self.obj {
-            // Skip models entirely in the depth pass: skinned shadow casters
-            // (deforming the depth-pass geometry by the joint matrices) are a
-            // follow-up, and a rest-pose shadow under an animated model looks
-            // worse than none. Primitives and the terrain cast shadows.
-            SceneObject::Model(_) if depth_pass => {}
             SceneObject::Model(model_description) => {
                 match &model_description.handle {
                     ModelHandle::File(str) => {
@@ -258,14 +253,19 @@ impl Scene3D {
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
                         let normals_debug =
                             render_context.debug_render_mode == DebugRenderMode::Normals;
-                        // (Models are skipped in the depth pass above.)
-                        let mut model_material: Box<dyn Material> =
-                            match (is_skinned, normals_debug) {
+                        // In the depth pass, draw the model with a depth material
+                        // that still skins (so animated models cast a correctly
+                        // deforming shadow), else the normal/debug material.
+                        let mut model_material: Box<dyn Material> = match (depth_pass, is_skinned) {
+                            (true, true) => SkinnedDepthMaterial::create(),
+                            (true, false) => DepthMaterial::create(),
+                            (false, _) => match (is_skinned, normals_debug) {
                                 (true, false) => SkinnedMaterial::create(),
                                 (false, false) => BasicMaterial::create(),
                                 (true, true) => SkinnedNormalDebugMaterial::create(),
                                 (false, true) => NormalDebugMaterial::create(),
-                            };
+                            },
+                        };
                         model_material.initialize(&render_context);
 
                         let animation_index = 0;
