@@ -20,7 +20,8 @@
         mouse_wheel_wasm,
         net_drain_commands_json_wasm,
         net_push_http_response_wasm,
-        net_push_http_error_wasm
+        net_push_http_error_wasm,
+        audio_drain_commands_json_wasm
       } from "./build-wasm/pkg/game_wasm.js";
       import startRuntime from "./pkg/functor_runtime_web.js";
 
@@ -103,6 +104,9 @@
           net_push_http_response_wasm(token, status, body);
         window.game.net_push_http_error = (token, message) =>
           net_push_http_error_wasm(token, message);
+        // Audio bridge (see functor-runtime-web dispatch_audio_commands).
+        window.game.audio_drain_commands_json_wasm = () =>
+          audio_drain_commands_json_wasm();
 
         // In a deterministic capture (?fixed-time), don't wire up input — a
         // stray mouse move would turn the camera, like on native.

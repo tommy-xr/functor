@@ -91,6 +91,11 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = game, js_name = net_push_http_error)]
     fn game_net_push_http_error(token: i32, message: JsValue);
+
+    // Audio bridge into the game module (see Runtime.Wasm): the game queues
+    // play commands as a JSON string, which the host plays via Web Audio.
+    #[wasm_bindgen(js_namespace = game, js_name = audio_drain_commands_json_wasm)]
+    fn game_audio_drain_commands() -> JsValue;
 }
 
 fn http_method_str(method: HttpMethod) -> &'static str {
@@ -177,6 +182,111 @@ async fn perform_fetch(
         .await
         .map_err(js_err)?;
     Ok((status, text_value.as_string().unwrap_or_default()))
+}
+
+thread_local! {
+    // The Web Audio device, created lazily on the first sound (so it's spun up
+    // inside the user-gesture that triggered it, and never on pages with no
+    // audio). Decoded buffers are cached by path so repeat plays are instant.
+    static AUDIO_CTX: RefCell<Option<web_sys::AudioContext>> = const { RefCell::new(None) };
+    static AUDIO_BUFFERS: RefCell<std::collections::HashMap<String, web_sys::AudioBuffer>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn audio_context() -> Option<web_sys::AudioContext> {
+    AUDIO_CTX.with(|c| {
+        if c.borrow().is_none() {
+            match web_sys::AudioContext::new() {
+                Ok(ctx) => *c.borrow_mut() = Some(ctx),
+                Err(e) => {
+                    web_sys::console::error_1(&format!("[audio] no AudioContext: {e:?}").into())
+                }
+            }
+        }
+        c.borrow().clone()
+    })
+}
+
+/// Drain the game's queued audio commands and play each via Web Audio. Mirrors
+/// `dispatch_net_commands`; called each frame after `tick`.
+fn dispatch_audio_commands() {
+    let json = game_audio_drain_commands()
+        .as_string()
+        .unwrap_or_else(|| "[]".to_string());
+    if json == "[]" {
+        return;
+    }
+    match serde_json::from_str::<Vec<functor_runtime_common::audio::AudioCommand>>(&json) {
+        Ok(commands) => {
+            for cmd in commands {
+                spawn_local(play_one_shot(cmd));
+            }
+        }
+        Err(e) => web_sys::console::error_1(&format!("[audio] bad commands json: {e}").into()),
+    }
+}
+
+async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
+    use wasm_bindgen::JsCast;
+    let functor_runtime_common::audio::AudioCommand::PlayOneShot { sound, gain } = cmd;
+
+    let ctx = match audio_context() {
+        Some(c) => c,
+        None => return,
+    };
+    // Browsers start the context suspended until a user gesture; the play is
+    // driven by one (a keypress), so a best-effort resume is enough.
+    let _ = ctx.resume();
+
+    // Decode on first use, then serve from the cache.
+    let cached = AUDIO_BUFFERS.with(|b| b.borrow().get(&sound).cloned());
+    let buffer = match cached {
+        Some(b) => b,
+        None => {
+            let bytes = match functor_runtime_common::io::load_bytes_async(&sound).await {
+                Ok(b) => b,
+                Err(e) => {
+                    web_sys::console::error_1(&format!("[audio] load '{sound}': {e}").into());
+                    return;
+                }
+            };
+            // decodeAudioData wants an ArrayBuffer (and detaches it); the
+            // Uint8Array copies the bytes into a standalone JS buffer.
+            let array = js_sys::Uint8Array::from(&bytes[..]);
+            let promise = match ctx.decode_audio_data(&array.buffer()) {
+                Ok(p) => p,
+                Err(e) => {
+                    web_sys::console::error_1(&format!("[audio] decode '{sound}': {e:?}").into());
+                    return;
+                }
+            };
+            let buf: web_sys::AudioBuffer = match JsFuture::from(promise).await {
+                Ok(v) => match v.dyn_into() {
+                    Ok(b) => b,
+                    Err(_) => return,
+                },
+                Err(e) => {
+                    web_sys::console::error_1(&format!("[audio] decode '{sound}': {e:?}").into());
+                    return;
+                }
+            };
+            AUDIO_BUFFERS.with(|b| b.borrow_mut().insert(sound.clone(), buf.clone()));
+            buf
+        }
+    };
+
+    // source -> gain -> speakers.
+    let source = match ctx.create_buffer_source() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    source.set_buffer(Some(&buffer));
+    if let Ok(gain_node) = ctx.create_gain() {
+        gain_node.gain().set_value(gain);
+        let _ = source.connect_with_audio_node(&gain_node);
+        let _ = gain_node.connect_with_audio_node(&ctx.destination());
+    }
+    let _ = source.start();
 }
 
 #[wasm_bindgen(start)]
@@ -341,6 +451,9 @@ async fn run_async() -> Result<(), JsValue> {
             // are pushed back into the inbox asynchronously and decoded by a later
             // tick (see dispatch_net_commands).
             dispatch_net_commands();
+            // Play any one-shot sounds this frame's tick queued (fetch + decode
+            // the first time, then from the cache).
+            dispatch_audio_commands();
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
