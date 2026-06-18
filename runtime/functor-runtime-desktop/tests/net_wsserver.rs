@@ -25,7 +25,7 @@ use fable_library_rust::String_::{fromString, LrcStr};
 use functor_runtime_common::FrameTime;
 use libloading::{Library, Symbol};
 
-const BIND: &str = "127.0.0.1:9100";
+const BIND: &str = "127.0.0.1:9001";
 
 fn wsserverdemo_dylib() -> PathBuf {
     let dylib = format!(
