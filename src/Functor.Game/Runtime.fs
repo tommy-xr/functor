@@ -75,14 +75,42 @@ module Runtime
         [<OuterAttr("wasm_bindgen")>]
         let test_render_wasm (frameTimeJs: JsValue): JsValue =
             let frameTime = frameTimeJs |> UnsafeJsValue.from_js<Time.FrameTime>;
-            if currentRunner.IsSome then 
-                let ret = 
+            if currentRunner.IsSome then
+                let ret =
                     frameTime
                     |> currentRunner.Value.render
                     |> UnsafeJsValue.to_js
                 ret
-            else 
+            else
                 raise (System.Exception("No runner"))
+
+        // Networking bridge for the web runtime (mirrors the native exports). The
+        // web runtime is a separate wasm module, so it reaches the game's outbound
+        // command queue / async inbox only through these wasm_bindgen exports.
+        // Strings cross as JsValue (the existing marshalling convention) rather
+        // than via Fable's string type, to keep the wasm-bindgen ABI simple.
+        [<Emit("functor_runtime_common::to_js_value(&functor_runtime_common::net::drain_commands_json())")>]
+        let private netDrainCommandsJs () : JsValue = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_http_response($0 as u64, $1 as u16, functor_runtime_common::from_js_value::<String>($2).into_bytes())")>]
+        let private netPushHttpResponseJs (token: int) (status: int) (body: JsValue) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_http_error($0 as u64, functor_runtime_common::from_js_value::<String>($1))")>]
+        let private netPushHttpErrorJs (token: int) (message: JsValue) : unit = nativeOnly
+
+        /// Host: take the queued networking commands as a JSON string (JsValue).
+        [<OuterAttr("wasm_bindgen")>]
+        let net_drain_commands_json_wasm () : JsValue = netDrainCommandsJs ()
+
+        /// Host: deliver a completed HTTP response into the game's async inbox.
+        [<OuterAttr("wasm_bindgen")>]
+        let net_push_http_response_wasm (token: int, status: int, body: JsValue) : unit =
+            netPushHttpResponseJs token status body
+
+        /// Host: deliver a transport-level failure for a request into the inbox.
+        [<OuterAttr("wasm_bindgen")>]
+        let net_push_http_error_wasm (token: int, message: JsValue) : unit =
+            netPushHttpErrorJs token message
 
 
     ///////////////////////////////

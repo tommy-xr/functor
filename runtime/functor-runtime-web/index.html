@@ -17,7 +17,10 @@
         tick_wasm,
         key_event_wasm,
         mouse_move_wasm,
-        mouse_wheel_wasm
+        mouse_wheel_wasm,
+        net_drain_commands_json_wasm,
+        net_push_http_response_wasm,
+        net_push_http_error_wasm
       } from "./build-wasm/pkg/game_wasm.js";
       import startRuntime from "./pkg/functor_runtime_web.js";
 
@@ -92,6 +95,14 @@
         window.game.tick = (frameTime) => {
           return tick_wasm(frameTime);
         }
+
+        // Networking bridge: the web runtime drains queued commands and pushes
+        // results back through these (see functor-runtime-web dispatch_net_commands).
+        window.game.net_drain_commands_json = () => net_drain_commands_json_wasm();
+        window.game.net_push_http_response = (token, status, body) =>
+          net_push_http_response_wasm(token, status, body);
+        window.game.net_push_http_error = (token, message) =>
+          net_push_http_error_wasm(token, message);
 
         // In a deterministic capture (?fixed-time), don't wire up input — a
         // stray mouse move would turn the camera, like on native.

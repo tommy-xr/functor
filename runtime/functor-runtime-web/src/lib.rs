@@ -11,6 +11,7 @@ use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
+use functor_runtime_common::net::{HttpMethod, NetCommand};
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
@@ -79,6 +80,103 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = game, js_name = tick)]
     fn game_tick(frameTimeJs: JsValue);
+
+    // Networking bridge into the game module (see Runtime.Wasm). The game queues
+    // commands as a JSON string; results are pushed back as JS strings.
+    #[wasm_bindgen(js_namespace = game, js_name = net_drain_commands_json)]
+    fn game_net_drain_commands() -> JsValue;
+
+    #[wasm_bindgen(js_namespace = game, js_name = net_push_http_response)]
+    fn game_net_push_http_response(token: i32, status: i32, body: JsValue);
+
+    #[wasm_bindgen(js_namespace = game, js_name = net_push_http_error)]
+    fn game_net_push_http_error(token: i32, message: JsValue);
+}
+
+fn http_method_str(method: HttpMethod) -> &'static str {
+    match method {
+        HttpMethod::Get => "GET",
+        HttpMethod::Post => "POST",
+        HttpMethod::Put => "PUT",
+        HttpMethod::Delete => "DELETE",
+    }
+}
+
+fn js_err(v: JsValue) -> String {
+    v.as_string().unwrap_or_else(|| "fetch error".to_string())
+}
+
+/// Drain the game's queued networking commands and start a `fetch` for each. The
+/// result is pushed back into the game's inbox when the fetch resolves (a later
+/// microtask), so the next `tick` decodes it — same shape as the native loop.
+/// JS is single-threaded, so a push always completes before the next frame's tick.
+fn dispatch_net_commands() {
+    let json = game_net_drain_commands()
+        .as_string()
+        .unwrap_or_else(|| "[]".to_string());
+    if json == "[]" {
+        return;
+    }
+    match serde_json::from_str::<Vec<NetCommand>>(&json) {
+        Ok(commands) => {
+            for cmd in commands {
+                spawn_local(perform_and_push(cmd));
+            }
+        }
+        Err(e) => {
+            web_sys::console::error_1(&format!("[net] bad commands json: {e}").into());
+        }
+    }
+}
+
+async fn perform_and_push(cmd: NetCommand) {
+    let NetCommand::HttpRequest {
+        token,
+        method,
+        url,
+        headers,
+        body,
+    } = cmd;
+    let token = token as i32;
+    match perform_fetch(method, &url, &headers, &body).await {
+        Ok((status, text)) => game_net_push_http_response(token, status, JsValue::from_str(&text)),
+        Err(message) => game_net_push_http_error(token, JsValue::from_str(&message)),
+    }
+}
+
+async fn perform_fetch(
+    method: HttpMethod,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<(i32, String), String> {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Request, RequestInit, Response};
+
+    let mut opts = RequestInit::new();
+    opts.method(http_method_str(method));
+    if !body.is_empty() {
+        let text = String::from_utf8_lossy(body).to_string();
+        opts.body(Some(&JsValue::from_str(&text)));
+    }
+
+    let request = Request::new_with_str_and_init(url, &opts).map_err(js_err)?;
+    for (name, value) in headers {
+        request.headers().set(name, value).map_err(js_err)?;
+    }
+
+    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
+    let resp_value = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(js_err)?;
+    let response: Response = resp_value
+        .dyn_into()
+        .map_err(|_| "not a Response".to_string())?;
+    let status = response.status() as i32;
+    let text_value = JsFuture::from(response.text().map_err(js_err)?)
+        .await
+        .map_err(js_err)?;
+    Ok((status, text_value.as_string().unwrap_or_default()))
 }
 
 #[wasm_bindgen(start)]
@@ -238,6 +336,11 @@ async fn run_async() -> Result<(), JsValue> {
             last_time = now;
 
             game_tick(functor_runtime_common::to_js_value(&frame_time));
+
+            // Perform any networking commands this frame's tick queued; results
+            // are pushed back into the inbox asynchronously and decoded by a later
+            // tick (see dispatch_net_commands).
+            dispatch_net_commands();
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
