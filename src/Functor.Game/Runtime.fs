@@ -112,6 +112,15 @@ module Runtime
         let net_push_http_error_wasm (token: int, message: JsValue) : unit =
             netPushHttpErrorJs token message
 
+        // Audio bridge for the web runtime (mirrors the native export). The host
+        // drains the queued audio commands each frame and plays them via Web Audio.
+        [<Emit("functor_runtime_common::to_js_value(&functor_runtime_common::audio::drain_commands_json())")>]
+        let private audioDrainCommandsJs () : JsValue = nativeOnly
+
+        /// Host: take the queued audio commands as a JSON string (JsValue).
+        [<OuterAttr("wasm_bindgen")>]
+        let audio_drain_commands_json_wasm () : JsValue = audioDrainCommandsJs ()
+
 
     ///////////////////////////////
     // Native API
