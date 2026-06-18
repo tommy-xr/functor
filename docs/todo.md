@@ -37,7 +37,9 @@ golden tests), see `CLAUDE.md` and `git log`.
 
 ## Effects & subscriptions
 
-Build the shared machinery once when the first resource-backed sub/effect lands:
+Build the shared machinery once when the first resource-backed sub/effect lands.
+The networking design + phased roadmap that drives these items lives in
+`docs/multiplayer.md` (Phase 0 = the `Transport`/`VirtualTransport` spine).
 
 - [ ] **Async inbox**: a channel the runtime drains each frame into the
       `EffectQueue`, so messages can arrive on a *later* frame (today `Effect` is

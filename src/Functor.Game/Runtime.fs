@@ -88,9 +88,38 @@ module Runtime
     ///////////////////////////////
     // Native API
     ///////////////////////////////
-    module Native = 
+    module Native =
+        // Networking bridge. The outbound command queue and async inbox live on
+        // this (dylib) side; the host reaches them only through these exports,
+        // never by sharing the static across the dylib boundary. The host drains
+        // pending commands, performs the I/O, and pushes results back in.
+        [<Emit("functor_runtime_common::net::drain_commands_json().into()")>]
+        let private drainCommandsJson () : string = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_http_response($0 as u64, $1 as u16, $2.to_string().into_bytes())")>]
+        let private pushHttpResponse (token: int) (status: int) (body: string) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_http_error($0 as u64, $1.to_string())")>]
+        let private pushHttpError (token: int) (message: string) : unit = nativeOnly
+
         [<OuterAttr("no_mangle")>]
         let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
+
+        /// Host: take the networking commands the game has queued this frame, as a
+        /// JSON array of NetCommand. The host performs the I/O and reports results
+        /// back via `net_push_http_response` / `net_push_http_error`.
+        [<OuterAttr("no_mangle")>]
+        let net_drain_commands_json () : string = drainCommandsJson ()
+
+        /// Host: deliver a completed HTTP response into the game's async inbox.
+        [<OuterAttr("no_mangle")>]
+        let net_push_http_response (token: int, status: int, body: string) : unit =
+            pushHttpResponse token status body
+
+        /// Host: deliver a transport-level failure for a request into the inbox.
+        [<OuterAttr("no_mangle")>]
+        let net_push_http_error (token: int, message: string) : unit =
+            pushHttpError token message
 
         [<OuterAttr("no_mangle")>]
         let tick(frameTime: Time.FrameTime) =
@@ -172,15 +201,21 @@ module Runtime
             printfn "Hello from GameRunner!"
         interface IRunner with
             member this.getState() =
-                // Bundle the pending effect queue with the model so in-flight
-                // effects survive a hot reload (the new runner starts with an
-                // empty queue otherwise, dropping effects enqueued across frames).
-                OpaqueState.to_opaque_type (state, effectQueue)
+                // Only the model crosses a hot reload. The effect queue is not
+                // transferred: an HTTP effect carries a tagger closure (code in the
+                // old dylib) which would dangle after the swap, and the pending-
+                // request registry that holds in-flight taggers is dropped with the
+                // old dylib too. So in-flight effects/requests are dropped on reload
+                // (the executor warns when an orphaned response lands) -- a
+                // deliberate trade for the Elm-style `expect` API.
+                OpaqueState.to_opaque_type state
             member this.setState(incomingState) =
-                let (restoredState, restoredQueue): ('Model * EffectQueue<'Msg>) =
-                    OpaqueState.unsafe_coerce incomingState
+                let restoredState: 'Model = OpaqueState.unsafe_coerce incomingState
                 state <- restoredState
-                effectQueue <- restoredQueue
+                // Start the reloaded runner with an empty queue. This also discards
+                // the constructor-seeded 'init' effect, so 'init' runs once (first
+                // load) and not again across a reload.
+                effectQueue <- EffectQueue.empty ()
             member this.stateDebug() = formatState state
             member this.tick(frameTime: Time.FrameTime) =
 
@@ -233,6 +268,19 @@ module Runtime
                     |> Array.iter (fun msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue)
                 | None -> ()
                 lastTts <- Some tts
+
+                // Drain the async inbox: HTTP results that arrived (on some later
+                // frame) since the request ran. For each, apply the tagger the
+                // request registered (matched by token) and enqueue the resulting
+                // message through the same update path. A result with no tagger --
+                // an unknown token, or one dropped by a hot reload while the request
+                // was in flight -- is logged and discarded rather than crashing.
+                for result in Net.drainHttpResults () do
+                    let token = result.token
+                    match Net.takePending result with
+                    | Some msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue
+                    | None ->
+                        printfn "[Functor] dropped HTTP response (token %d): no handler; likely a hot reload while the request was in flight" token
 
                 let settledState = drain settledBeforeSubs
 

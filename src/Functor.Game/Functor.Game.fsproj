@@ -4,6 +4,7 @@
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Net.fs" />
     <Compile Include="Effect.fs" />
     <Compile Include="EffectQueue.fs" />
     <Compile Include="Math/Angle.fs" />

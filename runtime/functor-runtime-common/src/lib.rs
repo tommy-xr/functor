@@ -79,6 +79,7 @@ mod light;
 pub mod material;
 pub mod math;
 pub mod model;
+pub mod net;
 pub mod render;
 mod render_context;
 mod renderer;
