@@ -219,8 +219,10 @@ async fn run_async() -> Result<(), JsValue> {
         let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
 
         // In deterministic mode (?fixed-time, the golden) the canvas is sized
-        // once and then left fixed (see below).
+        // once and then left fixed (see below), and the render loop stops after
+        // a few frames so the page is static for screenshotting.
         let mut sized = false;
+        let mut frame_count = 0u32;
 
         *g.borrow_mut() = Some(Closure::new(move || {
             let now = performance.now() as f32;
@@ -277,8 +279,15 @@ async fn run_async() -> Result<(), JsValue> {
                 debug_render_mode,
             );
 
-            // Schedule ourself for another requestAnimationFrame callback.
-            request_animation_frame(f.borrow().as_ref().unwrap());
+            // Schedule the next frame. In deterministic mode (?fixed-time, the
+            // golden) render a few warm-up frames (shader compile, first-frame
+            // settling) then stop, so the page is perfectly static: the golden
+            // screenshot then never has to chase a stable frame (CI's
+            // swiftshader isn't bit-identical frame to frame).
+            frame_count += 1;
+            if fixed_time.is_none() || frame_count < 30 {
+                request_animation_frame(f.borrow().as_ref().unwrap());
+            }
         }));
 
         request_animation_frame(g.borrow().as_ref().unwrap());
