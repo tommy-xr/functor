@@ -17,6 +17,7 @@ use crate::game::Game;
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
 
+mod audio;
 mod debug_server;
 mod game;
 mod hot_reload_game;
@@ -306,6 +307,10 @@ pub async fn main() {
         let http_client = reqwest::Client::new();
         let (net_tx, net_rx) = std::sync::mpsc::channel::<net_dispatch::NetResult>();
 
+        // Audio device, owned by the host (survives hot reload). `None` when no
+        // device is available — audio commands are then drained and dropped.
+        let audio_player = audio::AudioPlayer::new();
+
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
             // The frame time handed to the game. Pinning it (--fixed-time, or the
@@ -400,6 +405,23 @@ pub async fn main() {
                         }
                     }
                     Err(e) => eprintln!("[net] bad commands json: {e}"),
+                }
+            }
+
+            // Perform any audio the tick queued (fire-and-forget one-shots).
+            let audio_json = game.audio_drain_commands();
+            if audio_json != "[]" {
+                match serde_json::from_str::<Vec<functor_runtime_common::audio::AudioCommand>>(
+                    &audio_json,
+                ) {
+                    Ok(commands) => {
+                        if let Some(player) = &audio_player {
+                            for cmd in commands {
+                                player.handle(cmd);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("[audio] bad commands json: {e}"),
                 }
             }
 

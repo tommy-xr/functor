@@ -81,6 +81,14 @@ impl Game for StaticGame {
         }
     }
 
+    fn audio_drain_commands(&self) -> String {
+        unsafe {
+            let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> =
+                self.library.get(b"audio_drain_commands_json").unwrap();
+            func().to_string()
+        }
+    }
+
     fn quit(&mut self) {
         // Noop - nothing to do yet
     }

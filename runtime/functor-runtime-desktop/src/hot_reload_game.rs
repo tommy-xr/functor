@@ -124,6 +124,18 @@ impl Game for HotReloadGame {
         }
     }
 
+    fn audio_drain_commands(&self) -> String {
+        unsafe {
+            let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"audio_drain_commands_json")
+                .unwrap();
+            func().to_string()
+        }
+    }
+
     fn quit(&mut self) {
         if let Some(handle) = self.watcher_thread.take() {
             handle.join().expect("Failed to join watcher thread");

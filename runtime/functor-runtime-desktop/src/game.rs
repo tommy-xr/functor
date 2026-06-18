@@ -33,5 +33,10 @@ pub trait Game {
     /// Deliver a transport-level failure for a request into the async inbox.
     fn net_push_http_error(&mut self, token: i32, message: String);
 
+    /// Take the audio commands the game queued this frame (a JSON array of
+    /// `functor_runtime_common::audio::AudioCommand`), via the dylib's
+    /// `audio_drain_commands_json` export. The host plays them on its own device.
+    fn audio_drain_commands(&self) -> String;
+
     fn quit(&mut self);
 }
