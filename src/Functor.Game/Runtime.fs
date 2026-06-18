@@ -135,6 +135,21 @@ module Runtime
         [<Emit("functor_runtime_common::audio::drain_commands_json().into()")>]
         let private drainAudioCommandsJson () : string = nativeOnly
 
+        [<Emit("functor_runtime_common::net::drain_conn_commands_json().into()")>]
+        let private drainConnCommandsJson () : string = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_connected($0.to_string(), $1 as u64)")>]
+        let private pushConnected (key: string) (conn: int) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_message($0.to_string(), $1 as u64, $2.to_string().into_bytes())")>]
+        let private pushConnMessage (key: string) (conn: int) (text: string) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_disconnected($0.to_string(), $1 as u64)")>]
+        let private pushDisconnected (key: string) (conn: int) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_conn_error($0.to_string(), $1 as u64, $2.to_string())")>]
+        let private pushConnErr (key: string) (conn: int) (message: string) : unit = nativeOnly
+
         [<OuterAttr("no_mangle")>]
         let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
 
@@ -158,6 +173,27 @@ module Runtime
         [<OuterAttr("no_mangle")>]
         let net_push_http_error (token: int, message: string) : unit =
             pushHttpError token message
+
+        /// Host: take the connection commands (connect/listen/send/close) the game
+        /// has queued this frame, as a JSON array of ConnCommand.
+        [<OuterAttr("no_mangle")>]
+        let net_drain_conn_commands_json () : string = drainConnCommandsJson ()
+
+        /// Host: deliver connection events into the game's inbound queue, tagged
+        /// with the connection's key (its endpoint url).
+        [<OuterAttr("no_mangle")>]
+        let net_push_connected (key: string, conn: int) : unit = pushConnected key conn
+
+        [<OuterAttr("no_mangle")>]
+        let net_push_conn_message (key: string, conn: int, text: string) : unit =
+            pushConnMessage key conn text
+
+        [<OuterAttr("no_mangle")>]
+        let net_push_disconnected (key: string, conn: int) : unit = pushDisconnected key conn
+
+        [<OuterAttr("no_mangle")>]
+        let net_push_conn_error (key: string, conn: int, message: string) : unit =
+            pushConnErr key conn message
 
         [<OuterAttr("no_mangle")>]
         let tick(frameTime: Time.FrameTime) =
@@ -235,6 +271,10 @@ module Runtime
         // establishes a baseline (and after a hot reload), so we never report a
         // spurious crossing across a discontinuous jump in the clock.
         let mutable lastTts: Option<float> = None
+        // Keys (endpoint urls) of the connections currently declared/open, to diff
+        // against next frame's declared set. Not persisted across hot reload (the
+        // host owns the sockets and re-attaches by key on the next reconcile).
+        let mutable liveConnKeys: string list = []
         do
             printfn "Hello from GameRunner!"
         interface IRunner with
@@ -295,17 +335,40 @@ module Runtime
                 // to -- e.g. disable a timer).
                 let settledBeforeSubs = drain state
 
-                // Poll subscriptions on the settled model: recompute the Sub tree
-                // and enqueue a message for any timer that crossed a boundary since
-                // last frame, then drain those through the same update path. A sub
-                // disabled by the effects above no longer fires this frame.
+                // Recompute the Sub tree once on the settled model; a sub disabled
+                // by the effects above no longer participates this frame.
+                let subs = GameRunner.subscriptions myGame settledBeforeSubs
+
+                // Timers: enqueue a message for any `Every` that crossed a boundary
+                // since last frame, drained through the same update path.
                 match lastTts with
                 | Some prevTts ->
-                    GameRunner.subscriptions myGame settledBeforeSubs
+                    subs
                     |> Sub.messagesForFrame prevTts tts
                     |> Array.iter (fun msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue)
                 | None -> ()
                 lastTts <- Some tts
+
+                // Connection reconciliation: diff the declared connection keys
+                // against the live set. Newly declared -> open; no longer declared
+                // -> close. `liveConnKeys` is executor state (not persisted), so a
+                // hot reload re-opens by key; the host treats Connect as idempotent
+                // and reattaches to the still-live socket.
+                let conns = Sub.connections subs
+                let desiredKeys = conns |> Array.map fst |> Array.toList
+                for (key, _) in conns do
+                    if not (List.contains key liveConnKeys) then Net.pushConnect key
+                for key in liveConnKeys do
+                    if not (List.contains key desiredKeys) then Net.pushCloseKey key
+                liveConnKeys <- desiredKeys
+
+                // Route inbound connection events to the matching declared
+                // connection's decoder (by key). An event for a key no longer
+                // declared (e.g. a trailing Disconnected) is dropped.
+                for (key, event) in Net.drainConnEvents () do
+                    match conns |> Array.tryFind (fun (k, _) -> k = key) with
+                    | Some(_, decode) -> EffectQueue.enqueue (Effect.wrapped (decode event)) effectQueue
+                    | None -> ()
 
                 // Drain the async inbox: HTTP results that arrived (on some later
                 // frame) since the request ran. For each, apply the tagger the

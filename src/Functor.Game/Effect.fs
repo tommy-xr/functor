@@ -28,6 +28,22 @@ module Effect =
     [<Emit("functor_runtime_common::Effect::http(functor_runtime_common::net::next_token(), functor_runtime_common::net::HttpMethod::Post, $0.to_string(), vec![], $1.to_string().into_bytes(), $2)")>]
     let httpPost (url: string) (body: string) (tagger: Net.HttpResponse -> 'msg) : effect<'msg> = nativeOnly
 
+    // Persistent connections: send a (text) message on, or close, a connection you
+    // were handed via `NetEvent.Connected`. Plain-data commands performed by the
+    // host; inbound events arrive through the connection's `Sub.connect` decoder.
+
+    [<Emit("functor_runtime_common::Effect::conn(functor_runtime_common::net::ConnCommand::Send { conn: $0 as u64, payload: $1.to_string().into_bytes() })")>]
+    let private sendRaw (id: int64) (text: string) : effect<'msg> = nativeOnly
+
+    [<Emit("functor_runtime_common::Effect::conn(functor_runtime_common::net::ConnCommand::CloseConn { conn: $0 as u64 })")>]
+    let private closeRaw (id: int64) : effect<'msg> = nativeOnly
+
+    /// Send a UTF-8 text message on `id`. A closed/unknown id is a graceful no-op.
+    let send (id: Net.ConnectionId) (text: string) : effect<'msg> = sendRaw (Net.rawId id) text
+
+    /// Close the connection `id`.
+    let close (id: Net.ConnectionId) : effect<'msg> = closeRaw (Net.rawId id)
+
     
     // TODO: These should live elsewhere because they aren't user space
 

@@ -9,10 +9,12 @@
 //! `ConnectionId` vocabulary, so game code and the connection manager are
 //! identical whether they run over a real network or the virtual one.
 
+mod connection;
 mod inbox;
 mod registry;
 mod virtual_net;
 
+pub use connection::*;
 pub use inbox::*;
 pub use registry::*;
 pub use virtual_net::*;
