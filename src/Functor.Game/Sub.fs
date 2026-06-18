@@ -21,6 +21,11 @@ namespace Functor
 type Sub<'msg> =
     | SubNone
     | Every of Duration.t * 'msg
+    // A persistent client connection. The string is the endpoint url, which is
+    // also its identity (key): the runtime keeps exactly one connection open per
+    // declared url and tears it down when no longer declared. The decoder turns
+    // its events into messages. Carries a closure -- fine, subs aren't persisted.
+    | Connect of string * (Net.NetEvent -> 'msg)
     | Batch of Sub<'msg> array
 
 module Sub =
@@ -29,12 +34,18 @@ module Sub =
 
     let every (period: Duration.t) (msg: 'msg) : Sub<'msg> = Every(period, msg)
 
+    /// Declare a WebSocket (etc.) connection to `url`, kept open while declared.
+    /// Its events (`Connected`/`Message`/`Disconnected`/`Error`) flow to `decode`;
+    /// the `Connected` event hands you the `ConnectionId` to send on.
+    let connect (url: string) (decode: Net.NetEvent -> 'msg) : Sub<'msg> = Connect(url, decode)
+
     let batch (subs: Sub<'msg> array) : Sub<'msg> = Batch subs
 
     let rec map (f: 'a -> 'b) (sub: Sub<'a>) : Sub<'b> =
         match sub with
         | SubNone -> SubNone
         | Every(period, msg) -> Every(period, f msg)
+        | Connect(key, decode) -> Connect(key, decode >> f)
         | Batch subs -> Batch(subs |> Array.map (map f))
 
     // True iff an integer multiple of `period` lies in the interval
@@ -51,6 +62,7 @@ module Sub =
         | SubNone -> acc
         | Every(period, msg) ->
             if crossedBoundary period prevTts tts then Array.append acc [| msg |] else acc
+        | Connect _ -> acc // event-driven, not clock-driven
         | Batch subs -> Array.fold (collectFired prevTts tts) acc subs
 
     // Walk the Sub tree and return the messages that fired this frame, given the
@@ -58,3 +70,16 @@ module Sub =
     // same enqueue -> update path as effects.
     let messagesForFrame (prevTts: float) (tts: float) (sub: Sub<'msg>) : 'msg array =
         collectFired prevTts tts [||] sub
+
+    let rec private collectConnections (acc: (string * (Net.NetEvent -> 'msg)) list) (sub: Sub<'msg>) =
+        match sub with
+        | SubNone -> acc
+        | Every _ -> acc
+        | Connect(key, decode) -> (key, decode) :: acc
+        | Batch subs -> Array.fold collectConnections acc subs
+
+    // The declared (key, decoder) connections in the Sub tree. The runtime diffs
+    // the keys against the live set each frame to open/close connections, and
+    // routes inbound events to the matching decoder by key.
+    let connections (sub: Sub<'msg>) : (string * (Net.NetEvent -> 'msg)) array =
+        collectConnections [] sub |> List.toArray

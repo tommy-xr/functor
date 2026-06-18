@@ -3,7 +3,7 @@ use std::fmt;
 use fable_library_rust::{NativeArray_, Native_::Func1};
 
 use crate::audio::{self, AudioCommand};
-use crate::net::{self, HttpMethod, HttpResult, NetCommand};
+use crate::net::{self, ConnCommand, HttpMethod, HttpResult, NetCommand};
 
 #[derive(Clone)]
 pub enum Effect<T: Clone + 'static> {
@@ -24,6 +24,10 @@ pub enum Effect<T: Clone + 'static> {
         command: NetCommand,
         tagger: Func1<HttpResult, T>,
     },
+    /// A persistent-connection command (send/close). Plain data, no message; the
+    /// host performs it. Inbound events arrive separately via the connection
+    /// inbox and are decoded by the connection's `Sub`.
+    Conn(ConnCommand),
 }
 
 // Implement Debug manually so it doesn't require `T: Debug`. This lets types
@@ -36,6 +40,7 @@ impl<T: Clone + 'static> fmt::Debug for Effect<T> {
             Effect::Wrapped(_) => f.write_str("Effect::Wrapped(..)"),
             Effect::PlayAudio(command) => write!(f, "Effect::PlayAudio({command:?})"),
             Effect::Http { command, .. } => write!(f, "Effect::Http({command:?})"),
+            Effect::Conn(cmd) => write!(f, "Effect::Conn({cmd:?})"),
         }
     }
 }
@@ -95,6 +100,8 @@ impl<T: Clone + 'static> Effect<T> {
                 command,
                 tagger: Func1::new(move |result: HttpResult| mapping(tagger(result))),
             },
+            // No message, so the type change is a no-op on the payload.
+            Effect::Conn(cmd) => Effect::Conn(cmd),
         }
     }
 
@@ -117,7 +124,17 @@ impl<T: Clone + 'static> Effect<T> {
                 net::push_command(command);
                 NativeArray_::array_from(vec![])
             }
+            // Hand the connection command to the host; no in-frame message.
+            Effect::Conn(cmd) => {
+                net::push_conn_command(cmd);
+                NativeArray_::array_from(vec![])
+            }
         }
+    }
+
+    /// Build a persistent-connection command effect (send/close).
+    pub fn conn(command: ConnCommand) -> Effect<T> {
+        Effect::Conn(command)
     }
 }
 

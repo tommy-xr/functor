@@ -41,3 +41,63 @@ module Net =
     // flight). The Msg type is inferred from the call site.
     [<Emit("functor_runtime_common::net::take_pending($0)")>]
     let takePending (result: HttpResponse) : Option<'msg> = nativeOnly
+
+    // ----- Persistent connections (WebSocket/TCP/UDP) -----
+
+    /// An opaque handle to a live connection, minted by the runtime and handed to
+    /// you via `NetEvent.Connected` (or a server's per-client events). Hold it,
+    /// compare it, key a `Map` by it, and pass it to `Effect.send` / `Effect.close`
+    /// -- but you can't fabricate one, so a send always names a real connection.
+    type ConnectionId = internal ConnectionId of int64
+
+    /// Extract the raw id. `internal`, so only the framework (same assembly) can —
+    /// games never see the underlying value.
+    let internal rawId (ConnectionId id) = id
+
+    /// Events delivered to a connection's `Sub.connect` decoder.
+    type NetEvent =
+        | Connected of ConnectionId
+        // Single tuple fields: Fable's Rust backend miscompiles a match on a union
+        // case with multiple separate fields (see Input.fs).
+        | Message of (ConnectionId * string)
+        | Disconnected of ConnectionId
+        | Error of (ConnectionId * string)
+
+    /// A thin handle over the runtime's `KeyedEvent`; the executor reads these to
+    /// rebuild a typed `NetEvent` and route it by `key`.
+    [<Erase; Emit("functor_runtime_common::net::KeyedEvent")>]
+    type private ConnInbound =
+        [<Emit("$0.key_str().into()")>]
+        abstract key: string
+        /// 0=Connected, 1=Message, 2=Disconnected, 3=Error.
+        [<Emit("$0.kind()")>]
+        abstract kind: int
+        [<Emit("$0.conn()")>]
+        abstract conn: int64
+        /// Message payload (UTF-8) / error text / "".
+        [<Emit("$0.text().into()")>]
+        abstract text: string
+
+    [<Emit("functor_runtime_common::net::take_conn_events()")>]
+    let private takeConnInbound () : ConnInbound array = nativeOnly
+
+    /// Executor-only: drain inbound connection events as `(key, NetEvent)` pairs.
+    let internal drainConnEvents () : (string * NetEvent) array =
+        takeConnInbound ()
+        |> Array.map (fun e ->
+            let id = ConnectionId e.conn
+            let event =
+                match e.kind with
+                | 0 -> Connected id
+                | 1 -> Message(id, e.text)
+                | 2 -> Disconnected id
+                | _ -> Error(id, e.text)
+            (e.key, event))
+
+    // Executor-only: reconciliation commands (open a declared connection / tear
+    // down one no longer declared). Key == the endpoint url.
+    [<Emit("functor_runtime_common::net::push_conn_command(functor_runtime_common::net::ConnCommand::Connect { key: $0.to_string(), url: $0.to_string() })")>]
+    let internal pushConnect (key: string) : unit = nativeOnly
+
+    [<Emit("functor_runtime_common::net::push_conn_command(functor_runtime_common::net::ConnCommand::CloseKey { key: $0.to_string() })")>]
+    let internal pushCloseKey (key: string) : unit = nativeOnly

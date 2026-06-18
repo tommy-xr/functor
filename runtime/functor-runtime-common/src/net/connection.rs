@@ -16,6 +16,7 @@
 //! still-live connection. Hosts therefore treat `Connect`/`Listen` as idempotent
 //! by key.
 
+use fable_library_rust::NativeArray_;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +45,42 @@ pub enum ConnCommand {
 pub struct KeyedEvent {
     pub key: String,
     pub event: NetEvent,
+}
+
+impl KeyedEvent {
+    /// Routing key (the endpoint/bind string of the owning `connect`/`listen`).
+    pub fn key_str(&self) -> String {
+        self.key.clone()
+    }
+
+    /// Event discriminant for the F# decoder: 0=Connected, 1=Message,
+    /// 2=Disconnected, 3=Error.
+    pub fn kind(&self) -> i32 {
+        match self.event {
+            NetEvent::Connected(_) => 0,
+            NetEvent::Message(_, _) => 1,
+            NetEvent::Disconnected(_) => 2,
+            NetEvent::Error(_, _) => 3,
+        }
+    }
+
+    /// The connection this event is about.
+    pub fn conn(&self) -> i64 {
+        let id = match self.event {
+            NetEvent::Connected(c) | NetEvent::Disconnected(c) => c,
+            NetEvent::Message(c, _) | NetEvent::Error(c, _) => c,
+        };
+        id as i64
+    }
+
+    /// Payload text for `Message` (UTF-8), error message for `Error`, else "".
+    pub fn text(&self) -> String {
+        match &self.event {
+            NetEvent::Message(_, bytes) => String::from_utf8_lossy(bytes).to_string(),
+            NetEvent::Error(_, message) => message.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 // Dylib-side singletons, reached by the host only through the runtime's exports
@@ -75,6 +112,11 @@ pub fn push_conn_event(key: String, event: NetEvent) {
 /// Executor: take the inbound connection events queued since the last frame.
 pub fn drain_conn_events() -> Vec<KeyedEvent> {
     CONN_IN.drain()
+}
+
+/// Executor (F#-facing): drain the inbound events as a Fable array.
+pub fn take_conn_events() -> NativeArray_::Array<KeyedEvent> {
+    NativeArray_::array_from(drain_conn_events())
 }
 
 // Host (primitive ABI): one helper per event kind so the dylib's exported shim
