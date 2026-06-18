@@ -228,7 +228,13 @@ fn dispatch_audio_commands() {
 
 async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
     use wasm_bindgen::JsCast;
-    let functor_runtime_common::audio::AudioCommand::PlayOneShot { sound, gain } = cmd;
+    // `token` (completion reporting) is native-only for now — the web backend
+    // plays fire-and-forget and never reports a finish.
+    let functor_runtime_common::audio::AudioCommand::PlayOneShot {
+        token: _,
+        sound,
+        gain,
+    } = cmd;
 
     let ctx = match audio_context() {
         Some(c) => c,

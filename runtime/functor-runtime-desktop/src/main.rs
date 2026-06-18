@@ -316,7 +316,10 @@ pub async fn main() {
 
         // Audio device, owned by the host (survives hot reload). `None` when no
         // device is available — audio commands are then drained and dropped.
-        let audio_player = audio::AudioPlayer::new();
+        // `playThen` completions come back over this channel and are reported to
+        // the game before the next tick (like net results).
+        let (audio_tx, audio_rx) = std::sync::mpsc::channel::<u64>();
+        let audio_player = audio::AudioPlayer::new(audio_tx);
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
@@ -408,6 +411,12 @@ pub async fn main() {
                         game.net_push_conn_error(key, id as i32, message)
                     }
                 }
+            }
+
+            // Deliver any `playThen` completions that finished since last frame,
+            // before tick so this frame's executor drain delivers their messages.
+            while let Ok(token) = audio_rx.try_recv() {
+                game.audio_push_finished(token as i32);
             }
 
             game.tick(time.clone());

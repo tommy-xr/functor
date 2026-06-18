@@ -140,7 +140,8 @@ module Runtime
         let private pushHttpError (token: int) (message: string) : unit = nativeOnly
 
         // Audio bridge: the outbound command queue lives on this (dylib) side; the
-        // host drains it through this export each frame and plays on its device.
+        // host drains it through this export each frame and plays on its device,
+        // and reports a `playThen` one-shot's end back through `audio_push_finished`.
         [<Emit("functor_runtime_common::audio::drain_commands_json().into()")>]
         let private drainAudioCommandsJson () : string = nativeOnly
 
@@ -159,6 +160,9 @@ module Runtime
         [<Emit("functor_runtime_common::net::push_conn_error($0.to_string(), $1 as u64, $2.to_string())")>]
         let private pushConnErr (key: string) (conn: int) (message: string) : unit = nativeOnly
 
+        [<Emit("functor_runtime_common::audio::push_finished($0 as u64)")>]
+        let private pushAudioFinished (token: int) : unit = nativeOnly
+
         [<OuterAttr("no_mangle")>]
         let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
 
@@ -166,6 +170,11 @@ module Runtime
         /// array of AudioCommand, and play them on the host's audio device.
         [<OuterAttr("no_mangle")>]
         let audio_drain_commands_json () : string = drainAudioCommandsJson ()
+
+        /// Host: report that a `playThen` one-shot (`token`) has finished, so the
+        /// game can deliver its completion message.
+        [<OuterAttr("no_mangle")>]
+        let audio_push_finished (token: int) : unit = pushAudioFinished token
 
         /// Host: take the networking commands the game has queued this frame, as a
         /// JSON array of NetCommand. The host performs the I/O and reports results
@@ -391,6 +400,15 @@ module Runtime
                     | Some msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue
                     | None ->
                         printfn "[Functor] dropped HTTP response (token %d): no handler; likely a hot reload while the request was in flight" token
+
+                // Drain audio completions: `Audio.playThen` one-shots the host has
+                // reported finished. Match each token to its message and enqueue
+                // it through the same update path. A token with no handler
+                // (dropped by a hot reload while the sound played) is discarded.
+                for token in Audio.drainFinished () do
+                    match Audio.takeCompletion token with
+                    | Some msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue
+                    | None -> ()
 
                 let settledState = drain settledBeforeSubs
 

@@ -136,7 +136,6 @@ impl Game for HotReloadGame {
         }
     }
 
-
     fn net_drain_conn_commands(&self) -> String {
         unsafe {
             let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> = self
@@ -206,6 +205,18 @@ impl Game for HotReloadGame {
                 conn,
                 fable_library_rust::String_::fromString(message),
             )
+        }
+    }
+
+    fn audio_push_finished(&mut self, token: i32) {
+        unsafe {
+            let func: Symbol<fn(i32)> = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"audio_push_finished")
+                .unwrap();
+            func(token)
         }
     }
 

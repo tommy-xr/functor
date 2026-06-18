@@ -14,3 +14,17 @@ module Audio =
     /// returned from `update` / `input` / `tick`.
     [<Emit("functor_runtime_common::Effect::play_audio(functor_runtime_common::audio::AudioCommand::play_one_shot($0.to_string()))")>]
     let play (sound: string) : effect<'msg> = nativeOnly
+
+    /// Play a sound once and deliver `onFinished` as a message when it ends — the
+    /// audio twin of `Effect.httpGet`'s tagger. The host reports completion back
+    /// after the sound finishes.
+    [<Emit("functor_runtime_common::Effect::play_audio_then(functor_runtime_common::audio::next_token(), $0.to_string(), $1)")>]
+    let playThen (sound: string) (onFinished: 'msg) : effect<'msg> = nativeOnly
+
+    // Executor-only (not user space): drain the tokens of sounds that finished
+    // since last frame, and take the completion message a token registered.
+    [<Emit("functor_runtime_common::audio::drain_finished_array()")>]
+    let drainFinished () : uint64 array = nativeOnly
+
+    [<Emit("functor_runtime_common::audio::take_completion($0)")>]
+    let takeCompletion (token: uint64) : Option<'msg> = nativeOnly
