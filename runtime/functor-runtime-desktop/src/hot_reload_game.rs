@@ -136,6 +136,79 @@ impl Game for HotReloadGame {
         }
     }
 
+
+    fn net_drain_conn_commands(&self) -> String {
+        unsafe {
+            let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"net_drain_conn_commands_json")
+                .unwrap();
+            func().to_string()
+        }
+    }
+
+    fn net_push_connected(&mut self, key: String, conn: i32) {
+        unsafe {
+            let func: Symbol<fn(fable_library_rust::String_::LrcStr, i32)> = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"net_push_connected")
+                .unwrap();
+            func(fable_library_rust::String_::fromString(key), conn)
+        }
+    }
+
+    fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
+        unsafe {
+            let func: Symbol<
+                fn(fable_library_rust::String_::LrcStr, i32, fable_library_rust::String_::LrcStr),
+            > = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"net_push_conn_message")
+                .unwrap();
+            func(
+                fable_library_rust::String_::fromString(key),
+                conn,
+                fable_library_rust::String_::fromString(text),
+            )
+        }
+    }
+
+    fn net_push_disconnected(&mut self, key: String, conn: i32) {
+        unsafe {
+            let func: Symbol<fn(fable_library_rust::String_::LrcStr, i32)> = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"net_push_disconnected")
+                .unwrap();
+            func(fable_library_rust::String_::fromString(key), conn)
+        }
+    }
+
+    fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
+        unsafe {
+            let func: Symbol<
+                fn(fable_library_rust::String_::LrcStr, i32, fable_library_rust::String_::LrcStr),
+            > = self
+                .library
+                .as_ref()
+                .unwrap()
+                .get(b"net_push_conn_error")
+                .unwrap();
+            func(
+                fable_library_rust::String_::fromString(key),
+                conn,
+                fable_library_rust::String_::fromString(message),
+            )
+        }
+    }
+
     fn quit(&mut self) {
         if let Some(handle) = self.watcher_thread.take() {
             handle.join().expect("Failed to join watcher thread");

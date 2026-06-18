@@ -34,6 +34,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Audio playback (the host owns the device so it survives hot reload). cpal needs
 # ALSA dev headers on Linux (libasound2-dev) — installed in the Build Native CI.
 rodio = { version = "0.19", default-features = false, features = ["symphonia-wav", "symphonia-vorbis"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+
+[dev-dependencies]
+libloading = "0.8.3"
+functor_runtime_common = { path = "./../functor-runtime-common" }
+fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features=["HtmlCanvasElement", "WebGl2RenderingContext", "Window"] }
