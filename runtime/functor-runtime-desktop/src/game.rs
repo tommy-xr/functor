@@ -21,5 +21,17 @@ pub trait Game {
     /// works for any game because Fable derives `Debug` on every generated type.
     fn state_debug(&self) -> String;
 
+    /// Take the networking commands the game has queued this frame (a JSON array
+    /// of `functor_runtime_common::net::NetCommand`), via the dylib's
+    /// `net_drain_commands_json` export. The host performs the I/O and reports
+    /// results back with `net_push_http_response` / `net_push_http_error`.
+    fn net_drain_commands(&self) -> String;
+
+    /// Deliver a completed HTTP response into the game's async inbox.
+    fn net_push_http_response(&mut self, token: i32, status: i32, body: String);
+
+    /// Deliver a transport-level failure for a request into the async inbox.
+    fn net_push_http_error(&mut self, token: i32, message: String);
+
     fn quit(&mut self);
 }

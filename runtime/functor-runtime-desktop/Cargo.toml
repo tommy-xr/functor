@@ -30,6 +30,7 @@ glfw = { version = "0.56.0" }
 libloading = "0.8.3"
 tokio = { version = "1", features = ["full"] }
 tiny_http = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 libloading = "0.8.3"
