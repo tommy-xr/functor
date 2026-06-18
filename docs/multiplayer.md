@@ -19,20 +19,26 @@ not part of it.
 
 ## Design constraints (from the architecture)
 
-Two facts about the MVU loop drive the whole API shape:
+The MVU loop's hot-reload behavior shapes the API:
 
-1. **Effects are persisted across hot reload.** `getState`/`setState` bundle
-   `(model, effectQueue)` into `OpaqueState`. Per the
-   `effects-plain-data-invariant`, an `Effect` must therefore be **plain data** —
-   no live sockets, no closures. Outbound network ops carry a `ConnectionId` +
-   bytes, never a handle.
-2. **Subs are recomputed every frame and are *not* persisted.** So a `Sub` *may*
-   carry closures (decoders) and *must* carry identity, so a live socket is
-   matched across recomputations instead of being torn down and reopened every
-   frame (see the existing comment in `Sub.fs`).
+- **The effect queue is no longer persisted across hot reload** (changed during
+  the HTTP work — see `effects-plain-data-invariant`). `getState`/`setState`
+  persist **only the model**; the queue is reset to empty on reload. This *lifts*
+  the old "effects must be plain data" rule, so an `Effect` may now carry a
+  closure — which is what lets HTTP use the Elm `expect` shape (the request `Cmd`
+  carries a `tagger : Result -> Msg`).
+- **A closure cannot cross a dylib swap.** So the request→response tagger is held
+  in a thread-local, dylib-bound registry, not in `OpaqueState`. On hot reload an
+  in-flight request loses its tagger; the response is dropped with a warning
+  (a deliberate, dev-only trade).
+- **Subs are recomputed every frame and not persisted.** For *persistent
+  connections* (WebSocket/TCP/UDP, Phase 2+), a `Sub` still carries the inbound
+  decoder and the connection identity, so a live socket is matched across
+  recomputations instead of being reopened every frame.
 
-That asymmetry decides the API: **inbound + lifecycle is a `Sub`; outbound + send
-is an `Effect`.**
+So: **one-shot request/response (HTTP) is a single `Effect` carrying its tagger,
+Elm-style; persistent connections are a `Sub` (inbound/identity) + `Effect`
+(send), per the WebSocket/TCP/UDP phases.**
 
 ## Architecture
 
@@ -66,30 +72,39 @@ is an `Effect`.**
 
 ## API (F#)
 
-Inbound + lifecycle — `Sub` (carries decoders, owns the socket):
+**HTTP — Elm `Http.get { expect = ... }` style (shipped, Phase 1).** A single
+`Effect` carries the tagger; the response comes back as a message through
+`update`. No subscription.
+
+```fsharp
+Effect.httpGet  (url: string) (tagger: Net.HttpResponse -> 'msg) : effect<'msg>
+Effect.httpPost (url: string) (body: string) (tagger: Net.HttpResponse -> 'msg) : effect<'msg>
+// Net.HttpResponse: .ok .status .body .error   (the result handed to the tagger)
+```
+
+Under the hood: the request gets an auto token; running the effect registers the
+tagger (keyed by token) in a thread-local registry and queues a plain-data
+command for the host to perform; when the response lands, the executor applies the
+tagger and delivers the message.
+
+**Persistent connections — `Sub` (inbound/identity) + `Effect` (send)**
+(WebSocket/TCP/UDP, Phase 2+):
 
 ```fsharp
 // client: declares a desired connection; runtime keeps it open + reconnects
 Sub.connect (endpoint: Endpoint) (decode: NetEvent -> 'msg)
 // server: accepts many; yields per-client events (native only for TCP/UDP/WS)
 Sub.listen  (bind: Endpoint)     (decode: NetEvent -> 'msg)
-```
 
-`NetEvent = Connected of ConnectionId | Message of ConnectionId * byte[]
-          | Disconnected of ConnectionId | Error of ConnectionId * string`
-
-Outbound + send — `Effect` (plain data only):
-
-```fsharp
 Effect.send      (id: ConnectionId) (payload: byte[]) : effect<'msg>
 Effect.broadcast (ids)              (payload: byte[]) : effect<'msg>
 Effect.close     (id: ConnectionId)                   : effect<'msg>
 ```
 
-`ConnectionId` is a plain value assigned by the runtime and reported via the
-`Connected`/`ClientConnected` event; the game stores it in its model and names it
-in send effects. HTTP request/response correlates by a plain token the game picks:
-request via `Effect`, response arrives via the connection's inbound `Sub`.
+`NetEvent = Connected of ConnectionId | Message of ConnectionId * byte[]
+          | Disconnected of ConnectionId | Error of ConnectionId * string`.
+`ConnectionId` is assigned by the runtime and reported via the `Connected` event;
+the game stores it in its model and names it in send effects.
 
 ## Test harness / SDK
 

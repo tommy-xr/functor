@@ -2,17 +2,22 @@ use std::fmt;
 
 use fable_library_rust::{NativeArray_, Native_::Func1};
 
-use crate::net::{self, HttpMethod, NetCommand};
+use crate::net::{self, HttpMethod, HttpResult, NetCommand};
 
 #[derive(Clone)]
 pub enum Effect<T: Clone + 'static> {
     None,
     Wrapped(T),
-    /// A networking side effect: plain data describing I/O for the host shell to
-    /// perform. It produces no in-frame message; the result arrives later through
-    /// the async inbox and is turned into a message by the matching `Sub`. Kept
-    /// plain data so it survives hot reload like any other queued effect.
-    Command(NetCommand),
+    /// An HTTP request (the Elm `Http.get { expect = ... }`). `command` is the
+    /// plain-data request the host performs; `tagger` maps the eventual result to
+    /// a message. When the effect runs, the command goes to the outbound queue and
+    /// the tagger into the pending-request registry (keyed by the command's
+    /// token); the response is delivered as a message later. The tagger is a
+    /// closure, so the effect queue is no longer persisted across hot reload.
+    Http {
+        command: NetCommand,
+        tagger: Func1<HttpResult, T>,
+    },
 }
 
 // Implement Debug manually so it doesn't require `T: Debug`. This lets types
@@ -23,7 +28,7 @@ impl<T: Clone + 'static> fmt::Debug for Effect<T> {
         match self {
             Effect::None => f.write_str("Effect::None"),
             Effect::Wrapped(_) => f.write_str("Effect::Wrapped(..)"),
-            Effect::Command(cmd) => write!(f, "Effect::Command({cmd:?})"),
+            Effect::Http { command, .. } => write!(f, "Effect::Http({command:?})"),
         }
     }
 }
@@ -44,31 +49,38 @@ impl<T: Clone + 'static> Effect<T> {
         Effect::Wrapped(data)
     }
 
-    /// Build an HTTP request effect. `token` is echoed back on the response so the
-    /// game can correlate it (see `net::NetInbound`).
-    pub fn http_request(
+    /// Build an HTTP request effect. `tagger` maps the eventual result into a
+    /// message (the Elm `expect`); `token` correlates request and response.
+    pub fn http(
         token: u64,
         method: HttpMethod,
         url: String,
         headers: Vec<(String, String)>,
         body: Vec<u8>,
+        tagger: Func1<HttpResult, T>,
     ) -> Effect<T> {
-        Effect::Command(NetCommand::HttpRequest {
-            token,
-            method,
-            url,
-            headers,
-            body,
-        })
+        Effect::Http {
+            command: NetCommand::HttpRequest {
+                token,
+                method,
+                url,
+                headers,
+                body,
+            },
+            tagger,
+        }
     }
 
     pub fn map<U: Clone + 'static>(mapping: Func1<T, U>, source: Effect<T>) -> Effect<U> {
         match source {
             Effect::None => Effect::None,
             Effect::Wrapped(v) => Effect::Wrapped(mapping(v)),
-            // A command carries no message, so remapping the message type is a
-            // no-op on the payload -- just re-tag it under the new type.
-            Effect::Command(cmd) => Effect::Command(cmd),
+            // Compose the mapping after the tagger so the request still resolves to
+            // the new message type (Elm's Cmd.map over an Http command).
+            Effect::Http { command, tagger } => Effect::Http {
+                command,
+                tagger: Func1::new(move |result: HttpResult| mapping(tagger(result))),
+            },
         }
     }
 
@@ -76,10 +88,13 @@ impl<T: Clone + 'static> Effect<T> {
         match effect {
             Effect::None => NativeArray_::array_from(vec![]),
             Effect::Wrapped(v) => NativeArray_::array_from(vec![v]),
-            // Hand the command to the host (via the outbound queue) and produce no
-            // in-frame message; the result returns later through the inbox.
-            Effect::Command(cmd) => {
-                net::push_command(cmd);
+            // Register the tagger (keyed by token) and hand the command to the host
+            // via the outbound queue; the result returns later through the inbox
+            // and is matched back to this tagger. No in-frame message.
+            Effect::Http { command, tagger } => {
+                let NetCommand::HttpRequest { token, .. } = &command;
+                net::register_tagger(*token, tagger);
+                net::push_command(command);
                 NativeArray_::array_from(vec![])
             }
         }
@@ -110,19 +125,22 @@ mod tests {
     }
 
     #[test]
-    fn run_command_queues_outbound_and_yields_no_message() {
-        // Clear anything a prior run left behind, then perform an HTTP effect.
+    fn run_http_queues_command_and_registers_tagger() {
+        // Clear anything a prior run left behind, then perform an HTTP effect whose
+        // tagger turns the result's status into a message.
         let _ = net::drain_commands();
-        let eff: Effect<i32> = Effect::http_request(
+        let eff: Effect<i32> = Effect::http(
             99,
             HttpMethod::Get,
             "https://example.com".to_string(),
             vec![],
             vec![],
+            Func1::new(|r: HttpResult| r.status as i32),
         );
         let msgs = Effect::run(eff);
         assert_eq!(NativeArray_::count(msgs), 0);
 
+        // The plain command went to the outbound queue...
         let queued = net::drain_commands();
         assert_eq!(
             queued,
@@ -134,5 +152,14 @@ mod tests {
                 body: vec![],
             }]
         );
+
+        // ...and the tagger was registered: a response for token 99 maps to 200.
+        let result = HttpResult {
+            token: 99,
+            status: 200,
+            body: vec![],
+            error: None,
+        };
+        assert_eq!(net::take_pending::<i32>(result), Some(200));
     }
 }

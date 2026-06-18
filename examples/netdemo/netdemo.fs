@@ -1,59 +1,47 @@
 module NetDemo
 
-// A minimal networking sample: on startup it fires an HTTP GET, then reflects the
-// response into its model. It exercises the Phase 1 HTTP path end to end --
-// `Effect.httpGet` (outbound) and `Sub.httpResponses` (inbound, correlated by
-// token) -- and is meant to be driven *headlessly*: the model is fully visible
-// via the debug server's /state, and a response can be injected with /net/inbox
-// without a real server (see docs/multiplayer.md). draw3d is deliberately tiny;
-// the interesting state is textual.
+// A minimal networking sample, in the Elm `Http.get { expect = ... }` style: on
+// startup it fires an HTTP GET whose result is tagged into a message, and reflects
+// it into the model. No subscription is involved. It is meant to be driven
+// *headlessly* -- the model is fully visible via the debug server's /state, and a
+// response can be injected without a real server (see docs/multiplayer.md and
+// tests/net_http.rs). draw3d is deliberately tiny; the interesting state is text.
 
 open Functor
 open Functor.Math
 open Graphics
 
-// The correlation token for our one request. The response carries it back so we
-// can tell it apart from any other in-flight request (here there's just one).
-let helloToken = 1
-
 let endpoint = "http://127.0.0.1:9000/hello"
 
-/// Where the one request is in its lifecycle. Plain data -- it rides in the model
-/// and (as messages) through the effect queue, so it stays hot-reload safe.
+/// Where the request is in its lifecycle.
 type Phase =
-    | Idle
-    | Waiting
+    | Loading
     | Done of int * string // status, body
     | Failed of string // transport error
 
 type Model = { phase: Phase; frame: int }
 
 module Model =
-    let initial = { phase = Idle; frame = 0 }
+    let initial = { phase = Loading; frame = 0 }
 
 type Msg =
-    // Kick off (or retry) the request.
-    | Fetch
-    // A decoded HTTP result. We carry plain fields, not the response handle, so
-    // the message is plain data on the queue.
-    | GotResponse of token: int * ok: bool * status: int * body: string
+    // The HTTP result, tagged back to us by the request below.
+    | GotResponse of Net.HttpResponse
 
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
+// The request: GET the endpoint and deliver the result as `GotResponse` (the Elm
+// `expect`). The runtime applies this tagger when the response lands.
+let fetch = Effect.httpGet endpoint GotResponse
+
 let update model msg =
     match msg with
-    | Fetch -> ({ model with phase = Waiting }, Effect.httpGet helloToken endpoint)
-    | GotResponse(token, ok, status, body) when token = helloToken ->
-        let phase = if ok then Done(status, body) else Failed body
-        Debug.log (sprintf "netdemo: got response token=%d ok=%b status=%d" token ok status)
+    | GotResponse resp ->
+        let phase = if resp.ok then Done(resp.status, resp.body) else Failed resp.error
+        Debug.log (sprintf "netdemo: got response ok=%b status=%d" resp.ok resp.status)
         ({ model with phase = phase }, Effect.none ())
-    | GotResponse _ -> (model, Effect.none ()) // not ours; ignore
 
-// Listen for HTTP results and decode each into a plain-data message. The executor
-// hands every result that lands this frame to this decoder; we filter by token in
-// `update`.
-let subscriptions _model =
-    Sub.httpResponses (fun resp -> GotResponse(resp.token, resp.ok, resp.status, resp.body))
+let subscriptions _model = Sub.none ()
 
 let tick model (_: Time.FrameTime) =
     ({ model with frame = model.frame + 1 }, Effect.none ())
@@ -83,8 +71,8 @@ let init (_args: array<string>) =
     |> GameBuilder.update update
     |> GameBuilder.input input
     |> GameBuilder.tick tick
-    // Seed the first fetch as the startup effect (drains on the first tick, runs
-    // once -- not re-run across hot reload).
-    |> GameBuilder.init (Effect.wrapped Fetch)
+    // Fire the request on startup (runs once on the first tick; not re-run across
+    // a hot reload).
+    |> GameBuilder.init fetch
     |> GameBuilder.subscriptions subscriptions
     |> Runtime.runGame

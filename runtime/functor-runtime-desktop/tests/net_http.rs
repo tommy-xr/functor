@@ -70,19 +70,20 @@ fn http_request_response_round_trip() {
             "expected the queued GET in the outbound commands, got: {commands}"
         );
 
-        let waiting = state_debug().to_string();
+        let loading = state_debug().to_string();
         assert!(
-            waiting.contains("Waiting"),
-            "model should be Waiting after firing the request, got: {waiting}"
+            loading.contains("Loading"),
+            "model should be Loading after firing the request, got: {loading}"
         );
 
         // The command should have been consumed by the drain above.
         assert_eq!(drain_commands().to_string(), "[]");
 
-        // Inject the response into the async inbox (token 1, 200, body "pong").
+        // Inject the response into the async inbox. The request was the first
+        // httpGet, so its auto-assigned token is 1.
         push_response(1, 200, fromString("pong".to_string()));
 
-        // Tick 2: the inbox drains -> the httpResponses decoder -> Done(200, "pong").
+        // Tick 2: the inbox drains -> the request's tagger -> Done(200, "pong").
         tick(FrameTime { tts: 0.016, dts: 0.016 });
 
         let done = state_debug().to_string();

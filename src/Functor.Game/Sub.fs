@@ -21,11 +21,6 @@ namespace Functor
 type Sub<'msg> =
     | SubNone
     | Every of Duration.t * 'msg
-    // Resource-backed: decode every HTTP result that lands in the async inbox this
-    // frame into a message. Unlike `Every`, it carries a decoder closure -- legal
-    // because subs are recomputed each frame, never persisted -- and it is driven
-    // by inbox results rather than the clock. Games correlate by the request token.
-    | OnHttpResponse of (Net.HttpResponse -> 'msg)
     | Batch of Sub<'msg> array
 
 module Sub =
@@ -34,18 +29,12 @@ module Sub =
 
     let every (period: Duration.t) (msg: 'msg) : Sub<'msg> = Every(period, msg)
 
-    /// Listen for HTTP results delivered to the async inbox. `decode` is applied to
-    /// every result that arrives in a frame; match on `HttpResponse.token` to pick
-    /// out the request you issued with `Effect.httpGet` / `httpPost`.
-    let httpResponses (decode: Net.HttpResponse -> 'msg) : Sub<'msg> = OnHttpResponse decode
-
     let batch (subs: Sub<'msg> array) : Sub<'msg> = Batch subs
 
     let rec map (f: 'a -> 'b) (sub: Sub<'a>) : Sub<'b> =
         match sub with
         | SubNone -> SubNone
         | Every(period, msg) -> Every(period, f msg)
-        | OnHttpResponse decode -> OnHttpResponse(decode >> f)
         | Batch subs -> Batch(subs |> Array.map (map f))
 
     // True iff an integer multiple of `period` lies in the interval
@@ -62,7 +51,6 @@ module Sub =
         | SubNone -> acc
         | Every(period, msg) ->
             if crossedBoundary period prevTts tts then Array.append acc [| msg |] else acc
-        | OnHttpResponse _ -> acc // driven by inbox results, not the clock
         | Batch subs -> Array.fold (collectFired prevTts tts) acc subs
 
     // Walk the Sub tree and return the messages that fired this frame, given the
@@ -70,16 +58,3 @@ module Sub =
     // same enqueue -> update path as effects.
     let messagesForFrame (prevTts: float) (tts: float) (sub: Sub<'msg>) : 'msg array =
         collectFired prevTts tts [||] sub
-
-    let rec private collectInbound (results: Net.HttpResponse array) (acc: 'msg array) (sub: Sub<'msg>) : 'msg array =
-        match sub with
-        | SubNone -> acc
-        | Every _ -> acc // clock-driven, not inbox-driven
-        | OnHttpResponse decode -> Array.append acc (Array.map decode results)
-        | Batch subs -> Array.fold (collectInbound results) acc subs
-
-    // Walk the Sub tree and decode this frame's inbox results into messages. Each
-    // `OnHttpResponse` decoder sees every result; games filter by token. Fed back
-    // through the same enqueue -> update path as timer messages.
-    let inboundMessagesForFrame (results: Net.HttpResponse array) (sub: Sub<'msg>) : 'msg array =
-        collectInbound results [||] sub

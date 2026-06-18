@@ -201,15 +201,21 @@ module Runtime
             printfn "Hello from GameRunner!"
         interface IRunner with
             member this.getState() =
-                // Bundle the pending effect queue with the model so in-flight
-                // effects survive a hot reload (the new runner starts with an
-                // empty queue otherwise, dropping effects enqueued across frames).
-                OpaqueState.to_opaque_type (state, effectQueue)
+                // Only the model crosses a hot reload. The effect queue is not
+                // transferred: an HTTP effect carries a tagger closure (code in the
+                // old dylib) which would dangle after the swap, and the pending-
+                // request registry that holds in-flight taggers is dropped with the
+                // old dylib too. So in-flight effects/requests are dropped on reload
+                // (the executor warns when an orphaned response lands) -- a
+                // deliberate trade for the Elm-style `expect` API.
+                OpaqueState.to_opaque_type state
             member this.setState(incomingState) =
-                let (restoredState, restoredQueue): ('Model * EffectQueue<'Msg>) =
-                    OpaqueState.unsafe_coerce incomingState
+                let restoredState: 'Model = OpaqueState.unsafe_coerce incomingState
                 state <- restoredState
-                effectQueue <- restoredQueue
+                // Start the reloaded runner with an empty queue. This also discards
+                // the constructor-seeded 'init' effect, so 'init' runs once (first
+                // load) and not again across a reload.
+                effectQueue <- EffectQueue.empty ()
             member this.stateDebug() = formatState state
             member this.tick(frameTime: Time.FrameTime) =
 
@@ -264,15 +270,17 @@ module Runtime
                 lastTts <- Some tts
 
                 // Drain the async inbox: HTTP results that arrived (on some later
-                // frame) since the request effect ran. Route each to the game's
-                // `Sub.httpResponses` decoders, enqueueing through the same update
-                // path. Unlike timers this is gated on results existing, so the
-                // common no-network case adds only an empty-array drain.
-                let httpResults = Net.drainHttpResults ()
-                if httpResults.Length > 0 then
-                    GameRunner.subscriptions myGame settledBeforeSubs
-                    |> Sub.inboundMessagesForFrame httpResults
-                    |> Array.iter (fun msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue)
+                // frame) since the request ran. For each, apply the tagger the
+                // request registered (matched by token) and enqueue the resulting
+                // message through the same update path. A result with no tagger --
+                // an unknown token, or one dropped by a hot reload while the request
+                // was in flight -- is logged and discarded rather than crashing.
+                for result in Net.drainHttpResults () do
+                    let token = result.token
+                    match Net.takePending result with
+                    | Some msg -> EffectQueue.enqueue (Effect.wrapped msg) effectQueue
+                    | None ->
+                        printfn "[Functor] dropped HTTP response (token %d): no handler; likely a hot reload while the request was in flight" token
 
                 let settledState = drain settledBeforeSubs
 
