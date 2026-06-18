@@ -6,9 +6,10 @@
 
     "build:cli": "cargo build --bin functor-runner && wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
     "fetch:assets": "node scripts/fetch-assets.mjs",
-    "test:golden": "npm run build:examples:hello:rust && cargo build --manifest-path examples/hello/build-native/Cargo.toml && npm run build:examples:lighting:rust && cargo build --manifest-path examples/lighting/build-native/Cargo.toml && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
+    "test:golden": "npm run build:examples:hello:rust && cargo build --manifest-path examples/hello/build-native/Cargo.toml && npm run build:examples:lighting:rust && cargo build --manifest-path examples/lighting/build-native/Cargo.toml && npm run build:examples:primitives:rust && cargo build --manifest-path examples/primitives/build-native/Cargo.toml && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
     "build:examples:hello:rust": "dotnet fable examples/hello/hello.fsproj --lang rust --outDir .",
     "build:examples:lighting:rust": "dotnet fable examples/lighting/lighting.fsproj --lang rust --outDir .",
+    "build:examples:primitives:rust": "dotnet fable examples/primitives/primitives.fsproj --lang rust --outDir .",
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots"
   },

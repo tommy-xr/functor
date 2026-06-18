@@ -218,6 +218,12 @@ async fn run_async() -> Result<(), JsValue> {
         // and sampled by the lit material (mirrors the desktop runtime).
         let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
 
+        // In deterministic mode (?fixed-time, the golden) the canvas is sized
+        // once and then left fixed (see below), and the render loop stops after
+        // a few frames so the page is static for screenshotting.
+        let mut sized = false;
+        let mut frame_count = 0u32;
+
         *g.borrow_mut() = Some(Closure::new(move || {
             let now = performance.now() as f32;
             // Pin the frame time when `?fixed-time` is set (deterministic capture).
@@ -237,15 +243,26 @@ async fn run_async() -> Result<(), JsValue> {
             let frame: Frame = functor_runtime_common::from_js_value(val);
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
-            // scaled for HiDPI, so the view follows browser/window resizes.
-            let dpr = web_sys::window().unwrap().device_pixel_ratio();
-            let draw_w = ((canvas.client_width() as f64) * dpr).round().max(0.0) as u32;
-            let draw_h = ((canvas.client_height() as f64) * dpr).round().max(0.0) as u32;
-            if canvas.width() != draw_w {
-                canvas.set_width(draw_w);
-            }
-            if canvas.height() != draw_h {
-                canvas.set_height(draw_h);
+            // scaled for HiDPI, so the view follows browser/window resizes. In
+            // deterministic mode (?fixed-time, the golden), size it once layout
+            // is ready and then leave it fixed: the per-frame resize otherwise
+            // jitters the canvas element under headless CI and prevents
+            // Playwright from getting a stable screenshot.
+            if fixed_time.is_none() || !sized {
+                let dpr = web_sys::window().unwrap().device_pixel_ratio();
+                let cw = canvas.client_width();
+                let ch = canvas.client_height();
+                if cw > 0 && ch > 0 {
+                    let draw_w = ((cw as f64) * dpr).round().max(1.0) as u32;
+                    let draw_h = ((ch as f64) * dpr).round().max(1.0) as u32;
+                    if canvas.width() != draw_w {
+                        canvas.set_width(draw_w);
+                    }
+                    if canvas.height() != draw_h {
+                        canvas.set_height(draw_h);
+                    }
+                    sized = true;
+                }
             }
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
 
@@ -262,8 +279,15 @@ async fn run_async() -> Result<(), JsValue> {
                 debug_render_mode,
             );
 
-            // Schedule ourself for another requestAnimationFrame callback.
-            request_animation_frame(f.borrow().as_ref().unwrap());
+            // Schedule the next frame. In deterministic mode (?fixed-time, the
+            // golden) render a few warm-up frames (shader compile, first-frame
+            // settling) then stop, so the page is perfectly static: the golden
+            // screenshot then never has to chase a stable frame (CI's
+            // swiftshader isn't bit-identical frame to frame).
+            frame_count += 1;
+            if fixed_time.is_none() || frame_count < 30 {
+                request_animation_frame(f.borrow().as_ref().unwrap());
+            }
         }));
 
         request_animation_frame(g.borrow().as_ref().unwrap());
