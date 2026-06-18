@@ -11,7 +11,7 @@ use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
-use functor_runtime_common::net::{HttpMethod, NetCommand};
+use functor_runtime_common::net::{ConnCommand, HttpMethod, NetCommand};
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
@@ -96,6 +96,22 @@ extern "C" {
     // play commands as a JSON string, which the host plays via Web Audio.
     #[wasm_bindgen(js_namespace = game, js_name = audio_drain_commands_json_wasm)]
     fn game_audio_drain_commands() -> JsValue;
+
+    // Persistent connections (WebSocket).
+    #[wasm_bindgen(js_namespace = game, js_name = net_drain_conn_commands_json)]
+    fn game_net_drain_conn_commands() -> JsValue;
+
+    #[wasm_bindgen(js_namespace = game, js_name = net_push_connected)]
+    fn game_net_push_connected(key: JsValue, id: i32);
+
+    #[wasm_bindgen(js_namespace = game, js_name = net_push_conn_message)]
+    fn game_net_push_conn_message(key: JsValue, id: i32, text: JsValue);
+
+    #[wasm_bindgen(js_namespace = game, js_name = net_push_disconnected)]
+    fn game_net_push_disconnected(key: JsValue, id: i32);
+
+    #[wasm_bindgen(js_namespace = game, js_name = net_push_conn_error)]
+    fn game_net_push_conn_error(key: JsValue, id: i32, message: JsValue);
 }
 
 fn http_method_str(method: HttpMethod) -> &'static str {
@@ -295,6 +311,131 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
     let _ = source.start();
 }
 
+/// Browser WebSocket client state (client only — browsers can't listen). Lives
+/// for the page; the per-socket event handlers are `forget()`-leaked, which keeps
+/// them alive without a reference cycle through this table.
+#[derive(Default)]
+struct WsClient {
+    conns: std::collections::HashMap<u64, web_sys::WebSocket>,
+    by_key: std::collections::HashMap<String, u64>,
+    next_id: u64,
+}
+
+fn to_js(s: &str) -> JsValue {
+    functor_runtime_common::to_js_value(&s.to_string())
+}
+
+/// Drain the game's queued connection commands and perform them with browser
+/// WebSockets; socket events are pushed back into the game from the handlers.
+fn dispatch_conn_commands(state: &Rc<RefCell<WsClient>>) {
+    let json = game_net_drain_conn_commands()
+        .as_string()
+        .unwrap_or_else(|| "[]".to_string());
+    if json == "[]" {
+        return;
+    }
+    let commands: Vec<ConnCommand> = match serde_json::from_str(&json) {
+        Ok(c) => c,
+        Err(e) => {
+            web_sys::console::error_1(&format!("[net] bad conn commands json: {e}").into());
+            return;
+        }
+    };
+    for cmd in commands {
+        match cmd {
+            ConnCommand::Connect { key, url } => ws_connect(state, key, url),
+            ConnCommand::Listen { .. } => {
+                web_sys::console::warn_1(
+                    &"[net] Sub.listen is unsupported in the browser (client only)".into(),
+                );
+            }
+            ConnCommand::Send { conn, payload } => {
+                if let Some(ws) = state.borrow().conns.get(&conn) {
+                    let _ = ws.send_with_str(&String::from_utf8_lossy(&payload));
+                }
+            }
+            ConnCommand::CloseConn { conn } => {
+                if let Some(ws) = state.borrow().conns.get(&conn) {
+                    let _ = ws.close();
+                }
+            }
+            ConnCommand::CloseKey { key } => {
+                let id = state.borrow().by_key.get(&key).copied();
+                if let Some(id) = id {
+                    if let Some(ws) = state.borrow().conns.get(&id) {
+                        let _ = ws.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
+    // Idempotent by key (matches the native host); a re-declared connection
+    // reattaches rather than opening a second socket.
+    if state.borrow().by_key.contains_key(&key) {
+        return;
+    }
+    let ws = match web_sys::WebSocket::new(&url) {
+        Ok(ws) => ws,
+        Err(_) => {
+            game_net_push_conn_error(to_js(&key), 0, to_js("failed to open WebSocket"));
+            return;
+        }
+    };
+    let id = {
+        let mut s = state.borrow_mut();
+        s.next_id += 1;
+        let id = s.next_id;
+        s.conns.insert(id, ws.clone());
+        s.by_key.insert(key.clone(), id);
+        id
+    };
+    let iid = id as i32;
+
+    let on_open = {
+        let key = key.clone();
+        Closure::<dyn FnMut()>::new(move || game_net_push_connected(to_js(&key), iid))
+    };
+    ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+    on_open.forget();
+
+    let on_message = {
+        let key = key.clone();
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
+            if let Some(text) = e.data().as_string() {
+                game_net_push_conn_message(to_js(&key), iid, to_js(&text));
+            }
+        })
+    };
+    ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    on_message.forget();
+
+    let on_close = {
+        let key = key.clone();
+        let state = state.clone();
+        Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_e: web_sys::CloseEvent| {
+            game_net_push_disconnected(to_js(&key), iid);
+            // Drop our handle so a still-declared Sub.connect reconnects next frame.
+            let mut s = state.borrow_mut();
+            s.conns.remove(&id);
+            s.by_key.remove(&key);
+        })
+    };
+    ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    on_close.forget();
+
+    let on_error = {
+        let key = key.clone();
+        Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |e: web_sys::ErrorEvent| {
+            game_net_push_conn_error(to_js(&key), iid, to_js(&e.message()));
+        })
+    };
+    ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    on_error.forget();
+}
+
 #[wasm_bindgen(start)]
 pub fn main() {
     spawn_local(async {
@@ -397,6 +538,7 @@ async fn run_async() -> Result<(), JsValue> {
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
         gl.enable(glow::DEPTH_TEST);
+        let ws_state = Rc::new(RefCell::new(WsClient::default()));
         let f = Rc::new(RefCell::new(None));
         let g = f.clone();
 
@@ -459,6 +601,7 @@ async fn run_async() -> Result<(), JsValue> {
             // Play any one-shot sounds this frame's tick queued (fetch + decode
             // the first time, then from the cache).
             dispatch_audio_commands();
+            dispatch_conn_commands(&ws_state);
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
