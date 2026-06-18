@@ -1,0 +1,95 @@
+name: Golden (wasm)
+
+# Headless render-regression check. Builds the CLI + embedded web runtime, serves
+# the asset-free `primitives` sample as wasm, and compares a screenshot of the
+# WebGL2 canvas (software swiftshader) to the committed golden — the
+# `primitives-t2` scenario in golden-scenarios.json, driven by
+# e2e/golden-wasm.spec.mjs.
+#
+# Linux-only: golden images are renderer-specific, and swiftshader is a
+# deterministic software rasterizer, so this is the headless path that needs no
+# GPU/display (unlike the native golden in golden.rs). The scene uses no external
+# assets, so there is nothing to fetch.
+#
+# Reference images are per-platform (Playwright appends `-chromium-linux`); the
+# committed Linux golden is generated from this job. To (re)generate it, run this
+# workflow manually with `update_snapshots = true` and commit the
+# `golden-wasm` artifact's snapshot.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      update_snapshots:
+        description: "Regenerate the committed goldens (upload them as an artifact to commit)"
+        type: boolean
+        default: false
+
+jobs:
+  golden-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      # Materializes fable_modules/ (the fable_library_rust workspace dep) that
+      # the CLI build below resolves. See the build-wasm workflow for why this
+      # precedes the cache step.
+      - name: Build F#
+        run: npm run build:examples:hello:rust -- --verbose
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Build CLI (functor-runner + web bundle + functor)
+        run: npm run build:cli
+
+      - name: Run wasm golden (asset-free primitives scene)
+        env:
+          FUNCTOR_SAMPLE: primitives
+        run: |
+          if [ "${{ github.event.inputs.update_snapshots }}" = "true" ]; then
+            npm run test:wasm-golden:update
+          else
+            npm run test:wasm-golden
+          fi
+
+      # The snapshot dir carries a freshly written Linux golden when run with
+      # update_snapshots; the report/diffs help debug a regression otherwise.
+      - name: Upload golden artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-wasm
+          path: |
+            e2e/golden-wasm.spec.mjs-snapshots
+            playwright-report
+            test-results
+          retention-days: 14
