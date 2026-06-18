@@ -68,8 +68,16 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
-      - name: Build CLI (functor-runner + web bundle + functor)
-        run: npm run build:cli
+      # The wasm golden only needs the `functor` CLI (to serve the wasm bundle)
+      # and the web runtime bundle it embeds — not `functor-runner` (the native
+      # GLFW/OpenGL runtime), which would drag in X11/GL system libs. The CLI
+      # depends only on functor_runtime_common, so this avoids them entirely.
+      - name: Build web runtime bundle
+        run: wasm-pack build --target=web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build functor CLI
+        run: cargo build --bin functor
 
       - name: Run wasm golden (asset-free primitives scene)
         env:
