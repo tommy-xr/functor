@@ -26,7 +26,8 @@ pub enum MaterialDescription {
         texture: Option<TextureDescription>,
     },
     /// A diffuse-lit surface: albedo `color` (optionally modulated by a texture)
-    /// shaded by the frame's ambient + directional lights (Lambert).
+    /// shaded by the frame's lights (Lambert + specular), optionally with a
+    /// tangent-space `normal_map` perturbing the surface normal.
     Lit {
         #[serde(
             serialize_with = "serialize_vec4",
@@ -34,6 +35,8 @@ pub enum MaterialDescription {
         )]
         color: Vector4<f32>,
         texture: Option<TextureDescription>,
+        #[serde(default)]
+        normal_map: Option<TextureDescription>,
     },
 }
 
@@ -68,6 +71,7 @@ impl MaterialDescription {
         MaterialDescription::Lit {
             color: vec4(r, g, b, a),
             texture: None,
+            normal_map: None,
         }
     }
 
@@ -76,6 +80,24 @@ impl MaterialDescription {
         MaterialDescription::Lit {
             color: vec4(1.0, 1.0, 1.0, 1.0),
             texture: Some(tex),
+            normal_map: None,
+        }
+    }
+
+    /// A diffuse-lit surface with a tangent-space normal map perturbing the
+    /// lighting. `color` is the albedo tint (no albedo texture); `normal_map` is
+    /// the normal-map texture.
+    pub fn lit_normal_mapped(
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+        normal_map: TextureDescription,
+    ) -> MaterialDescription {
+        MaterialDescription::Lit {
+            color: vec4(r, g, b, a),
+            texture: None,
+            normal_map: Some(normal_map),
         }
     }
 }
@@ -106,14 +128,21 @@ impl MaterialDescription {
                 basic_material
             }
             MaterialDescription::Emissive { color, texture } => {
-                let use_texture = bind_optional_texture(texture, context, scene_context);
+                let use_texture = bind_optional_texture(texture, 0, context, scene_context);
                 let mut emissive_material = EmissiveMaterial::create(*color, use_texture);
                 emissive_material.initialize(&context);
                 emissive_material
             }
-            MaterialDescription::Lit { color, texture } => {
-                let use_texture = bind_optional_texture(texture, context, scene_context);
-                let mut lit_material = LitMaterial::create(*color, use_texture);
+            MaterialDescription::Lit {
+                color,
+                texture,
+                normal_map,
+            } => {
+                // Albedo on unit 0, the normal map on unit 2 (the shadow map
+                // uses unit 1).
+                let use_texture = bind_optional_texture(texture, 0, context, scene_context);
+                let use_normal_map = bind_optional_texture(normal_map, 2, context, scene_context);
+                let mut lit_material = LitMaterial::create(*color, use_texture, use_normal_map);
                 lit_material.initialize(&context);
                 lit_material
             }
@@ -122,9 +151,11 @@ impl MaterialDescription {
 }
 
 /// Bind an optional albedo texture to unit 0; returns whether one was bound (the
-/// shaders sample `texture1` only when their `useTexture` uniform is set).
+/// shaders sample the texture only when their corresponding `use…` uniform is
+/// set. Binds to texture unit `unit`.
 fn bind_optional_texture(
     texture: &Option<TextureDescription>,
+    unit: u32,
     context: &RenderContext,
     scene_context: &SceneContext,
 ) -> bool {
@@ -133,7 +164,7 @@ fn bind_optional_texture(
             let asset = context
                 .asset_cache
                 .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
-            asset.get().bind(0, context);
+            asset.get().bind(unit, context);
             true
         }
         None => false,

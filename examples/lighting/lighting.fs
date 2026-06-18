@@ -101,6 +101,10 @@ let init (_args: array<string>) =
         // the colored lights tint them; the ground is a neutral grey.
         let litWhite = Material.lit(0.9f, 0.9f, 0.9f, 1.0f)
         let litGround = Material.lit(0.6f, 0.6f, 0.62f, 1.0f)
+        // Normal-mapped: a tangent-space bumps map perturbs the surface normal,
+        // so the lights and specular highlights play across the bumps.
+        let litBumps =
+            Material.litNormalMapped(0.9f, 0.9f, 0.92f, 1.0f, Texture.file("bumps-normal.png"))
 
         // Three colored point lights orbiting the scene (120 degrees apart),
         // animated by total time. Each has an emissive marker sphere at its
@@ -125,8 +129,11 @@ let init (_args: array<string>) =
                 material (litGround, [| plane() |> Transform.scale 24.0f |])
                 material (litWhite, [|
                     sphere()   |> Transform.translateX -2.5f |> Transform.translateY 0.8f |> Transform.scale 0.8f
-                    cube()     |> Transform.translateX 2.5f  |> Transform.translateY 0.5f
                     cylinder() |> Transform.translateZ 2.5f  |> Transform.translateY 0.5f
+                |])
+                // The cube is normal-mapped, so its flat faces show the bumps.
+                material (litBumps, [|
+                    cube() |> Transform.translateX 2.5f |> Transform.translateY 0.5f
                 |])
             |])
 

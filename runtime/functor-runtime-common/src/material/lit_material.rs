@@ -20,6 +20,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
         layout (location = 2) in vec3 inNormal;
+        layout (location = 3) in vec4 inTangent;
 
         uniform mat4 world;
         uniform mat4 view;
@@ -27,11 +28,18 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         out vec2 texCoord;
         out vec3 worldNormal;
+        out vec3 worldTangent;
+        out vec3 worldBitangent;
         out vec3 worldPos;
 
         void main() {
             texCoord = inTex;
-            worldNormal = mat3(world) * inNormal;
+            vec3 n = mat3(world) * inNormal;
+            vec3 t = mat3(world) * inTangent.xyz;
+            worldNormal = n;
+            worldTangent = t;
+            // Bitangent from normal/tangent and the glTF handedness sign.
+            worldBitangent = cross(n, t) * inTangent.w;
             vec4 wp = world * vec4(inPos, 1.0);
             worldPos = wp.xyz;
             gl_Position = projection * view * wp;
@@ -47,11 +55,18 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
 
         in vec2 texCoord;
         in vec3 worldNormal;
+        in vec3 worldTangent;
+        in vec3 worldBitangent;
         in vec3 worldPos;
 
         uniform vec4 baseColor;
         uniform sampler2D texture1;
         uniform int useTexture;
+
+        // Tangent-space normal map (unit 2). `useNormalMap` gates it; the surface
+        // tangent frame comes from the interpolated worldTangent/worldBitangent.
+        uniform sampler2D normalMap;
+        uniform int useNormalMap;
 
         uniform int numLights;
         uniform int lightType[MAX_LIGHTS];      // 0=ambient 1=directional 2=point 3=spot
@@ -104,6 +119,15 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
 
         void main() {
             vec3 n = normalize(worldNormal);
+            // Perturb the surface normal by the tangent-space normal map.
+            if (useNormalMap == 1) {
+                vec3 tn = texture(normalMap, texCoord).xyz * 2.0 - 1.0;
+                mat3 tbn = mat3(
+                    normalize(worldTangent),
+                    normalize(worldBitangent),
+                    n);
+                n = normalize(tbn * tn);
+            }
             vec3 viewDir = normalize(viewPos - worldPos);
             // Kept separate so specular highlights are the light's color, not
             // tinted by albedo (only the diffuse term is multiplied by albedo).
@@ -186,6 +210,8 @@ struct Uniforms {
     shadow_enabled_loc: UniformLocation,
     shadow_light_index_loc: UniformLocation,
     view_pos_loc: UniformLocation,
+    normal_map_loc: UniformLocation,
+    use_normal_map_loc: UniformLocation,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -193,6 +219,7 @@ static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 pub struct LitMaterial {
     color: Vector4<f32>,
     use_texture: bool,
+    use_normal_map: bool,
 }
 
 use crate::shader::Shader;
@@ -242,6 +269,8 @@ impl Material for LitMaterial {
                     shadow_light_index_loc: shader
                         .get_uniform_location(ctx.gl, "shadowLightIndex"),
                     view_pos_loc: shader.get_uniform_location(ctx.gl, "viewPos"),
+                    normal_map_loc: shader.get_uniform_location(ctx.gl, "normalMap"),
+                    use_normal_map_loc: shader.get_uniform_location(ctx.gl, "useNormalMap"),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -279,6 +308,15 @@ impl Material for LitMaterial {
                 p.set_uniform_vec4(ctx.gl, &uniforms.base_color_loc, &self.color);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
+
+                // Normal map on texture unit 2 (0 = albedo, 1 = shadow map); the
+                // caller binds the texture when `use_normal_map`.
+                p.set_uniform_1i(ctx.gl, &uniforms.normal_map_loc, 2);
+                p.set_uniform_1i(
+                    ctx.gl,
+                    &uniforms.use_normal_map_loc,
+                    self.use_normal_map as i32,
+                );
 
                 p.set_uniform_1i(ctx.gl, &uniforms.num_lights_loc, lights.count);
                 p.set_uniform_1iv(ctx.gl, &uniforms.light_type_loc, &lights.types);
@@ -320,9 +358,18 @@ impl Material for LitMaterial {
 }
 
 impl LitMaterial {
-    /// `use_texture` expects a texture bound to unit 0 (the caller binds it); the
-    /// sampled texel is multiplied by `color` as a tint/albedo.
-    pub fn create(color: Vector4<f32>, use_texture: bool) -> Box<dyn Material> {
-        Box::new(LitMaterial { color, use_texture })
+    /// `use_texture` expects an albedo texture bound to unit 0 (the caller binds
+    /// it); the sampled texel is multiplied by `color` as a tint/albedo.
+    /// `use_normal_map` expects a tangent-space normal map bound to unit 2.
+    pub fn create(
+        color: Vector4<f32>,
+        use_texture: bool,
+        use_normal_map: bool,
+    ) -> Box<dyn Material> {
+        Box::new(LitMaterial {
+            color,
+            use_texture,
+            use_normal_map,
+        })
     }
 }
