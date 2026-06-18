@@ -55,9 +55,14 @@ pub fn drain_commands_json() -> String {
 mod tests {
     use super::*;
 
+    // One test, not two: `push_command`/`drain_commands` share the process-global
+    // OUTBOUND queue, so two tests touching it run in parallel and can drain each
+    // other's command (a flaky failure that showed up under CI's scheduling).
+    // Keeping it to a single test makes the queue access sequential.
     #[test]
-    fn push_then_drain_round_trips() {
-        let _ = drain_commands(); // clear anything a prior test left
+    fn push_drain_round_trips_and_serializes_to_json() {
+        let _ = drain_commands(); // clear anything a prior run left
+
         push_command(AudioCommand::play_one_shot("gunshot.wav".to_string()));
         let drained = drain_commands();
         assert_eq!(
@@ -69,11 +74,7 @@ mod tests {
         );
         // Draining again yields nothing.
         assert!(drain_commands().is_empty());
-    }
 
-    #[test]
-    fn drain_json_is_an_array() {
-        let _ = drain_commands();
         push_command(AudioCommand::play_one_shot("x.wav".to_string()));
         let json = drain_commands_json();
         assert!(json.contains("PlayOneShot"));
