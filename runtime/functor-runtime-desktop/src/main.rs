@@ -20,6 +20,7 @@ const SCR_HEIGHT: u32 = 600;
 mod debug_server;
 mod game;
 mod hot_reload_game;
+mod net_dispatch;
 mod static_game;
 
 /// Translate a GLFW key into the canonical engine key code passed across the
@@ -298,6 +299,13 @@ pub async fn main() {
 
         // let texture_data = PNG.load(&CRATE_BYTES.to_vec());
 
+        // HTTP dispatch. Commands the game queues each frame are performed on
+        // tokio tasks (so a slow request never stalls the frame loop); each result
+        // returns over this channel and is pushed back into the game on the main
+        // thread, keeping all dylib calls on one thread.
+        let http_client = reqwest::Client::new();
+        let (net_tx, net_rx) = std::sync::mpsc::channel::<net_dispatch::NetResult>();
+
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
             // The frame time handed to the game. Pinning it (--fixed-time, or the
@@ -355,7 +363,45 @@ pub async fn main() {
                 }
             }
 
+            // Deliver any HTTP results that completed since last frame into the
+            // game's inbox *before* tick, so this frame's executor drain sees
+            // them (the executor drains the inbox during tick).
+            while let Ok(result) = net_rx.try_recv() {
+                match result {
+                    net_dispatch::NetResult::Response {
+                        token,
+                        status,
+                        body,
+                    } => game.net_push_http_response(token, status, body),
+                    net_dispatch::NetResult::Error { token, message } => {
+                        game.net_push_http_error(token, message)
+                    }
+                }
+            }
+
             game.tick(time.clone());
+
+            // Perform any networking commands this frame's tick queued. Each runs
+            // on its own tokio task; the result returns over net_tx and is applied
+            // next frame by the loop above. `[]` (the common no-network case) is
+            // cheap to produce and skip.
+            let commands_json = game.net_drain_commands();
+            if commands_json != "[]" {
+                match serde_json::from_str::<Vec<functor_runtime_common::net::NetCommand>>(
+                    &commands_json,
+                ) {
+                    Ok(commands) => {
+                        for cmd in commands {
+                            let tx = net_tx.clone();
+                            let client = http_client.clone();
+                            tokio::spawn(async move {
+                                let _ = tx.send(net_dispatch::perform_http(&client, cmd).await);
+                            });
+                        }
+                    }
+                    Err(e) => eprintln!("[net] bad commands json: {e}"),
+                }
+            }
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.

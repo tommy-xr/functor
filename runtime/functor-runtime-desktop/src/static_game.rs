@@ -57,6 +57,30 @@ impl Game for StaticGame {
         }
     }
 
+    fn net_drain_commands(&self) -> String {
+        unsafe {
+            let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> =
+                self.library.get(b"net_drain_commands_json").unwrap();
+            func().to_string()
+        }
+    }
+
+    fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
+        unsafe {
+            let func: Symbol<fn(i32, i32, fable_library_rust::String_::LrcStr)> =
+                self.library.get(b"net_push_http_response").unwrap();
+            func(token, status, fable_library_rust::String_::fromString(body))
+        }
+    }
+
+    fn net_push_http_error(&mut self, token: i32, message: String) {
+        unsafe {
+            let func: Symbol<fn(i32, fable_library_rust::String_::LrcStr)> =
+                self.library.get(b"net_push_http_error").unwrap();
+            func(token, fable_library_rust::String_::fromString(message))
+        }
+    }
+
     fn quit(&mut self) {
         // Noop - nothing to do yet
     }
