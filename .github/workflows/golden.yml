@@ -51,11 +51,15 @@ jobs:
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
-      # Materializes fable_modules/ (the fable_library_rust workspace dep) that
-      # the CLI build below resolves. See the build-wasm workflow for why this
-      # precedes the cache step.
-      - name: Build F#
-        run: npm run build:examples:hello:rust -- --verbose
+      # Transpile the `primitives` sample (the one the golden renders). This
+      # also materializes fable_modules/ (the fable_library_rust workspace dep)
+      # that the CLI build resolves. It must transpile *primitives* — Fable's
+      # incremental cache skips re-writing a sample's .rs once another sample has
+      # been transpiled in the same run, so primitives.rs only lands reliably if
+      # primitives is the first (here, only) transpile. See the build-wasm
+      # workflow for why this precedes the cache step.
+      - name: Build F# (primitives)
+        run: npm run build:examples:primitives:rust -- --verbose
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -79,15 +83,13 @@ jobs:
       - name: Build functor CLI
         run: cargo build --bin functor
 
-      # Build the primitives game wasm directly first: it generates
-      # primitives.rs and surfaces any cargo/wasm-pack error (the `functor run
-      # wasm` path below swallows child stderr), and means the golden's dev
-      # server only has to rebuild incrementally.
+      # Pre-build the primitives game wasm (primitives.rs was generated above).
+      # Doing it directly surfaces any cargo/wasm-pack error — the `functor run
+      # wasm` dev server below swallows child stderr — and warms the build so the
+      # server only rebuilds incrementally.
       - name: Build primitives wasm bundle
-        run: |
-          npm run build:examples:primitives:rust
-          cd examples/primitives/build-wasm
-          wasm-pack build --target web
+        run: wasm-pack build --target web
+        working-directory: examples/primitives/build-wasm
 
       - name: Run wasm golden (asset-free primitives scene)
         env:
