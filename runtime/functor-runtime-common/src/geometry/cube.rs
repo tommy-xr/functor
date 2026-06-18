@@ -82,15 +82,12 @@ impl Cube {
         for (normal, corners) in faces {
             let base = vertices.len() as u32;
             for (corner, uv) in corners.iter().zip(uvs.iter()) {
-                vertices.push(VertexPositionTexture {
-                    position: *corner,
-                    uv: *uv,
-                    normal,
-                });
+                vertices.push(VertexPositionTexture::new(*corner, *uv, normal));
             }
             indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
         }
 
+        super::compute_tangents(&mut vertices, &indices);
         Box::new(IndexedMesh::create(vertices, indices))
     }
 }

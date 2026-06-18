@@ -141,6 +141,14 @@ fn process_node(
                 .map(|v| v.collect::<Vec<_>>())
                 .unwrap_or_default();
 
+            // glTF `TANGENT` is a vec4 (xyz + bitangent-handedness w). Many
+            // assets omit it (no normal map authored); we compute a fallback
+            // below so the tangent frame is always present.
+            let tangents = reader
+                .read_tangents()
+                .map(|v| v.collect::<Vec<_>>())
+                .unwrap_or_default();
+
             let scale = 1.0;
 
             let joints = reader
@@ -159,7 +167,7 @@ fn process_node(
             // shortest attribute list instead would leave the vertex buffer
             // empty while the index buffer still references it (GL reads out
             // of bounds: a segfault natively, GL_INVALID_OPERATION on WebGL).
-            let vertices: Vec<VertexPositionTextureSkinned> = (0..positions.len())
+            let mut vertices: Vec<VertexPositionTextureSkinned> = (0..positions.len())
                 .map(|i| {
                     let uv = tex_coords.get(i).copied().unwrap_or([0.0, 0.0]);
                     let joint = joints.get(i).copied().unwrap_or([0, 0, 0, 0]);
@@ -168,6 +176,9 @@ fn process_node(
                     // conversion. Meshes without NORMAL fall back to +Y — the
                     // sample assets all provide normals.
                     let normal = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+                    // Use the glTF tangent when present; otherwise a zeroed
+                    // placeholder that `compute_tangents` overwrites below.
+                    let tangent = tangents.get(i).copied().unwrap_or([0.0, 0.0, 0.0, 0.0]);
                     VertexPositionTextureSkinned {
                         position: vec3(
                             positions[i][0] * scale,
@@ -176,6 +187,7 @@ fn process_node(
                         ),
                         uv: vec2(uv[0], uv[1]),
                         normal: vec3(normal[0], normal[1], normal[2]),
+                        tangent: vec4(tangent[0], tangent[1], tangent[2], tangent[3]),
                         joint_indices: vec4(
                             joint[0] as f32,
                             joint[1] as f32,
@@ -186,6 +198,13 @@ fn process_node(
                     }
                 })
                 .collect();
+
+            // Fallback: derive tangents from positions/uvs/normals when the
+            // mesh didn't carry a `TANGENT` attribute (the common case for the
+            // sample assets), so normal mapping + the tangent debug view work.
+            if tangents.is_empty() {
+                crate::geometry::compute_tangents(&mut vertices, &indices);
+            }
             println!(
                 "-- Mesh: {:?} vertices: {} indices: {} joints: {} weights: {}",
                 mesh.name(),

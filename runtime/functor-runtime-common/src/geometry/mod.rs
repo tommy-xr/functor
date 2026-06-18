@@ -10,6 +10,7 @@ mod indexed_mesh;
 mod plane;
 mod quad;
 mod sphere;
+mod tangents;
 pub use cube::*;
 pub use cylinder::*;
 pub use empty_mesh::*;
@@ -18,6 +19,7 @@ pub use indexed_mesh::*;
 pub use plane::*;
 pub use quad::*;
 pub use sphere::*;
+pub use tangents::*;
 
 // pub mod plane {
 //     use glow::{HasContext, Buffer, VertexArray};

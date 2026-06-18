@@ -65,16 +65,13 @@ impl Sphere {
         let stacks = 20;
         let (sphere_vertices, sphere_indices) = generate_unit_sphere(slices, stacks);
 
-        let vertices = sphere_vertices
+        let mut vertices: Vec<VertexPositionTexture> = sphere_vertices
             .into_iter()
-            .map(|v| VertexPositionTexture {
-                position: v.position,
-                uv: v.tex_coords,
-                normal: v.normal,
-            })
+            .map(|v| VertexPositionTexture::new(v.position, v.tex_coords, v.normal))
             .collect();
-        let indices = sphere_indices.into_iter().map(|i| i as u32).collect();
+        let indices: Vec<u32> = sphere_indices.into_iter().map(|i| i as u32).collect();
 
+        super::compute_tangents(&mut vertices, &indices);
         Box::new(IndexedMesh::create(vertices, indices))
     }
 }

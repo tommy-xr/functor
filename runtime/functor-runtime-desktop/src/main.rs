@@ -96,6 +96,8 @@ enum DebugRenderArg {
     Default,
     /// Visualize world-space surface normals as RGB.
     Normals,
+    /// Visualize world-space surface tangents as RGB.
+    Tangents,
 }
 
 impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
@@ -103,6 +105,7 @@ impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
         match arg {
             DebugRenderArg::Default => functor_runtime_common::DebugRenderMode::Default,
             DebugRenderArg::Normals => functor_runtime_common::DebugRenderMode::Normals,
+            DebugRenderArg::Tangents => functor_runtime_common::DebugRenderMode::Tangents,
         }
     }
 }

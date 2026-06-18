@@ -35,6 +35,10 @@ pub enum DebugRenderMode {
     Default,
     /// Visualize world-space surface normals as RGB (`normal * 0.5 + 0.5`).
     Normals,
+    /// Visualize world-space surface tangents as RGB (`tangent * 0.5 + 0.5`) —
+    /// the guard for the tangent vertex attribute (glTF import + analytic
+    /// generation), as `Normals` is for normals.
+    Tangents,
 }
 
 impl DebugRenderMode {
@@ -45,6 +49,7 @@ impl DebugRenderMode {
         match self {
             DebugRenderMode::Default => "default",
             DebugRenderMode::Normals => "normals",
+            DebugRenderMode::Tangents => "tangents",
         }
     }
 
@@ -54,6 +59,7 @@ impl DebugRenderMode {
         match s.trim().to_ascii_lowercase().as_str() {
             "default" => Some(DebugRenderMode::Default),
             "normals" => Some(DebugRenderMode::Normals),
+            "tangents" => Some(DebugRenderMode::Tangents),
             _ => None,
         }
     }

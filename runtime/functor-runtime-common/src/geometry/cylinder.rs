@@ -158,16 +158,13 @@ impl Cylinder {
         let (cylinder_vertices, cylinder_indices) =
             generate_cylinder(slices, stacks, height, radius);
 
-        let vertices = cylinder_vertices
+        let mut vertices: Vec<VertexPositionTexture> = cylinder_vertices
             .into_iter()
-            .map(|v| VertexPositionTexture {
-                position: v.position,
-                uv: v.tex_coords,
-                normal: v.normal,
-            })
+            .map(|v| VertexPositionTexture::new(v.position, v.tex_coords, v.normal))
             .collect();
-        let indices = cylinder_indices.into_iter().map(|i| i as u32).collect();
+        let indices: Vec<u32> = cylinder_indices.into_iter().map(|i| i as u32).collect();
 
+        super::compute_tangents(&mut vertices, &indices);
         Box::new(IndexedMesh::create(vertices, indices))
     }
 }
