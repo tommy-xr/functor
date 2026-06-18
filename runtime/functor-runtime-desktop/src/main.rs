@@ -23,6 +23,7 @@ mod game;
 mod hot_reload_game;
 mod net_dispatch;
 mod static_game;
+mod ws_host;
 
 /// Translate a GLFW key into the canonical engine key code passed across the
 /// game boundary. Unmapped keys become InputKey::Unknown.
@@ -307,6 +308,12 @@ pub async fn main() {
         let http_client = reqwest::Client::new();
         let (net_tx, net_rx) = std::sync::mpsc::channel::<net_dispatch::NetResult>();
 
+        // WebSocket connections. Commands (connect/send/close) are drained each
+        // frame and performed by the manager on tokio tasks; socket events return
+        // over this channel and are pushed into the game on the main thread.
+        let (ws_tx, ws_rx) = std::sync::mpsc::channel::<ws_host::HostNetEvent>();
+        let mut ws_manager = ws_host::WsManager::new(ws_tx);
+
         // Audio device, owned by the host (survives hot reload). `None` when no
         // device is available — audio commands are then drained and dropped.
         let audio_player = audio::AudioPlayer::new();
@@ -384,6 +391,25 @@ pub async fn main() {
                 }
             }
 
+            // Likewise deliver WebSocket events before tick, so the executor routes
+            // them to the connection's decoder this frame.
+            while let Ok(event) = ws_rx.try_recv() {
+                match event {
+                    ws_host::HostNetEvent::Connected { key, id } => {
+                        game.net_push_connected(key, id as i32)
+                    }
+                    ws_host::HostNetEvent::Message { key, id, text } => {
+                        game.net_push_conn_message(key, id as i32, text)
+                    }
+                    ws_host::HostNetEvent::Disconnected { key, id } => {
+                        game.net_push_disconnected(key, id as i32)
+                    }
+                    ws_host::HostNetEvent::Error { key, id, message } => {
+                        game.net_push_conn_error(key, id as i32, message)
+                    }
+                }
+            }
+
             game.tick(time.clone());
 
             // Perform any networking commands this frame's tick queued. Each runs
@@ -405,6 +431,22 @@ pub async fn main() {
                         }
                     }
                     Err(e) => eprintln!("[net] bad commands json: {e}"),
+                }
+            }
+
+            // Perform any WebSocket commands this frame's tick queued (connect /
+            // send / close). The manager owns the sockets; events return via ws_rx.
+            let conn_json = game.net_drain_conn_commands();
+            if conn_json != "[]" {
+                match serde_json::from_str::<Vec<functor_runtime_common::net::ConnCommand>>(
+                    &conn_json,
+                ) {
+                    Ok(commands) => {
+                        for cmd in commands {
+                            ws_manager.handle(cmd);
+                        }
+                    }
+                    Err(e) => eprintln!("[net] bad conn commands json: {e}"),
                 }
             }
 

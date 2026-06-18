@@ -37,6 +37,16 @@ pub trait Game {
     /// `functor_runtime_common::audio::AudioCommand`), via the dylib's
     /// `audio_drain_commands_json` export. The host plays them on its own device.
     fn audio_drain_commands(&self) -> String;
+    /// Take the persistent-connection commands (connect/send/close) the game has
+    /// queued this frame, as a JSON array of `functor_runtime_common::net::ConnCommand`.
+    fn net_drain_conn_commands(&self) -> String;
+
+    /// Deliver a connection event into the game's inbound queue, tagged with the
+    /// connection's key (its endpoint url).
+    fn net_push_connected(&mut self, key: String, conn: i32);
+    fn net_push_conn_message(&mut self, key: String, conn: i32, text: String);
+    fn net_push_disconnected(&mut self, key: String, conn: i32);
+    fn net_push_conn_error(&mut self, key: String, conn: i32, message: String);
 
     fn quit(&mut self);
 }
