@@ -52,7 +52,8 @@ jobs:
             libgl1-mesa-dev \
             libglu1-mesa-dev \
             libglfw3 \
-            libglfw3-dev
+            libglfw3-dev \
+            libasound2-dev
 
       - name: Build F#
         run: npm run build:examples:hello:rust -- --verbose

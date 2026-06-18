@@ -2,12 +2,18 @@ use std::fmt;
 
 use fable_library_rust::{NativeArray_, Native_::Func1};
 
+use crate::audio::{self, AudioCommand};
 use crate::net::{self, HttpMethod, HttpResult, NetCommand};
 
 #[derive(Clone)]
 pub enum Effect<T: Clone + 'static> {
     None,
     Wrapped(T),
+    /// A fire-and-forget audio command (e.g. `Audio.play "gunshot.wav"`). When
+    /// the effect runs, the command goes to the audio outbound queue for the
+    /// host to perform; there is no message back (a completion message is a
+    /// later addition, mirroring `Http`'s tagger).
+    PlayAudio(AudioCommand),
     /// An HTTP request (the Elm `Http.get { expect = ... }`). `command` is the
     /// plain-data request the host performs; `tagger` maps the eventual result to
     /// a message. When the effect runs, the command goes to the outbound queue and
@@ -28,6 +34,7 @@ impl<T: Clone + 'static> fmt::Debug for Effect<T> {
         match self {
             Effect::None => f.write_str("Effect::None"),
             Effect::Wrapped(_) => f.write_str("Effect::Wrapped(..)"),
+            Effect::PlayAudio(command) => write!(f, "Effect::PlayAudio({command:?})"),
             Effect::Http { command, .. } => write!(f, "Effect::Http({command:?})"),
         }
     }
@@ -47,6 +54,11 @@ impl<T: Clone + 'static> Effect<T> {
 
     pub fn wrapped(data: T) -> Effect<T> {
         Effect::Wrapped(data)
+    }
+
+    /// A fire-and-forget audio command (e.g. play a one-shot sound).
+    pub fn play_audio(command: AudioCommand) -> Effect<T> {
+        Effect::PlayAudio(command)
     }
 
     /// Build an HTTP request effect. `tagger` maps the eventual result into a
@@ -75,6 +87,8 @@ impl<T: Clone + 'static> Effect<T> {
         match source {
             Effect::None => Effect::None,
             Effect::Wrapped(v) => Effect::Wrapped(mapping(v)),
+            // No message to remap — the command carries through unchanged.
+            Effect::PlayAudio(cmd) => Effect::PlayAudio(cmd),
             // Compose the mapping after the tagger so the request still resolves to
             // the new message type (Elm's Cmd.map over an Http command).
             Effect::Http { command, tagger } => Effect::Http {
@@ -88,6 +102,12 @@ impl<T: Clone + 'static> Effect<T> {
         match effect {
             Effect::None => NativeArray_::array_from(vec![]),
             Effect::Wrapped(v) => NativeArray_::array_from(vec![v]),
+            // Hand the command to the host via the audio outbound queue; no
+            // in-frame (or later) message.
+            Effect::PlayAudio(cmd) => {
+                audio::push_command(cmd);
+                NativeArray_::array_from(vec![])
+            }
             // Register the tagger (keyed by token) and hand the command to the host
             // via the outbound queue; the result returns later through the inbox
             // and is matched back to this tagger. No in-frame message.

@@ -55,6 +55,9 @@ let private pitchLimit = 1.5f
 
 let input model (event: Input.t) =
     match event with
+    // Spacebar fires a one-shot sound (fire-and-forget audio effect).
+    | Input.Keyboard (Input.KeyboardEvent.KeyDown Input.Space) ->
+        (model, Audio.play "gunshot.wav")
     | Input.Keyboard (Input.KeyboardEvent.KeyDown key) ->
         ({ model with held = setHeld model.held key true }, Effect.none())
     | Input.Keyboard (Input.KeyboardEvent.KeyUp key) ->

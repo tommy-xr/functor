@@ -102,8 +102,18 @@ module Runtime
         [<Emit("functor_runtime_common::net::push_http_error($0 as u64, $1.to_string())")>]
         let private pushHttpError (token: int) (message: string) : unit = nativeOnly
 
+        // Audio bridge: the outbound command queue lives on this (dylib) side; the
+        // host drains it through this export each frame and plays on its device.
+        [<Emit("functor_runtime_common::audio::drain_commands_json().into()")>]
+        let private drainAudioCommandsJson () : string = nativeOnly
+
         [<OuterAttr("no_mangle")>]
         let dynamic_call_from_rust num = printfn "Hello from F# called from Rust! %f" num
+
+        /// Host: take the audio commands the game queued this frame, as a JSON
+        /// array of AudioCommand, and play them on the host's audio device.
+        [<OuterAttr("no_mangle")>]
+        let audio_drain_commands_json () : string = drainAudioCommandsJson ()
 
         /// Host: take the networking commands the game has queued this frame, as a
         /// JSON array of NetCommand. The host performs the I/O and reports results

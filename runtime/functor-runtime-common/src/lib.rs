@@ -66,6 +66,7 @@ impl OpaqueState {
 
 pub mod animation;
 pub mod asset;
+pub mod audio;
 mod camera;
 mod effect;
 mod effect_queue;
