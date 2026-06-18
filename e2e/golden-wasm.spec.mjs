@@ -39,6 +39,10 @@ for (const scenario of scenarios) {
     await page.waitForTimeout(2500);
 
     expect(errors, `page errors:\n${errors.join("\n")}`).toEqual([]);
-    await expect(page.locator("#canvas")).toHaveScreenshot(`${scenario.name}-wasm.png`);
+    // Screenshot the whole page (the canvas fills the viewport) rather than the
+    // canvas element: the app's perpetual requestAnimationFrame loop keeps the
+    // element-screenshot's "wait for element to be stable" from ever settling
+    // under headless CI. A page screenshot skips that per-element wait.
+    await expect(page).toHaveScreenshot(`${scenario.name}-wasm.png`);
   });
 }
