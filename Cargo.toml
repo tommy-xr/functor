@@ -9,6 +9,14 @@ members = [
     "src",
 ]
 
+# Strip debug info from all third-party dependencies. Our own crates keep full
+# debug info; the deps don't need it, and their debuginfo dominates target/ size
+# (it was repeatedly filling the disk during development). The per-package
+# opt-level overrides below still apply and inherit `debug = false` from this
+# wildcard.
+[profile.dev.package."*"]
+debug = false
+
 # Image decoding runs in the asset pipeline at game load; unoptimized it is
 # 10-100x slower, which makes texture-heavy models (e.g. a 47MB fish.glb)
 # appear to never load in debug builds of functor-runner. Optimize just the

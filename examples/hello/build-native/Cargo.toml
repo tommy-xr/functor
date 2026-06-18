@@ -24,6 +24,8 @@ fable_library_rust = { path = "./../../../fable_modules/fable-library-rust" }
 # https://github.com/erezsh/hexx/commit/45773dd471f352a5a424e274048d17da96a9e116
 [profile.dev.package."*"]
 opt-level = 3
+# Deps don't need debug info, and it dominates target/ size.
+debug = false
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
