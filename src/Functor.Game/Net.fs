@@ -99,5 +99,8 @@ module Net =
     [<Emit("functor_runtime_common::net::push_conn_command(functor_runtime_common::net::ConnCommand::Connect { key: $0.to_string(), url: $0.to_string() })")>]
     let internal pushConnect (key: string) : unit = nativeOnly
 
+    [<Emit("functor_runtime_common::net::push_conn_command(functor_runtime_common::net::ConnCommand::Listen { key: $0.to_string(), addr: $0.to_string() })")>]
+    let internal pushListen (key: string) : unit = nativeOnly
+
     [<Emit("functor_runtime_common::net::push_conn_command(functor_runtime_common::net::ConnCommand::CloseKey { key: $0.to_string() })")>]
     let internal pushCloseKey (key: string) : unit = nativeOnly

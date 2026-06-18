@@ -26,6 +26,10 @@ type Sub<'msg> =
     // declared url and tears it down when no longer declared. The decoder turns
     // its events into messages. Carries a closure -- fine, subs aren't persisted.
     | Connect of string * (Net.NetEvent -> 'msg)
+    // A server listener bound to the given address (its key). Each accepted client
+    // surfaces through the decoder as `Connected`/`Message`/... carrying that
+    // client's ConnectionId. Native-only (browsers can't listen).
+    | Listen of string * (Net.NetEvent -> 'msg)
     | Batch of Sub<'msg> array
 
 module Sub =
@@ -39,6 +43,12 @@ module Sub =
     /// the `Connected` event hands you the `ConnectionId` to send on.
     let connect (url: string) (decode: Net.NetEvent -> 'msg) : Sub<'msg> = Connect(url, decode)
 
+    /// Declare a server listening on `bind` (e.g. "127.0.0.1:9001"), kept open
+    /// while declared. Each accepted client surfaces through `decode` as
+    /// `Connected id` / `Message (id, _)` / `Disconnected id`; reply with
+    /// `Effect.send id`. Native-only.
+    let listen (bind: string) (decode: Net.NetEvent -> 'msg) : Sub<'msg> = Listen(bind, decode)
+
     let batch (subs: Sub<'msg> array) : Sub<'msg> = Batch subs
 
     let rec map (f: 'a -> 'b) (sub: Sub<'a>) : Sub<'b> =
@@ -46,6 +56,7 @@ module Sub =
         | SubNone -> SubNone
         | Every(period, msg) -> Every(period, f msg)
         | Connect(key, decode) -> Connect(key, decode >> f)
+        | Listen(key, decode) -> Listen(key, decode >> f)
         | Batch subs -> Batch(subs |> Array.map (map f))
 
     // True iff an integer multiple of `period` lies in the interval
@@ -62,7 +73,8 @@ module Sub =
         | SubNone -> acc
         | Every(period, msg) ->
             if crossedBoundary period prevTts tts then Array.append acc [| msg |] else acc
-        | Connect _ -> acc // event-driven, not clock-driven
+        | Connect _
+        | Listen _ -> acc // event-driven, not clock-driven
         | Batch subs -> Array.fold (collectFired prevTts tts) acc subs
 
     // Walk the Sub tree and return the messages that fired this frame, given the
@@ -71,15 +83,20 @@ module Sub =
     let messagesForFrame (prevTts: float) (tts: float) (sub: Sub<'msg>) : 'msg array =
         collectFired prevTts tts [||] sub
 
-    let rec private collectConnections (acc: (string * (Net.NetEvent -> 'msg)) list) (sub: Sub<'msg>) =
+    let rec private collectNetSubs
+        (acc: (string * bool * (Net.NetEvent -> 'msg)) list)
+        (sub: Sub<'msg>)
+        =
         match sub with
         | SubNone -> acc
         | Every _ -> acc
-        | Connect(key, decode) -> (key, decode) :: acc
-        | Batch subs -> Array.fold collectConnections acc subs
+        | Connect(key, decode) -> (key, false, decode) :: acc
+        | Listen(key, decode) -> (key, true, decode) :: acc
+        | Batch subs -> Array.fold collectNetSubs acc subs
 
-    // The declared (key, decoder) connections in the Sub tree. The runtime diffs
-    // the keys against the live set each frame to open/close connections, and
-    // routes inbound events to the matching decoder by key.
-    let connections (sub: Sub<'msg>) : (string * (Net.NetEvent -> 'msg)) array =
-        collectConnections [] sub |> List.toArray
+    // The declared networking connections in the Sub tree as (key, isListen,
+    // decoder). The runtime diffs the keys against the live set each frame to
+    // open (connect vs listen) / close them, and routes inbound events to the
+    // matching decoder by key.
+    let netSubs (sub: Sub<'msg>) : (string * bool * (Net.NetEvent -> 'msg)) array =
+        collectNetSubs [] sub |> List.toArray

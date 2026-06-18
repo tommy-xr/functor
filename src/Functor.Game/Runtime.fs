@@ -372,10 +372,11 @@ module Runtime
                 // -> close. `liveConnKeys` is executor state (not persisted), so a
                 // hot reload re-opens by key; the host treats Connect as idempotent
                 // and reattaches to the still-live socket.
-                let conns = Sub.connections subs
-                let desiredKeys = conns |> Array.map fst |> Array.toList
-                for (key, _) in conns do
-                    if not (List.contains key liveConnKeys) then Net.pushConnect key
+                let conns = Sub.netSubs subs
+                let desiredKeys = conns |> Array.map (fun (k, _, _) -> k) |> Array.toList
+                for (key, isListen, _) in conns do
+                    if not (List.contains key liveConnKeys) then
+                        if isListen then Net.pushListen key else Net.pushConnect key
                 for key in liveConnKeys do
                     if not (List.contains key desiredKeys) then Net.pushCloseKey key
                 liveConnKeys <- desiredKeys
@@ -384,8 +385,8 @@ module Runtime
                 // connection's decoder (by key). An event for a key no longer
                 // declared (e.g. a trailing Disconnected) is dropped.
                 for (key, event) in Net.drainConnEvents () do
-                    match conns |> Array.tryFind (fun (k, _) -> k = key) with
-                    | Some(_, decode) -> EffectQueue.enqueue (Effect.wrapped (decode event)) effectQueue
+                    match conns |> Array.tryFind (fun (k, _, _) -> k = key) with
+                    | Some(_, _, decode) -> EffectQueue.enqueue (Effect.wrapped (decode event)) effectQueue
                     | None -> ()
 
                 // Drain the async inbox: HTTP results that arrived (on some later
