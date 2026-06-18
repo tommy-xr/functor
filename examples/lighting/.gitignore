@@ -5,3 +5,6 @@
 # Golden reference images for the render regression test are checked in.
 !golden/
 !golden/*.png
+
+# The normal-mapping demo texture is a small checked-in asset.
+!bumps-normal.png

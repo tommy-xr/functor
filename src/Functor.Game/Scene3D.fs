@@ -81,6 +81,12 @@ module Scene3D =
         [<Emit("functor_runtime_common::MaterialDescription::lit_texture($0)")>]
         let litTexture (texture: Texture): Material = nativeOnly
 
+        // Diffuse-lit, with a tangent-space normal map perturbing the surface
+        // normal (the bumps catch the lights / specular). `(r,g,b,a)` is the
+        // albedo tint.
+        [<Emit("functor_runtime_common::MaterialDescription::lit_normal_mapped($0, $1, $2, $3, $4)")>]
+        let litNormalMapped (r: float32, g: float32, b: float32, a: float32, normalMap: Texture): Material = nativeOnly
+
     module Light =
         // Private float-based FFI shims; the public record API destructures into
         // these so the Rust boundary stays simple and the records stay pure F#.
