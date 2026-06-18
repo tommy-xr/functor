@@ -79,6 +79,16 @@ jobs:
       - name: Build functor CLI
         run: cargo build --bin functor
 
+      # Build the primitives game wasm directly first: it generates
+      # primitives.rs and surfaces any cargo/wasm-pack error (the `functor run
+      # wasm` path below swallows child stderr), and means the golden's dev
+      # server only has to rebuild incrementally.
+      - name: Build primitives wasm bundle
+        run: |
+          npm run build:examples:primitives:rust
+          cd examples/primitives/build-wasm
+          wasm-pack build --target web
+
       - name: Run wasm golden (asset-free primitives scene)
         env:
           FUNCTOR_SAMPLE: primitives
