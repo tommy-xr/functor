@@ -22,6 +22,7 @@
         net_push_http_response_wasm,
         net_push_http_error_wasm,
         audio_drain_commands_json_wasm,
+        audio_scene_json_wasm,
         net_drain_conn_commands_json_wasm,
         net_push_connected_wasm,
         net_push_conn_message_wasm,
@@ -112,6 +113,7 @@
         // Audio bridge (see functor-runtime-web dispatch_audio_commands).
         window.game.audio_drain_commands_json_wasm = () =>
           audio_drain_commands_json_wasm();
+        window.game.audio_scene_json_wasm = () => audio_scene_json_wasm();
 
         window.game.net_drain_conn_commands_json = () => net_drain_conn_commands_json_wasm();
         window.game.net_push_connected = (key, id) => net_push_connected_wasm(key, id);

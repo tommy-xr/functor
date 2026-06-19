@@ -121,6 +121,21 @@ module Runtime
         /// Host: take the queued audio commands as a JSON string (JsValue).
         [<OuterAttr("wasm_bindgen")>]
         let audio_drain_commands_json_wasm () : JsValue = audioDrainCommandsJs ()
+
+        // A Fable string is `LrcStr` (not serde-Serialize), so build the JS
+        // string directly rather than via `to_js_value`.
+        [<Emit("wasm_bindgen::JsValue::from_str(&$0.to_string())")>]
+        let private stringToJs (s: string) : JsValue = nativeOnly
+
+        /// Host: the desired soundscape (`soundScape model`) as a JSON string
+        /// (JsValue), for the web runtime to reconcile against its live voices.
+        [<OuterAttr("wasm_bindgen")>]
+        let audio_scene_json_wasm () : JsValue =
+            if currentRunner.IsSome then
+                currentRunner.Value.audioSceneJson () |> stringToJs
+            else
+                raise (System.Exception("No runner"))
+
         // Persistent connections (WebSocket) for the web runtime, mirroring the
         // native exports. Keys/text cross as JsValue strings.
         [<Emit("functor_runtime_common::to_js_value(&functor_runtime_common::net::drain_conn_commands_json())")>]
