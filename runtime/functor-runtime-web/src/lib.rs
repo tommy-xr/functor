@@ -250,6 +250,7 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
         token: _,
         sound,
         gain,
+        position,
     } = cmd;
 
     let ctx = match audio_context() {
@@ -297,7 +298,11 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
         }
     };
 
-    // source -> gain -> speakers.
+    // source -> [panner] -> gain -> speakers. A positioned one-shot inserts a
+    // PannerNode at its world position; the AudioContext listener (set from the
+    // camera each frame) gives Web Audio the same pan/attenuation the native
+    // SpatialSink produces. The audio graph keeps the nodes alive until the
+    // source finishes, so the Rust bindings can drop here.
     let source = match ctx.create_buffer_source() {
         Ok(s) => s,
         Err(_) => return,
@@ -305,8 +310,25 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
     source.set_buffer(Some(&buffer));
     if let Ok(gain_node) = ctx.create_gain() {
         gain_node.gain().set_value(gain);
-        let _ = source.connect_with_audio_node(&gain_node);
         let _ = gain_node.connect_with_audio_node(&ctx.destination());
+
+        match position {
+            Some([x, y, z]) => match ctx.create_panner() {
+                Ok(panner) => {
+                    panner.position_x().set_value(x);
+                    panner.position_y().set_value(y);
+                    panner.position_z().set_value(z);
+                    let _ = panner.connect_with_audio_node(&gain_node);
+                    let _ = source.connect_with_audio_node(&panner);
+                }
+                Err(_) => {
+                    let _ = source.connect_with_audio_node(&gain_node);
+                }
+            },
+            None => {
+                let _ = source.connect_with_audio_node(&gain_node);
+            }
+        }
     }
     let _ = source.start();
 }
