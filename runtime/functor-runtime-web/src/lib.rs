@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::env;
 use std::path::Path;
 use std::rc::Rc;
@@ -96,6 +96,11 @@ extern "C" {
     // play commands as a JSON string, which the host plays via Web Audio.
     #[wasm_bindgen(js_namespace = game, js_name = audio_drain_commands_json_wasm)]
     fn game_audio_drain_commands() -> JsValue;
+
+    // The desired soundscape (`soundScape model`) as a JSON string, reconciled
+    // against the live looping voices each frame.
+    #[wasm_bindgen(js_namespace = game, js_name = audio_scene_json_wasm)]
+    fn game_audio_scene_json() -> JsValue;
 
     // Persistent connections (WebSocket).
     #[wasm_bindgen(js_namespace = game, js_name = net_drain_conn_commands_json)]
@@ -261,41 +266,9 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
     // driven by one (a keypress), so a best-effort resume is enough.
     let _ = ctx.resume();
 
-    // Decode on first use, then serve from the cache.
-    let cached = AUDIO_BUFFERS.with(|b| b.borrow().get(&sound).cloned());
-    let buffer = match cached {
+    let buffer = match decode_buffer(&ctx, &sound).await {
         Some(b) => b,
-        None => {
-            let bytes = match functor_runtime_common::io::load_bytes_async(&sound).await {
-                Ok(b) => b,
-                Err(e) => {
-                    web_sys::console::error_1(&format!("[audio] load '{sound}': {e}").into());
-                    return;
-                }
-            };
-            // decodeAudioData wants an ArrayBuffer (and detaches it); the
-            // Uint8Array copies the bytes into a standalone JS buffer.
-            let array = js_sys::Uint8Array::from(&bytes[..]);
-            let promise = match ctx.decode_audio_data(&array.buffer()) {
-                Ok(p) => p,
-                Err(e) => {
-                    web_sys::console::error_1(&format!("[audio] decode '{sound}': {e:?}").into());
-                    return;
-                }
-            };
-            let buf: web_sys::AudioBuffer = match JsFuture::from(promise).await {
-                Ok(v) => match v.dyn_into() {
-                    Ok(b) => b,
-                    Err(_) => return,
-                },
-                Err(e) => {
-                    web_sys::console::error_1(&format!("[audio] decode '{sound}': {e:?}").into());
-                    return;
-                }
-            };
-            AUDIO_BUFFERS.with(|b| b.borrow_mut().insert(sound.clone(), buf.clone()));
-            buf
-        }
+        None => return,
     };
 
     // source -> [panner] -> gain -> speakers. A positioned one-shot inserts a
@@ -331,6 +304,239 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
         }
     }
     let _ = source.start();
+}
+
+/// Fetch + decode a sound to an `AudioBuffer`, caching by path so repeat uses
+/// (one-shots and looping voices) are instant. `None` on any load/decode error.
+async fn decode_buffer(
+    ctx: &web_sys::AudioContext,
+    sound: &str,
+) -> Option<web_sys::AudioBuffer> {
+    use wasm_bindgen::JsCast;
+
+    if let Some(b) = AUDIO_BUFFERS.with(|b| b.borrow().get(sound).cloned()) {
+        return Some(b);
+    }
+    let bytes = match functor_runtime_common::io::load_bytes_async(sound).await {
+        Ok(b) => b,
+        Err(e) => {
+            web_sys::console::error_1(&format!("[audio] load '{sound}': {e}").into());
+            return None;
+        }
+    };
+    // decodeAudioData wants an ArrayBuffer (and detaches it); the Uint8Array
+    // copies the bytes into a standalone JS buffer.
+    let array = js_sys::Uint8Array::from(&bytes[..]);
+    let promise = match ctx.decode_audio_data(&array.buffer()) {
+        Ok(p) => p,
+        Err(e) => {
+            web_sys::console::error_1(&format!("[audio] decode '{sound}': {e:?}").into());
+            return None;
+        }
+    };
+    let buf: web_sys::AudioBuffer = match JsFuture::from(promise).await {
+        Ok(v) => v.dyn_into().ok()?,
+        Err(e) => {
+            web_sys::console::error_1(&format!("[audio] decode '{sound}': {e:?}").into());
+            return None;
+        }
+    };
+    AUDIO_BUFFERS.with(|b| b.borrow_mut().insert(sound.to_string(), buf.clone()));
+    Some(buf)
+}
+
+// --- Soundscape: continuous looping voices, reconciled by key each frame. -------
+//
+// The Web Audio counterpart of the native rodio voice registry. Unlike the
+// rodio path (where we re-aim the ears every frame), Web Audio does the spatial
+// math itself: we set the AudioContext listener from the camera each frame, and
+// each positioned voice keeps a PannerNode at its world position — the browser
+// pans/attenuates relative to the listener automatically.
+
+struct WebVoice {
+    source: functor_runtime_common::audio::AudioSource, // last applied (for diffing)
+    gain: web_sys::GainNode,
+    panner: Option<web_sys::PannerNode>,
+    // The looping source node, attached once its buffer decodes (async). Shared
+    // so the decode task can install it and `stop` can reach it.
+    node: Rc<RefCell<Option<web_sys::AudioBufferSourceNode>>>,
+    // Set if the voice is stopped before its buffer finished decoding, so the
+    // decode task discards its result instead of starting an orphan.
+    cancelled: Rc<Cell<bool>>,
+}
+
+thread_local! {
+    static SOUNDSCAPE: RefCell<std::collections::HashMap<String, WebVoice>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Set the AudioContext listener from the frame camera (position + orientation),
+/// so spatial voices pan relative to where the player is looking.
+fn set_audio_listener(ctx: &web_sys::AudioContext, camera: &functor_runtime_common::Camera) {
+    let l = functor_runtime_common::audio::Listener::from_eye_target_up(
+        camera.eye,
+        camera.target,
+        camera.up,
+    );
+    let listener = ctx.listener();
+    listener.set_position(l.position[0] as f64, l.position[1] as f64, l.position[2] as f64);
+    listener.set_orientation(
+        l.forward[0] as f64,
+        l.forward[1] as f64,
+        l.forward[2] as f64,
+        l.up[0] as f64,
+        l.up[1] as f64,
+        l.up[2] as f64,
+    );
+}
+
+/// Aim the listener from the frame camera and reconcile the desired soundscape
+/// against the live voices each frame: spawn new ones, stop gone ones, update
+/// changed gain/position in place. Skips entirely (and never spins up an
+/// AudioContext) when nothing is playing and nothing is wanted.
+fn update_soundscape(camera: &functor_runtime_common::Camera) {
+    let json = game_audio_scene_json()
+        .as_string()
+        .unwrap_or_else(|| "{\"sources\":[]}".to_string());
+    let nothing_live = SOUNDSCAPE.with(|s| s.borrow().is_empty());
+    if nothing_live && (json.is_empty() || json == "{\"sources\":[]}") {
+        return;
+    }
+    let ctx = match audio_context() {
+        Some(c) => c,
+        None => return,
+    };
+    // The context starts suspended (autoplay policy). Looping beds aren't driven
+    // by a gesture like one-shots are, so resume best-effort each frame; it takes
+    // effect once the user has interacted with the page (canvas keypress/click).
+    let _ = ctx.resume();
+    set_audio_listener(&ctx, camera);
+
+    let scene: functor_runtime_common::audio::AudioScene = match serde_json::from_str(&json) {
+        Ok(s) => s,
+        Err(e) => {
+            web_sys::console::error_1(&format!("[audio] bad scene json: {e}").into());
+            return;
+        }
+    };
+    let live: std::collections::HashMap<String, functor_runtime_common::audio::AudioSource> =
+        SOUNDSCAPE.with(|s| {
+            s.borrow()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.source.clone()))
+                .collect()
+        });
+    for update in functor_runtime_common::audio::reconcile(&live, &scene) {
+        use functor_runtime_common::audio::SceneUpdate;
+        match update {
+            SceneUpdate::Spawn(src) => spawn_voice(&ctx, src),
+            SceneUpdate::Update(src) => update_voice(&ctx, src),
+            SceneUpdate::Stop(key) => stop_voice(&key),
+        }
+    }
+}
+
+fn spawn_voice(ctx: &web_sys::AudioContext, src: functor_runtime_common::audio::AudioSource) {
+    use wasm_bindgen::JsCast;
+
+    let _ = ctx.resume();
+    let gain = match ctx.create_gain() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    gain.gain().set_value(src.gain);
+    let _ = gain.connect_with_audio_node(&ctx.destination());
+
+    // The node a fresh source connects into: the panner (positioned) or the gain.
+    let (panner, head): (Option<web_sys::PannerNode>, web_sys::AudioNode) = match src.position {
+        Some([x, y, z]) => match ctx.create_panner() {
+            Ok(p) => {
+                p.position_x().set_value(x);
+                p.position_y().set_value(y);
+                p.position_z().set_value(z);
+                let _ = p.connect_with_audio_node(&gain);
+                (Some(p.clone()), p.unchecked_into())
+            }
+            Err(_) => (None, gain.clone().unchecked_into()),
+        },
+        None => (None, gain.clone().unchecked_into()),
+    };
+
+    let node: Rc<RefCell<Option<web_sys::AudioBufferSourceNode>>> = Rc::new(RefCell::new(None));
+    let cancelled = Rc::new(Cell::new(false));
+    SOUNDSCAPE.with(|s| {
+        s.borrow_mut().insert(
+            src.key.clone(),
+            WebVoice {
+                source: src.clone(),
+                gain,
+                panner,
+                node: node.clone(),
+                cancelled: cancelled.clone(),
+            },
+        );
+    });
+
+    // Decode (async) then attach + loop + start — unless the voice was stopped
+    // (or respawned) before the buffer was ready.
+    let ctx = ctx.clone();
+    let sound = src.sound.clone();
+    spawn_local(async move {
+        let Some(buffer) = decode_buffer(&ctx, &sound).await else {
+            return;
+        };
+        if cancelled.get() {
+            return;
+        }
+        let Ok(source) = ctx.create_buffer_source() else {
+            return;
+        };
+        source.set_buffer(Some(&buffer));
+        source.set_loop(true);
+        let _ = source.connect_with_audio_node(&head);
+        let _ = source.start();
+        *node.borrow_mut() = Some(source);
+    });
+}
+
+fn update_voice(ctx: &web_sys::AudioContext, src: functor_runtime_common::audio::AudioSource) {
+    // A flip in spatial-ness (None <-> Some) changes the node graph; respawn.
+    let flip = SOUNDSCAPE.with(|s| {
+        s.borrow()
+            .get(&src.key)
+            .map(|v| v.source.position.is_some() != src.position.is_some())
+            .unwrap_or(true)
+    });
+    if flip {
+        stop_voice(&src.key);
+        spawn_voice(ctx, src);
+        return;
+    }
+    SOUNDSCAPE.with(|s| {
+        if let Some(v) = s.borrow_mut().get_mut(&src.key) {
+            v.gain.gain().set_value(src.gain);
+            if let (Some(p), Some([x, y, z])) = (&v.panner, src.position) {
+                p.position_x().set_value(x);
+                p.position_y().set_value(y);
+                p.position_z().set_value(z);
+            }
+            v.source = src;
+        }
+    });
+}
+
+fn stop_voice(key: &str) {
+    if let Some(v) = SOUNDSCAPE.with(|s| s.borrow_mut().remove(key)) {
+        v.cancelled.set(true);
+        if let Some(node) = v.node.borrow().as_ref() {
+            let _ = node.stop();
+            let _ = node.disconnect();
+        }
+        let _ = v.gain.disconnect();
+        if let Some(p) = &v.panner {
+            let _ = p.disconnect();
+        }
+    }
 }
 
 /// Browser WebSocket client state (client only — browsers can't listen). Lives
@@ -627,6 +833,10 @@ async fn run_async() -> Result<(), JsValue> {
 
             let val = game_render(functor_runtime_common::to_js_value(&frame_time));
             let frame: Frame = functor_runtime_common::from_js_value(val);
+
+            // Soundscape: aim the listener from this frame's camera, then
+            // reconcile the desired looping voices against the live ones.
+            update_soundscape(&frame.camera);
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes. In
