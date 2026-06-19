@@ -60,6 +60,10 @@ let input model (event: Input.t) =
     // Spacebar fires a one-shot sound, with a message delivered when it ends.
     | Input.Keyboard (Input.KeyboardEvent.KeyDown Input.Space) ->
         (model, Audio.playThen "gunshot.wav" GunshotDone)
+    // 'B' fires a spatialized gunshot at a fixed point off to the right, so it
+    // pans and attenuates as you look around / move (Audio.playAt).
+    | Input.Keyboard (Input.KeyboardEvent.KeyDown Input.B) ->
+        (model, Audio.playAt "gunshot.wav" (Vector3.xyz 5.0f 1.0f 0.0f))
     | Input.Keyboard (Input.KeyboardEvent.KeyDown key) ->
         ({ model with held = setHeld model.held key true }, Effect.none())
     | Input.Keyboard (Input.KeyboardEvent.KeyUp key) ->

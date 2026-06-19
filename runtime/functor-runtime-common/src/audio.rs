@@ -26,22 +26,27 @@ use serde::{Deserialize, Serialize};
 pub enum AudioCommand {
     /// Play a sound once and let it finish. `sound` is an asset path the host
     /// loads/decodes; `gain` is a linear volume (1.0 = full). `token` is `Some`
-    /// only when the game wants a completion message (`Audio.playThen`): the
-    /// host then reports back via `audio_push_finished(token)` when it ends.
+    /// only when the game wants a completion message (`Audio.playThen`): the host
+    /// then reports back via `audio_push_finished(token)` when it ends. `position`
+    /// is `Some` for a spatialized one-shot (world-space, panned and attenuated
+    /// relative to the camera/listener — `Audio.playAt`); `None` plays non-spatial.
     PlayOneShot {
         token: Option<u64>,
         sound: String,
         gain: f32,
+        #[serde(default)]
+        position: Option<[f32; 3]>,
     },
 }
 
 impl AudioCommand {
-    /// A fire-and-forget one-shot at full volume — behind `Audio.play`.
+    /// A fire-and-forget, non-spatial one-shot at full volume — behind `Audio.play`.
     pub fn play_one_shot(sound: String) -> AudioCommand {
         AudioCommand::PlayOneShot {
             token: None,
             sound,
             gain: 1.0,
+            position: None,
         }
     }
 
@@ -52,6 +57,17 @@ impl AudioCommand {
             token: Some(token),
             sound,
             gain: 1.0,
+            position: None,
+        }
+    }
+
+    /// A spatialized one-shot at `position` (world space) — behind `Audio.playAt`.
+    pub fn play_one_shot_at(sound: String, x: f32, y: f32, z: f32) -> AudioCommand {
+        AudioCommand::PlayOneShot {
+            token: None,
+            sound,
+            gain: 1.0,
+            position: Some([x, y, z]),
         }
     }
 }
@@ -131,6 +147,67 @@ pub fn drain_finished_array() -> NativeArray_::Array<u64> {
     NativeArray_::array_from(drain_finished())
 }
 
+/// Where the player hears from — the render camera. The host sets it from the
+/// frame's camera each frame; spatial backends pan/attenuate emitters relative
+/// to it (Y-up, right-handed).
+#[derive(Debug, Clone, Copy)]
+pub struct Listener {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub up: [f32; 3],
+}
+
+impl Listener {
+    /// Derive from a camera's `eye` / `target` / `up`.
+    pub fn from_eye_target_up(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Listener {
+        let forward = normalize(sub(target, eye));
+        Listener {
+            position: eye,
+            forward,
+            up: normalize(up),
+        }
+    }
+
+    /// Left/right ear world positions `half_ear` apart along the listener's right
+    /// axis — what rodio's `SpatialSink` wants (it derives L/R balance + distance
+    /// attenuation from the emitter relative to these).
+    pub fn ears(&self, half_ear: f32) -> ([f32; 3], [f32; 3]) {
+        let right = normalize(cross(self.forward, self.up));
+        let l = [
+            self.position[0] - right[0] * half_ear,
+            self.position[1] - right[1] * half_ear,
+            self.position[2] - right[2] * half_ear,
+        ];
+        let r = [
+            self.position[0] + right[0] * half_ear,
+            self.position[1] + right[1] * half_ear,
+            self.position[2] + right[2] * half_ear,
+        ];
+        (l, r)
+    }
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len > 1e-6 {
+        [v[0] / len, v[1] / len, v[2] / len]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,7 +228,8 @@ mod tests {
             vec![AudioCommand::PlayOneShot {
                 token: None,
                 sound: "gunshot.wav".to_string(),
-                gain: 1.0
+                gain: 1.0,
+                position: None
             }]
         );
         // Draining again yields nothing.

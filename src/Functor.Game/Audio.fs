@@ -21,6 +21,14 @@ module Audio =
     [<Emit("functor_runtime_common::Effect::play_audio_then(functor_runtime_common::audio::next_token(), $0.to_string(), $1)")>]
     let playThen (sound: string) (onFinished: 'msg) : effect<'msg> = nativeOnly
 
+    [<Emit("functor_runtime_common::Effect::play_audio(functor_runtime_common::audio::AudioCommand::play_one_shot_at($0.to_string(), $1, $2, $3))")>]
+    let private playAtRaw (sound: string, x: float32, y: float32, z: float32) : effect<'msg> = nativeOnly
+
+    /// Play a sound once at a world-space `position`, panned and attenuated
+    /// relative to the camera (the listener). Fire-and-forget, like `play`.
+    let playAt (sound: string) (position: Functor.Math.Vector3) : effect<'msg> =
+        playAtRaw (sound, position.x, position.y, position.z)
+
     // Executor-only (not user space): drain the tokens of sounds that finished
     // since last frame, and take the completion message a token registered.
     [<Emit("functor_runtime_common::audio::drain_finished_array()")>]

@@ -317,9 +317,10 @@ pub async fn main() {
         // Audio device, owned by the host (survives hot reload). `None` when no
         // device is available — audio commands are then drained and dropped.
         // `playThen` completions come back over this channel and are reported to
-        // the game before the next tick (like net results).
+        // the game before the next tick (like net results). The player is `mut`
+        // so the listener can be updated from each frame's camera.
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<u64>();
-        let audio_player = audio::AudioPlayer::new(audio_tx);
+        let mut audio_player = audio::AudioPlayer::new(audio_tx);
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
@@ -459,7 +460,19 @@ pub async fn main() {
                 }
             }
 
-            // Perform any audio the tick queued (fire-and-forget one-shots).
+            // Follow window resizes: query the drawable size each frame.
+            // Framebuffer size is in pixels, so this handles HiDPI/retina.
+            let (fb_width, fb_height) = window.get_framebuffer_size();
+            let viewport = functor_runtime_common::Viewport::new(fb_width as u32, fb_height as u32);
+
+            // The game supplies the camera/scene/lights as part of its frame.
+            let frame = game.render(time.clone());
+
+            // Audio: set the listener from this frame's camera, then play any
+            // one-shots the tick queued (positioned ones pan relative to it).
+            if let Some(player) = &mut audio_player {
+                player.set_listener(frame.camera.eye, frame.camera.target, frame.camera.up);
+            }
             let audio_json = game.audio_drain_commands();
             if audio_json != "[]" {
                 match serde_json::from_str::<Vec<functor_runtime_common::audio::AudioCommand>>(
@@ -475,14 +488,6 @@ pub async fn main() {
                     Err(e) => eprintln!("[audio] bad commands json: {e}"),
                 }
             }
-
-            // Follow window resizes: query the drawable size each frame.
-            // Framebuffer size is in pixels, so this handles HiDPI/retina.
-            let (fb_width, fb_height) = window.get_framebuffer_size();
-            let viewport = functor_runtime_common::Viewport::new(fb_width as u32, fb_height as u32);
-
-            // The game supplies the camera/scene/lights as part of its frame.
-            let frame = game.render(time.clone());
 
             // Shadow + forward passes, shared with the web runtime.
             functor_runtime_common::render_frame(
