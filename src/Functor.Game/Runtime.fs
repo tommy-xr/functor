@@ -120,6 +120,39 @@ module Runtime
         /// Host: take the queued audio commands as a JSON string (JsValue).
         [<OuterAttr("wasm_bindgen")>]
         let audio_drain_commands_json_wasm () : JsValue = audioDrainCommandsJs ()
+        // Persistent connections (WebSocket) for the web runtime, mirroring the
+        // native exports. Keys/text cross as JsValue strings.
+        [<Emit("functor_runtime_common::to_js_value(&functor_runtime_common::net::drain_conn_commands_json())")>]
+        let private netDrainConnCommandsJs () : JsValue = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_connected(functor_runtime_common::from_js_value::<String>($0), $1 as u64)")>]
+        let private netPushConnectedJs (key: JsValue) (conn: int) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_message(functor_runtime_common::from_js_value::<String>($0), $1 as u64, functor_runtime_common::from_js_value::<String>($2).into_bytes())")>]
+        let private netPushConnMessageJs (key: JsValue) (conn: int) (text: JsValue) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_disconnected(functor_runtime_common::from_js_value::<String>($0), $1 as u64)")>]
+        let private netPushDisconnectedJs (key: JsValue) (conn: int) : unit = nativeOnly
+
+        [<Emit("functor_runtime_common::net::push_conn_error(functor_runtime_common::from_js_value::<String>($0), $1 as u64, functor_runtime_common::from_js_value::<String>($2))")>]
+        let private netPushConnErrorJs (key: JsValue) (conn: int) (message: JsValue) : unit = nativeOnly
+
+        [<OuterAttr("wasm_bindgen")>]
+        let net_drain_conn_commands_json_wasm () : JsValue = netDrainConnCommandsJs ()
+
+        [<OuterAttr("wasm_bindgen")>]
+        let net_push_connected_wasm (key: JsValue, conn: int) : unit = netPushConnectedJs key conn
+
+        [<OuterAttr("wasm_bindgen")>]
+        let net_push_conn_message_wasm (key: JsValue, conn: int, text: JsValue) : unit =
+            netPushConnMessageJs key conn text
+
+        [<OuterAttr("wasm_bindgen")>]
+        let net_push_disconnected_wasm (key: JsValue, conn: int) : unit = netPushDisconnectedJs key conn
+
+        [<OuterAttr("wasm_bindgen")>]
+        let net_push_conn_error_wasm (key: JsValue, conn: int, message: JsValue) : unit =
+            netPushConnErrorJs key conn message
 
 
     ///////////////////////////////
