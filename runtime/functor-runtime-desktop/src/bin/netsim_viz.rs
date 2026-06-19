@@ -15,6 +15,10 @@
 //! ```
 //!
 //! Keys: Esc quit · Space pause/resume · Right step one frame (while paused).
+//!
+//! For a headless-ish snapshot (still needs a GL context), `--capture <png>`
+//! steps `--capture-after` frames (default 120), writes the whole multi-pane
+//! window to a PNG, and exits — handy for sharing/reviewing the sim's output.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -39,16 +43,55 @@ fn resolve(arg: &str) -> String {
     format!("examples/{arg}/build-native/target/debug/{dll}")
 }
 
+/// Read back the default framebuffer and encode it as a PNG. GL rows are
+/// bottom-up, so flip into image (top-down) order.
+unsafe fn encode_framebuffer_png(gl: &glow::Context, width: u32, height: u32) -> Vec<u8> {
+    let stride = (width * 4) as usize;
+    let mut pixels = vec![0u8; stride * height as usize];
+    gl.read_pixels(
+        0,
+        0,
+        width as i32,
+        height as i32,
+        glow::RGBA,
+        glow::UNSIGNED_BYTE,
+        glow::PixelPackData::Slice(&mut pixels),
+    );
+    let mut flipped = vec![0u8; pixels.len()];
+    for row in 0..height as usize {
+        let src = (height as usize - 1 - row) * stride;
+        flipped[row * stride..(row + 1) * stride].copy_from_slice(&pixels[src..src + stride]);
+    }
+    let img = image::RgbaImage::from_raw(width, height, flipped).expect("framebuffer size mismatch");
+    let mut bytes: Vec<u8> = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .expect("encode png");
+    bytes
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() {
-        eprintln!("usage: functor-netsim-viz <dylib|sample> [<dylib|sample> ...]");
+    // Split flags from the positional dylib/sample args.
+    let mut paths: Vec<String> = Vec::new();
+    let mut capture: Option<String> = None;
+    let mut capture_after: u32 = 120;
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--capture" => capture = it.next(),
+            "--capture-after" => {
+                capture_after = it.next().and_then(|s| s.parse().ok()).unwrap_or(capture_after)
+            }
+            _ => paths.push(a),
+        }
+    }
+    if paths.is_empty() {
+        eprintln!("usage: functor-netsim-viz [--capture <png> [--capture-after <n>]] <dylib|sample> ...");
         eprintln!("   e.g. functor-netsim-viz mpserver mpclient mpclient");
         std::process::exit(2);
     }
 
     let mut sim = NetSim::new(1);
-    for arg in &args {
+    for arg in &paths {
         let path = resolve(arg);
         assert!(
             std::path::Path::new(&path).exists(),
@@ -83,6 +126,7 @@ fn main() {
         let start = Instant::now();
         let mut paused = false;
         let mut step_once = false;
+        let mut frames: u32 = 0;
 
         while !window.should_close() {
             glfw.poll_events();
@@ -138,6 +182,17 @@ fn main() {
                     viewport,
                     DebugRenderMode::Default,
                 );
+            }
+
+            // Snapshot the whole window once we've stepped far enough, then exit.
+            frames += 1;
+            if let Some(path) = &capture {
+                if frames >= capture_after {
+                    let bytes = encode_framebuffer_png(&gl, fb_w as u32, fb_h as u32);
+                    std::fs::write(path, &bytes).expect("write capture");
+                    println!("[netsim-viz] captured {path} after {frames} frames");
+                    break;
+                }
             }
 
             window.swap_buffers();
