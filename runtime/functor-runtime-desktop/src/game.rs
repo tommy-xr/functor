@@ -48,5 +48,9 @@ pub trait Game {
     fn net_push_disconnected(&mut self, key: String, conn: i32);
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String);
 
+    /// Report that a `playThen` one-shot (`token`) finished, so the game delivers
+    /// its completion message.
+    fn audio_push_finished(&mut self, token: i32);
+
     fn quit(&mut self);
 }

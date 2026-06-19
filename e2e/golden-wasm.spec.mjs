@@ -35,8 +35,9 @@ for (const scenario of scenarios) {
     await page.goto(`/?${params.toString()}`);
     await expect(page.locator("#canvas")).toBeVisible();
 
-    // Let the wasm module initialize and render a stable frame at the pinned time.
-    await page.waitForTimeout(2500);
+    // Let the wasm module initialize and reach its static frame. The deterministic
+    // render loop stops ~1s after its first frame, so this comfortably outlasts it.
+    await page.waitForTimeout(3500);
 
     expect(errors, `page errors:\n${errors.join("\n")}`).toEqual([]);
     // Screenshot the whole page (the canvas fills the viewport) rather than the

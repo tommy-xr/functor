@@ -228,7 +228,13 @@ fn dispatch_audio_commands() {
 
 async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
     use wasm_bindgen::JsCast;
-    let functor_runtime_common::audio::AudioCommand::PlayOneShot { sound, gain } = cmd;
+    // `token` (completion reporting) is native-only for now — the web backend
+    // plays fire-and-forget and never reports a finish.
+    let functor_runtime_common::audio::AudioCommand::PlayOneShot {
+        token: _,
+        sound,
+        gain,
+    } = cmd;
 
     let ctx = match audio_context() {
         Some(c) => c,
@@ -428,9 +434,8 @@ async fn run_async() -> Result<(), JsValue> {
 
         // In deterministic mode (?fixed-time, the golden) the canvas is sized
         // once and then left fixed (see below), and the render loop stops after
-        // a few frames so the page is static for screenshotting.
+        // a short warm-up so the page is static for screenshotting.
         let mut sized = false;
-        let mut frame_count = 0u32;
 
         *g.borrow_mut() = Some(Closure::new(move || {
             let now = performance.now() as f32;
@@ -496,12 +501,13 @@ async fn run_async() -> Result<(), JsValue> {
             );
 
             // Schedule the next frame. In deterministic mode (?fixed-time, the
-            // golden) render a few warm-up frames (shader compile, first-frame
+            // golden) render a short warm-up (shader compile, first-frame
             // settling) then stop, so the page is perfectly static: the golden
-            // screenshot then never has to chase a stable frame (CI's
-            // swiftshader isn't bit-identical frame to frame).
-            frame_count += 1;
-            if fixed_time.is_none() || frame_count < 30 {
+            // screenshot then never has to chase a stable frame (CI's swiftshader
+            // isn't bit-identical frame to frame). Gate on wall-clock elapsed,
+            // not a frame count, so the loop reliably stops before the test
+            // screenshots regardless of the CI runner's frame rate.
+            if fixed_time.is_none() || (now - initial_time) < 1000.0 {
                 request_animation_frame(f.borrow().as_ref().unwrap());
             }
         }));

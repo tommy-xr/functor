@@ -11,9 +11,12 @@
 //! One-shots here are fire-and-forget. A completion message (the audio twin of
 //! the HTTP `tagger`) is a later addition that mirrors the `net` async inbox.
 
-use std::collections::VecDeque;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
+use fable_library_rust::NativeArray_;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
@@ -21,15 +24,35 @@ use serde::{Deserialize, Serialize};
 /// the dylib boundary as JSON, like [`crate::net::NetCommand`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AudioCommand {
-    /// Play a sound once and let it finish (fire-and-forget). `sound` is an
-    /// asset path the host loads/decodes; `gain` is a linear volume (1.0 = full).
-    PlayOneShot { sound: String, gain: f32 },
+    /// Play a sound once and let it finish. `sound` is an asset path the host
+    /// loads/decodes; `gain` is a linear volume (1.0 = full). `token` is `Some`
+    /// only when the game wants a completion message (`Audio.playThen`): the
+    /// host then reports back via `audio_push_finished(token)` when it ends.
+    PlayOneShot {
+        token: Option<u64>,
+        sound: String,
+        gain: f32,
+    },
 }
 
 impl AudioCommand {
-    /// A one-shot at full volume — the common case behind `Audio.play`.
+    /// A fire-and-forget one-shot at full volume — behind `Audio.play`.
     pub fn play_one_shot(sound: String) -> AudioCommand {
-        AudioCommand::PlayOneShot { sound, gain: 1.0 }
+        AudioCommand::PlayOneShot {
+            token: None,
+            sound,
+            gain: 1.0,
+        }
+    }
+
+    /// A one-shot whose completion is reported back under `token` — behind
+    /// `Audio.playThen`.
+    pub fn play_one_shot_token(token: u64, sound: String) -> AudioCommand {
+        AudioCommand::PlayOneShot {
+            token: Some(token),
+            sound,
+            gain: 1.0,
+        }
     }
 }
 
@@ -51,6 +74,63 @@ pub fn drain_commands_json() -> String {
     serde_json::to_string(&drain_commands()).unwrap_or_else(|_| "[]".to_string())
 }
 
+// --- Completion: the `Audio.playThen` half (mirrors the `net` registry/inbox) ---
+//
+// A `playThen` one-shot carries a completion message; we hold it here keyed by
+// the command's token across the play→finish gap, and the host reports the end
+// via `audio_push_finished(token)` into the FINISHED queue. The executor drains
+// that queue each tick, matches each token back to its message, and feeds it
+// through `update`. Like `net`, these live on the dylib side and are dropped on
+// hot reload (an in-flight sound then just loses its completion message).
+
+thread_local! {
+    // Box<dyn Any> erases the Msg type so one table serves any game; the executor
+    // (which knows Msg) downcasts on the way out.
+    static COMPLETIONS: RefCell<HashMap<u64, Box<dyn Any>>> = RefCell::new(HashMap::new());
+    static NEXT_TOKEN: Cell<u64> = Cell::new(1);
+    // Tokens of sounds the host has reported finished, awaiting the executor.
+    static FINISHED: RefCell<VecDeque<u64>> = RefCell::new(VecDeque::new());
+}
+
+/// A fresh correlation token for a `playThen` one-shot.
+pub fn next_token() -> u64 {
+    NEXT_TOKEN.with(|c| {
+        let token = c.get();
+        c.set(token + 1);
+        token
+    })
+}
+
+/// Hold the completion message for `token` until the sound finishes.
+pub fn register_completion<M: 'static>(token: u64, message: M) {
+    COMPLETIONS.with(|c| {
+        c.borrow_mut().insert(token, Box::new(message));
+    });
+}
+
+/// Take the completion message for `token`. `None` for an unknown token or one
+/// whose message was dropped by a hot reload while the sound was playing.
+pub fn take_completion<M: 'static>(token: u64) -> Option<M> {
+    let boxed = COMPLETIONS.with(|c| c.borrow_mut().remove(&token))?;
+    boxed.downcast::<M>().ok().map(|m| *m)
+}
+
+/// Host: report that the sound for `token` has finished (via the runtime export).
+pub fn push_finished(token: u64) {
+    FINISHED.with(|f| f.borrow_mut().push_back(token));
+}
+
+/// The executor drains finished tokens each tick to deliver completion messages.
+pub fn drain_finished() -> Vec<u64> {
+    FINISHED.with(|f| f.borrow_mut().drain(..).collect())
+}
+
+/// Executor (F#-facing): the finished tokens as a Fable array, so they cross to
+/// F# as `array` (mirrors `net::drain_http_results`).
+pub fn drain_finished_array() -> NativeArray_::Array<u64> {
+    NativeArray_::array_from(drain_finished())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,7 +138,8 @@ mod tests {
     // One test, not two: `push_command`/`drain_commands` share the process-global
     // OUTBOUND queue, so two tests touching it run in parallel and can drain each
     // other's command (a flaky failure that showed up under CI's scheduling).
-    // Keeping it to a single test makes the queue access sequential.
+    // Keeping it to a single test makes the queue access sequential. (The
+    // completion tests below use thread-local state, so they stand alone.)
     #[test]
     fn push_drain_round_trips_and_serializes_to_json() {
         let _ = drain_commands(); // clear anything a prior run left
@@ -68,6 +149,7 @@ mod tests {
         assert_eq!(
             drained,
             vec![AudioCommand::PlayOneShot {
+                token: None,
                 sound: "gunshot.wav".to_string(),
                 gain: 1.0
             }]
@@ -75,9 +157,27 @@ mod tests {
         // Draining again yields nothing.
         assert!(drain_commands().is_empty());
 
+        // drain_commands_json serializes the same queue as a JSON array.
         push_command(AudioCommand::play_one_shot("x.wav".to_string()));
         let json = drain_commands_json();
         assert!(json.contains("PlayOneShot"));
         assert!(json.contains("x.wav"));
     }
+
+    #[test]
+    fn completion_round_trips_by_token() {
+        let token = next_token();
+        register_completion(token, 42i32);
+        push_finished(token);
+        assert_eq!(drain_finished(), vec![token]);
+        assert_eq!(take_completion::<i32>(token), Some(42));
+        // Taken once: gone the second time.
+        assert_eq!(take_completion::<i32>(token), None);
+    }
+
+    #[test]
+    fn take_completion_unknown_token_is_none() {
+        assert_eq!(take_completion::<i32>(999_999), None);
+    }
+
 }

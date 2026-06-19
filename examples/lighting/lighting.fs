@@ -37,6 +37,8 @@ module Model =
 
 type Msg =
     | Noop
+    // Delivered when the spacebar gunshot finishes playing (Audio.playThen).
+    | GunshotDone
 
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
@@ -55,9 +57,9 @@ let private pitchLimit = 1.5f
 
 let input model (event: Input.t) =
     match event with
-    // Spacebar fires a one-shot sound (fire-and-forget audio effect).
+    // Spacebar fires a one-shot sound, with a message delivered when it ends.
     | Input.Keyboard (Input.KeyboardEvent.KeyDown Input.Space) ->
-        (model, Audio.play "gunshot.wav")
+        (model, Audio.playThen "gunshot.wav" GunshotDone)
     | Input.Keyboard (Input.KeyboardEvent.KeyDown key) ->
         ({ model with held = setHeld model.held key true }, Effect.none())
     | Input.Keyboard (Input.KeyboardEvent.KeyUp key) ->

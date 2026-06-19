@@ -89,7 +89,6 @@ impl Game for StaticGame {
         }
     }
 
-
     fn net_drain_conn_commands(&self) -> String {
         unsafe {
             let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> =
@@ -135,6 +134,13 @@ impl Game for StaticGame {
                 conn,
                 fable_library_rust::String_::fromString(message),
             )
+        }
+    }
+
+    fn audio_push_finished(&mut self, token: i32) {
+        unsafe {
+            let func: Symbol<fn(i32)> = self.library.get(b"audio_push_finished").unwrap();
+            func(token)
         }
     }
 

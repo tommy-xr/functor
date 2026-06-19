@@ -11,9 +11,16 @@ pub enum Effect<T: Clone + 'static> {
     Wrapped(T),
     /// A fire-and-forget audio command (e.g. `Audio.play "gunshot.wav"`). When
     /// the effect runs, the command goes to the audio outbound queue for the
-    /// host to perform; there is no message back (a completion message is a
-    /// later addition, mirroring `Http`'s tagger).
+    /// host to perform; there is no message back.
     PlayAudio(AudioCommand),
+    /// An audio one-shot that delivers `on_finished` as a message when the sound
+    /// ends (`Audio.playThen`) — the audio twin of `Http`'s tagger. The command
+    /// carries a token; running the effect registers `on_finished` under it, and
+    /// the host reports completion back through the inbox (`audio_push_finished`).
+    PlayAudioThen {
+        command: AudioCommand,
+        on_finished: T,
+    },
     /// An HTTP request (the Elm `Http.get { expect = ... }`). `command` is the
     /// plain-data request the host performs; `tagger` maps the eventual result to
     /// a message. When the effect runs, the command goes to the outbound queue and
@@ -39,6 +46,9 @@ impl<T: Clone + 'static> fmt::Debug for Effect<T> {
             Effect::None => f.write_str("Effect::None"),
             Effect::Wrapped(_) => f.write_str("Effect::Wrapped(..)"),
             Effect::PlayAudio(command) => write!(f, "Effect::PlayAudio({command:?})"),
+            Effect::PlayAudioThen { command, .. } => {
+                write!(f, "Effect::PlayAudioThen({command:?})")
+            }
             Effect::Http { command, .. } => write!(f, "Effect::Http({command:?})"),
             Effect::Conn(cmd) => write!(f, "Effect::Conn({cmd:?})"),
         }
@@ -64,6 +74,15 @@ impl<T: Clone + 'static> Effect<T> {
     /// A fire-and-forget audio command (e.g. play a one-shot sound).
     pub fn play_audio(command: AudioCommand) -> Effect<T> {
         Effect::PlayAudio(command)
+    }
+
+    /// A one-shot that delivers `on_finished` as a message when it ends. `token`
+    /// correlates the play with the host's completion report.
+    pub fn play_audio_then(token: u64, sound: String, on_finished: T) -> Effect<T> {
+        Effect::PlayAudioThen {
+            command: AudioCommand::play_one_shot_token(token, sound),
+            on_finished,
+        }
     }
 
     /// Build an HTTP request effect. `tagger` maps the eventual result into a
@@ -94,6 +113,14 @@ impl<T: Clone + 'static> Effect<T> {
             Effect::Wrapped(v) => Effect::Wrapped(mapping(v)),
             // No message to remap — the command carries through unchanged.
             Effect::PlayAudio(cmd) => Effect::PlayAudio(cmd),
+            // Remap the completion message to the new type.
+            Effect::PlayAudioThen {
+                command,
+                on_finished,
+            } => Effect::PlayAudioThen {
+                command,
+                on_finished: mapping(on_finished),
+            },
             // Compose the mapping after the tagger so the request still resolves to
             // the new message type (Elm's Cmd.map over an Http command).
             Effect::Http { command, tagger } => Effect::Http {
@@ -113,6 +140,21 @@ impl<T: Clone + 'static> Effect<T> {
             // in-frame (or later) message.
             Effect::PlayAudio(cmd) => {
                 audio::push_command(cmd);
+                NativeArray_::array_from(vec![])
+            }
+            // Register the completion message under the command's token, then
+            // queue the command. The message returns later via the inbox.
+            Effect::PlayAudioThen {
+                command,
+                on_finished,
+            } => {
+                if let AudioCommand::PlayOneShot {
+                    token: Some(tok), ..
+                } = &command
+                {
+                    audio::register_completion(*tok, on_finished);
+                }
+                audio::push_command(command);
                 NativeArray_::array_from(vec![])
             }
             // Register the tagger (keyed by token) and hand the command to the host
