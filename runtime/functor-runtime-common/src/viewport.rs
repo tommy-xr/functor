@@ -7,11 +7,33 @@ use serde::{Deserialize, Serialize};
 pub struct Viewport {
     pub width: u32,
     pub height: u32,
+    /// Bottom-left origin of this viewport within the framebuffer. 0,0 for a
+    /// full-window render; non-zero to render into a sub-rectangle (e.g. one pane
+    /// of a multi-instance view). Defaults to 0 so existing callers are unchanged.
+    #[serde(default)]
+    pub x: u32,
+    #[serde(default)]
+    pub y: u32,
 }
 
 impl Viewport {
     pub fn new(width: u32, height: u32) -> Viewport {
-        Viewport { width, height }
+        Viewport {
+            width,
+            height,
+            x: 0,
+            y: 0,
+        }
+    }
+
+    /// A viewport offset to a sub-rectangle of the framebuffer (bottom-left x,y).
+    pub fn with_offset(x: u32, y: u32, width: u32, height: u32) -> Viewport {
+        Viewport {
+            width,
+            height,
+            x,
+            y,
+        }
     }
 
     /// Width-to-height ratio for the perspective projection. Guards against a
