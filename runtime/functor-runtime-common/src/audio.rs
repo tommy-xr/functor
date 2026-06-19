@@ -208,6 +208,135 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
     }
 }
 
+// --- Soundscape: the `Sub`-shaped half (continuous, reconciled voices) ----------
+//
+// Where a one-shot is fire-and-forget, a soundscape is a *standing* set of
+// looping voices, declared each frame as a pure function of the model
+// (`soundScape : model -> AudioScene`). Each voice has a `key` for cross-frame
+// identity, so the runtime can keep a live voice playing across frames (panning
+// and attenuating as the listener moves) instead of restarting it.
+//
+// The diff (`reconcile`) is pure and lives here; the live-voice registry lives in
+// the *shell* (rodio sinks / Web Audio nodes), so it survives a hot reload for
+// free — the dylib reloads, the voices keep playing, and the next frame's
+// `soundScape` re-diffs against them.
+
+/// One continuous voice in an [`AudioScene`]. Looping is implied (soundscape
+/// voices are beds/emitters); one-shots use [`AudioCommand`] instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioSource {
+    /// Cross-frame identity. A source with the same key across frames is the same
+    /// live voice (kept playing); changing `position`/`gain` updates it in place.
+    pub key: String,
+    /// Asset path the host loads/decodes and loops.
+    pub sound: String,
+    /// Linear volume (1.0 = full).
+    pub gain: f32,
+    /// `Some` for a positioned (spatial) voice — panned/attenuated relative to the
+    /// listener; `None` for a non-spatial bed (2D / music).
+    #[serde(default)]
+    pub position: Option<[f32; 3]>,
+}
+
+impl AudioSource {
+    /// A non-spatial bed (wind, music) at full volume.
+    pub fn ambient(key: String, sound: String) -> AudioSource {
+        AudioSource {
+            key,
+            sound,
+            gain: 1.0,
+            position: None,
+        }
+    }
+
+    /// A positioned emitter (a fountain you can walk around) at full volume.
+    pub fn at(key: String, sound: String, x: f32, y: f32, z: f32) -> AudioSource {
+        AudioSource {
+            key,
+            sound,
+            gain: 1.0,
+            position: Some([x, y, z]),
+        }
+    }
+
+    pub fn with_gain(mut self, gain: f32) -> AudioSource {
+        self.gain = gain;
+        self
+    }
+}
+
+/// The full set of continuous voices the game wants playing this frame — what
+/// `soundScape model` returns. Pure, serializable data; crosses the dylib
+/// boundary as JSON (like [`AudioCommand`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AudioScene {
+    pub sources: Vec<AudioSource>,
+}
+
+impl AudioScene {
+    pub fn new(sources: Vec<AudioSource>) -> AudioScene {
+        AudioScene { sources }
+    }
+}
+
+/// Serialize a scene for the dylib→host hop (behind the `audio_scene_json`
+/// runtime export). The game produces the scene; the host deserializes and
+/// reconciles it.
+pub fn scene_to_json(scene: &AudioScene) -> String {
+    serde_json::to_string(scene).unwrap_or_else(|_| "{\"sources\":[]}".to_string())
+}
+
+/// One reconciliation action the shell applies to its live-voice registry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneUpdate {
+    /// Start a new looping voice for `key`.
+    Spawn(AudioSource),
+    /// A voice with this key is already live; apply the new gain/position.
+    Update(AudioSource),
+    /// Stop and drop the live voice for `key` (no longer in the scene).
+    Stop(String),
+}
+
+/// Pure diff between the live voices (keyed by their last-applied source) and the
+/// `desired` scene. Produces stops (gone), spawns (new), and updates (changed) —
+/// the shell maps each to a backend op. Deterministic order (stops, then spawns
+/// /updates by key) so it's golden-testable. A key repeated in `desired` keeps
+/// its first occurrence (later duplicates are ignored).
+pub fn reconcile(live: &HashMap<String, AudioSource>, desired: &AudioScene) -> Vec<SceneUpdate> {
+    let mut seen: Vec<&String> = Vec::new();
+    let mut wanted: Vec<&AudioSource> = Vec::new();
+    for src in &desired.sources {
+        if seen.contains(&&src.key) {
+            continue; // first occurrence of a key wins
+        }
+        seen.push(&src.key);
+        wanted.push(src);
+    }
+
+    let mut updates = Vec::new();
+
+    // Stops: live keys no longer desired. Sorted for determinism.
+    let mut stops: Vec<&String> = live
+        .keys()
+        .filter(|k| !seen.contains(k))
+        .collect();
+    stops.sort();
+    for key in stops {
+        updates.push(SceneUpdate::Stop(key.clone()));
+    }
+
+    // Spawns / updates, in declaration order.
+    for src in wanted {
+        match live.get(&src.key) {
+            None => updates.push(SceneUpdate::Spawn(src.clone())),
+            Some(current) if current != src => updates.push(SceneUpdate::Update(src.clone())),
+            Some(_) => {} // unchanged: leave the live voice alone
+        }
+    }
+
+    updates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,4 +387,70 @@ mod tests {
         assert_eq!(take_completion::<i32>(999_999), None);
     }
 
+    // --- soundscape reconcile ---
+
+    fn live_of(sources: &[AudioSource]) -> HashMap<String, AudioSource> {
+        sources.iter().map(|s| (s.key.clone(), s.clone())).collect()
+    }
+
+    #[test]
+    fn reconcile_spawns_new_and_stops_gone() {
+        let wind = AudioSource::ambient("wind".into(), "wind.wav".into());
+        let fountain = AudioSource::at("fountain".into(), "water.wav".into(), 5.0, 0.0, 0.0);
+
+        // From nothing live, a two-source scene spawns both (in declaration order).
+        let live = HashMap::new();
+        let desired = AudioScene::new(vec![wind.clone(), fountain.clone()]);
+        assert_eq!(
+            reconcile(&live, &desired),
+            vec![
+                SceneUpdate::Spawn(wind.clone()),
+                SceneUpdate::Spawn(fountain.clone()),
+            ]
+        );
+
+        // With both live, dropping the fountain stops just it.
+        let live = live_of(&[wind.clone(), fountain]);
+        let desired = AudioScene::new(vec![wind]);
+        assert_eq!(
+            reconcile(&live, &desired),
+            vec![SceneUpdate::Stop("fountain".into())]
+        );
+    }
+
+    #[test]
+    fn reconcile_updates_changed_and_ignores_unchanged() {
+        let fountain = AudioSource::at("fountain".into(), "water.wav".into(), 5.0, 0.0, 0.0);
+        let live = live_of(&[fountain.clone()]);
+
+        // Same source again: no action.
+        let desired = AudioScene::new(vec![fountain.clone()]);
+        assert!(reconcile(&live, &desired).is_empty());
+
+        // Moved + quieter: a single Update carrying the new source.
+        let moved = fountain.with_gain(0.4);
+        let moved = AudioSource {
+            position: Some([8.0, 0.0, 1.0]),
+            ..moved
+        };
+        let desired = AudioScene::new(vec![moved.clone()]);
+        assert_eq!(reconcile(&live, &desired), vec![SceneUpdate::Update(moved)]);
+    }
+
+    #[test]
+    fn reconcile_dedupes_desired_by_key_and_json_round_trips() {
+        // A key repeated in the scene keeps its first occurrence.
+        let first = AudioSource::ambient("bed".into(), "a.wav".into());
+        let dup = AudioSource::ambient("bed".into(), "b.wav".into());
+        let desired = AudioScene::new(vec![first.clone(), dup]);
+        assert_eq!(
+            reconcile(&HashMap::new(), &desired),
+            vec![SceneUpdate::Spawn(first)]
+        );
+
+        // scene_to_json -> serde round-trips (the dylog->host hop).
+        let json = scene_to_json(&desired);
+        let back: AudioScene = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, desired);
+    }
 }
