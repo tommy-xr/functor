@@ -37,6 +37,10 @@ pub trait Game {
     /// `functor_runtime_common::audio::AudioCommand`), via the dylib's
     /// `audio_drain_commands_json` export. The host plays them on its own device.
     fn audio_drain_commands(&self) -> String;
+    /// The desired soundscape (`soundScape model`) as JSON
+    /// (`functor_runtime_common::audio::AudioScene`), via the dylib's
+    /// `audio_scene_json` export. The host reconciles it against its live voices.
+    fn audio_scene_json(&self) -> String;
     /// Take the persistent-connection commands (connect/send/close) the game has
     /// queued this frame, as a JSON array of `functor_runtime_common::net::ConnCommand`.
     fn net_drain_conn_commands(&self) -> String;

@@ -13,6 +13,7 @@ module Runtime
         abstract member getState: unit -> OpaqueState
         abstract member setState: OpaqueState -> unit
         abstract member stateDebug: unit -> string
+        abstract member audioSceneJson: unit -> string
 
     let mutable currentRunner: Option<IRunner> = None
 
@@ -208,6 +209,15 @@ module Runtime
         /// game can deliver its completion message.
         [<OuterAttr("no_mangle")>]
         let audio_push_finished (token: int) : unit = pushAudioFinished token
+
+        /// Host: the desired soundscape (`soundScape model`) as JSON, for the host
+        /// to reconcile against its live looping voices each frame.
+        [<OuterAttr("no_mangle")>]
+        let audio_scene_json () : string =
+            if currentRunner.IsSome then
+                currentRunner.Value.audioSceneJson ()
+            else
+                raise (System.Exception("No runner"))
 
         /// Host: take the networking commands the game has queued this frame, as a
         /// JSON array of NetCommand. The host performs the I/O and reports results
@@ -464,6 +474,11 @@ module Runtime
                 GameRunner.draw3d myGame state frameTime
                 // printfn "Hello from GameRunner.render!"
                 // Scene3D.cube()
+            member this.audioSceneJson() =
+                // The desired soundscape for the current model, serialized for the
+                // host to reconcile against its live voices. Pure (no effects); the
+                // host calls this each frame after render.
+                GameRunner.soundScape myGame state |> Audio.sceneToJson
 
 
     // Holds the module-level mutable assignment so it is emitted in this module

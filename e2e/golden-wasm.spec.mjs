@@ -36,14 +36,18 @@ for (const scenario of scenarios) {
     await expect(page.locator("#canvas")).toBeVisible();
 
     // Let the wasm module initialize and reach its static frame. The deterministic
-    // render loop stops ~1s after its first frame, so this comfortably outlasts it.
-    await page.waitForTimeout(3500);
+    // render loop stops ~1s after its first frame; the generous wait gives a slow
+    // CI runner room for wasm init + that first frame before we screenshot (an
+    // intermittent stability timeout otherwise flaked this job on slow runners).
+    await page.waitForTimeout(6000);
 
     expect(errors, `page errors:\n${errors.join("\n")}`).toEqual([]);
     // Screenshot the whole page (the canvas fills the viewport) rather than the
     // canvas element: the app's perpetual requestAnimationFrame loop keeps the
     // element-screenshot's "wait for element to be stable" from ever settling
-    // under headless CI. A page screenshot skips that per-element wait.
-    await expect(page).toHaveScreenshot(`${scenario.name}-wasm.png`);
+    // under headless CI. A page screenshot skips that per-element wait. The long
+    // timeout lets toHaveScreenshot keep retrying until the loop has stopped and
+    // two consecutive screenshots are stable, rather than failing at the default 5s.
+    await expect(page).toHaveScreenshot(`${scenario.name}-wasm.png`, { timeout: 20000 });
   });
 }
