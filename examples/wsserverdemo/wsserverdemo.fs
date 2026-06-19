@@ -9,7 +9,9 @@ open Functor
 open Functor.Math
 open Graphics
 
-let bind = "127.0.0.1:9100"
+// Authority matches wsdemo's connect url ("ws://127.0.0.1:9001/echo") so the
+// netsim harness can route a wsdemo client to this server.
+let bind = "127.0.0.1:9001"
 
 type Model =
     { clients: int
