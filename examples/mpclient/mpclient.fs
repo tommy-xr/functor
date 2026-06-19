@@ -99,23 +99,34 @@ open Graphics.Scene3D
 let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model _frameTime ->
-        // A cube per player in the last snapshot the server sent.
-        let mat = Material.emissive (0.3f, 0.7f, 0.9f, 1.0f)
+        // A lit cube per player in the last snapshot the server sent (same framing
+        // as mpserver, so panes line up side by side in the netsim viewer).
         let cubes =
             model.world
-            |> List.map (fun (_, x, z) -> cube () |> Transform.translateX x |> Transform.translateZ z)
+            |> List.map (fun (_, x, z) ->
+                cube () |> Transform.scale 0.6f |> Transform.translateX x |> Transform.translateZ z)
             |> List.toArray
 
-        let scene = material (mat, cubes)
+        let scene =
+            group
+                [| material (Material.lit (0.18f, 0.2f, 0.28f, 1.0f), [| plane () |> Transform.scale 8.0f |])
+                   material (Material.lit (0.3f, 0.7f, 0.9f, 1.0f), cubes) |]
+
+        let lights =
+            [| Light.ambient (Color.rgb 0.35f 0.35f 0.42f)
+               Light.directional
+                   { Direction = Vector3.xyz -0.4f -1.0f -0.35f
+                     Color = Color.rgb 1.0f 0.95f 0.85f
+                     Intensity = 1.1f } |]
 
         let camera =
             Graphics.Camera.firstPerson
-                (Vector3.xyz 0.0f 4.0f -6.0f)
+                (Vector3.xyz 0.0f 9.0f -2.0f)
                 (Math.Angle.radians 0.0f)
-                (Math.Angle.radians -0.4f)
-                (Math.Angle.degrees 60.0f)
+                (Math.Angle.radians -1.2f)
+                (Math.Angle.degrees 70.0f)
 
-        Graphics.Frame.create camera scene)
+        Graphics.Frame.createLit camera scene lights)
     |> GameBuilder.update update
     |> GameBuilder.input input
     |> GameBuilder.tick tick

@@ -12,11 +12,20 @@ open Fable.Core
 
 let bind = "127.0.0.1:9001"
 let speed = 2.0f
+let arena = 4.0f
 
 // Parse an i32 out of a (possibly space-padded) string. Fable's string->int
 // support is patchy, so go straight to Rust.
 [<Emit("$0.trim().parse::<i32>().unwrap_or(0)")>]
 let private parseInt (s: string) : int = nativeOnly
+
+// Integrate one axis a frame, wrapping around the arena edges (asteroids-style)
+// so entities stay in a fixed playfield instead of drifting off-screen.
+let private wrapAxis (pos: float32) (vel: int) (dt: float32) : float32 =
+    let p = pos + float32 vel * speed * dt
+    if p > arena then p - 2.0f * arena
+    elif p < -arena then p + 2.0f * arena
+    else p
 
 type Player =
     { cid: Net.ConnectionId
@@ -89,8 +98,8 @@ let tick model (t: Time.FrameTime) =
         model.players
         |> List.map (fun p ->
             { p with
-                x = p.x + float32 p.vx * speed * t.dts
-                z = p.z + float32 p.vz * speed * t.dts })
+                x = wrapAxis p.x p.vx t.dts
+                z = wrapAxis p.z p.vz t.dts })
 
     let model = { model with players = players }
     let snapshot = encode players
@@ -109,23 +118,35 @@ open Graphics.Scene3D
 let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model _frameTime ->
-        // One cube per connected player, at its authoritative position.
-        let mat = Material.emissive (0.9f, 0.5f, 0.3f, 1.0f)
+        // A lit ground plane + a lit cube per player at its authoritative position.
         let cubes =
             model.players
-            |> List.map (fun p -> cube () |> Transform.translateX p.x |> Transform.translateZ p.z)
+            |> List.map (fun p ->
+                cube () |> Transform.scale 0.6f |> Transform.translateX p.x |> Transform.translateZ p.z)
             |> List.toArray
 
-        let scene = material (mat, cubes)
+        // Ground sized to the wrap boundary, so the playfield edges are visible.
+        let scene =
+            group
+                [| material (Material.lit (0.18f, 0.2f, 0.28f, 1.0f), [| plane () |> Transform.scale (2.0f * arena) |])
+                   material (Material.lit (0.95f, 0.55f, 0.25f, 1.0f), cubes) |]
 
+        let lights =
+            [| Light.ambient (Color.rgb 0.35f 0.35f 0.42f)
+               Light.directional
+                   { Direction = Vector3.xyz -0.4f -1.0f -0.35f
+                     Color = Color.rgb 1.0f 0.95f 0.85f
+                     Intensity = 1.1f } |]
+
+        // Top-down-ish view so player movement stays on screen.
         let camera =
             Graphics.Camera.firstPerson
-                (Vector3.xyz 0.0f 4.0f -6.0f)
+                (Vector3.xyz 0.0f 9.0f -2.0f)
                 (Math.Angle.radians 0.0f)
-                (Math.Angle.radians -0.4f)
-                (Math.Angle.degrees 60.0f)
+                (Math.Angle.radians -1.2f)
+                (Math.Angle.degrees 70.0f)
 
-        Graphics.Frame.create camera scene)
+        Graphics.Frame.createLit camera scene lights)
     |> GameBuilder.update update
     |> GameBuilder.input input
     |> GameBuilder.tick tick
