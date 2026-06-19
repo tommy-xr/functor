@@ -135,4 +135,7 @@ The CLI operates on a directory containing a `functor.json`. Point it at the exa
 
 ## Credits
 
-- Demo assets are from [BabylonJS Assets](https://github.com/BabylonJS/Assets/)
+- Demo 3D assets are from [BabylonJS Assets](https://github.com/BabylonJS/Assets/)
+- Demo audio (`examples/*/*.wav`) is procedurally synthesized — original/CC0, no
+  third-party samples. Regenerate with `npm run generate:audio`
+  (`scripts/generate-audio.mjs`).
