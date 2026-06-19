@@ -89,6 +89,14 @@ impl Game for StaticGame {
         }
     }
 
+    fn audio_scene_json(&self) -> String {
+        unsafe {
+            let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> =
+                self.library.get(b"audio_scene_json").unwrap();
+            func().to_string()
+        }
+    }
+
     fn net_drain_conn_commands(&self) -> String {
         unsafe {
             let func: Symbol<fn() -> fable_library_rust::String_::LrcStr> =

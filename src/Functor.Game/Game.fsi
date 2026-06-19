@@ -8,6 +8,8 @@ type TickFn<'model, 'msg> = 'model -> Time.FrameTime -> ('model * effect<'msg>)
 
 type SubFn<'model, 'msg> = 'model -> Sub<'msg>
 
+type SoundScapeFn<'model> = 'model -> AudioScene
+
 type Game<'model, 'msg>
 
 module GameBuilder = 
@@ -27,6 +29,8 @@ module GameBuilder =
 
     val draw3d: ('model -> Time.FrameTime -> Graphics.Frame) -> Game<'model, 'msg> -> Game<'model, 'msg>
 
+    val soundScape: SoundScapeFn<'model> -> Game<'model, 'msg> -> Game<'model, 'msg>
+
 
 module GameRunner =
     val initialState: Game<'model, 'msg> -> 'model
@@ -36,3 +40,4 @@ module GameRunner =
     val subscriptions: Game<'model, 'msg> -> 'model -> Sub<'msg>
     val input: Game<'model, 'msg> -> 'model -> Input.t -> ('model * effect<'msg>)
     val draw3d: Game<'model, 'msg> -> 'model -> Time.FrameTime -> Graphics.Frame
+    val soundScape: Game<'model, 'msg> -> 'model -> AudioScene

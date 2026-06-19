@@ -8,6 +8,8 @@ type InputFn<'model, 'msg> = 'model -> Input.t -> ('model * effect<'msg>)
 
 type SubFn<'model, 'msg> = 'model -> Sub<'msg>
 
+type SoundScapeFn<'model> = 'model -> AudioScene
+
 type Game<'model, 'msg> = {
     initialState: 'model
     init: effect<'msg>
@@ -16,6 +18,7 @@ type Game<'model, 'msg> = {
     update: UpdateFn<'model, 'msg>
     subscriptions: SubFn<'model, 'msg>
     draw3d: 'model -> Time.FrameTime -> Graphics.Frame
+    soundScape: SoundScapeFn<'model>
     }
 
 
@@ -29,7 +32,8 @@ module GameBuilder =
         let draw3d model frametime = Graphics.Frame.create (Graphics.Camera.initial ()) (Graphics.Scene3D.cube())
         let input model input = (model, Effect.none ())
         let subscriptions model = Sub.none ()
-        { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; subscriptions = subscriptions; draw3d = draw3d}
+        let soundScape model = AudioScene.empty ()
+        { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; subscriptions = subscriptions; draw3d = draw3d; soundScape = soundScape}
 
     /// Set the startup effect, run once when the game first loads. Unlike 'tick'
     /// effects, this fires before the first frame and is *not* re-run across a
@@ -51,6 +55,12 @@ module GameBuilder =
 
     let subscriptions<'model, 'msg> (f: SubFn<'model, 'msg>) (game: Game<'model, 'msg>) =
         { game with subscriptions = f }
+
+    /// Declare the continuous soundscape: a pure function of the model returning
+    /// the set of looping voices the runtime keeps playing (reconciled by key
+    /// each frame). The listener comes from `draw3d`'s camera.
+    let soundScape<'model, 'msg> (f: SoundScapeFn<'model>) (game: Game<'model, 'msg>) =
+        { game with soundScape = f }
 
 
 
@@ -76,3 +86,6 @@ module GameRunner =
 
     let draw3d<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime): Graphics.Frame =
         game.draw3d model tick
+
+    let soundScape<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model): AudioScene =
+        game.soundScape model

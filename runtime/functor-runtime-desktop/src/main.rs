@@ -489,6 +489,19 @@ pub async fn main() {
                 }
             }
 
+            // Soundscape: reconcile the game's desired looping voices against the
+            // live ones, then re-aim the spatial voices at the (possibly moved)
+            // listener so they pan/attenuate as the camera moves.
+            if let Some(player) = &mut audio_player {
+                let scene_json = game.audio_scene_json();
+                match serde_json::from_str::<functor_runtime_common::audio::AudioScene>(&scene_json)
+                {
+                    Ok(scene) => player.reconcile_scene(&scene),
+                    Err(e) => eprintln!("[audio] bad scene json: {e}"),
+                }
+                player.update_spatial_listener();
+            }
+
             // Shadow + forward passes, shared with the web runtime.
             functor_runtime_common::render_frame(
                 &gl,

@@ -203,4 +203,13 @@ let init (_args: array<string>) =
     |> GameBuilder.update update
     |> GameBuilder.input input
     |> GameBuilder.tick tick
+    // The continuous soundscape: a non-spatial wind bed plus a positioned
+    // fountain you can walk around (WASD) and hear pan/attenuate. Both loop and
+    // are reconciled by key each frame — they keep playing as the camera moves.
+    |> GameBuilder.soundScape (fun _world ->
+        AudioScene.create [|
+            AudioSource.ambient "wind" "wind-loop.wav" |> AudioSource.gain 0.35f
+            AudioSource.at "fountain" "water-loop.wav" (Vector3.xyz 5.0f 0.5f 0.0f)
+            |> AudioSource.gain 0.8f
+        |])
     |> Runtime.runGame

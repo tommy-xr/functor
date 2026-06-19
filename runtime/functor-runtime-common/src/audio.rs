@@ -277,6 +277,14 @@ impl AudioScene {
     pub fn new(sources: Vec<AudioSource>) -> AudioScene {
         AudioScene { sources }
     }
+
+    /// Build from the Fable array F# `soundScape` returns (mirrors
+    /// `Scene3D::group`), so the F# `AudioScene.create` shim stays a thin call.
+    pub fn from_sources(sources: NativeArray_::Array<AudioSource>) -> AudioScene {
+        AudioScene {
+            sources: sources.to_vec(),
+        }
+    }
 }
 
 /// Serialize a scene for the dylib→host hop (behind the `audio_scene_json`
