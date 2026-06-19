@@ -71,9 +71,15 @@ let private parseInput (text: string) =
 let update model msg =
     match msg with
     | Joined cid ->
-        // Spawn the new player, offset on x so they don't overlap.
+        // Spawn the new player on its own z-lane so players don't overlap.
         Debug.log "mpserver: client joined"
-        let p = { cid = cid; pid = model.nextPid; x = float32 model.nextPid; z = 0.0f; vx = 0; vz = 0 }
+        let p =
+            { cid = cid
+              pid = model.nextPid
+              x = -2.0f
+              z = float32 model.nextPid * 1.8f - 1.8f
+              vx = 0
+              vz = 0 }
         ({ model with
             players = p :: model.players
             nextPid = model.nextPid + 1 },
@@ -114,22 +120,35 @@ let input model (_: Input.t) = (model, Effect.none ())
 open Fable.Core.Rust
 open Graphics.Scene3D
 
+// A distinct color per player id, shared with the client so a given player is the
+// same color in every pane (you can track "the red one" across server + clients).
+let colorFor (pid: int) : float32 * float32 * float32 =
+    match pid % 4 with
+    | 0 -> (0.90f, 0.35f, 0.35f)
+    | 1 -> (0.35f, 0.60f, 0.95f)
+    | 2 -> (0.45f, 0.85f, 0.45f)
+    | _ -> (0.95f, 0.80f, 0.35f)
+
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model _frameTime ->
-        // A lit ground plane + a lit cube per player at its authoritative position.
-        let cubes =
+        // One colored cube per player at its authoritative position, on a ground
+        // plane sized to the wrap boundary (so the playfield edges are visible).
+        let playerNodes =
             model.players
             |> List.map (fun p ->
-                cube () |> Transform.scale 0.6f |> Transform.translateX p.x |> Transform.translateZ p.z)
+                let (r, g, b) = colorFor p.pid
+                material (
+                    Material.lit (r, g, b, 1.0f),
+                    [| cube () |> Transform.scale 0.6f |> Transform.translateX p.x |> Transform.translateZ p.z |]
+                ))
             |> List.toArray
 
-        // Ground sized to the wrap boundary, so the playfield edges are visible.
-        let scene =
-            group
-                [| material (Material.lit (0.18f, 0.2f, 0.28f, 1.0f), [| plane () |> Transform.scale (2.0f * arena) |])
-                   material (Material.lit (0.95f, 0.55f, 0.25f, 1.0f), cubes) |]
+        let ground =
+            material (Material.lit (0.18f, 0.2f, 0.28f, 1.0f), [| plane () |> Transform.scale (2.0f * arena) |])
+
+        let scene = group (Array.append [| ground |] playerNodes)
 
         let lights =
             [| Light.ambient (Color.rgb 0.35f 0.35f 0.42f)

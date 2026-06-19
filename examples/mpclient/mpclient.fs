@@ -95,22 +95,35 @@ let input model (event: Input.t) =
 open Fable.Core.Rust
 open Graphics.Scene3D
 
+// Same palette as mpserver, keyed by player id, so a player is the same color in
+// every pane (server + clients).
+let colorFor (pid: int) : float32 * float32 * float32 =
+    match pid % 4 with
+    | 0 -> (0.90f, 0.35f, 0.35f)
+    | 1 -> (0.35f, 0.60f, 0.95f)
+    | 2 -> (0.45f, 0.85f, 0.45f)
+    | _ -> (0.95f, 0.80f, 0.35f)
+
 [<OuterAttr("no_mangle")>]
 let init (_args: array<string>) =
     game
     |> GameBuilder.draw3d (fun model _frameTime ->
-        // A lit cube per player in the last snapshot the server sent (same framing
-        // as mpserver, so panes line up side by side in the netsim viewer).
-        let cubes =
+        // One colored cube per player in the last snapshot the server sent (same
+        // framing + palette as mpserver, so panes line up in the netsim viewer).
+        let playerNodes =
             model.world
-            |> List.map (fun (_, x, z) ->
-                cube () |> Transform.scale 0.6f |> Transform.translateX x |> Transform.translateZ z)
+            |> List.map (fun (pid, x, z) ->
+                let (r, g, b) = colorFor pid
+                material (
+                    Material.lit (r, g, b, 1.0f),
+                    [| cube () |> Transform.scale 0.6f |> Transform.translateX x |> Transform.translateZ z |]
+                ))
             |> List.toArray
 
-        let scene =
-            group
-                [| material (Material.lit (0.18f, 0.2f, 0.28f, 1.0f), [| plane () |> Transform.scale 8.0f |])
-                   material (Material.lit (0.3f, 0.7f, 0.9f, 1.0f), cubes) |]
+        let ground =
+            material (Material.lit (0.18f, 0.2f, 0.28f, 1.0f), [| plane () |> Transform.scale 8.0f |])
+
+        let scene = group (Array.append [| ground |] playerNodes)
 
         let lights =
             [| Light.ambient (Color.rgb 0.35f 0.35f 0.42f)
