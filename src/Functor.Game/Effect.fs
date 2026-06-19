@@ -15,6 +15,11 @@ module Effect =
     [<Emit("functor_runtime_common::Effect::map($0, $1)")>]
     let map (fn: 'a -> 'b)  (eff: effect<'a>) : effect<'b> = nativeOnly
 
+    /// Combine several effects into one (the Elm `Cmd.batch`) — e.g. a server
+    /// sending a snapshot to every connected client.
+    [<Emit("functor_runtime_common::Effect::batch($0)")>]
+    let batch (effects: effect<'msg>[]) : effect<'msg> = nativeOnly
+
     // Networking: fire an HTTP request, Elm-style. `tagger` (the Elm `expect`)
     // maps the eventual result to a message; the runtime applies it when the
     // response lands and delivers it through `update`. No in-frame message, and

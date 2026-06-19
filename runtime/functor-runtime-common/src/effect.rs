@@ -35,6 +35,10 @@ pub enum Effect<T: Clone + 'static> {
     /// host performs it. Inbound events arrive separately via the connection
     /// inbox and are decoded by the connection's `Sub`.
     Conn(ConnCommand),
+    /// Several effects at once (the Elm `Cmd.batch`). Running it runs each in
+    /// order and concatenates any messages they produce — e.g. a server sending
+    /// the same snapshot to every connected client.
+    Batch(Vec<Effect<T>>),
 }
 
 // Implement Debug manually so it doesn't require `T: Debug`. This lets types
@@ -51,6 +55,7 @@ impl<T: Clone + 'static> fmt::Debug for Effect<T> {
             }
             Effect::Http { command, .. } => write!(f, "Effect::Http({command:?})"),
             Effect::Conn(cmd) => write!(f, "Effect::Conn({cmd:?})"),
+            Effect::Batch(effs) => write!(f, "Effect::Batch({} effects)", effs.len()),
         }
     }
 }
@@ -129,6 +134,11 @@ impl<T: Clone + 'static> Effect<T> {
             },
             // No message, so the type change is a no-op on the payload.
             Effect::Conn(cmd) => Effect::Conn(cmd),
+            // Map each sub-effect. `mapping` is `Clone` (Lrc-backed), so it can be
+            // reused across the batch.
+            Effect::Batch(effs) => {
+                Effect::Batch(effs.into_iter().map(|e| Effect::map(mapping.clone(), e)).collect())
+            }
         }
     }
 
@@ -171,12 +181,25 @@ impl<T: Clone + 'static> Effect<T> {
                 net::push_conn_command(cmd);
                 NativeArray_::array_from(vec![])
             }
+            // Run each sub-effect (in order) and concatenate their messages.
+            Effect::Batch(effs) => {
+                let mut out: Vec<T> = Vec::new();
+                for e in effs {
+                    out.extend(Effect::run(e).iter().cloned());
+                }
+                NativeArray_::array_from(out)
+            }
         }
     }
 
     /// Build a persistent-connection command effect (send/close).
     pub fn conn(command: ConnCommand) -> Effect<T> {
         Effect::Conn(command)
+    }
+
+    /// Combine several effects into one (the Elm `Cmd.batch`).
+    pub fn batch(effects: NativeArray_::Array<Effect<T>>) -> Effect<T> {
+        Effect::Batch(effects.iter().cloned().collect())
     }
 }
 
