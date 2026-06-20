@@ -499,7 +499,7 @@ pub async fn main() {
                     Ok(scene) => player.reconcile_scene(&scene),
                     Err(e) => eprintln!("[audio] bad scene json: {e}"),
                 }
-                player.update_spatial_listener();
+                player.respatialize_voices();
             }
 
             // Shadow + forward passes, shared with the web runtime.

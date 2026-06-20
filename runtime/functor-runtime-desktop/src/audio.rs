@@ -124,17 +124,28 @@ impl AudioPlayer {
         }
     }
 
-    /// Re-aim the live spatial voices at the current listener (called each frame
-    /// after `set_listener`), so a looping emitter pans/attenuates as the camera
-    /// moves around it — even on frames where its source didn't change.
-    pub fn update_spatial_listener(&self) {
-        let (left, right) = self.listener.ears(HALF_EAR);
+    /// Re-spatialize the live positioned voices for the current listener (called
+    /// each frame after `set_listener`), so a looping emitter pans/attenuates as
+    /// the camera moves around it — even on frames where its source didn't change.
+    pub fn respatialize_voices(&self) {
         for voice in self.voices.values() {
-            if let VoiceSink::Spatial(sink) = &voice.sink {
-                sink.set_left_ear_position(left);
-                sink.set_right_ear_position(right);
+            if let (VoiceSink::Spatial(sink), Some(pos)) = (&voice.sink, voice.source.position) {
+                self.apply_spatial(sink, pos, voice.source.gain);
             }
         }
+    }
+
+    /// Apply the shared spatialization to a `SpatialSink`: rodio provides the pan
+    /// (we place the emitter one unit away in the pan direction, so rodio's own
+    /// distance attenuation stays ~constant), and the shared linear `gain` drives
+    /// the falloff via the sink volume — identical to the wasm backend.
+    fn apply_spatial(&self, sink: &SpatialSink, world_pos: [f32; 3], base_gain: f32) {
+        let s = self.listener.spatialize(world_pos);
+        let (left, right) = self.listener.ears(HALF_EAR);
+        sink.set_left_ear_position(left);
+        sink.set_right_ear_position(right);
+        sink.set_emitter_position(self.listener.pan_emitter(s.pan));
+        sink.set_volume(base_gain * s.gain);
     }
 
     fn spawn_voice(&mut self, src: AudioSource) {
@@ -159,8 +170,8 @@ impl AudioPlayer {
                 let (left, right) = self.listener.ears(HALF_EAR);
                 match SpatialSink::try_new(&self.handle, pos, left, right) {
                     Ok(sink) => {
-                        sink.set_volume(src.gain);
                         sink.append(looped);
+                        self.apply_spatial(&sink, pos, src.gain);
                         VoiceSink::Spatial(sink)
                     }
                     Err(e) => {
@@ -187,14 +198,10 @@ impl AudioPlayer {
             return;
         }
         if let Some(voice) = self.voices.get_mut(&src.key) {
-            match &voice.sink {
-                VoiceSink::Plain(sink) => sink.set_volume(src.gain),
-                VoiceSink::Spatial(sink) => {
-                    sink.set_volume(src.gain);
-                    if let Some(pos) = src.position {
-                        sink.set_emitter_position(pos);
-                    }
-                }
+            // Non-spatial: apply the gain directly. Spatial voices are re-applied
+            // each frame by `respatialize_voices` from the stored source below.
+            if let VoiceSink::Plain(sink) = &voice.sink {
+                sink.set_volume(src.gain);
             }
             voice.source = src;
         }
@@ -221,7 +228,8 @@ impl AudioPlayer {
                 let (left, right) = self.listener.ears(HALF_EAR);
                 match SpatialSink::try_new(&self.handle, pos, left, right) {
                     Ok(sink) => {
-                        if self.append_spatial(&sink, &sound, gain) {
+                        if self.append_spatial(&sink, &sound) {
+                            self.apply_spatial(&sink, pos, gain);
                             self.finish(sink, token);
                         }
                     }
@@ -258,10 +266,9 @@ impl AudioPlayer {
         }
     }
 
-    fn append_spatial(&self, sink: &SpatialSink, path: &str, gain: f32) -> bool {
+    fn append_spatial(&self, sink: &SpatialSink, path: &str) -> bool {
         match self.decode(path) {
             Some(source) => {
-                sink.set_volume(gain);
                 sink.append(source);
                 true
             }
