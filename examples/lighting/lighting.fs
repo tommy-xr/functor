@@ -40,6 +40,10 @@ type Msg =
     // Delivered when the spacebar gunshot finishes playing (Audio.playThen).
     | GunshotDone
 
+/// World position of the fountain — shared by its visual (draw3d) and its
+/// positioned audio loop (soundScape) so the sound always comes from the object.
+let fountainPos = Vector3.xyz 5.0f 0.5f 0.0f
+
 let game: Game<Model, Msg> = GameBuilder.local Model.initial
 
 let update model _msg = (model, Effect.none())
@@ -162,7 +166,29 @@ let init (_args: array<string>) =
             |> Transform.rotateY (Math.Angle.degrees 90.0f)
             |> Transform.scale 0.003f
 
-        let scene = group(Array.append [| objects; shark |] markers)
+        // The fountain: a stone basin with a glowing pool of water, sitting at
+        // `fountainPos` — the source of the positioned water-loop you hear pan as
+        // you walk around it. The water bobs gently so it reads as alive.
+        // Transforms compose right-to-left (the last in the pipe is applied to the
+        // geometry first), so translate first, then scale — otherwise the scale
+        // would shrink the translation offset too.
+        let bob = 0.05f * sin (frameTime.tts * 2.0f)
+        let fountain =
+            group([|
+                // Wide, short basin resting on the ground.
+                material (litWhite, [|
+                    cylinder() |> Transform.translateY 0.25f
+                               |> Transform.scaleY 0.5f |> Transform.scaleX 1.4f |> Transform.scaleZ 1.4f
+                |])
+                // Emissive "water" pooled in the basin (self-lit so it glows).
+                material (Material.emissive(0.3f, 0.65f, 1.0f, 1.0f), [|
+                    sphere() |> Transform.translateY (0.6f + bob)
+                             |> Transform.scaleY 0.4f |> Transform.scale 0.55f
+                |])
+            |])
+            |> Transform.translateX fountainPos.x |> Transform.translateZ fountainPos.z
+
+        let scene = group(Array.append [| objects; shark; fountain |] markers)
 
         let camera =
             Graphics.Camera.firstPerson
@@ -209,7 +235,7 @@ let init (_args: array<string>) =
     |> GameBuilder.soundScape (fun _world ->
         AudioScene.create [|
             AudioSource.ambient "wind" "wind-loop.wav" |> AudioSource.gain 0.35f
-            AudioSource.at "fountain" "water-loop.wav" (Vector3.xyz 5.0f 0.5f 0.0f)
+            AudioSource.at "fountain" "water-loop.wav" fountainPos
             |> AudioSource.gain 0.8f
         |])
     |> Runtime.runGame
