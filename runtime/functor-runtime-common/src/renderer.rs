@@ -63,10 +63,25 @@ pub fn render_frame(
             }
         });
 
-    // Main (forward) pass into the bound framebuffer. Reset the clear color (the
-    // shadow pass cleared its depth-color buffer to white).
+    // Main (forward) pass into the bound framebuffer, at the viewport's
+    // sub-rectangle (x,y default to 0 = full window). The scissor clips the clear
+    // and draws to this pane, so multiple instances can share one framebuffer
+    // (e.g. a netsim viewer). Reset the clear color (the shadow pass cleared its
+    // depth-color buffer to white).
     unsafe {
-        gl.viewport(0, 0, viewport.width as i32, viewport.height as i32);
+        gl.viewport(
+            viewport.x as i32,
+            viewport.y as i32,
+            viewport.width as i32,
+            viewport.height as i32,
+        );
+        gl.scissor(
+            viewport.x as i32,
+            viewport.y as i32,
+            viewport.width as i32,
+            viewport.height as i32,
+        );
+        gl.enable(glow::SCISSOR_TEST);
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
     }

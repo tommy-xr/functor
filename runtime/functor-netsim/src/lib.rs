@@ -126,6 +126,15 @@ impl Instance {
             f().to_string()
         }
     }
+
+    /// The instance's frame (camera + scene) at this time, for a visualizer.
+    fn render(&self, time: FrameTime) -> functor_runtime_common::Frame {
+        unsafe {
+            let f: Symbol<fn(FrameTime) -> functor_runtime_common::Frame> =
+                self.lib.get(b"test_render").unwrap();
+            f(time)
+        }
+    }
 }
 
 impl Drop for Instance {
@@ -183,6 +192,21 @@ impl NetSim {
     /// The Debug-formatted model of an instance.
     pub fn state(&self, id: InstanceId) -> String {
         self.instances[id].state()
+    }
+
+    /// Number of instances.
+    pub fn len(&self) -> usize {
+        self.instances.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.instances.is_empty()
+    }
+
+    /// The frame (camera + scene) an instance would render at this time — for a
+    /// visualizer that draws each instance's view (see `functor-netsim-viz`).
+    pub fn render(&self, id: InstanceId, time: FrameTime) -> functor_runtime_common::Frame {
+        self.instances[id].render(time)
     }
 
     /// Advance the simulation by one frame: tick every instance, route the

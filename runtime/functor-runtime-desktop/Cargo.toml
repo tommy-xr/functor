@@ -11,6 +11,13 @@ strict = ["functor_runtime_common/strict"]
 name = "functor-runner"
 path = "src/main.rs"
 
+# A live multi-pane viewer for the netsim: renders each game instance's view in
+# its own pane while stepping the simulation. Native-only (needs GL + dylib load).
+[[bin]]
+name = "functor-netsim-viz"
+path = "src/bin/netsim_viz.rs"
+required-features = []
+
 [dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
@@ -26,6 +33,7 @@ clap = { version = "4.5.6", features = ["derive"] }
 async-trait = "0.1.80"
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
+functor-netsim = { path = "./../functor-netsim" }
 glfw = { version = "0.56.0" }
 libloading = "0.8.3"
 tokio = { version = "1", features = ["full"] }
