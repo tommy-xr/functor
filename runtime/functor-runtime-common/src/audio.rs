@@ -168,24 +168,6 @@ impl Listener {
         }
     }
 
-    /// Left/right ear world positions `half_ear` apart along the listener's right
-    /// axis — what rodio's `SpatialSink` wants (it derives L/R balance + distance
-    /// attenuation from the emitter relative to these).
-    pub fn ears(&self, half_ear: f32) -> ([f32; 3], [f32; 3]) {
-        let right = normalize(cross(self.forward, self.up));
-        let l = [
-            self.position[0] - right[0] * half_ear,
-            self.position[1] - right[1] * half_ear,
-            self.position[2] - right[2] * half_ear,
-        ];
-        let r = [
-            self.position[0] + right[0] * half_ear,
-            self.position[1] + right[1] * half_ear,
-            self.position[2] + right[2] * half_ear,
-        ];
-        (l, r)
-    }
-
     /// The listener's right axis (unit) — +pan is toward here.
     pub fn right(&self) -> [f32; 3] {
         normalize(cross(self.forward, self.up))
@@ -219,21 +201,6 @@ impl Listener {
         };
 
         Spatialization { gain, pan }
-    }
-
-    /// A unit-distance emitter position that encodes `pan` as a direction off the
-    /// listener — lets rodio's `SpatialSink` reproduce the shared pan (its own
-    /// distance attenuation then stays ~constant, so the linear `gain` from
-    /// [`spatialize`], applied as the sink volume, drives the falloff).
-    pub fn pan_emitter(&self, pan: f32) -> [f32; 3] {
-        let right = self.right();
-        let pan = pan.clamp(-1.0, 1.0);
-        let fwd_amount = (1.0 - pan * pan).max(0.0).sqrt();
-        [
-            self.position[0] + right[0] * pan + self.forward[0] * fwd_amount,
-            self.position[1] + right[1] * pan + self.forward[1] * fwd_amount,
-            self.position[2] + right[2] * pan + self.forward[2] * fwd_amount,
-        ]
     }
 }
 
@@ -498,14 +465,6 @@ mod tests {
         assert!(l.spatialize([5.0, 0.0, 0.0]).pan < -0.9); // +X → left
         assert!(l.spatialize([-5.0, 0.0, 0.0]).pan > 0.9); // -X → right
         assert!(l.spatialize([0.0, 0.0, 5.0]).pan.abs() < 0.1); // ahead → centered
-    }
-
-    #[test]
-    fn pan_emitter_unit_distance_in_pan_direction() {
-        let l = listener_at_origin();
-        // Hard-right pan (+1) places the emitter one unit along the right axis (-X).
-        let e = l.pan_emitter(1.0);
-        assert!((e[0] + 1.0).abs() < 1e-5 && e[1].abs() < 1e-5 && e[2].abs() < 1e-5);
     }
 
     // --- soundscape reconcile ---

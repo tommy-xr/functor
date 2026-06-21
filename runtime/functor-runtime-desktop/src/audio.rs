@@ -8,59 +8,107 @@
 //! Fire-and-forget one-shots are detached and free themselves when done; a
 //! `playThen` one-shot (with a token) plays on a thread that waits for it to
 //! finish and reports the token over `completion_tx`, which `main.rs` forwards
-//! back to the game. Positioned one-shots (`Audio.playAt`) play through a
-//! `SpatialSink`, panned and attenuated relative to the listener (the render
-//! camera), which `main.rs` updates from the frame's camera each frame.
+//! back to the game. Positioned sounds (`Audio.playAt`, soundscape voices) are
+//! spread to stereo with the shared `spatialize` gain + an equal-power pan via a
+//! `Panned` source — the same model the wasm backend uses (we don't use rodio's
+//! `SpatialSink`, whose pan law is too gentle to localize).
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::time::Duration;
 
 use functor_runtime_common::audio::{AudioCommand, AudioScene, AudioSource, Listener, SceneUpdate};
 use rodio::source::Source;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, SpatialSink};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 
-/// Distance (world units) from the listener to each ear; sets how strongly
-/// spatial sounds pan left/right.
-const HALF_EAR: f32 = 0.3;
+/// Per-channel `[left, right]` gains, stored as f32 bits so the frame loop can
+/// update a live voice's pan/volume while it plays on rodio's thread.
+type PanGains = Arc<[AtomicU32; 2]>;
 
-/// A rodio sink we can either detach (fire-and-forget) or wait on to report
-/// completion. Both `Sink` and `SpatialSink` qualify, so the play/finish tail is
-/// shared across spatial and non-spatial one-shots.
-trait Playable: Send + 'static {
-    fn sleep_until_end(&self);
-    fn detach(self);
+fn store_gains(gains: &PanGains, left: f32, right: f32) {
+    gains[0].store(left.to_bits(), Ordering::Relaxed);
+    gains[1].store(right.to_bits(), Ordering::Relaxed);
 }
 
-impl Playable for Sink {
-    fn sleep_until_end(&self) {
-        Sink::sleep_until_end(self)
-    }
-    fn detach(self) {
-        Sink::detach(self)
+/// Equal-power stereo pan (matching the wasm `StereoPannerNode`): `pan` −1 → all
+/// left, +1 → all right, 0 → −3dB both. Scaled by the distance `gain`.
+fn equal_power(pan: f32, gain: f32) -> (f32, f32) {
+    let theta = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+    (gain * theta.cos(), gain * theta.sin())
+}
+
+/// A mono rodio source spread to stereo with live per-channel gains. Assumes a
+/// mono input (the demo/audio assets are mono); each input sample is emitted to
+/// both channels, scaled by that channel's current gain.
+struct Panned<I> {
+    input: I,
+    gains: PanGains,
+    // Next output channel: 0 = left, 1 = right.
+    channel: usize,
+    sample: f32,
+}
+
+impl<I> Panned<I>
+where
+    I: Source<Item = f32>,
+{
+    fn new(input: I, gains: PanGains) -> Panned<I> {
+        Panned {
+            input,
+            gains,
+            channel: 0,
+            sample: 0.0,
+        }
     }
 }
 
-impl Playable for SpatialSink {
-    fn sleep_until_end(&self) {
-        SpatialSink::sleep_until_end(self)
+impl<I> Iterator for Panned<I>
+where
+    I: Source<Item = f32>,
+{
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.channel == 0 {
+            self.sample = self.input.next()?;
+            self.channel = 1;
+            Some(self.sample * f32::from_bits(self.gains[0].load(Ordering::Relaxed)))
+        } else {
+            self.channel = 0;
+            Some(self.sample * f32::from_bits(self.gains[1].load(Ordering::Relaxed)))
+        }
     }
-    fn detach(self) {
-        SpatialSink::detach(self)
+}
+
+impl<I> Source for Panned<I>
+where
+    I: Source<Item = f32>,
+{
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> u16 {
+        2
+    }
+    fn sample_rate(&self) -> u32 {
+        self.input.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
     }
 }
 
 /// A live looping voice in the soundscape: the rodio sink plus the last-applied
-/// source, so the reconciler can diff gain/position changes against it.
+/// source (so the reconciler can diff changes), and — for a positioned voice —
+/// the pan gains the frame loop updates as the listener moves.
 struct LoopVoice {
     source: AudioSource,
-    sink: VoiceSink,
-}
-
-enum VoiceSink {
-    Plain(Sink),
-    Spatial(SpatialSink),
+    sink: Sink,
+    pan_gains: Option<PanGains>,
 }
 
 /// Holds the audio device.
@@ -129,23 +177,12 @@ impl AudioPlayer {
     /// the camera moves around it — even on frames where its source didn't change.
     pub fn respatialize_voices(&self) {
         for voice in self.voices.values() {
-            if let (VoiceSink::Spatial(sink), Some(pos)) = (&voice.sink, voice.source.position) {
-                self.apply_spatial(sink, pos, voice.source.gain);
+            if let (Some(gains), Some(pos)) = (&voice.pan_gains, voice.source.position) {
+                let s = self.listener.spatialize(pos);
+                let (l, r) = equal_power(s.pan, voice.source.gain * s.gain);
+                store_gains(gains, l, r);
             }
         }
-    }
-
-    /// Apply the shared spatialization to a `SpatialSink`: rodio provides the pan
-    /// (we place the emitter one unit away in the pan direction, so rodio's own
-    /// distance attenuation stays ~constant), and the shared linear `gain` drives
-    /// the falloff via the sink volume — identical to the wasm backend.
-    fn apply_spatial(&self, sink: &SpatialSink, world_pos: [f32; 3], base_gain: f32) {
-        let s = self.listener.spatialize(world_pos);
-        let (left, right) = self.listener.ears(HALF_EAR);
-        sink.set_left_ear_position(left);
-        sink.set_right_ear_position(right);
-        sink.set_emitter_position(self.listener.pan_emitter(s.pan));
-        sink.set_volume(base_gain * s.gain);
     }
 
     fn spawn_voice(&mut self, src: AudioSource) {
@@ -154,39 +191,40 @@ impl AudioPlayer {
         };
         // Buffered so the decoded samples can be cloned and looped forever.
         let looped = source.buffered().repeat_infinite();
-        let sink = match src.position {
-            None => match Sink::try_new(&self.handle) {
-                Ok(sink) => {
-                    sink.set_volume(src.gain);
-                    sink.append(looped);
-                    VoiceSink::Plain(sink)
-                }
-                Err(e) => {
-                    eprintln!("[audio] sink: {e}");
-                    return;
-                }
-            },
-            Some(pos) => {
-                let (left, right) = self.listener.ears(HALF_EAR);
-                match SpatialSink::try_new(&self.handle, pos, left, right) {
-                    Ok(sink) => {
-                        sink.append(looped);
-                        self.apply_spatial(&sink, pos, src.gain);
-                        VoiceSink::Spatial(sink)
-                    }
-                    Err(e) => {
-                        eprintln!("[audio] spatial sink: {e}");
-                        return;
-                    }
-                }
+        let sink = match Sink::try_new(&self.handle) {
+            Ok(sink) => sink,
+            Err(e) => {
+                eprintln!("[audio] sink: {e}");
+                return;
             }
         };
-        self.voices.insert(src.key.clone(), LoopVoice { source: src, sink });
+        let pan_gains = match src.position {
+            None => {
+                sink.set_volume(src.gain);
+                sink.append(looped);
+                None
+            }
+            Some(pos) => {
+                let s = self.listener.spatialize(pos);
+                let (l, r) = equal_power(s.pan, src.gain * s.gain);
+                let gains: PanGains = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+                store_gains(&gains, l, r);
+                sink.append(Panned::new(looped.convert_samples::<f32>(), gains.clone()));
+                Some(gains)
+            }
+        };
+        self.voices.insert(
+            src.key.clone(),
+            LoopVoice {
+                source: src,
+                sink,
+                pan_gains,
+            },
+        );
     }
 
     fn update_voice(&mut self, src: AudioSource) {
-        // A flip in spatial-ness (None <-> Some) is a different sink type, so
-        // respawn rather than mutate in place.
+        // A flip in spatial-ness (None <-> Some) is a different graph, so respawn.
         let spatial_changed = self
             .voices
             .get(&src.key)
@@ -200,8 +238,8 @@ impl AudioPlayer {
         if let Some(voice) = self.voices.get_mut(&src.key) {
             // Non-spatial: apply the gain directly. Spatial voices are re-applied
             // each frame by `respatialize_voices` from the stored source below.
-            if let VoiceSink::Plain(sink) = &voice.sink {
-                sink.set_volume(src.gain);
+            if voice.pan_gains.is_none() {
+                voice.sink.set_volume(src.gain);
             }
             voice.source = src;
         }
@@ -215,34 +253,36 @@ impl AudioPlayer {
             gain,
             position,
         } = cmd;
+        let Some(source) = self.decode(&sound) else {
+            return;
+        };
+        let sink = match Sink::try_new(&self.handle) {
+            Ok(sink) => sink,
+            Err(e) => {
+                eprintln!("[audio] sink: {e}");
+                return;
+            }
+        };
         match position {
-            None => match Sink::try_new(&self.handle) {
-                Ok(sink) => {
-                    if self.append(&sink, &sound, gain) {
-                        self.finish(sink, token);
-                    }
-                }
-                Err(e) => eprintln!("[audio] sink: {e}"),
-            },
+            None => {
+                sink.set_volume(gain);
+                sink.append(source);
+            }
             Some(pos) => {
-                let (left, right) = self.listener.ears(HALF_EAR);
-                match SpatialSink::try_new(&self.handle, pos, left, right) {
-                    Ok(sink) => {
-                        if self.append_spatial(&sink, &sound) {
-                            self.apply_spatial(&sink, pos, gain);
-                            self.finish(sink, token);
-                        }
-                    }
-                    Err(e) => eprintln!("[audio] spatial sink: {e}"),
-                }
+                let s = self.listener.spatialize(pos);
+                let (l, r) = equal_power(s.pan, gain * s.gain);
+                let gains: PanGains = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+                store_gains(&gains, l, r);
+                sink.append(Panned::new(source.convert_samples::<f32>(), gains));
             }
         }
+        self.finish(sink, token);
     }
 
     /// Either detach the sink (fire-and-forget) or, for a `playThen` one-shot,
     /// wait for it on its own thread (so the frame loop never blocks) and report
     /// the token back to the main loop.
-    fn finish<S: Playable>(&self, sink: S, token: Option<u64>) {
+    fn finish(&self, sink: Sink, token: Option<u64>) {
         match token {
             None => sink.detach(),
             Some(tok) => {
@@ -252,27 +292,6 @@ impl AudioPlayer {
                     let _ = tx.send(tok);
                 });
             }
-        }
-    }
-
-    fn append(&self, sink: &Sink, path: &str, gain: f32) -> bool {
-        match self.decode(path) {
-            Some(source) => {
-                sink.set_volume(gain);
-                sink.append(source);
-                true
-            }
-            None => false,
-        }
-    }
-
-    fn append_spatial(&self, sink: &SpatialSink, path: &str) -> bool {
-        match self.decode(path) {
-            Some(source) => {
-                sink.append(source);
-                true
-            }
-            None => false,
         }
     }
 
