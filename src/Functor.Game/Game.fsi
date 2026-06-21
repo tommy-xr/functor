@@ -10,6 +10,8 @@ type SubFn<'model, 'msg> = 'model -> Sub<'msg>
 
 type SoundScapeFn<'model> = 'model -> AudioScene
 
+type UiFn<'model> = 'model -> View
+
 type Game<'model, 'msg>
 
 module GameBuilder = 
@@ -29,6 +31,8 @@ module GameBuilder =
 
     val draw3d: ('model -> Time.FrameTime -> Graphics.Frame) -> Game<'model, 'msg> -> Game<'model, 'msg>
 
+    val ui: UiFn<'model> -> Game<'model, 'msg> -> Game<'model, 'msg>
+
     val soundScape: SoundScapeFn<'model> -> Game<'model, 'msg> -> Game<'model, 'msg>
 
 
@@ -40,4 +44,5 @@ module GameRunner =
     val subscriptions: Game<'model, 'msg> -> 'model -> Sub<'msg>
     val input: Game<'model, 'msg> -> 'model -> Input.t -> ('model * effect<'msg>)
     val draw3d: Game<'model, 'msg> -> 'model -> Time.FrameTime -> Graphics.Frame
+    val ui: Game<'model, 'msg> -> 'model -> View
     val soundScape: Game<'model, 'msg> -> 'model -> AudioScene

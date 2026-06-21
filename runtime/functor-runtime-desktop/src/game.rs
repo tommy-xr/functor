@@ -1,3 +1,4 @@
+use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 
 pub trait Game {
@@ -15,6 +16,10 @@ pub trait Game {
     fn mouse_wheel(&mut self, delta: i32);
 
     fn render(&mut self, frame_time: FrameTime) -> Frame;
+
+    /// The game's declarative UI tree (`ui model`), via the dylib's `emit_ui`
+    /// export. The host lowers it to a text overlay drawn on top of the frame.
+    fn ui(&self) -> View;
 
     /// A pretty-printed (Rust `Debug`) view of the live game model, for
     /// introspection. Produced by the game dylib's `emit_state_debug` export;

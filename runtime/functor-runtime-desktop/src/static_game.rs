@@ -21,6 +21,14 @@ impl Game for StaticGame {
         }
     }
 
+    fn ui(&self) -> functor_runtime_common::ui::View {
+        unsafe {
+            let ui_func: Symbol<fn() -> functor_runtime_common::ui::View> =
+                self.library.get(b"emit_ui").unwrap();
+            ui_func()
+        }
+    }
+
     fn tick(&mut self, frame_time: FrameTime) {
         unsafe {
             let tick_func: Symbol<fn(FrameTime)> = self.library.get(b"tick").unwrap();

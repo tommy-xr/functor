@@ -269,4 +269,15 @@ let init (_args: array<string>) =
     |> GameBuilder.tick tick
     |> GameBuilder.init (Effect.wrapped MovePaddle1)
     |> GameBuilder.subscriptions subscriptions
+    // A small HUD, declared as a pure function of the model. The runtime lowers
+    // this `View` tree to a text overlay drawn on top of the 3D frame.
+    |> GameBuilder.ui (fun model ->
+        Ui.panel (Ui.topLeft ()) (
+            Ui.column [|
+                Ui.text "functor · hello"
+                Ui.textColor (Color.rgb 1.0f 0.85f 0.4f)
+                    (sprintf "eye  %.1f %.1f %.1f" model.eye.x model.eye.y model.eye.z)
+                Ui.text (sprintf "look  yaw %.0f  pitch %.0f" model.yaw model.pitch)
+                Ui.text (sprintf "frame %d" model.counter)
+            |]))
     |> Runtime.runGame

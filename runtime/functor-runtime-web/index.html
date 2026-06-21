@@ -14,6 +14,7 @@
 
       import init1, {
         test_render_wasm,
+        emit_ui_wasm,
         tick_wasm,
         key_event_wasm,
         mouse_move_wasm,
@@ -98,6 +99,8 @@
         window.game.render = (frameTime) => {
             return test_render_wasm(frameTime);
         };
+
+        window.game.ui = () => emit_ui_wasm();
 
         window.game.tick = (frameTime) => {
           return tick_wasm(frameTime);

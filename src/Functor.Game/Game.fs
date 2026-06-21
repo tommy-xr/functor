@@ -10,6 +10,8 @@ type SubFn<'model, 'msg> = 'model -> Sub<'msg>
 
 type SoundScapeFn<'model> = 'model -> AudioScene
 
+type UiFn<'model> = 'model -> View
+
 type Game<'model, 'msg> = {
     initialState: 'model
     init: effect<'msg>
@@ -18,6 +20,7 @@ type Game<'model, 'msg> = {
     update: UpdateFn<'model, 'msg>
     subscriptions: SubFn<'model, 'msg>
     draw3d: 'model -> Time.FrameTime -> Graphics.Frame
+    ui: UiFn<'model>
     soundScape: SoundScapeFn<'model>
     }
 
@@ -32,8 +35,9 @@ module GameBuilder =
         let draw3d model frametime = Graphics.Frame.create (Graphics.Camera.initial ()) (Graphics.Scene3D.cube())
         let input model input = (model, Effect.none ())
         let subscriptions model = Sub.none ()
+        let ui model = Ui.none ()
         let soundScape model = AudioScene.empty ()
-        { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; subscriptions = subscriptions; draw3d = draw3d; soundScape = soundScape}
+        { initialState = initialState; init = Effect.none (); update = update; tick = tick; input = input; subscriptions = subscriptions; draw3d = draw3d; ui = ui; soundScape = soundScape}
 
     /// Set the startup effect, run once when the game first loads. Unlike 'tick'
     /// effects, this fires before the first frame and is *not* re-run across a
@@ -49,6 +53,11 @@ module GameBuilder =
 
     let draw3d<'model, 'msg> (f: 'model -> Time.FrameTime -> Graphics.Frame) (game: Game<'model, 'msg>) =
         { game with draw3d = f }
+
+    /// Declare the 2D UI: a pure function of the model returning a declarative
+    /// `View` tree, drawn as a text overlay on top of `draw3d`'s frame.
+    let ui<'model, 'msg> (f: UiFn<'model>) (game: Game<'model, 'msg>) =
+        { game with ui = f }
 
     let tick<'model, 'msg> (f: TickFn<'model, 'msg>) (game: Game<'model, 'msg>) =
         { game with tick = f}
@@ -86,6 +95,9 @@ module GameRunner =
 
     let draw3d<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model) (tick: Time.FrameTime): Graphics.Frame =
         game.draw3d model tick
+
+    let ui<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model): View =
+        game.ui model
 
     let soundScape<'model, 'msg> (game: Game<'model, 'msg>) (model: 'model): AudioScene =
         game.soundScape model
