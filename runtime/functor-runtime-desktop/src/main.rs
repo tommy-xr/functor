@@ -262,6 +262,12 @@ pub async fn main() {
             (gl, "#version 410", window, glfw, events)
         };
 
+        // Share the GL context via Arc so the egui text-overlay painter can keep
+        // its own reference (egui_glow::Painter requires Arc<glow::Context>). The
+        // rest of the runtime keeps using `&gl`, which derefs through the Arc.
+        let gl = std::sync::Arc::new(gl);
+        let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
+
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
         gl.enable(glow::DEPTH_TEST);
@@ -513,6 +519,20 @@ pub async fn main() {
                 time.clone(),
                 viewport,
                 args.debug_render.into(),
+            );
+
+            // 2D text overlay on top of the 3D frame. Drawn before capture so it
+            // appears in --capture-frame PNGs. Hardcoded label for now; a
+            // declarative `model -> View` path lands in a later PR.
+            text_overlay.draw(
+                fb_width as u32,
+                fb_height as u32,
+                1.0,
+                &[functor_runtime_common::ui::Label::new(
+                    "functor · egui overlay",
+                    12.0,
+                    12.0,
+                )],
             );
 
             if let Some(capture_path) = &args.capture_frame {
