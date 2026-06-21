@@ -26,6 +26,34 @@ pub use functor_runtime_common::net::LinkProfile as Link;
 
 pub type InstanceId = usize;
 
+/// Whether an instance is acting as a server (another instance connected to a
+/// bind it listens on) or a plain client. Derived from the live routing tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientRole {
+    Server,
+    Client,
+}
+
+impl ClientRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClientRole::Server => "server",
+            ClientRole::Client => "client",
+        }
+    }
+}
+
+/// A snapshot of one instance's network-facing state, for visualizers/telemetry.
+pub struct ClientInfo {
+    pub id: InstanceId,
+    pub node: NodeId,
+    pub role: ClientRole,
+    /// Active connections this instance currently holds.
+    pub connections: usize,
+    /// In-flight packets addressed to this instance (inbound, not yet delivered).
+    pub inbound_in_flight: usize,
+}
+
 /// The authority (host:port) of an endpoint, ignoring scheme and path, so a
 /// client url ("ws://127.0.0.1:9001/echo") matches a server bind ("127.0.0.1:9001").
 fn authority(endpoint: &str) -> &str {
@@ -201,6 +229,34 @@ impl NetSim {
 
     pub fn is_empty(&self) -> bool {
         self.instances.is_empty()
+    }
+
+    /// The current simulation frame (number of [`step`](Self::step)s taken).
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
+
+    /// Total packets in flight across the whole virtual network right now.
+    pub fn in_flight(&self) -> usize {
+        self.vnet.in_flight_len()
+    }
+
+    /// Per-instance network-facing snapshot (role, node, live connections,
+    /// inbound traffic) — for a visualizer overlay or a test assertion.
+    pub fn client_info(&self, id: InstanceId) -> ClientInfo {
+        let node = self.instances[id].node;
+        let role = if self.listeners.values().any(|(lid, _)| *lid == id) {
+            ClientRole::Server
+        } else {
+            ClientRole::Client
+        };
+        ClientInfo {
+            id,
+            node,
+            role,
+            connections: self.instances[id].keys.len(),
+            inbound_in_flight: self.vnet.in_flight_to(node),
+        }
     }
 
     /// The frame (camera + scene) an instance would render at this time — for a

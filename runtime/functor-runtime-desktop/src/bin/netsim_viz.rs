@@ -23,8 +23,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use functor_netsim::NetSim;
+use functor_netsim::{ClientRole, NetSim};
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::ui::{Label, TextOverlay};
 use functor_runtime_common::{DebugRenderMode, FrameTime, SceneContext, Viewport};
 use glfw::Context;
 use glow::*;
@@ -116,19 +117,35 @@ fn main() {
         window.make_current();
         window.set_key_polling(true);
 
-        let gl = glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _);
+        // Arc so the egui overlay painter can share the same GL context.
+        let gl =
+            Arc::new(glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _));
         gl.enable(glow::DEPTH_TEST);
 
         let asset_cache = Arc::new(AssetCache::new());
         let scene_context = SceneContext::new();
         let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
+        // Per-client text overlay (id/role/connections/in-flight/fps) on each pane.
+        let mut overlay = TextOverlay::new(gl.clone());
 
         let start = Instant::now();
         let mut paused = false;
         let mut step_once = false;
         let mut frames: u32 = 0;
+        // Smoothed viewer frame rate (EMA), shown in each pane's overlay.
+        let mut last_frame = Instant::now();
+        let mut fps = 0.0f32;
 
         while !window.should_close() {
+            // Smoothed viewer FPS for the overlay (EMA over instantaneous dt).
+            let frame_start = Instant::now();
+            let dt = frame_start.duration_since(last_frame).as_secs_f32();
+            last_frame = frame_start;
+            if dt > 0.0 {
+                let inst = 1.0 / dt;
+                fps = if fps == 0.0 { inst } else { fps * 0.9 + inst * 0.1 };
+            }
+
             glfw.poll_events();
             for (_, event) in glfw::flush_messages(&events) {
                 if let glfw::WindowEvent::Key(key, _, glfw::Action::Press, _) = event {
@@ -183,6 +200,45 @@ fn main() {
                     DebugRenderMode::Default,
                 );
             }
+
+            // Per-client info overlay on top of all panes, in a single egui pass.
+            // Each pane's labels are offset to its column's x origin.
+            let frame_no = sim.frame();
+            let mut labels: Vec<Label> = Vec::new();
+            for i in 0..panes {
+                let info = sim.client_info(i);
+                let x = (i as i32 * (pane_w + gap)).max(0) as f32 + 8.0;
+                let role_color = match info.role {
+                    ClientRole::Server => [120, 230, 140],
+                    ClientRole::Client => [180, 200, 255],
+                };
+                let dim = [170, 170, 185];
+                labels.push(
+                    Label::new(
+                        format!("#{} {} · {}", info.id, info.role.as_str(), paths[i]),
+                        x,
+                        8.0,
+                    )
+                    .with_color(role_color),
+                );
+                labels.push(
+                    Label::new(
+                        format!("node {} · {} conn", info.node, info.connections),
+                        x,
+                        26.0,
+                    )
+                    .with_color(dim),
+                );
+                labels.push(
+                    Label::new(format!("inbound {}", info.inbound_in_flight), x, 42.0)
+                        .with_color(dim),
+                );
+                labels.push(
+                    Label::new(format!("{:.0} fps · frame {}", fps, frame_no), x, 58.0)
+                        .with_color(dim),
+                );
+            }
+            overlay.draw(fb_w as u32, fb_h as u32, 1.0, &labels);
 
             // Snapshot the whole window once we've stepped far enough, then exit.
             frames += 1;

@@ -105,6 +105,18 @@ impl VirtualNet {
         self.now
     }
 
+    /// Number of packets currently in flight (sent but not yet delivered) —
+    /// a cheap measure of live network activity, for visualizers/telemetry.
+    pub fn in_flight_len(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    /// Number of in-flight packets whose destination is `node` (inbound traffic
+    /// not yet delivered to it).
+    pub fn in_flight_to(&self, node: NodeId) -> usize {
+        self.in_flight.iter().filter(|p| p.dest == node).count()
+    }
+
     /// Register a new node (game instance) and return its id.
     pub fn add_node(&mut self) -> NodeId {
         let id = self.next_node;
