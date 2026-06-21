@@ -212,6 +212,14 @@ pub fn render_shadow_pass(
     unsafe {
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(shadow_map.fbo));
         gl.viewport(0, 0, shadow_map.size as i32, shadow_map.size as i32);
+        // Disable the scissor test for the duration of the pass: the forward pass
+        // leaves SCISSOR_TEST enabled (clipped to the window's viewport pane), and
+        // since the shadow pass runs first each frame it would otherwise inherit
+        // that rectangle — clipping the clear and the caster geometry to a
+        // window-sized corner of the (larger) shadow map and slicing off shadows
+        // that project past it. The shadow FBO owns the whole texture, so no
+        // scissoring is wanted here; the forward pass re-enables it afterward.
+        gl.disable(glow::SCISSOR_TEST);
         // Clear the depth-color buffer to 1.0 (far) so untouched texels never
         // shadow anything.
         gl.clear_color(1.0, 1.0, 1.0, 1.0);
