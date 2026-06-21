@@ -21,7 +21,7 @@ required-features = []
 [dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
-glow = "0.13.1"
+glow = "0.16"
 cgmath = "0.18.0"
 image = "0.25"
 serde = { version = "1", features = ["derive"] }

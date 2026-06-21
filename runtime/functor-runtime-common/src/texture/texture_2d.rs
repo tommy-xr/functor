@@ -82,7 +82,7 @@ impl RenderableAsset for TextureData {
                 0,
                 format,
                 glow::UNSIGNED_BYTE,
-                Some(&self.bytes),
+                glow::PixelUnpackData::Slice(Some(&self.bytes)),
             );
 
             gl.bind_texture(glow::TEXTURE_2D, None);
