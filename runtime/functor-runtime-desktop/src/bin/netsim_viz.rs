@@ -55,7 +55,7 @@ unsafe fn encode_framebuffer_png(gl: &glow::Context, width: u32, height: u32) ->
         height as i32,
         glow::RGBA,
         glow::UNSIGNED_BYTE,
-        glow::PixelPackData::Slice(&mut pixels),
+        glow::PixelPackData::Slice(Some(&mut pixels)),
     );
     let mut flipped = vec![0u8; pixels.len()];
     for row in 0..height as usize {
