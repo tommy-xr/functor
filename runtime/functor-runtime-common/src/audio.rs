@@ -168,24 +168,56 @@ impl Listener {
         }
     }
 
-    /// Left/right ear world positions `half_ear` apart along the listener's right
-    /// axis — what rodio's `SpatialSink` wants (it derives L/R balance + distance
-    /// attenuation from the emitter relative to these).
-    pub fn ears(&self, half_ear: f32) -> ([f32; 3], [f32; 3]) {
-        let right = normalize(cross(self.forward, self.up));
-        let l = [
-            self.position[0] - right[0] * half_ear,
-            self.position[1] - right[1] * half_ear,
-            self.position[2] - right[2] * half_ear,
-        ];
-        let r = [
-            self.position[0] + right[0] * half_ear,
-            self.position[1] + right[1] * half_ear,
-            self.position[2] + right[2] * half_ear,
-        ];
-        (l, r)
+    /// The listener's right axis (unit) — +pan is toward here.
+    pub fn right(&self) -> [f32; 3] {
+        normalize(cross(self.forward, self.up))
+    }
+
+    /// The shared spatialization for an emitter at `position`: a distance `gain`
+    /// and a stereo `pan`, used identically by both backends so attenuation
+    /// matches (each backend only applies these — it doesn't run its own distance
+    /// model). See [`Spatialization`].
+    pub fn spatialize(&self, position: [f32; 3]) -> Spatialization {
+        let to = sub(position, self.position);
+        let dist = length(to);
+
+        // Rolloff: full gain within `min`, silent past `max`. The linear factor is
+        // squared so the falloff is steep — a positioned voice fades to near-
+        // nothing well before `max`, instead of lingering across the whole scene.
+        let gain = if dist <= SPATIAL_MIN_DISTANCE {
+            1.0
+        } else if dist >= SPATIAL_MAX_DISTANCE {
+            0.0
+        } else {
+            let t = 1.0 - (dist - SPATIAL_MIN_DISTANCE) / (SPATIAL_MAX_DISTANCE - SPATIAL_MIN_DISTANCE);
+            t * t
+        };
+
+        // Pan = how far the emitter is to the listener's right (−1 left, +1 right).
+        let pan = if dist > 1e-6 {
+            dot(normalize(to), self.right()).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+
+        Spatialization { gain, pan }
     }
 }
+
+/// Distance attenuation (`gain`, linear 0..1) and stereo `pan` (−1 left .. +1
+/// right) for a positioned voice, relative to the listener. Computed once in the
+/// shared core so native (rodio) and wasm (Web Audio) attenuate identically.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spatialization {
+    pub gain: f32,
+    pub pan: f32,
+}
+
+/// Distances (world units) for the rolloff: at/below `MIN` a positioned voice is
+/// at full gain; at/above `MAX` it's silent. The curve between is steep
+/// (quadratic), so most of the audible range sits well inside `MAX`.
+pub const SPATIAL_MIN_DISTANCE: f32 = 1.0;
+pub const SPATIAL_MAX_DISTANCE: f32 = 10.0;
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -206,6 +238,14 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
     } else {
         [0.0, 0.0, 1.0]
     }
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn length(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 // --- Soundscape: the `Sub`-shaped half (continuous, reconciled voices) ----------
@@ -393,6 +433,38 @@ mod tests {
     #[test]
     fn take_completion_unknown_token_is_none() {
         assert_eq!(take_completion::<i32>(999_999), None);
+    }
+
+    // --- spatialization (shared distance gain + pan) ---
+
+    fn listener_at_origin() -> Listener {
+        // At origin, looking down +Z, up +Y → right axis is +X.
+        Listener::from_eye_target_up([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    }
+
+    #[test]
+    fn spatialize_gain_by_distance() {
+        let l = listener_at_origin();
+        // Inside min distance: full gain.
+        assert_eq!(l.spatialize([0.0, 0.0, 0.5]).gain, 1.0);
+        // Past max distance: silent.
+        assert_eq!(l.spatialize([0.0, 0.0, 100.0]).gain, 0.0);
+        // Halfway between min and max the linear factor is 0.5, squared → 0.25.
+        let mid = (SPATIAL_MIN_DISTANCE + SPATIAL_MAX_DISTANCE) / 2.0;
+        let g = l.spatialize([0.0, 0.0, mid]).gain;
+        assert!((g - 0.25).abs() < 1e-5, "gain {g} should be ~0.25 at the midpoint");
+        // Monotonically decreasing with distance.
+        assert!(l.spatialize([0.0, 0.0, 3.0]).gain > l.spatialize([0.0, 0.0, 6.0]).gain);
+    }
+
+    #[test]
+    fn spatialize_pans_by_side() {
+        let l = listener_at_origin();
+        // Looking down +Z with +Y up, the listener's right axis is -X (matching
+        // the existing native `ears`), so +X is on the left and -X on the right.
+        assert!(l.spatialize([5.0, 0.0, 0.0]).pan < -0.9); // +X → left
+        assert!(l.spatialize([-5.0, 0.0, 0.0]).pan > 0.9); // -X → right
+        assert!(l.spatialize([0.0, 0.0, 5.0]).pan.abs() < 0.1); // ahead → centered
     }
 
     // --- soundscape reconcile ---

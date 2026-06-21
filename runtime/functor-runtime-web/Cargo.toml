@@ -19,7 +19,7 @@ serde_json = "1.0"
 
 [dependencies.web-sys]
 version = "0.3.4"
-features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Location', 'Performance', 'PerformanceTiming', 'Document', 'Element', 'Request', 'RequestInit', 'Response', 'Headers', 'AudioContext', 'BaseAudioContext', 'AudioBuffer', 'AudioBufferSourceNode', 'AudioDestinationNode', 'AudioNode', 'AudioParam', 'GainNode', 'PannerNode', 'AudioListener', 'WebSocket', 'MessageEvent', 'CloseEvent', 'ErrorEvent']
+features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Location', 'Performance', 'PerformanceTiming', 'Document', 'Element', 'Request', 'RequestInit', 'Response', 'Headers', 'AudioContext', 'BaseAudioContext', 'AudioBuffer', 'AudioBufferSourceNode', 'AudioDestinationNode', 'AudioNode', 'AudioParam', 'GainNode', 'StereoPannerNode', 'WebSocket', 'MessageEvent', 'CloseEvent', 'ErrorEvent']
 
 [profile.release]
 codegen-units = 1

@@ -228,6 +228,23 @@ fn audio_context() -> Option<web_sys::AudioContext> {
     })
 }
 
+thread_local! {
+    // Where the player hears from (the render camera), updated each frame. Both
+    // one-shots and looping voices spatialize against this — there's no Web Audio
+    // AudioListener (its position API is deprecated/ignored in modern browsers);
+    // we compute gain + pan ourselves so it always tracks the camera.
+    static CURRENT_LISTENER: std::cell::Cell<functor_runtime_common::audio::Listener> =
+        std::cell::Cell::new(functor_runtime_common::audio::Listener {
+            position: [0.0, 0.0, 0.0],
+            forward: [0.0, 0.0, 1.0],
+            up: [0.0, 1.0, 0.0],
+        });
+}
+
+fn current_listener() -> functor_runtime_common::audio::Listener {
+    CURRENT_LISTENER.with(|l| l.get())
+}
+
 /// Drain the game's queued audio commands and play each via Web Audio. Mirrors
 /// `dispatch_net_commands`; called each frame after `tick`.
 fn dispatch_audio_commands() {
@@ -271,10 +288,10 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
         None => return,
     };
 
-    // source -> [panner] -> gain -> speakers. A positioned one-shot inserts a
-    // PannerNode at its world position; the AudioContext listener (set from the
-    // camera each frame) gives Web Audio the same pan/attenuation the native
-    // SpatialSink produces. The audio graph keeps the nodes alive until the
+    // source -> [stereo panner] -> gain -> speakers. A positioned one-shot routes
+    // through a StereoPannerNode; both its gain and pan come from the shared
+    // `spatialize` (relative to the current listener), so native and wasm
+    // attenuate identically. The audio graph keeps the nodes alive until the
     // source finishes, so the Rust bindings can drop here.
     let source = match ctx.create_buffer_source() {
         Ok(s) => s,
@@ -282,28 +299,41 @@ async fn play_one_shot(cmd: functor_runtime_common::audio::AudioCommand) {
     };
     source.set_buffer(Some(&buffer));
     if let Ok(gain_node) = ctx.create_gain() {
-        gain_node.gain().set_value(gain);
         let _ = gain_node.connect_with_audio_node(&ctx.destination());
-
-        match position {
-            Some([x, y, z]) => match ctx.create_panner() {
-                Ok(panner) => {
-                    panner.position_x().set_value(x);
-                    panner.position_y().set_value(y);
-                    panner.position_z().set_value(z);
-                    let _ = panner.connect_with_audio_node(&gain_node);
-                    let _ = source.connect_with_audio_node(&panner);
-                }
-                Err(_) => {
-                    let _ = source.connect_with_audio_node(&gain_node);
-                }
-            },
-            None => {
-                let _ = source.connect_with_audio_node(&gain_node);
-            }
-        }
+        let head = spatial_head(&ctx, &gain_node, gain, position);
+        let _ = source.connect_with_audio_node(&head);
     }
     let _ = source.start();
+}
+
+/// Wire the gain (and, for a positioned voice, a StereoPannerNode) for a voice,
+/// returning the node a fresh source should connect into. Sets the gain/pan from
+/// the shared `spatialize` so the distance falloff matches the native backend.
+fn spatial_head(
+    ctx: &web_sys::AudioContext,
+    gain_node: &web_sys::GainNode,
+    base_gain: f32,
+    position: Option<[f32; 3]>,
+) -> web_sys::AudioNode {
+    use wasm_bindgen::JsCast;
+    match position {
+        Some(pos) => {
+            let s = current_listener().spatialize(pos);
+            gain_node.gain().set_value(base_gain * s.gain);
+            match ctx.create_stereo_panner() {
+                Ok(panner) => {
+                    panner.pan().set_value(s.pan);
+                    let _ = panner.connect_with_audio_node(gain_node);
+                    panner.unchecked_into()
+                }
+                Err(_) => gain_node.clone().unchecked_into(),
+            }
+        }
+        None => {
+            gain_node.gain().set_value(base_gain);
+            gain_node.clone().unchecked_into()
+        }
+    }
 }
 
 /// Fetch + decode a sound to an `AudioBuffer`, caching by path so repeat uses
@@ -347,16 +377,16 @@ async fn decode_buffer(
 
 // --- Soundscape: continuous looping voices, reconciled by key each frame. -------
 //
-// The Web Audio counterpart of the native rodio voice registry. Unlike the
-// rodio path (where we re-aim the ears every frame), Web Audio does the spatial
-// math itself: we set the AudioContext listener from the camera each frame, and
-// each positioned voice keeps a PannerNode at its world position — the browser
-// pans/attenuates relative to the listener automatically.
+// The Web Audio counterpart of the native rodio voice registry. Each positioned
+// voice routes through a StereoPannerNode; both its gain and pan come from the
+// shared `spatialize` (computed against CURRENT_LISTENER) and are re-applied each
+// frame, so the voice pans/attenuates as the camera moves — the same linear
+// falloff the native backend uses (no Web Audio PannerNode / AudioListener).
 
 struct WebVoice {
     source: functor_runtime_common::audio::AudioSource, // last applied (for diffing)
     gain: web_sys::GainNode,
-    panner: Option<web_sys::PannerNode>,
+    panner: Option<web_sys::StereoPannerNode>,
     // The looping source node, attached once its buffer decodes (async). Shared
     // so the decode task can install it and `stop` can reach it.
     node: Rc<RefCell<Option<web_sys::AudioBufferSourceNode>>>,
@@ -370,24 +400,15 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
 }
 
-/// Set the AudioContext listener from the frame camera (position + orientation),
-/// so spatial voices pan relative to where the player is looking.
-fn set_audio_listener(ctx: &web_sys::AudioContext, camera: &functor_runtime_common::Camera) {
-    let l = functor_runtime_common::audio::Listener::from_eye_target_up(
-        camera.eye,
-        camera.target,
-        camera.up,
-    );
-    let listener = ctx.listener();
-    listener.set_position(l.position[0] as f64, l.position[1] as f64, l.position[2] as f64);
-    listener.set_orientation(
-        l.forward[0] as f64,
-        l.forward[1] as f64,
-        l.forward[2] as f64,
-        l.up[0] as f64,
-        l.up[1] as f64,
-        l.up[2] as f64,
-    );
+/// Re-apply the shared spatialization (gain + pan) to a live positioned voice for
+/// the current listener. No-op for non-spatial beds (their gain doesn't depend on
+/// the listener).
+fn respatialize_voice(voice: &WebVoice) {
+    if let (Some(panner), Some(pos)) = (&voice.panner, voice.source.position) {
+        let s = current_listener().spatialize(pos);
+        voice.gain.gain().set_value(voice.source.gain * s.gain);
+        panner.pan().set_value(s.pan);
+    }
 }
 
 /// Aim the listener from the frame camera and reconcile the desired soundscape
@@ -395,6 +416,17 @@ fn set_audio_listener(ctx: &web_sys::AudioContext, camera: &functor_runtime_comm
 /// changed gain/position in place. Skips entirely (and never spins up an
 /// AudioContext) when nothing is playing and nothing is wanted.
 fn update_soundscape(camera: &functor_runtime_common::Camera) {
+    // Track the listener from the camera every frame (cheap, no AudioContext
+    // needed), so positioned one-shots (`playAt`) spatialize correctly even for a
+    // game with no soundscape.
+    CURRENT_LISTENER.with(|l| {
+        l.set(functor_runtime_common::audio::Listener::from_eye_target_up(
+            camera.eye,
+            camera.target,
+            camera.up,
+        ))
+    });
+
     let json = game_audio_scene_json()
         .as_string()
         .unwrap_or_else(|| "{\"sources\":[]}".to_string());
@@ -410,7 +442,6 @@ fn update_soundscape(camera: &functor_runtime_common::Camera) {
     // by a gesture like one-shots are, so resume best-effort each frame; it takes
     // effect once the user has interacted with the page (canvas keypress/click).
     let _ = ctx.resume();
-    set_audio_listener(&ctx, camera);
 
     let scene: functor_runtime_common::audio::AudioScene = match serde_json::from_str(&json) {
         Ok(s) => s,
@@ -434,6 +465,13 @@ fn update_soundscape(camera: &functor_runtime_common::Camera) {
             SceneUpdate::Stop(key) => stop_voice(&key),
         }
     }
+
+    // Re-apply spatialization to every live positioned voice for the (moved) listener.
+    SOUNDSCAPE.with(|s| {
+        for v in s.borrow().values() {
+            respatialize_voice(v);
+        }
+    });
 }
 
 fn spawn_voice(ctx: &web_sys::AudioContext, src: functor_runtime_common::audio::AudioSource) {
@@ -444,22 +482,32 @@ fn spawn_voice(ctx: &web_sys::AudioContext, src: functor_runtime_common::audio::
         Ok(g) => g,
         Err(_) => return,
     };
-    gain.gain().set_value(src.gain);
     let _ = gain.connect_with_audio_node(&ctx.destination());
 
-    // The node a fresh source connects into: the panner (positioned) or the gain.
-    let (panner, head): (Option<web_sys::PannerNode>, web_sys::AudioNode) = match src.position {
-        Some([x, y, z]) => match ctx.create_panner() {
-            Ok(p) => {
-                p.position_x().set_value(x);
-                p.position_y().set_value(y);
-                p.position_z().set_value(z);
-                let _ = p.connect_with_audio_node(&gain);
-                (Some(p.clone()), p.unchecked_into())
+    // Positioned voices route through a StereoPannerNode; gain + pan come from the
+    // shared `spatialize` (re-applied each frame by `respatialize_voice`).
+    let panner: Option<web_sys::StereoPannerNode> = match src.position {
+        Some(pos) => {
+            let s = current_listener().spatialize(pos);
+            gain.gain().set_value(src.gain * s.gain);
+            match ctx.create_stereo_panner() {
+                Ok(p) => {
+                    p.pan().set_value(s.pan);
+                    let _ = p.connect_with_audio_node(&gain);
+                    Some(p)
+                }
+                Err(_) => None,
             }
-            Err(_) => (None, gain.clone().unchecked_into()),
-        },
-        None => (None, gain.clone().unchecked_into()),
+        }
+        None => {
+            gain.gain().set_value(src.gain);
+            None
+        }
+    };
+    // The node a fresh source connects into: the panner (positioned) or the gain.
+    let head: web_sys::AudioNode = match &panner {
+        Some(p) => p.clone().unchecked_into(),
+        None => gain.clone().unchecked_into(),
     };
 
     let node: Rc<RefCell<Option<web_sys::AudioBufferSourceNode>>> = Rc::new(RefCell::new(None));
@@ -514,13 +562,14 @@ fn update_voice(ctx: &web_sys::AudioContext, src: functor_runtime_common::audio:
     }
     SOUNDSCAPE.with(|s| {
         if let Some(v) = s.borrow_mut().get_mut(&src.key) {
-            v.gain.gain().set_value(src.gain);
-            if let (Some(p), Some([x, y, z])) = (&v.panner, src.position) {
-                p.position_x().set_value(x);
-                p.position_y().set_value(y);
-                p.position_z().set_value(z);
-            }
             v.source = src;
+            // Positioned voices re-spatialize (gain + pan); non-spatial beds just
+            // take the new gain directly.
+            if v.panner.is_some() {
+                respatialize_voice(v);
+            } else {
+                v.gain.gain().set_value(v.source.gain);
+            }
         }
     });
 }
