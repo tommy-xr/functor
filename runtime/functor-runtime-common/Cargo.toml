@@ -12,6 +12,12 @@ strict = []
 [dependencies]
 cgmath = "0.18.0"
 glow = "0.17"
+# In-game text/UI overlay. egui is the immediate-mode backend living entirely in
+# this shell; `egui_glow` paints through the same glow::Context the runtime owns.
+# `default-features = false` drops egui_glow's winit/clipboard glue we don't use;
+# egui keeps its default bundled font (default_fonts) so text actually renders.
+egui = "0.34"
+egui_glow = { version = "0.34", default-features = false }
 image = "0.25.1"
 once_cell = "1.19.0"
 serde = { version = "1.0", features = ["derive"] }

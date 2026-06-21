@@ -89,6 +89,7 @@ mod shader;
 pub mod shadow;
 mod shader_program;
 pub mod texture;
+pub mod ui;
 mod viewport;
 
 pub use camera::*;
