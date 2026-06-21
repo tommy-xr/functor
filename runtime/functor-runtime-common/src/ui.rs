@@ -140,79 +140,69 @@ impl View {
         }
     }
 
-    /// Flatten this tree into absolutely-positioned labels over a `sw`×`sh`-point
-    /// screen. Layout is deliberately simple: fixed line height / char width
-    /// (matching the default monospace face), columns stack, rows advance, panels
-    /// anchor to a corner. Font sizing is honored once real fonts are wired.
-    pub fn lower(&self, sw: f32, sh: f32) -> Vec<Label> {
-        let mut out = Vec::new();
-        // A bare (non-panel) root defaults to the top-left, inset by a margin.
-        match self {
-            View::Panel { .. } => {
-                place(self, 0.0, 0.0, sw, sh, &mut out);
-            }
-            _ => {
-                place(self, MARGIN, MARGIN, sw, sh, &mut out);
-            }
+}
+
+/// Point size of the overlay's monospace text.
+const UI_FONT_SIZE: f32 = 14.0;
+/// Inset of an anchored panel from the screen edge, in points.
+const MARGIN: f32 = 10.0;
+
+/// Render a declarative [`View`] into `ui` using egui's own layout (vertical /
+/// horizontal / anchored `Area`), so line height and spacing come from the font
+/// being rendered — no manual metrics, and lines never overlap.
+fn render_view(ui: &mut egui::Ui, view: &View) {
+    match view {
+        View::Empty => {}
+        View::Text { text, color, .. } => {
+            let [r, g, b] = *color;
+            ui.label(
+                egui::RichText::new(text)
+                    .font(egui::FontId::monospace(UI_FONT_SIZE))
+                    .color(egui::Color32::from_rgb(r, g, b)),
+            );
         }
-        out
+        View::Column(items) => {
+            ui.vertical(|ui| {
+                for item in items {
+                    render_view(ui, item);
+                }
+            });
+        }
+        View::Row(items) => {
+            ui.horizontal(|ui| {
+                for item in items {
+                    render_view(ui, item);
+                }
+            });
+        }
+        View::Panel { anchor, child } => {
+            let (align, offset) = anchor_align(*anchor);
+            let ctx = ui.ctx().clone();
+            egui::Area::new(egui::Id::new(("functor_ui_panel", anchor_id(*anchor))))
+                .anchor(align, offset)
+                .interactable(false)
+                .show(&ctx, |ui| render_view(ui, child));
+        }
     }
 }
 
-const LINE_H: f32 = 18.0;
-const CHAR_W: f32 = 8.2;
-const ROW_GAP: f32 = 8.0;
-const MARGIN: f32 = 10.0;
+/// egui corner alignment + inset offset for an [`Anchor`].
+fn anchor_align(anchor: Anchor) -> (egui::Align2, egui::Vec2) {
+    match anchor {
+        Anchor::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN)),
+        Anchor::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-MARGIN, MARGIN)),
+        Anchor::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(MARGIN, -MARGIN)),
+        Anchor::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-MARGIN, -MARGIN)),
+    }
+}
 
-/// Place `view`'s labels starting at top-left `(x, y)` and return the (width,
-/// height) it occupied (points). `sw`/`sh` are the screen size, for panel anchoring.
-fn place(view: &View, x: f32, y: f32, sw: f32, sh: f32, out: &mut Vec<Label>) -> (f32, f32) {
-    match view {
-        View::Empty => (0.0, 0.0),
-        View::Text { text, color, .. } => {
-            out.push(Label {
-                text: text.clone(),
-                x,
-                y,
-                color: *color,
-            });
-            (text.chars().count() as f32 * CHAR_W, LINE_H)
-        }
-        View::Column(items) => {
-            let (mut w, mut h) = (0.0f32, 0.0f32);
-            for item in items {
-                let (iw, ih) = place(item, x, y + h, sw, sh, out);
-                w = w.max(iw);
-                h += ih;
-            }
-            (w, h)
-        }
-        View::Row(items) => {
-            let (mut w, mut h) = (0.0f32, 0.0f32);
-            for item in items {
-                let (iw, ih) = place(item, x + w, y, sw, sh, out);
-                w += iw + ROW_GAP;
-                h = h.max(ih);
-            }
-            (w, h)
-        }
-        View::Panel { anchor, child } => {
-            // Lay the child out at the origin to measure it, then translate the
-            // labels we just emitted to the anchored corner.
-            let start = out.len();
-            let (w, h) = place(child, 0.0, 0.0, sw, sh, out);
-            let (ox, oy) = match anchor {
-                Anchor::TopLeft => (MARGIN, MARGIN),
-                Anchor::TopRight => (sw - w - MARGIN, MARGIN),
-                Anchor::BottomLeft => (MARGIN, sh - h - MARGIN),
-                Anchor::BottomRight => (sw - w - MARGIN, sh - h - MARGIN),
-            };
-            for label in &mut out[start..] {
-                label.x += ox;
-                label.y += oy;
-            }
-            (w, h)
-        }
+/// A stable per-corner id so distinct panels get distinct egui `Area` ids.
+fn anchor_id(anchor: Anchor) -> u8 {
+    match anchor {
+        Anchor::TopLeft => 0,
+        Anchor::TopRight => 1,
+        Anchor::BottomLeft => 2,
+        Anchor::BottomRight => 3,
     }
 }
 
@@ -241,25 +231,15 @@ impl TextOverlay {
         }
     }
 
-    /// Paint `labels` over the bound framebuffer. `width`/`height` are the physical
-    /// framebuffer size in pixels; `pixels_per_point` maps points -> pixels (1.0 on
-    /// a non-HiDPI display; the device pixel ratio on retina / browser canvases).
+    /// Paint absolutely-positioned `labels` over the bound framebuffer.
+    /// `width`/`height` are the physical framebuffer size in pixels;
+    /// `pixels_per_point` maps points -> pixels (1.0 on a non-HiDPI display; the
+    /// device pixel ratio on retina / browser canvases).
     pub fn draw(&mut self, width: u32, height: u32, pixels_per_point: f32, labels: &[Label]) {
-        if width == 0 || height == 0 || labels.is_empty() {
+        if labels.is_empty() {
             return;
         }
-
-        self.ctx.set_pixels_per_point(pixels_per_point);
-        let screen_points = egui::vec2(
-            width as f32 / pixels_per_point,
-            height as f32 / pixels_per_point,
-        );
-        let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_points)),
-            ..Default::default()
-        };
-
-        let output = self.ctx.run_ui(raw_input, |ui| {
+        self.run_and_paint(width, height, pixels_per_point, |ui| {
             // Labels are floating, Context-attached Areas rather than children of
             // the root Ui, so pull the context back out of the supplied `ui`.
             let ctx = ui.ctx().clone();
@@ -273,12 +253,58 @@ impl TextOverlay {
                         let [r, g, b] = label.color;
                         ui.label(
                             egui::RichText::new(&label.text)
-                                .monospace()
+                                .font(egui::FontId::monospace(UI_FONT_SIZE))
                                 .color(egui::Color32::from_rgb(r, g, b)),
                         );
                     });
             }
         });
+    }
+
+    /// Paint a declarative [`View`], laid out with egui's own containers so line
+    /// height and spacing come from the rendered font (no manual metrics, no
+    /// overlap). `width`/`height` are physical framebuffer pixels.
+    pub fn draw_view(&mut self, width: u32, height: u32, pixels_per_point: f32, view: &View) {
+        if matches!(view, View::Empty) {
+            return;
+        }
+        self.run_and_paint(width, height, pixels_per_point, |ui| match view {
+            // A panel anchors itself; a bare root sits at the top-left with a margin.
+            View::Panel { .. } => render_view(ui, view),
+            other => {
+                let ctx = ui.ctx().clone();
+                egui::Area::new(egui::Id::new("functor_ui_root"))
+                    .anchor(egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN))
+                    .interactable(false)
+                    .show(&ctx, |ui| render_view(ui, other));
+            }
+        });
+    }
+
+    /// Run one egui frame (building the UI with `build`), tessellate, paint to the
+    /// bound framebuffer, and restore the GL state the 3D path expects. egui's
+    /// fonts only exist *during* `run`, so all layout/measurement happens in here.
+    fn run_and_paint(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels_per_point: f32,
+        build: impl FnMut(&mut egui::Ui),
+    ) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.ctx.set_pixels_per_point(pixels_per_point);
+        let screen_points = egui::vec2(
+            width as f32 / pixels_per_point,
+            height as f32 / pixels_per_point,
+        );
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_points)),
+            ..Default::default()
+        };
+
+        let output = self.ctx.run_ui(raw_input, build);
 
         let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
         self.painter.paint_and_update_textures(
@@ -297,15 +323,5 @@ impl TextOverlay {
             self.gl.disable(glow::BLEND);
             self.gl.enable(glow::DEPTH_TEST);
         }
-    }
-
-    /// Lower a declarative [`View`] to labels and paint it. `width`/`height` are
-    /// physical framebuffer pixels; the tree is laid out in points (pixels / ppp).
-    pub fn draw_view(&mut self, width: u32, height: u32, pixels_per_point: f32, view: &View) {
-        let labels = view.lower(
-            width as f32 / pixels_per_point,
-            height as f32 / pixels_per_point,
-        );
-        self.draw(width, height, pixels_per_point, &labels);
     }
 }
