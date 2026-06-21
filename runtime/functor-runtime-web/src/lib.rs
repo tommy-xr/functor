@@ -78,6 +78,9 @@ extern "C" {
     #[wasm_bindgen(js_namespace = game, js_name = render)]
     fn game_render(frameTimeJs: JsValue) -> JsValue;
 
+    #[wasm_bindgen(js_namespace = game, js_name = ui)]
+    fn game_ui() -> JsValue;
+
     #[wasm_bindgen(js_namespace = game, js_name = tick)]
     fn game_tick(frameTimeJs: JsValue);
 
@@ -748,7 +751,8 @@ async fn run_async() -> Result<(), JsValue> {
                 .unwrap()
                 .dyn_into::<web_sys::WebGl2RenderingContext>()
                 .unwrap();
-            let gl = glow::Context::from_webgl2_context(webgl2_context);
+            // Arc so the egui text-overlay painter can share this same context.
+            let gl = std::sync::Arc::new(glow::Context::from_webgl2_context(webgl2_context));
             (gl, "#version 300 es", canvas)
         };
 
@@ -851,6 +855,10 @@ async fn run_async() -> Result<(), JsValue> {
         // and sampled by the lit material (mirrors the desktop runtime).
         let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
 
+        // The 2D UI overlay (egui), painting the game's `ui model` View on top of
+        // the 3D frame — the web sibling of the desktop runner's overlay.
+        let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
+
         // In deterministic mode (?fixed-time, the golden) the canvas is sized
         // once and then left fixed (see below), and the render loop stops after
         // a short warm-up so the page is static for screenshotting.
@@ -923,6 +931,13 @@ async fn run_async() -> Result<(), JsValue> {
                 viewport,
                 debug_render_mode,
             );
+
+            // 2D UI overlay: the game's declarative `ui model` View, lowered to a
+            // text overlay on top of the frame (HiDPI-aware via the device ratio).
+            let view: functor_runtime_common::ui::View =
+                functor_runtime_common::from_js_value(game_ui());
+            let dpr = web_sys::window().unwrap().device_pixel_ratio() as f32;
+            text_overlay.draw_view(canvas.width(), canvas.height(), dpr.max(1.0), &view);
 
             // Schedule the next frame. In deterministic mode (?fixed-time, the
             // golden) render a short warm-up (shader compile, first-frame

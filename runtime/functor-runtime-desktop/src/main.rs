@@ -521,19 +521,11 @@ pub async fn main() {
                 args.debug_render.into(),
             );
 
-            // 2D text overlay on top of the 3D frame. Drawn before capture so it
-            // appears in --capture-frame PNGs. Hardcoded label for now; a
-            // declarative `model -> View` path lands in a later PR.
-            text_overlay.draw(
-                fb_width as u32,
-                fb_height as u32,
-                1.0,
-                &[functor_runtime_common::ui::Label::new(
-                    "functor · egui overlay",
-                    12.0,
-                    12.0,
-                )],
-            );
+            // 2D UI overlay: the game's declarative `ui model` View, lowered to a
+            // text overlay on top of the 3D frame. Drawn before capture so it
+            // appears in --capture-frame PNGs.
+            let ui_view = game.ui();
+            text_overlay.draw_view(fb_width as u32, fb_height as u32, 1.0, &ui_view);
 
             if let Some(capture_path) = &args.capture_frame {
                 if elapsed_time >= args.capture_time {

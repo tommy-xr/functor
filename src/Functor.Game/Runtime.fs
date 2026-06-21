@@ -10,6 +10,7 @@ module Runtime
         abstract member tick: Time.FrameTime -> unit
         abstract member input: Input.t -> unit
         abstract member render: Time.FrameTime -> Graphics.Frame
+        abstract member ui: unit -> View
         abstract member getState: unit -> OpaqueState
         abstract member setState: OpaqueState -> unit
         abstract member stateDebug: unit -> string
@@ -34,7 +35,7 @@ module Runtime
 
         module UnsafeJsValue =
             [<Emit("functor_runtime_common::to_js_value(&$0)")>]
-            let to_js<'a>(obj): JsValue = nativeOnly
+            let to_js<'a>(obj: 'a): JsValue = nativeOnly
             // let from_js<'a>(jsValue: JsValue): 'a = nativeOnly
 
             [<Emit("functor_runtime_common::from_js_value($0)")>]
@@ -82,6 +83,16 @@ module Runtime
                     |> currentRunner.Value.render
                     |> UnsafeJsValue.to_js
                 ret
+            else
+                raise (System.Exception("No runner"))
+
+        /// The game's declarative UI tree (serialized), for the web host to lower
+        /// to a text overlay after render. Pure; mirrors `emit_ui` on native.
+        [<OuterAttr("wasm_bindgen")>]
+        let emit_ui_wasm (): JsValue =
+            if currentRunner.IsSome then
+                currentRunner.Value.ui()
+                |> UnsafeJsValue.to_js
             else
                 raise (System.Exception("No runner"))
 
@@ -324,9 +335,18 @@ module Runtime
 
         [<OuterAttr("no_mangle")>]
         let test_render(frameTime: Time.FrameTime): Graphics.Frame =
-            if currentRunner.IsSome then 
+            if currentRunner.IsSome then
                 currentRunner.Value.render(frameTime)
-            else 
+            else
+                raise (System.Exception("No runner"))
+
+        /// The game's declarative UI tree for the current model, for the host to
+        /// lower to a text overlay after `test_render`. Pure; safe to call per frame.
+        [<OuterAttr("no_mangle")>]
+        let emit_ui(): View =
+            if currentRunner.IsSome then
+                currentRunner.Value.ui()
+            else
                 raise (System.Exception("No runner"))
 
     // `formatState` renders the live model for introspection (the debug server's
@@ -489,6 +509,10 @@ module Runtime
                 GameRunner.draw3d myGame state frameTime
                 // printfn "Hello from GameRunner.render!"
                 // Scene3D.cube()
+            member this.ui() =
+                // The declarative UI tree for the current model; the host lowers it
+                // to a text overlay after render. Pure (like render); no effects.
+                GameRunner.ui myGame state
             member this.audioSceneJson() =
                 // The desired soundscape for the current model, serialized for the
                 // host to reconcile against its live voices. Pure (no effects); the
