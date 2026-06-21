@@ -199,13 +199,16 @@ impl Listener {
         let to = sub(position, self.position);
         let dist = length(to);
 
-        // Linear rolloff: full gain within `min`, silent past `max`.
+        // Rolloff: full gain within `min`, silent past `max`. The linear factor is
+        // squared so the falloff is steep — a positioned voice fades to near-
+        // nothing well before `max`, instead of lingering across the whole scene.
         let gain = if dist <= SPATIAL_MIN_DISTANCE {
             1.0
         } else if dist >= SPATIAL_MAX_DISTANCE {
             0.0
         } else {
-            1.0 - (dist - SPATIAL_MIN_DISTANCE) / (SPATIAL_MAX_DISTANCE - SPATIAL_MIN_DISTANCE)
+            let t = 1.0 - (dist - SPATIAL_MIN_DISTANCE) / (SPATIAL_MAX_DISTANCE - SPATIAL_MIN_DISTANCE);
+            t * t
         };
 
         // Pan = how far the emitter is to the listener's right (−1 left, +1 right).
@@ -243,10 +246,11 @@ pub struct Spatialization {
     pub pan: f32,
 }
 
-/// Distances (world units) for the linear rolloff: at/below `MIN` a positioned
-/// voice is at full gain; at/above `MAX` it's silent.
+/// Distances (world units) for the rolloff: at/below `MIN` a positioned voice is
+/// at full gain; at/above `MAX` it's silent. The curve between is steep
+/// (quadratic), so most of the audible range sits well inside `MAX`.
 pub const SPATIAL_MIN_DISTANCE: f32 = 1.0;
-pub const SPATIAL_MAX_DISTANCE: f32 = 25.0;
+pub const SPATIAL_MAX_DISTANCE: f32 = 10.0;
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -472,16 +476,18 @@ mod tests {
     }
 
     #[test]
-    fn spatialize_linear_gain_by_distance() {
+    fn spatialize_gain_by_distance() {
         let l = listener_at_origin();
         // Inside min distance: full gain.
         assert_eq!(l.spatialize([0.0, 0.0, 0.5]).gain, 1.0);
         // Past max distance: silent.
         assert_eq!(l.spatialize([0.0, 0.0, 100.0]).gain, 0.0);
-        // Halfway between min and max → half gain.
+        // Halfway between min and max the linear factor is 0.5, squared → 0.25.
         let mid = (SPATIAL_MIN_DISTANCE + SPATIAL_MAX_DISTANCE) / 2.0;
         let g = l.spatialize([0.0, 0.0, mid]).gain;
-        assert!((g - 0.5).abs() < 1e-5, "gain {g} should be ~0.5 at the midpoint");
+        assert!((g - 0.25).abs() < 1e-5, "gain {g} should be ~0.25 at the midpoint");
+        // Monotonically decreasing with distance.
+        assert!(l.spatialize([0.0, 0.0, 3.0]).gain > l.spatialize([0.0, 0.0, 6.0]).gain);
     }
 
     #[test]

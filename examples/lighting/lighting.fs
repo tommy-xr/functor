@@ -23,6 +23,8 @@ type Model = {
     yaw: float32
     pitch: float32
     lastMouse: (float32 * float32) option
+    // Which side the next 'B' gunshot fires to (alternates each press).
+    bangRight: bool
 }
 
 module Model =
@@ -33,6 +35,7 @@ module Model =
         yaw = 0.0f
         pitch = -0.25f
         lastMouse = None
+        bangRight = false
     }
 
 type Msg =
@@ -64,10 +67,14 @@ let input model (event: Input.t) =
     // Spacebar fires a one-shot sound, with a message delivered when it ends.
     | Input.Keyboard (Input.KeyboardEvent.KeyDown Input.Space) ->
         (model, Audio.playThen "gunshot.wav" GunshotDone)
-    // 'B' fires a spatialized gunshot at a fixed point off to the right, so it
-    // pans and attenuates as you look around / move (Audio.playAt).
+    // 'B' fires a spatialized gunshot a few units directly to your left/right
+    // (relative to facing), alternating each press — a clear hard-pan L/R test of
+    // Audio.playAt. The point is along the camera's right axis, so it pans fully.
     | Input.Keyboard (Input.KeyboardEvent.KeyDown Input.B) ->
-        (model, Audio.playAt "gunshot.wav" (Vector3.xyz 5.0f 1.0f 0.0f))
+        let right = Vector3.xyz -(cos model.yaw) 0.0f (sin model.yaw)
+        let side = if model.bangRight then 4.0f else -4.0f
+        let pos = Vector3.add model.eye (Vector3.scale side right)
+        ({ model with bangRight = not model.bangRight }, Audio.playAt "gunshot.wav" pos)
     | Input.Keyboard (Input.KeyboardEvent.KeyDown key) ->
         ({ model with held = setHeld model.held key true }, Effect.none())
     | Input.Keyboard (Input.KeyboardEvent.KeyUp key) ->
