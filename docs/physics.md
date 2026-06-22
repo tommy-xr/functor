@@ -55,7 +55,7 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
         │  update/tick  -> effect                 (impulse/force/teleport,     │
         │                                          raycast tagger, rewindTo)   │
         │  subscriptions-> Sub                     (collisions, step read-back)│
-        │  draw3d : model -> Physics.View -> Frame (C: query stepped world)    │
+        │  draw3d : model -> DrawContext -> Frame  (C: ctx.physics view query) │
         └─────────────────────────────────┬───────────────────────────────────┘
                                            │  (thin Emit shims, JSON over boundary)
         ┌──────────────────────────────────▼──────────────── imperative shell ─┐
@@ -78,6 +78,23 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
   is the same machinery client prediction uses.
 
 ## API (F#)
+
+**Per-frame draw context.** `draw3d` takes a `DrawContext` record (not a bare
+`FrameTime`), destructured at the call site. This is the per-frame *extension
+point*: physics arrives as a field, and future per-frame reads (the backlog's
+polling `Input.State`, etc.) slot in as new fields with no further signature
+churn. The view is a live handle, not serializable, so it rides in the context
+record assembled at the draw call site — not inside `FrameTime`, which is
+marshalled through `JsValue` on wasm.
+
+```fsharp
+type DrawContext = {
+    time:    Time.FrameTime
+    physics: Physics.View      // read handle to the frame's stepped world (world 0)
+}
+
+draw3d : ('model -> DrawContext -> Graphics.Frame) -> Game<'model,'msg> -> Game<'model,'msg>
+```
 
 **Description — `physicsScape`** (new hook on the `Game` record / `GameBuilder` /
 `GameRunner`, mirroring `soundScape`; supersedes the `physics : model ->
@@ -163,8 +180,9 @@ We use **C** (query the world) with **A** (sync into model) as an opt-in escape
 hatch:
 
 ```fsharp
-// C — ergonomic query at draw time, no model boilerplate, explicit (not ambient):
-draw3d (fun model (phys: Physics.View) _time ->
+// C — ergonomic query at draw time, no model boilerplate, explicit (not ambient).
+//     Destructure exactly what the frame needs out of the context record:
+draw3d (fun model { time = _; physics = phys } ->
     let t = Physics.View.transform phys "crate-3"     // reads the just-stepped world
     Frame.create camera (crateMesh |> Transform.apply t))
 
@@ -173,10 +191,12 @@ draw3d (fun model (phys: Physics.View) _time ->
 Physics.synced (fun states -> PhysicsTick states)     // Sub<'msg>
 ```
 
-The `Physics.View` is a cheap read handle to the frame's stepped snapshot, passed
-as an explicit argument so rewind and netsim still treat **model + snapshot** as
-the whole truth (it is not ambient global state). This widens `draw3d`'s signature
-by one parameter — a one-time migration across examples, done as its own small PR.
+The `Physics.View` is a cheap read handle to the frame's stepped snapshot, reached
+through the explicit `DrawContext` argument so rewind and netsim still treat
+**model + snapshot** as the whole truth (it is not ambient global state). Changing
+`draw3d` to take the context record is a small migration across the existing
+examples (`hello`, `mpserver`, `mpclient`) — they destructure `{ time }` and are
+otherwise untouched.
 
 ### Authority + divergence
 
@@ -357,7 +377,7 @@ It's worth building in two steps, because they exercise different machinery:
 | Phase | Scope | Targets |
 | --- | --- | --- |
 | **1. Shell spine** | Rapier dep (`enhanced-determinism` + `serde-serialize`), `physics` module (`PhysicsScene`/`Body`/`reconcile`/`WorldId` registry), fixed-step accumulator, `Simulatable` + `Timeline` traits, `KeyframeLog`, snapshot + text/JSON dump. Determinism + strategy-equivalence + replay goldens. **No F# surface.** | native+wasm (Rust) |
-| **2. `physicsScape` + read-back** | `Game` hook + builder/runner, reconcile pipeline, `Physics.View` param on `draw3d`, `Physics.synced` sub, `examples/hello-physics`. | both |
+| **2. `physicsScape` + read-back** | `Game` hook + builder/runner, reconcile pipeline, `DrawContext` record on `draw3d` (`ctx.physics` view), `Physics.synced` sub, `examples/hello-physics`. | both |
 | **3. Commands** | `applyImpulse`/`applyForce`/`setVelocity`/`teleport` (plain-data effects). | both |
 | **4. Queries** | `raycast`/`shapeCast` (async tagger, token registry). | both |
 | **5. Collision events** | `Physics.events` sub. | both |
