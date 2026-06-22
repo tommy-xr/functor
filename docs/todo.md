@@ -74,9 +74,18 @@ The networking design + phased roadmap that drives these items lives in
 
 ## Physics
 
-- [ ] Use the rapier library.
-- [ ] A `physics : model -> PhysicsScene` function; sync physics positions back
-      into the model (or feed the physics scene to the renderer).
+Design + phased roadmap: `docs/physics.md` (Rapier-backed, functional
+`physicsScape` reconcile, deterministic fixed-step, `Simulatable`/`Timeline`
+rewind seam, server-authoritative prediction). First step = Phase 1, the Rust-only
+shell spine (no F# surface).
+
+- [ ] Phase 1: Rapier dep + `physics` module + fixed-step + `Timeline` traits +
+      determinism goldens.
+- [ ] `physicsScape : model -> PhysicsScene` hook + `Physics.View` read-back +
+      `hello-physics` example.
+- [ ] Pause/rewind/replay via keyboard (the local culmination).
+- [ ] Networked physics: grow `mpserver`/`mpclient` to client-owned balls +
+      server-owned objects (state-sync, then prediction).
 
 ## Live variables / fast iteration
 
