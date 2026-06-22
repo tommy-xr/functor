@@ -217,6 +217,103 @@ divergence → overwrite. This generalizes citadel-xr's `mass == 0` heuristic to
 allow correcting dynamic bodies — which is exactly what netcode reconciliation
 needs.
 
+## Entity lifecycle (model-layer abstraction)
+
+`physicsScape`'s reconcile-by-tag is right for **identity-bearing** bodies the
+model reasons about individually (player, doors, crates). It is clumsy for
+**high-churn** bodies (bullets, debris, particles): the model would hand-enumerate
+hundreds of them and carry per-instance string-tag bookkeeping.
+
+The fix is a **pure, model-resident collection** — citadel-xr's `EntityManager`
+rebuilt as a *value that projects into physics and rendering*, instead of a
+stateful object that syncs them. It lives in your model, so model-as-truth holds,
+rewind/snapshots are automatic, and it needs **no engine hooks** — only the public
+physics/graphics primitives. (The "C" read-back already removes the worst of the
+old EntityManager's mess: entities don't store transforms; `draw3d` reads them
+live from the `Physics.View`.)
+
+An **archetype** is the per-kind bundle — the EntityManager's entity-definition as
+plain data + pure functions:
+
+```fsharp
+type Archetype<'e> = {
+    shape:  Shape
+    body:   BodyKind
+    visual: 'e -> Transform -> Scene3D     // pure; transform comes from the view
+    until:  Despawn list                   // OnCollision | AfterSeconds | BelowY | WhenSleeping
+}
+
+type Entities<'e>   // Map<EntityId,'e> + a deterministic id counter (in the model)
+module Entities =
+    val spawn   : 'e -> Entities<'e> -> Entities<'e> * EntityId
+    val despawn : EntityId -> Entities<'e> -> Entities<'e>
+    val update  : (EntityId -> 'e -> 'e option) -> Entities<'e> -> Entities<'e>   // None = reap
+    val toBodies  : Archetype<'e> -> Entities<'e> -> Body[]
+    val toScene3d : Archetype<'e> -> Physics.View -> Entities<'e> -> Scene3D       // instanced
+```
+
+`physicsScape` and `draw3d` just project the collection; deterministic ids come
+from the counter *inside* `Entities`, so replay reproduces them with zero engine
+support.
+
+### Replication is structural: separate collections, not a per-entity flag
+
+The replication boundary is cleanest as **structure in the model** — separate
+entity collections by role — rather than a flag on each archetype:
+
+```fsharp
+type Model = {
+    server: Entities<GameplayEntity>   // the replicated, authoritative world
+    client: Entities<Cosmetic>         // this client's local-only entities
+    // ... player, camera, etc.
+}
+```
+
+- **`server`** — the shared authoritative world. On the server it's owned and
+  simulated; on a client it's a predicted replica, reconciled against snapshots.
+- **`client`** — local-only (cosmetic debris, prediction-only UI, debug markers).
+  Never sent over the wire — but still in the model, so still in the local Timeline.
+
+Two independent axes fall out of *which collection an entity lives in*, with no
+per-archetype flag:
+
+- **Replication** = structural: `server` replicates, `client` does not.
+- **Local timeline** = always in — the whole model is snapshotted locally, so a
+  client rewind/replay shows cosmetic debris too (exactly what you want for
+  debugging). Cosmetics are excluded from *the network*, never from *history*.
+
+This supersedes both the per-archetype `replication` flag and the earlier
+"engine-owned fx world": everything is model-resident, and the boundary is a field.
+
+### Snapshot partition + reconciliation — now trivial
+
+Because the partition is structural, the snapshot and reconciliation are just field
+operations:
+
+- **Local Timeline snapshot** = the whole model (`server` + `client`).
+- **Network snapshot** = the `server` collection only.
+- **Reconciliation** = `{ model with server = authoritativeSnapshot }`, then resim
+  — `client` is untouched by construction. A correction can't wipe cosmetics, and
+  cosmetics can't desync (they were never authoritative).
+
+The model's *type* now documents the netcode topology — you can read off what's
+authoritative vs. local from the field list. (Split ownership — a client that
+*owns* some replicated entities, like its own ball — is the one wrinkle: those live
+in the replicated collection but carry `Authority = Local`, so this instance
+simulates and broadcasts them while peers render them kinematic. `server`/`client`
+are just the two common collections; a model can carry as many as its netcode needs
+— Functor imposes none.)
+
+### Committed vs. recommended
+
+- **Committed engine primitives** (what makes the model-resident collection cheap):
+  **instanced rendering** (`Scene3D.instances mesh transforms` → one draw call),
+  **reconcile bail-out + tag interning** (steady-state diff is near-free), and the
+  **`Physics.events` sub** (despawn-on-collision).
+- **`Entities` is a recommended pattern, not a mandate.** It ships in
+  `Functor.Game` as the default, but a game can swap in its own entity model
+  (ECS-ish, hierarchical) on the same primitives — Functor doesn't impose one.
+
 ## Determinism
 
 - **Fixed-step accumulator** in the shell (never variable dt).
@@ -381,9 +478,10 @@ It's worth building in two steps, because they exercise different machinery:
 | **3. Commands** | `applyImpulse`/`applyForce`/`setVelocity`/`teleport` (plain-data effects). | both |
 | **4. Queries** | `raycast`/`shapeCast` (async tagger, token registry). | both |
 | **5. Collision events** | `Physics.events` sub. | both |
+| **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `hello-physics` grows a bullet/debris archetype. | both |
 | **6. Pause/rewind/replay** | timeline-control effects + keyboard wiring + egui status overlay (the culmination). | both |
 | **7a. Networked physics (state-sync)** | `Authority`, `mpserver`/`mpclient` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
-| **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
+| **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
 | **8. Cross-target determinism** | native↔wasm determinism validation (gated on Phase 1 goldens); fixed-point fallback if needed. | both |
 
 ## Prior art
