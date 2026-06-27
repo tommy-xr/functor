@@ -78,4 +78,7 @@ export interface LaunchOptions {
   launchTimeoutMs?: number;
   /** Echo runtime stdout/stderr to this process's stderr (default false). */
   echoLogs?: boolean;
+  /** Run the runtime with no GL window (`--headless`): no display needed, but
+   * `capture()` is unavailable. Ideal for CI / headless machines. */
+  headless?: boolean;
 }

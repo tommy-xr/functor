@@ -21,6 +21,26 @@ functor-runner --game-path build-native/target/debug/libgame_native.dylib --debu
 The server binds **localhost only** (`127.0.0.1:<PORT>`). HTTP handlers never touch GL;
 each request is handed to the render loop and fulfilled once per frame.
 
+## Headless mode
+
+Add `--headless` to run with **no GL window** — the game loop and debug server run
+without GLFW/OpenGL, so no display (or GPU) is needed. Ideal for CI, scripted runs,
+and LLM-driven control:
+
+```sh
+functor-runner --game-path <dylib> --debug-port 8077 --headless
+```
+
+`/`, `/state`, `/scene`, `/input`, and `/time` all work (the game's `draw3d`
+produces a pure `Frame`, so `/scene` is real data with no rendering). This is the
+runtime expression of the LLM-native principle: drive and observe a game with no
+GPU window. Limitations vs. windowed:
+
+- `/capture` is unavailable (no pixels to read back) and returns `503`.
+- Audio isn't played, and `Audio.playThen` completion messages are **not**
+  delivered — don't gate game logic on audio completion when running headless.
+- `--capture-frame` is rejected (it needs GL).
+
 ## Endpoints
 
 `GET /` returns this list as JSON (discoverability).

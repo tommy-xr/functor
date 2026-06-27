@@ -158,11 +158,13 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
       }
     }
 
+    const runnerArgs = ["--game-path", dylibPath, "--debug-port", String(port)];
+    if (options.headless) {
+      runnerArgs.push("--headless");
+    }
+
     const logLines: string[] = [];
-    const child = spawn(
-      runnerBin,
-      ["--game-path", dylibPath, "--debug-port", String(port)],
-      {
+    const child = spawn(runnerBin, runnerArgs, {
         cwd: gameDir,
         env: {
           ...process.env,

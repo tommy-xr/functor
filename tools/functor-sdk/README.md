@@ -32,6 +32,10 @@ const png = await game.capture();// PNG bytes of the frame
 `FunctorRunner.connect(url)` attaches to an already-running runtime instead of
 spawning one (and won't kill it on dispose).
 
+Pass `headless: true` to launch with no GL window (`--headless`) — no display
+needed, ideal for CI. `state()`, `scene()`, `input()`, and the clock controls all
+work; `capture()` is unavailable (it returns a 503 — there are no pixels).
+
 ### Observe vs. drive
 
 - **Observe a human playing:** leave the clock alone and poll `state()`,

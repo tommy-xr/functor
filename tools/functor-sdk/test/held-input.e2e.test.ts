@@ -10,6 +10,8 @@ import { findRepoRoot, FunctorRunner } from "../src/index.js";
 //
 //   npm run test:e2e        (or FUNCTOR_E2E=1 node --test dist/test/)
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
+// Headless (no GL window) is the CI path; capture is unavailable there.
+const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -34,6 +36,7 @@ test(
       gameDir: join(repoRoot, "examples", "hello"),
       repoRoot,
       port: Number(process.env.FUNCTOR_E2E_PORT ?? 8090),
+      headless,
     });
 
     // Pin the clock so the only thing that changes state is what we inject.
@@ -59,12 +62,14 @@ test(
     assert.equal(await game.isKeyDown("Up"), false, "runtime should report Up released");
     assert.equal(gameSawUp((await game.state()).model), false, "game should see up released");
 
-    // The render path produces a valid PNG.
-    const png = await game.capture();
-    assert.ok(png.length > 0, "capture should return bytes");
-    assert.ok(
-      png.subarray(0, 8).equals(PNG_MAGIC),
-      "capture should be a PNG (magic bytes)",
-    );
+    // The render path produces a valid PNG — windowed only (headless has no GL).
+    if (!headless) {
+      const png = await game.capture();
+      assert.ok(png.length > 0, "capture should return bytes");
+      assert.ok(
+        png.subarray(0, 8).equals(PNG_MAGIC),
+        "capture should be a PNG (magic bytes)",
+      );
+    }
   },
 );
