@@ -12,6 +12,7 @@ use std::io::Cursor;
 
 use cgmath::{vec3, vec4, Matrix4, Quaternion, Vector3, Vector4};
 use gltf::buffer::Source as BufferSource;
+use serde::Serialize;
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::model::{Skeleton, SkeletonBuilder};
@@ -46,6 +47,26 @@ impl Aabb {
     }
 }
 
+/// An empty `Aabb` carries infinities (see [`Aabb::empty`]), which are not
+/// valid JSON numbers. Serialize as `null` when empty, otherwise as
+/// `{ "min": [x, y, z], "max": [x, y, z] }` — matching the codebase's plain
+/// `[f32; 3]` convention for geometry (see `light.rs`).
+impl Serialize for Aabb {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        if self.is_empty() {
+            return serializer.serialize_none();
+        }
+        let mut s = serializer.serialize_struct("Aabb", 2)?;
+        s.serialize_field("min", &[self.min.x, self.min.y, self.min.z])?;
+        s.serialize_field("max", &[self.max.x, self.max.y, self.max.z])?;
+        s.end()
+    }
+}
+
 /// A single skinned vertex, kept CPU-side for AABB computation.
 struct SkinnedVertex {
     position: Vector3<f32>,
@@ -54,7 +75,7 @@ struct SkinnedVertex {
 }
 
 /// Per-primitive inspection report.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PrimitiveReport {
     /// The owning mesh's name (glTF names live on the mesh, not the primitive).
     pub mesh_name: String,
@@ -67,14 +88,14 @@ pub struct PrimitiveReport {
 }
 
 /// A single animation's summary.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct AnimationReport {
     pub name: String,
     pub duration: f32,
 }
 
 /// The full model inspection report.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ModelReport {
     pub primitives: Vec<PrimitiveReport>,
     pub mesh_count: usize,
@@ -90,7 +111,7 @@ pub struct ModelReport {
 }
 
 /// The skinned AABB plus the context used to produce it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SkinnedAabbReport {
     pub animation_name: String,
     pub requested_time: f32,
@@ -99,10 +120,17 @@ pub struct SkinnedAabbReport {
     pub aabb: Aabb,
 }
 
-/// Inspect a glb/glTF byte buffer. When `time` is `Some` and the model is
-/// skinned with at least one animation, the skinned AABB at that time is also
-/// computed.
-pub fn inspect_model(bytes: Vec<u8>, time: Option<f32>) -> Result<ModelReport, String> {
+/// Inspect a glb/glTF byte buffer. The skinned AABB is computed when the model
+/// is skinned with at least one animation and the caller asks to sample a pose —
+/// i.e. either `time` is `Some` or `animation_name` is `Some` (an omitted `time`
+/// defaults to `0.0`). `animation_name` selects which animation to sample; when
+/// `None`, the first animation is used. An `animation_name` that doesn't exist
+/// is an error that lists the available animations.
+pub fn inspect_model(
+    bytes: Vec<u8>,
+    time: Option<f32>,
+    animation_name: Option<&str>,
+) -> Result<ModelReport, String> {
     let cursor = Cursor::new(bytes);
     let gltf = gltf::Gltf::from_slice(cursor.get_ref())
         .map_err(|e| format!("Failed to parse glTF/glb: {}", e))?;
@@ -156,11 +184,37 @@ pub fn inspect_model(bytes: Vec<u8>, time: Option<f32>) -> Result<ModelReport, S
 
     let any_skinned = primitives.iter().any(|p| p.has_skinning);
 
-    // Compute the skinned AABB only when asked for a time, the mesh is skinned,
-    // and there is an animation to sample.
-    let skinned_aabb = match time {
-        Some(t) if any_skinned && has_skeleton && !animations.is_empty() => {
-            let animation = &animations[0];
+    // Pick the animation to sample: by name if given (erroring with the
+    // available names if it doesn't exist), otherwise the first one.
+    let selected_animation = match animation_name {
+        Some(name) => match animations.iter().find(|a| a.name == name) {
+            Some(a) => Some(a),
+            None => {
+                let available = if animations.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    animations
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                return Err(format!(
+                    "Animation '{}' not found. Available: {}",
+                    name, available
+                ));
+            }
+        },
+        None => animations.first(),
+    };
+
+    // Compute the skinned AABB only when the caller asked to sample a pose
+    // (a time and/or an animation name), the mesh is skinned, and there is an
+    // animation to sample. An omitted time defaults to 0.0.
+    let want_pose = time.is_some() || animation_name.is_some();
+    let skinned_aabb = match selected_animation {
+        Some(animation) if want_pose && any_skinned && has_skeleton => {
+            let t = time.unwrap_or(0.0);
             let sampled_time = if animation.duration > 0.0 {
                 t.rem_euclid(animation.duration)
             } else {

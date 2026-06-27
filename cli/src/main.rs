@@ -79,6 +79,15 @@ enum InspectTarget {
         /// Sample the skinned AABB at this time (seconds) for animated models.
         #[arg(long)]
         time: Option<f32>,
+
+        /// Animation to sample for the skinned AABB (by name). Defaults to the
+        /// first animation. Implies sampling even without --time (at t=0).
+        #[arg(long)]
+        animation: Option<String>,
+
+        /// Output format for the report.
+        #[arg(long, value_enum, default_value_t = commands::inspect::OutputFormat::Text)]
+        format: commands::inspect::OutputFormat,
     },
 }
 
@@ -90,8 +99,19 @@ async fn main() -> tokio::io::Result<()> {
     // project, so handle it before the functor.json validation below.
     if let Command::Inspect { target } = &args.command {
         let res = match target {
-            InspectTarget::Model { path, time } => {
-                commands::inspect::execute_model(path, *time).await
+            InspectTarget::Model {
+                path,
+                time,
+                animation,
+                format,
+            } => {
+                commands::inspect::execute_model(
+                    path,
+                    *time,
+                    animation.as_deref(),
+                    format.clone(),
+                )
+                .await
             }
         };
         return finish(res);
@@ -153,7 +173,9 @@ async fn main() -> tokio::io::Result<()> {
 fn finish(res: io::Result<()>) -> tokio::io::Result<()> {
     match res {
         Ok(()) => {
-            println!("Done");
+            // Status goes to stderr so stdout stays pure data (e.g. JSON from
+            // `inspect ... --format json` is directly pipeable).
+            eprintln!("Done");
             Ok(())
         }
         Err(error) => {
