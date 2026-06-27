@@ -10,7 +10,9 @@
 //! `main.rs`) and fulfills them with framebuffer data / runtime state it can
 //! only read on the main thread.
 //!
-//! This is the seed of a richer debug runtime (future `/input`, `/time`, etc.).
+//! Endpoints: `GET /` (index), `POST /capture`, `GET /state`, `GET /scene`,
+//! `POST /input`, `POST /time`. See `docs/debug-runtime.md` for usage and the
+//! observe-vs-drive workflows.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -235,6 +237,25 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                                 .respond(Response::from_string("time failed").with_status_code(500));
                         }
                     }
+                }
+                (Method::Get, "/") => {
+                    // Static endpoint index for discoverability (e.g. an LLM
+                    // probing the port). No GL access needed, so reply directly.
+                    let body = serde_json::json!({
+                        "service": "functor debug runtime",
+                        "endpoints": {
+                            "GET /": "this endpoint index",
+                            "POST /capture": "PNG (image/png) of the next rendered frame",
+                            "GET /state": "runtime state JSON: frame, tts, viewport, model (Debug text)",
+                            "GET /scene": "current frame as JSON: camera + scene + lights",
+                            "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1}",
+                            "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}"
+                        }
+                    })
+                    .to_string();
+                    let header =
+                        Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+                    let _ = request.respond(Response::from_string(body).with_header(header));
                 }
                 _ => {
                     let _ = request.respond(Response::from_string("not found").with_status_code(404));
