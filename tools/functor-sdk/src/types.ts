@@ -1,0 +1,54 @@
+/** Runtime state from `GET /state`. `model` is the game model rendered with
+ * Rust's pretty-`Debug` (not structured JSON yet), so reading specific fields
+ * from it is best-effort string matching for now. */
+export interface RuntimeState {
+  frame: number;
+  tts: number;
+  viewport: { width: number; height: number };
+  model: string;
+}
+
+export type Vec3 = [number, number, number];
+
+/** Camera block from `GET /scene`. */
+export interface Camera {
+  eye: Vec3;
+  target: Vec3;
+  up: Vec3;
+  fov_radians: number;
+  near: number;
+  far: number;
+}
+
+/** The frame description from `GET /scene` (camera + scene + lights). The scene
+ * and lights are passed through as-is for now. */
+export interface Scene {
+  camera: Camera;
+  scene: unknown;
+  lights: unknown;
+}
+
+/** An input event for `POST /input`, tagged by `type`. */
+export type InputCommand =
+  | { type: "key"; key: string; down: boolean }
+  | { type: "mouse_move"; x: number; y: number }
+  | { type: "mouse_wheel"; delta: number };
+
+/** Options for launching a `functor-runner` process. */
+export interface LaunchOptions {
+  /** Game directory containing `build-native/` (the runner's cwd, for assets).
+   * e.g. an absolute path to `examples/hello`. */
+  gameDir: string;
+  /** Debug-runtime HTTP port (default 8077). */
+  port?: number;
+  /** Path to the `functor-runner` binary (default `<repoRoot>/target/debug/functor-runner`). */
+  runnerBin?: string;
+  /** Path to the game dylib (default `<gameDir>/build-native/target/debug/<libgame_native>`). */
+  dylibPath?: string;
+  /** Cargo workspace root (default: walk up from `gameDir`). */
+  repoRoot?: string;
+  /** Max time to wait for the runtime to be ready, ms (default 60_000). */
+  launchTimeoutMs?: number;
+  /** Echo runtime stdout/stderr to this process's stderr (default false). */
+  echoLogs?: boolean;
+}
