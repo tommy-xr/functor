@@ -12,10 +12,6 @@ golden tests), see `CLAUDE.md` and `git log`.
       (`/screenshot`, raycast, entity-state). Grow it out of the existing capture
       path rather than a separate binary; MVU already makes state serializable
       (`emit_state`).
-- [ ] **Model inspector** — `functor inspect model <file.glb> [--time T]`: run the
-      asset pipeline CPU-side and print per-mesh vertex/index/joint counts and
-      skinned AABBs. Text-only, no GPU, diffable. Would have caught both
-      skinned-material bugs (zero-vertex meshes, wrong joint rest pose).
 - [ ] Headless/offscreen render path (e.g. llvmpipe under xvfb) at a fixed
       resolution so the golden-image test can run in CI (today it's `#[ignore]`d).
 - [ ] WASM capture path (today wasm screenshots need an external headless browser).
