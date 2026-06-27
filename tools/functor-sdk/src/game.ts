@@ -1,5 +1,11 @@
 import type { HttpClient } from "./client.js";
-import type { InputCommand, KeyName, RuntimeState, Scene } from "./types.js";
+import type {
+  InputCommand,
+  KeyName,
+  RuntimeState,
+  Scene,
+  WaitForOptions,
+} from "./types.js";
 
 /** Default per-step delta time (seconds), ~one frame at 60 Hz. */
 export const DEFAULT_STEP_DT = 1 / 60;
@@ -103,6 +109,46 @@ export class FunctorClient {
   /** Resume following the wall clock. */
   async resume(): Promise<void> {
     await this.http.postText("/time", { type: "resume" });
+  }
+
+  /** Poll `state()` until `predicate` holds, or throw on timeout. Useful for
+   * async conditions like network convergence. */
+  waitForState(
+    predicate: (state: RuntimeState) => boolean,
+    opts?: WaitForOptions,
+  ): Promise<RuntimeState> {
+    return waitFor(() => this.state(), predicate, opts);
+  }
+}
+
+/** Poll `poll()` until `predicate(value)` is true, then return that value;
+ * throw if it doesn't happen within the timeout. A throwing `poll()` is treated
+ * as "not ready yet" and retried (e.g. a transient `/state` hiccup mid-
+ * convergence), with the last error surfaced if the deadline passes. */
+export async function waitFor<T>(
+  poll: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  opts: WaitForOptions = {},
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const intervalMs = opts.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  for (;;) {
+    try {
+      const value = await poll();
+      lastError = undefined;
+      if (predicate(value)) return value;
+    } catch (err) {
+      lastError = err;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      const what = opts.description ? ` waiting for ${opts.description}` : "";
+      const cause = lastError === undefined ? "" : ` (last error: ${lastError})`;
+      throw new Error(`waitFor timed out after ${timeoutMs}ms${what}${cause}`);
+    }
+    await new Promise((r) => setTimeout(r, Math.min(intervalMs, remaining)));
   }
 }
 

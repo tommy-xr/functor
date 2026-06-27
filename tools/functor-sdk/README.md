@@ -41,10 +41,16 @@ spawning one (and won't kill it on dispose).
 
 ## Multiplayer simulation
 
-`stepAll(clients, dt)` advances several clients by one lockstep frame. Launch N
-runners on separate ports (networked via `Sub.connect`/`Sub.listen`), pin every
-clock, and `stepAll` them each tick to keep simulations in sync — the
-out-of-process counterpart to the in-process `functor-netsim` harness.
+Launch N runners on separate debug ports, networked via `Sub.connect`/`Sub.listen`,
+and drive them together — the out-of-process counterpart to the in-process
+`functor-netsim` harness. `waitFor(poll, predicate, opts)` (and the
+`client.waitForState(predicate, opts)` shorthand) polls until an async condition
+holds, e.g. network convergence; `stepAll(clients, dt)` advances every client by
+one lockstep frame.
+
+`test/multiplayer.e2e.test.ts` does exactly this end-to-end: it launches one
+`mpserver` + two `mpclient` runners and waits until the server tracks 2 players
+and each client converges on a 2-player world.
 
 ```ts
 await using a = await FunctorRunner.launch({ gameDir: "examples/pong", port: 8077 });
@@ -63,13 +69,18 @@ npm test          # unit tests only (no runtime needed)
 npm run test:e2e  # FUNCTOR_E2E=1 — launches a real functor-runner
 ```
 
-The e2e tests require the runner binary and the game dylib to be built, and a
-display to open the GL window:
+The e2e tests require the runner binary and the relevant game dylibs to be built,
+and a display to open the GL window:
 
 ```sh
 cargo build --bin functor-runner
-./target/debug/functor -d examples/hello build native
+./target/debug/functor -d examples/hello build native      # held-input test
+./target/debug/functor -d examples/mpserver build native   # multiplayer test
+./target/debug/functor -d examples/mpclient build native   # multiplayer test
 ```
+
+(If a build reports a missing `*.rs`, the Fable cache is stale — regenerate with
+`dotnet fable <example>/<name>.fsproj --lang rust --outDir . --noCache`.)
 
 The headline e2e (`held-input.e2e.test.ts`) is the durable guard for the
 input→state→step loop: inject `up`, step a frame, assert the model's `held.up`

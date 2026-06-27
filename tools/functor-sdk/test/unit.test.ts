@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { findRepoRoot, formatCrashOutput, stepAll } from "../src/index.js";
+import { findRepoRoot, formatCrashOutput, stepAll, waitFor } from "../src/index.js";
 
 // Pure unit tests — no runtime required, always run.
 
@@ -47,4 +47,52 @@ test("stepAll advances every client by the same dt, concurrently", async () => {
   await stepAll(clients, 0.25);
 
   assert.deepEqual(calls, [0.25, 0.25, 0.25]);
+});
+
+test("waitFor returns once the predicate holds", async () => {
+  let n = 0;
+  const value = await waitFor(
+    async () => ++n,
+    (v) => v >= 3,
+    { intervalMs: 1 },
+  );
+  assert.equal(value, 3);
+});
+
+test("waitFor retries when poll throws, then resolves", async () => {
+  let n = 0;
+  const value = await waitFor(
+    async () => {
+      n++;
+      if (n < 3) throw new Error("transient");
+      return n;
+    },
+    (v) => v >= 3,
+    { intervalMs: 1 },
+  );
+  assert.equal(value, 3);
+});
+
+test("waitFor surfaces the last poll error on timeout", async () => {
+  await assert.rejects(
+    waitFor(
+      async () => {
+        throw new Error("boom");
+      },
+      () => true,
+      { timeoutMs: 20, intervalMs: 5, description: "x" },
+    ),
+    /timed out after 20ms waiting for x \(last error: Error: boom\)/,
+  );
+});
+
+test("waitFor throws on timeout with the description", async () => {
+  await assert.rejects(
+    waitFor(
+      async () => false,
+      (v) => v === true,
+      { timeoutMs: 20, intervalMs: 5, description: "the impossible" },
+    ),
+    /timed out after 20ms waiting for the impossible/,
+  );
 });
