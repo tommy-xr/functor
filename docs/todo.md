@@ -7,11 +7,17 @@ golden tests), see `CLAUDE.md` and `git log`.
 
 ## Validation tooling
 
-- [ ] **Debug runtime** (north star): an HTTP/stdin trigger on `functor-runner`
-      for on-demand capture + state queries, à la shock2quest's `debug_runtime`
-      (`/screenshot`, raycast, entity-state). Grow it out of the existing capture
-      path rather than a separate binary; MVU already makes state serializable
-      (`emit_state`).
+- Debug runtime: the `--debug-port` HTTP control server exists (`/capture`,
+      `/state`, `/scene`, `/input`, `/time` clock control, `GET /` index — see
+      `docs/debug-runtime.md`). Remaining:
+  - [ ] **TypeScript SDK** (`tools/functor-sdk`): typed client over the endpoints
+        (single-client + a multi-client lockstep session for **multiplayer
+        simulation** — N runners, pinned clocks, stepped together), plus a gated
+        e2e harness driving `hello`. First e2e guard: inject `up` → step → assert
+        `model.held.up`.
+  - [ ] Richer observation: a structured (parseable) state snapshot + held-input
+        summary, beyond today's `Debug`-text `model`.
+  - [ ] Raycast / entity-state queries (à la shock2quest's `debug_runtime`).
 - [ ] Headless/offscreen render path (e.g. llvmpipe under xvfb) at a fixed
       resolution so the golden-image test can run in CI (today it's `#[ignore]`d).
 - [ ] WASM capture path (today wasm screenshots need an external headless browser).
