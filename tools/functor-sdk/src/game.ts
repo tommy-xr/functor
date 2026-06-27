@@ -1,8 +1,16 @@
 import type { HttpClient } from "./client.js";
-import type { InputCommand, RuntimeState, Scene } from "./types.js";
+import type { InputCommand, KeyName, RuntimeState, Scene } from "./types.js";
 
 /** Default per-step delta time (seconds), ~one frame at 60 Hz. */
 export const DEFAULT_STEP_DT = 1 / 60;
+
+/** Canonicalize a key name to the runtime's form (e.g. "up" -> "Up", "w" -> "W").
+ * Every canonical Key name is a single word with only its first letter capitalized. */
+function canonicalKeyName(key: string): string {
+  return key.length === 0
+    ? key
+    : key[0].toUpperCase() + key.slice(1).toLowerCase();
+}
 
 /** A high-level client for a single running game (one debug port).
  *
@@ -22,6 +30,18 @@ export class FunctorClient {
   /** Current frame description: camera + scene + lights. */
   scene(): Promise<Scene> {
     return this.http.getJson<Scene>("/scene");
+  }
+
+  /** Keys the runtime currently considers held (structured, game-agnostic). */
+  async heldKeys(): Promise<KeyName[]> {
+    return (await this.state()).input.held_keys;
+  }
+
+  /** Whether a given key is currently held. Case-insensitive: accepts either the
+   * canonical name ("Up") or the lowercase form taken by keyDown/keyUp ("up"). */
+  async isKeyDown(key: KeyName): Promise<boolean> {
+    const want = canonicalKeyName(key);
+    return (await this.heldKeys()).some((k) => k === want);
   }
 
   /** Capture the next rendered frame as PNG bytes. */

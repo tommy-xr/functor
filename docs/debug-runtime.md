@@ -28,7 +28,7 @@ each request is handed to the render loop and fulfilled once per frame.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, `viewport`, `model` (Rust `Debug` text) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, `viewport`, `input` (structured `held_keys` + `mouse`), `model` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `POST /input` | inject input (see below) |
 | `POST /time` | control the frame clock (see below) |
@@ -88,6 +88,7 @@ session for simulating multiplayer games) lives in `tools/functor-sdk` *(planned
   `--debug-port`, networked via `Sub.connect`/`Sub.listen`; pin all clocks and step
   them in lockstep, injecting input and observing state per client. This is the
   out-of-process counterpart to the in-process `functor-netsim` harness.
-- **Richer observation.** A structured (parseable) state snapshot and a held-input
-  summary, beyond today's `Debug`-text `model`.
+- **Richer observation.** `/state.input` now reports held keys + mouse as structured
+  JSON (game-agnostic, runtime-owned). Still open: a parseable snapshot of the game
+  *model* itself (today `Debug` text — the model isn't `Serialize`).
 - **Discoverability/ergonomics.** First-class `pause` / single-`step` verbs.

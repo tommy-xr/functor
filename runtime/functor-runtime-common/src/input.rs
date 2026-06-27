@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// boundary. The F# `Input.Key` DU mirrors these discriminants in
 /// `Input.ofKeyCode` — keep the two in sync when adding keys.
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Key {
     Unknown = 0,
     A = 1,
@@ -43,4 +43,41 @@ pub enum Key {
     Space,
     Enter,
     Escape,
+}
+
+impl Key {
+    /// All key variants in discriminant order. Keep in sync with the enum above
+    /// (guarded by `from_i32_round_trips`).
+    pub const ALL: [Key; 34] = [
+        Key::Unknown,
+        Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I,
+        Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R,
+        Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z,
+        Key::Up, Key::Down, Key::Left, Key::Right, Key::Space, Key::Enter,
+        Key::Escape,
+    ];
+
+    /// The key whose `as i32` discriminant equals `value`, if any. The inverse
+    /// of `key as i32` (which is how key codes cross the dylib/wasm boundary).
+    pub fn from_i32(value: i32) -> Option<Key> {
+        Key::ALL.into_iter().find(|k| *k as i32 == value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Key;
+
+    #[test]
+    fn from_i32_round_trips() {
+        for (i, key) in Key::ALL.iter().enumerate() {
+            // Prove ALL is contiguous from 0 (not just that round-trips work) —
+            // otherwise the length-as-ceiling check below wouldn't be sound, and
+            // a gap could hide a missing variant.
+            assert_eq!(*key as i32, i as i32, "Key::ALL must be contiguous from 0");
+            assert_eq!(Key::from_i32(*key as i32), Some(*key));
+        }
+        assert_eq!(Key::from_i32(Key::ALL.len() as i32), None);
+        assert_eq!(Key::from_i32(-1), None);
+    }
 }
