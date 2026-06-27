@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::{FrameTime, SceneContext};
+use functor_runtime_common::{Frame, FrameTime, SceneContext};
 use std::collections::BTreeSet;
 
 use functor_runtime_common::Key as InputKey;
@@ -215,6 +215,195 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
     }
 }
 
+// --- Shared per-frame phases, used by both the windowed and headless loops, so
+// the two don't drift. Each is GL-free; the windowed loop wraps them with its
+// rendering, and supplies a real framebuffer-capture closure to
+// `service_debug_request` (headless supplies an "unavailable" one). ---
+
+/// This frame's `FrameTime`, honoring the debug clock controls (`--fixed-time` /
+/// POST /time): `pending_step` advances once then holds; otherwise a pinned
+/// `held_time` freezes the clock, else it follows wall-clock.
+fn next_frame_time(
+    held_time: &mut Option<f32>,
+    pending_step: &mut Option<f32>,
+    last_time: f32,
+    elapsed: f32,
+) -> FrameTime {
+    if let Some(step) = pending_step.take() {
+        let new_tts = held_time.unwrap_or(last_time) + step;
+        *held_time = Some(new_tts);
+        FrameTime {
+            dts: step,
+            tts: new_tts,
+        }
+    } else {
+        match *held_time {
+            Some(tts) => FrameTime { dts: 0.0, tts },
+            None => FrameTime {
+                dts: elapsed - last_time,
+                tts: elapsed,
+            },
+        }
+    }
+}
+
+/// Deliver async HTTP + WebSocket results into the game's inbox *before* tick, so
+/// this frame's executor drain sees them.
+fn deliver_net_ws(
+    game: &mut dyn Game,
+    net_rx: &std::sync::mpsc::Receiver<net_dispatch::NetResult>,
+    ws_rx: &std::sync::mpsc::Receiver<ws_host::HostNetEvent>,
+) {
+    while let Ok(result) = net_rx.try_recv() {
+        match result {
+            net_dispatch::NetResult::Response {
+                token,
+                status,
+                body,
+            } => game.net_push_http_response(token, status, body),
+            net_dispatch::NetResult::Error { token, message } => {
+                game.net_push_http_error(token, message)
+            }
+        }
+    }
+    while let Ok(event) = ws_rx.try_recv() {
+        match event {
+            ws_host::HostNetEvent::Connected { key, id } => {
+                game.net_push_connected(key, id as i32)
+            }
+            ws_host::HostNetEvent::Message { key, id, text } => {
+                game.net_push_conn_message(key, id as i32, text)
+            }
+            ws_host::HostNetEvent::Disconnected { key, id } => {
+                game.net_push_disconnected(key, id as i32)
+            }
+            ws_host::HostNetEvent::Error { key, id, message } => {
+                game.net_push_conn_error(key, id as i32, message)
+            }
+        }
+    }
+}
+
+/// Perform the HTTP + WebSocket commands this frame's tick queued. HTTP requests
+/// run on tokio tasks (results return via `net_tx`); WS commands go to the manager.
+fn dispatch_net_ws(
+    game: &mut dyn Game,
+    net_tx: &std::sync::mpsc::Sender<net_dispatch::NetResult>,
+    http_client: &reqwest::Client,
+    ws_manager: &mut ws_host::WsManager,
+) {
+    let commands_json = game.net_drain_commands();
+    if commands_json != "[]" {
+        match serde_json::from_str::<Vec<functor_runtime_common::net::NetCommand>>(&commands_json) {
+            Ok(commands) => {
+                for cmd in commands {
+                    let tx = net_tx.clone();
+                    let client = http_client.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.send(net_dispatch::perform_http(&client, cmd).await);
+                    });
+                }
+            }
+            Err(e) => eprintln!("[net] bad commands json: {e}"),
+        }
+    }
+
+    let conn_json = game.net_drain_conn_commands();
+    if conn_json != "[]" {
+        match serde_json::from_str::<Vec<functor_runtime_common::net::ConnCommand>>(&conn_json) {
+            Ok(commands) => {
+                for cmd in commands {
+                    ws_manager.handle(cmd);
+                }
+            }
+            Err(e) => eprintln!("[net] bad conn commands json: {e}"),
+        }
+    }
+}
+
+/// Service one debug-server request. `capture` produces the PNG (or a
+/// `CaptureError`) for `POST /capture` — a framebuffer readback in the windowed
+/// loop, or `Unavailable` in headless.
+#[allow(clippy::too_many_arguments)]
+fn service_debug_request(
+    req: debug_server::DebugRequest,
+    game: &mut dyn Game,
+    frame: &Frame,
+    frame_count: u64,
+    tts: f32,
+    width: u32,
+    height: u32,
+    held_keys: &mut BTreeSet<InputKey>,
+    mouse_pos: &mut (i32, i32),
+    held_time: &mut Option<f32>,
+    pending_step: &mut Option<f32>,
+    capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
+) {
+    match req {
+        debug_server::DebugRequest::Capture(resp) => {
+            let _ = resp.send(capture());
+        }
+        debug_server::DebugRequest::State(resp) => {
+            let _ = resp.send(debug_server::RuntimeState {
+                frame: frame_count,
+                tts,
+                width,
+                height,
+                model: game.state_debug(),
+                held_keys: held_keys.iter().copied().collect(),
+                mouse: *mouse_pos,
+            });
+        }
+        debug_server::DebugRequest::Scene(resp) => {
+            let json = serde_json::to_string_pretty(frame)
+                .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
+            let _ = resp.send(json);
+        }
+        debug_server::DebugRequest::Input(cmd, resp) => {
+            let result = match cmd {
+                debug_server::InputCommand::Key { key, down } => match key_from_str(&key) {
+                    Some(k) => {
+                        game.key_event(k as i32, down);
+                        if down {
+                            held_keys.insert(k);
+                        } else {
+                            held_keys.remove(&k);
+                        }
+                        Ok(())
+                    }
+                    None => Err(format!("unknown key: {}", key)),
+                },
+                debug_server::InputCommand::MouseMove { x, y } => {
+                    *mouse_pos = (x, y);
+                    game.mouse_move(x, y);
+                    Ok(())
+                }
+                debug_server::InputCommand::MouseWheel { delta } => {
+                    game.mouse_wheel(delta);
+                    Ok(())
+                }
+            };
+            let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::Time(cmd, resp) => {
+            match cmd {
+                debug_server::TimeCommand::Set { tts } => {
+                    *held_time = Some(tts);
+                    *pending_step = None;
+                }
+                debug_server::TimeCommand::Advance { dts } => {
+                    *pending_step = Some(dts);
+                }
+                debug_server::TimeCommand::Resume => {
+                    *held_time = None;
+                    *pending_step = None;
+                }
+            }
+            let _ = resp.send(());
+        }
+    }
+}
+
 /// Headless game loop: drives the game + debug server with no GL window, for CI /
 /// scripted / LLM-driven runs (`--headless`). Mirrors the windowed loop's game,
 /// networking, and debug handling, minus everything that needs GL — rendering,
@@ -246,168 +435,41 @@ fn run_headless(
 
     loop {
         let elapsed = start_time.elapsed().as_secs_f32();
-        // Same clock control as the windowed loop (--fixed-time / POST /time).
-        let time: FrameTime = if let Some(step) = pending_step.take() {
-            let new_tts = held_time.unwrap_or(last_time) + step;
-            held_time = Some(new_tts);
-            FrameTime {
-                dts: step,
-                tts: new_tts,
-            }
-        } else {
-            match held_time {
-                Some(tts) => FrameTime { dts: 0.0, tts },
-                None => FrameTime {
-                    dts: elapsed - last_time,
-                    tts: elapsed,
-                },
-            }
-        };
+        let time = next_frame_time(&mut held_time, &mut pending_step, last_time, elapsed);
         last_time = elapsed;
 
-        // Pick up a hot-reloaded dylib (no-op for a static game), matching the
-        // windowed loop. Keep this loop's per-frame ordering in sync with the
-        // windowed loop above, which is the source of truth.
+        // Same per-frame ordering as the windowed loop (the source of truth),
+        // minus everything that needs GL.
         game.check_hot_reload(time.clone());
-
-        // Deliver async net/ws results into the game before tick (same ordering as
-        // the windowed loop, so this frame's executor drain sees them).
-        while let Ok(result) = net_rx.try_recv() {
-            match result {
-                net_dispatch::NetResult::Response {
-                    token,
-                    status,
-                    body,
-                } => game.net_push_http_response(token, status, body),
-                net_dispatch::NetResult::Error { token, message } => {
-                    game.net_push_http_error(token, message)
-                }
-            }
-        }
-        while let Ok(event) = ws_rx.try_recv() {
-            match event {
-                ws_host::HostNetEvent::Connected { key, id } => {
-                    game.net_push_connected(key, id as i32)
-                }
-                ws_host::HostNetEvent::Message { key, id, text } => {
-                    game.net_push_conn_message(key, id as i32, text)
-                }
-                ws_host::HostNetEvent::Disconnected { key, id } => {
-                    game.net_push_disconnected(key, id as i32)
-                }
-                ws_host::HostNetEvent::Error { key, id, message } => {
-                    game.net_push_conn_error(key, id as i32, message)
-                }
-            }
-        }
-
+        deliver_net_ws(&mut *game, &net_rx, &ws_rx);
         game.tick(time.clone());
+        dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
 
-        // HTTP commands this tick queued -> tokio tasks (results return via net_rx).
-        let commands_json = game.net_drain_commands();
-        if commands_json != "[]" {
-            match serde_json::from_str::<Vec<functor_runtime_common::net::NetCommand>>(&commands_json)
-            {
-                Ok(commands) => {
-                    for cmd in commands {
-                        let tx = net_tx.clone();
-                        let client = http_client.clone();
-                        tokio::spawn(async move {
-                            let _ = tx.send(net_dispatch::perform_http(&client, cmd).await);
-                        });
-                    }
-                }
-                Err(e) => eprintln!("[net] bad commands json: {e}"),
-            }
-        }
-
-        // WebSocket commands this tick queued (connect / listen / send / close).
-        let conn_json = game.net_drain_conn_commands();
-        if conn_json != "[]" {
-            match serde_json::from_str::<Vec<functor_runtime_common::net::ConnCommand>>(&conn_json) {
-                Ok(commands) => {
-                    for cmd in commands {
-                        ws_manager.handle(cmd);
-                    }
-                }
-                Err(e) => eprintln!("[net] bad conn commands json: {e}"),
-            }
-        }
-
-        // The frame description is pure data (no GL); it powers GET /scene. Drain
-        // and drop audio commands (no device in headless) so they don't pile up.
+        // The frame is pure data (no GL); it powers GET /scene. Drain and drop
+        // audio commands (no device in headless) so they don't pile up.
         let frame = game.render(time.clone());
         let _ = game.audio_drain_commands();
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {
-                match req {
-                    debug_server::DebugRequest::Capture(resp) => {
-                        let _ = resp.send(Err(debug_server::CaptureError::Unavailable(
+                service_debug_request(
+                    req,
+                    &mut *game,
+                    &frame,
+                    frame_count,
+                    time.tts,
+                    0, // no framebuffer in headless
+                    0,
+                    &mut held_keys,
+                    &mut mouse_pos,
+                    &mut held_time,
+                    &mut pending_step,
+                    &|| {
+                        Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
-                        )));
-                    }
-                    debug_server::DebugRequest::State(resp) => {
-                        let _ = resp.send(debug_server::RuntimeState {
-                            frame: frame_count,
-                            tts: time.tts,
-                            width: 0,
-                            height: 0,
-                            model: game.state_debug(),
-                            held_keys: held_keys.iter().copied().collect(),
-                            mouse: mouse_pos,
-                        });
-                    }
-                    debug_server::DebugRequest::Scene(resp) => {
-                        let json = serde_json::to_string_pretty(&frame)
-                            .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
-                        let _ = resp.send(json);
-                    }
-                    debug_server::DebugRequest::Input(cmd, resp) => {
-                        let result = match cmd {
-                            debug_server::InputCommand::Key { key, down } => {
-                                match key_from_str(&key) {
-                                    Some(k) => {
-                                        game.key_event(k as i32, down);
-                                        if down {
-                                            held_keys.insert(k);
-                                        } else {
-                                            held_keys.remove(&k);
-                                        }
-                                        Ok(())
-                                    }
-                                    None => Err(format!("unknown key: {}", key)),
-                                }
-                            }
-                            debug_server::InputCommand::MouseMove { x, y } => {
-                                mouse_pos = (x, y);
-                                game.mouse_move(x, y);
-                                Ok(())
-                            }
-                            debug_server::InputCommand::MouseWheel { delta } => {
-                                game.mouse_wheel(delta);
-                                Ok(())
-                            }
-                        };
-                        let _ = resp.send(result);
-                    }
-                    debug_server::DebugRequest::Time(cmd, resp) => {
-                        match cmd {
-                            debug_server::TimeCommand::Set { tts } => {
-                                held_time = Some(tts);
-                                pending_step = None;
-                            }
-                            debug_server::TimeCommand::Advance { dts } => {
-                                pending_step = Some(dts);
-                            }
-                            debug_server::TimeCommand::Resume => {
-                                held_time = None;
-                                pending_step = None;
-                            }
-                        }
-                        let _ = resp.send(());
-                    }
-                }
+                        ))
+                    },
+                );
             }
         }
 
@@ -563,24 +625,7 @@ pub async fn main() {
             // for reproducible captures / golden images. The capture trigger
             // below still keys off wall-clock elapsed, so the loop runs long
             // enough for assets to load before a shot is taken.
-            let time: FrameTime = if let Some(step) = pending_step.take() {
-                // One-shot /time advance: step the clock by `step` with a matching
-                // dts so the simulation integrates the interval, then stay held.
-                let new_tts = held_time.unwrap_or(last_time) + step;
-                held_time = Some(new_tts);
-                FrameTime {
-                    dts: step,
-                    tts: new_tts,
-                }
-            } else {
-                match held_time {
-                    Some(tts) => FrameTime { dts: 0.0, tts },
-                    None => FrameTime {
-                        dts: elapsed_time - last_time,
-                        tts: elapsed_time,
-                    },
-                }
-            };
+            let time = next_frame_time(&mut held_time, &mut pending_step, last_time, elapsed_time);
             last_time = elapsed_time;
 
             game.check_hot_reload(time.clone());
@@ -630,86 +675,22 @@ pub async fn main() {
                 }
             }
 
-            // Deliver any HTTP results that completed since last frame into the
-            // game's inbox *before* tick, so this frame's executor drain sees
-            // them (the executor drains the inbox during tick).
-            while let Ok(result) = net_rx.try_recv() {
-                match result {
-                    net_dispatch::NetResult::Response {
-                        token,
-                        status,
-                        body,
-                    } => game.net_push_http_response(token, status, body),
-                    net_dispatch::NetResult::Error { token, message } => {
-                        game.net_push_http_error(token, message)
-                    }
-                }
-            }
-
-            // Likewise deliver WebSocket events before tick, so the executor routes
-            // them to the connection's decoder this frame.
-            while let Ok(event) = ws_rx.try_recv() {
-                match event {
-                    ws_host::HostNetEvent::Connected { key, id } => {
-                        game.net_push_connected(key, id as i32)
-                    }
-                    ws_host::HostNetEvent::Message { key, id, text } => {
-                        game.net_push_conn_message(key, id as i32, text)
-                    }
-                    ws_host::HostNetEvent::Disconnected { key, id } => {
-                        game.net_push_disconnected(key, id as i32)
-                    }
-                    ws_host::HostNetEvent::Error { key, id, message } => {
-                        game.net_push_conn_error(key, id as i32, message)
-                    }
-                }
-            }
+            // Deliver async HTTP + WebSocket results into the game's inbox before
+            // tick (shared with the headless loop).
+            deliver_net_ws(&mut *game, &net_rx, &ws_rx);
 
             // Deliver any `playThen` completions that finished since last frame,
             // before tick so this frame's executor drain delivers their messages.
+            // (Windowed-only: the headless loop has no audio device.)
             while let Ok(token) = audio_rx.try_recv() {
                 game.audio_push_finished(token as i32);
             }
 
             game.tick(time.clone());
 
-            // Perform any networking commands this frame's tick queued. Each runs
-            // on its own tokio task; the result returns over net_tx and is applied
-            // next frame by the loop above. `[]` (the common no-network case) is
-            // cheap to produce and skip.
-            let commands_json = game.net_drain_commands();
-            if commands_json != "[]" {
-                match serde_json::from_str::<Vec<functor_runtime_common::net::NetCommand>>(
-                    &commands_json,
-                ) {
-                    Ok(commands) => {
-                        for cmd in commands {
-                            let tx = net_tx.clone();
-                            let client = http_client.clone();
-                            tokio::spawn(async move {
-                                let _ = tx.send(net_dispatch::perform_http(&client, cmd).await);
-                            });
-                        }
-                    }
-                    Err(e) => eprintln!("[net] bad commands json: {e}"),
-                }
-            }
-
-            // Perform any WebSocket commands this frame's tick queued (connect /
-            // send / close). The manager owns the sockets; events return via ws_rx.
-            let conn_json = game.net_drain_conn_commands();
-            if conn_json != "[]" {
-                match serde_json::from_str::<Vec<functor_runtime_common::net::ConnCommand>>(
-                    &conn_json,
-                ) {
-                    Ok(commands) => {
-                        for cmd in commands {
-                            ws_manager.handle(cmd);
-                        }
-                    }
-                    Err(e) => eprintln!("[net] bad conn commands json: {e}"),
-                }
-            }
+            // Perform the HTTP + WebSocket commands this frame's tick queued
+            // (shared with the headless loop).
+            dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
@@ -789,79 +770,24 @@ pub async fn main() {
             // reads from). GL stays on this thread; we only reply over channels.
             if let Some(rx) = &debug_requests {
                 while let Ok(req) = rx.try_recv() {
-                    match req {
-                        debug_server::DebugRequest::Capture(resp) => {
-                            let _ = resp.send(
-                                encode_framebuffer_png(&gl, fb_width as u32, fb_height as u32)
-                                    .map_err(debug_server::CaptureError::Failed),
-                            );
-                        }
-                        debug_server::DebugRequest::State(resp) => {
-                            let _ = resp.send(debug_server::RuntimeState {
-                                frame: frame_count,
-                                tts: time.tts,
-                                width: fb_width as u32,
-                                height: fb_height as u32,
-                                model: game.state_debug(),
-                                held_keys: held_keys.iter().copied().collect(),
-                                mouse: mouse_pos,
-                            });
-                        }
-                        debug_server::DebugRequest::Scene(resp) => {
-                            // Serialize the frame we just rendered (camera +
-                            // scene). Frame derives Serialize for the wasm path,
-                            // so this is real JSON, not Debug text.
-                            let json = serde_json::to_string_pretty(&frame)
-                                .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
-                            let _ = resp.send(json);
-                        }
-                        debug_server::DebugRequest::Input(cmd, resp) => {
-                            // Inject input as if it came from the window; the game
-                            // applies it immediately, so the next /state reflects it.
-                            let result = match cmd {
-                                debug_server::InputCommand::Key { key, down } => {
-                                    match key_from_str(&key) {
-                                        Some(k) => {
-                                            game.key_event(k as i32, down);
-                                            if down {
-                                                held_keys.insert(k);
-                                            } else {
-                                                held_keys.remove(&k);
-                                            }
-                                            Ok(())
-                                        }
-                                        None => Err(format!("unknown key: {}", key)),
-                                    }
-                                }
-                                debug_server::InputCommand::MouseMove { x, y } => {
-                                    mouse_pos = (x, y);
-                                    game.mouse_move(x, y);
-                                    Ok(())
-                                }
-                                debug_server::InputCommand::MouseWheel { delta } => {
-                                    game.mouse_wheel(delta);
-                                    Ok(())
-                                }
-                            };
-                            let _ = resp.send(result);
-                        }
-                        debug_server::DebugRequest::Time(cmd, resp) => {
-                            match cmd {
-                                debug_server::TimeCommand::Set { tts } => {
-                                    held_time = Some(tts);
-                                    pending_step = None;
-                                }
-                                debug_server::TimeCommand::Advance { dts } => {
-                                    pending_step = Some(dts);
-                                }
-                                debug_server::TimeCommand::Resume => {
-                                    held_time = None;
-                                    pending_step = None;
-                                }
-                            }
-                            let _ = resp.send(());
-                        }
-                    }
+                    service_debug_request(
+                        req,
+                        &mut *game,
+                        &frame,
+                        frame_count,
+                        time.tts,
+                        fb_width as u32,
+                        fb_height as u32,
+                        &mut held_keys,
+                        &mut mouse_pos,
+                        &mut held_time,
+                        &mut pending_step,
+                        // GL readback on the render thread (a real Failed on error).
+                        &|| {
+                            encode_framebuffer_png(&gl, fb_width as u32, fb_height as u32)
+                                .map_err(debug_server::CaptureError::Failed)
+                        },
+                    );
                 }
             }
 
