@@ -51,6 +51,16 @@ export type InputCommand =
   | { type: "mouse_move"; x: number; y: number }
   | { type: "mouse_wheel"; delta: number };
 
+/** Options for polling helpers like `waitFor` / `waitForState`. */
+export interface WaitForOptions {
+  /** Total time to wait before giving up, ms (default 10_000). */
+  timeoutMs?: number;
+  /** Poll interval, ms (default 100). */
+  intervalMs?: number;
+  /** Phrase used in the timeout error message ("…waiting for <description>"). */
+  description?: string;
+}
+
 /** Options for launching a `functor-runner` process. */
 export interface LaunchOptions {
   /** Game directory containing `build-native/` (the runner's cwd, for assets).

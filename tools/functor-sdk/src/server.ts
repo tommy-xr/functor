@@ -1,11 +1,49 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { HttpClient } from "./client.js";
 import { FunctorClient } from "./game.js";
-import type { LaunchOptions } from "./types.js";
+import type { LaunchOptions, WaitForOptions } from "./types.js";
+
+/** Resolve once a TCP connection to `host:port` succeeds, or throw on timeout.
+ * Useful to wait for a game's `Sub.listen` socket to be bound before launching
+ * clients (the debug `/state` readiness only proves the render loop is running,
+ * not that a game-level listener has bound yet). */
+export async function waitForPort(
+  host: string,
+  port: number,
+  opts: WaitForOptions = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const intervalMs = opts.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await tryConnect(host, port)) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      const what = opts.description ? ` (${opts.description})` : "";
+      throw new Error(`${host}:${port} not accepting connections after ${timeoutMs}ms${what}`);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+function tryConnect(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host, port });
+    const settle = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.once("connect", () => settle(true));
+    socket.once("error", () => settle(false));
+    socket.setTimeout(1_000, () => settle(false));
+  });
+}
 
 /** Walk up from a directory until a cargo workspace root is found. */
 export function findRepoRoot(startDir: string): string | undefined {
