@@ -6,6 +6,8 @@ use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::{FrameTime, SceneContext};
+use std::collections::BTreeSet;
+
 use functor_runtime_common::Key as InputKey;
 use glfw::{Action, Key};
 use glow::*;
@@ -66,28 +68,27 @@ fn map_key(key: Key) -> InputKey {
     }
 }
 
-/// Map a key name (case-insensitive: "w", "Up", "space", …) to the engine key
-/// code passed across the game boundary, for the debug server's POST /input.
-/// Letters rely on the contiguous A..Z discriminants.
-fn key_code_from_str(name: &str) -> Option<i32> {
+/// Map a key name (case-insensitive: "w", "Up", "space", …) to the canonical
+/// engine key, for the debug server's POST /input. Letters rely on the
+/// contiguous A..Z discriminants.
+fn key_from_str(name: &str) -> Option<InputKey> {
     let name = name.to_ascii_lowercase();
     if name.len() == 1 {
         let c = name.as_bytes()[0];
         if c.is_ascii_lowercase() {
-            return Some((c - b'a') as i32 + InputKey::A as i32);
+            return InputKey::from_i32((c - b'a') as i32 + InputKey::A as i32);
         }
     }
-    let key = match name.as_str() {
-        "up" => InputKey::Up,
-        "down" => InputKey::Down,
-        "left" => InputKey::Left,
-        "right" => InputKey::Right,
-        "space" => InputKey::Space,
-        "enter" => InputKey::Enter,
-        "escape" => InputKey::Escape,
-        _ => return None,
-    };
-    Some(key as i32)
+    match name.as_str() {
+        "up" => Some(InputKey::Up),
+        "down" => Some(InputKey::Down),
+        "left" => Some(InputKey::Left),
+        "right" => Some(InputKey::Right),
+        "space" => Some(InputKey::Space),
+        "enter" => Some(InputKey::Enter),
+        "escape" => Some(InputKey::Escape),
+        _ => None,
+    }
 }
 
 use clap::Parser;
@@ -280,6 +281,11 @@ pub async fn main() {
         // one-shot dt advance on the next frame. Seeded from --fixed-time.
         let mut held_time: Option<f32> = args.fixed_time;
         let mut pending_step: Option<f32> = None;
+        // Runtime-owned input snapshot for GET /state, maintained from both the
+        // GLFW event stream and the debug server's POST /input. Generic and
+        // serializable, unlike the game model (which is Debug text only).
+        let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
+        let mut mouse_pos: (i32, i32) = (0, 0);
 
         use glfw::Context;
 
@@ -370,14 +376,31 @@ pub async fn main() {
                     glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                         window.set_should_close(true)
                     }
-                    _ if ignore_user_input => {}
-                    glfw::WindowEvent::Key(key, _, action, _) => match action {
-                        Action::Press | Action::Repeat => {
-                            game.key_event(map_key(key) as i32, true)
+                    // Always honor key releases and focus-loss, even while other
+                    // input is ignored (pinned clock) — otherwise a key held at
+                    // the pin transition, or released after alt-tab, would stick
+                    // in held_keys forever. Releases can only *clear* input, so
+                    // they don't perturb a pinned/deterministic pose.
+                    glfw::WindowEvent::Key(key, _, Action::Release, _) => {
+                        let k = map_key(key);
+                        game.key_event(k as i32, false);
+                        held_keys.remove(&k);
+                    }
+                    glfw::WindowEvent::Focus(false) => {
+                        for k in std::mem::take(&mut held_keys) {
+                            game.key_event(k as i32, false);
                         }
-                        Action::Release => game.key_event(map_key(key) as i32, false),
-                    },
+                    }
+                    _ if ignore_user_input => {}
+                    glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
+                        let k = map_key(key);
+                        game.key_event(k as i32, true);
+                        if k != InputKey::Unknown {
+                            held_keys.insert(k);
+                        }
+                    }
                     glfw::WindowEvent::CursorPos(x, y) => {
+                        mouse_pos = (x as i32, y as i32);
                         game.mouse_move(x as i32, y as i32)
                     }
                     glfw::WindowEvent::Scroll(_, y) => game.mouse_wheel(y as i32),
@@ -563,6 +586,8 @@ pub async fn main() {
                                 width: fb_width as u32,
                                 height: fb_height as u32,
                                 model: game.state_debug(),
+                                held_keys: held_keys.iter().copied().collect(),
+                                mouse: mouse_pos,
                             });
                         }
                         debug_server::DebugRequest::Scene(resp) => {
@@ -578,15 +603,21 @@ pub async fn main() {
                             // applies it immediately, so the next /state reflects it.
                             let result = match cmd {
                                 debug_server::InputCommand::Key { key, down } => {
-                                    match key_code_from_str(&key) {
-                                        Some(code) => {
-                                            game.key_event(code, down);
+                                    match key_from_str(&key) {
+                                        Some(k) => {
+                                            game.key_event(k as i32, down);
+                                            if down {
+                                                held_keys.insert(k);
+                                            } else {
+                                                held_keys.remove(&k);
+                                            }
                                             Ok(())
                                         }
                                         None => Err(format!("unknown key: {}", key)),
                                     }
                                 }
                                 debug_server::InputCommand::MouseMove { x, y } => {
+                                    mouse_pos = (x, y);
                                     game.mouse_move(x, y);
                                     Ok(())
                                 }

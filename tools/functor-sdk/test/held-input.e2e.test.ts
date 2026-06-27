@@ -13,18 +13,18 @@ const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-/** Best-effort read of `held.up` from the model's Debug string, e.g.
- * `... held: HeldKeys { up: true, down: false, ... } ...`. Whitespace-tolerant,
- * but still coupled to the Rust Debug layout (model is stringly-typed today —
- * see types.ts; a structured snapshot would let us drop this regex). */
-function heldUp(model: string): boolean {
+/** Whether the hello game's model shows `held.up` set. This reads the (stringly-
+ * typed) Debug model on purpose — as an independent check that the injected key
+ * reaches the *game*, not just the runtime's own input snapshot (which is mutated
+ * in the same handler as the game key event). */
+function gameSawUp(model: string): boolean {
   const m = model.match(/HeldKeys\s*\{\s*up:\s*(true|false)/);
   assert.ok(m, `could not find HeldKeys.up in model: ${model.slice(0, 200)}`);
   return m[1] === "true";
 }
 
 test(
-  "injected key is reflected in game state across a manual step",
+  "injected key is reflected in both the runtime input state and the game",
   { skip: !e2eEnabled, timeout: 120_000 },
   async () => {
     const repoRoot = findRepoRoot(process.cwd());
@@ -39,23 +39,25 @@ test(
     // Pin the clock so the only thing that changes state is what we inject.
     await game.pause();
 
-    // Baseline: nothing held.
-    await game.step();
-    assert.equal(heldUp((await game.state()).model), false, "up should start released");
+    // Baseline: nothing held — structured snapshot AND game model.
+    assert.equal(await game.isKeyDown("Up"), false, "Up should start released");
+    assert.equal(gameSawUp((await game.state()).model), false, "game should start with up released");
 
-    // Positive: press 'up', step a frame, observe held.up flip true.
+    // Positive: press 'up', step a frame.
     await game.keyDown("up");
     await game.step();
+    assert.equal(await game.isKeyDown("Up"), true, "runtime should report Up held");
     assert.equal(
-      heldUp((await game.state()).model),
+      gameSawUp((await game.state()).model),
       true,
-      "up should be held after keyDown + step (regression: input not reaching the game)",
+      "game should see up held (regression: input not reaching the game)",
     );
 
-    // Negative: release 'up', step, observe it flip back.
+    // Negative: release 'up', step.
     await game.keyUp("up");
     await game.step();
-    assert.equal(heldUp((await game.state()).model), false, "up should release after keyUp + step");
+    assert.equal(await game.isKeyDown("Up"), false, "runtime should report Up released");
+    assert.equal(gameSawUp((await game.state()).model), false, "game should see up released");
 
     // The render path produces a valid PNG.
     const png = await game.capture();

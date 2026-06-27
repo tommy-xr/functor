@@ -1,10 +1,27 @@
-/** Runtime state from `GET /state`. `model` is the game model rendered with
- * Rust's pretty-`Debug` (not structured JSON yet), so reading specific fields
- * from it is best-effort string matching for now. */
+/** A canonical key name as reported by the runtime (`functor_runtime_common::Key`).
+ * The `(string & {})` arm keeps newly-added keys usable before the SDK is updated. */
+export type KeyName =
+  | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
+  | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+  | "Up" | "Down" | "Left" | "Right" | "Space" | "Enter" | "Escape" | "Unknown"
+  | (string & {});
+
+/** Runtime-owned input snapshot (independent of the game model). */
+export interface InputSnapshot {
+  /** Keys currently held, by canonical name. */
+  held_keys: KeyName[];
+  /** Last known cursor position in window pixels. */
+  mouse: { x: number; y: number };
+}
+
+/** Runtime state from `GET /state`. `input` is structured and game-agnostic;
+ * `model` is the game model rendered with Rust's pretty-`Debug` (not structured
+ * JSON), so reading fields from it is best-effort string matching. */
 export interface RuntimeState {
   frame: number;
   tts: number;
   viewport: { width: number; height: number };
+  input: InputSnapshot;
   model: string;
 }
 

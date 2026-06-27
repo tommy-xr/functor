@@ -17,6 +17,7 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use functor_runtime_common::Key;
 use serde::Deserialize;
 use tiny_http::{Header, Method, Response, Server};
 
@@ -31,6 +32,11 @@ pub struct RuntimeState {
     pub width: u32,
     pub height: u32,
     pub model: String,
+    /// Keys currently held, maintained by the runtime (serialized by their
+    /// canonical names, ordered by key discriminant, e.g. `["W", "Up"]`).
+    pub held_keys: Vec<Key>,
+    /// Last known cursor position (x, y) in window pixels.
+    pub mouse: (i32, i32),
 }
 
 impl RuntimeState {
@@ -42,6 +48,10 @@ impl RuntimeState {
             "tts": self.tts,
             "viewport": { "width": self.width, "height": self.height },
             "model": self.model,
+            "input": {
+                "held_keys": self.held_keys,
+                "mouse": { "x": self.mouse.0, "y": self.mouse.1 },
+            },
         })
         .to_string()
     }
@@ -246,7 +256,7 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                         "endpoints": {
                             "GET /": "this endpoint index",
                             "POST /capture": "PNG (image/png) of the next rendered frame",
-                            "GET /state": "runtime state JSON: frame, tts, viewport, model (Debug text)",
+                            "GET /state": "runtime state JSON: frame, tts, viewport, input (held_keys + mouse), model (Debug text)",
                             "GET /scene": "current frame as JSON: camera + scene + lights",
                             "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1}",
                             "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}"
