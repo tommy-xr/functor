@@ -1,0 +1,74 @@
+name: E2E (headless)
+
+# Runs the @functor/sdk end-to-end tests against the real `functor-runner` in
+# --headless mode (no GL window). Covers: input -> state, capture-unavailable,
+# and a real WebSocket network sim (1 server + 2 clients converging on a shared
+# world).
+#
+# Runs on macOS: that's where the native runner is known-good (the dev machine +
+# the e2e locally), and headless needs no display, so a headless macOS runner is
+# enough — no GL system deps. (macOS provides the Cocoa/OpenGL frameworks the
+# runner links.) Linux is deferred: the native runner currently SIGSEGVs shortly
+# after the game dylib's init() on Linux — a dlopen/duplicate-runtime issue with
+# the Rust `dylib` game (works under macOS two-level namespaces). Tracked as a
+# follow-up; moving this job to ubuntu is the payoff once that's fixed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e-headless:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Transpile each sample the e2e launches. `--noCache` per sample: Fable's
+      # incremental cache otherwise skips re-writing a sample's .rs once another
+      # sample has been transpiled in the same run (see golden.yml), so a
+      # multi-sample run needs --noCache to land every .rs reliably. This also
+      # materializes fable_modules/ (the fable_library_rust workspace dep).
+      - name: Transpile F# samples (hello, mpserver, mpclient)
+        run: |
+          dotnet fable examples/hello/hello.fsproj --lang rust --outDir . --noCache
+          dotnet fable examples/mpserver/mpserver.fsproj --lang rust --outDir . --noCache
+          dotnet fable examples/mpclient/mpclient.fsproj --lang rust --outDir . --noCache
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Build functor-runner
+        run: cargo build --bin functor-runner
+
+      - name: Build sample dylibs
+        run: |
+          cargo build --manifest-path examples/hello/build-native/Cargo.toml
+          cargo build --manifest-path examples/mpserver/build-native/Cargo.toml
+          cargo build --manifest-path examples/mpclient/build-native/Cargo.toml
+
+      - name: Install SDK dependencies
+        run: npm install
+        working-directory: tools/functor-sdk
+
+      - name: Run headless e2e
+        run: npm run test:e2e:headless
+        working-directory: tools/functor-sdk
