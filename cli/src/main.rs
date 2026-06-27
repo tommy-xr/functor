@@ -80,8 +80,8 @@ enum InspectTarget {
         #[arg(long)]
         time: Option<f32>,
 
-        /// Animation to sample for the skinned AABB (by name). Defaults to the
-        /// first animation. Implies sampling even without --time (at t=0).
+        /// Animation to sample for the skinned AABB, by name or index. Defaults
+        /// to the first animation. Implies sampling even without --time (at t=0).
         #[arg(long)]
         animation: Option<String>,
 

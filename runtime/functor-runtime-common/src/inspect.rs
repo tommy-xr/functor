@@ -47,17 +47,22 @@ impl Aabb {
     }
 }
 
-/// An empty `Aabb` carries infinities (see [`Aabb::empty`]), which are not
-/// valid JSON numbers. Serialize as `null` when empty, otherwise as
-/// `{ "min": [x, y, z], "max": [x, y, z] }` — matching the codebase's plain
-/// `[f32; 3]` convention for geometry (see `light.rs`).
+/// An empty `Aabb` carries infinities (see [`Aabb::empty`]), and malformed/NaN
+/// vertex data can leave non-finite coordinates; serde_json renders non-finite
+/// floats as JSON `null`, which would corrupt the `[x, y, z]` arrays. So when the
+/// box is empty or any coordinate is non-finite, serialize the whole `Aabb` as
+/// `null`; otherwise `{ "min": [x, y, z], "max": [x, y, z] }` — matching the
+/// codebase's plain `[f32; 3]` convention for geometry (see `light.rs`).
 impl Serialize for Aabb {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        if self.is_empty() {
+        let coords = [
+            self.min.x, self.min.y, self.min.z, self.max.x, self.max.y, self.max.z,
+        ];
+        if self.is_empty() || coords.iter().any(|c| !c.is_finite()) {
             return serializer.serialize_none();
         }
         let mut s = serializer.serialize_struct("Aabb", 2)?;
@@ -105,8 +110,9 @@ pub struct ModelReport {
     pub animations: Vec<AnimationReport>,
     /// Model-space AABB of the static (bind-pose) mesh positions.
     pub static_aabb: Aabb,
-    /// Skinned AABB at the requested time, if `--time` was given and the model
-    /// is skinned and has at least one animation.
+    /// Skinned AABB at the sampled pose, if a pose was requested (a `time`
+    /// and/or an `animation_name`) and the model is skinned with at least one
+    /// animation.
     pub skinned_aabb: Option<SkinnedAabbReport>,
 }
 
@@ -131,6 +137,15 @@ pub fn inspect_model(
     time: Option<f32>,
     animation_name: Option<&str>,
 ) -> Result<ModelReport, String> {
+    // Reject non-finite sample times up front: they would otherwise flow into
+    // `requested_time`/`sampled_time` and serialize as JSON `null`, yielding a
+    // "successful" but semantically broken report.
+    if let Some(t) = time {
+        if !t.is_finite() {
+            return Err(format!("time must be a finite number, got {}", t));
+        }
+    }
+
     let cursor = Cursor::new(bytes);
     let gltf = gltf::Gltf::from_slice(cursor.get_ref())
         .map_err(|e| format!("Failed to parse glTF/glb: {}", e))?;
@@ -184,27 +199,35 @@ pub fn inspect_model(
 
     let any_skinned = primitives.iter().any(|p| p.has_skinning);
 
-    // Pick the animation to sample: by name if given (erroring with the
-    // available names if it doesn't exist), otherwise the first one.
+    // Pick the animation to sample. If a selector is given, prefer an exact name
+    // match, then fall back to a numeric index — so unnamed or duplicate-named
+    // animations (glTF allows both) stay addressable. With no selector, use the
+    // first animation. An unresolvable selector errors with an index-annotated
+    // list of what's available.
     let selected_animation = match animation_name {
-        Some(name) => match animations.iter().find(|a| a.name == name) {
-            Some(a) => Some(a),
-            None => {
-                let available = if animations.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    animations
-                        .iter()
-                        .map(|a| a.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                return Err(format!(
-                    "Animation '{}' not found. Available: {}",
-                    name, available
-                ));
+        Some(selector) => {
+            let by_name = animations.iter().find(|a| a.name == selector);
+            let by_index = || selector.parse::<usize>().ok().and_then(|i| animations.get(i));
+            match by_name.or_else(by_index) {
+                Some(a) => Some(a),
+                None => {
+                    let available = if animations.is_empty() {
+                        "<none>".to_string()
+                    } else {
+                        animations
+                            .iter()
+                            .enumerate()
+                            .map(|(i, a)| format!("{}: {}", i, a.name))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    return Err(format!(
+                        "Animation '{}' not found (use a name or index). Available: {}",
+                        selector, available
+                    ));
+                }
             }
-        },
+        }
         None => animations.first(),
     };
 
@@ -537,5 +560,44 @@ mod tests {
         ];
         let p = skin_position(&v, &transforms);
         assert_eq!(p, vec3(5.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn aabb_serializes_finite_box_as_min_max() {
+        let mut aabb = Aabb::empty();
+        aabb.extend(vec3(-1.0, -2.0, -3.0));
+        aabb.extend(vec3(1.0, 2.0, 3.0));
+        let v = serde_json::to_value(aabb).unwrap();
+        assert_eq!(v["min"], serde_json::json!([-1.0, -2.0, -3.0]));
+        assert_eq!(v["max"], serde_json::json!([1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn aabb_serializes_empty_or_nonfinite_as_null() {
+        // Empty (never extended) -> null, not a struct full of infinities.
+        assert!(serde_json::to_value(Aabb::empty()).unwrap().is_null());
+
+        // Any non-finite coordinate -> null, so the [x,y,z] arrays never contain
+        // JSON `null` (serde_json's rendering of non-finite floats). Constructed
+        // directly: `extend`'s min/max would otherwise swallow NaN and clamp
+        // infinities, so this exercises the serialize guard in isolation.
+        let nan_box = Aabb {
+            min: vec3(f32::NAN, 0.0, 0.0),
+            max: vec3(1.0, 1.0, 1.0),
+        };
+        assert!(serde_json::to_value(nan_box).unwrap().is_null());
+
+        let inf_box = Aabb {
+            min: vec3(0.0, 0.0, 0.0),
+            max: vec3(f32::INFINITY, 1.0, 1.0),
+        };
+        assert!(serde_json::to_value(inf_box).unwrap().is_null());
+    }
+
+    #[test]
+    fn inspect_model_rejects_non_finite_time() {
+        // The time guard runs before any glTF parsing, so empty bytes are fine.
+        let err = inspect_model(Vec::new(), Some(f32::NAN), None).unwrap_err();
+        assert!(err.contains("finite"), "unexpected error: {}", err);
     }
 }
