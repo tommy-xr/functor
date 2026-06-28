@@ -13,6 +13,7 @@ import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 //   ./target/debug/functor -d examples/mpclient build native
 //   FUNCTOR_E2E=1 node --test dist/test/
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
+const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
 // The example models are exposed only as Rust Debug text (the game model isn't
 // Serialize yet), so these read the `model` string. An F# list renders as a
@@ -45,6 +46,7 @@ test(
         repoRoot,
         port,
         launchTimeoutMs: 30_000,
+        headless,
       });
 
     // Server first, and wait for its Sub.listen socket to actually bind before

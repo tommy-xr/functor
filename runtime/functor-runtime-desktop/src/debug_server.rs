@@ -80,12 +80,21 @@ pub enum TimeCommand {
     Resume,
 }
 
+/// Why a `POST /capture` couldn't return pixels. Maps to an HTTP status:
+/// `Unavailable` → 503 (no GL, e.g. `--headless`), `Failed` → 500 (a real
+/// readback/encode error).
+pub enum CaptureError {
+    Unavailable(String),
+    Failed(String),
+}
+
 /// A request from the HTTP thread to the GL loop. Each variant carries a
 /// one-shot `Sender` the GL loop uses to reply; the HTTP handler blocks on the
 /// matching `Receiver`.
 pub enum DebugRequest {
-    /// `POST /capture` — reply with PNG bytes of the next rendered frame.
-    Capture(Sender<Vec<u8>>),
+    /// `POST /capture` — reply with PNG bytes of the next rendered frame, or a
+    /// [`CaptureError`] (unavailable in `--headless`, or a readback failure).
+    Capture(Sender<Result<Vec<u8>, CaptureError>>),
     /// `GET /state` — reply with the current runtime state.
     State(Sender<RuntimeState>),
     /// `GET /scene` — reply with the current frame (camera + scene) as JSON.
@@ -121,17 +130,27 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
 
             match (&method, path.as_str()) {
                 (Method::Post, "/capture") => {
-                    let (resp_tx, resp_rx) = mpsc::channel::<Vec<u8>>();
+                    let (resp_tx, resp_rx) = mpsc::channel::<Result<Vec<u8>, CaptureError>>();
                     if tx.send(DebugRequest::Capture(resp_tx)).is_err() {
                         let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
                         continue;
                     }
                     match resp_rx.recv() {
-                        Ok(png) => {
+                        Ok(Ok(png)) => {
                             let header =
                                 Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..]).unwrap();
                             let resp = Response::from_data(png).with_header(header);
                             let _ = request.respond(resp);
+                        }
+                        // No GL to read back (e.g. headless) — Service Unavailable.
+                        Ok(Err(CaptureError::Unavailable(msg))) => {
+                            let _ = request
+                                .respond(Response::from_string(msg).with_status_code(503));
+                        }
+                        // A genuine readback/encode failure — Internal Error.
+                        Ok(Err(CaptureError::Failed(msg))) => {
+                            let _ = request
+                                .respond(Response::from_string(msg).with_status_code(500));
                         }
                         Err(_) => {
                             let _ = request
