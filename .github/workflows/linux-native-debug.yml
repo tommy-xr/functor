@@ -76,21 +76,34 @@ jobs:
             | wc -l
           echo ")"
 
-      - name: gdb backtrace of the crash
-        working-directory: examples/hello
+      # Confirmed crash site (default build): SIGSEGV in alloc::rc drop glue during
+      # the game dylib's init() — duplicate std/alloc between host + dylib. Try the
+      # fix: build BOTH with `-C prefer-dynamic` so they share one libstd.so (one
+      # allocator), then run headless and check /state actually serves.
+      - name: Experiment — prefer-dynamic (share one libstd)
+        env:
+          RUSTFLAGS: "-C prefer-dynamic"
         run: |
+          set -x
+          cargo build --bin functor-runner
+          cargo build --manifest-path examples/hello/build-native/Cargo.toml
+          export LD_LIBRARY_PATH="$(rustc --print target-libdir):$LD_LIBRARY_PATH"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
           RUNNER="$GITHUB_WORKSPACE/target/debug/functor-runner"
           DYLIB="$GITHUB_WORKSPACE/examples/hello/build-native/target/debug/libgame_native.so"
-          # The runner crashes within ~1s; gdb catches SIGSEGV and prints the
-          # backtrace. `timeout` guards against the no-crash case (would loop).
-          timeout 90 gdb -batch \
-            -ex 'set pagination off' \
-            -ex 'run' \
-            -ex 'echo \n===== BACKTRACE =====\n' \
-            -ex 'bt' \
-            -ex 'echo \n===== THREADS =====\n' \
-            -ex 'thread apply all bt' \
-            -ex 'echo \n===== SHARED LIBS =====\n' \
-            -ex 'info sharedlibrary' \
-            --args "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 \
-            || echo "(gdb exited / timed out — see backtrace above)"
+          ( cd examples/hello && "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 ) &
+          PID=$!
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 3 http://127.0.0.1:8077/state -o /tmp/state.json 2>/dev/null; then ok=1; break; fi
+            if ! kill -0 "$PID" 2>/dev/null; then echo "!! runner exited early (still crashing)"; break; fi
+            sleep 1
+          done
+          kill "$PID" 2>/dev/null || true
+          if [ "$ok" = 1 ]; then
+            echo "✅ SUCCESS: /state served — prefer-dynamic fixed the crash"
+            head -c 300 /tmp/state.json
+          else
+            echo "❌ FAIL: runner did not serve /state with prefer-dynamic"
+            exit 1
+          fi
