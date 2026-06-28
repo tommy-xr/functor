@@ -76,34 +76,24 @@ jobs:
             | wc -l
           echo ")"
 
-      # Confirmed crash site (default build): SIGSEGV in alloc::rc drop glue during
-      # the game dylib's init() — duplicate std/alloc between host + dylib. Try the
-      # fix: build BOTH with `-C prefer-dynamic` so they share one libstd.so (one
-      # allocator), then run headless and check /state actually serves.
-      - name: Experiment — prefer-dynamic (share one libstd)
-        env:
-          RUSTFLAGS: "-C prefer-dynamic"
+      # prefer-dynamic was ruled out (shared libstd, still SIGSEGV in the same
+      # spot) — so it's not simple std duplication. Inspect the actual fault:
+      # is the Rc being dropped a garbage pointer (lazy-static/TLS init problem
+      # with the dlopen'd `dylib`) or a valid RcBox (allocator/double-free)?
+      - name: Deep gdb inspection of the crash (default build)
+        working-directory: examples/hello
         run: |
-          set -x
-          cargo build --bin functor-runner
-          cargo build --manifest-path examples/hello/build-native/Cargo.toml
-          export LD_LIBRARY_PATH="$(rustc --print target-libdir):$LD_LIBRARY_PATH"
-          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
           RUNNER="$GITHUB_WORKSPACE/target/debug/functor-runner"
           DYLIB="$GITHUB_WORKSPACE/examples/hello/build-native/target/debug/libgame_native.so"
-          ( cd examples/hello && "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 ) &
-          PID=$!
-          ok=0
-          for i in $(seq 1 30); do
-            if curl -sf --max-time 3 http://127.0.0.1:8077/state -o /tmp/state.json 2>/dev/null; then ok=1; break; fi
-            if ! kill -0 "$PID" 2>/dev/null; then echo "!! runner exited early (still crashing)"; break; fi
-            sleep 1
-          done
-          kill "$PID" 2>/dev/null || true
-          if [ "$ok" = 1 ]; then
-            echo "✅ SUCCESS: /state served — prefer-dynamic fixed the crash"
-            head -c 300 /tmp/state.json
-          else
-            echo "❌ FAIL: runner did not serve /state with prefer-dynamic"
-            exit 1
-          fi
+          timeout 90 gdb -batch \
+            -ex 'set pagination off' \
+            -ex 'run' \
+            -ex 'echo \n===== FAULT / REGISTERS =====\n' \
+            -ex 'info registers rip rdi rsi rax rbx' \
+            -ex 'echo \n===== FRAME 0 =====\n' -ex 'frame 0' -ex 'info args' -ex 'info locals' \
+            -ex 'echo \n===== FRAME 1 (Rc) =====\n' -ex 'frame 1' -ex 'info args' \
+            -ex 'echo \n===== MEM @ rdi (RcBox: strong,weak) =====\n' -ex 'x/4xg $rdi' \
+            -ex 'echo \n===== MEM @ rax =====\n' -ex 'x/4xg $rax' \
+            -ex 'echo \n===== BACKTRACE =====\n' -ex 'bt' \
+            --args "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 \
+            || echo "(gdb exited / timed out)"
