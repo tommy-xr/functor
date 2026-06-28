@@ -1,0 +1,96 @@
+name: Linux native debug (WIP)
+
+# Diagnostic-only workflow for the Linux native-runner SIGSEGV. The native
+# functor-runner crashes shortly after the game dylib's init() on Linux (works
+# on macOS). Hypothesis: the game is a Rust `dylib` (crate-type=["dylib"]) that
+# carries its own copy of std + functor_runtime_common, dlopen'd into a host that
+# also statically links them — Linux's flat symbol namespace interposes the two
+# copies (macOS two-level namespaces don't). This job confirms the symbol overlap
+# and captures a gdb backtrace of the crash so we know the exact site.
+#
+# WIP: runs only on this debug branch / manual dispatch; remove once fixed.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [debug/linux-native-runner]
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install deps (GL/X11 + gdb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libglfw3 libglfw3-dev libasound2-dev \
+            gdb
+
+      - name: Transpile hello
+        run: dotnet fable examples/hello/hello.fsproj --lang rust --outDir . --noCache
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Build functor-runner + hello dylib
+        run: |
+          cargo build --bin functor-runner
+          cargo build --manifest-path examples/hello/build-native/Cargo.toml
+
+      - name: Symbol overlap (host vs game dylib)
+        run: |
+          RUNNER=target/debug/functor-runner
+          DYLIB=examples/hello/build-native/target/debug/libgame_native.so
+          echo "## dylib exported symbols (nm -D --defined-only)"
+          echo "total:            $(nm -D --defined-only "$DYLIB" | wc -l)"
+          echo "functor_common:   $(nm -D --defined-only "$DYLIB" | grep -c functor_runtime_common)"
+          echo "std/core/alloc:   $(nm -D --defined-only "$DYLIB" | grep -cE '4core|3std|5alloc|rust_eh')"
+          echo "## runner binary defined symbols (nm)"
+          echo "functor_common:   $(nm "$RUNNER" 2>/dev/null | grep -c functor_runtime_common)"
+          echo "## sample functor_runtime_common symbols defined in BOTH (interposition candidates):"
+          comm -12 \
+            <(nm -D --defined-only "$DYLIB" | awk '{print $NF}' | grep functor_runtime_common | sort -u) \
+            <(nm "$RUNNER" 2>/dev/null | awk '{print $NF}' | grep functor_runtime_common | sort -u) \
+            | head -20
+          echo "(shared functor_runtime_common symbol count:"
+          comm -12 \
+            <(nm -D --defined-only "$DYLIB" | awk '{print $NF}' | grep functor_runtime_common | sort -u) \
+            <(nm "$RUNNER" 2>/dev/null | awk '{print $NF}' | grep functor_runtime_common | sort -u) \
+            | wc -l
+          echo ")"
+
+      - name: gdb backtrace of the crash
+        working-directory: examples/hello
+        run: |
+          RUNNER="$GITHUB_WORKSPACE/target/debug/functor-runner"
+          DYLIB="$GITHUB_WORKSPACE/examples/hello/build-native/target/debug/libgame_native.so"
+          # The runner crashes within ~1s; gdb catches SIGSEGV and prints the
+          # backtrace. `timeout` guards against the no-crash case (would loop).
+          timeout 90 gdb -batch \
+            -ex 'set pagination off' \
+            -ex 'run' \
+            -ex 'echo \n===== BACKTRACE =====\n' \
+            -ex 'bt' \
+            -ex 'echo \n===== THREADS =====\n' \
+            -ex 'thread apply all bt' \
+            -ex 'echo \n===== SHARED LIBS =====\n' \
+            -ex 'info sharedlibrary' \
+            --args "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 \
+            || echo "(gdb exited / timed out — see backtrace above)"
