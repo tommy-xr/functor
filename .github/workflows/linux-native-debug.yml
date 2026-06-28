@@ -76,24 +76,30 @@ jobs:
             | wc -l
           echo ")"
 
-      # prefer-dynamic was ruled out (shared libstd, still SIGSEGV in the same
-      # spot) — so it's not simple std duplication. Inspect the actual fault:
-      # is the Rc being dropped a garbage pointer (lazy-static/TLS init problem
-      # with the dlopen'd `dylib`) or a valid RcBox (allocator/double-free)?
-      - name: Deep gdb inspection of the crash (default build)
-        working-directory: examples/hello
+      # Fault was a NULL Rc dropped in the dylib's init() — the signature of
+      # dlopen'ing a Rust `dylib` (vs `cdylib`) on Linux: lazy statics aren't set
+      # up. Experiment: the game is now built as `cdylib` (dlopen-safe; the runner
+      # loads it via #[no_mangle] exports either way). Run headless, check /state.
+      - name: Experiment — cdylib game (dlopen-safe)
         run: |
+          set -x
+          ldd target/debug/functor-runner | head -5 || true
+          file examples/hello/build-native/target/debug/libgame_native.so
           RUNNER="$GITHUB_WORKSPACE/target/debug/functor-runner"
           DYLIB="$GITHUB_WORKSPACE/examples/hello/build-native/target/debug/libgame_native.so"
-          timeout 90 gdb -batch \
-            -ex 'set pagination off' \
-            -ex 'run' \
-            -ex 'echo \n===== FAULT / REGISTERS =====\n' \
-            -ex 'info registers rip rdi rsi rax rbx' \
-            -ex 'echo \n===== FRAME 0 =====\n' -ex 'frame 0' -ex 'info args' -ex 'info locals' \
-            -ex 'echo \n===== FRAME 1 (Rc) =====\n' -ex 'frame 1' -ex 'info args' \
-            -ex 'echo \n===== MEM @ rdi (RcBox: strong,weak) =====\n' -ex 'x/4xg $rdi' \
-            -ex 'echo \n===== MEM @ rax =====\n' -ex 'x/4xg $rax' \
-            -ex 'echo \n===== BACKTRACE =====\n' -ex 'bt' \
-            --args "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 \
-            || echo "(gdb exited / timed out)"
+          ( cd examples/hello && "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 ) &
+          PID=$!
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 3 http://127.0.0.1:8077/state -o /tmp/state.json 2>/dev/null; then ok=1; break; fi
+            if ! kill -0 "$PID" 2>/dev/null; then echo "!! runner exited early (still crashing)"; break; fi
+            sleep 1
+          done
+          kill "$PID" 2>/dev/null || true
+          if [ "$ok" = 1 ]; then
+            echo "✅ SUCCESS: /state served — cdylib is dlopen-safe on Linux"
+            head -c 400 /tmp/state.json
+          else
+            echo "❌ FAIL: runner did not serve /state with cdylib game"
+            exit 1
+          fi
