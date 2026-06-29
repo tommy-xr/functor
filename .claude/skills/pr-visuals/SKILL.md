@@ -81,13 +81,49 @@ frames[0].save('/tmp/demo.gif', save_all=True, append_images=frames[1:],
                duration=70, loop=0, optimize=True, disposal=2)
 ```
 
-## 4. Verify
+## 4. Before/after (when the change MODIFIES an existing visual)
+
+If the change alters an *existing* rendered scene (not a net-new feature), include
+a **before/after** so reviewers see the delta — a one-sided "after" can't show what
+improved. Capture both at the **same `--fixed-time`** so only the change differs.
+
+- **Cheapest "before":** if the base ref already commits a golden at that fixed
+  time (`examples/<name>/golden/<name>-t2.png`), just reuse it — no rebuild.
+- **Otherwise build the base ref in a throwaway worktree** (doesn't disturb your
+  branch):
+
+  ```bash
+  BASE=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || echo main)
+  git worktree add /tmp/before "$BASE"
+  ( cd /tmp/before && ./target/debug/functor -d examples/<name> run native \
+      --capture-frame /tmp/before.png --fixed-time 2.0 --capture-time 0.8 )
+  git worktree remove /tmp/before --force
+  ```
+
+- Compose the two into one labeled side-by-side PNG (renders everywhere, one
+  attachment):
+
+  ```python
+  from PIL import Image, ImageDraw, ImageFont
+  b = Image.open('/tmp/before.png').convert('RGB'); a = Image.open('/tmp/after.png').convert('RGB')
+  H = 440; fit = lambda im: im.resize((int(im.width*H/im.height), H), Image.LANCZOS)
+  b, a = fit(b), fit(a); gap = 8
+  c = Image.new('RGB', (b.width+gap+a.width, H+28), (18,8,28)); c.paste(b,(0,28)); c.paste(a,(b.width+gap,28))
+  d = ImageDraw.Draw(c); f = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 20)
+  d.text((8,4), "BEFORE", fill=(255,255,255), font=f); d.text((b.width+gap+8,4), "AFTER", fill=(255,255,255), font=f)
+  c.save('/tmp/beforeafter.png', optimize=True)
+  ```
+
+  Host it with the GIF (host step) and embed it under a "Before → after" heading
+  (embed step). **Skip before/after for net-new features** — there's no prior state.
+
+## 5. Verify
 
 Read a couple of frames (and/or the GIF) back to confirm the look, and confirm the
 animation actually moves (diff two frames with `PIL.ImageChops.difference(...).getbbox()`
 — `None` means identical). Fix framing/timing and re-capture before uploading.
 
-## 5. Host the media in a gist (binary-safe)
+## 6. Host the media in a gist (binary-safe)
 
 The browser drag-drop `user-attachments` host needs your web session cookies — not
 reachable with a token. A **gist works** as a token-based equivalent, BUT you must
@@ -118,7 +154,7 @@ EOF
 Confirm each raw URL reports `content-type: image/gif` / `image/png` (proof the
 binary survived and markdown will render it).
 
-## 6. Embed in the PR body
+## 7. Embed in the PR body
 
 **Do NOT use `gh pr edit --body-file`** here — it hits a Projects-classic GraphQL
 path that errors out and silently leaves the body unchanged. Use the REST API:
@@ -138,14 +174,14 @@ Markdown to embed (a caption reads nicely under the GIF):
 ![still](<png raw url>)
 ```
 
-## 7. Report
+## 8. Report
 
 Return the gist URL, the raw image URLs, **and the local media paths** (keep the
 captured files on disk, e.g. `/tmp/demo.gif` + the stills, don't delete them), plus
 a confirmation that the PR body was updated (verify with
 `gh pr view <N> --json body -q .body | grep gist`).
 
-## 8. Hand the media to the review (visual verification)
+## 9. Hand the media to the review (visual verification)
 
 The point of the media isn't just decoration — a reviewer should confirm the
 render **actually exercises the feature and looks correct**. After embedding, run
