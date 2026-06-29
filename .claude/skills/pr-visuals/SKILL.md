@@ -91,15 +91,17 @@ animation actually moves (diff two frames with `PIL.ImageChops.difference(...).g
 
 The browser drag-drop `user-attachments` host needs your web session cookies — not
 reachable with a token. A **gist works** as a token-based equivalent, BUT you must
-push binaries via **git** — `gh gist create <file>` uploads content as a JSON
-string and corrupts binary. Gist raw URLs serve the correct `image/*` content-type,
-so they render inline in markdown.
+push binaries via **git** — `gh gist create` flat-out **rejects** a binary file
+(`binary file not supported`), so create the gist with a small **text placeholder**
+first, then git-push the images into it. Gist raw URLs serve the correct `image/*`
+content-type, so they render inline in markdown.
 
 ```bash
 bash <<'EOF'
 set -e
-URL=$(gh gist create --desc "<repo> <feature> — media for PR #<N>" /tmp/demo.gif 2>&1 | tail -1)
-# gh gist create mangles binary, so re-push via git instead:
+# Create with a TEXT placeholder (gh gist create rejects binary), then git-push the media.
+printf '# <repo> <feature> — media for PR #<N>\n' > /tmp/gist-readme.md
+URL=$(gh gist create --desc "<repo> <feature> — media for PR #<N>" /tmp/gist-readme.md 2>&1 | tail -1)
 GID=$(basename "$URL"); USER=$(gh api user -q .login); TOKEN=$(gh auth token)
 rm -rf /tmp/gist && git clone "https://x-access-token:$TOKEN@gist.github.com/$GID.git" /tmp/gist
 cp /tmp/demo.gif /tmp/shot.png /tmp/gist/
