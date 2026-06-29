@@ -28,14 +28,12 @@ golden tests), see `CLAUDE.md` and `git log`.
       instead of forcing `SkinnedMaterial` on every model; move the green joint
       debug-markers and per-frame `Animating` println off the render path;
       revisit `MAX_JOINTS 200` (800 uniform vec4s) vs the WebGL2 minimum guarantee.
-- [ ] Mesh primitives: quad, plane, heightmap (cube/cylinder/sphere exist).
 - [ ] Dynamic mesh (+ emissive texture material).
 - [ ] Lighting: ambient, point, directional, ambient/positional fog, spot →
       shadow mapping.
 - [ ] Cubemap / skybox (emissive lighting + reflection).
 - [ ] Camera middleware: FPSCamera, OrbitCamera.
 - [ ] In-built hands models.
-- [ ] Synthwave-ground demo scene.
 
 ## Effects & subscriptions
 
@@ -110,7 +108,6 @@ shell spine (no F# surface).
 
 ## Games to build
 
-- 3D: Simple Terrain (synthwave vibes)
 - 3D: Multiplayer Asteroids
 - 3D: Simple FPS (shooting range; weapons / recoil)
 - 3D: Multiplayer FPS (weapons / recoil)

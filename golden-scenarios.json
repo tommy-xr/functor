@@ -35,6 +35,13 @@
       "fixedTime": 2.0,
       "debugRender": null,
       "targets": ["native", "wasm"]
+    },
+    {
+      "name": "synthwave-t2",
+      "sample": "synthwave",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": ["native"]
     }
   ]
 }
