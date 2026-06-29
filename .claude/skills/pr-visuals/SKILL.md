@@ -147,16 +147,16 @@ a confirmation that the PR body was updated (verify with
 
 The point of the media isn't just decoration — a reviewer should confirm the
 render **actually exercises the feature and looks correct**. After embedding, run
-`/xreview` and pass the local media paths so its image-capable (Claude) reviewer
-analyzes them against the change's claims (e.g. "the GIF should show the grid
+`/xreview` and pass the local media paths so **both** image-capable reviewers
+analyze them against the change's claims (e.g. "the GIF should show the grid
 scrolling toward the camera with a glowing sun on the horizon"):
 
 ```
 /xreview --media /tmp/demo.gif,/tmp/shot-t0.png,/tmp/shot-t2.png
 ```
 
-Pass the GIF **plus two stills captured at different `--fixed-time` values** —
-`Read` shows only a single GIF frame, so motion (e.g. "scrolling") must be
-evidenced by distinct stills. The Claude reviewer reads the images and checks them
-against the diff; the Codex reviewer stays code-only (no vision). Treat a visual
-reviewer that can't see the claimed feature in the media as a finding to resolve.
+Pass the GIF **plus two stills captured at different `--fixed-time` values** — a
+single image is one frame, so motion (e.g. "scrolling") must be evidenced by
+distinct stills. Both engines do the visual check (Claude via `Read`, Codex via
+`-i`), so a visual issue both raise is high-confidence. Treat a reviewer that
+can't see the claimed feature in the media as a finding to resolve.
