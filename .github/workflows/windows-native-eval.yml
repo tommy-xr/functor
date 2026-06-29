@@ -1,0 +1,67 @@
+name: Windows native eval (WIP)
+
+# Reproducer (manual): does the native functor-runner work headlessly on Windows?
+# RESULT: no — it SIGSEGVs during the loaded game's init(), the same as Linux
+# (Windows uses LoadLibrary, Linux dlopen; only macOS works). Kept as a manual
+# reproducer for the native-platform follow-up (see todo.md); not auto-run, since
+# it's red by design until the Fable lazy-static/load-time-init issue is fixed.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Transpile hello
+        run: dotnet fable examples/hello/hello.fsproj --lang rust --outDir . --noCache
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Build functor-runner + hello dll
+        run: |
+          cargo build --bin functor-runner
+          cargo build --manifest-path examples/hello/build-native/Cargo.toml
+
+      - name: Headless smoke — does /state serve?
+        run: |
+          set -x
+          RUNNER="$GITHUB_WORKSPACE/target/debug/functor-runner.exe"
+          DYLIB="$GITHUB_WORKSPACE/examples/hello/build-native/target/debug/game_native.dll"
+          ls -la "$RUNNER" "$DYLIB"
+          ( cd examples/hello && "$RUNNER" --game-path "$DYLIB" --headless --debug-port 8077 ) &
+          PID=$!
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -sf --max-time 3 http://127.0.0.1:8077/state -o state.json 2>/dev/null; then ok=1; break; fi
+            if ! kill -0 "$PID" 2>/dev/null; then echo "!! runner exited early (crashing?)"; break; fi
+            sleep 1
+          done
+          kill "$PID" 2>/dev/null || taskkill //F //PID "$PID" 2>/dev/null || true
+          if [ "$ok" = 1 ]; then
+            echo "✅ SUCCESS: Windows headless native runner serves /state"
+            head -c 400 state.json
+          else
+            echo "❌ FAIL: Windows runner did not serve /state"
+            exit 1
+          fi

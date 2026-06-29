@@ -18,6 +18,21 @@ golden tests), see `CLAUDE.md` and `git log`.
   - [ ] Richer observation: a structured (parseable) state snapshot + held-input
         summary, beyond today's `Debug`-text `model`.
   - [ ] Raycast / entity-state queries (à la shock2quest's `debug_runtime`).
+- [ ] **Revisit: native runner on Linux + Windows (pick up with the Fable model).**
+      The native `functor-runner` SIGSEGVs on **both Linux and Windows** during the
+      loaded game's `init()`; **only macOS works**, which is why the e2e CI runs on
+      macOS (`e2e.yml`). Goal: get native Linux (and ideally Windows) working, then
+      run the e2e there too. Diagnosis (reproducers: `linux-native-debug.yml` on
+      branch `debug/linux-native-runner`, `windows-native-eval.yml` on
+      `eval/native-platform-support`): gdb on Linux shows a Fable lazy-static
+      returning a **NULL `Rc`** — `Rc<MutCell<Vec<LrcStr>>>` dropped at
+      `hello.rs:888`, so `Rc::drop` null-derefs; Windows crashes the same way.
+      **Ruled out:** `-C prefer-dynamic` (shared libstd) and `crate-type=["cdylib"]`
+      — both still crash, so it's neither std-duplication nor the crate-type. That
+      Windows (`LoadLibrary`) and Linux (`dlopen`) both fail while macOS doesn't
+      points at how Fable's generated `OnceInit`/lazy-statics initialize when the
+      crate is loaded at runtime rather than linked at startup — revisit with
+      Fable-backend knowledge.
 - [ ] Headless/offscreen render path (e.g. llvmpipe under xvfb) at a fixed
       resolution so the golden-image test can run in CI (today it's `#[ignore]`d).
 - [ ] WASM capture path (today wasm screenshots need an external headless browser).
