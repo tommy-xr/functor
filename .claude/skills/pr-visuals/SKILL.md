@@ -152,9 +152,11 @@ analyzes them against the change's claims (e.g. "the GIF should show the grid
 scrolling toward the camera with a glowing sun on the horizon"):
 
 ```
-/xreview --media /tmp/demo.gif,/tmp/shot.png
+/xreview --media /tmp/demo.gif,/tmp/shot-t0.png,/tmp/shot-t2.png
 ```
 
-The Claude reviewer reads the images and checks them against the diff; the Codex
-reviewer stays code-only (no vision). Treat a visual reviewer that can't see the
-claimed feature in the media as a finding to resolve.
+Pass the GIF **plus two stills captured at different `--fixed-time` values** —
+`Read` shows only a single GIF frame, so motion (e.g. "scrolling") must be
+evidenced by distinct stills. The Claude reviewer reads the images and checks them
+against the diff; the Codex reviewer stays code-only (no vision). Treat a visual
+reviewer that can't see the claimed feature in the media as a finding to resolve.
