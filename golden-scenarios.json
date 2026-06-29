@@ -37,6 +37,13 @@
       "targets": ["native", "wasm"]
     },
     {
+      "name": "synthwave-t0",
+      "sample": "synthwave",
+      "fixedTime": 0.0,
+      "debugRender": null,
+      "targets": ["native"]
+    },
+    {
       "name": "synthwave-t2",
       "sample": "synthwave",
       "fixedTime": 2.0,
