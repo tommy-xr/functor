@@ -143,6 +143,20 @@ Goldens are renderer/display-specific — the regeneration command is in the tes
 **Tests** are Rust, in `functor-runtime-common`, with test modules alongside source:
 `cargo test -p functor_runtime_common`.
 
+## Visual changes
+
+Whenever a change adds or alters something **visible** (a new example/scene, a
+rendering/material/lighting/camera feature, a shader), capture a short looping
+**GIF** *and* a still **PNG** of it and embed them in the PR — this is part of the
+definition of done for visual work, so reviewers (human and LLM) can see the
+result. When the change *modifies* an existing visual, include a **before/after**
+too (capture the base ref at the same fixed time). Use the **`pr-visuals` skill**
+(`.claude/skills/pr-visuals/`): it drives
+the headless `--capture-frame` / `--fixed-time` path (no screen, deterministic),
+assembles the GIF, hosts the binaries in a gist, and embeds them in the PR body —
+and it runs the capture in a subagent so the image-heavy work stays out of the
+main context.
+
 ## Gotchas
 
 - **uuid / wasm:** the generated `fable_library_rust` depends on `uuid`. It's constrained to
