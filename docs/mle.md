@@ -163,9 +163,17 @@ snapshots — no GPU, fully agent-verifiable.
 
 Starts once A2 + B3 exist.
 
-- [ ] **C1. Functor prelude.** `Vec3`, `Color`, `Scene3D` constructors, `Input`
-      as MLE values mapping onto the Track-A protocol (Rust-backed builtins).
-      *Verify:* unit tests assert the protocol data an `.mle` snippet emits.
+- [x] **C1. Functor prelude.** The `mle::Host` seam (host-provided externals
+      + opaque `HostData` values, added to the interpreter) and
+      `functor_runtime_common::mle_prelude::FunctorHost`: `Scene.*`
+      constructors/transforms/color/group, `Camera.lookAt`, `Frame.create` —
+      MLE snippets emit real protocol `Frame`s (extracted via `frame_value`).
+      Transforms wrap in `Group` nodes, which makes them immune to the
+      Material-drops-its-xform quirk AND apply outermost-last (the order the
+      source reads) — both pinned by test.
+      *Verify (done):* unit tests assert the protocol data `.mle` snippets
+      emit, incl. wire round-trip and the mle-hello mapped-group shape;
+      prelude + mle crate build for wasm32 (ready for C5). (done)
 - [ ] **C2. `MleProducer`.** Implements `GameProducer`; `functor.json` grows a
       `language` field. First game: spinning cube (`examples/mle-hello`).
       *Verify:* `--capture-frame` golden; headless SDK e2e reads the MLE model

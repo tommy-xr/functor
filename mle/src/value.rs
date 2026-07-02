@@ -22,6 +22,21 @@ pub enum Value {
     Record(Rc<Vec<(String, Value)>>),
     Closure(Rc<Closure>),
     Builtin(crate::eval::Builtin),
+    /// A host-provided external function (see [`crate::eval::Host`]),
+    /// identified by its qualified path (`Scene.cube`).
+    HostFn(Rc<str>),
+    /// An opaque host-owned value (a scene node, a camera, …). The language
+    /// can pass it around and hand it back to host functions; it cannot look
+    /// inside, compare it, or serialize it.
+    HostData(Rc<dyn HostData>),
+}
+
+/// What a host value must provide: a type name for display/errors, and
+/// `Any` access so the host can downcast its own values back out.
+pub trait HostData {
+    /// Shown as `<{type_name}>` in run/trace output and error messages.
+    fn type_name(&self) -> &'static str;
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// A lambda value: its IR params/body (shared with the [`crate::ir::Module`])
@@ -103,6 +118,8 @@ impl fmt::Display for Value {
                 write!(f, ")>")
             }
             Value::Builtin(b) => write!(f, "<builtin {}>", builtin_name(*b)),
+            Value::HostFn(path) => write!(f, "<host {path}>"),
+            Value::HostData(data) => write!(f, "<{}>", data.type_name()),
         }
     }
 }
@@ -118,6 +135,8 @@ impl Value {
             Value::Record(_) => "a record",
             Value::Closure(_) => "a function",
             Value::Builtin(_) => "a builtin",
+            Value::HostFn(_) => "a host function",
+            Value::HostData(data) => data.type_name(),
         }
     }
 }

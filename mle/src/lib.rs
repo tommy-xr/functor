@@ -16,11 +16,13 @@ mod parser;
 mod span;
 pub mod value;
 
-pub use eval::{render_trace, run, RunFailure, RunOutcome, RunRecord, Tracing};
+pub use eval::{
+    render_trace, run, run_with_host, Host, NoHost, RunFailure, RunOutcome, RunRecord, Tracing,
+};
 pub use lower::lower;
 pub use parser::parse;
 pub use span::{line_col, Span};
-pub use value::Value;
+pub use value::{HostData, Value};
 
 /// A lex or parse failure: a message plus the span of the offending source.
 /// Render positions with [`line_col`] (`file:line:col: message`).
