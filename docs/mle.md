@@ -133,9 +133,10 @@ snapshots — no GPU, fully agent-verifiable.
       functions, records, field access, literals, pipelines, type annotations;
       source spans. *Verify:* AST snapshots per example (`UPDATE_GOLDENS=1` to
       regenerate); `mle parse`; errors point at spans. (done)
-- [ ] **B2. AST → core IR.** Stable IDs, name resolution, pipeline desugaring,
+- [x] **B2. AST → core IR.** Stable IDs, name resolution, pipeline desugaring,
       spans on every node. *Verify:* `mle ir` snapshot fixtures (the
-      parser↔runtime contract).
+      parser↔runtime contract). (done — top-level defs are mutually visible
+      and carry their name as the stable hot-reload identity)
 - [ ] **B3. Interpreter + run/trace.** Literals, records, calls, locals; run
       record with captured values. *Verify:* `mle run` / `mle trace` goldens.
 - [ ] **B4. Basic types.** Primitives, records, function signatures, mismatch

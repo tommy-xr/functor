@@ -5,13 +5,13 @@ let threshold = 10
 
 let isHigh = (score: Float): Bool => score > threshold
 
-let describe = (score) => concat("score: ", Text.fromFloat(score))
+let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
 
 // Pipelines bind loosest: the division happens before the `|>`.
-let normalized = (score) => score / 100.0 |> clamp01
+let normalized = (score) => score / 100.0 |> Math.clamp01
 
 let report = (scores) =>
   scores
-    |> filter(isHigh)
-    |> map(describe)
+    |> List.filter(isHigh)
+    |> List.map(describe)
     |> Text.toBullets

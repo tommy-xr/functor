@@ -1,0 +1,442 @@
+Module {
+    types: [
+        TypeDef {
+            id: d0,
+            name: "Player",
+            fields: [
+                FieldTy {
+                    name: "name",
+                    ty: TypeName {
+                        name: "String",
+                        args: [],
+                        span: 96..102,
+                    },
+                    span: 90..102,
+                },
+                FieldTy {
+                    name: "scores",
+                    ty: TypeName {
+                        name: "List",
+                        args: [
+                            TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 117..122,
+                            },
+                        ],
+                        span: 112..123,
+                    },
+                    span: 104..123,
+                },
+            ],
+            span: 74..125,
+        },
+    ],
+    defs: [
+        Def {
+            id: d1,
+            name: "add",
+            value: Expr {
+                id: e3,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b0,
+                            name: "a",
+                            ty: Some(
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 141..146,
+                                },
+                            ),
+                            span: 138..146,
+                        },
+                        Param {
+                            binding: b1,
+                            name: "b",
+                            ty: Some(
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 151..156,
+                                },
+                            ),
+                            span: 148..156,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Float",
+                            args: [],
+                            span: 159..164,
+                        },
+                    ),
+                    body: Expr {
+                        id: e2,
+                        kind: Binary {
+                            op: Add,
+                            lhs: Expr {
+                                id: e0,
+                                kind: Local {
+                                    binding: b0,
+                                    name: "a",
+                                },
+                                span: 168..169,
+                            },
+                            rhs: Expr {
+                                id: e1,
+                                kind: Local {
+                                    binding: b1,
+                                    name: "b",
+                                },
+                                span: 172..173,
+                            },
+                        },
+                        span: 168..173,
+                    },
+                },
+                span: 137..173,
+            },
+            span: 127..173,
+        },
+        Def {
+            id: d2,
+            name: "average",
+            value: Expr {
+                id: e9,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b2,
+                            name: "a",
+                            ty: None,
+                            span: 190..191,
+                        },
+                        Param {
+                            binding: b3,
+                            name: "b",
+                            ty: None,
+                            span: 193..194,
+                        },
+                    ],
+                    ret: None,
+                    body: Expr {
+                        id: e8,
+                        kind: Binary {
+                            op: Div,
+                            lhs: Expr {
+                                id: e6,
+                                kind: Binary {
+                                    op: Add,
+                                    lhs: Expr {
+                                        id: e4,
+                                        kind: Local {
+                                            binding: b2,
+                                            name: "a",
+                                        },
+                                        span: 200..201,
+                                    },
+                                    rhs: Expr {
+                                        id: e5,
+                                        kind: Local {
+                                            binding: b3,
+                                            name: "b",
+                                        },
+                                        span: 204..205,
+                                    },
+                                },
+                                span: 199..206,
+                            },
+                            rhs: Expr {
+                                id: e7,
+                                kind: Number(
+                                    2.0,
+                                ),
+                                span: 209..212,
+                            },
+                        },
+                        span: 199..212,
+                    },
+                },
+                span: 189..212,
+            },
+            span: 175..212,
+        },
+        Def {
+            id: d3,
+            name: "total",
+            value: Expr {
+                id: e16,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b4,
+                            name: "p",
+                            ty: Some(
+                                TypeName {
+                                    name: "Player",
+                                    args: [],
+                                    span: 230..236,
+                                },
+                            ),
+                            span: 227..236,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Float",
+                            args: [],
+                            span: 239..244,
+                        },
+                    ),
+                    body: Expr {
+                        id: e15,
+                        kind: Call {
+                            callee: Expr {
+                                id: e10,
+                                kind: External(
+                                    [
+                                        "List",
+                                        "fold",
+                                    ],
+                                ),
+                                span: 248..257,
+                            },
+                            args: [
+                                Expr {
+                                    id: e11,
+                                    kind: Global(
+                                        "add",
+                                    ),
+                                    span: 258..261,
+                                },
+                                Expr {
+                                    id: e12,
+                                    kind: Number(
+                                        0.0,
+                                    ),
+                                    span: 263..266,
+                                },
+                                Expr {
+                                    id: e14,
+                                    kind: FieldAccess {
+                                        object: Expr {
+                                            id: e13,
+                                            kind: Local {
+                                                binding: b4,
+                                                name: "p",
+                                            },
+                                            span: 268..269,
+                                        },
+                                        field: "scores",
+                                    },
+                                    span: 268..276,
+                                },
+                            ],
+                        },
+                        span: 248..277,
+                    },
+                },
+                span: 226..277,
+            },
+            span: 214..277,
+        },
+        Def {
+            id: d4,
+            name: "bestTotal",
+            value: Expr {
+                id: e26,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b5,
+                            name: "players",
+                            ty: Some(
+                                TypeName {
+                                    name: "List",
+                                    args: [
+                                        TypeName {
+                                            name: "Player",
+                                            args: [],
+                                            span: 310..316,
+                                        },
+                                    ],
+                                    span: 305..317,
+                                },
+                            ),
+                            span: 296..317,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Float",
+                            args: [],
+                            span: 320..325,
+                        },
+                    ),
+                    body: Expr {
+                        id: e25,
+                        kind: Call {
+                            callee: Expr {
+                                id: e24,
+                                kind: External(
+                                    [
+                                        "List",
+                                        "maximum",
+                                    ],
+                                ),
+                                span: 371..383,
+                            },
+                            args: [
+                                Expr {
+                                    id: e23,
+                                    kind: Call {
+                                        callee: Expr {
+                                            id: e18,
+                                            kind: External(
+                                                [
+                                                    "List",
+                                                    "map",
+                                                ],
+                                            ),
+                                            span: 342..350,
+                                        },
+                                        args: [
+                                            Expr {
+                                                id: e17,
+                                                kind: Local {
+                                                    binding: b5,
+                                                    name: "players",
+                                                },
+                                                span: 331..338,
+                                            },
+                                            Expr {
+                                                id: e22,
+                                                kind: Lambda {
+                                                    params: [
+                                                        Param {
+                                                            binding: b6,
+                                                            name: "p",
+                                                            ty: None,
+                                                            span: 352..353,
+                                                        },
+                                                    ],
+                                                    ret: None,
+                                                    body: Expr {
+                                                        id: e21,
+                                                        kind: Call {
+                                                            callee: Expr {
+                                                                id: e19,
+                                                                kind: Global(
+                                                                    "total",
+                                                                ),
+                                                                span: 358..363,
+                                                            },
+                                                            args: [
+                                                                Expr {
+                                                                    id: e20,
+                                                                    kind: Local {
+                                                                        binding: b6,
+                                                                        name: "p",
+                                                                    },
+                                                                    span: 364..365,
+                                                                },
+                                                            ],
+                                                        },
+                                                        span: 358..366,
+                                                    },
+                                                },
+                                                span: 351..366,
+                                            },
+                                        ],
+                                    },
+                                    span: 342..367,
+                                },
+                            ],
+                        },
+                        span: 371..383,
+                    },
+                },
+                span: 295..383,
+            },
+            span: 279..383,
+        },
+        Def {
+            id: d5,
+            name: "isWinner",
+            value: Expr {
+                id: e32,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b7,
+                            name: "p",
+                            ty: None,
+                            span: 401..402,
+                        },
+                        Param {
+                            binding: b8,
+                            name: "cutoff",
+                            ty: None,
+                            span: 404..410,
+                        },
+                    ],
+                    ret: None,
+                    body: Expr {
+                        id: e31,
+                        kind: Binary {
+                            op: Lt,
+                            lhs: Expr {
+                                id: e27,
+                                kind: Local {
+                                    binding: b8,
+                                    name: "cutoff",
+                                },
+                                span: 415..421,
+                            },
+                            rhs: Expr {
+                                id: e30,
+                                kind: Call {
+                                    callee: Expr {
+                                        id: e28,
+                                        kind: Global(
+                                            "total",
+                                        ),
+                                        span: 424..429,
+                                    },
+                                    args: [
+                                        Expr {
+                                            id: e29,
+                                            kind: Local {
+                                                binding: b7,
+                                                name: "p",
+                                            },
+                                            span: 430..431,
+                                        },
+                                    ],
+                                },
+                                span: 424..432,
+                            },
+                        },
+                        span: 415..432,
+                    },
+                },
+                span: 400..432,
+            },
+            span: 385..432,
+        },
+        Def {
+            id: d6,
+            name: "debug",
+            value: Expr {
+                id: e33,
+                kind: Bool(
+                    false,
+                ),
+                span: 446..451,
+            },
+            span: 434..451,
+        },
+    ],
+}
