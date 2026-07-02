@@ -82,8 +82,16 @@ pub struct RunRecord {
     pub trace: Vec<TraceEvent>,
 }
 
+/// A failed run: the error **plus the trace recorded up to it** — a failing
+/// program is exactly when the execution story matters most, so the partial
+/// trace is never discarded (`mle trace` prints it before the diagnostic).
+pub struct RunFailure {
+    pub error: RunError,
+    pub trace: Vec<TraceEvent>,
+}
+
 /// Evaluate a lowered module (see the module doc for semantics).
-pub fn run(module: &Module, tracing: Tracing) -> Result<RunRecord, RunError> {
+pub fn run(module: &Module, tracing: Tracing) -> Result<RunRecord, RunFailure> {
     let mut interp = Interp {
         globals: HashMap::new(),
         trace: Vec::new(),
@@ -91,20 +99,16 @@ pub fn run(module: &Module, tracing: Tracing) -> Result<RunRecord, RunError> {
         depth: 0,
         call_depth: 0,
     };
-    let mut bindings = Vec::new();
-    for def in &module.defs {
-        let value = interp.eval(&def.value, &Env::empty())?;
-        interp.globals.insert(def.name.clone(), value.clone());
-        bindings.push((def.name.clone(), value));
+    match interp.run_module(module) {
+        Ok(outcome) => Ok(RunRecord {
+            outcome,
+            trace: interp.trace,
+        }),
+        Err(error) => Err(RunFailure {
+            error,
+            trace: interp.trace,
+        }),
     }
-    let outcome = match module.defs.iter().find(|def| def.name == "main") {
-        Some(main_def) => RunOutcome::Main(interp.call_main(main_def)?),
-        None => RunOutcome::Bindings(bindings),
-    };
-    Ok(RunRecord {
-        outcome,
-        trace: interp.trace,
-    })
 }
 
 struct Interp {
@@ -116,13 +120,28 @@ struct Interp {
 }
 
 impl Interp {
+    fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
+        let mut bindings = Vec::new();
+        for def in &module.defs {
+            let value = self.eval(&def.value, &Env::empty())?;
+            self.globals.insert(def.name.clone(), value.clone());
+            bindings.push((def.name.clone(), value));
+        }
+        match module.defs.iter().find(|def| def.name == "main") {
+            Some(main_def) => Ok(RunOutcome::Main(self.call_main(main_def)?)),
+            None => Ok(RunOutcome::Bindings(bindings)),
+        }
+    }
+
     fn call_main(&mut self, def: &Def) -> Result<Value, RunError> {
         let main = self.globals.get("main").expect("just defined").clone();
         match &main {
             Value::Closure(closure) if closure.params.is_empty() => {
-                self.call(main.clone(), vec![], "main".to_string(), def.span)
+                self.call(main.clone(), vec![], "main".to_string(), def.span, None)
             }
-            Value::Closure(_) => Err(RunError {
+            // A builtin takes arguments by definition, so it gets the same
+            // error as a parameterful closure rather than printing as a value.
+            Value::Closure(_) | Value::Builtin(_) => Err(RunError {
                 message: "`main` must take no parameters to be runnable".to_string(),
                 span: def.span,
             }),
@@ -136,7 +155,9 @@ impl Interp {
         if self.depth > MAX_EVAL_DEPTH {
             self.depth -= 1;
             return Err(RunError {
-                message: "evaluation nested too deeply (infinite recursion?)".to_string(),
+                message:
+                    "evaluation nested too deeply (deep recursion, or deeply nested expressions)"
+                        .to_string(),
                 span: expr.span,
             });
         }
@@ -146,7 +167,6 @@ impl Interp {
     }
 
     fn eval_inner(&mut self, expr: &Expr, env: &Env) -> Result<Value, RunError> {
-        use crate::ast::BinOp;
         match &expr.kind {
             ExprKind::Number(n) => Ok(Value::Number(*n)),
             ExprKind::String(s) => Ok(Value::String(Rc::from(s.as_str()))),
@@ -209,22 +229,31 @@ impl Interp {
                 for arg in args {
                     arg_values.push(self.eval(arg, env)?);
                 }
-                self.call(callee_value, arg_values, callee_label(callee), expr.span)
+                self.call(
+                    callee_value,
+                    arg_values,
+                    callee_label(callee),
+                    expr.span,
+                    None,
+                )
             }
-            ExprKind::Binary { op, lhs, rhs } => {
-                let lhs_value = self.eval(lhs, env)?;
-                let rhs_value = self.eval(rhs, env)?;
-                match op {
-                    BinOp::Add => self.arith(lhs_value, rhs_value, expr.span, |a, b| a + b),
-                    BinOp::Sub => self.arith(lhs_value, rhs_value, expr.span, |a, b| a - b),
-                    BinOp::Mul => self.arith(lhs_value, rhs_value, expr.span, |a, b| a * b),
-                    // Division follows IEEE-754 (x/0 is ±inf/NaN, printed as
-                    // `inf`/`NaN`) — one number type, no checked division.
-                    BinOp::Div => self.arith(lhs_value, rhs_value, expr.span, |a, b| a / b),
-                    BinOp::Lt => self.compare(lhs_value, rhs_value, expr.span, |a, b| a < b),
-                    BinOp::Gt => self.compare(lhs_value, rhs_value, expr.span, |a, b| a > b),
-                    BinOp::Eq => Ok(Value::Bool(value_eq(&lhs_value, &rhs_value, expr.span)?)),
+            ExprKind::Binary { .. } => {
+                // Left-assoc chains (`a + b + c + …`) nest down the lhs, and
+                // the parser builds them iteratively (no depth guard), so
+                // evaluate the lhs spine iteratively too — a flat 500-term sum
+                // must not consume eval depth (or host stack) per term.
+                let mut spine = Vec::new();
+                let mut leaf = expr;
+                while let ExprKind::Binary { op, lhs, rhs } = &leaf.kind {
+                    spine.push((*op, rhs, leaf.span));
+                    leaf = lhs;
                 }
+                let mut acc = self.eval(leaf, env)?;
+                for (op, rhs, span) in spine.into_iter().rev() {
+                    let rhs_value = self.eval(rhs, env)?;
+                    acc = self.binary_op(op, acc, rhs_value, span)?;
+                }
+                Ok(acc)
             }
             ExprKind::Neg(inner) => match self.eval(inner, env)? {
                 Value::Number(n) => Ok(Value::Number(-n)),
@@ -233,6 +262,27 @@ impl Interp {
                     span: expr.span,
                 }),
             },
+        }
+    }
+
+    fn binary_op(
+        &mut self,
+        op: crate::ast::BinOp,
+        lhs: Value,
+        rhs: Value,
+        span: Span,
+    ) -> Result<Value, RunError> {
+        use crate::ast::BinOp;
+        match op {
+            BinOp::Add => self.arith(lhs, rhs, span, |a, b| a + b),
+            BinOp::Sub => self.arith(lhs, rhs, span, |a, b| a - b),
+            BinOp::Mul => self.arith(lhs, rhs, span, |a, b| a * b),
+            // Division follows IEEE-754 (x/0 is ±inf/NaN, printed as
+            // `inf`/`NaN`) — one number type, no checked division.
+            BinOp::Div => self.arith(lhs, rhs, span, |a, b| a / b),
+            BinOp::Lt => self.compare(lhs, rhs, span, |a, b| a < b),
+            BinOp::Gt => self.compare(lhs, rhs, span, |a, b| a > b),
+            BinOp::Eq => Ok(Value::Bool(value_eq(&lhs, &rhs, span)?)),
         }
     }
 
@@ -278,22 +328,29 @@ impl Interp {
 
     /// Call a value. `label` is the callee's source-level name for the trace
     /// (`report`, `List.map`, `<lambda>`); `span` is the call site, used for
-    /// errors raised by the call itself (arity, not-callable).
+    /// errors raised by the call itself (arity, not-callable). `via` is set
+    /// when a builtin is invoking its function argument, so an arity error
+    /// blames "the function passed to List.map", not the builtin.
     fn call(
         &mut self,
         callee: Value,
         args: Vec<Value>,
         label: String,
         span: Span,
+        via: Option<&'static str>,
     ) -> Result<Value, RunError> {
         self.trace_enter(&label, &args);
         self.call_depth += 1;
         let result = match &callee {
             Value::Closure(closure) => {
                 if closure.params.len() != args.len() {
+                    let who = match via {
+                        Some(builtin) => format!("the function passed to {builtin}"),
+                        None => format!("`{label}`"),
+                    };
                     Err(RunError {
                         message: format!(
-                            "`{label}` takes {} argument(s), got {}",
+                            "{who} takes {} argument(s), got {}",
                             closure.params.len(),
                             args.len()
                         ),
@@ -337,7 +394,15 @@ impl Interp {
     }
 
     fn trace_exit(&mut self, result: &Value) {
-        if self.tracing == Tracing::Off || self.trace.len() >= MAX_TRACE_EVENTS {
+        if self.tracing == Tracing::Off {
+            return;
+        }
+        if self.trace.len() >= MAX_TRACE_EVENTS {
+            // Same marker as trace_enter: without it, a transcript whose last
+            // recorded event is an Enter would read like a hang.
+            if !matches!(self.trace.last(), Some(TraceEvent::Truncated)) {
+                self.trace.push(TraceEvent::Truncated);
+            }
             return;
         }
         self.trace.push(TraceEvent::Exit {
@@ -363,6 +428,7 @@ impl Interp {
                             vec![item.clone()],
                             element_label(b, i),
                             span,
+                            Some(builtin_name(b)),
                         )?);
                     }
                     Ok(Value::List(Rc::new(out)))
@@ -373,7 +439,13 @@ impl Interp {
                 [Value::List(items), f] => {
                     let mut out = Vec::new();
                     for (i, item) in items.iter().enumerate() {
-                        match self.call(f.clone(), vec![item.clone()], element_label(b, i), span)? {
+                        match self.call(
+                            f.clone(),
+                            vec![item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )? {
                             Value::Bool(true) => out.push(item.clone()),
                             Value::Bool(false) => {}
                             other => {
@@ -388,8 +460,10 @@ impl Interp {
                 }
                 _ => err("List.filter(list, fn) expects a list and a function".to_string()),
             },
+            // List-first like map/filter, so it composes with `|>` (the piped
+            // value is PREPENDED as the first argument — see crate::lower).
             Builtin::ListFold => match args.as_slice() {
-                [f, init, Value::List(items)] => {
+                [Value::List(items), f, init] => {
                     let mut acc = init.clone();
                     for (i, item) in items.iter().enumerate() {
                         acc = self.call(
@@ -397,15 +471,18 @@ impl Interp {
                             vec![acc, item.clone()],
                             element_label(b, i),
                             span,
+                            Some(builtin_name(b)),
                         )?;
                     }
                     Ok(acc)
                 }
                 _ => err(
-                    "List.fold(fn, init, list) expects a function, an initial value, and a list"
+                    "List.fold(list, fn, init) expects a list, a function, and an initial value"
                         .to_string(),
                 ),
             },
+            // NaN handling follows Rust's `f64::max` (IEEE maximumNumber):
+            // NaN elements are ignored unless every element is NaN.
             Builtin::ListMaximum => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut best: Option<f64> = None;

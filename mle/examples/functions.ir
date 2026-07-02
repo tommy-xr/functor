@@ -194,53 +194,53 @@ Module {
                         id: e15,
                         kind: Call {
                             callee: Expr {
-                                id: e10,
+                                id: e12,
                                 kind: External(
                                     [
                                         "List",
                                         "fold",
                                     ],
                                 ),
-                                span: 248..257,
+                                span: 260..269,
                             },
                             args: [
                                 Expr {
                                     id: e11,
-                                    kind: Global(
-                                        "add",
-                                    ),
-                                    span: 258..261,
-                                },
-                                Expr {
-                                    id: e12,
-                                    kind: Number(
-                                        0.0,
-                                    ),
-                                    span: 263..266,
-                                },
-                                Expr {
-                                    id: e14,
                                     kind: FieldAccess {
                                         object: Expr {
-                                            id: e13,
+                                            id: e10,
                                             kind: Local {
                                                 binding: b4,
                                                 name: "p",
                                             },
-                                            span: 268..269,
+                                            span: 248..249,
                                         },
                                         field: "scores",
                                     },
-                                    span: 268..276,
+                                    span: 248..256,
+                                },
+                                Expr {
+                                    id: e13,
+                                    kind: Global(
+                                        "add",
+                                    ),
+                                    span: 270..273,
+                                },
+                                Expr {
+                                    id: e14,
+                                    kind: Number(
+                                        0.0,
+                                    ),
+                                    span: 275..278,
                                 },
                             ],
                         },
-                        span: 248..277,
+                        span: 260..279,
                     },
                 },
-                span: 226..277,
+                span: 226..279,
             },
-            span: 214..277,
+            span: 214..279,
         },
         Def {
             id: d4,
@@ -259,20 +259,20 @@ Module {
                                         TypeName {
                                             name: "Player",
                                             args: [],
-                                            span: 310..316,
+                                            span: 312..318,
                                         },
                                     ],
-                                    span: 305..317,
+                                    span: 307..319,
                                 },
                             ),
-                            span: 296..317,
+                            span: 298..319,
                         },
                     ],
                     ret: Some(
                         TypeName {
                             name: "Float",
                             args: [],
-                            span: 320..325,
+                            span: 322..327,
                         },
                     ),
                     body: Expr {
@@ -286,7 +286,7 @@ Module {
                                         "maximum",
                                     ],
                                 ),
-                                span: 371..383,
+                                span: 373..385,
                             },
                             args: [
                                 Expr {
@@ -300,7 +300,7 @@ Module {
                                                     "map",
                                                 ],
                                             ),
-                                            span: 342..350,
+                                            span: 344..352,
                                         },
                                         args: [
                                             Expr {
@@ -309,7 +309,7 @@ Module {
                                                     binding: b5,
                                                     name: "players",
                                                 },
-                                                span: 331..338,
+                                                span: 333..340,
                                             },
                                             Expr {
                                                 id: e22,
@@ -319,7 +319,7 @@ Module {
                                                             binding: b6,
                                                             name: "p",
                                                             ty: None,
-                                                            span: 352..353,
+                                                            span: 354..355,
                                                         },
                                                     ],
                                                     ret: None,
@@ -331,7 +331,7 @@ Module {
                                                                 kind: Global(
                                                                     "total",
                                                                 ),
-                                                                span: 358..363,
+                                                                span: 360..365,
                                                             },
                                                             args: [
                                                                 Expr {
@@ -340,27 +340,27 @@ Module {
                                                                         binding: b6,
                                                                         name: "p",
                                                                     },
-                                                                    span: 364..365,
+                                                                    span: 366..367,
                                                                 },
                                                             ],
                                                         },
-                                                        span: 358..366,
+                                                        span: 360..368,
                                                     },
                                                 },
-                                                span: 351..366,
+                                                span: 353..368,
                                             },
                                         ],
                                     },
-                                    span: 342..367,
+                                    span: 344..369,
                                 },
                             ],
                         },
-                        span: 371..383,
+                        span: 373..385,
                     },
                 },
-                span: 295..383,
+                span: 297..385,
             },
-            span: 279..383,
+            span: 281..385,
         },
         Def {
             id: d5,
@@ -373,13 +373,13 @@ Module {
                             binding: b7,
                             name: "p",
                             ty: None,
-                            span: 401..402,
+                            span: 403..404,
                         },
                         Param {
                             binding: b8,
                             name: "cutoff",
                             ty: None,
-                            span: 404..410,
+                            span: 406..412,
                         },
                     ],
                     ret: None,
@@ -393,7 +393,7 @@ Module {
                                     binding: b8,
                                     name: "cutoff",
                                 },
-                                span: 415..421,
+                                span: 417..423,
                             },
                             rhs: Expr {
                                 id: e30,
@@ -403,7 +403,7 @@ Module {
                                         kind: Global(
                                             "total",
                                         ),
-                                        span: 424..429,
+                                        span: 426..431,
                                     },
                                     args: [
                                         Expr {
@@ -412,19 +412,19 @@ Module {
                                                 binding: b7,
                                                 name: "p",
                                             },
-                                            span: 430..431,
+                                            span: 432..433,
                                         },
                                     ],
                                 },
-                                span: 424..432,
+                                span: 426..434,
                             },
                         },
-                        span: 415..432,
+                        span: 417..434,
                     },
                 },
-                span: 400..432,
+                span: 402..434,
             },
-            span: 385..432,
+            span: 387..434,
         },
         Def {
             id: d6,
@@ -434,9 +434,9 @@ Module {
                 kind: Bool(
                     false,
                 ),
-                span: 446..451,
+                span: 448..453,
             },
-            span: 434..451,
+            span: 436..453,
         },
         Def {
             id: d7,
@@ -454,7 +454,7 @@ Module {
                                 kind: Global(
                                     "bestTotal",
                                 ),
-                                span: 472..481,
+                                span: 474..483,
                             },
                             args: [
                                 Expr {
@@ -472,9 +472,9 @@ Module {
                                                                 kind: String(
                                                                     "ada",
                                                                 ),
-                                                                span: 496..501,
+                                                                span: 498..503,
                                                             },
-                                                            span: 490..501,
+                                                            span: 492..503,
                                                         },
                                                         Field {
                                                             name: "scores",
@@ -487,24 +487,24 @@ Module {
                                                                             kind: Number(
                                                                                 12.0,
                                                                             ),
-                                                                            span: 512..516,
+                                                                            span: 514..518,
                                                                         },
                                                                         Expr {
                                                                             id: e37,
                                                                             kind: Number(
                                                                                 30.0,
                                                                             ),
-                                                                            span: 518..522,
+                                                                            span: 520..524,
                                                                         },
                                                                     ],
                                                                 ),
-                                                                span: 511..523,
+                                                                span: 513..525,
                                                             },
-                                                            span: 503..523,
+                                                            span: 505..525,
                                                         },
                                                     ],
                                                 ),
-                                                span: 488..525,
+                                                span: 490..527,
                                             },
                                             Expr {
                                                 id: e44,
@@ -517,9 +517,9 @@ Module {
                                                                 kind: String(
                                                                     "grace",
                                                                 ),
-                                                                span: 539..546,
+                                                                span: 541..548,
                                                             },
-                                                            span: 533..546,
+                                                            span: 535..548,
                                                         },
                                                         Field {
                                                             name: "scores",
@@ -532,37 +532,37 @@ Module {
                                                                             kind: Number(
                                                                                 8.0,
                                                                             ),
-                                                                            span: 557..560,
+                                                                            span: 559..562,
                                                                         },
                                                                         Expr {
                                                                             id: e42,
                                                                             kind: Number(
                                                                                 4.0,
                                                                             ),
-                                                                            span: 562..565,
+                                                                            span: 564..567,
                                                                         },
                                                                     ],
                                                                 ),
-                                                                span: 556..566,
+                                                                span: 558..568,
                                                             },
-                                                            span: 548..566,
+                                                            span: 550..568,
                                                         },
                                                     ],
                                                 ),
-                                                span: 531..568,
+                                                span: 533..570,
                                             },
                                         ],
                                     ),
-                                    span: 482..573,
+                                    span: 484..575,
                                 },
                             ],
                         },
-                        span: 472..574,
+                        span: 474..576,
                     },
                 },
-                span: 464..574,
+                span: 466..576,
             },
-            span: 453..574,
+            span: 455..576,
         },
     ],
 }

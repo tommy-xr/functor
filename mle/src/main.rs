@@ -53,7 +53,14 @@ fn main() {
     };
     let record = match mle::run(&module, tracing) {
         Ok(record) => record,
-        Err(err) => fail(path, &src, err.span, &err.message),
+        Err(failure) => {
+            // A failing run is when the execution story matters most: print
+            // the partial trace before the diagnostic.
+            if command == "trace" {
+                print!("{}", mle::render_trace(&failure.trace));
+            }
+            fail(path, &src, failure.error.span, &failure.error.message)
+        }
     };
     if command == "trace" {
         print!("{}", mle::render_trace(&record.trace));

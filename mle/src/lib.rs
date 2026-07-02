@@ -16,7 +16,7 @@ mod parser;
 mod span;
 pub mod value;
 
-pub use eval::{render_trace, run, RunOutcome, RunRecord, Tracing};
+pub use eval::{render_trace, run, RunFailure, RunOutcome, RunRecord, Tracing};
 pub use lower::lower;
 pub use parser::parse;
 pub use span::{line_col, Span};

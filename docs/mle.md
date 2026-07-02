@@ -146,8 +146,9 @@ snapshots — no GPU, fully agent-verifiable.
       errors, and a depth cap that turns infinite recursion into a clean
       error. `mle run` evaluates a module (calling a zero-param `main` when
       present); `mle trace` prints the enter/exit call story with rendered
-      values. *Verify:* `.run`/`.trace` goldens per example + 18 semantics
-      tests. (done)
+      values — kept even when the run fails. *Verify:* `.run` goldens per
+      example, a `.trace` golden, and a semantics/runtime-error suite
+      (closures, late binding, arity, depth caps, NaN policy). (done)
 - [ ] **B4. Basic types.** Primitives, records, function signatures, mismatch
       diagnostics. *Verify:* diagnostic snapshots on broken examples.
 - [ ] **B5. Match/ADTs + storable closures.** The game-logic essentials;

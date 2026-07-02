@@ -180,53 +180,60 @@ Program {
                             },
                         ),
                         body: Expr {
-                            kind: Call {
-                                callee: Expr {
-                                    kind: Ident(
-                                        [
-                                            "List",
-                                            "fold",
-                                        ],
-                                    ),
-                                    span: 248..257,
+                            kind: Pipeline {
+                                head: Expr {
+                                    kind: FieldAccess {
+                                        object: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "p",
+                                                ],
+                                            ),
+                                            span: 248..249,
+                                        },
+                                        field: "scores",
+                                    },
+                                    span: 248..256,
                                 },
-                                args: [
+                                stages: [
                                     Expr {
-                                        kind: Ident(
-                                            [
-                                                "add",
-                                            ],
-                                        ),
-                                        span: 258..261,
-                                    },
-                                    Expr {
-                                        kind: Number(
-                                            0.0,
-                                        ),
-                                        span: 263..266,
-                                    },
-                                    Expr {
-                                        kind: FieldAccess {
-                                            object: Expr {
+                                        kind: Call {
+                                            callee: Expr {
                                                 kind: Ident(
                                                     [
-                                                        "p",
+                                                        "List",
+                                                        "fold",
                                                     ],
                                                 ),
-                                                span: 268..269,
+                                                span: 260..269,
                                             },
-                                            field: "scores",
+                                            args: [
+                                                Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "add",
+                                                        ],
+                                                    ),
+                                                    span: 270..273,
+                                                },
+                                                Expr {
+                                                    kind: Number(
+                                                        0.0,
+                                                    ),
+                                                    span: 275..278,
+                                                },
+                                            ],
                                         },
-                                        span: 268..276,
+                                        span: 260..279,
                                     },
                                 ],
                             },
-                            span: 248..277,
+                            span: 248..279,
                         },
                     },
-                    span: 226..277,
+                    span: 226..279,
                 },
-                span: 214..277,
+                span: 214..279,
             },
         ),
         Let(
@@ -244,20 +251,20 @@ Program {
                                             TypeName {
                                                 name: "Player",
                                                 args: [],
-                                                span: 310..316,
+                                                span: 312..318,
                                             },
                                         ],
-                                        span: 305..317,
+                                        span: 307..319,
                                     },
                                 ),
-                                span: 296..317,
+                                span: 298..319,
                             },
                         ],
                         ret: Some(
                             TypeName {
                                 name: "Float",
                                 args: [],
-                                span: 320..325,
+                                span: 322..327,
                             },
                         ),
                         body: Expr {
@@ -268,7 +275,7 @@ Program {
                                             "players",
                                         ],
                                     ),
-                                    span: 331..338,
+                                    span: 333..340,
                                 },
                                 stages: [
                                     Expr {
@@ -280,7 +287,7 @@ Program {
                                                         "map",
                                                     ],
                                                 ),
-                                                span: 342..350,
+                                                span: 344..352,
                                             },
                                             args: [
                                                 Expr {
@@ -289,7 +296,7 @@ Program {
                                                             Param {
                                                                 name: "p",
                                                                 ty: None,
-                                                                span: 352..353,
+                                                                span: 354..355,
                                                             },
                                                         ],
                                                         ret: None,
@@ -301,7 +308,7 @@ Program {
                                                                             "total",
                                                                         ],
                                                                     ),
-                                                                    span: 358..363,
+                                                                    span: 360..365,
                                                                 },
                                                                 args: [
                                                                     Expr {
@@ -310,18 +317,18 @@ Program {
                                                                                 "p",
                                                                             ],
                                                                         ),
-                                                                        span: 364..365,
+                                                                        span: 366..367,
                                                                     },
                                                                 ],
                                                             },
-                                                            span: 358..366,
+                                                            span: 360..368,
                                                         },
                                                     },
-                                                    span: 351..366,
+                                                    span: 353..368,
                                                 },
                                             ],
                                         },
-                                        span: 342..367,
+                                        span: 344..369,
                                     },
                                     Expr {
                                         kind: Ident(
@@ -330,16 +337,16 @@ Program {
                                                 "maximum",
                                             ],
                                         ),
-                                        span: 371..383,
+                                        span: 373..385,
                                     },
                                 ],
                             },
-                            span: 331..383,
+                            span: 333..385,
                         },
                     },
-                    span: 295..383,
+                    span: 297..385,
                 },
-                span: 279..383,
+                span: 281..385,
             },
         ),
         Let(
@@ -351,12 +358,12 @@ Program {
                             Param {
                                 name: "p",
                                 ty: None,
-                                span: 401..402,
+                                span: 403..404,
                             },
                             Param {
                                 name: "cutoff",
                                 ty: None,
-                                span: 404..410,
+                                span: 406..412,
                             },
                         ],
                         ret: None,
@@ -369,7 +376,7 @@ Program {
                                             "cutoff",
                                         ],
                                     ),
-                                    span: 415..421,
+                                    span: 417..423,
                                 },
                                 rhs: Expr {
                                     kind: Call {
@@ -379,7 +386,7 @@ Program {
                                                     "total",
                                                 ],
                                             ),
-                                            span: 424..429,
+                                            span: 426..431,
                                         },
                                         args: [
                                             Expr {
@@ -388,19 +395,19 @@ Program {
                                                         "p",
                                                     ],
                                                 ),
-                                                span: 430..431,
+                                                span: 432..433,
                                             },
                                         ],
                                     },
-                                    span: 424..432,
+                                    span: 426..434,
                                 },
                             },
-                            span: 415..432,
+                            span: 417..434,
                         },
                     },
-                    span: 400..432,
+                    span: 402..434,
                 },
-                span: 385..432,
+                span: 387..434,
             },
         ),
         Let(
@@ -410,9 +417,9 @@ Program {
                     kind: Bool(
                         false,
                     ),
-                    span: 446..451,
+                    span: 448..453,
                 },
-                span: 434..451,
+                span: 436..453,
             },
         ),
         Let(
@@ -430,7 +437,7 @@ Program {
                                             "bestTotal",
                                         ],
                                     ),
-                                    span: 472..481,
+                                    span: 474..483,
                                 },
                                 args: [
                                     Expr {
@@ -445,9 +452,9 @@ Program {
                                                                     kind: String(
                                                                         "ada",
                                                                     ),
-                                                                    span: 496..501,
+                                                                    span: 498..503,
                                                                 },
-                                                                span: 490..501,
+                                                                span: 492..503,
                                                             },
                                                             Field {
                                                                 name: "scores",
@@ -458,23 +465,23 @@ Program {
                                                                                 kind: Number(
                                                                                     12.0,
                                                                                 ),
-                                                                                span: 512..516,
+                                                                                span: 514..518,
                                                                             },
                                                                             Expr {
                                                                                 kind: Number(
                                                                                     30.0,
                                                                                 ),
-                                                                                span: 518..522,
+                                                                                span: 520..524,
                                                                             },
                                                                         ],
                                                                     ),
-                                                                    span: 511..523,
+                                                                    span: 513..525,
                                                                 },
-                                                                span: 503..523,
+                                                                span: 505..525,
                                                             },
                                                         ],
                                                     ),
-                                                    span: 488..525,
+                                                    span: 490..527,
                                                 },
                                                 Expr {
                                                     kind: Record(
@@ -485,9 +492,9 @@ Program {
                                                                     kind: String(
                                                                         "grace",
                                                                     ),
-                                                                    span: 539..546,
+                                                                    span: 541..548,
                                                                 },
-                                                                span: 533..546,
+                                                                span: 535..548,
                                                             },
                                                             Field {
                                                                 name: "scores",
@@ -498,36 +505,36 @@ Program {
                                                                                 kind: Number(
                                                                                     8.0,
                                                                                 ),
-                                                                                span: 557..560,
+                                                                                span: 559..562,
                                                                             },
                                                                             Expr {
                                                                                 kind: Number(
                                                                                     4.0,
                                                                                 ),
-                                                                                span: 562..565,
+                                                                                span: 564..567,
                                                                             },
                                                                         ],
                                                                     ),
-                                                                    span: 556..566,
+                                                                    span: 558..568,
                                                                 },
-                                                                span: 548..566,
+                                                                span: 550..568,
                                                             },
                                                         ],
                                                     ),
-                                                    span: 531..568,
+                                                    span: 533..570,
                                                 },
                                             ],
                                         ),
-                                        span: 482..573,
+                                        span: 484..575,
                                     },
                                 ],
                             },
-                            span: 472..574,
+                            span: 474..576,
                         },
                     },
-                    span: 464..574,
+                    span: 466..576,
                 },
-                span: 453..574,
+                span: 455..576,
             },
         ),
     ],

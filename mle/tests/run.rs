@@ -12,23 +12,28 @@ fn run_src(src: &str, tracing: Tracing) -> mle::RunRecord {
     let module = mle::lower(program).expect("source should lower");
     match mle::run(&module, tracing) {
         Ok(record) => record,
-        Err(err) => {
-            let (line, col) = mle::line_col(src, err.span.start);
-            panic!("{line}:{col}: error: {}", err.message);
+        Err(failure) => {
+            let (line, col) = mle::line_col(src, failure.error.span.start);
+            panic!("{line}:{col}: error: {}", failure.error.message);
         }
+    }
+}
+
+/// Run `src` expecting a runtime failure.
+fn run_failure(src: &str, tracing: Tracing) -> mle::RunFailure {
+    let program = mle::parse(src).expect("source should parse");
+    let module = mle::lower(program).expect("source should lower");
+    match mle::run(&module, tracing) {
+        Err(failure) => failure,
+        Ok(_) => panic!("source should fail at runtime"),
     }
 }
 
 /// Run `src` expecting a runtime error; returns (message, line, col).
 fn run_err(src: &str) -> (String, usize, usize) {
-    let program = mle::parse(src).expect("source should parse");
-    let module = mle::lower(program).expect("source should lower");
-    let err = match mle::run(&module, Tracing::Off) {
-        Err(err) => err,
-        Ok(_) => panic!("source should fail at runtime"),
-    };
-    let (line, col) = mle::line_col(src, err.span.start);
-    (err.message, line, col)
+    let failure = run_failure(src, Tracing::Off);
+    let (line, col) = mle::line_col(src, failure.error.span.start);
+    (failure.error.message, line, col)
 }
 
 /// `main`'s printed result for `src`.
@@ -183,8 +188,17 @@ fn error_infinite_recursion_is_a_clean_error() {
     );
     assert_eq!(
         message,
-        "evaluation nested too deeply (infinite recursion?)"
+        "evaluation nested too deeply (deep recursion, or deeply nested expressions)"
     );
+}
+
+// The parser builds left-assoc chains iteratively and eval walks the lhs
+// spine iteratively, so flat straight-line arithmetic never hits the depth
+// cap regardless of length.
+#[test]
+fn long_flat_expression_chains_evaluate() {
+    let terms = vec!["1.0"; 500].join(" + ");
+    assert_eq!(main_result(&format!("let main = {terms}")), "500");
 }
 
 #[test]
@@ -201,10 +215,56 @@ fn division_follows_ieee() {
 #[test]
 fn builtins_evaluate() {
     assert_eq!(main_result("let main = () => Math.clamp01(1.5)"), "1");
+    // List-first, so fold composes with |> like map/filter.
     assert_eq!(
-        main_result("let main = () => List.fold((acc, x) => acc + x, 0.0, [1.0, 2.0, 3.0])"),
+        main_result("let main = () => [1.0, 2.0, 3.0] |> List.fold((acc, x) => acc + x, 0.0)"),
         "6"
     );
+}
+
+// NaN follows f64::max (IEEE maximumNumber): ignored unless all-NaN.
+#[test]
+fn maximum_ignores_nan_unless_all_nan() {
+    assert_eq!(
+        main_result("let main = () => List.maximum([0.0 / 0.0, 1.0])"),
+        "1"
+    );
+    assert_eq!(
+        main_result("let main = () => List.maximum([0.0 / 0.0])"),
+        "NaN"
+    );
+}
+
+#[test]
+fn arity_error_blames_the_callback_not_the_builtin() {
+    let (message, _, _) = run_err(
+        "let add = (a, b) => a + b\n\
+         let main = () => [1.0] |> List.map(add)",
+    );
+    assert_eq!(
+        message,
+        "the function passed to List.map takes 2 argument(s), got 1"
+    );
+}
+
+#[test]
+fn error_main_bound_to_a_builtin() {
+    let (message, _, _) = run_err("let main = List.map");
+    assert_eq!(message, "`main` must take no parameters to be runnable");
+}
+
+// A failing run keeps the trace recorded up to the error — the execution
+// story is most valuable exactly then.
+#[test]
+fn failing_runs_keep_their_partial_trace() {
+    let failure = run_failure(
+        "let boom = (x) => x + \"s\"\n\
+         let main = () => boom(1.0)",
+        Tracing::On,
+    );
+    let rendered = mle::render_trace(&failure.trace);
+    assert!(rendered.contains("> main()"), "trace was: {rendered}");
+    assert!(rendered.contains("> boom(1)"), "trace was: {rendered}");
 }
 
 #[test]
