@@ -202,3 +202,12 @@ fn type_and_let_may_share_a_name() {
     assert_eq!(module.types[0].name, "Foo");
     assert_eq!(module.defs[0].name, "Foo");
 }
+
+// Duplicate record fields would make record equality asymmetric at runtime
+// (fields match by name) — rejected at lowering like duplicate params.
+#[test]
+fn error_duplicate_record_field() {
+    let (message, line, col) = lower_err("let a = { x: 1.0, x: 2.0 }");
+    assert_eq!(message, "duplicate record field `x`");
+    assert_eq!((line, col), (1, 19));
+}

@@ -15,8 +15,9 @@
 //! unary     := "-" unary | postfix
 //! postfix   := primary ("(" expr,* ")" | "." ident)*
 //! primary   := number | string | "true" | "false" | qualifiedIdent
-//!            | record | lambda | "(" expr ")"
+//!            | record | list | lambda | "(" expr ")"
 //! record    := "{" (ident ":" expr),* "}"
+//! list      := "[" expr,* "]"
 //! lambda    := "(" (ident (":" type)?),* ")" (":" type)? "=>" expr
 //! ```
 //!
@@ -357,6 +358,7 @@ impl Parser {
             }
             TokenKind::Ident(_) => self.ident_expr(),
             TokenKind::LBrace => self.record(),
+            TokenKind::LBracket => self.list(),
             TokenKind::LParen => {
                 if self.lambda_ahead() {
                     self.lambda()
@@ -411,6 +413,24 @@ impl Parser {
         let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
         Ok(Expr {
             kind: ExprKind::Record(fields),
+            span: open.span.to(close.span),
+        })
+    }
+
+    fn list(&mut self) -> Result<Expr, ParseError> {
+        let open = self.bump();
+        let mut items = Vec::new();
+        while self.peek_kind() != &TokenKind::RBracket {
+            items.push(self.expr()?);
+            if self.peek_kind() == &TokenKind::Comma {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RBracket, "`,` or `]`")?;
+        Ok(Expr {
+            kind: ExprKind::List(items),
             span: open.span.to(close.span),
         })
     }

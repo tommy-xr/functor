@@ -20,6 +20,7 @@
 use crate::ast::{BinOp, FieldTy, TypeName};
 use crate::span::Span;
 use std::fmt;
+use std::rc::Rc;
 
 /// ID of a top-level item ([`TypeDef`] or [`Def`]), assigned in file order.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -105,15 +106,20 @@ pub enum ExprKind {
     External(Vec<String>),
     /// `{ x: 1.0, y: 2.0 }`
     Record(Vec<Field>),
+    /// `[1.0, 2.0, 3.0]`
+    List(Vec<Expr>),
     /// `position.x`
     FieldAccess {
         object: Box<Expr>,
         field: String,
     },
+    /// Params and body are `Rc` (not `Box`) so a closure *value* can share
+    /// them without lifetimes tied to the [`Module`] — see [`crate::eval`].
+    /// (`Rc`'s `Debug` delegates, so the pretty-IR goldens are unaffected.)
     Lambda {
-        params: Vec<Param>,
+        params: Rc<Vec<Param>>,
         ret: Option<TypeName>,
-        body: Box<Expr>,
+        body: Rc<Expr>,
     },
     Call {
         callee: Box<Expr>,

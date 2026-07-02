@@ -74,6 +74,8 @@ pub enum ExprKind {
     Ident(Vec<String>),
     /// `{ x: 1.0, y: 2.0 }`
     Record(Vec<Field>),
+    /// `[1.0, 2.0, 3.0]`
+    List(Vec<Expr>),
     /// `position.x`
     FieldAccess {
         object: Box<Expr>,

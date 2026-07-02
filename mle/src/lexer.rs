@@ -18,6 +18,8 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
     Dot,
@@ -55,6 +57,8 @@ pub fn describe(kind: &TokenKind) -> String {
         RParen => "`)`".to_string(),
         LBrace => "`{`".to_string(),
         RBrace => "`}`".to_string(),
+        LBracket => "`[`".to_string(),
+        RBracket => "`]`".to_string(),
         Comma => "`,`".to_string(),
         Colon => "`:`".to_string(),
         Dot => "`.`".to_string(),
@@ -105,6 +109,14 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             b'}' => {
                 i += 1;
                 TokenKind::RBrace
+            }
+            b'[' => {
+                i += 1;
+                TokenKind::LBracket
+            }
+            b']' => {
+                i += 1;
+                TokenKind::RBracket
             }
             b',' => {
                 i += 1;

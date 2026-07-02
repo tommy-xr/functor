@@ -276,5 +276,58 @@ Program {
                 span: 380..488,
             },
         ),
+        Let(
+            LetDecl {
+                name: "main",
+                value: Expr {
+                    kind: Lambda {
+                        params: [],
+                        ret: None,
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "report",
+                                        ],
+                                    ),
+                                    span: 507..513,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: List(
+                                            [
+                                                Expr {
+                                                    kind: Number(
+                                                        12.0,
+                                                    ),
+                                                    span: 515..519,
+                                                },
+                                                Expr {
+                                                    kind: Number(
+                                                        3.5,
+                                                    ),
+                                                    span: 521..524,
+                                                },
+                                                Expr {
+                                                    kind: Number(
+                                                        40.0,
+                                                    ),
+                                                    span: 526..530,
+                                                },
+                                            ],
+                                        ),
+                                        span: 514..531,
+                                    },
+                                ],
+                            },
+                            span: 507..532,
+                        },
+                    },
+                    span: 501..532,
+                },
+                span: 490..532,
+            },
+        ),
     ],
 }

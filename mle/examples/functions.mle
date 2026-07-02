@@ -6,7 +6,7 @@ let add = (a: Float, b: Float): Float => a + b
 
 let average = (a, b) => (a + b) / 2.0
 
-let total = (p: Player): Float => List.fold(add, 0.0, p.scores)
+let total = (p: Player): Float => p.scores |> List.fold(add, 0.0)
 
 let bestTotal = (players: List<Player>): Float =>
   players |> List.map((p) => total(p)) |> List.maximum
@@ -14,3 +14,9 @@ let bestTotal = (players: List<Player>): Float =>
 let isWinner = (p, cutoff) => cutoff < total(p)
 
 let debug = false
+
+let main = () =>
+  bestTotal([
+    { name: "ada", scores: [12.0, 30.0] },
+    { name: "grace", scores: [8.0, 4.0] },
+  ])

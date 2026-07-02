@@ -108,11 +108,39 @@ impl Lowerer {
         id
     }
 
-    // Recursion depth is bounded by the parser's `MAX_DEPTH` guard, so
-    // lowering needs no depth check of its own.
+    // Recursion depth is bounded by the parser's `MAX_DEPTH` guard — except
+    // for left-assoc binary chains (`a + b + c + …`), which the parser builds
+    // iteratively with no depth cost, so lowering walks their lhs spine
+    // iteratively too (as does eval).
     fn expr(&mut self, expr: ast::Expr) -> Result<Expr, LowerError> {
         let span = expr.span;
         let kind = match expr.kind {
+            ast::ExprKind::Binary { .. } => {
+                let mut spine = Vec::new();
+                let mut leaf = expr;
+                while let ast::ExprKind::Binary { op, lhs, rhs } = leaf.kind {
+                    spine.push((op, *rhs, leaf.span));
+                    leaf = *lhs;
+                }
+                // Lowering order (leaf, then each rhs, assigning the joining
+                // node's ID after its rhs) matches what recursive descent
+                // produced, so expression IDs — and the .ir goldens — are
+                // unchanged.
+                let mut acc = self.expr(leaf)?;
+                for (op, rhs, node_span) in spine.into_iter().rev() {
+                    let rhs = self.expr(rhs)?;
+                    acc = Expr {
+                        id: self.expr_id(),
+                        kind: ExprKind::Binary {
+                            op,
+                            lhs: Box::new(acc),
+                            rhs: Box::new(rhs),
+                        },
+                        span: node_span,
+                    };
+                }
+                return Ok(acc);
+            }
             ast::ExprKind::Ident(segments) => return self.ident(segments, span),
             ast::ExprKind::Pipeline { head, stages } => {
                 let mut piped = self.expr(*head)?;
@@ -125,8 +153,17 @@ impl Lowerer {
             ast::ExprKind::String(s) => ExprKind::String(s),
             ast::ExprKind::Bool(b) => ExprKind::Bool(b),
             ast::ExprKind::Record(fields) => {
-                let mut lowered = Vec::new();
+                let mut lowered: Vec<Field> = Vec::new();
                 for field in fields {
+                    // Duplicate fields would make record equality (which
+                    // matches fields by name) asymmetric — reject them here,
+                    // like duplicate params and duplicate top-level names.
+                    if lowered.iter().any(|f| f.name == field.name) {
+                        return Err(LowerError {
+                            message: format!("duplicate record field `{}`", field.name),
+                            span: field.span,
+                        });
+                    }
                     lowered.push(Field {
                         name: field.name,
                         value: self.expr(field.value)?,
@@ -134,6 +171,13 @@ impl Lowerer {
                     });
                 }
                 ExprKind::Record(lowered)
+            }
+            ast::ExprKind::List(items) => {
+                let mut lowered = Vec::new();
+                for item in items {
+                    lowered.push(self.expr(item)?);
+                }
+                ExprKind::List(lowered)
             }
             ast::ExprKind::FieldAccess { object, field } => ExprKind::FieldAccess {
                 object: Box::new(self.expr(*object)?),
@@ -163,9 +207,9 @@ impl Lowerer {
                 let body = self.expr(*body);
                 self.scopes.pop();
                 ExprKind::Lambda {
-                    params: lowered,
+                    params: std::rc::Rc::new(lowered),
                     ret,
-                    body: Box::new(body?),
+                    body: std::rc::Rc::new(body?),
                 }
             }
             ast::ExprKind::Call { callee, args } => {
@@ -179,11 +223,6 @@ impl Lowerer {
                     args: lowered,
                 }
             }
-            ast::ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
-                op,
-                lhs: Box::new(self.expr(*lhs)?),
-                rhs: Box::new(self.expr(*rhs)?),
-            },
             ast::ExprKind::Neg(inner) => ExprKind::Neg(Box::new(self.expr(*inner)?)),
         };
         Ok(Expr {

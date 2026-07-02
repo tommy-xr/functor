@@ -137,8 +137,18 @@ snapshots — no GPU, fully agent-verifiable.
       spans on every node. *Verify:* `mle ir` snapshot fixtures (the
       parser↔runtime contract). (done — top-level defs are mutually visible
       and carry their name as the stable hot-reload identity)
-- [ ] **B3. Interpreter + run/trace.** Literals, records, calls, locals; run
-      record with captured values. *Verify:* `mle run` / `mle trace` goldens.
+- [x] **B3. Interpreter + run/trace.** Tree-walking evaluator over the IR:
+      literals, records, **lists** (list literals added through the full
+      stack — nothing could construct one before), closures with captured
+      environments, late-bound globals (the hot-reload rebind semantics), a
+      first builtin registry (`List.map`/`filter`/`fold`/`maximum`,
+      `Text.concat`/`fromFloat`/`toBullets`, `Math.clamp01`), spanned runtime
+      errors, and a depth cap that turns infinite recursion into a clean
+      error. `mle run` evaluates a module (calling a zero-param `main` when
+      present); `mle trace` prints the enter/exit call story with rendered
+      values — kept even when the run fails. *Verify:* `.run` goldens per
+      example, a `.trace` golden, and a semantics/runtime-error suite
+      (closures, late binding, arity, depth caps, NaN policy). (done)
 - [ ] **B4. Basic types.** Primitives, records, function signatures, mismatch
       diagnostics. *Verify:* diagnostic snapshots on broken examples.
 - [ ] **B5. Match/ADTs + storable closures.** The game-logic essentials;
