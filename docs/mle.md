@@ -67,17 +67,29 @@ run via `functor-runner --mle --game-path examples/mle-spike/game.mle`):**
   from scratch every frame: **63.6µs/frame at 51 entities (0.4%** of a 60fps
   budget); **645.9µs at 501 entities (3.9%)**. Even the unoptimized debug
   build held 51 entities at 2.5% of budget. No bytecode VM needed for
-  Functor-scale logic — roadmap phase 7 stays deferred.
+  Functor-scale logic — roadmap phase 7 stays deferred. (The number is
+  isolated interpreter throughput — a tight tick+draw loop through the real
+  `Game` paths, including ~0.5% of stats bookkeeping — not in-situ frame cost;
+  the in-frame `[mle] avg` stats agree.)
 - **Hot reload: 0.07ms re-parse**, edit→visible bounded by the one-frame file
   poll (~16ms). Model value survives the reload (spin continued from its live
-  value while an edited `speed` constant reversed its direction — rebind
-  semantics working as designed). A syntax-error edit fails loud and keeps the
-  old program running.
-- Renders correctly through the real pipeline (`--capture-frame` verified) and
-  drives headless + debug-server (`/state` shows the MLE model).
-- Runtime quirk found: `Material` nodes ignore their own `xform` in
+  value while an edited `speed` constant reversed its direction). A
+  syntax-error edit fails loud and keeps the old program running. Scope
+  caveat (flagged by both review engines): this validates **global-name
+  rebind only** — the spike's closures keep their parse-time bodies, so
+  *closures stored in the model* would NOT adopt edits. The `(stable-id, env)`
+  stored-closure rebind from `closures.md` remains unproven until B5/C3.
+- Renders correctly through the real pipeline (`--capture-frame` verified —
+  note a `--fixed-time` capture pins `dts = 0`, so it evidences interpreted
+  scene construction at the `spin = 0` pose, not motion; motion was verified
+  separately via the headless `/state` probes) and drives headless +
+  debug-server (`/state` shows the MLE model).
+- Two boundary semantics to pin down explicitly in Track A's protocol (both
+  found the hard way here): `Material` nodes ignore their own `xform` in
   `Scene3D::render` (unlike `Group`), so transforms must be applied inside a
-  material wrapper. Worth revisiting during Track A protocol formalization.
+  material wrapper; and `Scene3D::transform` right-multiplies
+  (`self.xform * xform`), so `translate(rotateY(x), …)` applies the
+  translation *first* — wrapper order reads backwards from what it does.
 
 ## Track A — the language-neutral data seam (no MLE required)
 
