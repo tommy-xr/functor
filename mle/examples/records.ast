@@ -1,0 +1,514 @@
+Program {
+    items: [
+        Type(
+            TypeDecl {
+                name: "Position",
+                fields: [
+                    FieldTy {
+                        name: "x",
+                        ty: TypeName {
+                            name: "Float",
+                            args: [],
+                            span: 162..167,
+                        },
+                        span: 159..167,
+                    },
+                    FieldTy {
+                        name: "y",
+                        ty: TypeName {
+                            name: "Float",
+                            args: [],
+                            span: 172..177,
+                        },
+                        span: 169..177,
+                    },
+                ],
+                span: 141..179,
+            },
+        ),
+        Type(
+            TypeDecl {
+                name: "Velocity",
+                fields: [
+                    FieldTy {
+                        name: "dx",
+                        ty: TypeName {
+                            name: "Float",
+                            args: [],
+                            span: 202..207,
+                        },
+                        span: 198..207,
+                    },
+                    FieldTy {
+                        name: "dy",
+                        ty: TypeName {
+                            name: "Float",
+                            args: [],
+                            span: 213..218,
+                        },
+                        span: 209..218,
+                    },
+                ],
+                span: 180..220,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "origin",
+                value: Expr {
+                    kind: Record(
+                        [
+                            Field {
+                                name: "x",
+                                value: Expr {
+                                    kind: Number(
+                                        0.0,
+                                    ),
+                                    span: 240..243,
+                                },
+                                span: 237..243,
+                            },
+                            Field {
+                                name: "y",
+                                value: Expr {
+                                    kind: Number(
+                                        0.0,
+                                    ),
+                                    span: 248..251,
+                                },
+                                span: 245..251,
+                            },
+                        ],
+                    ),
+                    span: 235..253,
+                },
+                span: 222..253,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "move",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "p",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Position",
+                                        args: [],
+                                        span: 270..278,
+                                    },
+                                ),
+                                span: 267..278,
+                            },
+                            Param {
+                                name: "v",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Velocity",
+                                        args: [],
+                                        span: 283..291,
+                                    },
+                                ),
+                                span: 280..291,
+                            },
+                            Param {
+                                name: "dt",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 297..302,
+                                    },
+                                ),
+                                span: 293..302,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Position",
+                                args: [],
+                                span: 305..313,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Record(
+                                [
+                                    Field {
+                                        name: "x",
+                                        value: Expr {
+                                            kind: Binary {
+                                                op: Add,
+                                                lhs: Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "p",
+                                                                ],
+                                                            ),
+                                                            span: 324..325,
+                                                        },
+                                                        field: "x",
+                                                    },
+                                                    span: 324..327,
+                                                },
+                                                rhs: Expr {
+                                                    kind: Binary {
+                                                        op: Mul,
+                                                        lhs: Expr {
+                                                            kind: FieldAccess {
+                                                                object: Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "v",
+                                                                        ],
+                                                                    ),
+                                                                    span: 330..331,
+                                                                },
+                                                                field: "dx",
+                                                            },
+                                                            span: 330..334,
+                                                        },
+                                                        rhs: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "dt",
+                                                                ],
+                                                            ),
+                                                            span: 337..339,
+                                                        },
+                                                    },
+                                                    span: 330..339,
+                                                },
+                                            },
+                                            span: 324..339,
+                                        },
+                                        span: 321..339,
+                                    },
+                                    Field {
+                                        name: "y",
+                                        value: Expr {
+                                            kind: Binary {
+                                                op: Add,
+                                                lhs: Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "p",
+                                                                ],
+                                                            ),
+                                                            span: 344..345,
+                                                        },
+                                                        field: "y",
+                                                    },
+                                                    span: 344..347,
+                                                },
+                                                rhs: Expr {
+                                                    kind: Binary {
+                                                        op: Mul,
+                                                        lhs: Expr {
+                                                            kind: FieldAccess {
+                                                                object: Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "v",
+                                                                        ],
+                                                                    ),
+                                                                    span: 350..351,
+                                                                },
+                                                                field: "dy",
+                                                            },
+                                                            span: 350..354,
+                                                        },
+                                                        rhs: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "dt",
+                                                                ],
+                                                            ),
+                                                            span: 357..359,
+                                                        },
+                                                    },
+                                                    span: 350..359,
+                                                },
+                                            },
+                                            span: 344..359,
+                                        },
+                                        span: 341..359,
+                                    },
+                                ],
+                            ),
+                            span: 319..361,
+                        },
+                    },
+                    span: 266..361,
+                },
+                span: 255..361,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "delta",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "a",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Position",
+                                        args: [],
+                                        span: 379..387,
+                                    },
+                                ),
+                                span: 376..387,
+                            },
+                            Param {
+                                name: "b",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Position",
+                                        args: [],
+                                        span: 392..400,
+                                    },
+                                ),
+                                span: 389..400,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Position",
+                                args: [],
+                                span: 403..411,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Record(
+                                [
+                                    Field {
+                                        name: "x",
+                                        value: Expr {
+                                            kind: Binary {
+                                                op: Sub,
+                                                lhs: Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "a",
+                                                                ],
+                                                            ),
+                                                            span: 422..423,
+                                                        },
+                                                        field: "x",
+                                                    },
+                                                    span: 422..425,
+                                                },
+                                                rhs: Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "b",
+                                                                ],
+                                                            ),
+                                                            span: 428..429,
+                                                        },
+                                                        field: "x",
+                                                    },
+                                                    span: 428..431,
+                                                },
+                                            },
+                                            span: 422..431,
+                                        },
+                                        span: 419..431,
+                                    },
+                                    Field {
+                                        name: "y",
+                                        value: Expr {
+                                            kind: Binary {
+                                                op: Sub,
+                                                lhs: Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "a",
+                                                                ],
+                                                            ),
+                                                            span: 436..437,
+                                                        },
+                                                        field: "y",
+                                                    },
+                                                    span: 436..439,
+                                                },
+                                                rhs: Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "b",
+                                                                ],
+                                                            ),
+                                                            span: 442..443,
+                                                        },
+                                                        field: "y",
+                                                    },
+                                                    span: 442..445,
+                                                },
+                                            },
+                                            span: 436..445,
+                                        },
+                                        span: 433..445,
+                                    },
+                                ],
+                            ),
+                            span: 417..447,
+                        },
+                    },
+                    span: 375..447,
+                },
+                span: 363..447,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "mirror",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "p",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Position",
+                                        args: [],
+                                        span: 466..474,
+                                    },
+                                ),
+                                span: 463..474,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Position",
+                                args: [],
+                                span: 477..485,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Record(
+                                [
+                                    Field {
+                                        name: "x",
+                                        value: Expr {
+                                            kind: Neg(
+                                                Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "p",
+                                                                ],
+                                                            ),
+                                                            span: 495..496,
+                                                        },
+                                                        field: "x",
+                                                    },
+                                                    span: 495..498,
+                                                },
+                                            ),
+                                            span: 494..498,
+                                        },
+                                        span: 491..498,
+                                    },
+                                    Field {
+                                        name: "y",
+                                        value: Expr {
+                                            kind: FieldAccess {
+                                                object: Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "p",
+                                                        ],
+                                                    ),
+                                                    span: 503..504,
+                                                },
+                                                field: "y",
+                                            },
+                                            span: 503..506,
+                                        },
+                                        span: 500..506,
+                                    },
+                                ],
+                            ),
+                            span: 489..508,
+                        },
+                    },
+                    span: 462..508,
+                },
+                span: 449..508,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "isOrigin",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "p",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Position",
+                                        args: [],
+                                        span: 529..537,
+                                    },
+                                ),
+                                span: 526..537,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Bool",
+                                args: [],
+                                span: 540..544,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Binary {
+                                op: Eq,
+                                lhs: Expr {
+                                    kind: FieldAccess {
+                                        object: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "p",
+                                                ],
+                                            ),
+                                            span: 548..549,
+                                        },
+                                        field: "x",
+                                    },
+                                    span: 548..551,
+                                },
+                                rhs: Expr {
+                                    kind: Number(
+                                        0.0,
+                                    ),
+                                    span: 555..558,
+                                },
+                            },
+                            span: 548..558,
+                        },
+                    },
+                    span: 525..558,
+                },
+                span: 510..558,
+            },
+        ),
+    ],
+}
