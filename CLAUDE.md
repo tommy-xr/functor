@@ -36,7 +36,8 @@ built fluently via `GameBuilder` and handed to `Runtime.runGame`:
 
 - `initialState: 'model`
 - `init  : effect<'msg>` — startup effect, seeded into the queue at construction so it drains
-  before the first frame; **not** re-run across a hot reload (the persisted queue is restored)
+  before the first frame; **not** re-run across a hot reload (`setState` starts the reloaded
+  runner with an empty queue, discarding the constructor-seeded effect)
 - `input : 'model -> Input.t -> 'model * effect<'msg>` — keyboard/mouse events, applied immediately
 - `tick  : 'model -> FrameTime -> 'model * effect<'msg>` — per-frame simulation step
 - `update: 'model -> 'msg -> 'model * effect<'msg>` — handles messages produced by effects
@@ -64,9 +65,11 @@ lives in the Rust runtime, with an F# `Emit` binding mirroring its signature —
 
 **Hot-reload and state persistence.** The desktop runtime can run a game statically
 (`static_game.rs`) or hot-reloaded (`hot_reload_game.rs`, via the `--hot` flag). Across a reload,
-`getState`/`setState` (the `emit_state`/`set_state` `no_mangle` exports in `Runtime.fs`) bundle
-**both the model and the pending effect queue** into an `OpaqueState` so in-flight effects survive
-the reload. Preserve this contract when touching executor state.
+`getState`/`setState` (the `emit_state`/`set_state` `no_mangle` exports in `Runtime.fs`) carry
+**the model only** in an `OpaqueState`; pending effects are deliberately dropped (an `Http`
+effect's tagger is a closure into the old dylib and would dangle — see `getState`'s comment in
+`Runtime.fs`). Preserve this contract when touching executor state; the full boundary is
+enumerated in `functor_runtime_common::protocol`.
 
 **Two runtime exports.** `Runtime.Native` exposes `no_mangle` functions for the dylib;
 `Runtime.Wasm` exposes `wasm_bindgen` equivalents (`_wasm` suffix, marshalling through JsValue;
