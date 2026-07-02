@@ -87,6 +87,23 @@ shell spine (no F# surface).
 - [ ] Networked physics: grow `mpserver`/`mpclient` to client-owned balls +
       server-owned objects (state-sync, then prediction).
 
+## Language (MLE)
+
+Design + phased roadmap: `docs/mle.md` (replace F#/Fable with a custom
+Rust-hosted interpreted language; data-protocol seam first, F# and MLE coexist
+behind a `GameProducer` trait until MLE wins). Language design notes live in
+`~/notes/ideas/mle-language/`.
+
+- [ ] Milestone 0: throwaway perf spike — interpreted tick/draw at 60fps +
+      hot-reload latency numbers, embedded in `functor-runner` behind a flag.
+- [ ] Track A: data seam — versioned serde protocol (A1), `GameProducer` trait
+      (A2), proof producer (A3). No MLE required; valuable standalone.
+- [ ] Track B: MLE vertical slice — parser → IR → interpreter → types →
+      ADTs/closures → effect broker (B1–B6), in-repo `mle/` crates.
+- [ ] Track C: MLE behind the seam — prelude, `MleProducer` + mle-hello golden,
+      hot-reload payoff demo, MVU parity, wasm, perf gate (C1–C6).
+- [ ] Endgame: port examples, then delete the F#/Fable pipeline (D1–D3).
+
 ## Live variables / fast iteration
 
 - [ ] Live-variable debugging: a `Constant`-style function (name + value) editable

@@ -23,6 +23,7 @@ mod audio;
 mod debug_server;
 mod game;
 mod hot_reload_game;
+mod mle_spike;
 mod net_dispatch;
 mod static_game;
 mod ws_host;
@@ -123,6 +124,12 @@ struct Args {
 
     #[arg(long)]
     hot: bool,
+
+    /// THROWAWAY (docs/mle.md Milestone 0): treat --game-path as an `.mle`
+    /// source file and run it through the embedded spike interpreter instead
+    /// of loading a game dylib. Hot-reloads on save; prints per-frame eval cost.
+    #[arg(long)]
+    mle: bool,
 
     /// Run without a GL window: drive the game loop + debug server headlessly
     /// (no GLFW/OpenGL). `/state`, `/scene`, `/input`, `/time` work; `/capture`
@@ -489,7 +496,9 @@ pub async fn main() {
     println!("Using game path: {}", game_path);
     println!("Working directory: {:?}", env::current_dir());
 
-    let mut game: Box<dyn Game> = if args.hot {
+    let mut game: Box<dyn Game> = if args.mle {
+        Box::new(mle_spike::MleGame::create(game_path.as_str()))
+    } else if args.hot {
         Box::new(HotReloadGame::create(game_path.as_str()))
     } else {
         Box::new(StaticGame::create(game_path.as_str()))
