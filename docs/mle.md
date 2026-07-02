@@ -119,9 +119,10 @@ Roadmap phases from `~/notes/ideas/mle-language/roadmap.md`, scoped to what
 Functor needs (notebook features deferred). Every step is `cargo test` +
 snapshots — no GPU, fully agent-verifiable.
 
-- [ ] **B1. Examples + parser → AST.** `.mle` subset: `let`, functions, records,
-      field access, literals, pipelines, type annotations; source spans.
-      *Verify:* AST snapshots per example; `mle parse`; errors point at spans.
+- [x] **B1. Examples + parser → AST.** (the `mle/` crate) `.mle` subset: `let`,
+      functions, records, field access, literals, pipelines, type annotations;
+      source spans. *Verify:* AST snapshots per example (`UPDATE_GOLDENS=1` to
+      regenerate); `mle parse`; errors point at spans. (done)
 - [ ] **B2. AST → core IR.** Stable IDs, name resolution, pipeline desugaring,
       spans on every node. *Verify:* `mle ir` snapshot fixtures (the
       parser↔runtime contract).
