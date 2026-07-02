@@ -135,6 +135,13 @@ impl Lowerer {
                 }
                 ExprKind::Record(lowered)
             }
+            ast::ExprKind::List(items) => {
+                let mut lowered = Vec::new();
+                for item in items {
+                    lowered.push(self.expr(item)?);
+                }
+                ExprKind::List(lowered)
+            }
             ast::ExprKind::FieldAccess { object, field } => ExprKind::FieldAccess {
                 object: Box::new(self.expr(*object)?),
                 field,
@@ -163,9 +170,9 @@ impl Lowerer {
                 let body = self.expr(*body);
                 self.scopes.pop();
                 ExprKind::Lambda {
-                    params: lowered,
+                    params: std::rc::Rc::new(lowered),
                     ret,
-                    body: Box::new(body?),
+                    body: std::rc::Rc::new(body?),
                 }
             }
             ast::ExprKind::Call { callee, args } => {

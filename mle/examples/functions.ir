@@ -438,5 +438,131 @@ Module {
             },
             span: 434..451,
         },
+        Def {
+            id: d7,
+            name: "main",
+            value: Expr {
+                id: e47,
+                kind: Lambda {
+                    params: [],
+                    ret: None,
+                    body: Expr {
+                        id: e46,
+                        kind: Call {
+                            callee: Expr {
+                                id: e34,
+                                kind: Global(
+                                    "bestTotal",
+                                ),
+                                span: 472..481,
+                            },
+                            args: [
+                                Expr {
+                                    id: e45,
+                                    kind: List(
+                                        [
+                                            Expr {
+                                                id: e39,
+                                                kind: Record(
+                                                    [
+                                                        Field {
+                                                            name: "name",
+                                                            value: Expr {
+                                                                id: e35,
+                                                                kind: String(
+                                                                    "ada",
+                                                                ),
+                                                                span: 496..501,
+                                                            },
+                                                            span: 490..501,
+                                                        },
+                                                        Field {
+                                                            name: "scores",
+                                                            value: Expr {
+                                                                id: e38,
+                                                                kind: List(
+                                                                    [
+                                                                        Expr {
+                                                                            id: e36,
+                                                                            kind: Number(
+                                                                                12.0,
+                                                                            ),
+                                                                            span: 512..516,
+                                                                        },
+                                                                        Expr {
+                                                                            id: e37,
+                                                                            kind: Number(
+                                                                                30.0,
+                                                                            ),
+                                                                            span: 518..522,
+                                                                        },
+                                                                    ],
+                                                                ),
+                                                                span: 511..523,
+                                                            },
+                                                            span: 503..523,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: 488..525,
+                                            },
+                                            Expr {
+                                                id: e44,
+                                                kind: Record(
+                                                    [
+                                                        Field {
+                                                            name: "name",
+                                                            value: Expr {
+                                                                id: e40,
+                                                                kind: String(
+                                                                    "grace",
+                                                                ),
+                                                                span: 539..546,
+                                                            },
+                                                            span: 533..546,
+                                                        },
+                                                        Field {
+                                                            name: "scores",
+                                                            value: Expr {
+                                                                id: e43,
+                                                                kind: List(
+                                                                    [
+                                                                        Expr {
+                                                                            id: e41,
+                                                                            kind: Number(
+                                                                                8.0,
+                                                                            ),
+                                                                            span: 557..560,
+                                                                        },
+                                                                        Expr {
+                                                                            id: e42,
+                                                                            kind: Number(
+                                                                                4.0,
+                                                                            ),
+                                                                            span: 562..565,
+                                                                        },
+                                                                    ],
+                                                                ),
+                                                                span: 556..566,
+                                                            },
+                                                            span: 548..566,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: 531..568,
+                                            },
+                                        ],
+                                    ),
+                                    span: 482..573,
+                                },
+                            ],
+                        },
+                        span: 472..574,
+                    },
+                },
+                span: 464..574,
+            },
+            span: 453..574,
+        },
     ],
 }

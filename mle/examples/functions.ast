@@ -415,5 +415,120 @@ Program {
                 span: 434..451,
             },
         ),
+        Let(
+            LetDecl {
+                name: "main",
+                value: Expr {
+                    kind: Lambda {
+                        params: [],
+                        ret: None,
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "bestTotal",
+                                        ],
+                                    ),
+                                    span: 472..481,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: List(
+                                            [
+                                                Expr {
+                                                    kind: Record(
+                                                        [
+                                                            Field {
+                                                                name: "name",
+                                                                value: Expr {
+                                                                    kind: String(
+                                                                        "ada",
+                                                                    ),
+                                                                    span: 496..501,
+                                                                },
+                                                                span: 490..501,
+                                                            },
+                                                            Field {
+                                                                name: "scores",
+                                                                value: Expr {
+                                                                    kind: List(
+                                                                        [
+                                                                            Expr {
+                                                                                kind: Number(
+                                                                                    12.0,
+                                                                                ),
+                                                                                span: 512..516,
+                                                                            },
+                                                                            Expr {
+                                                                                kind: Number(
+                                                                                    30.0,
+                                                                                ),
+                                                                                span: 518..522,
+                                                                            },
+                                                                        ],
+                                                                    ),
+                                                                    span: 511..523,
+                                                                },
+                                                                span: 503..523,
+                                                            },
+                                                        ],
+                                                    ),
+                                                    span: 488..525,
+                                                },
+                                                Expr {
+                                                    kind: Record(
+                                                        [
+                                                            Field {
+                                                                name: "name",
+                                                                value: Expr {
+                                                                    kind: String(
+                                                                        "grace",
+                                                                    ),
+                                                                    span: 539..546,
+                                                                },
+                                                                span: 533..546,
+                                                            },
+                                                            Field {
+                                                                name: "scores",
+                                                                value: Expr {
+                                                                    kind: List(
+                                                                        [
+                                                                            Expr {
+                                                                                kind: Number(
+                                                                                    8.0,
+                                                                                ),
+                                                                                span: 557..560,
+                                                                            },
+                                                                            Expr {
+                                                                                kind: Number(
+                                                                                    4.0,
+                                                                                ),
+                                                                                span: 562..565,
+                                                                            },
+                                                                        ],
+                                                                    ),
+                                                                    span: 556..566,
+                                                                },
+                                                                span: 548..566,
+                                                            },
+                                                        ],
+                                                    ),
+                                                    span: 531..568,
+                                                },
+                                            ],
+                                        ),
+                                        span: 482..573,
+                                    },
+                                ],
+                            },
+                            span: 472..574,
+                        },
+                    },
+                    span: 464..574,
+                },
+                span: 453..574,
+            },
+        ),
     ],
 }

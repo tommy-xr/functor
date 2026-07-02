@@ -542,5 +542,77 @@ Module {
             },
             span: 510..558,
         },
+        Def {
+            id: d7,
+            name: "main",
+            value: Expr {
+                id: e50,
+                kind: Lambda {
+                    params: [],
+                    ret: None,
+                    body: Expr {
+                        id: e49,
+                        kind: Call {
+                            callee: Expr {
+                                id: e43,
+                                kind: Global(
+                                    "move",
+                                ),
+                                span: 577..581,
+                            },
+                            args: [
+                                Expr {
+                                    id: e44,
+                                    kind: Global(
+                                        "origin",
+                                    ),
+                                    span: 582..588,
+                                },
+                                Expr {
+                                    id: e47,
+                                    kind: Record(
+                                        [
+                                            Field {
+                                                name: "dx",
+                                                value: Expr {
+                                                    id: e45,
+                                                    kind: Number(
+                                                        3.0,
+                                                    ),
+                                                    span: 596..599,
+                                                },
+                                                span: 592..599,
+                                            },
+                                            Field {
+                                                name: "dy",
+                                                value: Expr {
+                                                    id: e46,
+                                                    kind: Number(
+                                                        4.0,
+                                                    ),
+                                                    span: 605..608,
+                                                },
+                                                span: 601..608,
+                                            },
+                                        ],
+                                    ),
+                                    span: 590..610,
+                                },
+                                Expr {
+                                    id: e48,
+                                    kind: Number(
+                                        0.5,
+                                    ),
+                                    span: 612..615,
+                                },
+                            ],
+                        },
+                        span: 577..616,
+                    },
+                },
+                span: 571..616,
+            },
+            span: 560..616,
+        },
     ],
 }

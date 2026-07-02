@@ -14,3 +14,9 @@ let bestTotal = (players: List<Player>): Float =>
 let isWinner = (p, cutoff) => cutoff < total(p)
 
 let debug = false
+
+let main = () =>
+  bestTotal([
+    { name: "ada", scores: [12.0, 30.0] },
+    { name: "grace", scores: [8.0, 4.0] },
+  ])

@@ -294,5 +294,62 @@ Module {
             },
             span: 380..488,
         },
+        Def {
+            id: d5,
+            name: "main",
+            value: Expr {
+                id: e34,
+                kind: Lambda {
+                    params: [],
+                    ret: None,
+                    body: Expr {
+                        id: e33,
+                        kind: Call {
+                            callee: Expr {
+                                id: e28,
+                                kind: Global(
+                                    "report",
+                                ),
+                                span: 507..513,
+                            },
+                            args: [
+                                Expr {
+                                    id: e32,
+                                    kind: List(
+                                        [
+                                            Expr {
+                                                id: e29,
+                                                kind: Number(
+                                                    12.0,
+                                                ),
+                                                span: 515..519,
+                                            },
+                                            Expr {
+                                                id: e30,
+                                                kind: Number(
+                                                    3.5,
+                                                ),
+                                                span: 521..524,
+                                            },
+                                            Expr {
+                                                id: e31,
+                                                kind: Number(
+                                                    40.0,
+                                                ),
+                                                span: 526..530,
+                                            },
+                                        ],
+                                    ),
+                                    span: 514..531,
+                                },
+                            ],
+                        },
+                        span: 507..532,
+                    },
+                },
+                span: 501..532,
+            },
+            span: 490..532,
+        },
     ],
 }

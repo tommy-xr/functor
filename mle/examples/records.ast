@@ -510,5 +510,74 @@ Program {
                 span: 510..558,
             },
         ),
+        Let(
+            LetDecl {
+                name: "main",
+                value: Expr {
+                    kind: Lambda {
+                        params: [],
+                        ret: None,
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "move",
+                                        ],
+                                    ),
+                                    span: 577..581,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: Ident(
+                                            [
+                                                "origin",
+                                            ],
+                                        ),
+                                        span: 582..588,
+                                    },
+                                    Expr {
+                                        kind: Record(
+                                            [
+                                                Field {
+                                                    name: "dx",
+                                                    value: Expr {
+                                                        kind: Number(
+                                                            3.0,
+                                                        ),
+                                                        span: 596..599,
+                                                    },
+                                                    span: 592..599,
+                                                },
+                                                Field {
+                                                    name: "dy",
+                                                    value: Expr {
+                                                        kind: Number(
+                                                            4.0,
+                                                        ),
+                                                        span: 605..608,
+                                                    },
+                                                    span: 601..608,
+                                                },
+                                            ],
+                                        ),
+                                        span: 590..610,
+                                    },
+                                    Expr {
+                                        kind: Number(
+                                            0.5,
+                                        ),
+                                        span: 612..615,
+                                    },
+                                ],
+                            },
+                            span: 577..616,
+                        },
+                    },
+                    span: 571..616,
+                },
+                span: 560..616,
+            },
+        ),
     ],
 }
