@@ -12,8 +12,6 @@ type Msg = Noop
 
 let game: Game<Model, Msg> = GameBuilder.local ()
 
-let update (model: Model) (_msg: Msg) = (model, Effect.none ())
-
 open Fable.Core.Rust
 open Graphics.Scene3D
 
@@ -64,14 +62,16 @@ let init (_args: array<string>) =
                 |> Transform.scaleZ terrainSize
             |])
 
-        // The glowing sun, low on the horizon down +Z. A big emissive sphere;
-        // its warm color pops against the dark sky behind it. (The camera's far
-        // clip is 100 units, so the sun + sky backdrop are kept within that
-        // budget.) Transforms compose right-to-left (rightmost in the pipe is
-        // applied to the geometry first), so scale first, then translate —
-        // otherwise the scale would multiply the translation offsets.
+        // The glowing sun, low on the horizon down +Z. A bright, warm emissive
+        // sphere that pops against the warm horizon glow of the sky behind it (the
+        // sky's pink haze around it does the "glow" work — the renderer has no
+        // bloom, and an opaque halo disc just reads as a dark ring on the bright
+        // sky). (The camera's far clip is 100 units, so the sun + sky backdrop are
+        // kept within that budget.) Transforms compose right-to-left (rightmost in
+        // the pipe is applied to the geometry first), so scale first, then
+        // translate — otherwise scale would multiply the translation offsets.
         let sun =
-            material (Material.emissive (1.0f, 0.45f, 0.65f, 1.0f), [|
+            material (Material.emissive (1.0f, 0.82f, 0.6f, 1.0f), [|
                 sphere ()
                 |> Transform.translateY 9.0f
                 |> Transform.translateZ 78.0f
@@ -105,5 +105,4 @@ let init (_args: array<string>) =
         // lights — `Frame.create` (no light list) is all it takes.
         Graphics.Frame.create camera scene
     )
-    |> GameBuilder.update update
     |> Runtime.runGame
