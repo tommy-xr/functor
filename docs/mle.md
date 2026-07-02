@@ -108,11 +108,15 @@ versioned protocol.
       payloads + HTTP taggers are closures; their commands cross as data).
       *Verify:* round-trip serde tests per boundary type (done); rendering
       code untouched so goldens are unaffected.
-- [ ] **A2. `GameProducer` trait.** Abstract the runtime's "thing that ticks and
-      draws" — today hardcoded to dylib exports (`static_game.rs`,
+- [x] **A2. `GameProducer` trait.** Abstract the runtime's "thing that ticks and
+      draws" — previously hardcoded to dylib exports (`static_game.rs`,
       `hot_reload_game.rs`) and wasm-bindgen calls — behind one trait the loop
-      consumes; the dylib producer becomes one impl.
-      *Verify:* native, wasm, headless, SDK e2e all green; zero behavior change.
+      consumes: `functor_runtime_common::protocol::GameProducer`. The desktop
+      producers implement it (re-exported as the runner's `Game`); the web
+      runtime's loop drives a `WasmGame` bridge over the wasm-bindgen exports.
+      *Verify (done):* cargo tests, wasm-pack bundle, headless SDK e2e 12/12;
+      zero behavior change proven by byte-identical `--fixed-time` captures
+      from the pre- and post-change runners.
 - [ ] **A3. Proof producer.** A trivial second impl (hardcoded scene or
       recorded-frame replay) selectable by flag.
       *Verify:* golden capture of the proof producer.
