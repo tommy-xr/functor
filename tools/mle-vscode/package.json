@@ -1,0 +1,43 @@
+{
+  "name": "mle-vscode",
+  "displayName": "MLE",
+  "description": "Language support for MLE (.mle): syntax highlighting and diagnostics via the mle-lsp language server.",
+  "version": "0.1.0",
+  "publisher": "functor",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./client/extension.js",
+  "activationEvents": [
+    "onLanguage:mle"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mle",
+        "aliases": [
+          "MLE",
+          "mle"
+        ],
+        "extensions": [
+          ".mle"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mle",
+        "scopeName": "source.mle",
+        "path": "./syntaxes/mle.tmLanguage.json"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

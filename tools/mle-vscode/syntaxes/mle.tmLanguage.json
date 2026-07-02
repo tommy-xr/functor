@@ -1,0 +1,121 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "MLE",
+  "scopeName": "source.mle",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#keyword" },
+    { "include": "#boolean" },
+    { "include": "#number" },
+    { "include": "#qualified-name" },
+    { "include": "#type-name" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.mle",
+      "match": "//.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.mle",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.mle" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.mle" }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.mle",
+          "match": "\\\\[\\\\\"nt]"
+        },
+        {
+          "name": "invalid.illegal.unknown-escape.mle",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "keyword": {
+      "name": "keyword.control.mle",
+      "match": "\\b(let|type)\\b"
+    },
+    "boolean": {
+      "name": "constant.language.boolean.mle",
+      "match": "\\b(true|false)\\b"
+    },
+    "number": {
+      "name": "constant.numeric.mle",
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "qualified-name": {
+      "comment": "Module access like `List.map` / `Text.concat`",
+      "match": "\\b([A-Z][A-Za-z0-9_]*)(\\.)([a-z][A-Za-z0-9_]*)\\b",
+      "captures": {
+        "1": { "name": "entity.name.namespace.mle" },
+        "2": { "name": "punctuation.accessor.mle" },
+        "3": { "name": "support.function.mle" }
+      }
+    },
+    "type-name": {
+      "comment": "Any other uppercase identifier is a type: `type` decl names, annotations after `:`, and generic arguments (`List<Float>`)",
+      "name": "entity.name.type.mle",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.pipeline.mle",
+          "match": "\\|>"
+        },
+        {
+          "name": "storage.type.function.arrow.mle",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.comparison.mle",
+          "match": "==|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.mle",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.mle",
+          "match": "[+*/]|-"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.comma.mle",
+          "match": ","
+        },
+        {
+          "name": "punctuation.separator.key-value.mle",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.accessor.mle",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.section.braces.mle",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.brackets.mle",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.section.parens.mle",
+          "match": "[()]"
+        }
+      ]
+    }
+  }
+}

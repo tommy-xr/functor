@@ -9,6 +9,7 @@ members = [
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
     "src",
+    "tools/mle-lsp",
 ]
 
 # Debug info dominated target/ size (it was repeatedly filling the disk during
