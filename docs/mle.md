@@ -117,9 +117,13 @@ versioned protocol.
       *Verify (done):* cargo tests, wasm-pack bundle, headless SDK e2e 12/12;
       zero behavior change proven by byte-identical `--fixed-time` captures
       from the pre- and post-change runners.
-- [ ] **A3. Proof producer.** A trivial second impl (hardcoded scene or
-      recorded-frame replay) selectable by flag.
-      *Verify:* golden capture of the proof producer.
+- [x] **A3. Proof producer.** A trivial second impl (hardcoded scene or
+      recorded-frame replay) selectable by flag: `--replay` plays back a
+      recorded-frame JSON (`replay_game.rs`; a `Frame` or array of them, the
+      exact `GET /scene` wire format) through the unchanged shells. Sample
+      recording in `examples/replay/scene.json`.
+      *Verify (done):* headless `GET /scene` returns the recording verbatim
+      (round-trip equality); deterministic `--fixed-time` capture renders it.
 
 Each is a small standalone PR, valuable even if MLE dies.
 
