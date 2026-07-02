@@ -135,8 +135,10 @@ struct Args {
     /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
     /// or a JSON array of them — the exact format `GET /scene` emits) and replay
     /// it instead of loading a game dylib. A proof producer for the
-    /// producer-agnostic seam (docs/mle.md Track A3).
-    #[arg(long)]
+    /// producer-agnostic seam (docs/mle.md Track A3). Each producer mode
+    /// reinterprets --game-path, so combining them is an error, not a silent
+    /// precedence pick.
+    #[arg(long, conflicts_with_all = ["mle", "hot"])]
     replay: bool,
 
     /// Run without a GL window: drive the game loop + debug server headlessly

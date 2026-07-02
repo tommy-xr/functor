@@ -31,16 +31,16 @@ impl ReplayGame {
     pub fn create(path: &str) -> ReplayGame {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| load_error(path, e.to_string()));
-        // A recording is either a single Frame or an array of them.
-        let frames: Vec<Frame> = match serde_json::from_str::<Vec<Frame>>(&src) {
-            Ok(frames) => frames,
-            Err(_) => match serde_json::from_str::<Frame>(&src) {
-                Ok(frame) => vec![frame],
-                Err(e) => load_error(
-                    path,
-                    format!("not a serialized Frame or JSON array of Frames: {e}"),
-                ),
-            },
+        // A recording is either a single Frame or an array of them. Pick the
+        // parse by the file's shape so a malformed recording reports the
+        // error from the parse that was actually intended (a bad frame inside
+        // an array must not surface as "a sequence is not a Frame").
+        let frames: Vec<Frame> = if src.trim_start().starts_with('[') {
+            serde_json::from_str::<Vec<Frame>>(&src)
+                .unwrap_or_else(|e| load_error(path, format!("bad Frame array: {e}")))
+        } else {
+            vec![serde_json::from_str::<Frame>(&src)
+                .unwrap_or_else(|e| load_error(path, format!("bad Frame: {e}")))]
         };
         if frames.is_empty() {
             load_error(path, "the recording contains no frames".to_string());
