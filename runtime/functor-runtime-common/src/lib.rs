@@ -81,6 +81,7 @@ pub mod material;
 pub mod math;
 pub mod model;
 pub mod net;
+pub mod protocol;
 pub mod render;
 mod render_context;
 mod renderer;
