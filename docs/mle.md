@@ -97,11 +97,17 @@ Today the boundary is a shared-crate ABI (`test_render` returns a
 `Graphics.Frame` struct; ~20 `no_mangle` exports in `Runtime.fs`), not a
 versioned protocol.
 
-- [ ] **A1. Formalize the protocol.** Version the logic↔runtime contract in
-      `functor-runtime-common`: `Frame`/`Scene3D` out, `Effect` out, `Input` +
-      `FrameTime` in, `OpaqueState` for persistence — all serde-serializable.
-      *Verify:* round-trip serde tests per boundary type; existing goldens
-      byte-identical with the F# producer.
+- [x] **A1. Formalize the protocol.** Version the logic↔runtime contract in
+      `functor-runtime-common` (`protocol.rs`: `PROTOCOL_VERSION` + the full
+      boundary enumeration): `Frame`/`Scene3D`/`View` out, effect *commands*
+      (`NetCommand`/`ConnCommand`/`AudioCommand`/`AudioScene`) out, `Input`
+      key codes + `FrameTime` in — all serde round-trip-tested. Two pieces are
+      documented as **in-process only**, not (yet) data: `OpaqueState` (an
+      any-box with a layout assumption — made serializable by Track C's
+      data-native state) and `Effect`/`EffectQueue` themselves (message
+      payloads + HTTP taggers are closures; their commands cross as data).
+      *Verify:* round-trip serde tests per boundary type (done); rendering
+      code untouched so goldens are unaffected.
 - [ ] **A2. `GameProducer` trait.** Abstract the runtime's "thing that ticks and
       draws" — today hardcoded to dylib exports (`static_game.rs`,
       `hot_reload_game.rs`) and wasm-bindgen calls — behind one trait the loop
