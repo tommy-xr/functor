@@ -60,6 +60,25 @@ edit→frame vs today's multi-second rebuild). If perf is bad, the plan pivots t
 bytecode-VM-first; Track A is unaffected either way. Code is explicitly
 discarded afterwards.
 
+**Results (2026-07-01, spike in `runtime/functor-runtime-desktop/src/mle_spike.rs`,
+run via `functor-runner --mle --game-path examples/mle-spike/game.mle`):**
+
+- **Perf: yes, decisively.** Release build, naive tree-walker, scene rebuilt
+  from scratch every frame: **63.6µs/frame at 51 entities (0.4%** of a 60fps
+  budget); **645.9µs at 501 entities (3.9%)**. Even the unoptimized debug
+  build held 51 entities at 2.5% of budget. No bytecode VM needed for
+  Functor-scale logic — roadmap phase 7 stays deferred.
+- **Hot reload: 0.07ms re-parse**, edit→visible bounded by the one-frame file
+  poll (~16ms). Model value survives the reload (spin continued from its live
+  value while an edited `speed` constant reversed its direction — rebind
+  semantics working as designed). A syntax-error edit fails loud and keeps the
+  old program running.
+- Renders correctly through the real pipeline (`--capture-frame` verified) and
+  drives headless + debug-server (`/state` shows the MLE model).
+- Runtime quirk found: `Material` nodes ignore their own `xform` in
+  `Scene3D::render` (unlike `Group`), so transforms must be applied inside a
+  material wrapper. Worth revisiting during Track A protocol formalization.
+
 ## Track A — the language-neutral data seam (no MLE required)
 
 Today the boundary is a shared-crate ABI (`test_render` returns a
