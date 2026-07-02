@@ -1,0 +1,498 @@
+//! Recursive-descent parser for the B1 subset.
+//!
+//! Grammar (whitespace and newlines are insignificant):
+//!
+//! ```text
+//! program   := (letDecl | typeDecl)*
+//! letDecl   := "let" ident "=" expr
+//! typeDecl  := "type" ident "=" "{" (ident ":" type),* "}"
+//! type      := ident ("<" type ("," type)* ">")?
+//! expr      := pipeline
+//! pipeline  := cmp ("|>" cmp)*
+//! cmp       := add (("<" | ">" | "==") add)*        (left-assoc)
+//! add       := mul (("+" | "-") mul)*               (left-assoc)
+//! mul       := unary (("*" | "/") unary)*           (left-assoc)
+//! unary     := "-" unary | postfix
+//! postfix   := primary ("(" expr,* ")" | "." ident)*
+//! primary   := number | string | "true" | "false" | qualifiedIdent
+//!            | record | lambda | "(" expr ")"
+//! record    := "{" (ident ":" expr),* "}"
+//! lambda    := "(" (ident (":" type)?),* ")" (":" type)? "=>" expr
+//! ```
+//!
+//! Comma lists allow a trailing comma. `(` is disambiguated between lambda
+//! and parenthesized expression by scanning to the matching `)`: it is a
+//! lambda iff the next token is `=>` or `:` (a return-type annotation).
+
+use crate::ast::*;
+use crate::lexer::{describe, lex, Token, TokenKind};
+use crate::span::Span;
+use crate::ParseError;
+
+/// Parse a whole source file into a [`Program`].
+pub fn parse(src: &str) -> Result<Program, ParseError> {
+    let tokens = lex(src)?;
+    Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    }
+    .program()
+}
+
+/// Nesting cap for the recursive entry points: pathological input
+/// (`((((…))))`) must fail as a clean spanned error, not a stack overflow —
+/// MLE sources may be machine-generated. Each nesting level costs ~10 debug
+/// frames, so the cap must fit a 2 MiB test-thread stack with margin.
+const MAX_DEPTH: usize = 100;
+
+struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+    depth: usize,
+}
+
+impl Parser {
+    fn peek(&self) -> &Token {
+        &self.tokens[self.pos]
+    }
+
+    fn peek_kind(&self) -> &TokenKind {
+        &self.tokens[self.pos].kind
+    }
+
+    /// Kind of the token `n` past the cursor, clamped to the trailing `Eof`.
+    fn nth_kind(&self, n: usize) -> &TokenKind {
+        let idx = (self.pos + n).min(self.tokens.len() - 1);
+        &self.tokens[idx].kind
+    }
+
+    /// Consume and return the current token; never advances past `Eof`.
+    fn bump(&mut self) -> Token {
+        let token = self.tokens[self.pos].clone();
+        if token.kind != TokenKind::Eof {
+            self.pos += 1;
+        }
+        token
+    }
+
+    fn error<T>(&self, expected: &str) -> Result<T, ParseError> {
+        Err(ParseError {
+            message: format!("expected {expected}, found {}", describe(self.peek_kind())),
+            span: self.peek().span,
+        })
+    }
+
+    fn expect(&mut self, kind: TokenKind, expected: &str) -> Result<Token, ParseError> {
+        if self.peek_kind() == &kind {
+            Ok(self.bump())
+        } else {
+            self.error(expected)
+        }
+    }
+
+    fn expect_ident(&mut self, expected: &str) -> Result<(String, Span), ParseError> {
+        match self.peek_kind() {
+            TokenKind::Ident(name) => {
+                let name = name.clone();
+                Ok((name, self.bump().span))
+            }
+            _ => self.error(expected),
+        }
+    }
+
+    fn program(&mut self) -> Result<Program, ParseError> {
+        let mut items = Vec::new();
+        while self.peek_kind() != &TokenKind::Eof {
+            match self.peek_kind() {
+                TokenKind::Let => items.push(Item::Let(self.let_decl()?)),
+                TokenKind::Type => items.push(Item::Type(self.type_decl()?)),
+                _ => return self.error("`let` or `type` at top level"),
+            }
+        }
+        Ok(Program { items })
+    }
+
+    fn let_decl(&mut self) -> Result<LetDecl, ParseError> {
+        let kw = self.bump();
+        let (name, _) = self.expect_ident("a name after `let`")?;
+        self.expect(TokenKind::Eq, "`=`")?;
+        let value = self.expr()?;
+        let span = kw.span.to(value.span);
+        Ok(LetDecl { name, value, span })
+    }
+
+    fn type_decl(&mut self) -> Result<TypeDecl, ParseError> {
+        let kw = self.bump();
+        let (name, _) = self.expect_ident("a name after `type`")?;
+        self.expect(TokenKind::Eq, "`=`")?;
+        self.expect(TokenKind::LBrace, "`{`")?;
+        let mut fields = Vec::new();
+        while self.peek_kind() != &TokenKind::RBrace {
+            let (field_name, field_span) = self.expect_ident("a field name")?;
+            self.expect(TokenKind::Colon, "`:` after field name")?;
+            let ty = self.type_name()?;
+            fields.push(FieldTy {
+                span: field_span.to(ty.span),
+                name: field_name,
+                ty,
+            });
+            if self.peek_kind() == &TokenKind::Comma {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
+        Ok(TypeDecl {
+            name,
+            fields,
+            span: kw.span.to(close.span),
+        })
+    }
+
+    fn type_name(&mut self) -> Result<TypeName, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(ParseError {
+                message: "type nested too deeply".to_string(),
+                span: self.peek().span,
+            });
+        }
+        let (name, mut span) = self.expect_ident("a type name")?;
+        let mut args = Vec::new();
+        if self.peek_kind() == &TokenKind::Lt {
+            self.bump();
+            loop {
+                args.push(self.type_name()?);
+                if self.peek_kind() == &TokenKind::Comma {
+                    self.bump();
+                    if self.peek_kind() == &TokenKind::Gt {
+                        break; // trailing comma
+                    }
+                } else {
+                    break;
+                }
+            }
+            let close = self.expect(TokenKind::Gt, "`,` or `>`")?;
+            span = span.to(close.span);
+        }
+        self.depth -= 1;
+        Ok(TypeName { name, args, span })
+    }
+
+    fn expr(&mut self) -> Result<Expr, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(ParseError {
+                message: "expression nested too deeply".to_string(),
+                span: self.peek().span,
+            });
+        }
+        let result = self.pipeline();
+        self.depth -= 1;
+        result
+    }
+
+    fn pipeline(&mut self) -> Result<Expr, ParseError> {
+        let head = self.comparison()?;
+        if self.peek_kind() != &TokenKind::PipeGt {
+            return Ok(head);
+        }
+        let mut stages = Vec::new();
+        while self.peek_kind() == &TokenKind::PipeGt {
+            self.bump();
+            stages.push(self.comparison()?);
+        }
+        let span = head
+            .span
+            .to(stages.last().expect("at least one stage").span);
+        Ok(Expr {
+            kind: ExprKind::Pipeline {
+                head: Box::new(head),
+                stages,
+            },
+            span,
+        })
+    }
+
+    fn comparison(&mut self) -> Result<Expr, ParseError> {
+        use TokenKind::*;
+        self.left_assoc(
+            &[(Lt, BinOp::Lt), (Gt, BinOp::Gt), (EqEq, BinOp::Eq)],
+            Self::additive,
+        )
+    }
+
+    fn additive(&mut self) -> Result<Expr, ParseError> {
+        use TokenKind::*;
+        self.left_assoc(
+            &[(Plus, BinOp::Add), (Minus, BinOp::Sub)],
+            Self::multiplicative,
+        )
+    }
+
+    fn multiplicative(&mut self) -> Result<Expr, ParseError> {
+        use TokenKind::*;
+        self.left_assoc(&[(Star, BinOp::Mul), (Slash, BinOp::Div)], Self::unary)
+    }
+
+    fn left_assoc(
+        &mut self,
+        ops: &[(TokenKind, BinOp)],
+        next: fn(&mut Self) -> Result<Expr, ParseError>,
+    ) -> Result<Expr, ParseError> {
+        let mut lhs = next(self)?;
+        loop {
+            let Some((_, op)) = ops.iter().find(|(kind, _)| kind == self.peek_kind()) else {
+                return Ok(lhs);
+            };
+            let op = *op;
+            self.bump();
+            let rhs = next(self)?;
+            let span = lhs.span.to(rhs.span);
+            lhs = Expr {
+                kind: ExprKind::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            };
+        }
+    }
+
+    // Iterative (not recursive) so `----x` chains can't grow the stack past
+    // the `expr` depth guard.
+    fn unary(&mut self) -> Result<Expr, ParseError> {
+        let mut minus_spans = Vec::new();
+        while self.peek_kind() == &TokenKind::Minus {
+            minus_spans.push(self.bump().span);
+        }
+        let mut expr = self.postfix()?;
+        for minus_span in minus_spans.into_iter().rev() {
+            let span = minus_span.to(expr.span);
+            expr = Expr {
+                kind: ExprKind::Neg(Box::new(expr)),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn postfix(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.primary()?;
+        loop {
+            match self.peek_kind() {
+                TokenKind::LParen => {
+                    self.bump();
+                    let mut args = Vec::new();
+                    while self.peek_kind() != &TokenKind::RParen {
+                        args.push(self.expr()?);
+                        if self.peek_kind() == &TokenKind::Comma {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    let close = self.expect(TokenKind::RParen, "`,` or `)`")?;
+                    let span = expr.span.to(close.span);
+                    expr = Expr {
+                        kind: ExprKind::Call {
+                            callee: Box::new(expr),
+                            args,
+                        },
+                        span,
+                    };
+                }
+                TokenKind::Dot => {
+                    self.bump();
+                    let (field, field_span) = self.expect_ident("a field name after `.`")?;
+                    let span = expr.span.to(field_span);
+                    expr = Expr {
+                        kind: ExprKind::FieldAccess {
+                            object: Box::new(expr),
+                            field,
+                        },
+                        span,
+                    };
+                }
+                _ => return Ok(expr),
+            }
+        }
+    }
+
+    fn primary(&mut self) -> Result<Expr, ParseError> {
+        let span = self.peek().span;
+        match self.peek_kind() {
+            TokenKind::Number(n) => {
+                let n = *n;
+                self.bump();
+                Ok(Expr {
+                    kind: ExprKind::Number(n),
+                    span,
+                })
+            }
+            TokenKind::Str(s) => {
+                let s = s.clone();
+                self.bump();
+                Ok(Expr {
+                    kind: ExprKind::String(s),
+                    span,
+                })
+            }
+            TokenKind::True => {
+                self.bump();
+                Ok(Expr {
+                    kind: ExprKind::Bool(true),
+                    span,
+                })
+            }
+            TokenKind::False => {
+                self.bump();
+                Ok(Expr {
+                    kind: ExprKind::Bool(false),
+                    span,
+                })
+            }
+            TokenKind::Ident(_) => self.ident_expr(),
+            TokenKind::LBrace => self.record(),
+            TokenKind::LParen => {
+                if self.lambda_ahead() {
+                    self.lambda()
+                } else {
+                    self.paren()
+                }
+            }
+            _ => self.error("an expression"),
+        }
+    }
+
+    /// A possibly-qualified identifier. `.segment`s are absorbed into the
+    /// name while the segment left of the `.` starts uppercase (a module or
+    /// type qualifier, e.g. `Text.toBullets`); once a segment starts
+    /// lowercase, any further `.` is field access (handled by [`Self::postfix`]).
+    fn ident_expr(&mut self) -> Result<Expr, ParseError> {
+        let (first, mut span) = self.expect_ident("an identifier")?;
+        let mut segments = vec![first];
+        while starts_uppercase(segments.last().expect("non-empty"))
+            && self.peek_kind() == &TokenKind::Dot
+            && matches!(self.nth_kind(1), TokenKind::Ident(_))
+        {
+            self.bump();
+            let (segment, segment_span) = self.expect_ident("an identifier")?;
+            span = span.to(segment_span);
+            segments.push(segment);
+        }
+        Ok(Expr {
+            kind: ExprKind::Ident(segments),
+            span,
+        })
+    }
+
+    fn record(&mut self) -> Result<Expr, ParseError> {
+        let open = self.bump();
+        let mut fields = Vec::new();
+        while self.peek_kind() != &TokenKind::RBrace {
+            let (name, name_span) = self.expect_ident("a field name")?;
+            self.expect(TokenKind::Colon, "`:` after field name")?;
+            let value = self.expr()?;
+            fields.push(Field {
+                span: name_span.to(value.span),
+                name,
+                value,
+            });
+            if self.peek_kind() == &TokenKind::Comma {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
+        Ok(Expr {
+            kind: ExprKind::Record(fields),
+            span: open.span.to(close.span),
+        })
+    }
+
+    /// `(` begins either a lambda or a parenthesized expression. Scan to the
+    /// matching `)` (depth-counted): it is a lambda iff the token after it is
+    /// `=>` or `:` (a return-type annotation). An unmatched `(` falls through
+    /// to the paren-expression path, which reports the error at the offending
+    /// token.
+    fn lambda_ahead(&self) -> bool {
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        loop {
+            match &self.tokens[i].kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(
+                            self.tokens[i + 1].kind,
+                            TokenKind::FatArrow | TokenKind::Colon
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    fn lambda(&mut self) -> Result<Expr, ParseError> {
+        let open = self.bump();
+        let mut params = Vec::new();
+        while self.peek_kind() != &TokenKind::RParen {
+            let (name, name_span) = self.expect_ident("a parameter name")?;
+            let (ty, span) = if self.peek_kind() == &TokenKind::Colon {
+                self.bump();
+                let ty = self.type_name()?;
+                let span = name_span.to(ty.span);
+                (Some(ty), span)
+            } else {
+                (None, name_span)
+            };
+            params.push(Param { name, ty, span });
+            if self.peek_kind() == &TokenKind::Comma {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "`,` or `)`")?;
+        let ret = if self.peek_kind() == &TokenKind::Colon {
+            self.bump();
+            Some(self.type_name()?)
+        } else {
+            None
+        };
+        self.expect(TokenKind::FatArrow, "`=>`")?;
+        let body = self.expr()?;
+        let span = open.span.to(body.span);
+        Ok(Expr {
+            kind: ExprKind::Lambda {
+                params,
+                ret,
+                body: Box::new(body),
+            },
+            span,
+        })
+    }
+
+    /// Parentheses don't create an AST node; the inner expression's span is
+    /// widened to cover them so every span still maps to exact source text.
+    fn paren(&mut self) -> Result<Expr, ParseError> {
+        let open = self.bump();
+        let mut expr = self.expr()?;
+        let close = self.expect(TokenKind::RParen, "`)`")?;
+        expr.span = open.span.to(close.span);
+        Ok(expr)
+    }
+}
+
+fn starts_uppercase(s: &str) -> bool {
+    s.chars().next().is_some_and(char::is_uppercase)
+}

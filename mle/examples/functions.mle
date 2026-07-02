@@ -1,0 +1,16 @@
+// Higher-order functions, inline lambdas, and generic type annotations.
+
+type Player = { name: String, scores: List<Float> }
+
+let add = (a: Float, b: Float): Float => a + b
+
+let average = (a, b) => (a + b) / 2.0
+
+let total = (p: Player): Float => fold(add, 0.0, p.scores)
+
+let bestTotal = (players: List<Player>): Float =>
+  players |> map((p) => total(p)) |> maximum
+
+let isWinner = (p, cutoff) => cutoff < total(p)
+
+let debug = false

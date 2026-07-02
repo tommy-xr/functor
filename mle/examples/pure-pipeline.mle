@@ -1,0 +1,17 @@
+// Format player scores as a bulleted report — pipelines, qualified names,
+// strings, and comparisons.
+
+let threshold = 10
+
+let isHigh = (score: Float): Bool => score > threshold
+
+let describe = (score) => concat("score: ", Text.fromFloat(score))
+
+// Pipelines bind loosest: the division happens before the `|>`.
+let normalized = (score) => score / 100.0 |> clamp01
+
+let report = (scores) =>
+  scores
+    |> filter(isHigh)
+    |> map(describe)
+    |> Text.toBullets

@@ -1,0 +1,276 @@
+Program {
+    items: [
+        Let(
+            LetDecl {
+                name: "threshold",
+                value: Expr {
+                    kind: Number(
+                        10.0,
+                    ),
+                    span: 123..125,
+                },
+                span: 107..125,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "isHigh",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "score",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 148..153,
+                                    },
+                                ),
+                                span: 141..153,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Bool",
+                                args: [],
+                                span: 156..160,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Binary {
+                                op: Gt,
+                                lhs: Expr {
+                                    kind: Ident(
+                                        [
+                                            "score",
+                                        ],
+                                    ),
+                                    span: 164..169,
+                                },
+                                rhs: Expr {
+                                    kind: Ident(
+                                        [
+                                            "threshold",
+                                        ],
+                                    ),
+                                    span: 172..181,
+                                },
+                            },
+                            span: 164..181,
+                        },
+                    },
+                    span: 140..181,
+                },
+                span: 127..181,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "describe",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "score",
+                                ty: None,
+                                span: 199..204,
+                            },
+                        ],
+                        ret: None,
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "concat",
+                                        ],
+                                    ),
+                                    span: 209..215,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: String(
+                                            "score: ",
+                                        ),
+                                        span: 216..225,
+                                    },
+                                    Expr {
+                                        kind: Call {
+                                            callee: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "Text",
+                                                        "fromFloat",
+                                                    ],
+                                                ),
+                                                span: 227..241,
+                                            },
+                                            args: [
+                                                Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "score",
+                                                        ],
+                                                    ),
+                                                    span: 242..247,
+                                                },
+                                            ],
+                                        },
+                                        span: 227..248,
+                                    },
+                                ],
+                            },
+                            span: 209..249,
+                        },
+                    },
+                    span: 198..249,
+                },
+                span: 183..249,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "normalized",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "score",
+                                ty: None,
+                                span: 334..339,
+                            },
+                        ],
+                        ret: None,
+                        body: Expr {
+                            kind: Pipeline {
+                                head: Expr {
+                                    kind: Binary {
+                                        op: Div,
+                                        lhs: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "score",
+                                                ],
+                                            ),
+                                            span: 344..349,
+                                        },
+                                        rhs: Expr {
+                                            kind: Number(
+                                                100.0,
+                                            ),
+                                            span: 352..357,
+                                        },
+                                    },
+                                    span: 344..357,
+                                },
+                                stages: [
+                                    Expr {
+                                        kind: Ident(
+                                            [
+                                                "clamp01",
+                                            ],
+                                        ),
+                                        span: 361..368,
+                                    },
+                                ],
+                            },
+                            span: 344..368,
+                        },
+                    },
+                    span: 333..368,
+                },
+                span: 316..368,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "report",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "scores",
+                                ty: None,
+                                span: 384..390,
+                            },
+                        ],
+                        ret: None,
+                        body: Expr {
+                            kind: Pipeline {
+                                head: Expr {
+                                    kind: Ident(
+                                        [
+                                            "scores",
+                                        ],
+                                    ),
+                                    span: 397..403,
+                                },
+                                stages: [
+                                    Expr {
+                                        kind: Call {
+                                            callee: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "filter",
+                                                    ],
+                                                ),
+                                                span: 411..417,
+                                            },
+                                            args: [
+                                                Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "isHigh",
+                                                        ],
+                                                    ),
+                                                    span: 418..424,
+                                                },
+                                            ],
+                                        },
+                                        span: 411..425,
+                                    },
+                                    Expr {
+                                        kind: Call {
+                                            callee: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "map",
+                                                    ],
+                                                ),
+                                                span: 433..436,
+                                            },
+                                            args: [
+                                                Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "describe",
+                                                        ],
+                                                    ),
+                                                    span: 437..445,
+                                                },
+                                            ],
+                                        },
+                                        span: 433..446,
+                                    },
+                                    Expr {
+                                        kind: Ident(
+                                            [
+                                                "Text",
+                                                "toBullets",
+                                            ],
+                                        ),
+                                        span: 454..468,
+                                    },
+                                ],
+                            },
+                            span: 397..468,
+                        },
+                    },
+                    span: 383..468,
+                },
+                span: 370..468,
+            },
+        ),
+    ],
+}

@@ -1,0 +1,416 @@
+Program {
+    items: [
+        Type(
+            TypeDecl {
+                name: "Player",
+                fields: [
+                    FieldTy {
+                        name: "name",
+                        ty: TypeName {
+                            name: "String",
+                            args: [],
+                            span: 96..102,
+                        },
+                        span: 90..102,
+                    },
+                    FieldTy {
+                        name: "scores",
+                        ty: TypeName {
+                            name: "List",
+                            args: [
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 117..122,
+                                },
+                            ],
+                            span: 112..123,
+                        },
+                        span: 104..123,
+                    },
+                ],
+                span: 74..125,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "add",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "a",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 141..146,
+                                    },
+                                ),
+                                span: 138..146,
+                            },
+                            Param {
+                                name: "b",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 151..156,
+                                    },
+                                ),
+                                span: 148..156,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 159..164,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Binary {
+                                op: Add,
+                                lhs: Expr {
+                                    kind: Ident(
+                                        [
+                                            "a",
+                                        ],
+                                    ),
+                                    span: 168..169,
+                                },
+                                rhs: Expr {
+                                    kind: Ident(
+                                        [
+                                            "b",
+                                        ],
+                                    ),
+                                    span: 172..173,
+                                },
+                            },
+                            span: 168..173,
+                        },
+                    },
+                    span: 137..173,
+                },
+                span: 127..173,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "average",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "a",
+                                ty: None,
+                                span: 190..191,
+                            },
+                            Param {
+                                name: "b",
+                                ty: None,
+                                span: 193..194,
+                            },
+                        ],
+                        ret: None,
+                        body: Expr {
+                            kind: Binary {
+                                op: Div,
+                                lhs: Expr {
+                                    kind: Binary {
+                                        op: Add,
+                                        lhs: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "a",
+                                                ],
+                                            ),
+                                            span: 200..201,
+                                        },
+                                        rhs: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "b",
+                                                ],
+                                            ),
+                                            span: 204..205,
+                                        },
+                                    },
+                                    span: 199..206,
+                                },
+                                rhs: Expr {
+                                    kind: Number(
+                                        2.0,
+                                    ),
+                                    span: 209..212,
+                                },
+                            },
+                            span: 199..212,
+                        },
+                    },
+                    span: 189..212,
+                },
+                span: 175..212,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "total",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "p",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Player",
+                                        args: [],
+                                        span: 230..236,
+                                    },
+                                ),
+                                span: 227..236,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 239..244,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "fold",
+                                        ],
+                                    ),
+                                    span: 248..252,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: Ident(
+                                            [
+                                                "add",
+                                            ],
+                                        ),
+                                        span: 253..256,
+                                    },
+                                    Expr {
+                                        kind: Number(
+                                            0.0,
+                                        ),
+                                        span: 258..261,
+                                    },
+                                    Expr {
+                                        kind: FieldAccess {
+                                            object: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "p",
+                                                    ],
+                                                ),
+                                                span: 263..264,
+                                            },
+                                            field: "scores",
+                                        },
+                                        span: 263..271,
+                                    },
+                                ],
+                            },
+                            span: 248..272,
+                        },
+                    },
+                    span: 226..272,
+                },
+                span: 214..272,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "bestTotal",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "players",
+                                ty: Some(
+                                    TypeName {
+                                        name: "List",
+                                        args: [
+                                            TypeName {
+                                                name: "Player",
+                                                args: [],
+                                                span: 305..311,
+                                            },
+                                        ],
+                                        span: 300..312,
+                                    },
+                                ),
+                                span: 291..312,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 315..320,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Pipeline {
+                                head: Expr {
+                                    kind: Ident(
+                                        [
+                                            "players",
+                                        ],
+                                    ),
+                                    span: 326..333,
+                                },
+                                stages: [
+                                    Expr {
+                                        kind: Call {
+                                            callee: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "map",
+                                                    ],
+                                                ),
+                                                span: 337..340,
+                                            },
+                                            args: [
+                                                Expr {
+                                                    kind: Lambda {
+                                                        params: [
+                                                            Param {
+                                                                name: "p",
+                                                                ty: None,
+                                                                span: 342..343,
+                                                            },
+                                                        ],
+                                                        ret: None,
+                                                        body: Expr {
+                                                            kind: Call {
+                                                                callee: Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "total",
+                                                                        ],
+                                                                    ),
+                                                                    span: 348..353,
+                                                                },
+                                                                args: [
+                                                                    Expr {
+                                                                        kind: Ident(
+                                                                            [
+                                                                                "p",
+                                                                            ],
+                                                                        ),
+                                                                        span: 354..355,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: 348..356,
+                                                        },
+                                                    },
+                                                    span: 341..356,
+                                                },
+                                            ],
+                                        },
+                                        span: 337..357,
+                                    },
+                                    Expr {
+                                        kind: Ident(
+                                            [
+                                                "maximum",
+                                            ],
+                                        ),
+                                        span: 361..368,
+                                    },
+                                ],
+                            },
+                            span: 326..368,
+                        },
+                    },
+                    span: 290..368,
+                },
+                span: 274..368,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "isWinner",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "p",
+                                ty: None,
+                                span: 386..387,
+                            },
+                            Param {
+                                name: "cutoff",
+                                ty: None,
+                                span: 389..395,
+                            },
+                        ],
+                        ret: None,
+                        body: Expr {
+                            kind: Binary {
+                                op: Lt,
+                                lhs: Expr {
+                                    kind: Ident(
+                                        [
+                                            "cutoff",
+                                        ],
+                                    ),
+                                    span: 400..406,
+                                },
+                                rhs: Expr {
+                                    kind: Call {
+                                        callee: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "total",
+                                                ],
+                                            ),
+                                            span: 409..414,
+                                        },
+                                        args: [
+                                            Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "p",
+                                                    ],
+                                                ),
+                                                span: 415..416,
+                                            },
+                                        ],
+                                    },
+                                    span: 409..417,
+                                },
+                            },
+                            span: 400..417,
+                        },
+                    },
+                    span: 385..417,
+                },
+                span: 370..417,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "debug",
+                value: Expr {
+                    kind: Bool(
+                        false,
+                    ),
+                    span: 431..436,
+                },
+                span: 419..436,
+            },
+        ),
+    ],
+}

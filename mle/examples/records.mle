@@ -1,0 +1,17 @@
+// Positions and velocities — record types, record literals, field access,
+// arithmetic, and unary minus (the roadmap's `move` example).
+
+type Position = { x: Float, y: Float }
+type Velocity = { dx: Float, dy: Float }
+
+let origin = { x: 0.0, y: 0.0 }
+
+let move = (p: Position, v: Velocity, dt: Float): Position =>
+  { x: p.x + v.dx * dt, y: p.y + v.dy * dt }
+
+let delta = (a: Position, b: Position): Position =>
+  { x: a.x - b.x, y: a.y - b.y }
+
+let mirror = (p: Position): Position => { x: -p.x, y: p.y }
+
+let isOrigin = (p: Position): Bool => p.x == 0.0
