@@ -25,6 +25,7 @@ mod game;
 mod hot_reload_game;
 mod mle_spike;
 mod net_dispatch;
+mod replay_game;
 mod static_game;
 mod ws_host;
 
@@ -130,6 +131,15 @@ struct Args {
     /// of loading a game dylib. Hot-reloads on save; prints per-frame eval cost.
     #[arg(long)]
     mle: bool,
+
+    /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
+    /// or a JSON array of them — the exact format `GET /scene` emits) and replay
+    /// it instead of loading a game dylib. A proof producer for the
+    /// producer-agnostic seam (docs/mle.md Track A3). Each producer mode
+    /// reinterprets --game-path, so combining them is an error, not a silent
+    /// precedence pick.
+    #[arg(long, conflicts_with_all = ["mle", "hot"])]
+    replay: bool,
 
     /// Run without a GL window: drive the game loop + debug server headlessly
     /// (no GLFW/OpenGL). `/state`, `/scene`, `/input`, `/time` work; `/capture`
@@ -498,6 +508,8 @@ pub async fn main() {
 
     let mut game: Box<dyn Game> = if args.mle {
         Box::new(mle_spike::MleGame::create(game_path.as_str()))
+    } else if args.replay {
+        Box::new(replay_game::ReplayGame::create(game_path.as_str()))
     } else if args.hot {
         Box::new(HotReloadGame::create(game_path.as_str()))
     } else {
