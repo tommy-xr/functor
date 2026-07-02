@@ -8,7 +8,11 @@
 //! other functional languages), so definition order never forces a
 //! topological rewrite of game code. Because a def's *name* is its stable
 //! identity (the hot-reload rebind key, docs/mle.md B5), duplicate top-level
-//! names are lowering errors rather than shadowing.
+//! names are lowering errors rather than shadowing. Types and values are
+//! **separate namespaces** (as in F#/OCaml): `type Foo` and `let Foo` may
+//! coexist — each namespace keys its own identities — but a duplicate within
+//! either namespace is an error. Duplicate parameter names within one lambda
+//! are errors for the same reason (the last one would silently win).
 //!
 //! ## Name resolution
 //!
@@ -30,7 +34,9 @@
 //! Each pipeline stage becomes a call with the piped value **prepended** as
 //! the first argument: `x |> f` → `f(x)`, `x |> g(a)` → `g(x, a)`, so
 //! `x |> f |> g(a)` → `g(f(x), a)`. The desugared call carries the span of
-//! its stage. The IR has no pipeline node.
+//! its stage — which means its first argument's span lies *outside* the
+//! call's own span (it came from an earlier stage); diagnostics must not
+//! assume parent spans contain child spans. The IR has no pipeline node.
 
 use crate::ast;
 use crate::ir::*;
@@ -134,9 +140,15 @@ impl Lowerer {
                 field,
             },
             ast::ExprKind::Lambda { params, ret, body } => {
-                let mut scope = Vec::new();
+                let mut scope: Vec<(String, BindingId)> = Vec::new();
                 let mut lowered = Vec::new();
                 for param in params {
+                    if scope.iter().any(|(n, _)| *n == param.name) {
+                        return Err(LowerError {
+                            message: format!("duplicate parameter `{}`", param.name),
+                            span: param.span,
+                        });
+                    }
                     let binding = BindingId(self.next_binding);
                     self.next_binding += 1;
                     scope.push((param.name.clone(), binding));

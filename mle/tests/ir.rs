@@ -184,3 +184,21 @@ fn pipeline_desugars_to_nested_calls() {
     );
     assert_eq!(&src[inner.span.start..inner.span.end], "f");
 }
+
+#[test]
+fn error_duplicate_parameter() {
+    let (message, line, col) = lower_err("let f = (a, a) => a");
+    assert_eq!(message, "duplicate parameter `a`");
+    assert_eq!((line, col), (1, 13));
+}
+
+// Types and values are separate namespaces (as in F#/OCaml) — `type Foo` and
+// `let Foo` coexist; each namespace keys its own hot-reload identities.
+#[test]
+fn type_and_let_may_share_a_name() {
+    let module = lower_src("type Foo = { x: Float }\nlet Foo = 1");
+    assert_eq!(module.types.len(), 1);
+    assert_eq!(module.defs.len(), 1);
+    assert_eq!(module.types[0].name, "Foo");
+    assert_eq!(module.defs[0].name, "Foo");
+}
