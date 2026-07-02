@@ -60,9 +60,91 @@
 
 /// Version of the serialized logic↔runtime contract. Bump when the wire shape
 /// of any type enumerated in this module changes incompatibly. Informational
-/// for now — nothing transmits or checks it until Track A2's producer seam
-/// consumes it.
+/// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
+/// the current version.
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// The producer side of the protocol: one game logic instance as consumed by a
+/// runtime shell's frame loop. Every method carries a payload enumerated in
+/// this module's boundary doc (drains return JSON arrays, pushes take the
+/// inbox scalars, `render` returns the [`crate::Frame`]).
+///
+/// Impls: the desktop runner's dylib producers (`StaticGame`,
+/// `HotReloadGame`), the web runtime's `WasmGame` bridge over the
+/// `wasm_bindgen` game exports, and (Track C) the MLE interpreter. The seam
+/// exists so a producer can be swapped without the shells knowing what
+/// language or pipeline produced the logic — see `docs/mle.md`, Track A2.
+///
+/// Some capabilities are shell-specific; producers for shells that lack them
+/// implement the honest no-op (e.g. the web bridge's `check_hot_reload` — the
+/// browser reloads the whole page — and `audio_push_finished` — web one-shots
+/// are fire-and-forget).
+pub trait GameProducer {
+    /// Poll for and apply a logic update (native dylib hot-reload). Shells
+    /// with a reload path call this once per frame before anything else;
+    /// shells without one (the web runtime — the browser reloads the whole
+    /// page) may never call it.
+    fn check_hot_reload(&mut self, frame_time: crate::FrameTime);
+
+    fn tick(&mut self, frame_time: crate::FrameTime);
+
+    /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.
+    fn key_event(&mut self, code: i32, is_down: bool);
+
+    /// Deliver a mouse-move event in window pixel coordinates.
+    fn mouse_move(&mut self, x: i32, y: i32);
+
+    /// Deliver a mouse-wheel event (vertical scroll offset).
+    fn mouse_wheel(&mut self, delta: i32);
+
+    fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame;
+
+    /// The game's declarative UI tree (`ui model`), lowered by the shell to a
+    /// text overlay drawn on top of the frame.
+    fn ui(&self) -> crate::ui::View;
+
+    /// A pretty-printed (Rust `Debug`) view of the live game model, for
+    /// introspection (the debug server's `GET /state` `model` field). Opaque
+    /// debug text — see the module doc; consumers must not parse it.
+    fn state_debug(&self) -> String;
+
+    /// Take the networking commands the game queued this frame (a JSON array
+    /// of [`crate::net::NetCommand`]). The shell performs the I/O and reports
+    /// results back with `net_push_http_response` / `net_push_http_error`.
+    fn net_drain_commands(&self) -> String;
+
+    /// Deliver a completed HTTP response into the game's async inbox.
+    fn net_push_http_response(&mut self, token: i32, status: i32, body: String);
+
+    /// Deliver a transport-level failure for a request into the async inbox.
+    fn net_push_http_error(&mut self, token: i32, message: String);
+
+    /// Take the audio commands the game queued this frame (a JSON array of
+    /// [`crate::audio::AudioCommand`]). The shell plays them on its device.
+    fn audio_drain_commands(&self) -> String;
+
+    /// The desired soundscape (`soundScape model`) as JSON
+    /// ([`crate::audio::AudioScene`]), reconciled by the shell against its
+    /// live voices.
+    fn audio_scene_json(&self) -> String;
+
+    /// Take the persistent-connection commands (connect/send/close) queued
+    /// this frame, as a JSON array of [`crate::net::ConnCommand`].
+    fn net_drain_conn_commands(&self) -> String;
+
+    /// Deliver a connection event into the game's inbound queue, tagged with
+    /// the connection's key (its endpoint url).
+    fn net_push_connected(&mut self, key: String, conn: i32);
+    fn net_push_conn_message(&mut self, key: String, conn: i32, text: String);
+    fn net_push_disconnected(&mut self, key: String, conn: i32);
+    fn net_push_conn_error(&mut self, key: String, conn: i32, message: String);
+
+    /// Report that a `playThen` one-shot (`token`) finished, so the game
+    /// delivers its completion message.
+    fn audio_push_finished(&mut self, token: i32);
+
+    fn quit(&mut self);
+}
 
 #[cfg(test)]
 mod tests {

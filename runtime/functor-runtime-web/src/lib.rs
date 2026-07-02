@@ -12,6 +12,7 @@ use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::net::{ConnCommand, HttpMethod, NetCommand};
+use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
@@ -122,6 +123,96 @@ extern "C" {
     fn game_net_push_conn_error(key: JsValue, id: i32, message: JsValue);
 }
 
+/// The web producer: `GameProducer` bridged over the `wasm_bindgen` exports of
+/// the game module (the `js_namespace = game` externs above), marshalling
+/// through `JsValue`. Zero-sized and stateless — all state lives in the game
+/// module — so async callbacks (fetch results, WebSocket events) construct
+/// their own instance to push into the inbox; JS is single-threaded, so a push
+/// always completes before the next frame's tick.
+///
+/// Shell-specific no-ops: `check_hot_reload` (the browser reloads the page),
+/// input events (the page feeds the game module directly), `state_debug` (no
+/// debug server on web), `audio_push_finished` (web one-shots are
+/// fire-and-forget — see `play_one_shot`), and `quit` (page lifetime).
+struct WasmGame;
+
+impl GameProducer for WasmGame {
+    fn check_hot_reload(&mut self, _frame_time: FrameTime) {}
+
+    fn tick(&mut self, frame_time: FrameTime) {
+        game_tick(functor_runtime_common::to_js_value(&frame_time));
+    }
+
+    fn key_event(&mut self, _code: i32, _is_down: bool) {}
+    fn mouse_move(&mut self, _x: i32, _y: i32) {}
+    fn mouse_wheel(&mut self, _delta: i32) {}
+
+    fn render(&mut self, frame_time: FrameTime) -> Frame {
+        let val = game_render(functor_runtime_common::to_js_value(&frame_time));
+        functor_runtime_common::from_js_value(val)
+    }
+
+    fn ui(&self) -> functor_runtime_common::ui::View {
+        functor_runtime_common::from_js_value(game_ui())
+    }
+
+    fn state_debug(&self) -> String {
+        "<state_debug is unavailable on wasm>".to_string()
+    }
+
+    fn net_drain_commands(&self) -> String {
+        game_net_drain_commands()
+            .as_string()
+            .unwrap_or_else(|| "[]".to_string())
+    }
+
+    fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
+        game_net_push_http_response(token, status, JsValue::from_str(&body));
+    }
+
+    fn net_push_http_error(&mut self, token: i32, message: String) {
+        game_net_push_http_error(token, JsValue::from_str(&message));
+    }
+
+    fn audio_drain_commands(&self) -> String {
+        game_audio_drain_commands()
+            .as_string()
+            .unwrap_or_else(|| "[]".to_string())
+    }
+
+    fn audio_scene_json(&self) -> String {
+        game_audio_scene_json()
+            .as_string()
+            .unwrap_or_else(|| "{\"sources\":[]}".to_string())
+    }
+
+    fn net_drain_conn_commands(&self) -> String {
+        game_net_drain_conn_commands()
+            .as_string()
+            .unwrap_or_else(|| "[]".to_string())
+    }
+
+    fn net_push_connected(&mut self, key: String, conn: i32) {
+        game_net_push_connected(to_js(&key), conn);
+    }
+
+    fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
+        game_net_push_conn_message(to_js(&key), conn, to_js(&text));
+    }
+
+    fn net_push_disconnected(&mut self, key: String, conn: i32) {
+        game_net_push_disconnected(to_js(&key), conn);
+    }
+
+    fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
+        game_net_push_conn_error(to_js(&key), conn, to_js(&message));
+    }
+
+    fn audio_push_finished(&mut self, _token: i32) {}
+
+    fn quit(&mut self) {}
+}
+
 fn http_method_str(method: HttpMethod) -> &'static str {
     match method {
         HttpMethod::Get => "GET",
@@ -139,10 +230,8 @@ fn js_err(v: JsValue) -> String {
 /// result is pushed back into the game's inbox when the fetch resolves (a later
 /// microtask), so the next `tick` decodes it — same shape as the native loop.
 /// JS is single-threaded, so a push always completes before the next frame's tick.
-fn dispatch_net_commands() {
-    let json = game_net_drain_commands()
-        .as_string()
-        .unwrap_or_else(|| "[]".to_string());
+fn dispatch_net_commands(game: &dyn GameProducer) {
+    let json = game.net_drain_commands();
     if json == "[]" {
         return;
     }
@@ -167,9 +256,11 @@ async fn perform_and_push(cmd: NetCommand) {
         body,
     } = cmd;
     let token = token as i32;
+    // WasmGame is stateless, so the async completion pushes through its own
+    // instance (see the WasmGame doc).
     match perform_fetch(method, &url, &headers, &body).await {
-        Ok((status, text)) => game_net_push_http_response(token, status, JsValue::from_str(&text)),
-        Err(message) => game_net_push_http_error(token, JsValue::from_str(&message)),
+        Ok((status, text)) => WasmGame.net_push_http_response(token, status, text),
+        Err(message) => WasmGame.net_push_http_error(token, message),
     }
 }
 
@@ -250,10 +341,8 @@ fn current_listener() -> functor_runtime_common::audio::Listener {
 
 /// Drain the game's queued audio commands and play each via Web Audio. Mirrors
 /// `dispatch_net_commands`; called each frame after `tick`.
-fn dispatch_audio_commands() {
-    let json = game_audio_drain_commands()
-        .as_string()
-        .unwrap_or_else(|| "[]".to_string());
+fn dispatch_audio_commands(game: &dyn GameProducer) {
+    let json = game.audio_drain_commands();
     if json == "[]" {
         return;
     }
@@ -418,7 +507,7 @@ fn respatialize_voice(voice: &WebVoice) {
 /// against the live voices each frame: spawn new ones, stop gone ones, update
 /// changed gain/position in place. Skips entirely (and never spins up an
 /// AudioContext) when nothing is playing and nothing is wanted.
-fn update_soundscape(camera: &functor_runtime_common::Camera) {
+fn update_soundscape(game: &dyn GameProducer, camera: &functor_runtime_common::Camera) {
     // Track the listener from the camera every frame (cheap, no AudioContext
     // needed), so positioned one-shots (`playAt`) spatialize correctly even for a
     // game with no soundscape.
@@ -430,9 +519,7 @@ fn update_soundscape(camera: &functor_runtime_common::Camera) {
         ))
     });
 
-    let json = game_audio_scene_json()
-        .as_string()
-        .unwrap_or_else(|| "{\"sources\":[]}".to_string());
+    let json = game.audio_scene_json();
     let nothing_live = SOUNDSCAPE.with(|s| s.borrow().is_empty());
     if nothing_live && (json.is_empty() || json == "{\"sources\":[]}") {
         return;
@@ -607,10 +694,8 @@ fn to_js(s: &str) -> JsValue {
 
 /// Drain the game's queued connection commands and perform them with browser
 /// WebSockets; socket events are pushed back into the game from the handlers.
-fn dispatch_conn_commands(state: &Rc<RefCell<WsClient>>) {
-    let json = game_net_drain_conn_commands()
-        .as_string()
-        .unwrap_or_else(|| "[]".to_string());
+fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>) {
+    let json = game.net_drain_conn_commands();
     if json == "[]" {
         return;
     }
@@ -660,7 +745,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     let ws = match web_sys::WebSocket::new(&url) {
         Ok(ws) => ws,
         Err(_) => {
-            game_net_push_conn_error(to_js(&key), 0, to_js("failed to open WebSocket"));
+            WasmGame.net_push_conn_error(key, 0, "failed to open WebSocket".to_string());
             return;
         }
     };
@@ -676,7 +761,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
 
     let on_open = {
         let key = key.clone();
-        Closure::<dyn FnMut()>::new(move || game_net_push_connected(to_js(&key), iid))
+        Closure::<dyn FnMut()>::new(move || WasmGame.net_push_connected(key.clone(), iid))
     };
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
     on_open.forget();
@@ -685,7 +770,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
         let key = key.clone();
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
             if let Some(text) = e.data().as_string() {
-                game_net_push_conn_message(to_js(&key), iid, to_js(&text));
+                WasmGame.net_push_conn_message(key.clone(), iid, text);
             }
         })
     };
@@ -696,7 +781,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
         let key = key.clone();
         let state = state.clone();
         Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_e: web_sys::CloseEvent| {
-            game_net_push_disconnected(to_js(&key), iid);
+            WasmGame.net_push_disconnected(key.clone(), iid);
             // Drop our handle so a still-declared Sub.connect reconnects next frame.
             let mut s = state.borrow_mut();
             s.conns.remove(&id);
@@ -709,7 +794,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     let on_error = {
         let key = key.clone();
         Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |e: web_sys::ErrorEvent| {
-            game_net_push_conn_error(to_js(&key), iid, to_js(&e.message()));
+            WasmGame.net_push_conn_error(key.clone(), iid, e.message());
         })
     };
     ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
@@ -819,6 +904,14 @@ async fn run_async() -> Result<(), JsValue> {
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
         gl.enable(glow::DEPTH_TEST);
+        // The producer this loop drives — the wasm_bindgen bridge to the game
+        // module, behind the shared GameProducer seam (docs/mle.md, Track A2).
+        // Deliberately the concrete type, not a Box<dyn>: the async completions
+        // (fetch results, WebSocket events) push through their own stateless
+        // WasmGame, so swapping in a different web producer requires threading
+        // a shared handle into perform_and_push/ws_connect first — a boxed
+        // producer here would compile and then silently lose those events.
+        let mut game = WasmGame;
         let ws_state = Rc::new(RefCell::new(WsClient::default()));
         let f = Rc::new(RefCell::new(None));
         let g = f.clone();
@@ -877,23 +970,22 @@ async fn run_async() -> Result<(), JsValue> {
 
             last_time = now;
 
-            game_tick(functor_runtime_common::to_js_value(&frame_time));
+            game.tick(frame_time.clone());
 
             // Perform any networking commands this frame's tick queued; results
             // are pushed back into the inbox asynchronously and decoded by a later
             // tick (see dispatch_net_commands).
-            dispatch_net_commands();
+            dispatch_net_commands(&game);
             // Play any one-shot sounds this frame's tick queued (fetch + decode
             // the first time, then from the cache).
-            dispatch_audio_commands();
-            dispatch_conn_commands(&ws_state);
+            dispatch_audio_commands(&game);
+            dispatch_conn_commands(&game, &ws_state);
 
-            let val = game_render(functor_runtime_common::to_js_value(&frame_time));
-            let frame: Frame = functor_runtime_common::from_js_value(val);
+            let frame: Frame = game.render(frame_time.clone());
 
             // Soundscape: aim the listener from this frame's camera, then
             // reconcile the desired looping voices against the live ones.
-            update_soundscape(&frame.camera);
+            update_soundscape(&game, &frame.camera);
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes. In
@@ -934,8 +1026,7 @@ async fn run_async() -> Result<(), JsValue> {
 
             // 2D UI overlay: the game's declarative `ui model` View, lowered to a
             // text overlay on top of the frame (HiDPI-aware via the device ratio).
-            let view: functor_runtime_common::ui::View =
-                functor_runtime_common::from_js_value(game_ui());
+            let view: functor_runtime_common::ui::View = game.ui();
             let dpr = web_sys::window().unwrap().device_pixel_ratio() as f32;
             text_overlay.draw_view(canvas.width(), canvas.height(), dpr.max(1.0), &view);
 
