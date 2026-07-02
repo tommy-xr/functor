@@ -153,8 +153,20 @@ snapshots — no GPU, fully agent-verifiable.
       values — kept even when the run fails. *Verify:* `.run` goldens per
       example, a `.trace` golden, and a semantics/runtime-error suite
       (closures, late binding, arity, depth caps, NaN policy). (done)
-- [ ] **B4. Basic types.** Primitives, records, function signatures, mismatch
-      diagnostics. *Verify:* diagnostic snapshots on broken examples.
+- [x] **B4. Basic types.** Gradual checking over the core IR (`mle check`),
+      with annotations, not inference: primitives (`Float`/`String`/`Bool`),
+      nominal declared record types, `List<T>`, and function types from
+      lambda annotations. Anything unannotated or unrecognized (e.g. a
+      generic parameter) is Unknown, and a check fires only where both sides
+      are known — so unannotated code never false-positives. Checks:
+      arithmetic/comparison/`==`/negation operand types, record literals and
+      field access against declared record types, call arity + argument
+      types (builtins carry real signatures with generic slots as Unknown),
+      return-annotation mismatches, and type-argument arity. `mle run` stays
+      check-free (integration comes later). *Verify:* `examples/broken.mle`
+      + committed `broken.check` diagnostic golden (all diagnostics, sorted,
+      `file:line:col`); per-diagnostic message/span unit tests; the three
+      examples check clean. (done)
 - [ ] **B5. Match/ADTs + storable closures.** The game-logic essentials;
       closures serialize as `(stable-id, env)`. *Verify:* serialize a value
       graph containing a closure → deserialize → call it; rename-then-restore

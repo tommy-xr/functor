@@ -637,8 +637,10 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
     }
 }
 
-/// The trace label for a call site, from its callee's IR shape.
-fn callee_label(callee: &Expr) -> String {
+/// The trace label for a call site, from its callee's IR shape. Also used by
+/// the typechecker ([`crate::types`]) so its call diagnostics name callees
+/// the same way.
+pub(crate) fn callee_label(callee: &Expr) -> String {
     match &callee.kind {
         ExprKind::Global(name) => name.clone(),
         ExprKind::Local { name, .. } => name.clone(),
