@@ -1,9 +1,9 @@
 //! Surface AST for the B1 syntax subset. Every node carries a [`Span`].
 //!
 //! Deliberately close to the source: pipelines stay explicit
-//! ([`ExprKind::Pipeline`]) rather than desugaring to nested calls — lowering
-//! is B2's job (the core IR), and keeping the surface shape makes error spans
-//! and future formatting honest.
+//! ([`ExprKind::Pipeline`]) rather than desugaring to nested calls — that is
+//! lowering's job ([`crate::lower`], the core IR), and keeping the surface
+//! shape makes error spans and future formatting honest.
 
 use crate::span::Span;
 

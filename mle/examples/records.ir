@@ -1,0 +1,546 @@
+Module {
+    types: [
+        TypeDef {
+            id: d0,
+            name: "Position",
+            fields: [
+                FieldTy {
+                    name: "x",
+                    ty: TypeName {
+                        name: "Float",
+                        args: [],
+                        span: 162..167,
+                    },
+                    span: 159..167,
+                },
+                FieldTy {
+                    name: "y",
+                    ty: TypeName {
+                        name: "Float",
+                        args: [],
+                        span: 172..177,
+                    },
+                    span: 169..177,
+                },
+            ],
+            span: 141..179,
+        },
+        TypeDef {
+            id: d1,
+            name: "Velocity",
+            fields: [
+                FieldTy {
+                    name: "dx",
+                    ty: TypeName {
+                        name: "Float",
+                        args: [],
+                        span: 202..207,
+                    },
+                    span: 198..207,
+                },
+                FieldTy {
+                    name: "dy",
+                    ty: TypeName {
+                        name: "Float",
+                        args: [],
+                        span: 213..218,
+                    },
+                    span: 209..218,
+                },
+            ],
+            span: 180..220,
+        },
+    ],
+    defs: [
+        Def {
+            id: d2,
+            name: "origin",
+            value: Expr {
+                id: e2,
+                kind: Record(
+                    [
+                        Field {
+                            name: "x",
+                            value: Expr {
+                                id: e0,
+                                kind: Number(
+                                    0.0,
+                                ),
+                                span: 240..243,
+                            },
+                            span: 237..243,
+                        },
+                        Field {
+                            name: "y",
+                            value: Expr {
+                                id: e1,
+                                kind: Number(
+                                    0.0,
+                                ),
+                                span: 248..251,
+                            },
+                            span: 245..251,
+                        },
+                    ],
+                ),
+                span: 235..253,
+            },
+            span: 222..253,
+        },
+        Def {
+            id: d3,
+            name: "move",
+            value: Expr {
+                id: e18,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b0,
+                            name: "p",
+                            ty: Some(
+                                TypeName {
+                                    name: "Position",
+                                    args: [],
+                                    span: 270..278,
+                                },
+                            ),
+                            span: 267..278,
+                        },
+                        Param {
+                            binding: b1,
+                            name: "v",
+                            ty: Some(
+                                TypeName {
+                                    name: "Velocity",
+                                    args: [],
+                                    span: 283..291,
+                                },
+                            ),
+                            span: 280..291,
+                        },
+                        Param {
+                            binding: b2,
+                            name: "dt",
+                            ty: Some(
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 297..302,
+                                },
+                            ),
+                            span: 293..302,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Position",
+                            args: [],
+                            span: 305..313,
+                        },
+                    ),
+                    body: Expr {
+                        id: e17,
+                        kind: Record(
+                            [
+                                Field {
+                                    name: "x",
+                                    value: Expr {
+                                        id: e9,
+                                        kind: Binary {
+                                            op: Add,
+                                            lhs: Expr {
+                                                id: e4,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e3,
+                                                        kind: Local {
+                                                            binding: b0,
+                                                            name: "p",
+                                                        },
+                                                        span: 324..325,
+                                                    },
+                                                    field: "x",
+                                                },
+                                                span: 324..327,
+                                            },
+                                            rhs: Expr {
+                                                id: e8,
+                                                kind: Binary {
+                                                    op: Mul,
+                                                    lhs: Expr {
+                                                        id: e6,
+                                                        kind: FieldAccess {
+                                                            object: Expr {
+                                                                id: e5,
+                                                                kind: Local {
+                                                                    binding: b1,
+                                                                    name: "v",
+                                                                },
+                                                                span: 330..331,
+                                                            },
+                                                            field: "dx",
+                                                        },
+                                                        span: 330..334,
+                                                    },
+                                                    rhs: Expr {
+                                                        id: e7,
+                                                        kind: Local {
+                                                            binding: b2,
+                                                            name: "dt",
+                                                        },
+                                                        span: 337..339,
+                                                    },
+                                                },
+                                                span: 330..339,
+                                            },
+                                        },
+                                        span: 324..339,
+                                    },
+                                    span: 321..339,
+                                },
+                                Field {
+                                    name: "y",
+                                    value: Expr {
+                                        id: e16,
+                                        kind: Binary {
+                                            op: Add,
+                                            lhs: Expr {
+                                                id: e11,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e10,
+                                                        kind: Local {
+                                                            binding: b0,
+                                                            name: "p",
+                                                        },
+                                                        span: 344..345,
+                                                    },
+                                                    field: "y",
+                                                },
+                                                span: 344..347,
+                                            },
+                                            rhs: Expr {
+                                                id: e15,
+                                                kind: Binary {
+                                                    op: Mul,
+                                                    lhs: Expr {
+                                                        id: e13,
+                                                        kind: FieldAccess {
+                                                            object: Expr {
+                                                                id: e12,
+                                                                kind: Local {
+                                                                    binding: b1,
+                                                                    name: "v",
+                                                                },
+                                                                span: 350..351,
+                                                            },
+                                                            field: "dy",
+                                                        },
+                                                        span: 350..354,
+                                                    },
+                                                    rhs: Expr {
+                                                        id: e14,
+                                                        kind: Local {
+                                                            binding: b2,
+                                                            name: "dt",
+                                                        },
+                                                        span: 357..359,
+                                                    },
+                                                },
+                                                span: 350..359,
+                                            },
+                                        },
+                                        span: 344..359,
+                                    },
+                                    span: 341..359,
+                                },
+                            ],
+                        ),
+                        span: 319..361,
+                    },
+                },
+                span: 266..361,
+            },
+            span: 255..361,
+        },
+        Def {
+            id: d4,
+            name: "delta",
+            value: Expr {
+                id: e30,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b3,
+                            name: "a",
+                            ty: Some(
+                                TypeName {
+                                    name: "Position",
+                                    args: [],
+                                    span: 379..387,
+                                },
+                            ),
+                            span: 376..387,
+                        },
+                        Param {
+                            binding: b4,
+                            name: "b",
+                            ty: Some(
+                                TypeName {
+                                    name: "Position",
+                                    args: [],
+                                    span: 392..400,
+                                },
+                            ),
+                            span: 389..400,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Position",
+                            args: [],
+                            span: 403..411,
+                        },
+                    ),
+                    body: Expr {
+                        id: e29,
+                        kind: Record(
+                            [
+                                Field {
+                                    name: "x",
+                                    value: Expr {
+                                        id: e23,
+                                        kind: Binary {
+                                            op: Sub,
+                                            lhs: Expr {
+                                                id: e20,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e19,
+                                                        kind: Local {
+                                                            binding: b3,
+                                                            name: "a",
+                                                        },
+                                                        span: 422..423,
+                                                    },
+                                                    field: "x",
+                                                },
+                                                span: 422..425,
+                                            },
+                                            rhs: Expr {
+                                                id: e22,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e21,
+                                                        kind: Local {
+                                                            binding: b4,
+                                                            name: "b",
+                                                        },
+                                                        span: 428..429,
+                                                    },
+                                                    field: "x",
+                                                },
+                                                span: 428..431,
+                                            },
+                                        },
+                                        span: 422..431,
+                                    },
+                                    span: 419..431,
+                                },
+                                Field {
+                                    name: "y",
+                                    value: Expr {
+                                        id: e28,
+                                        kind: Binary {
+                                            op: Sub,
+                                            lhs: Expr {
+                                                id: e25,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e24,
+                                                        kind: Local {
+                                                            binding: b3,
+                                                            name: "a",
+                                                        },
+                                                        span: 436..437,
+                                                    },
+                                                    field: "y",
+                                                },
+                                                span: 436..439,
+                                            },
+                                            rhs: Expr {
+                                                id: e27,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e26,
+                                                        kind: Local {
+                                                            binding: b4,
+                                                            name: "b",
+                                                        },
+                                                        span: 442..443,
+                                                    },
+                                                    field: "y",
+                                                },
+                                                span: 442..445,
+                                            },
+                                        },
+                                        span: 436..445,
+                                    },
+                                    span: 433..445,
+                                },
+                            ],
+                        ),
+                        span: 417..447,
+                    },
+                },
+                span: 375..447,
+            },
+            span: 363..447,
+        },
+        Def {
+            id: d5,
+            name: "mirror",
+            value: Expr {
+                id: e37,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b5,
+                            name: "p",
+                            ty: Some(
+                                TypeName {
+                                    name: "Position",
+                                    args: [],
+                                    span: 466..474,
+                                },
+                            ),
+                            span: 463..474,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Position",
+                            args: [],
+                            span: 477..485,
+                        },
+                    ),
+                    body: Expr {
+                        id: e36,
+                        kind: Record(
+                            [
+                                Field {
+                                    name: "x",
+                                    value: Expr {
+                                        id: e33,
+                                        kind: Neg(
+                                            Expr {
+                                                id: e32,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e31,
+                                                        kind: Local {
+                                                            binding: b5,
+                                                            name: "p",
+                                                        },
+                                                        span: 495..496,
+                                                    },
+                                                    field: "x",
+                                                },
+                                                span: 495..498,
+                                            },
+                                        ),
+                                        span: 494..498,
+                                    },
+                                    span: 491..498,
+                                },
+                                Field {
+                                    name: "y",
+                                    value: Expr {
+                                        id: e35,
+                                        kind: FieldAccess {
+                                            object: Expr {
+                                                id: e34,
+                                                kind: Local {
+                                                    binding: b5,
+                                                    name: "p",
+                                                },
+                                                span: 503..504,
+                                            },
+                                            field: "y",
+                                        },
+                                        span: 503..506,
+                                    },
+                                    span: 500..506,
+                                },
+                            ],
+                        ),
+                        span: 489..508,
+                    },
+                },
+                span: 462..508,
+            },
+            span: 449..508,
+        },
+        Def {
+            id: d6,
+            name: "isOrigin",
+            value: Expr {
+                id: e42,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b6,
+                            name: "p",
+                            ty: Some(
+                                TypeName {
+                                    name: "Position",
+                                    args: [],
+                                    span: 529..537,
+                                },
+                            ),
+                            span: 526..537,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Bool",
+                            args: [],
+                            span: 540..544,
+                        },
+                    ),
+                    body: Expr {
+                        id: e41,
+                        kind: Binary {
+                            op: Eq,
+                            lhs: Expr {
+                                id: e39,
+                                kind: FieldAccess {
+                                    object: Expr {
+                                        id: e38,
+                                        kind: Local {
+                                            binding: b6,
+                                            name: "p",
+                                        },
+                                        span: 548..549,
+                                    },
+                                    field: "x",
+                                },
+                                span: 548..551,
+                            },
+                            rhs: Expr {
+                                id: e40,
+                                kind: Number(
+                                    0.0,
+                                ),
+                                span: 555..558,
+                            },
+                        },
+                        span: 548..558,
+                    },
+                },
+                span: 525..558,
+            },
+            span: 510..558,
+        },
+    ],
+}

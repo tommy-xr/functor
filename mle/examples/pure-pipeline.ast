@@ -83,17 +83,18 @@ Program {
                                 callee: Expr {
                                     kind: Ident(
                                         [
+                                            "Text",
                                             "concat",
                                         ],
                                     ),
-                                    span: 209..215,
+                                    span: 209..220,
                                 },
                                 args: [
                                     Expr {
                                         kind: String(
                                             "score: ",
                                         ),
-                                        span: 216..225,
+                                        span: 221..230,
                                     },
                                     Expr {
                                         kind: Call {
@@ -104,7 +105,7 @@ Program {
                                                         "fromFloat",
                                                     ],
                                                 ),
-                                                span: 227..241,
+                                                span: 232..246,
                                             },
                                             args: [
                                                 Expr {
@@ -113,20 +114,20 @@ Program {
                                                             "score",
                                                         ],
                                                     ),
-                                                    span: 242..247,
+                                                    span: 247..252,
                                                 },
                                             ],
                                         },
-                                        span: 227..248,
+                                        span: 232..253,
                                     },
                                 ],
                             },
-                            span: 209..249,
+                            span: 209..254,
                         },
                     },
-                    span: 198..249,
+                    span: 198..254,
                 },
-                span: 183..249,
+                span: 183..254,
             },
         ),
         Let(
@@ -138,7 +139,7 @@ Program {
                             Param {
                                 name: "score",
                                 ty: None,
-                                span: 334..339,
+                                span: 339..344,
                             },
                         ],
                         ret: None,
@@ -153,34 +154,35 @@ Program {
                                                     "score",
                                                 ],
                                             ),
-                                            span: 344..349,
+                                            span: 349..354,
                                         },
                                         rhs: Expr {
                                             kind: Number(
                                                 100.0,
                                             ),
-                                            span: 352..357,
+                                            span: 357..362,
                                         },
                                     },
-                                    span: 344..357,
+                                    span: 349..362,
                                 },
                                 stages: [
                                     Expr {
                                         kind: Ident(
                                             [
+                                                "Math",
                                                 "clamp01",
                                             ],
                                         ),
-                                        span: 361..368,
+                                        span: 366..378,
                                     },
                                 ],
                             },
-                            span: 344..368,
+                            span: 349..378,
                         },
                     },
-                    span: 333..368,
+                    span: 338..378,
                 },
-                span: 316..368,
+                span: 321..378,
             },
         ),
         Let(
@@ -192,7 +194,7 @@ Program {
                             Param {
                                 name: "scores",
                                 ty: None,
-                                span: 384..390,
+                                span: 394..400,
                             },
                         ],
                         ret: None,
@@ -204,7 +206,7 @@ Program {
                                             "scores",
                                         ],
                                     ),
-                                    span: 397..403,
+                                    span: 407..413,
                                 },
                                 stages: [
                                     Expr {
@@ -212,10 +214,11 @@ Program {
                                             callee: Expr {
                                                 kind: Ident(
                                                     [
+                                                        "List",
                                                         "filter",
                                                     ],
                                                 ),
-                                                span: 411..417,
+                                                span: 421..432,
                                             },
                                             args: [
                                                 Expr {
@@ -224,21 +227,22 @@ Program {
                                                             "isHigh",
                                                         ],
                                                     ),
-                                                    span: 418..424,
+                                                    span: 433..439,
                                                 },
                                             ],
                                         },
-                                        span: 411..425,
+                                        span: 421..440,
                                     },
                                     Expr {
                                         kind: Call {
                                             callee: Expr {
                                                 kind: Ident(
                                                     [
+                                                        "List",
                                                         "map",
                                                     ],
                                                 ),
-                                                span: 433..436,
+                                                span: 448..456,
                                             },
                                             args: [
                                                 Expr {
@@ -247,11 +251,11 @@ Program {
                                                             "describe",
                                                         ],
                                                     ),
-                                                    span: 437..445,
+                                                    span: 457..465,
                                                 },
                                             ],
                                         },
-                                        span: 433..446,
+                                        span: 448..466,
                                     },
                                     Expr {
                                         kind: Ident(
@@ -260,16 +264,16 @@ Program {
                                                 "toBullets",
                                             ],
                                         ),
-                                        span: 454..468,
+                                        span: 474..488,
                                     },
                                 ],
                             },
-                            span: 397..468,
+                            span: 407..488,
                         },
                     },
-                    span: 383..468,
+                    span: 393..488,
                 },
-                span: 370..468,
+                span: 380..488,
             },
         ),
     ],

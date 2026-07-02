@@ -1,0 +1,298 @@
+Module {
+    types: [],
+    defs: [
+        Def {
+            id: d0,
+            name: "threshold",
+            value: Expr {
+                id: e0,
+                kind: Number(
+                    10.0,
+                ),
+                span: 123..125,
+            },
+            span: 107..125,
+        },
+        Def {
+            id: d1,
+            name: "isHigh",
+            value: Expr {
+                id: e4,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b0,
+                            name: "score",
+                            ty: Some(
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 148..153,
+                                },
+                            ),
+                            span: 141..153,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Bool",
+                            args: [],
+                            span: 156..160,
+                        },
+                    ),
+                    body: Expr {
+                        id: e3,
+                        kind: Binary {
+                            op: Gt,
+                            lhs: Expr {
+                                id: e1,
+                                kind: Local {
+                                    binding: b0,
+                                    name: "score",
+                                },
+                                span: 164..169,
+                            },
+                            rhs: Expr {
+                                id: e2,
+                                kind: Global(
+                                    "threshold",
+                                ),
+                                span: 172..181,
+                            },
+                        },
+                        span: 164..181,
+                    },
+                },
+                span: 140..181,
+            },
+            span: 127..181,
+        },
+        Def {
+            id: d2,
+            name: "describe",
+            value: Expr {
+                id: e11,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b1,
+                            name: "score",
+                            ty: None,
+                            span: 199..204,
+                        },
+                    ],
+                    ret: None,
+                    body: Expr {
+                        id: e10,
+                        kind: Call {
+                            callee: Expr {
+                                id: e5,
+                                kind: External(
+                                    [
+                                        "Text",
+                                        "concat",
+                                    ],
+                                ),
+                                span: 209..220,
+                            },
+                            args: [
+                                Expr {
+                                    id: e6,
+                                    kind: String(
+                                        "score: ",
+                                    ),
+                                    span: 221..230,
+                                },
+                                Expr {
+                                    id: e9,
+                                    kind: Call {
+                                        callee: Expr {
+                                            id: e7,
+                                            kind: External(
+                                                [
+                                                    "Text",
+                                                    "fromFloat",
+                                                ],
+                                            ),
+                                            span: 232..246,
+                                        },
+                                        args: [
+                                            Expr {
+                                                id: e8,
+                                                kind: Local {
+                                                    binding: b1,
+                                                    name: "score",
+                                                },
+                                                span: 247..252,
+                                            },
+                                        ],
+                                    },
+                                    span: 232..253,
+                                },
+                            ],
+                        },
+                        span: 209..254,
+                    },
+                },
+                span: 198..254,
+            },
+            span: 183..254,
+        },
+        Def {
+            id: d3,
+            name: "normalized",
+            value: Expr {
+                id: e17,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b2,
+                            name: "score",
+                            ty: None,
+                            span: 339..344,
+                        },
+                    ],
+                    ret: None,
+                    body: Expr {
+                        id: e16,
+                        kind: Call {
+                            callee: Expr {
+                                id: e15,
+                                kind: External(
+                                    [
+                                        "Math",
+                                        "clamp01",
+                                    ],
+                                ),
+                                span: 366..378,
+                            },
+                            args: [
+                                Expr {
+                                    id: e14,
+                                    kind: Binary {
+                                        op: Div,
+                                        lhs: Expr {
+                                            id: e12,
+                                            kind: Local {
+                                                binding: b2,
+                                                name: "score",
+                                            },
+                                            span: 349..354,
+                                        },
+                                        rhs: Expr {
+                                            id: e13,
+                                            kind: Number(
+                                                100.0,
+                                            ),
+                                            span: 357..362,
+                                        },
+                                    },
+                                    span: 349..362,
+                                },
+                            ],
+                        },
+                        span: 366..378,
+                    },
+                },
+                span: 338..378,
+            },
+            span: 321..378,
+        },
+        Def {
+            id: d4,
+            name: "report",
+            value: Expr {
+                id: e27,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b3,
+                            name: "scores",
+                            ty: None,
+                            span: 394..400,
+                        },
+                    ],
+                    ret: None,
+                    body: Expr {
+                        id: e26,
+                        kind: Call {
+                            callee: Expr {
+                                id: e25,
+                                kind: External(
+                                    [
+                                        "Text",
+                                        "toBullets",
+                                    ],
+                                ),
+                                span: 474..488,
+                            },
+                            args: [
+                                Expr {
+                                    id: e24,
+                                    kind: Call {
+                                        callee: Expr {
+                                            id: e22,
+                                            kind: External(
+                                                [
+                                                    "List",
+                                                    "map",
+                                                ],
+                                            ),
+                                            span: 448..456,
+                                        },
+                                        args: [
+                                            Expr {
+                                                id: e21,
+                                                kind: Call {
+                                                    callee: Expr {
+                                                        id: e19,
+                                                        kind: External(
+                                                            [
+                                                                "List",
+                                                                "filter",
+                                                            ],
+                                                        ),
+                                                        span: 421..432,
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            id: e18,
+                                                            kind: Local {
+                                                                binding: b3,
+                                                                name: "scores",
+                                                            },
+                                                            span: 407..413,
+                                                        },
+                                                        Expr {
+                                                            id: e20,
+                                                            kind: Global(
+                                                                "isHigh",
+                                                            ),
+                                                            span: 433..439,
+                                                        },
+                                                    ],
+                                                },
+                                                span: 421..440,
+                                            },
+                                            Expr {
+                                                id: e23,
+                                                kind: Global(
+                                                    "describe",
+                                                ),
+                                                span: 457..465,
+                                            },
+                                        ],
+                                    },
+                                    span: 448..466,
+                                },
+                            ],
+                        },
+                        span: 474..488,
+                    },
+                },
+                span: 393..488,
+            },
+            span: 380..488,
+        },
+    ],
+}
