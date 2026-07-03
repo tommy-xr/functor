@@ -162,3 +162,24 @@ fn spans_map_to_source_text() {
     assert_eq!(text(src, lhs.span), "p.x");
     assert_eq!(text(src, rhs.span), "speed * 2.0");
 }
+
+// [AGREED review] `{ base with }` is a silent no-op copy — rejected.
+#[test]
+fn empty_record_update_is_an_error() {
+    let err = mle::parse("let f = (p) => { p with }").expect_err("should fail");
+    assert!(err
+        .message
+        .contains("at least one `name: value` after `with`"));
+}
+
+// [review] a stray `:=` after a non-name target gets a targeted error.
+#[test]
+fn assignment_to_field_is_a_targeted_error() {
+    let err = mle::parse("let f = (p) => p.x := 1.0; p").expect_err("should fail");
+    assert!(
+        err.message
+            .contains("assignment targets must be a bare `let mut` name"),
+        "got: {}",
+        err.message
+    );
+}

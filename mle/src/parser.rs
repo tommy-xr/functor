@@ -204,7 +204,16 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         let result = match self.peek_kind() {
             TokenKind::Let => self.let_in(),
             TokenKind::Ident(_) if self.nth_kind(1) == &TokenKind::ColonEq => self.assign(),
-            _ => self.pipeline(),
+            _ => {
+                let expr = self.pipeline();
+                // A stray `:=` after a non-name expression would otherwise
+                // surface as a baffling error at the enclosing context.
+                if expr.is_ok() && self.peek_kind() == &TokenKind::ColonEq {
+                    self.error("nothing (assignment targets must be a bare `let mut` name)")
+                } else {
+                    expr
+                }
+            }
         };
         self.depth -= 1;
         result
@@ -473,6 +482,10 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         let base = self.expr()?;
         self.expect(TokenKind::With, "`with` (or `name:` for a record literal)")?;
         let fields = self.record_fields()?;
+        if fields.is_empty() {
+            // A zero-field update is always a mistake (a silent copy).
+            return self.error("at least one `name: value` after `with`");
+        }
         let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
         Ok(Expr {
             kind: ExprKind::RecordUpdate {

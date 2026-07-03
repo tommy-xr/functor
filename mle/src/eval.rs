@@ -269,16 +269,21 @@ impl Interp<'_> {
                 };
                 let mut out = base_fields.as_ref().clone();
                 for field in fields {
-                    let value = self.eval(&field.value, env)?;
-                    match out.iter_mut().find(|(name, _)| *name == field.name) {
-                        Some((_, slot)) => *slot = value,
-                        None => {
-                            return Err(RunError {
-                                message: format!("record has no field `{}` to update", field.name),
-                                span: field.span,
-                            })
-                        }
+                    // Validate the target BEFORE evaluating the replacement:
+                    // with host externals the RHS can have effects, and an
+                    // invalid update must reject without running them.
+                    if !out.iter().any(|(name, _)| *name == field.name) {
+                        return Err(RunError {
+                            message: format!("record has no field `{}` to update", field.name),
+                            span: field.span,
+                        });
                     }
+                    let value = self.eval(&field.value, env)?;
+                    let slot = out
+                        .iter_mut()
+                        .find(|(name, _)| *name == field.name)
+                        .expect("checked above");
+                    slot.1 = value;
                 }
                 Ok(Value::Record(Rc::new(out)))
             }

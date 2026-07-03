@@ -357,3 +357,19 @@ fn closures_may_capture_immutable_lets() {
         "5"
     );
 }
+
+// [Codex review] an invalid update target rejects BEFORE evaluating the
+// replacement — with host externals the RHS can have effects.
+#[test]
+fn update_validates_target_before_evaluating_value() {
+    let failure = run_failure(
+        "let main = () => { { x: 1.0 } with y: List.maximum([]) }",
+        Tracing::On,
+    );
+    assert_eq!(failure.error.message, "record has no field `y` to update");
+    let rendered = mle::render_trace(&failure.trace);
+    assert!(
+        !rendered.contains("List.maximum"),
+        "the replacement must not have run: {rendered}"
+    );
+}

@@ -198,6 +198,18 @@ snapshots — no GPU, fully agent-verifiable.
       `mle types` dump, goldened); the B4 diagnostic suite still passes;
       probe battery re-run (no legal program rejected).
 
+- [ ] **B8. `.mlei` interface files** (added 2026-07-02; design already in
+      `~/notes` `syntax.md` — the OCaml `.mli` split). A module's public
+      contract as a checked file: exported types (including **abstract**
+      types that hide their representation), function signatures, and —
+      once B6 lands — effect requirements. `mle check` verifies the
+      implementation satisfies its interface; consumers typecheck against
+      the `.mlei` alone. The LLM payoff is the point: an interface file is
+      the concise, load-into-context summary of a module. Prerequisite:
+      a module story (imports across files) — today a program is one
+      `.mle` file, so B8 lands together with (or right after) multi-file
+      modules.
+
 ## Track C — MLE as a second producer behind the seam
 
 Starts once A2 + B3 exist.
