@@ -17,7 +17,7 @@
 //! - **Type annotations stay symbolic** ([`TypeName`] carried through
 //!   verbatim) — no inference or checking until B4.
 
-use crate::ast::{BinOp, FieldTy, TypeName};
+use crate::ast::{BinOp, TypeBody, TypeName};
 use crate::span::Span;
 use std::fmt;
 use std::rc::Rc;
@@ -70,14 +70,30 @@ pub struct Module {
     pub defs: Vec<Def>,
 }
 
-/// `type Position = { x: Float, y: Float }` — fields keep their symbolic
-/// [`TypeName`]s; other types reference this one by name.
-#[derive(Debug)]
+/// `type Position = { x: Float, y: Float }` or
+/// `type Shape = | Circle(radius: Float) | Point` — the body ([`TypeBody`])
+/// is carried through from the AST verbatim, fields keeping their symbolic
+/// [`TypeName`]s; other types reference this one by name. Constructor names
+/// live in the *value* namespace (see [`crate::lower`]).
 pub struct TypeDef {
     pub id: DefId,
     pub name: String,
-    pub fields: Vec<FieldTy>,
+    pub body: TypeBody,
     pub span: Span,
+}
+
+// Hand-written so the pretty-Debug output (and the committed `.ir` goldens)
+// keeps the pre-variant `fields:` shape for record declarations.
+impl fmt::Debug for TypeDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("TypeDef");
+        s.field("id", &self.id).field("name", &self.name);
+        match &self.body {
+            TypeBody::Record(fields) => s.field("fields", fields),
+            TypeBody::Variants(variants) => s.field("variants", variants),
+        };
+        s.field("span", &self.span).finish()
+    }
 }
 
 /// A lowered top-level `let`. `name` is the def's stable identity.
@@ -166,6 +182,58 @@ pub enum ExprKind {
         rhs: Box<Expr>,
     },
     Neg(Box<Expr>),
+    /// Reference to a declared variant constructor (an uppercase identifier
+    /// that resolved against the module's constructors — see
+    /// [`crate::lower`]). `arity` is the declared field count, carried here
+    /// so evaluation needs no type-table lookup: a nullary constructor
+    /// evaluates directly to its variant value, a parameterful one to a
+    /// callable constructor value.
+    Ctor {
+        name: String,
+        arity: usize,
+    },
+    /// `match scrutinee with | pattern => body | …` — first matching arm
+    /// wins; no arm matching is a runtime error.
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+}
+
+/// One lowered `| pattern => body` arm. Pattern variables are bindings
+/// scoped to `body` (they may shadow; duplicates within one pattern are
+/// lowering errors).
+#[derive(Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+/// The lowered pattern language (see [`crate::ast::PatternKind`]);
+/// variables carry their [`BindingId`]s.
+#[derive(Debug)]
+pub enum PatternKind {
+    Wildcard,
+    Var {
+        binding: BindingId,
+        name: String,
+    },
+    /// Lowering guarantees `name` is a declared constructor and `args`
+    /// matches its declared field count.
+    Ctor {
+        name: String,
+        args: Vec<Pattern>,
+    },
+    Number(f64),
+    Bool(bool),
+    String(String),
 }
 
 /// One `name: value` entry of a record expression.

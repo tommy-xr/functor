@@ -58,6 +58,11 @@ fn golden_functions() {
     check_golden("functions");
 }
 
+#[test]
+fn golden_shapes() {
+    check_golden("shapes");
+}
+
 /// Parse a deliberately broken input; return the error's (message, line, col).
 fn parse_err(src: &str) -> (String, usize, usize) {
     let err = mle::parse(src).expect_err("input should fail to parse");
@@ -182,4 +187,162 @@ fn assignment_to_field_is_a_targeted_error() {
         "got: {}",
         err.message
     );
+}
+
+// --- Variant declarations + match (B5 part 1) ---
+
+/// Both `type` bodies parse; the variant form allows nullary constructors
+/// and trailing commas in a constructor's field list.
+#[test]
+fn variant_declaration_forms_parse() {
+    assert!(
+        mle::parse("type Shape = | Circle(radius: Float) | Rect(w: Float, h: Float,) | Point")
+            .is_ok()
+    );
+    assert!(mle::parse("type Answer = | Yes").is_ok());
+}
+
+/// The leading `|` is required before the FIRST alternative too.
+#[test]
+fn error_variant_requires_leading_bar() {
+    assert_eq!(
+        parse_err("type Shape = Circle(radius: Float)"),
+        (
+            "expected `{` (a record type) or `|` (a variant alternative), found `Circle`"
+                .to_string(),
+            1,
+            14
+        )
+    );
+}
+
+#[test]
+fn error_lowercase_constructor_name() {
+    assert_eq!(
+        parse_err("type Shape = | circle(radius: Float)"),
+        (
+            "constructor name `circle` must start uppercase".to_string(),
+            1,
+            16
+        )
+    );
+}
+
+/// A constructor's fields are named in the declaration.
+#[test]
+fn error_variant_field_needs_a_name() {
+    assert_eq!(
+        parse_err("type Shape = | Circle(Float)"),
+        (
+            "expected `:` after field name, found `)`".to_string(),
+            1,
+            28
+        )
+    );
+}
+
+#[test]
+fn match_parses_all_pattern_kinds() {
+    let src = "let f = (s) => match s with\n\
+               | Circle(r, _) => r\n\
+               | Point => 0.0\n\
+               | true => 1.0\n\
+               | 2.0 => 2.0\n\
+               | \"s\" => 3.0\n\
+               | x => x\n\
+               | _ => 0.0";
+    let program = mle::parse(src).unwrap();
+    let Item::Let(decl) = &program.items[0] else {
+        panic!("expected a let declaration");
+    };
+    let ExprKind::Lambda { body, .. } = &decl.value.kind else {
+        panic!("expected a lambda");
+    };
+    let ExprKind::Match { arms, .. } = &body.kind else {
+        panic!("expected a match, got {body:?}");
+    };
+    assert_eq!(arms.len(), 7);
+    use mle::ast::PatternKind::*;
+    assert!(
+        matches!(&arms[0].pattern.kind, Ctor { name, args } if name == "Circle" && args.len() == 2)
+    );
+    assert!(
+        matches!(&arms[1].pattern.kind, Ctor { name, args } if name == "Point" && args.is_empty())
+    );
+    assert!(matches!(&arms[2].pattern.kind, Bool(true)));
+    assert!(matches!(&arms[3].pattern.kind, Number(n) if *n == 2.0));
+    assert!(matches!(&arms[4].pattern.kind, String(s) if s == "s"));
+    assert!(matches!(&arms[5].pattern.kind, Var(name) if name == "x"));
+    assert!(matches!(&arms[6].pattern.kind, Wildcard));
+}
+
+/// The leading `|` is required before the first arm.
+#[test]
+fn error_match_requires_leading_bar() {
+    assert_eq!(
+        parse_err("let f = (s) => match s with s => 1.0"),
+        (
+            "expected `|` to begin a match arm, found `s`".to_string(),
+            1,
+            29
+        )
+    );
+}
+
+/// Sub-patterns are bindings or `_` only — constructor patterns don't nest.
+#[test]
+fn error_nested_constructor_pattern() {
+    assert_eq!(
+        parse_err("let f = (s) => match s with | Circle(Point) => 1.0 | _ => 0.0"),
+        (
+            "expected a binding name or `_` (constructor patterns do not nest), found `Point`"
+                .to_string(),
+            1,
+            38
+        )
+    );
+}
+
+/// GREEDY ARMS: a nested match inside an arm consumes the following `|`
+/// arms as its own; parenthesizing restores them to the outer match (the
+/// documented F#/OCaml convention).
+#[test]
+fn nested_match_consumes_following_arms_greedily() {
+    let arms_of = |src: &str| -> (usize, usize) {
+        let program = mle::parse(src).unwrap();
+        let Item::Let(decl) = &program.items[0] else {
+            panic!("expected a let declaration");
+        };
+        let ExprKind::Match { arms, .. } = &decl.value.kind else {
+            panic!("expected a match, got {:?}", decl.value.kind);
+        };
+        let ExprKind::Match { arms: inner, .. } = &arms[0].body.kind else {
+            panic!("expected the first arm body to be a match");
+        };
+        (arms.len(), inner.len())
+    };
+    // Unparenthesized: the inner match eats `| false => 2.0`.
+    let (outer, inner) =
+        arms_of("let x = match true with | true => match false with | true => 1.0 | false => 2.0");
+    assert_eq!((outer, inner), (1, 2));
+    // Parenthesized: the outer match keeps its two arms.
+    let (outer, inner) = arms_of(
+        "let x = match true with | true => (match false with | true => 1.0) | false => 2.0",
+    );
+    assert_eq!((outer, inner), (2, 1));
+}
+
+/// `match` binds loosest, like let-in: an arm body is a full expression.
+#[test]
+fn match_arm_bodies_are_full_expressions() {
+    let src = "let x = match true with | true => 1.0 + 2.0 | false => 0.0";
+    let program = mle::parse(src).unwrap();
+    let Item::Let(decl) = &program.items[0] else {
+        panic!("expected a let declaration");
+    };
+    let ExprKind::Match { arms, .. } = &decl.value.kind else {
+        panic!("expected a match");
+    };
+    assert_eq!(arms.len(), 2);
+    assert!(matches!(&arms[0].body.kind, ExprKind::Binary { .. }));
 }

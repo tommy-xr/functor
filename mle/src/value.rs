@@ -20,6 +20,21 @@ pub enum Value {
     List(Rc<Vec<Value>>),
     /// Field order is the construction order (deterministic output).
     Record(Rc<Vec<(String, Value)>>),
+    /// A variant-type value: a constructor applied to its (positional)
+    /// arguments. Nullary constructors are variants with no args.
+    /// Equality is structural (same constructor, equal args).
+    Variant {
+        ctor: Rc<str>,
+        args: Rc<Vec<Value>>,
+    },
+    /// An unapplied parameterful constructor (`Circle` passed as a value,
+    /// e.g. to `List.map`) — callable; applying it with the declared arity
+    /// yields a [`Value::Variant`]. Nullary constructors never produce this
+    /// (used bare, they ARE the variant value).
+    Ctor {
+        name: Rc<str>,
+        arity: usize,
+    },
     Closure(Rc<Closure>),
     Builtin(crate::eval::Builtin),
     /// A host-provided external function (see [`crate::eval::Host`]),
@@ -107,6 +122,21 @@ impl fmt::Display for Value {
                 }
                 write!(f, " }}")
             }
+            Value::Variant { ctor, args } => {
+                write!(f, "{ctor}")?;
+                if args.is_empty() {
+                    return Ok(());
+                }
+                write!(f, "(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ")")
+            }
+            Value::Ctor { name, .. } => write!(f, "<ctor {name}>"),
             Value::Closure(closure) => {
                 write!(f, "<fn(")?;
                 for (i, param) in closure.params.iter().enumerate() {
@@ -133,6 +163,8 @@ impl Value {
             Value::Bool(_) => "a bool",
             Value::List(_) => "a list",
             Value::Record(_) => "a record",
+            Value::Variant { .. } => "a variant",
+            Value::Ctor { .. } => "a constructor",
             Value::Closure(_) => "a function",
             Value::Builtin(_) => "a builtin",
             Value::HostFn(_) => "a host function",

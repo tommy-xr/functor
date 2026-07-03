@@ -6,6 +6,7 @@
 //! shape makes error spans and future formatting honest.
 
 use crate::span::Span;
+use std::fmt;
 
 #[derive(Debug)]
 pub struct Program {
@@ -26,9 +27,41 @@ pub struct LetDecl {
     pub span: Span,
 }
 
-/// `type Position = { x: Float, y: Float }` — record types only in B1.
-#[derive(Debug)]
+/// `type Position = { x: Float, y: Float }` (a record type) or
+/// `type Shape = | Circle(radius: Float) | Point` (a variant type).
 pub struct TypeDecl {
+    pub name: String,
+    pub body: TypeBody,
+    pub span: Span,
+}
+
+// Hand-written so the pretty-Debug output (and the committed `.ast` goldens)
+// keeps the pre-variant `fields:` shape for record declarations.
+impl fmt::Debug for TypeDecl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("TypeDecl");
+        s.field("name", &self.name);
+        match &self.body {
+            TypeBody::Record(fields) => s.field("fields", fields),
+            TypeBody::Variants(variants) => s.field("variants", variants),
+        };
+        s.field("span", &self.span).finish()
+    }
+}
+
+/// What a `type` declares: a record shape, or one-or-more variant
+/// constructors (each `|`-led, including the first).
+#[derive(Debug)]
+pub enum TypeBody {
+    Record(Vec<FieldTy>),
+    Variants(Vec<VariantDecl>),
+}
+
+/// One `| Ctor(name: Type, …)` / `| Ctor` alternative of a variant type.
+/// Fields are named in the declaration (self-documenting) but constructors
+/// are *called* positionally: `Circle(2.0)`.
+#[derive(Debug)]
+pub struct VariantDecl {
     pub name: String,
     pub fields: Vec<FieldTy>,
     pub span: Span,
@@ -130,6 +163,48 @@ pub enum ExprKind {
     },
     /// Unary minus.
     Neg(Box<Expr>),
+    /// `match expr with | pattern => expr | …` — first matching arm wins,
+    /// top to bottom. Arm bodies are full expressions, so a nested `match`
+    /// inside an arm greedily consumes the following `|` arms — parenthesize
+    /// inner matches (the F#/OCaml convention; see [`crate::parser`]).
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+}
+
+/// One `| pattern => body` arm of a `match`.
+#[derive(Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+/// The deliberately-minimal B5 pattern language: constructor patterns whose
+/// sub-patterns are variable bindings or `_` (no deeper nesting), bare
+/// variables, `_`, and literal (equality) patterns.
+#[derive(Debug)]
+pub enum PatternKind {
+    /// `_` — matches anything, binds nothing.
+    Wildcard,
+    /// A bare lowercase name — matches anything, binds it.
+    Var(String),
+    /// `Circle(r)` / `Point` — an uppercase name is always a constructor
+    /// pattern (never a variable).
+    Ctor {
+        name: String,
+        args: Vec<Pattern>,
+    },
+    Number(f64),
+    Bool(bool),
+    String(String),
 }
 
 /// One `name: value` entry of a record expression.

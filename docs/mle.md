@@ -167,10 +167,22 @@ snapshots — no GPU, fully agent-verifiable.
       + committed `broken.check` diagnostic golden (all diagnostics, sorted,
       `file:line:col`); per-diagnostic message/span unit tests; the three
       examples check clean. (done)
-- [ ] **B5. Match/ADTs + storable closures.** The game-logic essentials;
-      closures serialize as `(stable-id, env)`. *Verify:* serialize a value
-      graph containing a closure → deserialize → call it; rename-then-restore
-      fails loud.
+- [ ] **B5. Match/ADTs + storable closures.** The game-logic essentials.
+      **Part 1 — ADTs + `match` — done (2026-07-03):** variant `type`
+      declarations (`| Ctor(name: Type, …)` / nullary `| Ctor`; leading `|`
+      required, first alternative included); constructors live in the value
+      namespace (resolve bare, unique across types, collide with `let`s),
+      are called positionally, and are first-class when unapplied; `match
+      expr with | pattern => expr` with constructor/variable/`_`/literal
+      patterns (bool-literal arms are the language's first conditional; arms
+      parse greedily — parenthesize nested matches); structural variant
+      equality; gradual checking with exhaustiveness (missing ctors named),
+      foreign-ctor/literal-compatibility diagnostics, typed pattern
+      variables, and arm-result joins; hover for ctor signatures and pattern
+      vars; `examples/shapes.mle` + goldens. **Remaining: storable
+      closures** serialized as `(stable-id, env)`. *Verify:* serialize a
+      value graph containing a closure → deserialize → call it;
+      rename-then-restore fails loud.
 - [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
       handlers. *Verify:* same program under real vs fake vs replay; structured
       effect log.

@@ -78,6 +78,11 @@ fn example_functions_checks_clean() {
     example_checks_clean("functions");
 }
 
+#[test]
+fn example_shapes_checks_clean() {
+    example_checks_clean("shapes");
+}
+
 fn example_checks_clean(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let src = fs::read_to_string(dir.join(format!("{name}.mle"))).unwrap();
@@ -419,4 +424,191 @@ fn let_in_types_flow_to_the_body() {
 #[test]
 fn gradual_mut_never_false_positives() {
     assert_clean("let f = (x) => let mut a = x in a := a + 1.0; { a with n: a }");
+}
+
+// --- Variants + match (B5 part 1) ---
+
+const SHAPE: &str = "type Shape = | Circle(r: Float) | Rect(w: Float, h: Float) | Point\n";
+
+/// Non-exhaustive match on a known variant type: the diagnostic names the
+/// missing constructor(s), in declaration order.
+#[test]
+fn error_non_exhaustive_variant_match() {
+    let (message, line, col) = single_diag(&format!(
+        "{SHAPE}let f = (s: Shape): Float => match s with | Circle(r) => r"
+    ));
+    assert_eq!(
+        message,
+        "match on `Shape` is not exhaustive: missing `Rect`, `Point`"
+    );
+    assert_eq!((line, col), (2, 30));
+}
+
+/// A catch-all arm (`_` or a variable) makes any match exhaustive.
+#[test]
+fn catch_all_arms_are_exhaustive() {
+    assert_clean(&format!(
+        "{SHAPE}let f = (s: Shape): Float => match s with | Circle(r) => r | _ => 0.0"
+    ));
+    assert_clean(&format!(
+        "{SHAPE}let f = (s: Shape): Float => match s with | Circle(r) => r | other => 0.0"
+    ));
+}
+
+/// Every constructor covered is exhaustive without a catch-all.
+#[test]
+fn full_ctor_coverage_is_exhaustive() {
+    assert_clean(&format!(
+        "{SHAPE}let f = (s: Shape): Float => match s with | Circle(r) => r | Rect(w, h) => w * h | Point => 0.0"
+    ));
+}
+
+/// A constructor from another variant type can never match.
+#[test]
+fn error_foreign_ctor_in_a_match() {
+    let (message, line, col) = single_diag(&format!(
+        "{SHAPE}type Blob = | Splat(size: Float)\n\
+         let f = (s: Shape): Float => match s with | Splat(n) => n | _ => 0.0"
+    ));
+    assert_eq!(message, "`Splat` is not a constructor of `Shape`");
+    assert_eq!((line, col), (3, 45));
+}
+
+/// A constructor pattern against a known non-variant scrutinee.
+#[test]
+fn error_ctor_pattern_against_a_float() {
+    let (message, _, _) = single_diag(&format!(
+        "{SHAPE}let f = (x: Float): Float => match x with | Circle(r) => r | _ => 0.0"
+    ));
+    assert_eq!(
+        message,
+        "pattern `Circle` matches `Shape`, but the scrutinee is Float"
+    );
+}
+
+/// A literal pattern of the wrong type against a known scrutinee.
+#[test]
+fn error_literal_pattern_against_a_variant() {
+    let (message, _, _) = single_diag(&format!(
+        "{SHAPE}let f = (s: Shape): Float => match s with | true => 1.0 | _ => 0.0"
+    ));
+    assert_eq!(message, "pattern matches Bool, but the scrutinee is Shape");
+}
+
+/// Bool matches: `true` + `false` (or a catch-all) is exhaustive; a missing
+/// literal is named.
+#[test]
+fn bool_match_exhaustiveness() {
+    assert_clean("let f = (b: Bool): Float => match b with | true => 1.0 | false => 0.0");
+    assert_clean("let f = (b: Bool): Float => match b with | true => 1.0 | _ => 0.0");
+    let (message, _, _) = single_diag("let f = (b: Bool): Float => match b with | true => 1.0");
+    assert_eq!(message, "match on Bool is not exhaustive: missing `false`");
+}
+
+/// Number/string literal matches can never cover their type: they require a
+/// catch-all arm when the scrutinee's type is known.
+#[test]
+fn literal_matches_require_a_catch_all() {
+    let (message, _, _) =
+        single_diag("let f = (x: Float): Float => match x with | 1.0 => 1.0 | 2.0 => 2.0");
+    assert_eq!(
+        message,
+        "match on Float is not exhaustive: literal patterns need a catch-all arm (`_` or a name)"
+    );
+    assert_clean("let f = (x: Float): Float => match x with | 1.0 => 1.0 | _ => 0.0");
+    let (message, _, _) = single_diag("let f = (x: String): Float => match x with | \"a\" => 1.0");
+    assert_eq!(
+        message,
+        "match on String is not exhaustive: literal patterns need a catch-all arm (`_` or a name)"
+    );
+}
+
+/// Arm result types must agree where known; the match's type is their join.
+#[test]
+fn error_incompatible_arm_types() {
+    let (message, _, _) =
+        single_diag("let f = (b: Bool) => match b with | true => 1.0 | false => \"no\"");
+    assert_eq!(
+        message,
+        "match arms have incompatible types Float and String"
+    );
+}
+
+/// The joined match type flows onward (here: into a return-type check).
+#[test]
+fn match_type_flows_to_the_return_annotation() {
+    let (message, _, _) =
+        single_diag("let f = (b: Bool): String => match b with | true => 1.0 | false => 0.0");
+    assert_eq!(message, "return value: expected String, got Float");
+}
+
+/// Pattern variables get the declared field types — they flow into arm
+/// bodies…
+#[test]
+fn pattern_vars_get_declared_field_types() {
+    let (message, _, _) = single_diag(&format!(
+        "{SHAPE}let f = (s: Shape): String => match s with | Circle(r) => Text.concat(r, \"!\") | _ => \"\""
+    ));
+    assert_eq!(
+        message,
+        "argument 1 of `Text.concat`: expected String, got Float"
+    );
+}
+
+/// …and a catch-all variable binds the scrutinee's type.
+#[test]
+fn catch_all_var_binds_the_scrutinee_type() {
+    let (message, _, _) = single_diag(&format!(
+        "{SHAPE}let area = (s: Shape): Float => 1.0\n\
+         let f = (s: Shape): Float => match s with | other => area(other) + other"
+    ));
+    assert_eq!(message, "`+` needs Float operands, got Shape");
+}
+
+/// Construction checks like any call: declared field types and arity.
+#[test]
+fn error_ctor_argument_type_and_arity() {
+    let (message, _, _) = single_diag(&format!("{SHAPE}let x = () => Circle(\"s\")"));
+    assert_eq!(
+        message,
+        "argument 1 of `Circle`: expected Float, got String"
+    );
+    let (message, _, _) = single_diag(&format!("{SHAPE}let x = () => Rect(1.0)"));
+    assert_eq!(message, "`Rect` takes 2 argument(s), got 1");
+}
+
+/// Variant types are nominal in annotations, like records.
+#[test]
+fn variant_return_annotations_check() {
+    assert_clean(&format!("{SHAPE}let f = (): Shape => Circle(2.0)"));
+    assert_clean(&format!("{SHAPE}let f = (): Shape => Point"));
+    let (message, _, _) = single_diag(&format!("{SHAPE}let f = (): Shape => 1.0"));
+    assert_eq!(message, "return value: expected Shape, got Float");
+}
+
+// Gradual: these must NOT error.
+
+/// An Unknown scrutinee is unchecked: no exhaustiveness demands, ctor and
+/// literal arms of any mix, and pattern variables still get their declared
+/// field types without ever false-positives.
+#[test]
+fn gradual_match_never_false_positives() {
+    assert_clean(&format!(
+        "{SHAPE}let f = (s) => match s with | Circle(r) => r | 1.0 => 2.0 | \"s\" => 3.0"
+    ));
+    // A match on an unannotated call result is unchecked too.
+    assert_clean(&format!(
+        "{SHAPE}let g = (s) => s\n\
+         let f = (s) => match g(s) with | Point => 1.0"
+    ));
+}
+
+/// Mixed known/Unknown arm types join to Unknown (no diagnostic), so the
+/// match result stays gradual.
+#[test]
+fn mixed_unknown_arm_types_stay_gradual() {
+    assert_clean(&format!(
+        "{SHAPE}let g = (x) => x\n\
+         let f = (b: Bool): String => match b with | true => g(1.0) | false => \"s\""
+    ));
 }

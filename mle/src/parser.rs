@@ -5,11 +5,16 @@
 //! ```text
 //! program   := (letDecl | typeDecl)*
 //! letDecl   := "let" ident "=" expr
-//! typeDecl  := "type" ident "=" "{" (ident ":" type),* "}"
+//! typeDecl  := "type" ident "=" ("{" (ident ":" type),* "}" | variant+)
+//! variant   := "|" upperIdent ("(" (ident ":" type),+ ")")?
 //! type      := ident ("<" type ("," type)* ">")?
-//! expr      := letIn | assign | pipeline
+//! expr      := letIn | assign | match | pipeline
 //! letIn     := "let" "mut"? ident "=" expr "in" expr
 //! assign    := ident ":=" expr ";" expr
+//! match     := "match" expr "with" ("|" pattern "=>" expr)+
+//! pattern   := "_" | lowerIdent | upperIdent ("(" subpat,+ ")")?
+//!            | "true" | "false" | number | string
+//! subpat    := "_" | lowerIdent
 //! pipeline  := cmp ("|>" cmp)*
 //! cmp       := add (("<" | ">" | "==") add)*        (left-assoc)
 //! add       := mul (("+" | "-") mul)*               (left-assoc)
@@ -27,6 +32,13 @@
 //! Comma lists allow a trailing comma. `(` is disambiguated between lambda
 //! and parenthesized expression by scanning to the matching `)`: it is a
 //! lambda iff the next token is `=>` or `:` (a return-type annotation).
+//!
+//! **Greedy match arms.** Arm bodies are full expressions, so a nested
+//! `match` inside an arm consumes the following `|` arms as its own —
+//! parenthesize the inner match to return to the outer one (the same
+//! convention as F#/OCaml). The leading `|` is required before *every* arm
+//! (and every variant alternative), including the first — that keeps the
+//! layout-free grammar unambiguous.
 
 use crate::ast::*;
 use crate::lexer::{describe, lex, Token, TokenKind};
@@ -138,29 +150,89 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         let kw = self.bump();
         let (name, _) = self.expect_ident("a name after `type`")?;
         self.expect(TokenKind::Eq, "`=`")?;
-        self.expect(TokenKind::LBrace, "`{`")?;
-        let mut fields = Vec::new();
-        while self.peek_kind() != &TokenKind::RBrace {
-            let (field_name, field_span) = self.expect_ident("a field name")?;
-            self.expect(TokenKind::Colon, "`:` after field name")?;
-            let ty = self.type_name()?;
-            fields.push(FieldTy {
-                span: field_span.to(ty.span),
-                name: field_name,
-                ty,
-            });
-            if self.peek_kind() == &TokenKind::Comma {
+        match self.peek_kind() {
+            TokenKind::LBrace => {
                 self.bump();
-            } else {
-                break;
+                let mut fields = Vec::new();
+                while self.peek_kind() != &TokenKind::RBrace {
+                    let (field_name, field_span) = self.expect_ident("a field name")?;
+                    self.expect(TokenKind::Colon, "`:` after field name")?;
+                    let ty = self.type_name()?;
+                    fields.push(FieldTy {
+                        span: field_span.to(ty.span),
+                        name: field_name,
+                        ty,
+                    });
+                    if self.peek_kind() == &TokenKind::Comma {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
+                Ok(TypeDecl {
+                    name,
+                    body: TypeBody::Record(fields),
+                    span: kw.span.to(close.span),
+                })
             }
+            TokenKind::Pipe => {
+                let mut variants = Vec::new();
+                while self.peek_kind() == &TokenKind::Pipe {
+                    self.bump();
+                    variants.push(self.variant_decl()?);
+                }
+                let span = kw
+                    .span
+                    .to(variants.last().expect("at least one variant").span);
+                Ok(TypeDecl {
+                    name,
+                    body: TypeBody::Variants(variants),
+                    span,
+                })
+            }
+            // A leading `|` is required before every alternative, including
+            // the first (see the module docs).
+            _ => self.error("`{` (a record type) or `|` (a variant alternative)"),
         }
-        let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
-        Ok(TypeDecl {
-            name,
-            fields,
-            span: kw.span.to(close.span),
-        })
+    }
+
+    /// One `Ctor(name: Type, …)` / `Ctor` alternative (its leading `|`
+    /// already consumed).
+    fn variant_decl(&mut self) -> Result<VariantDecl, ParseError> {
+        let (name, name_span) = self.expect_ident("a constructor name after `|`")?;
+        if !starts_uppercase(&name) {
+            return Err(ParseError {
+                message: format!("constructor name `{name}` must start uppercase"),
+                span: name_span,
+            });
+        }
+        let mut fields = Vec::new();
+        let mut span = name_span;
+        if self.peek_kind() == &TokenKind::LParen {
+            self.bump();
+            loop {
+                let (field_name, field_span) = self.expect_ident("a field name")?;
+                self.expect(TokenKind::Colon, "`:` after field name")?;
+                let ty = self.type_name()?;
+                fields.push(FieldTy {
+                    span: field_span.to(ty.span),
+                    name: field_name,
+                    ty,
+                });
+                if self.peek_kind() == &TokenKind::Comma {
+                    self.bump();
+                    if self.peek_kind() == &TokenKind::RParen {
+                        break; // trailing comma
+                    }
+                } else {
+                    break;
+                }
+            }
+            let close = self.expect(TokenKind::RParen, "`,` or `)`")?;
+            span = name_span.to(close.span);
+        }
+        Ok(VariantDecl { name, fields, span })
     }
 
     fn type_name(&mut self) -> Result<TypeName, ParseError> {
@@ -203,6 +275,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         }
         let result = match self.peek_kind() {
             TokenKind::Let => self.let_in(),
+            TokenKind::Match => self.match_expr(),
             TokenKind::Ident(_) if self.nth_kind(1) == &TokenKind::ColonEq => self.assign(),
             _ => {
                 let expr = self.pipeline();
@@ -265,6 +338,121 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             },
             span,
         })
+    }
+
+    /// `match expr with | pattern => expr | …` — lowest-precedence, like
+    /// let-in. Arm bodies are full expressions, so arms are consumed
+    /// greedily (see the module docs).
+    fn match_expr(&mut self) -> Result<Expr, ParseError> {
+        let kw = self.bump();
+        let scrutinee = self.expr()?;
+        self.expect(TokenKind::With, "`with` after the match scrutinee")?;
+        if self.peek_kind() != &TokenKind::Pipe {
+            // A leading `|` is required before every arm, including the first.
+            return self.error("`|` to begin a match arm");
+        }
+        let mut arms = Vec::new();
+        while self.peek_kind() == &TokenKind::Pipe {
+            let bar = self.bump();
+            let pattern = self.pattern()?;
+            self.expect(TokenKind::FatArrow, "`=>` after the pattern")?;
+            let body = self.expr()?;
+            arms.push(MatchArm {
+                span: bar.span.to(body.span),
+                pattern,
+                body,
+            });
+        }
+        let span = kw.span.to(arms.last().expect("at least one arm").span);
+        Ok(Expr {
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span,
+        })
+    }
+
+    fn pattern(&mut self) -> Result<Pattern, ParseError> {
+        let span = self.peek().span;
+        let kind = match self.peek_kind() {
+            TokenKind::Number(n) => {
+                let n = *n;
+                self.bump();
+                PatternKind::Number(n)
+            }
+            TokenKind::Str(s) => {
+                let s = s.clone();
+                self.bump();
+                PatternKind::String(s)
+            }
+            TokenKind::True => {
+                self.bump();
+                PatternKind::Bool(true)
+            }
+            TokenKind::False => {
+                self.bump();
+                PatternKind::Bool(false)
+            }
+            TokenKind::Ident(name) if name == "_" => {
+                self.bump();
+                PatternKind::Wildcard
+            }
+            TokenKind::Ident(name) if !starts_uppercase(name) => {
+                let name = name.clone();
+                self.bump();
+                PatternKind::Var(name)
+            }
+            // Uppercase: always a constructor pattern, never a variable.
+            TokenKind::Ident(_) => return self.ctor_pattern(),
+            _ => return self.error("a pattern"),
+        };
+        Ok(Pattern { kind, span })
+    }
+
+    /// `Circle(r, _)` / `Point` — sub-patterns are variable bindings or `_`
+    /// only (the deliberately-minimal B5 pattern language; no nesting).
+    fn ctor_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let (name, name_span) = self.expect_ident("a constructor name")?;
+        let mut args = Vec::new();
+        let mut span = name_span;
+        if self.peek_kind() == &TokenKind::LParen {
+            self.bump();
+            loop {
+                args.push(self.sub_pattern()?);
+                if self.peek_kind() == &TokenKind::Comma {
+                    self.bump();
+                    if self.peek_kind() == &TokenKind::RParen {
+                        break; // trailing comma
+                    }
+                } else {
+                    break;
+                }
+            }
+            let close = self.expect(TokenKind::RParen, "`,` or `)`")?;
+            span = name_span.to(close.span);
+        }
+        Ok(Pattern {
+            kind: PatternKind::Ctor { name, args },
+            span,
+        })
+    }
+
+    fn sub_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let span = self.peek().span;
+        let kind = match self.peek_kind() {
+            TokenKind::Ident(name) if name == "_" => {
+                self.bump();
+                PatternKind::Wildcard
+            }
+            TokenKind::Ident(name) if !starts_uppercase(name) => {
+                let name = name.clone();
+                self.bump();
+                PatternKind::Var(name)
+            }
+            _ => return self.error("a binding name or `_` (constructor patterns do not nest)"),
+        };
+        Ok(Pattern { kind, span })
     }
 
     fn pipeline(&mut self) -> Result<Expr, ParseError> {

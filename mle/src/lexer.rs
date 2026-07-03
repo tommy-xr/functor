@@ -17,6 +17,7 @@ pub enum TokenKind {
     Mut,
     With,
     In,
+    Match,
     LParen,
     RParen,
     LBrace,
@@ -32,6 +33,7 @@ pub enum TokenKind {
     EqEq,
     FatArrow,
     PipeGt,
+    Pipe,
     Plus,
     Minus,
     Star,
@@ -61,6 +63,7 @@ pub fn describe(kind: &TokenKind) -> String {
         Mut => "`mut`".to_string(),
         With => "`with`".to_string(),
         In => "`in`".to_string(),
+        Match => "`match`".to_string(),
         LParen => "`(`".to_string(),
         RParen => "`)`".to_string(),
         LBrace => "`{`".to_string(),
@@ -76,6 +79,7 @@ pub fn describe(kind: &TokenKind) -> String {
         EqEq => "`==`".to_string(),
         FatArrow => "`=>`".to_string(),
         PipeGt => "`|>`".to_string(),
+        Pipe => "`|`".to_string(),
         Plus => "`+`".to_string(),
         Minus => "`-`".to_string(),
         Star => "`*`".to_string(),
@@ -194,11 +198,10 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                     i += 2;
                     TokenKind::PipeGt
                 }
+                // Bare `|` begins a variant alternative or a match arm.
                 _ => {
-                    return Err(ParseError {
-                        message: "unexpected character `|`".to_string(),
-                        span: Span::new(i, i + 1),
-                    })
+                    i += 1;
+                    TokenKind::Pipe
                 }
             },
             b'"' => {
@@ -231,6 +234,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                     "mut" => TokenKind::Mut,
                     "with" => TokenKind::With,
                     "in" => TokenKind::In,
+                    "match" => TokenKind::Match,
                     name => TokenKind::Ident(name.to_string()),
                 }
             }

@@ -30,7 +30,7 @@
 //! marker event) after [`MAX_TRACE_EVENTS`] so a hot loop can't produce an
 //! unbounded transcript; evaluation itself continues.
 
-use crate::ir::{Def, Expr, ExprKind, Module};
+use crate::ir::{BindingId, Def, Expr, ExprKind, Module, Pattern, PatternKind};
 use crate::span::Span;
 use crate::value::{Closure, Env, Value};
 use crate::RunError;
@@ -259,13 +259,15 @@ impl Interp<'_> {
             Value::Closure(closure) if closure.params.is_empty() => {
                 self.call(main.clone(), vec![], "main".to_string(), def.span, None)
             }
-            // Builtins and host functions take arguments by definition, so
-            // they get the same error as a parameterful closure rather than
-            // printing as a value.
-            Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) => Err(RunError {
-                message: "`main` must take no parameters to be runnable".to_string(),
-                span: def.span,
-            }),
+            // Builtins, host functions, and unapplied constructors take
+            // arguments by definition, so they get the same error as a
+            // parameterful closure rather than printing as a value.
+            Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. } => {
+                Err(RunError {
+                    message: "`main` must take no parameters to be runnable".to_string(),
+                    span: def.span,
+                })
+            }
             // A non-function `main` is just a value; report it directly.
             _ => Ok(main),
         }
@@ -473,6 +475,36 @@ impl Interp<'_> {
                     span: expr.span,
                 }),
             },
+            // A nullary constructor used bare IS the variant value; a
+            // parameterful one is a callable constructor (so `List.map(xs,
+            // Circle)` works like any function argument).
+            ExprKind::Ctor { name, arity } => {
+                if *arity == 0 {
+                    Ok(Value::Variant {
+                        ctor: Rc::from(name.as_str()),
+                        args: Rc::new(Vec::new()),
+                    })
+                } else {
+                    Ok(Value::Ctor {
+                        name: Rc::from(name.as_str()),
+                        arity: *arity,
+                    })
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                let value = self.eval(scrutinee, env)?;
+                for arm in arms {
+                    let mut vars = Vec::new();
+                    if match_pattern(&arm.pattern, &value, &mut vars) {
+                        let child = env.child(vars);
+                        return self.eval(&arm.body, &child);
+                    }
+                }
+                Err(RunError {
+                    message: format!("no pattern matched {value}"),
+                    span: expr.span,
+                })
+            }
         }
     }
 
@@ -572,6 +604,23 @@ impl Interp<'_> {
                     let env = closure.env.child(vars);
                     let body = closure.body.clone();
                     self.eval(&body, &env)
+                }
+            }
+            Value::Ctor { name, arity } => {
+                if args.len() != *arity {
+                    let who = match via {
+                        Some(builtin) => format!("the function passed to {builtin}"),
+                        None => format!("`{label}`"),
+                    };
+                    Err(RunError {
+                        message: format!("{who} takes {arity} argument(s), got {}", args.len()),
+                        span,
+                    })
+                } else {
+                    Ok(Value::Variant {
+                        ctor: name.clone(),
+                        args: Rc::new(args),
+                    })
                 }
             }
             Value::Builtin(b) => self.call_builtin(*b, args, span),
@@ -779,6 +828,38 @@ impl Interp<'_> {
     }
 }
 
+/// Does `pattern` match `value`? Appends each pattern variable's binding on
+/// the way (bindings are only used if the whole pattern matched — a pattern
+/// either fully matches or its arm is skipped, and sub-patterns are leaves,
+/// so a partial append can never observe a half-match). Pure: literal
+/// patterns compare primitively, so no function-equality error can arise.
+fn match_pattern(pattern: &Pattern, value: &Value, vars: &mut Vec<(BindingId, Value)>) -> bool {
+    match &pattern.kind {
+        PatternKind::Wildcard => true,
+        PatternKind::Var { binding, .. } => {
+            vars.push((*binding, value.clone()));
+            true
+        }
+        PatternKind::Ctor { name, args } => match value {
+            // Same constructor AND same arg count: lowering fixes the
+            // pattern's arity to the declaration, but the VALUE may come
+            // from a host (`Session::call`) — mismatched args are a
+            // non-match, not UB.
+            Value::Variant { ctor, args: vals } if ctor.as_ref() == name => {
+                args.len() == vals.len()
+                    && args
+                        .iter()
+                        .zip(vals.iter())
+                        .all(|(p, v)| match_pattern(p, v, vars))
+            }
+            _ => false,
+        },
+        PatternKind::Number(n) => matches!(value, Value::Number(v) if v == n),
+        PatternKind::Bool(b) => matches!(value, Value::Bool(v) if v == b),
+        PatternKind::String(s) => matches!(value, Value::String(v) if v.as_ref() == s),
+    }
+}
+
 /// Structural equality for `==`. Functions have no equality — comparing them
 /// is a runtime error rather than a silent `false`.
 fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
@@ -809,11 +890,27 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
             }
             Ok(true)
         }
-        (Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_), _)
-        | (_, Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)) => Err(RunError {
-            message: "functions cannot be compared with `==`".to_string(),
-            span,
-        }),
+        // Structural: same constructor, equal args (a function argument
+        // still raises the function-comparison error below).
+        (Value::Variant { ctor: xc, args: xs }, Value::Variant { ctor: yc, args: ys }) => {
+            if xc != yc || xs.len() != ys.len() {
+                return Ok(false);
+            }
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                if !value_eq(x, y, span)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        // An unapplied constructor is a function value — no equality.
+        (Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. }, _)
+        | (_, Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. }) => {
+            Err(RunError {
+                message: "functions cannot be compared with `==`".to_string(),
+                span,
+            })
+        }
         (Value::HostData(_), _) | (_, Value::HostData(_)) => Err(RunError {
             message: "host values cannot be compared with `==`".to_string(),
             span,
@@ -832,6 +929,7 @@ pub(crate) fn callee_label(callee: &Expr) -> String {
         ExprKind::Global(name) => name.clone(),
         ExprKind::Local { name, .. } => name.clone(),
         ExprKind::External(path) => path.join("."),
+        ExprKind::Ctor { name, .. } => name.clone(),
         _ => "<lambda>".to_string(),
     }
 }
