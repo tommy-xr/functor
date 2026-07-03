@@ -153,8 +153,20 @@ snapshots — no GPU, fully agent-verifiable.
       values — kept even when the run fails. *Verify:* `.run` goldens per
       example, a `.trace` golden, and a semantics/runtime-error suite
       (closures, late binding, arity, depth caps, NaN policy). (done)
-- [ ] **B4. Basic types.** Primitives, records, function signatures, mismatch
-      diagnostics. *Verify:* diagnostic snapshots on broken examples.
+- [x] **B4. Basic types.** Gradual checking over the core IR (`mle check`),
+      with annotations, not inference: primitives (`Float`/`String`/`Bool`),
+      nominal declared record types, `List<T>`, and function types from
+      lambda annotations. Anything unannotated or unrecognized (e.g. a
+      generic parameter) is Unknown, and a check fires only where both sides
+      are known — so unannotated code never false-positives. Checks:
+      arithmetic/comparison/`==`/negation operand types, record literals and
+      field access against declared record types, call arity + argument
+      types (builtins carry real signatures with generic slots as Unknown),
+      return-annotation mismatches, and type-argument arity. `mle run` stays
+      check-free (integration comes later). *Verify:* `examples/broken.mle`
+      + committed `broken.check` diagnostic golden (all diagnostics, sorted,
+      `file:line:col`); per-diagnostic message/span unit tests; the three
+      examples check clean. (done)
 - [ ] **B5. Match/ADTs + storable closures.** The game-logic essentials;
       closures serialize as `(stable-id, env)`. *Verify:* serialize a value
       graph containing a closure → deserialize → call it; rename-then-restore
@@ -162,6 +174,20 @@ snapshots — no GPU, fully agent-verifiable.
 - [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
       handlers. *Verify:* same program under real vs fake vs replay; structured
       effect log.
+- [ ] **B7. Hindley–Milner inference** (decided 2026-07-02; **after effects
+      land** — B6 + the `effect[...]` header checking, so type inference and
+      effect rows are designed against each other, not retrofitted). Upgrade
+      the B4 gradual checker to real inference: type variables + unification,
+      let-polymorphism, and generic instantiation (element types flow through
+      `List.map`; `Unknown` shrinks to genuinely-dynamic seams like host
+      values). Gates to clear first: the nominal-vs-structural record
+      decision (B4 checks nominally, the runtime is structural — inference
+      with teeth needs one answer), and unification-error UX (every mismatch
+      must cite the source spans of *both* sides — legible errors were the
+      reason annotations came first; see `~/notes` `open-questions.md`).
+      *Verify:* unannotated examples get full inferred signatures (an
+      `mle types` dump, goldened); the B4 diagnostic suite still passes;
+      probe battery re-run (no legal program rejected).
 
 ## Track C — MLE as a second producer behind the seam
 

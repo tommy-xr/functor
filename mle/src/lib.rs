@@ -1,11 +1,12 @@
-//! MLE surface parser, core IR, and interpreter — Tracks B1–B3 of
-//! `docs/mle.md`.
+//! MLE surface parser, core IR, interpreter, and typechecker — Tracks B1–B4
+//! of `docs/mle.md`.
 //!
 //! Lexer + hand-rolled recursive-descent parser producing a surface AST in
 //! which every node carries a byte-offset [`Span`] (line/col derive from the
 //! source via [`line_col`]); a lowering pass ([`lower`]) from that AST to the
-//! name-resolved core IR ([`ir`]); and a tree-walking interpreter over the IR
-//! ([`eval`]) with an optional call trace. No typechecking — that is B4.
+//! name-resolved core IR ([`ir`]); a tree-walking interpreter over the IR
+//! ([`eval`]) with an optional call trace; and a gradual typechecker over the
+//! IR ([`types`]) — checking with annotations, not inference.
 
 pub mod ast;
 pub mod eval;
@@ -14,6 +15,7 @@ mod lexer;
 mod lower;
 mod parser;
 mod span;
+pub mod types;
 pub mod value;
 
 pub use eval::{
@@ -22,6 +24,7 @@ pub use eval::{
 pub use lower::lower;
 pub use parser::parse;
 pub use span::{line_col, Span};
+pub use types::check;
 pub use value::{HostData, Value};
 
 /// A lex or parse failure: a message plus the span of the offending source.
@@ -44,6 +47,15 @@ pub struct LowerError {
 /// non-function, …): same shape and rendering as [`ParseError`].
 #[derive(Debug)]
 pub struct RunError {
+    pub message: String,
+    pub span: Span,
+}
+
+/// One typechecking diagnostic: same shape and rendering as [`ParseError`].
+/// Unlike the other error kinds, [`check`] collects *all* of them rather
+/// than stopping at the first.
+#[derive(Debug)]
+pub struct CheckError {
     pub message: String,
     pub span: Span,
 }
