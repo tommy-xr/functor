@@ -23,7 +23,7 @@
 //! consumes the IMU internally and its display-space warp fights ours.
 
 use std::io::Read;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -78,26 +78,38 @@ impl PacketScanner {
         self.buf.extend_from_slice(bytes);
         let mut samples = Vec::new();
         let mut pos = 0;
-        while let Some(start) = find_magic(&self.buf[pos..]).map(|i| pos + i) {
-            if self.buf.len() - start < MESSAGE_LEN {
-                // Incomplete message: keep from the magic onward for the next read.
-                pos = start;
-                break;
+        let keep_from = loop {
+            match find_magic(&self.buf[pos..]) {
+                // No message start in the unconsumed remainder: it's garbage,
+                // except that the last few bytes could be a magic split across
+                // reads — keep only that tail (this also bounds the buffer on
+                // a magic-free stream, e.g. --xreal-addr pointing at the wrong
+                // service).
+                None => break self.buf.len().saturating_sub(MAGIC.len() - 1).max(pos),
+                Some(i) => {
+                    let start = pos + i;
+                    if self.buf.len() - start < MESSAGE_LEN {
+                        // Incomplete message: keep from its magic onward.
+                        break start;
+                    }
+                    if let Some(sample) = parse_at(&self.buf, start) {
+                        samples.push(sample);
+                    }
+                    // Messages are at least MESSAGE_LEN long, so the next one
+                    // can't start earlier — and skipping the whole message
+                    // means stray magic bytes inside this one can't be
+                    // mistaken for a message start.
+                    pos = start + MESSAGE_LEN;
+                }
             }
-            if let Some(sample) = parse_at(&self.buf, start) {
-                samples.push(sample);
-            }
-            // Fields end well before MESSAGE_LEN; resume the magic hunt right
-            // after the parsed fields so a shorter-than-expected next message
-            // can't be skipped.
-            pos = start + ACCEL_OFFSET + 12;
-        }
-        // Nothing before `pos` can start a complete message anymore, except a
-        // trailing partial magic — keep a small tail so a magic split across
-        // reads still matches.
-        let keep_from = pos.min(self.buf.len().saturating_sub(MESSAGE_LEN));
+        };
         self.buf.drain(..keep_from);
         samples
+    }
+
+    #[cfg(test)]
+    fn buffered_len(&self) -> usize {
+        self.buf.len()
     }
 }
 
@@ -152,6 +164,10 @@ const GRAVITY_MIN: f32 = 7.8; // m/s²
 const GRAVITY_MAX: f32 = 11.8;
 /// Ignore nonsense dt from timestamp glitches (stream is ~1ms).
 const MAX_DT: f32 = 0.05;
+/// Ignore rates no human head produces (~2000°/s) — a misparsed-but-finite
+/// float this large could overflow the integration to inf, and a NaN
+/// quaternion never recovers (every later update multiplies through it).
+const MAX_RATE: f32 = 35.0; // rad/s
 
 impl Fusion {
     pub fn new(gyro_bias: Vector3<f32>) -> Fusion {
@@ -179,6 +195,9 @@ impl Fusion {
         }
 
         let mut omega = sample.gyro - self.gyro_bias;
+        if omega.magnitude() > MAX_RATE {
+            return;
+        }
 
         // Gravity correction: the accelerometer at rest reads +1g along
         // world-up. Compare measured up (head frame) with where the current
@@ -263,7 +282,7 @@ impl XrealTracker {
     /// Spawn the reader. Connection failures don't fail the runner — the
     /// thread retries every 2s and logs transitions, so you can plug the
     /// glasses in after launch.
-    pub fn spawn(addr: String) -> XrealTracker {
+    pub fn spawn(addr: SocketAddr) -> XrealTracker {
         let orientation = Arc::new(Mutex::new(Quaternion::new(1.0, 0.0, 0.0, 0.0)));
         let recenter = Arc::new(AtomicBool::new(false));
         let shared = orientation.clone();
@@ -288,15 +307,12 @@ impl XrealTracker {
 }
 
 fn reader_loop(
-    addr: &str,
+    addr: &SocketAddr,
     shared: &Mutex<Quaternion<f32>>,
     recenter_flag: &AtomicBool,
 ) {
     loop {
-        match TcpStream::connect_timeout(
-            &addr.parse().expect("invalid --xreal-addr"),
-            Duration::from_secs(2),
-        ) {
+        match TcpStream::connect_timeout(addr, Duration::from_secs(2)) {
             Ok(mut stream) => {
                 println!("[xreal] connected to {addr}; calibrating (keep the glasses still)…");
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -307,9 +323,11 @@ fn reader_loop(
             }
             Err(e) => {
                 println!("[xreal] connect to {addr} failed ({e}); retrying in 2s (are the glasses plugged in?)");
-                std::thread::sleep(Duration::from_secs(2));
             }
         }
+        // Pause on both paths — an accept-then-immediate-close peer must not
+        // turn this into a busy reconnect loop.
+        std::thread::sleep(Duration::from_secs(2));
     }
 }
 
@@ -416,6 +434,80 @@ mod tests {
             samples.iter().map(|s| s.timestamp_ns).collect::<Vec<_>>(),
             vec![1, 3]
         );
+    }
+
+    /// Reads that end exactly at a message boundary (the steady-state case at
+    /// ~1kHz) must not re-emit the previous sample on the next push — the
+    /// original tail-keep logic did, silently halving the calibration window.
+    #[test]
+    fn scanner_does_not_duplicate_boundary_aligned_messages() {
+        let mut scanner = PacketScanner::new();
+        let g = [0.1, 0.0, 0.0];
+        let a = [0.0, 0.0, -9.8];
+        let mut seen = Vec::new();
+        for ts in 1..=4u64 {
+            for s in scanner.push(&message(ts, g, a)) {
+                seen.push(s.timestamp_ns);
+            }
+        }
+        assert_eq!(seen, vec![1, 2, 3, 4]);
+    }
+
+    /// A stream with no magic (wrong service at --xreal-addr) must not grow
+    /// the buffer without bound — only a possible split-magic tail is kept.
+    #[test]
+    fn scanner_bounds_buffer_on_magic_free_garbage() {
+        let mut scanner = PacketScanner::new();
+        for _ in 0..100 {
+            assert!(scanner.push(&[0xFF; 1024]).is_empty());
+            assert!(scanner.buffered_len() < MAGIC.len());
+        }
+        // …and that tail is genuinely useful: a magic split across the
+        // garbage boundary still parses.
+        let msg = message(7, [0.0, 0.0, 0.0], [0.0, 0.0, -9.8]);
+        scanner.push(&msg[..4]); // first 4 magic bytes
+        let samples = scanner.push(&msg[4..]);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].timestamp_ns, 7);
+    }
+
+    /// Stray magic bytes inside a message's padding must not be mistaken for
+    /// a message start (the scanner advances a whole MESSAGE_LEN instead of
+    /// resuming right after the parsed fields).
+    #[test]
+    fn scanner_ignores_magic_bytes_inside_a_message() {
+        let mut inner = message(1, [0.1, 0.0, 0.0], [0.0, 0.0, -9.8]);
+        // Plant a fake magic in the tail padding, after the parsed fields.
+        inner[ACCEL_OFFSET + 14..ACCEL_OFFSET + 20].copy_from_slice(&MAGIC);
+        let mut bytes = inner;
+        bytes.extend(message(2, [0.2, 0.0, 0.0], [0.0, 0.0, -9.8]));
+        let samples = PacketScanner::new().push(&bytes);
+        assert_eq!(
+            samples.iter().map(|s| s.timestamp_ns).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    /// An absurd (but finite) angular rate — a misparse that slipped through —
+    /// must be skipped, not integrated into a NaN orientation that never
+    /// recovers.
+    #[test]
+    fn fusion_skips_absurd_rates() {
+        let mut fusion = Fusion::new(Vector3::zero());
+        for i in 0..10u64 {
+            fusion.update(&ImuSample {
+                timestamp_ns: i * 1_000_000,
+                gyro: if i == 5 {
+                    Vector3::new(1e30, 0.0, 0.0)
+                } else {
+                    Vector3::zero()
+                },
+                accel: Vector3::new(0.0, 9.81, 0.0),
+            });
+        }
+        let q = fusion.orientation();
+        assert!(q.s.is_finite() && q.v.x.is_finite());
+        assert!(approx(q.s, 1.0, 1e-3));
     }
 
     /// At rest (accel = wire -z, i.e. head-frame +y = 1g up; zero gyro) the

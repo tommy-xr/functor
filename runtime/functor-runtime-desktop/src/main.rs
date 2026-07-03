@@ -201,9 +201,11 @@ struct Args {
     #[arg(long)]
     xreal_tracking: bool,
 
-    /// Address of the glasses' IMU stream, for --xreal-tracking.
-    #[arg(long, default_value_t = xreal::DEFAULT_ADDR.to_string())]
-    xreal_addr: String,
+    /// Address (IP:port) of the glasses' IMU stream, for --xreal-tracking.
+    /// Parsed as a socket address at startup so a typo is a clean CLI error,
+    /// not a dead background thread.
+    #[arg(long, default_value = xreal::DEFAULT_ADDR)]
+    xreal_addr: std::net::SocketAddr,
 }
 
 /// `--stereo-ipd` must be a positive, finite world-unit distance: NaN/inf
@@ -567,6 +569,9 @@ pub async fn main() {
             );
             std::process::exit(1);
         }
+        if args.xreal_tracking {
+            eprintln!("warning: --xreal-tracking has no effect in --headless mode (no view to rotate)");
+        }
         run_headless(game, debug_requests, args.fixed_time);
         return;
     }
@@ -689,7 +694,7 @@ pub async fn main() {
         // rotates the game's camera with it. None when the flag is off.
         let xreal_tracker = args
             .xreal_tracking
-            .then(|| xreal::XrealTracker::spawn(args.xreal_addr.clone()));
+            .then(|| xreal::XrealTracker::spawn(args.xreal_addr));
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
