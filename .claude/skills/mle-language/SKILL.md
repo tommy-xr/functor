@@ -111,7 +111,12 @@ A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:
 let init = { … }                       // the initial model (a value)
 let tick = (model, dt, tts) => model'  // per-frame step
 let draw = (model, tts) => Frame.create(camera, scene)
+let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"
 ```
+
+A project dir with `functor.json` `{"language": "mle", "entry": "game.mle"}`
+works with the CLI: `functor -d dir build` (typecheck, diagnostics are
+errors), `run native`, `develop` (hot reload is built in).
 
 `examples/mle-hello/game.mle` is the reference. The model shows live at the
 debug server's `GET /state`. **Hot reload is on by default**: saving the

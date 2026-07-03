@@ -124,6 +124,61 @@ async fn main() -> tokio::io::Result<()> {
     let working_directory_str = working_directory_os_str.into_string().unwrap();
 
     println!("Running command: {:?}", args.command);
+
+    // An MLE project (functor.json: `"language": "mle"`) routes build/run/
+    // develop to the interpreter — no Fable, no cargo, hot reload built in.
+    // Only build/run/develop are language-routed; anything else (Init, and
+    // Inspect handled earlier) falls through to the normal dispatch.
+    let is_routed = matches!(
+        &args.command,
+        Command::Build { .. } | Command::Run { .. } | Command::Develop { .. }
+    );
+    if let Some(project) = commands::mle_project::detect(&working_directory_str)
+        .filter(|_| is_routed)
+    {
+        let res = match &args.command {
+            Command::Init { .. } | Command::Inspect { .. } => unreachable!("is_routed excludes"),
+            Command::Build { environment } => {
+                if matches!(Environment::default(environment), Environment::Wasm) {
+                    Err(io::Error::other(
+                        "mle on wasm is not wired yet (docs/mle.md Track C5) — use `build native`",
+                    ))
+                } else {
+                    project.build(&working_directory_str)
+                }
+            }
+            Command::Run {
+                environment,
+                runner_args,
+            } => {
+                project.build(&working_directory_str)?;
+                project
+                    .run(
+                        &working_directory_str,
+                        &Environment::default(environment),
+                        runner_args,
+                        false,
+                    )
+                    .await
+            }
+            Command::Develop {
+                environment,
+                runner_args,
+            } => {
+                project.build(&working_directory_str)?;
+                project
+                    .run(
+                        &working_directory_str,
+                        &Environment::default(environment),
+                        runner_args,
+                        true,
+                    )
+                    .await
+            }
+        };
+        return finish(res);
+    }
+
     let res = match &args.command {
         Command::Init { template } => {
             // TODO: Handle init

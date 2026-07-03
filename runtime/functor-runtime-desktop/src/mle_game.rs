@@ -32,6 +32,7 @@ pub struct MleGame {
     src: String,
     session: Session,
     model: Value,
+    has_input: bool,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -53,6 +54,8 @@ struct Loaded {
     src: String,
     session: Session,
     init: Value,
+    /// The game defines the optional `input` entry point.
+    has_input: bool,
 }
 
 /// Load, check, and contract-validate a game file. Errors come back as fully
@@ -84,7 +87,18 @@ fn load_game(path: &str) -> Result<Loaded, String> {
     }
     require_function(path, &session, "tick", 3)?;
     require_function(path, &session, "draw", 2)?;
-    Ok(Loaded { src, session, init })
+    // `input` is optional (many games are non-interactive), but when present
+    // it must honor the contract: (model, key, isDown) => model.
+    let has_input = session.global("input").is_some();
+    if has_input {
+        require_function(path, &session, "input", 3)?;
+    }
+    Ok(Loaded {
+        src,
+        session,
+        init,
+        has_input,
+    })
 }
 
 fn file_mtime(path: &str) -> std::time::SystemTime {
@@ -113,6 +127,7 @@ impl MleGame {
             src: loaded.src,
             session: loaded.session,
             model: loaded.init,
+            has_input: loaded.has_input,
             last_frame: empty_frame(),
             last_error: None,
             frames: 0,
@@ -170,6 +185,7 @@ impl Game for MleGame {
             Ok(loaded) => {
                 self.src = loaded.src;
                 self.session = loaded.session;
+                self.has_input = loaded.has_input;
                 self.last_error = None;
                 println!(
                     "[mle] hot-reloaded {} in {:.2}ms (model preserved; an edited `init` \
@@ -204,7 +220,26 @@ takes effect on restart)",
         self.report_stats();
     }
 
-    fn key_event(&mut self, _code: i32, _is_down: bool) {}
+    fn key_event(&mut self, code: i32, is_down: bool) {
+        // The optional `input` entry point: (model, key, isDown) => model.
+        // Keys cross as their canonical names ("W", "Up", "Space") — the same
+        // spelling the debug server and SDK use.
+        if !self.has_input {
+            return;
+        }
+        let Some(key) = functor_runtime_common::Key::from_i32(code) else {
+            return;
+        };
+        let args = vec![
+            self.model.clone(),
+            Value::String(std::rc::Rc::from(format!("{key:?}").as_str())),
+            Value::Bool(is_down),
+        ];
+        match self.session.call("input", args, &mut FunctorHost) {
+            Ok(model) => self.model = model,
+            Err(err) => self.frame_error("input", &err),
+        }
+    }
     fn mouse_move(&mut self, _x: i32, _y: i32) {}
     fn mouse_wheel(&mut self, _delta: i32) {}
 
