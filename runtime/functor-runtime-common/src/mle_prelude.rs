@@ -12,13 +12,18 @@
 //! ```text
 //! Scene.cube() / sphere() / cylinder() / quad() / plane()   -> Scene
 //! Scene.group([scene, …])                                   -> Scene
-//! Scene.color(r, g, b, scene)                               -> Scene
+//! Scene.color(scene, r, g, b)                               -> Scene
 //! Scene.translate(scene, x, y, z)                           -> Scene
 //! Scene.rotateX/rotateY/rotateZ(scene, radians)             -> Scene
 //! Scene.scale(scene, k)                                     -> Scene
 //! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
+//!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
 //! ```
+//!
+//! Scene-consuming functions take the scene FIRST, so they compose with
+//! `|>` (the piped value is prepended — see `mle`'s lowering docs):
+//! `Scene.cube() |> Scene.color(1.0, 0.0, 0.0) |> Scene.translate(2.0, 0.0, 0.0)`.
 //!
 //! # Transform semantics (deliberate — see the Milestone-0 quirks)
 //!
@@ -124,11 +129,20 @@ impl Host for FunctorHost {
             })
         };
         match path {
-            "Scene.cube" => scene_value(Scene3D::cube()),
-            "Scene.sphere" => scene_value(Scene3D::sphere()),
-            "Scene.cylinder" => scene_value(Scene3D::cylinder()),
-            "Scene.quad" => scene_value(Scene3D::quad()),
-            "Scene.plane" => scene_value(Scene3D::plane()),
+            // Constructors take no arguments — reject any, so a guessed
+            // `Scene.cube(size)` fails loud instead of silently ignoring it.
+            "Scene.cube" | "Scene.sphere" | "Scene.cylinder" | "Scene.quad" | "Scene.plane" => {
+                if !args.is_empty() {
+                    return usage(&format!("{path}()"));
+                }
+                scene_value(match path {
+                    "Scene.cube" => Scene3D::cube(),
+                    "Scene.sphere" => Scene3D::sphere(),
+                    "Scene.cylinder" => Scene3D::cylinder(),
+                    "Scene.quad" => Scene3D::quad(),
+                    _ => Scene3D::plane(),
+                })
+            }
             "Scene.group" => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut scenes = Vec::with_capacity(items.len());
@@ -147,11 +161,12 @@ impl Host for FunctorHost {
                 }
                 _ => usage("Scene.group([scene, …])"),
             },
+            // Scene first, so it pipes: `Scene.cube() |> Scene.color(r, g, b)`.
             "Scene.color" => match args.as_slice() {
-                [r, g, b, scene] => {
+                [scene, r, g, b] => {
                     let (r, g, b) = (num(r, span)?, num(g, span)?, num(b, span)?);
                     let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.color(r, g, b, scene)");
+                        return usage("Scene.color(scene, r, g, b)");
                     };
                     scene_value(Scene3D {
                         obj: SceneObject::Material(
@@ -161,7 +176,7 @@ impl Host for FunctorHost {
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage("Scene.color(r, g, b, scene)"),
+                _ => usage("Scene.color(scene, r, g, b)"),
             },
             "Scene.translate" => match args.as_slice() {
                 [scene, x, y, z] => {
@@ -183,9 +198,9 @@ impl Host for FunctorHost {
                         "Scene.rotateY" => Matrix4::from_angle_y(angle),
                         _ => Matrix4::from_angle_z(angle),
                     };
-                    wrap_transform(scene, xform, "Scene.rotate*(scene, radians)", span)
+                    wrap_transform(scene, xform, &format!("{path}(scene, radians)"), span)
                 }
-                _ => usage("Scene.rotateX/Y/Z(scene, radians)"),
+                _ => return usage(&format!("{path}(scene, radians)")),
             },
             "Scene.scale" => match args.as_slice() {
                 [scene, k] => {
@@ -228,9 +243,16 @@ impl Host for FunctorHost {
     }
 }
 
+/// Protocol scalars must be finite f32s: NaN/inf (which MLE numbers permit —
+/// IEEE division) and f64s beyond f32 range are spanned errors here rather
+/// than non-finite matrices inside the renderer.
 fn num(value: &Value, span: Span) -> Result<f64, RunError> {
     match value {
-        Value::Number(n) => Ok(*n),
+        Value::Number(n) if (*n as f32).is_finite() => Ok(*n),
+        Value::Number(n) => Err(RunError {
+            message: format!("expected a finite number, got {n}"),
+            span,
+        }),
         other => Err(RunError {
             message: format!("expected a number, got {}", other.kind_name()),
             span,
@@ -330,7 +352,7 @@ mod tests {
             "let main = () =>\n\
              Frame.create(\n\
                Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
-               Scene.translate(Scene.color(1.0, 0.0, 0.0, Scene.cube()), 2.0, 0.0, 0.0))",
+               Scene.cube() |> Scene.color(1.0, 0.0, 0.0) |> Scene.translate(2.0, 0.0, 0.0))",
         );
         // Outermost node: a Group carrying the translation…
         let SceneObject::Group(children) = &frame.scene.obj else {
@@ -376,7 +398,7 @@ mod tests {
     #[test]
     fn mapped_group_builds_n_children() {
         let frame = frame_of(
-            "let cubeAt = (i) => Scene.translate(Scene.color(1.0, 0.5, 0.2, Scene.cube()), i, 0.0, 0.0)\n\
+            "let cubeAt = (i) => Scene.cube() |> Scene.color(1.0, 0.5, 0.2) |> Scene.translate(i, 0.0, 0.0)\n\
              let main = () =>\n\
              Frame.create(\n\
                Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
@@ -396,7 +418,7 @@ mod tests {
     #[test]
     fn prelude_errors_are_spanned() {
         let module = mle::lower(
-            mle::parse("let main = () => Scene.color(1.0, \"x\", 0.0, Scene.cube())").unwrap(),
+            mle::parse("let main = () => Scene.color(Scene.cube(), 1.0, \"x\", 0.0)").unwrap(),
         )
         .unwrap();
         let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
@@ -414,5 +436,49 @@ mod tests {
             .err()
             .expect("should fail");
         assert_eq!(failure.error.message, "unknown external `Scene.frobnicate`");
+    }
+
+    // [AGREED review pin] every advertised path must dispatch to a real arm:
+    // garbage args must produce a usage/type error, never the
+    // `internal: unregistered prelude path` fallback or `unknown external`.
+    #[test]
+    fn every_advertised_path_dispatches() {
+        let mut host = FunctorHost;
+        for path in PATHS {
+            let result = host.call(path, vec![Value::Bool(true)], mle::Span::new(0, 0));
+            let message = result.err().expect("garbage args should error").message;
+            assert!(
+                !message.starts_with("internal:"),
+                "`{path}` fell through to the internal fallback: {message}"
+            );
+        }
+    }
+
+    // `main` bound to a host function errors like a builtin, not a value.
+    #[test]
+    fn main_bound_to_host_fn_errors() {
+        let module = mle::lower(mle::parse("let main = Scene.cube").unwrap()).unwrap();
+        let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            failure.error.message,
+            "`main` must take no parameters to be runnable"
+        );
+    }
+
+    // MLE permits non-finite numbers (IEEE division); the protocol boundary
+    // does not — they become spanned errors, not NaN matrices.
+    #[test]
+    fn non_finite_numbers_are_rejected_at_the_boundary() {
+        let module = mle::lower(
+            mle::parse("let main = () => Scene.translate(Scene.cube(), 1.0 / 0.0, 0.0, 0.0)")
+                .unwrap(),
+        )
+        .unwrap();
+        let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(failure.error.message, "expected a finite number, got inf");
     }
 }

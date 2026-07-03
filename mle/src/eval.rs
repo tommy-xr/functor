@@ -181,9 +181,10 @@ impl Interp<'_> {
             Value::Closure(closure) if closure.params.is_empty() => {
                 self.call(main.clone(), vec![], "main".to_string(), def.span, None)
             }
-            // A builtin takes arguments by definition, so it gets the same
-            // error as a parameterful closure rather than printing as a value.
-            Value::Closure(_) | Value::Builtin(_) => Err(RunError {
+            // Builtins and host functions take arguments by definition, so
+            // they get the same error as a parameterful closure rather than
+            // printing as a value.
+            Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) => Err(RunError {
                 message: "`main` must take no parameters to be runnable".to_string(),
                 span: def.span,
             }),
