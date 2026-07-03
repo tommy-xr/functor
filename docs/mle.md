@@ -188,15 +188,34 @@ Starts once A2 + B3 exist.
       (roadmap phase 7) only if the tree-walker doesn't hold.
       *Verify:* frame-time assertion in the e2e harness.
 
+## Track D — IDE tooling
+
+First-class `.mle` editor support, built on the `mle` crate's front-end
+(`parse`/`lower`/`line_col`) — independent of the runtime tracks.
+
+- [x] **D1. TextMate grammar + VSCode extension.** `tools/mle-vscode/`:
+      grammar, language configuration (comments/brackets/auto-close), and a
+      plain-JS LSP client launching `mle-lsp` from PATH. *Verify:* grammar +
+      manifests JSON-checked and `test/sample.mle` (every construct) kept
+      parse/lower-clean by `cargo test -p mle-lsp`; visual check in the editor.
+- [x] **D2. LSP diagnostics.** `tools/mle-lsp/`: hand-rolled stdio LSP server
+      (blocking loop + serde_json, no async framework) publishing parse/lower
+      errors as spanned diagnostics on open/change. *Verify:* framed-protocol
+      e2e test drives the real binary (broken doc → diagnostic, fix → clear,
+      unknown method → MethodNotFound).
+- [ ] **D3. Hover types & go-to-definition.** Deferred: hover needs B4's
+      typechecker; go-to-def needs a use→definition query over the IR (it
+      already carries spans on every node, but no query API yet).
+
 ## Endgame — replace F#
 
 Pull-based: port examples as MLE proves itself; no flag-day.
 
-- [ ] **D1.** Port `examples/hello` (glTF lineup, free-look camera) — the
+- [ ] **E1.** Port `examples/hello` (glTF lineup, free-look camera) — the
       real-world bar. *Verify:* golden parity.
-- [ ] **D2.** Port remaining examples, one PR each. *Verify:* per-example
+- [ ] **E2.** Port remaining examples, one PR each. *Verify:* per-example
       goldens + e2e.
-- [ ] **D3.** Delete the F# pipeline: Fable, dotnet tooling, `.fsproj`s,
+- [ ] **E3.** Delete the F# pipeline: Fable, dotnet tooling, `.fsproj`s,
       `fable_modules/`, the `.fs`/`.fsi`/`.rs` triplication, the dylib
       hot-reload path. *Verify:* full CI green with no dotnet installed;
       `npm run build:cli` needs only Rust + Node.

@@ -102,7 +102,7 @@ behind a `GameProducer` trait until MLE wins). Language design notes live in
       ADTs/closures → effect broker (B1–B6), in-repo `mle/` crates.
 - [ ] Track C: MLE behind the seam — prelude, `MleProducer` + mle-hello golden,
       hot-reload payoff demo, MVU parity, wasm, perf gate (C1–C6).
-- [ ] Endgame: port examples, then delete the F#/Fable pipeline (D1–D3).
+- [ ] Endgame: port examples, then delete the F#/Fable pipeline (E1–E3).
 
 ## Live variables / fast iteration
 
