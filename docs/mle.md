@@ -174,6 +174,20 @@ snapshots — no GPU, fully agent-verifiable.
 - [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
       handlers. *Verify:* same program under real vs fake vs replay; structured
       effect log.
+- [ ] **B7. Hindley–Milner inference** (decided 2026-07-02; **after effects
+      land** — B6 + the `effect[...]` header checking, so type inference and
+      effect rows are designed against each other, not retrofitted). Upgrade
+      the B4 gradual checker to real inference: type variables + unification,
+      let-polymorphism, and generic instantiation (element types flow through
+      `List.map`; `Unknown` shrinks to genuinely-dynamic seams like host
+      values). Gates to clear first: the nominal-vs-structural record
+      decision (B4 checks nominally, the runtime is structural — inference
+      with teeth needs one answer), and unification-error UX (every mismatch
+      must cite the source spans of *both* sides — legible errors were the
+      reason annotations came first; see `~/notes` `open-questions.md`).
+      *Verify:* unannotated examples get full inferred signatures (an
+      `mle types` dump, goldened); the B4 diagnostic suite still passes;
+      probe battery re-run (no legal program rejected).
 
 ## Track C — MLE as a second producer behind the seam
 
