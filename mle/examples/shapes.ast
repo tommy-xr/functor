@@ -1,0 +1,796 @@
+Program {
+    items: [
+        Type(
+            TypeDecl {
+                name: "Shape",
+                body: Variants(
+                    [
+                        VariantDecl {
+                            name: "Circle",
+                            fields: [
+                                FieldTy {
+                                    name: "radius",
+                                    ty: TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 320..325,
+                                    },
+                                    span: 312..325,
+                                },
+                            ],
+                            span: 305..326,
+                        },
+                        VariantDecl {
+                            name: "Rect",
+                            fields: [
+                                FieldTy {
+                                    name: "w",
+                                    ty: TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 339..344,
+                                    },
+                                    span: 336..344,
+                                },
+                                FieldTy {
+                                    name: "h",
+                                    ty: TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 349..354,
+                                    },
+                                    span: 346..354,
+                                },
+                            ],
+                            span: 331..355,
+                        },
+                        VariantDecl {
+                            name: "Point",
+                            fields: [],
+                            span: 360..365,
+                        },
+                    ],
+                ),
+                span: 288..365,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "pi",
+                value: Expr {
+                    kind: Number(
+                        3.14159,
+                    ),
+                    span: 376..383,
+                },
+                span: 367..383,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "area",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "s",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Shape",
+                                        args: [],
+                                        span: 400..405,
+                                    },
+                                ),
+                                span: 397..405,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 408..413,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "s",
+                                        ],
+                                    ),
+                                    span: 425..426,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Ctor {
+                                                name: "Circle",
+                                                args: [
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "r",
+                                                        ),
+                                                        span: 443..444,
+                                                    },
+                                                ],
+                                            },
+                                            span: 436..445,
+                                        },
+                                        body: Expr {
+                                            kind: Binary {
+                                                op: Mul,
+                                                lhs: Expr {
+                                                    kind: Binary {
+                                                        op: Mul,
+                                                        lhs: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "pi",
+                                                                ],
+                                                            ),
+                                                            span: 449..451,
+                                                        },
+                                                        rhs: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "r",
+                                                                ],
+                                                            ),
+                                                            span: 454..455,
+                                                        },
+                                                    },
+                                                    span: 449..455,
+                                                },
+                                                rhs: Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "r",
+                                                        ],
+                                                    ),
+                                                    span: 458..459,
+                                                },
+                                            },
+                                            span: 449..459,
+                                        },
+                                        span: 434..459,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Ctor {
+                                                name: "Rect",
+                                                args: [
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "w",
+                                                        ),
+                                                        span: 469..470,
+                                                    },
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "h",
+                                                        ),
+                                                        span: 472..473,
+                                                    },
+                                                ],
+                                            },
+                                            span: 464..474,
+                                        },
+                                        body: Expr {
+                                            kind: Binary {
+                                                op: Mul,
+                                                lhs: Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "w",
+                                                        ],
+                                                    ),
+                                                    span: 478..479,
+                                                },
+                                                rhs: Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "h",
+                                                        ],
+                                                    ),
+                                                    span: 482..483,
+                                                },
+                                            },
+                                            span: 478..483,
+                                        },
+                                        span: 462..483,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Ctor {
+                                                name: "Point",
+                                                args: [],
+                                            },
+                                            span: 488..493,
+                                        },
+                                        body: Expr {
+                                            kind: Number(
+                                                0.0,
+                                            ),
+                                            span: 497..500,
+                                        },
+                                        span: 486..500,
+                                    },
+                                ],
+                            },
+                            span: 419..500,
+                        },
+                    },
+                    span: 396..500,
+                },
+                span: 385..500,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "isRound",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "s",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Shape",
+                                        args: [],
+                                        span: 520..525,
+                                    },
+                                ),
+                                span: 517..525,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Bool",
+                                args: [],
+                                span: 528..532,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "s",
+                                        ],
+                                    ),
+                                    span: 544..545,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Ctor {
+                                                name: "Circle",
+                                                args: [
+                                                    Pattern {
+                                                        kind: Wildcard,
+                                                        span: 562..563,
+                                                    },
+                                                ],
+                                            },
+                                            span: 555..564,
+                                        },
+                                        body: Expr {
+                                            kind: Bool(
+                                                true,
+                                            ),
+                                            span: 568..572,
+                                        },
+                                        span: 553..572,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Wildcard,
+                                            span: 577..578,
+                                        },
+                                        body: Expr {
+                                            kind: Bool(
+                                                false,
+                                            ),
+                                            span: 582..587,
+                                        },
+                                        span: 575..587,
+                                    },
+                                ],
+                            },
+                            span: 538..587,
+                        },
+                    },
+                    span: 516..587,
+                },
+                span: 502..587,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "sizeOf",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "s",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Shape",
+                                        args: [],
+                                        span: 649..654,
+                                    },
+                                ),
+                                span: 646..654,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "String",
+                                args: [],
+                                span: 657..663,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Binary {
+                                        op: Gt,
+                                        lhs: Expr {
+                                            kind: Call {
+                                                callee: Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "area",
+                                                        ],
+                                                    ),
+                                                    span: 675..679,
+                                                },
+                                                args: [
+                                                    Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "s",
+                                                            ],
+                                                        ),
+                                                        span: 680..681,
+                                                    },
+                                                ],
+                                            },
+                                            span: 675..682,
+                                        },
+                                        rhs: Expr {
+                                            kind: Number(
+                                                10.0,
+                                            ),
+                                            span: 685..689,
+                                        },
+                                    },
+                                    span: 675..689,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Bool(
+                                                true,
+                                            ),
+                                            span: 699..703,
+                                        },
+                                        body: Expr {
+                                            kind: String(
+                                                "big",
+                                            ),
+                                            span: 707..712,
+                                        },
+                                        span: 697..712,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Bool(
+                                                false,
+                                            ),
+                                            span: 717..722,
+                                        },
+                                        body: Expr {
+                                            kind: String(
+                                                "small",
+                                            ),
+                                            span: 726..733,
+                                        },
+                                        span: 715..733,
+                                    },
+                                ],
+                            },
+                            span: 669..733,
+                        },
+                    },
+                    span: 645..733,
+                },
+                span: 632..733,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "describe",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "s",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Shape",
+                                        args: [],
+                                        span: 961..966,
+                                    },
+                                ),
+                                span: 958..966,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "String",
+                                args: [],
+                                span: 969..975,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "s",
+                                        ],
+                                    ),
+                                    span: 987..988,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Ctor {
+                                                name: "Point",
+                                                args: [],
+                                            },
+                                            span: 998..1003,
+                                        },
+                                        body: Expr {
+                                            kind: String(
+                                                "a point",
+                                            ),
+                                            span: 1007..1016,
+                                        },
+                                        span: 996..1016,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Var(
+                                                "other",
+                                            ),
+                                            span: 1021..1026,
+                                        },
+                                        body: Expr {
+                                            kind: Match {
+                                                scrutinee: Expr {
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "isRound",
+                                                                ],
+                                                            ),
+                                                            span: 1042..1049,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                kind: Ident(
+                                                                    [
+                                                                        "other",
+                                                                    ],
+                                                                ),
+                                                                span: 1050..1055,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 1042..1056,
+                                                },
+                                                arms: [
+                                                    MatchArm {
+                                                        pattern: Pattern {
+                                                            kind: Bool(
+                                                                true,
+                                                            ),
+                                                            span: 1070..1074,
+                                                        },
+                                                        body: Expr {
+                                                            kind: Call {
+                                                                callee: Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "Text",
+                                                                            "concat",
+                                                                        ],
+                                                                    ),
+                                                                    span: 1078..1089,
+                                                                },
+                                                                args: [
+                                                                    Expr {
+                                                                        kind: String(
+                                                                            "a round ",
+                                                                        ),
+                                                                        span: 1090..1100,
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Call {
+                                                                            callee: Expr {
+                                                                                kind: Ident(
+                                                                                    [
+                                                                                        "Text",
+                                                                                        "concat",
+                                                                                    ],
+                                                                                ),
+                                                                                span: 1102..1113,
+                                                                            },
+                                                                            args: [
+                                                                                Expr {
+                                                                                    kind: Call {
+                                                                                        callee: Expr {
+                                                                                            kind: Ident(
+                                                                                                [
+                                                                                                    "sizeOf",
+                                                                                                ],
+                                                                                            ),
+                                                                                            span: 1114..1120,
+                                                                                        },
+                                                                                        args: [
+                                                                                            Expr {
+                                                                                                kind: Ident(
+                                                                                                    [
+                                                                                                        "other",
+                                                                                                    ],
+                                                                                                ),
+                                                                                                span: 1121..1126,
+                                                                                            },
+                                                                                        ],
+                                                                                    },
+                                                                                    span: 1114..1127,
+                                                                                },
+                                                                                Expr {
+                                                                                    kind: String(
+                                                                                        " shape",
+                                                                                    ),
+                                                                                    span: 1129..1137,
+                                                                                },
+                                                                            ],
+                                                                        },
+                                                                        span: 1102..1138,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: 1078..1139,
+                                                        },
+                                                        span: 1068..1139,
+                                                    },
+                                                    MatchArm {
+                                                        pattern: Pattern {
+                                                            kind: Bool(
+                                                                false,
+                                                            ),
+                                                            span: 1148..1153,
+                                                        },
+                                                        body: Expr {
+                                                            kind: Call {
+                                                                callee: Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "Text",
+                                                                            "concat",
+                                                                        ],
+                                                                    ),
+                                                                    span: 1157..1168,
+                                                                },
+                                                                args: [
+                                                                    Expr {
+                                                                        kind: String(
+                                                                            "a boxy ",
+                                                                        ),
+                                                                        span: 1169..1178,
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Call {
+                                                                            callee: Expr {
+                                                                                kind: Ident(
+                                                                                    [
+                                                                                        "Text",
+                                                                                        "concat",
+                                                                                    ],
+                                                                                ),
+                                                                                span: 1180..1191,
+                                                                            },
+                                                                            args: [
+                                                                                Expr {
+                                                                                    kind: Call {
+                                                                                        callee: Expr {
+                                                                                            kind: Ident(
+                                                                                                [
+                                                                                                    "sizeOf",
+                                                                                                ],
+                                                                                            ),
+                                                                                            span: 1192..1198,
+                                                                                        },
+                                                                                        args: [
+                                                                                            Expr {
+                                                                                                kind: Ident(
+                                                                                                    [
+                                                                                                        "other",
+                                                                                                    ],
+                                                                                                ),
+                                                                                                span: 1199..1204,
+                                                                                            },
+                                                                                        ],
+                                                                                    },
+                                                                                    span: 1192..1205,
+                                                                                },
+                                                                                Expr {
+                                                                                    kind: String(
+                                                                                        " shape",
+                                                                                    ),
+                                                                                    span: 1207..1215,
+                                                                                },
+                                                                            ],
+                                                                        },
+                                                                        span: 1180..1216,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: 1157..1217,
+                                                        },
+                                                        span: 1146..1217,
+                                                    },
+                                                ],
+                                            },
+                                            span: 1036..1217,
+                                        },
+                                        span: 1019..1217,
+                                    },
+                                ],
+                            },
+                            span: 981..1217,
+                        },
+                    },
+                    span: 957..1217,
+                },
+                span: 942..1217,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "shapes",
+                value: Expr {
+                    kind: List(
+                        [
+                            Expr {
+                                kind: Call {
+                                    callee: Expr {
+                                        kind: Ident(
+                                            [
+                                                "Circle",
+                                            ],
+                                        ),
+                                        span: 1233..1239,
+                                    },
+                                    args: [
+                                        Expr {
+                                            kind: Number(
+                                                2.0,
+                                            ),
+                                            span: 1240..1243,
+                                        },
+                                    ],
+                                },
+                                span: 1233..1244,
+                            },
+                            Expr {
+                                kind: Call {
+                                    callee: Expr {
+                                        kind: Ident(
+                                            [
+                                                "Rect",
+                                            ],
+                                        ),
+                                        span: 1246..1250,
+                                    },
+                                    args: [
+                                        Expr {
+                                            kind: Number(
+                                                3.0,
+                                            ),
+                                            span: 1251..1254,
+                                        },
+                                        Expr {
+                                            kind: Number(
+                                                4.0,
+                                            ),
+                                            span: 1256..1259,
+                                        },
+                                    ],
+                                },
+                                span: 1246..1260,
+                            },
+                            Expr {
+                                kind: Ident(
+                                    [
+                                        "Point",
+                                    ],
+                                ),
+                                span: 1262..1267,
+                            },
+                        ],
+                    ),
+                    span: 1232..1268,
+                },
+                span: 1219..1268,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "main",
+                value: Expr {
+                    kind: Lambda {
+                        params: [],
+                        ret: None,
+                        body: Expr {
+                            kind: Pipeline {
+                                head: Expr {
+                                    kind: Ident(
+                                        [
+                                            "shapes",
+                                        ],
+                                    ),
+                                    span: 1289..1295,
+                                },
+                                stages: [
+                                    Expr {
+                                        kind: Call {
+                                            callee: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "List",
+                                                        "map",
+                                                    ],
+                                                ),
+                                                span: 1299..1307,
+                                            },
+                                            args: [
+                                                Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "describe",
+                                                        ],
+                                                    ),
+                                                    span: 1308..1316,
+                                                },
+                                            ],
+                                        },
+                                        span: 1299..1317,
+                                    },
+                                    Expr {
+                                        kind: Ident(
+                                            [
+                                                "Text",
+                                                "toBullets",
+                                            ],
+                                        ),
+                                        span: 1321..1335,
+                                    },
+                                ],
+                            },
+                            span: 1289..1335,
+                        },
+                    },
+                    span: 1281..1335,
+                },
+                span: 1270..1335,
+            },
+        ),
+    ],
+}

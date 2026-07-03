@@ -12,6 +12,8 @@
 //! - Primitives `Float`, `String`, `Bool` (numbers are all Float).
 //! - Declared record types (`type Position = { x: Float, y: Float }`) —
 //!   nominal, by name.
+//! - Declared variant types (`type Shape = | Circle(radius: Float) | Point`)
+//!   — nominal, by name, like records.
 //! - `List<T>`.
 //! - Function types, from lambda annotations
 //!   (`(a: Float, b: Float): Float => …`); an unannotated return type is the
@@ -37,7 +39,17 @@
 //! with generic slots as Unknown (no instantiation: `List.map`'s element
 //! types simply aren't tracked); return annotations against the body's type;
 //! and type-argument arity (`Position<Float>` is an error, an *unknown* type
-//! name is not).
+//! name is not). Constructors carry function types from their declarations
+//! (`Circle : (Float) => Shape`; nullary constructors are the variant type
+//! itself), so construction checks like any call. `match` checks pattern
+//! compatibility against a known scrutinee type (a foreign constructor, a
+//! literal of the wrong type), binds pattern variables to the declared field
+//! types (a bare-variable arm binds the scrutinee's type), requires
+//! **exhaustiveness** when the scrutinee's type is known — every constructor
+//! of a variant type, both `true` and `false` for Bool, and always a
+//! catch-all for Float/String literal matches, unless a catch-all arm
+//! exists — and joins the arm result types (compatible where known; the
+//! match's type is Unknown unless all arms agree exactly).
 //!
 //! Top-level `let`s contribute what their value's shape declares (a lambda's
 //! annotations, a literal's type), then a quiet single-pass inference
@@ -49,9 +61,9 @@
 //! [`check`] walks the whole module and returns **every** diagnostic, sorted
 //! by source position — it never stops at the first error.
 
-use crate::ast::{BinOp, TypeName};
+use crate::ast::{BinOp, TypeBody, TypeName};
 use crate::eval::{builtin, callee_label, Builtin};
-use crate::ir::{Expr, ExprKind, Field, Module};
+use crate::ir::{BindingId, Expr, ExprId, ExprKind, Field, MatchArm, Module, Pattern, PatternKind};
 use crate::span::Span;
 use crate::CheckError;
 use std::collections::HashMap;
@@ -67,6 +79,8 @@ pub enum Type {
     List(Box<Type>),
     /// A declared record type, nominal by name.
     Record(String),
+    /// A declared variant type, nominal by name.
+    Variant(String),
     Fn(Vec<Type>, Box<Type>),
 }
 
@@ -78,7 +92,7 @@ impl fmt::Display for Type {
             Type::String => write!(f, "String"),
             Type::Bool => write!(f, "Bool"),
             Type::List(elem) => write!(f, "List<{elem}>"),
-            Type::Record(name) => write!(f, "{name}"),
+            Type::Record(name) | Type::Variant(name) => write!(f, "{name}"),
             Type::Fn(params, ret) => {
                 write!(f, "(")?;
                 for (i, param) in params.iter().enumerate() {
@@ -105,6 +119,7 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
         }
         (Type::List(x), Type::List(y)) => compatible(x, y),
         (Type::Record(x), Type::Record(y)) => x == y,
+        (Type::Variant(x), Type::Variant(y)) => x == y,
         (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
             p1.len() == p2.len()
                 && p1.iter().zip(p2).all(|(x, y)| compatible(x, y))
@@ -160,10 +175,24 @@ pub fn builtin_signature(b: Builtin) -> Type {
     }
 }
 
-/// The checker's best-known type for every expression node, keyed by the
-/// node's raw [`crate::ir::ExprId`] — the substrate for editor hover
-/// (see [`crate::hover`]).
-pub type ExprTypes = HashMap<u32, Type>;
+/// The checker's best-known types — the substrate for editor hover (see
+/// [`crate::hover`]): one table per expression node ([`ExprId`]) and one per
+/// value binding ([`BindingId`] — lambda params, `let … in`s, and pattern
+/// variables, whose types have no expression node of their own).
+pub struct ExprTypes {
+    exprs: HashMap<u32, Type>,
+    bindings: HashMap<u32, Type>,
+}
+
+impl ExprTypes {
+    pub fn expr(&self, id: ExprId) -> Option<&Type> {
+        self.exprs.get(&id.raw())
+    }
+
+    pub fn binding(&self, id: BindingId) -> Option<&Type> {
+        self.bindings.get(&id.0)
+    }
+}
 
 /// Check a lowered module; returns every diagnostic, sorted by position.
 /// Empty means clean.
@@ -176,6 +205,8 @@ pub fn check(module: &Module) -> Vec<CheckError> {
 pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
     let mut checker = Checker {
         records: HashMap::new(),
+        variants: HashMap::new(),
+        ctors: HashMap::new(),
         globals: HashMap::new(),
         locals: HashMap::new(),
         diags: Vec::new(),
@@ -186,15 +217,40 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
     // Record type names first (nominal references may be forward), then
     // resolve each declaration's field types (reporting bad type arity).
     for decl in &module.types {
-        checker.records.insert(decl.name.clone(), Vec::new());
+        match &decl.body {
+            TypeBody::Record(_) => {
+                checker.records.insert(decl.name.clone(), Vec::new());
+            }
+            TypeBody::Variants(variants) => {
+                checker.variants.insert(
+                    decl.name.clone(),
+                    variants.iter().map(|v| v.name.clone()).collect(),
+                );
+            }
+        }
     }
     for decl in &module.types {
-        let fields = decl
-            .fields
-            .iter()
-            .map(|f| (f.name.clone(), checker.resolve_type(&f.ty, true)))
-            .collect();
-        checker.records.insert(decl.name.clone(), fields);
+        match &decl.body {
+            TypeBody::Record(decl_fields) => {
+                let fields = decl_fields
+                    .iter()
+                    .map(|f| (f.name.clone(), checker.resolve_type(&f.ty, true)))
+                    .collect();
+                checker.records.insert(decl.name.clone(), fields);
+            }
+            TypeBody::Variants(variants) => {
+                for variant in variants {
+                    let fields = variant
+                        .fields
+                        .iter()
+                        .map(|f| checker.resolve_type(&f.ty, true))
+                        .collect();
+                    checker
+                        .ctors
+                        .insert(variant.name.clone(), (decl.name.clone(), fields));
+                }
+            }
+        }
     }
 
     // Global signatures before bodies, so forward references between
@@ -239,12 +295,24 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
     }
 
     checker.diags.sort_by_key(|d| d.span.start);
-    (checker.diags, checker.expr_types)
+    (
+        checker.diags,
+        ExprTypes {
+            exprs: checker.expr_types,
+            bindings: checker.locals,
+        },
+    )
 }
 
 struct Checker {
     /// Declared record types: name → resolved fields, in declaration order.
     records: HashMap<String, Vec<(String, Type)>>,
+    /// Declared variant types: name → constructor names, in declaration
+    /// order (the exhaustiveness universe).
+    variants: HashMap<String, Vec<String>>,
+    /// Declared constructors: name → (owning variant type, field types in
+    /// declaration order). Names are module-unique (lowering enforces it).
+    ctors: HashMap<String, (String, Vec<Type>)>,
     globals: HashMap<String, Type>,
     /// Parameter types by binding ID (IDs are unique module-wide, so entries
     /// are never shadowed or popped).
@@ -255,7 +323,7 @@ struct Checker {
     quiet: bool,
     /// Best-known type per expression, recorded by [`Checker::infer`]. The
     /// loud pass runs last, so its (better-informed) types win.
-    expr_types: ExprTypes,
+    expr_types: HashMap<u32, Type>,
 }
 
 /// Prefer the known parts of two views of the same definition's type: the
@@ -325,6 +393,12 @@ impl Checker {
                     return arity_error(self, 0);
                 }
                 Type::Record(name.to_string())
+            }
+            name if self.variants.contains_key(name) => {
+                if !ty.args.is_empty() {
+                    return arity_error(self, 0);
+                }
+                Type::Variant(name.to_string())
             }
             // Unrecognized (a generic like `T`, or a type this module doesn't
             // declare): Unknown, not an error. Still resolve any arguments so
@@ -655,6 +729,174 @@ impl Checker {
                 }
                 Type::Float
             }
+            // A constructor reference: nullary is the variant value itself,
+            // parameterful is a function from its declared field types.
+            ExprKind::Ctor { name, .. } => match self.ctors.get(name) {
+                Some((type_name, fields)) => {
+                    if fields.is_empty() {
+                        Type::Variant(type_name.clone())
+                    } else {
+                        Type::Fn(fields.clone(), Box::new(Type::Variant(type_name.clone())))
+                    }
+                }
+                // Unreachable (lowering rejects unknown constructors) —
+                // stay gradual rather than panic.
+                None => Type::Unknown,
+            },
+            ExprKind::Match { scrutinee, arms } => self.check_match(expr, scrutinee, arms),
+        }
+    }
+
+    /// Check a `match` (see the module doc): pattern compatibility against
+    /// the scrutinee's type, pattern-variable binding types, exhaustiveness
+    /// where the scrutinee's type is known, and the arm-result join.
+    fn check_match(&mut self, expr: &Expr, scrutinee: &Expr, arms: &[MatchArm]) -> Type {
+        let scrutinee_ty = self.infer(scrutinee);
+        let mut has_catch_all = false;
+        let mut saw_true = false;
+        let mut saw_false = false;
+        let mut covered_ctors: Vec<&str> = Vec::new();
+        let mut result: Option<Type> = None;
+        for arm in arms {
+            self.check_pattern(&arm.pattern, &scrutinee_ty);
+            match &arm.pattern.kind {
+                PatternKind::Wildcard | PatternKind::Var { .. } => has_catch_all = true,
+                PatternKind::Ctor { name, .. } => covered_ctors.push(name),
+                PatternKind::Bool(true) => saw_true = true,
+                PatternKind::Bool(false) => saw_false = true,
+                PatternKind::Number(_) | PatternKind::String(_) => {}
+            }
+            // All arms must agree where known; the match's type is the join
+            // (Unknown as soon as the arms aren't literally the same type).
+            let body_ty = self.infer(&arm.body);
+            result = Some(match result {
+                None => body_ty,
+                Some(prev) => {
+                    if !compatible(&prev, &body_ty) {
+                        self.diag(
+                            arm.body.span,
+                            format!("match arms have incompatible types {prev} and {body_ty}"),
+                        );
+                    }
+                    if prev == body_ty {
+                        prev
+                    } else {
+                        Type::Unknown
+                    }
+                }
+            });
+        }
+        // Exhaustiveness fires only where the scrutinee's type is known —
+        // gradual, like every other check.
+        if !has_catch_all {
+            match &scrutinee_ty {
+                Type::Variant(name) => {
+                    let missing: Vec<String> = self
+                        .variants
+                        .get(name)
+                        .map(|declared| {
+                            declared
+                                .iter()
+                                .filter(|c| !covered_ctors.contains(&c.as_str()))
+                                .map(|c| format!("`{c}`"))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !missing.is_empty() {
+                        self.diag(
+                            expr.span,
+                            format!(
+                                "match on `{name}` is not exhaustive: missing {}",
+                                missing.join(", ")
+                            ),
+                        );
+                    }
+                }
+                Type::Bool => {
+                    if !(saw_true && saw_false) {
+                        let missing = match (saw_true, saw_false) {
+                            (false, true) => "`true`",
+                            (true, false) => "`false`",
+                            _ => "`true`, `false`",
+                        };
+                        self.diag(
+                            expr.span,
+                            format!("match on Bool is not exhaustive: missing {missing}"),
+                        );
+                    }
+                }
+                // Literal patterns can never cover all numbers or strings.
+                Type::Float | Type::String => {
+                    self.diag(
+                        expr.span,
+                        format!(
+                            "match on {scrutinee_ty} is not exhaustive: literal patterns need \
+a catch-all arm (`_` or a name)"
+                        ),
+                    );
+                }
+                // Unknown stays gradual; List/Record/Fn scrutinees already
+                // drew per-pattern compatibility diagnostics above.
+                _ => {}
+            }
+        }
+        result.unwrap_or(Type::Unknown)
+    }
+
+    /// Check one pattern against the scrutinee's type and record its
+    /// variables' binding types (a bare variable binds the scrutinee's type;
+    /// constructor sub-patterns bind the declared field types).
+    fn check_pattern(&mut self, pattern: &Pattern, scrutinee: &Type) {
+        match &pattern.kind {
+            PatternKind::Wildcard => {}
+            PatternKind::Var { binding, .. } => {
+                self.locals.insert(binding.0, scrutinee.clone());
+            }
+            PatternKind::Ctor { name, args } => match self.ctors.get(name).cloned() {
+                Some((type_name, field_tys)) => {
+                    match scrutinee {
+                        Type::Variant(s) if *s != type_name => {
+                            self.diag(
+                                pattern.span,
+                                format!("`{name}` is not a constructor of `{s}`"),
+                            );
+                        }
+                        Type::Unknown | Type::Variant(_) => {}
+                        other => {
+                            self.diag(
+                                pattern.span,
+                                format!(
+                                    "pattern `{name}` matches `{type_name}`, but the scrutinee \
+is {other}"
+                                ),
+                            );
+                        }
+                    }
+                    // Lowering fixed the pattern's arity to the declaration.
+                    for (sub, field_ty) in args.iter().zip(&field_tys) {
+                        self.check_pattern(sub, field_ty);
+                    }
+                }
+                // Unreachable (lowering rejects unknown constructors) —
+                // stay gradual rather than panic.
+                None => {
+                    for sub in args {
+                        self.check_pattern(sub, &Type::Unknown);
+                    }
+                }
+            },
+            PatternKind::Number(_) => self.literal_pattern(scrutinee, Type::Float, pattern.span),
+            PatternKind::Bool(_) => self.literal_pattern(scrutinee, Type::Bool, pattern.span),
+            PatternKind::String(_) => self.literal_pattern(scrutinee, Type::String, pattern.span),
+        }
+    }
+
+    fn literal_pattern(&mut self, scrutinee: &Type, literal: Type, span: Span) {
+        if !compatible(scrutinee, &literal) {
+            self.diag(
+                span,
+                format!("pattern matches {literal}, but the scrutinee is {scrutinee}"),
+            );
         }
     }
 
@@ -686,7 +928,11 @@ impl Checker {
             // errors.
             BinOp::Eq => {
                 match (lhs, rhs) {
-                    (Type::Fn(..), Type::Fn(..)) => {
+                    // One known function operand is enough: the runtime
+                    // rejects `==` whenever EITHER side is a function
+                    // (closure, builtin, or unapplied constructor), so the
+                    // other operand's type — even Unknown — cannot save it.
+                    (Type::Fn(..), _) | (_, Type::Fn(..)) => {
                         self.diag(
                             node_span,
                             "functions cannot be compared with `==`".to_string(),

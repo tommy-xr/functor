@@ -31,6 +31,26 @@ regenerates). VSCode gets live parse/lower/type diagnostics and
 // line comments only
 type Position = { x: Float, y: Float }        // record types; nominal in annotations
 
+type Shape =                                  // variant types (ADTs); nominal like records
+  | Circle(radius: Float)                     // leading | REQUIRED, first alternative too
+  | Rect(w: Float, h: Float)                  // fields named in the decl…
+  | Point                                     // …nullary ctor: no parens, ever
+
+let c = Circle(2.0)                           // …but ctors are CALLED positionally
+let shapes = [c, Rect(3.0, 4.0), Point]       // bare Point IS the value
+
+let area = (s: Shape): Float =>
+  match s with                                // match: | pattern => full-expression body
+  | Circle(r) => 3.14 * r * r                 // ctor patterns bind positionally
+  | Rect(w, _) => w * w                       // sub-patterns: names or _ ONLY (no nesting)
+  | Point => 0.0                              // exhaustiveness checked when s's type is known
+
+let sizeOf = (s: Shape): String =>
+  match area(s) > 10.0 with                   // bool-literal match = the ONLY conditional
+  | true => "big"
+  | false => "small"                          // number/string literal arms exist too
+                                              // (they need a catch-all: `| x =>` or `| _ =>`)
+
 let threshold = 10                            // top-level let; ints/floats are all Float (f64)
 let origin = { x: 0.0, y: 0.0 }               // record literal
 let scores = [1.0, 2.0, 3.0]                  // list literal
@@ -58,10 +78,10 @@ let main = () => report([12.0, 3.5, 40.0])    // zero-param main is run's entry 
 ```
 
 Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
-loosest), unary `-`. There is **no** if/else, match, loops, strings
-concatenation operator, modules, or imports yet — iteration is
-`List.map/filter/fold`, conditionals don't exist (design them out or wait
-for the roadmap).
+loosest), unary `-`. There is **no** if/else, loops, string-concatenation
+operator, modules, or imports yet — iteration is `List.map/filter/fold`,
+and the conditional is a **bool-literal match**
+(`match x > 3.0 with | true => a | false => b`).
 
 ## Semantics rules that WILL bite you
 
@@ -78,8 +98,28 @@ for the roadmap).
 - **Equality `==` is structural**; comparing functions is a runtime error.
 - **Division is IEEE** (`1.0/0.0` = `inf`); the engine boundary rejects
   non-finite numbers.
+- **Greedy match arms**: arm bodies are full expressions, so a nested
+  `match` inside an arm consumes the following `|` arms as its own —
+  parenthesize the inner match (F#/OCaml convention). The leading `|` is
+  required before every arm and every variant alternative, first included.
+- **Constructors resolve bare and live in the VALUE namespace**: `Circle(2.0)`
+  works anywhere (`Shape.Circle` does NOT — it stays an unknown external),
+  which is why ctor names must be unique ACROSS all variant types in the
+  module, and `let Circle = …` alongside a ctor `Circle` is a
+  duplicate-definition error. An (uppercase) param may still shadow a ctor;
+  pattern vars can't (they are forced lowercase).
+- **Patterns are minimal**: `Ctor(x, _)` / `Ctor` / bare name / `_` /
+  literals (`true`, `false`, numbers incl. negative, strings — equality
+  match). Ctor
+  sub-patterns are names or `_` only — no nested ctors, no literals inside.
+  Pattern vars are immutable bindings; lambdas may capture them. First
+  matching arm wins; no arm matching is a spanned runtime error. Unapplied
+  ctors are first-class (`xs |> List.map(Circle)`); the runtime checks ctor
+  ARITY only (field types are the checker's job).
 - **Duplicates are errors**: top-level names (per namespace — `type Foo` and
-  `let Foo` may coexist), record fields (literal and update), lambda params.
+  `let Foo` may coexist, but constructors share the value namespace with
+  `let`s), record fields (literal and update), lambda params, pattern
+  variables within one pattern.
 - Recursion depth is capped (~200); deep iteration belongs in `List.*`.
 
 ## Builtins (the whole registry)
@@ -141,9 +181,12 @@ inspected, compared, or serialized.
 ## Typechecking model (gradual)
 
 `mle check` fires only where BOTH sides are known; unannotated = `Unknown` =
-compatible with everything. Annotations buy diagnostics. Record annotations
-are nominal; the runtime is structural. A `mut` slot's type fixes at its
-initializer. Full Hindley–Milner is roadmapped (B7) after effects.
+compatible with everything. Annotations buy diagnostics. Record and variant
+annotations are nominal; the runtime is structural. A `mut` slot's type
+fixes at its initializer. A known-typed `match` scrutinee buys exhaustiveness
+checking (all ctors, or `true`+`false`, or a catch-all) and typed pattern
+variables; arm results must agree where known. Full Hindley–Milner is
+roadmapped (B7) after effects.
 
 ## Keeping this skill honest
 

@@ -100,6 +100,11 @@ fn golden_run_functions() {
     check_golden("functions", "run");
 }
 
+#[test]
+fn golden_run_shapes() {
+    check_golden("shapes", "run");
+}
+
 // One trace golden pins the full enter/exit format; the other examples'
 // traces exercise no additional formatting.
 #[test]
@@ -434,4 +439,153 @@ fn new_builtins_evaluate() {
     assert_eq!(main_result("let main = () => List.range(-3.0)"), "[]");
     assert_eq!(main_result("let main = () => Math.sin(0.0)"), "0");
     assert_eq!(main_result("let main = () => Math.cos(0.0)"), "1");
+}
+
+// --- Variants + match (B5 part 1) ---
+
+const SHAPE: &str = "type Shape = | Circle(r: Float) | Rect(w: Float, h: Float) | Point\n";
+
+/// First matching arm wins, top to bottom — a catch-all above a more
+/// specific arm shadows it.
+#[test]
+fn first_matching_arm_wins() {
+    assert_eq!(
+        main_result("let main = () => match 1.0 with | x => \"first\" | 1.0 => \"second\""),
+        "\"first\""
+    );
+    assert_eq!(
+        main_result("let main = () => match 2.0 with | 1.0 => \"a\" | 2.0 => \"b\" | _ => \"c\""),
+        "\"b\""
+    );
+}
+
+#[test]
+fn constructor_patterns_bind_positionally() {
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let main = () => match Rect(3.0, 4.0) with | Circle(r) => r | Rect(w, h) => w * h | Point => 0.0"
+        )),
+        "12"
+    );
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let main = () => match Point with | Point => \"origin\" | _ => \"elsewhere\""
+        )),
+        "\"origin\""
+    );
+}
+
+/// A leading `-` folds into a number-literal pattern. [Claude L — B5 review]
+#[test]
+fn negative_number_literal_pattern() {
+    assert_eq!(
+        main_result("let main = () => match 0.0 - 1.0 with | -1.0 => \"neg\" | _ => \"other\""),
+        "\"neg\""
+    );
+    assert_eq!(
+        main_result("let main = () => match 1.0 with | -1.0 => \"neg\" | _ => \"other\""),
+        "\"other\""
+    );
+}
+
+/// No arm matching is a spanned runtime error naming the value.
+#[test]
+fn error_no_pattern_matched() {
+    let (message, line, col) = run_err(&format!(
+        "{SHAPE}let main = () => match Circle(2.0) with | Point => 0.0"
+    ));
+    assert_eq!(message, "no pattern matched Circle(2)");
+    assert_eq!((line, col), (2, 18));
+}
+
+/// Variants display as `Ctor(args…)` / bare `Ctor`, and equality is
+/// structural: same constructor, equal args.
+#[test]
+fn variant_display_and_structural_equality() {
+    assert_eq!(
+        main_result(&format!("{SHAPE}let main = () => [Circle(2.0), Point]")),
+        "[Circle(2), Point]"
+    );
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let main = () => Circle(2.0) == Circle(1.0 + 1.0)"
+        )),
+        "true"
+    );
+    assert_eq!(
+        main_result(&format!("{SHAPE}let main = () => Circle(2.0) == Point")),
+        "false"
+    );
+    // Different kinds are simply unequal, like everywhere else.
+    assert_eq!(
+        main_result(&format!("{SHAPE}let main = () => Circle(2.0) == 2.0")),
+        "false"
+    );
+}
+
+/// A function argument inside a variant hits the same function-comparison
+/// error as everywhere else. (Constructors check arity at runtime, not
+/// field types — the checker owns those.)
+#[test]
+fn error_variant_equality_over_functions() {
+    let (message, _, _) = run_err(&format!(
+        "{SHAPE}let main = () => Circle((x) => x) == Circle((x) => x)"
+    ));
+    assert_eq!(message, "functions cannot be compared with `==`");
+}
+
+/// An unapplied constructor is a function value with no equality.
+#[test]
+fn error_comparing_unapplied_ctors() {
+    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle == Circle"));
+    assert_eq!(message, "functions cannot be compared with `==`");
+}
+
+#[test]
+fn error_ctor_arity_at_runtime() {
+    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle(1.0, 2.0)"));
+    assert_eq!(message, "`Circle` takes 1 argument(s), got 2");
+    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle()"));
+    assert_eq!(message, "`Circle` takes 1 argument(s), got 0");
+}
+
+/// A parameterful constructor is first-class: it pipes through the builtins
+/// like any function.
+#[test]
+fn ctor_as_a_function_argument() {
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let main = () => [1.0, 2.0] |> List.map(Circle)"
+        )),
+        "[Circle(1), Circle(2)]"
+    );
+}
+
+/// A nullary constructor used bare IS the value — calling it is calling a
+/// variant, not a function.
+#[test]
+fn error_calling_a_nullary_ctor() {
+    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Point()"));
+    assert_eq!(message, "cannot call a variant");
+}
+
+/// Bool-literal matches are the language's first conditional.
+#[test]
+fn bool_match_is_a_conditional() {
+    assert_eq!(
+        main_result("let main = () => match 4.0 > 3.0 with | true => \"yes\" | false => \"no\""),
+        "\"yes\""
+    );
+}
+
+/// Lambdas may capture pattern variables (plain immutable bindings).
+#[test]
+fn closures_capture_pattern_vars() {
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let f = (s) => match s with | Circle(r) => (x) => r + x | _ => (x) => x\n\
+             let main = () => f(Circle(2.0))(3.0)"
+        )),
+        "5"
+    );
 }

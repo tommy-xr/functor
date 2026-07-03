@@ -3,52 +3,56 @@ Program {
         Type(
             TypeDecl {
                 name: "Position",
-                fields: [
-                    FieldTy {
-                        name: "x",
-                        ty: TypeName {
-                            name: "Float",
-                            args: [],
-                            span: 162..167,
+                body: Record(
+                    [
+                        FieldTy {
+                            name: "x",
+                            ty: TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 162..167,
+                            },
+                            span: 159..167,
                         },
-                        span: 159..167,
-                    },
-                    FieldTy {
-                        name: "y",
-                        ty: TypeName {
-                            name: "Float",
-                            args: [],
-                            span: 172..177,
+                        FieldTy {
+                            name: "y",
+                            ty: TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 172..177,
+                            },
+                            span: 169..177,
                         },
-                        span: 169..177,
-                    },
-                ],
+                    ],
+                ),
                 span: 141..179,
             },
         ),
         Type(
             TypeDecl {
                 name: "Velocity",
-                fields: [
-                    FieldTy {
-                        name: "dx",
-                        ty: TypeName {
-                            name: "Float",
-                            args: [],
-                            span: 202..207,
+                body: Record(
+                    [
+                        FieldTy {
+                            name: "dx",
+                            ty: TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 202..207,
+                            },
+                            span: 198..207,
                         },
-                        span: 198..207,
-                    },
-                    FieldTy {
-                        name: "dy",
-                        ty: TypeName {
-                            name: "Float",
-                            args: [],
-                            span: 213..218,
+                        FieldTy {
+                            name: "dy",
+                            ty: TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 213..218,
+                            },
+                            span: 209..218,
                         },
-                        span: 209..218,
-                    },
-                ],
+                    ],
+                ),
                 span: 180..220,
             },
         ),

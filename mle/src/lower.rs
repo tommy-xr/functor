@@ -11,8 +11,12 @@
 //! names are lowering errors rather than shadowing. Types and values are
 //! **separate namespaces** (as in F#/OCaml): `type Foo` and `let Foo` may
 //! coexist — each namespace keys its own identities — but a duplicate within
-//! either namespace is an error. Duplicate parameter names within one lambda
-//! are errors for the same reason (the last one would silently win).
+//! either namespace is an error. **Constructors live in the value
+//! namespace**: they resolve bare (`Circle(2.0)`, not `Shape.Circle`), so a
+//! constructor name must be unique across every variant type in the module
+//! AND must not collide with a top-level `let` — both are lowering errors.
+//! Duplicate parameter names within one lambda are errors for the same
+//! reason (the last one would silently win).
 //!
 //! ## Name resolution
 //!
@@ -21,13 +25,26 @@
 //! [`crate::ast::ExprKind::Ident`]):
 //!
 //! - `first` names an enclosing lambda parameter → [`ExprKind::Local`]
-//!   (innermost scope wins, so a parameter shadows a same-named global);
-//!   any remaining segments become [`ExprKind::FieldAccess`] on it.
+//!   (innermost scope wins, so a parameter — or a pattern variable — shadows
+//!   a same-named global or constructor); any remaining segments become
+//!   [`ExprKind::FieldAccess`] on it.
 //! - `first` names a top-level `let` → [`ExprKind::Global`]; remaining
 //!   segments likewise become field access.
+//! - `first` names a declared variant constructor → [`ExprKind::Ctor`]
+//!   (the `Type.Ctor` qualified form is deliberately NOT supported — a
+//!   qualified name whose head is a type name stays an unknown external).
 //! - Otherwise, a qualified name (`Text.toBullets`) → [`ExprKind::External`],
 //!   kept symbolic until the builtin registry arrives in B3 — and an
 //!   unqualified name is an "unknown name" error at the identifier's span.
+//!
+//! ## Match lowering
+//!
+//! Pattern variables get fresh [`BindingId`]s scoped to their arm's body
+//! (each arm is its own scope level — bindings never leak between arms);
+//! they are plain immutable bindings, so lambdas may capture them. A
+//! duplicate variable within one pattern, an unknown constructor in a
+//! pattern, and a constructor pattern whose sub-pattern count differs from
+//! the declared field count are all lowering errors.
 //!
 //! ## Pipeline desugaring
 //!
@@ -42,31 +59,82 @@ use crate::ast;
 use crate::ir::*;
 use crate::span::Span;
 use crate::LowerError;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Lower a parsed [`ast::Program`] to an IR [`Module`].
 pub fn lower(program: ast::Program) -> Result<Module, LowerError> {
     // Pass 1: collect top-level names so defs are mutually visible (see
     // module docs) and duplicates fail loud. Types and values are separate
-    // namespaces.
+    // namespaces; constructors join the VALUE namespace (they resolve bare),
+    // so they must not collide with `let`s or with each other — across
+    // variant types too.
     let mut globals = HashSet::new();
+    let mut ctors: HashMap<String, usize> = HashMap::new();
     let mut type_names = HashSet::new();
     for item in &program.items {
-        let (names, name, span) = match item {
-            ast::Item::Let(decl) => (&mut globals, &decl.name, decl.span),
-            ast::Item::Type(decl) => (&mut type_names, &decl.name, decl.span),
-        };
-        if !names.insert(name.clone()) {
-            return Err(LowerError {
-                message: format!("duplicate definition `{name}`"),
-                span,
-            });
+        match item {
+            ast::Item::Let(decl) => {
+                if ctors.contains_key(&decl.name) {
+                    return Err(LowerError {
+                        message: format!(
+                            "duplicate definition `{}` (constructors live in the value namespace)",
+                            decl.name
+                        ),
+                        span: decl.span,
+                    });
+                }
+                if !globals.insert(decl.name.clone()) {
+                    return Err(LowerError {
+                        message: format!("duplicate definition `{}`", decl.name),
+                        span: decl.span,
+                    });
+                }
+            }
+            ast::Item::Type(decl) => {
+                // Builtin type names would shadow the primitives in
+                // annotations (the checker resolves `Float` before user
+                // types), yielding nonsense like "expected Float, got Float".
+                if matches!(decl.name.as_str(), "Float" | "Bool" | "String" | "List") {
+                    return Err(LowerError {
+                        message: format!("cannot redeclare builtin type `{}`", decl.name),
+                        span: decl.span,
+                    });
+                }
+                if !type_names.insert(decl.name.clone()) {
+                    return Err(LowerError {
+                        message: format!("duplicate definition `{}`", decl.name),
+                        span: decl.span,
+                    });
+                }
+                if let ast::TypeBody::Variants(variants) = &decl.body {
+                    for variant in variants {
+                        if ctors.contains_key(&variant.name) {
+                            return Err(LowerError {
+                                message: format!("duplicate constructor `{}`", variant.name),
+                                span: variant.span,
+                            });
+                        }
+                        if globals.contains(&variant.name) {
+                            return Err(LowerError {
+                                message: format!(
+                                    "duplicate definition `{}` (constructors live in the value \
+namespace)",
+                                    variant.name
+                                ),
+                                span: variant.span,
+                            });
+                        }
+                        ctors.insert(variant.name.clone(), variant.fields.len());
+                    }
+                }
+            }
         }
     }
 
     // Pass 2: lower items in file order.
     let mut lowerer = Lowerer {
         globals,
+        ctors,
         scopes: Vec::new(),
         next_binding: 0,
         next_expr: 0,
@@ -79,7 +147,7 @@ pub fn lower(program: ast::Program) -> Result<Module, LowerError> {
             ast::Item::Type(decl) => types.push(TypeDef {
                 id,
                 name: decl.name,
-                fields: decl.fields,
+                body: decl.body,
                 span: decl.span,
             }),
             ast::Item::Let(decl) => defs.push(Def {
@@ -95,6 +163,9 @@ pub fn lower(program: ast::Program) -> Result<Module, LowerError> {
 
 struct Lowerer {
     globals: HashSet<String>,
+    /// Declared variant constructors: name → declared field count. Part of
+    /// the value namespace (pass 1 guarantees no overlap with `globals`).
+    ctors: HashMap<String, usize>,
     /// One level per enclosing lambda or `let … in`; lookup walks
     /// innermost-first. A lambda's level is a *boundary*: a `mut` binding
     /// found past one has been captured, which is an error (see the module
@@ -326,12 +397,96 @@ impl Lowerer {
                 }
             }
             ast::ExprKind::Neg(inner) => ExprKind::Neg(Box::new(self.expr(*inner)?)),
+            ast::ExprKind::Match { scrutinee, arms } => {
+                // The scrutinee is evaluated outside any arm's scope.
+                let scrutinee = Box::new(self.expr(*scrutinee)?);
+                let mut lowered = Vec::new();
+                for arm in arms {
+                    let mut vars: Vec<(String, BindingId, bool)> = Vec::new();
+                    let pattern = self.pattern(arm.pattern, &mut vars)?;
+                    // One scope level per arm: pattern variables are visible
+                    // in that arm's body only (they never leak to later
+                    // arms) and are plain immutable bindings — a lambda may
+                    // capture them.
+                    self.scopes.push(ScopeLevel {
+                        lambda_boundary: false,
+                        vars,
+                    });
+                    let body = self.expr(arm.body);
+                    self.scopes.pop();
+                    lowered.push(MatchArm {
+                        pattern,
+                        body: body?,
+                        span: arm.span,
+                    });
+                }
+                ExprKind::Match {
+                    scrutinee,
+                    arms: lowered,
+                }
+            }
         };
         Ok(Expr {
             id: self.expr_id(),
             kind,
             span,
         })
+    }
+
+    /// Lower one pattern, appending its variable bindings to `vars` (the
+    /// caller pushes them as the arm body's scope). Pattern nesting is
+    /// bounded by the grammar (constructor sub-patterns are leaves), so
+    /// recursion depth is at most two.
+    fn pattern(
+        &mut self,
+        pattern: ast::Pattern,
+        vars: &mut Vec<(String, BindingId, bool)>,
+    ) -> Result<Pattern, LowerError> {
+        let span = pattern.span;
+        let kind = match pattern.kind {
+            ast::PatternKind::Wildcard => PatternKind::Wildcard,
+            ast::PatternKind::Var(name) => {
+                if vars.iter().any(|(n, _, _)| *n == name) {
+                    return Err(LowerError {
+                        message: format!("duplicate pattern variable `{name}`"),
+                        span,
+                    });
+                }
+                let binding = BindingId(self.next_binding);
+                self.next_binding += 1;
+                vars.push((name.clone(), binding, false));
+                PatternKind::Var { binding, name }
+            }
+            ast::PatternKind::Ctor { name, args } => {
+                let Some(&arity) = self.ctors.get(&name) else {
+                    return Err(LowerError {
+                        message: format!("unknown constructor `{name}`"),
+                        span,
+                    });
+                };
+                if args.len() != arity {
+                    return Err(LowerError {
+                        message: format!(
+                            "`{name}` has {arity} field(s), but the pattern names {}",
+                            args.len()
+                        ),
+                        span,
+                    });
+                }
+                let mut lowered = Vec::new();
+                for arg in args {
+                    lowered.push(self.pattern(arg, vars)?);
+                }
+                PatternKind::Ctor {
+                    name,
+                    args: lowered,
+                }
+            }
+            ast::PatternKind::Number(n) => PatternKind::Number(n),
+            ast::PatternKind::Bool(b) => PatternKind::Bool(b),
+            ast::PatternKind::String(s) => PatternKind::String(s),
+        };
+        Ok(Pattern { kind, span })
     }
 
     /// Desugar one pipeline stage (see module docs): the already-lowered
@@ -381,6 +536,11 @@ impl Lowerer {
             }
         } else if self.globals.contains(first) {
             Some(ExprKind::Global(first.clone()))
+        } else if let Some(&arity) = self.ctors.get(first) {
+            Some(ExprKind::Ctor {
+                name: first.clone(),
+                arity,
+            })
         } else {
             None
         };

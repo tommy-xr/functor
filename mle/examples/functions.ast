@@ -3,32 +3,34 @@ Program {
         Type(
             TypeDecl {
                 name: "Player",
-                fields: [
-                    FieldTy {
-                        name: "name",
-                        ty: TypeName {
-                            name: "String",
-                            args: [],
-                            span: 96..102,
+                body: Record(
+                    [
+                        FieldTy {
+                            name: "name",
+                            ty: TypeName {
+                                name: "String",
+                                args: [],
+                                span: 96..102,
+                            },
+                            span: 90..102,
                         },
-                        span: 90..102,
-                    },
-                    FieldTy {
-                        name: "scores",
-                        ty: TypeName {
-                            name: "List",
-                            args: [
-                                TypeName {
-                                    name: "Float",
-                                    args: [],
-                                    span: 117..122,
-                                },
-                            ],
-                            span: 112..123,
+                        FieldTy {
+                            name: "scores",
+                            ty: TypeName {
+                                name: "List",
+                                args: [
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 117..122,
+                                    },
+                                ],
+                                span: 112..123,
+                            },
+                            span: 104..123,
                         },
-                        span: 104..123,
-                    },
-                ],
+                    ],
+                ),
                 span: 74..125,
             },
         ),
