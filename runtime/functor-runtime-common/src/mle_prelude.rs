@@ -22,7 +22,22 @@
 //! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
+//!
+//! Physics.box(w, h, d) / sphere(r) / capsule(hh, r)         -> Shape
+//! Physics.dynamic/kinematic/fixed(tag, shape)               -> Body
+//! Physics.at/velocity(body, x, y, z)                        -> Body
+//! Physics.mass/friction/restitution(body, n)                -> Body
+//! Physics.sensor(body)                                      -> Body
+//! Physics.scene(gx, gy, gz, [body, …])                      -> PhysicsScene
+//! Physics.position(tag)                                     -> {x, y, z}
+//! Physics.transformed(scene, tag)                           -> Scene
 //! ```
+//!
+//! The `Physics.*` reads target the singleton world the shell reconciles and
+//! steps each frame from the game's optional `physics` hook (see the desktop
+//! `MleGame` driver + docs/physics.md). MLE is interpreted in the shell's own
+//! process, so these are direct reads of live world state — the seam the
+//! dylib producers can't have.
 //!
 //! Scene-consuming functions take the scene FIRST, so they compose with
 //! `|>` (the piped value is prepended — see `mle`'s lowering docs):
@@ -50,6 +65,7 @@ use mle::{Host, RunError, Span, Value};
 use std::rc::Rc;
 
 use crate::math::Angle;
+use crate::physics;
 use crate::scene3d::MaterialDescription;
 use crate::{Camera, Frame, Light, Scene3D, SceneObject};
 
@@ -74,6 +90,43 @@ pub struct MleAngle(pub Angle);
 impl HostData for MleAngle {
     fn type_name(&self) -> &'static str {
         "Angle"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A [`physics::Shape`] as an opaque MLE value.
+pub struct MleShape(pub physics::Shape);
+
+/// A declared [`physics::Body`] as an opaque MLE value.
+pub struct MleBody(pub physics::Body);
+
+/// A [`physics::PhysicsScene`] as an opaque MLE value — what an MLE `physics`
+/// hook returns.
+pub struct MlePhysicsScene(pub physics::PhysicsScene);
+
+impl HostData for MleShape {
+    fn type_name(&self) -> &'static str {
+        "Shape"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HostData for MleBody {
+    fn type_name(&self) -> &'static str {
+        "Body"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HostData for MlePhysicsScene {
+    fn type_name(&self) -> &'static str {
+        "PhysicsScene"
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -125,6 +178,18 @@ pub fn frame_value(value: &Value) -> Option<&Frame> {
     }
 }
 
+/// Extract the [`physics::PhysicsScene`] from an MLE value (a `Physics.scene`
+/// result), for the shells' physics drive.
+pub fn physics_scene_value(value: &Value) -> Option<&physics::PhysicsScene> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MlePhysicsScene>()
+            .map(|s| &s.0),
+        _ => None,
+    }
+}
+
 /// The prelude host. Stateless; construct one per interpreter session.
 pub struct FunctorHost;
 
@@ -153,6 +218,21 @@ const PATHS: &[&str] = &[
     "Light.castShadows",
     "Frame.create",
     "Frame.createLit",
+    "Physics.box",
+    "Physics.sphere",
+    "Physics.capsule",
+    "Physics.dynamic",
+    "Physics.kinematic",
+    "Physics.fixed",
+    "Physics.at",
+    "Physics.velocity",
+    "Physics.mass",
+    "Physics.friction",
+    "Physics.restitution",
+    "Physics.sensor",
+    "Physics.scene",
+    "Physics.position",
+    "Physics.transformed",
 ];
 
 impl Host for FunctorHost {
@@ -381,6 +461,158 @@ impl Host for FunctorHost {
                 }
                 _ => usage("Frame.createLit(camera, scene, [light, …])"),
             },
+            // ── Physics (docs/physics.md; the declarative surface) ─────────
+            // Shapes are values, bodies are tag + shape + piped attributes,
+            // and the optional game hook `physics = (model) => Physics.scene(…)`
+            // declares the world each frame.
+            "Physics.box" => match args.as_slice() {
+                [w, h, d] => Ok(host(MleShape(physics::Shape::Cuboid {
+                    extents: [
+                        positive_num(w, span, "Physics.box width")? as f32,
+                        positive_num(h, span, "Physics.box height")? as f32,
+                        positive_num(d, span, "Physics.box depth")? as f32,
+                    ],
+                }))),
+                _ => usage("Physics.box(width, height, depth)"),
+            },
+            "Physics.sphere" => match args.as_slice() {
+                [r] => Ok(host(MleShape(physics::Shape::Sphere {
+                    radius: positive_num(r, span, "Physics.sphere radius")? as f32,
+                }))),
+                _ => usage("Physics.sphere(radius)"),
+            },
+            "Physics.capsule" => match args.as_slice() {
+                [half_height, r] => Ok(host(MleShape(physics::Shape::Capsule {
+                    half_height: positive_num(half_height, span, "Physics.capsule halfHeight")?
+                        as f32,
+                    radius: positive_num(r, span, "Physics.capsule radius")? as f32,
+                }))),
+                _ => usage("Physics.capsule(halfHeight, radius)"),
+            },
+            "Physics.dynamic" | "Physics.kinematic" | "Physics.fixed" => match args.as_slice() {
+                [Value::String(tag), shape] => match shape_of(shape) {
+                    Some(shape) => {
+                        let tag = tag.to_string();
+                        let shape = shape.clone();
+                        Ok(host(MleBody(match path {
+                            "Physics.dynamic" => physics::Body::dynamic(tag, shape),
+                            "Physics.kinematic" => physics::Body::kinematic(tag, shape),
+                            _ => physics::Body::fixed(tag, shape),
+                        })))
+                    }
+                    None => usage(&format!("{path}(tag, shape)")),
+                },
+                _ => usage(&format!("{path}(tag, shape)")),
+            },
+            // Body first, so they pipe:
+            // `Physics.dynamic("crate", Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
+            "Physics.at" | "Physics.velocity" => match args.as_slice() {
+                [body, x, y, z] => match body_of(body) {
+                    Some(inner) => {
+                        let v = [
+                            num(x, span)? as f32,
+                            num(y, span)? as f32,
+                            num(z, span)? as f32,
+                        ];
+                        Ok(host(MleBody(if path == "Physics.at" {
+                            inner.clone().at(v)
+                        } else {
+                            inner.clone().with_velocity(v)
+                        })))
+                    }
+                    None => usage(&format!("{path}(body, x, y, z)")),
+                },
+                _ => usage(&format!("{path}(body, x, y, z)")),
+            },
+            "Physics.mass" | "Physics.friction" | "Physics.restitution" => match args.as_slice() {
+                [body, n] => match body_of(body) {
+                    Some(inner) => {
+                        let n = match path {
+                            "Physics.mass" => positive_num(n, span, "Physics.mass")?,
+                            _ => non_negative_num(n, span, path)?,
+                        } as f32;
+                        Ok(host(MleBody(match path {
+                            "Physics.mass" => inner.clone().with_mass(n),
+                            "Physics.friction" => inner.clone().with_friction(n),
+                            _ => inner.clone().with_restitution(n),
+                        })))
+                    }
+                    None => usage(&format!("{path}(body, n)")),
+                },
+                _ => usage(&format!("{path}(body, n)")),
+            },
+            "Physics.sensor" => match args.as_slice() {
+                [body] => match body_of(body) {
+                    Some(inner) => Ok(host(MleBody(inner.clone().as_sensor()))),
+                    None => usage("Physics.sensor(body)"),
+                },
+                _ => usage("Physics.sensor(body)"),
+            },
+            "Physics.scene" => match args.as_slice() {
+                [gx, gy, gz, Value::List(items)] => {
+                    let gravity = [
+                        num(gx, span)? as f32,
+                        num(gy, span)? as f32,
+                        num(gz, span)? as f32,
+                    ];
+                    let mut bodies = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        match body_of(item) {
+                            Some(body) => bodies.push(body.clone()),
+                            None => {
+                                return err(format!(
+                                    "Physics.scene bodies must be Bodies, got {}",
+                                    item.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(host(MlePhysicsScene(physics::PhysicsScene::create(
+                        gravity, bodies,
+                    ))))
+                }
+                _ => usage("Physics.scene(gx, gy, gz, [body, …])"),
+            },
+            // Reads of the LIVE stepped world (the singleton, world 0). MLE
+            // runs in the same process as the world the shell steps, so these
+            // are direct reads — no boundary, no copy (the dylib producers
+            // can't do this; MLE can). A tag that isn't in the world is a
+            // loud spanned error — declare the body before reading. (An
+            // Option-shaped variant return could come now that B5 match
+            // exists, but loud-by-default is right for the common case.)
+            "Physics.position" => match args.as_slice() {
+                [Value::String(tag)] => match live_transform(tag) {
+                    Some((pos, _)) => Ok(Value::Record(Rc::new(vec![
+                        ("x".to_string(), Value::Number(pos[0] as f64)),
+                        ("y".to_string(), Value::Number(pos[1] as f64)),
+                        ("z".to_string(), Value::Number(pos[2] as f64)),
+                    ]))),
+                    None => err(no_body(tag)),
+                },
+                _ => usage("Physics.position(tag)"),
+            },
+            // Scene first, so it pipes: the way MLE draws a physics body —
+            // `Scene.cube() |> Scene.lit(…) |> Physics.transformed("crate-1")`
+            // places the visual at the body's live pose (position + rotation).
+            "Physics.transformed" => match args.as_slice() {
+                [scene, Value::String(tag)] => {
+                    let Some(inner) = scene_of(scene) else {
+                        return usage("Physics.transformed(scene, tag)");
+                    };
+                    match live_transform(tag) {
+                        Some((pos, rot)) => {
+                            // cgmath's Quaternion::new is scalar-FIRST (w, x, y, z).
+                            let rotation = cgmath::Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
+                            let xform = Matrix4::from_translation(cgmath::vec3(
+                                pos[0], pos[1], pos[2],
+                            )) * Matrix4::from(rotation);
+                            scene_value(group(vec![inner.clone()], xform))
+                        }
+                        None => err(no_body(tag)),
+                    }
+                }
+                _ => usage("Physics.transformed(scene, tag)"),
+            },
             "Frame.create" => match args.as_slice() {
                 [camera, scene] => {
                     let (Value::HostData(cam), Some(scene)) = (camera, scene_of(scene)) else {
@@ -441,6 +673,35 @@ Angle.degrees(…) or Angle.radians(…)"
     }
 }
 
+/// Physical dimensions (shape extents, radii, mass) must be strictly
+/// positive: Rapier accepts a negative radius and silently builds a
+/// degenerate collider that misbehaves far from the declaration — so reject
+/// it loud at the boundary.
+fn positive_num(value: &Value, span: Span, what: &str) -> Result<f64, RunError> {
+    let n = num(value, span)?;
+    if n > 0.0 {
+        Ok(n)
+    } else {
+        Err(RunError {
+            message: format!("{what} must be positive, got {n}"),
+            span,
+        })
+    }
+}
+
+/// Friction/restitution are coefficients: zero is meaningful, negative is not.
+fn non_negative_num(value: &Value, span: Span, what: &str) -> Result<f64, RunError> {
+    let n = num(value, span)?;
+    if n >= 0.0 {
+        Ok(n)
+    } else {
+        Err(RunError {
+            message: format!("{what} must not be negative, got {n}"),
+            span,
+        })
+    }
+}
+
 fn light_of(value: &Value) -> Option<&Light> {
     match value {
         Value::HostData(data) => data.as_any().downcast_ref::<MleLight>().map(|l| &l.0),
@@ -453,6 +714,33 @@ fn scene_of(value: &Value) -> Option<&Scene3D> {
         Value::HostData(data) => data.as_any().downcast_ref::<MleScene>().map(|s| &s.0),
         _ => None,
     }
+}
+
+fn shape_of(value: &Value) -> Option<&physics::Shape> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleShape>().map(|s| &s.0),
+        _ => None,
+    }
+}
+
+fn body_of(value: &Value) -> Option<&physics::Body> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleBody>().map(|b| &b.0),
+        _ => None,
+    }
+}
+
+/// Live pose of a body in the singleton world (the world the shell steps —
+/// same process, same crate statics as this prelude).
+fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
+    physics::with_world(physics::DEFAULT_WORLD, |w| w.body_transform(tag)).flatten()
+}
+
+fn no_body(tag: &str) -> String {
+    format!(
+        "no body tagged \"{tag}\" in the physics world (bodies exist after the \
+         frame's `physics` declaration has been reconciled and stepped)"
+    )
 }
 
 fn host(data: impl HostData + 'static) -> Value {
@@ -703,6 +991,125 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
                 "`{path}` fell through to the internal fallback: {message}"
             );
         }
+    }
+
+    // The physics vocabulary: an MLE snippet declares a PhysicsScene the
+    // shells can hand to `World::reconcile` — bodies, attributes, gravity.
+    #[test]
+    fn mle_snippet_declares_a_physics_scene() {
+        let value = eval(
+            "let crate1 = Physics.dynamic(\"crate-1\", Physics.box(1.0, 1.0, 1.0))\n\
+             |> Physics.at(0.0, 5.0, 0.0)\n\
+             |> Physics.velocity(1.0, 0.0, 0.0)\n\
+             |> Physics.mass(2.0)\n\
+             |> Physics.restitution(0.5)\n\
+             let main = () => Physics.scene(0.0, -9.81, 0.0, [\n\
+               Physics.fixed(\"ground\", Physics.box(20.0, 0.2, 20.0)),\n\
+               crate1,\n\
+               Physics.kinematic(\"door\", Physics.capsule(1.0, 0.3)) |> Physics.sensor,\n\
+             ])",
+        );
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        assert_eq!(scene.gravity, [0.0, -9.81, 0.0]);
+        assert_eq!(scene.bodies.len(), 3);
+        assert_eq!(scene.bodies[0].tag, "ground");
+        assert_eq!(scene.bodies[1].position, [0.0, 5.0, 0.0]);
+        assert_eq!(scene.bodies[1].velocity, [1.0, 0.0, 0.0]);
+        assert_eq!(scene.bodies[1].mass, Some(2.0));
+        assert_eq!(scene.bodies[1].restitution, 0.5);
+        assert!(scene.bodies[2].sensor);
+    }
+
+    // End to end across the seam: reconcile + step the singleton world the
+    // way the MleGame driver does, then read it back from MLE — the in-process
+    // live read that is the whole point of the MLE surface.
+    #[test]
+    fn physics_reads_see_the_stepped_world() {
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let declare = eval(
+            "let main = () => Physics.scene(0.0, -9.81, 0.0, [\n\
+               Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(0.0, 5.0, 0.0)])",
+        );
+        let scene = physics_scene_value(&declare).expect("a PhysicsScene").clone();
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&scene);
+            for _ in 0..30 {
+                w.step_fixed();
+            }
+        });
+
+        // Physics.position sees the fallen ball…
+        let pos = eval("let main = () => Physics.position(\"ball\")");
+        let Value::Record(fields) = &pos else {
+            panic!("expected a record, got {}", pos.kind_name());
+        };
+        let y = fields
+            .iter()
+            .find(|(k, _)| k == "y")
+            .and_then(|(_, v)| match v {
+                Value::Number(n) => Some(*n),
+                _ => None,
+            })
+            .expect("y field");
+        assert!(y < 5.0, "ball should have fallen, y = {y}");
+
+        // …and Physics.transformed places a scene node at the live pose.
+        let drawn = eval(
+            "let main = () => Scene.sphere() |> Physics.transformed(\"ball\")",
+        );
+        let scene3d = scene_of(&drawn).expect("a Scene");
+        assert!((scene3d.xform.w.y as f64 - y).abs() < 1e-6);
+
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+    }
+
+    // Degenerate physical dimensions are boundary errors — Rapier would
+    // silently build a broken collider, and MLE can't branch to notice.
+    #[test]
+    fn non_positive_dimensions_are_rejected() {
+        for (src, needle) in [
+            ("Physics.sphere(-0.5)", "Physics.sphere radius must be positive"),
+            ("Physics.box(1.0, 0.0, 1.0)", "Physics.box height must be positive"),
+            (
+                "Physics.dynamic(\"x\", Physics.sphere(0.5)) |> Physics.mass(0.0)",
+                "Physics.mass must be positive",
+            ),
+            (
+                "Physics.dynamic(\"x\", Physics.sphere(0.5)) |> Physics.friction(-1.0)",
+                "Physics.friction must not be negative",
+            ),
+        ] {
+            let module = mle::lower(
+                mle::parse(&format!("let main = () => {src}")).unwrap(),
+            )
+            .unwrap();
+            let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .unwrap_or_else(|| panic!("`{src}` should fail"));
+            assert!(
+                failure.error.message.contains(needle),
+                "`{src}`: got {}",
+                failure.error.message
+            );
+        }
+    }
+
+    // A missing tag is a loud spanned error, not a sentinel value.
+    #[test]
+    fn physics_read_of_unknown_tag_is_a_spanned_error() {
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let module = mle::lower(
+            mle::parse("let main = () => Physics.position(\"ghost\")").unwrap(),
+        )
+        .unwrap();
+        let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert!(
+            failure.error.message.contains("no body tagged \"ghost\""),
+            "got: {}",
+            failure.error.message
+        );
     }
 
     // `main` bound to a host function errors like a builtin, not a value.

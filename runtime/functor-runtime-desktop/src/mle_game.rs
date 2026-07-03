@@ -10,7 +10,13 @@
 //! let init = { … }                       // the initial model (a value)
 //! let tick = (model, dt, tts) => model'  // per-frame step
 //! let draw = (model, tts) => Frame.create(camera, scene)
+//! let physics = (model) => Physics.scene(gx, gy, gz, [body, …])  // OPTIONAL
 //! ```
+//!
+//! Frame order with physics: tick → physics (reconcile + fixed-step the
+//! singleton world) → draw, so `Physics.position`/`Physics.transformed` in
+//! `draw` read the frame's stepped world. The world lives in this process's
+//! registry, so like the model it survives hot reload.
 //!
 //! The model is a plain MLE value the host holds between frames — the
 //! serializable-state seam hot-reload (C3) will swap sessions around.
@@ -19,7 +25,8 @@
 
 use std::time::Instant;
 
-use functor_runtime_common::mle_prelude::{frame_value, FunctorHost};
+use functor_runtime_common::mle_prelude::{frame_value, physics_scene_value, FunctorHost};
+use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 use mle::{Session, Value};
@@ -35,6 +42,7 @@ pub struct MleGame {
     has_input: bool,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
+    has_physics: bool,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -43,9 +51,12 @@ pub struct MleGame {
     /// changes).
     last_error: Option<String>,
     // rolling per-frame eval cost, printed every STATS_EVERY frames (the C6
-    // perf gate watches these).
+    // perf gate watches these). Physics is engine cost, not MLE eval cost, so
+    // it gets its own counter — a heavy scene must not read as an interpreter
+    // regression.
     frames: u64,
     tick_ns: u64,
+    physics_ns: u64,
     draw_ns: u64,
 }
 
@@ -60,6 +71,7 @@ struct Loaded {
     has_input: bool,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
+    has_physics: bool,
 }
 
 /// Load, check, and contract-validate a game file. Errors come back as fully
@@ -112,6 +124,13 @@ fn load_game(path: &str) -> Result<Loaded, String> {
     if has_mouse_wheel {
         require_function(path, &session, "mouseWheel", 2)?;
     }
+    // Optional physics: `physics(model) => Physics.scene(…)` declares the
+    // bodies that should exist; the host reconciles + fixed-steps the world
+    // after each tick (docs/physics.md).
+    let has_physics = session.global("physics").is_some();
+    if has_physics {
+        require_function(path, &session, "physics", 1)?;
+    }
     Ok(Loaded {
         src,
         session,
@@ -119,6 +138,7 @@ fn load_game(path: &str) -> Result<Loaded, String> {
         has_input,
         has_mouse_move,
         has_mouse_wheel,
+        has_physics,
     })
 }
 
@@ -151,38 +171,74 @@ impl MleGame {
             has_input: loaded.has_input,
             has_mouse_move: loaded.has_mouse_move,
             has_mouse_wheel: loaded.has_mouse_wheel,
+            has_physics: loaded.has_physics,
             last_frame: empty_frame(),
             last_error: None,
             frames: 0,
             tick_ns: 0,
+            physics_ns: 0,
             draw_ns: 0,
         }
     }
 
-    /// Report a per-frame error with its source position, once per distinct
-    /// message (a 60fps loop must not flood stderr with one persistent bug).
-    fn frame_error(&mut self, stage: &str, err: &mle::RunError) {
-        let (line, col) = mle::line_col(&self.src, err.span.start);
-        let rendered = format!(
-            "[mle] {stage} error at {}:{line}:{col}: {}",
-            self.path, err.message
-        );
+    /// Print a per-frame problem once per distinct message — a 60fps loop must
+    /// not flood stderr with one persistent bug.
+    fn report_once(&mut self, rendered: String) {
         if self.last_error.as_deref() != Some(rendered.as_str()) {
             eprintln!("{rendered}");
             self.last_error = Some(rendered);
         }
     }
 
+    /// Report a per-frame error with its source position (deduped).
+    fn frame_error(&mut self, stage: &str, err: &mle::RunError) {
+        let (line, col) = mle::line_col(&self.src, err.span.start);
+        let rendered = format!(
+            "[mle] {stage} error at {}:{line}:{col}: {}",
+            self.path, err.message
+        );
+        self.report_once(rendered);
+    }
+
+    /// The frame's physics phase (docs/physics.md): ask the game what bodies
+    /// should exist, reconcile the singleton world to match, and advance it in
+    /// fixed substeps. Runs after `tick` so declarations come from the settled
+    /// model, and before `render` so `Physics.position`/`Physics.transformed`
+    /// in `draw` read the just-stepped world.
+    fn step_physics(&mut self, dts: f32) {
+        if !self.has_physics {
+            return;
+        }
+        let args = vec![self.model.clone()];
+        match self.session.call("physics", args, &mut FunctorHost) {
+            Ok(value) => match physics_scene_value(&value) {
+                Some(scene) => {
+                    physics::with_world(physics::DEFAULT_WORLD, |w| {
+                        w.reconcile(scene);
+                        w.step_frame(dts);
+                    });
+                }
+                None => self.report_once(format!(
+                    "[mle] physics must return Physics.scene(gx, gy, gz, [body, …]), got {}",
+                    value.kind_name()
+                )),
+            },
+            Err(err) => self.frame_error("physics", &err),
+        }
+    }
+
     fn report_stats(&mut self) {
         if self.frames > 0 && self.frames % STATS_EVERY == 0 {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
+            let physics_us = self.physics_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let draw_us = self.draw_ns as f64 / STATS_EVERY as f64 / 1000.0;
             println!(
-                "[mle] avg over {STATS_EVERY} frames: tick {tick_us:.1}µs, draw {draw_us:.1}µs \
-                 ({:.1}% of a 60fps budget)",
-                (tick_us + draw_us) / 16_666.0 * 100.0
+                "[mle] avg over {STATS_EVERY} frames: tick {tick_us:.1}µs, physics \
+                 {physics_us:.1}µs, draw {draw_us:.1}µs ({:.1}% of a 60fps budget)",
+                (tick_us + physics_us + draw_us) / 16_666.0 * 100.0
             );
             self.tick_ns = 0;
+            self.physics_ns = 0;
             self.draw_ns = 0;
         }
     }
@@ -211,6 +267,14 @@ impl Game for MleGame {
                 self.has_input = loaded.has_input;
                 self.has_mouse_move = loaded.has_mouse_move;
                 self.has_mouse_wheel = loaded.has_mouse_wheel;
+                self.has_physics = loaded.has_physics;
+                // The physics world is deliberately KEPT, like the model: it
+                // lives in this process's registry, so bodies stay where they
+                // are across the edit and the next frame's declaration
+                // re-diffs against them (removing the hook drops the world).
+                if !self.has_physics {
+                    physics::remove_world(physics::DEFAULT_WORLD);
+                }
                 self.last_error = None;
                 println!(
                     "[mle] hot-reloaded {} in {:.2}ms (model preserved; an edited `init` \
@@ -220,11 +284,7 @@ takes effect on restart)",
                 );
             }
             Err(message) => {
-                let rendered = format!("[mle] reload failed, keeping old program: {message}");
-                if self.last_error.as_deref() != Some(rendered.as_str()) {
-                    eprintln!("{rendered}");
-                    self.last_error = Some(rendered);
-                }
+                self.report_once(format!("[mle] reload failed, keeping old program: {message}"));
             }
         }
     }
@@ -241,6 +301,9 @@ takes effect on restart)",
             Err(err) => self.frame_error("tick", &err),
         }
         self.tick_ns += started.elapsed().as_nanos() as u64;
+        let physics_started = Instant::now();
+        self.step_physics(frame_time.dts);
+        self.physics_ns += physics_started.elapsed().as_nanos() as u64;
         self.frames += 1;
         self.report_stats();
     }
@@ -297,16 +360,10 @@ takes effect on restart)",
         match self.session.call("draw", args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => self.last_frame = frame.clone(),
-                None => {
-                    let rendered = format!(
-                        "[mle] draw must return Frame.create(camera, scene), got {}",
-                        value.kind_name()
-                    );
-                    if self.last_error.as_deref() != Some(rendered.as_str()) {
-                        eprintln!("{rendered}");
-                        self.last_error = Some(rendered);
-                    }
-                }
+                None => self.report_once(format!(
+                    "[mle] draw must return Frame.create(camera, scene), got {}",
+                    value.kind_name()
+                )),
             },
             Err(err) => self.frame_error("draw", &err),
         }

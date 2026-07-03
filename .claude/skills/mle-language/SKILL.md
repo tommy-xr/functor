@@ -150,7 +150,26 @@ Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)
 Light.directional(dx, dy, dz, r, g, b, intensity) |> Light.castShadows
 Frame.create(camera, scene)                                // what draw returns
 Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
+
+Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
+Physics.dynamic("tag", shape)                              // simulated body
+Physics.kinematic("tag", shape) / Physics.fixed("tag", shape)
+body |> Physics.at(x, y, z)                                // body-first: pipes
+body |> Physics.velocity(vx, vy, vz)
+body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
+body |> Physics.sensor                                     // overlap-only, no forces
+Physics.scene(gx, gy, gz, [body, …])                       // what `physics` returns
+Physics.position("tag")                                    // {x, y, z} of the LIVE body
+scene |> Physics.transformed("tag")                        // scene at the body's live pose
 ```
+
+`Physics.position` / `Physics.transformed` read the live stepped world
+(MLE runs in the shell's process — no boundary). A tag not in the world is
+a **spanned runtime error** (there is no Option-shaped return to match on),
+so only read tags your `physics` hook declares. The tag is cross-frame
+identity: same tag = same body; drop a body by not declaring it.
+Re-declaring an *unchanged* body leaves the simulation alone; *changing*
+its declared position teleports it (the divergence rule, docs/physics.md).
 
 A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:
 
@@ -161,7 +180,18 @@ let draw = (model, tts) => Frame.create(camera, scene)
 let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
+let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …])  // OPTIONAL
 ```
+
+Frame order: `tick` → `physics` (reconcile + fixed-step, 60Hz accumulator)
+→ `draw` — physics reads in `draw` see this frame's stepped world; reads in
+`tick` see the *previous* frame's (so on the very first frame, and inside
+the `physics` hook itself, declared bodies don't exist yet — keep reads in
+`draw`). The physics world survives hot reload (like the model); deleting
+the `physics` hook drops it. Gotcha: `--fixed-time T` pins the clock with
+`dts = 0`, so physics **never steps** under it — bodies render at their
+declared pose. Capture physics with plain `--capture-time` (and a settled
+scene for reproducibility) instead.
 
 A project dir with `functor.json` `{"language": "mle", "entry": "game.mle"}`
 works with the CLI: `functor -d dir build` (typecheck, diagnostics are

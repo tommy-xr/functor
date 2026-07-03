@@ -82,7 +82,48 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
 - **The `Simulatable` / `Timeline` seam** keeps the rewind strategy swappable and
   is the same machinery client prediction uses.
 
-## API (F#)
+## Surface: MLE-first
+
+**The game-facing surface lands in MLE, not F#** (decided 2026-07-03; see
+`docs/language-direction.md` — Functor is investing in MLE as the game-logic
+layer). The design below is unchanged — declarative scene, divergence rule,
+commands, subs — but the shipping vocabulary is the MLE prelude
+(`functor_runtime_common::mle_prelude`, documented in the `mle-language`
+skill):
+
+```mle
+let physics = (model) =>                       // OPTIONAL game hook
+  Physics.scene(0.0, -9.81, 0.0, [
+    Physics.fixed("ground", Physics.box(20.0, 0.2, 20.0)),
+    Physics.dynamic("crate", Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0),
+  ])
+
+let draw = (model, tts) =>
+  Frame.create(camera,
+    Scene.cube() |> Scene.lit(0.8, 0.5, 0.2) |> Physics.transformed("crate"))
+```
+
+MLE dissolves the read-back boundary problem outright: the interpreter runs in
+the **shell's own process**, sharing the crate statics that hold the physics
+world — so `Physics.position(tag)` / `Physics.transformed(scene, tag)` are
+direct reads of the live stepped world (frame order: `tick` → `physics`
+reconcile+step → `draw`). The dylib producers could never have this: the game
+dylib links its own copy of `functor_runtime_common`, so its statics are not
+the shell's, and a view would have to cross as per-frame data. The F# sketch
+below is retained as the reference design (types/semantics match the Rust
+engine one-for-one); an F# surface would need that data-crossing `DrawContext`
+plumbing and is deferred indefinitely.
+
+Read semantics worth knowing: physics reads of a missing tag are **loud
+spanned errors** — games read only tags their `physics` hook declares. (An
+Option-shaped variant return is possible now that MLE has `match`; loud
+remains the default because a missing declared body is a bug, not a case.)
+
+Capture gotcha: `--fixed-time` pins the clock with `dts = 0`, so physics never
+steps under it — a physics golden captures a *settled* scene via plain
+`--capture-time` (rest poses are reproducible) rather than the fixed-time path.
+
+## API (F# — reference design, deferred)
 
 **Per-frame draw context.** `draw3d` takes a `DrawContext` record (not a bare
 `FrameTime`), destructured at the call site. This is the per-frame *extension
@@ -569,8 +610,9 @@ It's worth building in two steps, because they exercise different machinery:
 | --- | --- | --- |
 | **1a. World spine** | Rapier dep (`serde-serialize`, default features), `physics` module (`PhysicsScene`/`Body`/`reconcile`/`WorldId` registry), fixed-step accumulator, snapshot + text/JSON dump. Determinism + restore-replay goldens. **No F# surface.** | native+wasm (Rust) |
 | **1b. Timeline seam** | `Simulatable` + `Timeline` traits, `TimelineLog` with the three cadences (`keyframes(n)` default / `snapshot_ring` / `replay_only`), strategy-equivalence + replay goldens. | native+wasm (Rust) |
-| **2. `physicsScape` + read-back** | `Game` hook + builder/runner, reconcile pipeline, `DrawContext` record on `draw3d` (`ctx.physics` view), `Physics.synced` sub, `examples/hello-physics`. | both |
-| **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, line pass in both shells, `--debug-render physics` mode + keyboard toggle in `hello-physics`. | both |
+| **2. MLE surface + read-back** | `Physics.*` prelude (shape/body/scene builders, `position`/`transformed` live reads), optional `physics` hook in the MLE driver (tick → reconcile+fixed-step → draw), prelude tests. | native (MLE) |
+| **2c. `examples/mle-physics`** | Crates settling on a ground slab, hot-reload demo, golden scenario, PR GIF/PNG. | native (MLE) |
+| **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, line pass, `--debug-render physics` mode. | native |
 | **3. Commands** | `applyImpulse`/`applyForce`/`setVelocity`/`teleport` (plain-data effects). | both |
 | **4. Queries** | `raycast`/`shapeCast` (async tagger, token registry). | both |
 | **5. Collision events** | `Physics.events` sub. | both |
