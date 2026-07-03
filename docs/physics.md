@@ -386,7 +386,9 @@ trait Simulatable {
     type Event;
     fn snapshot(&self) -> Self::Snapshot;
     fn restore(&mut self, s: &Self::Snapshot);
-    fn step(&mut self, dt: Fixed, cmds: &[Self::Command]) -> Vec<Self::Event>;
+    // The timestep is a fixed property of the sim (FIXED_DT), not a parameter —
+    // variable dt can't sneak in through this seam.
+    fn step(&mut self, cmds: &[Self::Command]) -> Vec<Self::Event>;
 }
 
 /// The SWAPPABLE part. The sim loop and netcode name only this trait.
@@ -398,15 +400,20 @@ trait Timeline<S: Simulatable> {
 }
 ```
 
-Strategies are tiny impls of one trait:
+The three strategies turned out to differ in *snapshot cadence only*, so they
+are one impl (`TimelineLog`, in `physics/timeline.rs`) with three constructors
+rather than three types:
 
-- **`KeyframeLog`** (default, the hybrid) — snapshot every N frames + always log
-  commands; `seek` restores nearest keyframe ≤ frame then `step`s forward. Bounded
-  memory *and* seek.
-- **`SnapshotRing`** — full snapshot every frame; `seek` = `restore(ring[frame])`.
-  O(1) seek, heavy memory. (Used as the oracle in strategy-equivalence goldens.)
-- **`ReplayOnly`** — one snapshot at frame 0; `seek` restores it and replays
-  0→frame. Lightest memory, leans hardest on determinism.
+- **`TimelineLog::keyframes(n)`** (default, the hybrid) — snapshot every N
+  frames + always log commands; `seek` restores nearest keyframe ≤ frame then
+  `step`s forward. Bounded memory *and* seek.
+- **`TimelineLog::snapshot_ring()`** — full snapshot every frame; `seek` is one
+  restore. O(1) seek, heavy memory. (The oracle in the strategy-equivalence
+  golden.)
+- **`TimelineLog::replay_only()`** — one snapshot at the first frame; `seek`
+  restores it and replays 0→frame. Lightest memory, leans hardest on
+  determinism. (`prune` is a documented no-op — the base snapshot is the only
+  restore point.)
 
 Reconciliation is written **once, against the trait**, and never changes when the
 strategy is swapped:
@@ -415,9 +422,9 @@ strategy is swapped:
 fn reconcile<S, T: Timeline<S>>(tl: &mut T, sim: &mut S,
                                 k: Frame, authoritative: &S::Snapshot, now: Frame) {
     sim.restore(authoritative);          // server truth at frame K
-    tl.overwrite(k, authoritative);      // correct recorded history at K
-    for (_f, cmds) in tl.commands_since(k) {
-        sim.step(FIXED_DT, cmds);        // replay OUR local inputs K+1..now
+    tl.overwrite(k, authoritative);      // correct recorded history at K (lands in 7b)
+    for cmds in tl.commands_since(k) {
+        sim.step(cmds);                  // replay OUR local inputs K+1..now
     }
 }
 ```
@@ -425,7 +432,10 @@ fn reconcile<S, T: Timeline<S>>(tl: &mut T, sim: &mut S,
 The trait contract — `seek(K)` equals restoring a valid earlier state and stepping
 forward with recorded commands — *is* the determinism invariant the netcode rests
 on. The F# surface stays thin (`Physics.rewindTo`, `pause`, `resume`, `stepOnce`);
-strategy choice is runtime config, defaulting to `KeyframeLog`.
+strategy choice is runtime config, defaulting to `keyframes(n)`. Two pieces are
+deliberately deferred to their consuming phases: `overwrite` (7b, server history
+correction) and truncate-on-record-after-seek (Phase 6, rewind-then-*branch* —
+until then a seek is resumed by replaying `commands_since`, not re-recording).
 
 ## Netcode (server-authoritative first)
 
@@ -558,7 +568,7 @@ It's worth building in two steps, because they exercise different machinery:
 | Phase | Scope | Targets |
 | --- | --- | --- |
 | **1a. World spine** | Rapier dep (`serde-serialize`, default features), `physics` module (`PhysicsScene`/`Body`/`reconcile`/`WorldId` registry), fixed-step accumulator, snapshot + text/JSON dump. Determinism + restore-replay goldens. **No F# surface.** | native+wasm (Rust) |
-| **1b. Timeline seam** | `Simulatable` + `Timeline` traits, `KeyframeLog` (default) + `SnapshotRing` + `ReplayOnly`, strategy-equivalence + replay goldens. | native+wasm (Rust) |
+| **1b. Timeline seam** | `Simulatable` + `Timeline` traits, `TimelineLog` with the three cadences (`keyframes(n)` default / `snapshot_ring` / `replay_only`), strategy-equivalence + replay goldens. | native+wasm (Rust) |
 | **2. `physicsScape` + read-back** | `Game` hook + builder/runner, reconcile pipeline, `DrawContext` record on `draw3d` (`ctx.physics` view), `Physics.synced` sub, `examples/hello-physics`. | both |
 | **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, line pass in both shells, `--debug-render physics` mode + keyboard toggle in `hello-physics`. | both |
 | **3. Commands** | `applyImpulse`/`applyForce`/`setVelocity`/`teleport` (plain-data effects). | both |
