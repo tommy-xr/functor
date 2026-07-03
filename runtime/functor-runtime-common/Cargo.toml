@@ -12,6 +12,10 @@ strict = []
 [dependencies]
 cgmath = "0.18.0"
 glow = "0.17"
+# The MLE language (parser/IR/interpreter). This crate provides the Functor
+# prelude — the mle::Host giving MLE programs Scene3D/Camera/Frame builtins
+# (docs/mle.md Track C1) — shared by both shells.
+mle = { path = "../../mle" }
 # In-game text/UI overlay. egui is the immediate-mode backend living entirely in
 # this shell; `egui_glow` paints through the same glow::Context the runtime owns.
 # `default-features = false` drops egui_glow's winit/clipboard glue we don't use;

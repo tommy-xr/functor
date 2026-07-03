@@ -90,14 +90,55 @@ pub struct RunFailure {
     pub trace: Vec<TraceEvent>,
 }
 
+/// Host-provided externals: the embedding runtime (e.g. Functor's shells)
+/// registers extra `Module.function` names beyond the built-in registry —
+/// the capability seam from the MLE design notes (Rust handlers provide what
+/// the pure language can't). An [`ExprKind::External`] resolves against the
+/// builtin registry first, then the host; host calls appear in the trace
+/// like any other call. See `functor_runtime_common::mle_prelude` for the
+/// first real host.
+pub trait Host {
+    /// Does this host provide `path` (a joined qualified name, `Scene.cube`)?
+    fn provides(&self, path: &str) -> bool;
+
+    /// Perform a host call. Only invoked for paths `provides` accepted.
+    fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<Value, RunError>;
+}
+
+/// The hostless host: no externals beyond the builtin registry.
+pub struct NoHost;
+
+impl Host for NoHost {
+    fn provides(&self, _path: &str) -> bool {
+        false
+    }
+
+    fn call(&mut self, path: &str, _args: Vec<Value>, span: Span) -> Result<Value, RunError> {
+        Err(RunError {
+            message: format!("internal: NoHost cannot call `{path}`"),
+            span,
+        })
+    }
+}
+
 /// Evaluate a lowered module (see the module doc for semantics).
 pub fn run(module: &Module, tracing: Tracing) -> Result<RunRecord, RunFailure> {
+    run_with_host(module, tracing, &mut NoHost)
+}
+
+/// [`run`], with host-provided externals (see [`Host`]).
+pub fn run_with_host(
+    module: &Module,
+    tracing: Tracing,
+    host: &mut dyn Host,
+) -> Result<RunRecord, RunFailure> {
     let mut interp = Interp {
         globals: HashMap::new(),
         trace: Vec::new(),
         tracing,
         depth: 0,
         call_depth: 0,
+        host,
     };
     match interp.run_module(module) {
         Ok(outcome) => Ok(RunRecord {
@@ -111,15 +152,16 @@ pub fn run(module: &Module, tracing: Tracing) -> Result<RunRecord, RunFailure> {
     }
 }
 
-struct Interp {
+struct Interp<'h> {
     globals: HashMap<String, Value>,
     trace: Vec<TraceEvent>,
     tracing: Tracing,
     depth: usize,
     call_depth: usize,
+    host: &'h mut dyn Host,
 }
 
-impl Interp {
+impl Interp<'_> {
     fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
         let mut bindings = Vec::new();
         for def in &module.defs {
@@ -139,9 +181,10 @@ impl Interp {
             Value::Closure(closure) if closure.params.is_empty() => {
                 self.call(main.clone(), vec![], "main".to_string(), def.span, None)
             }
-            // A builtin takes arguments by definition, so it gets the same
-            // error as a parameterful closure rather than printing as a value.
-            Value::Closure(_) | Value::Builtin(_) => Err(RunError {
+            // Builtins and host functions take arguments by definition, so
+            // they get the same error as a parameterful closure rather than
+            // printing as a value.
+            Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) => Err(RunError {
                 message: "`main` must take no parameters to be runnable".to_string(),
                 span: def.span,
             }),
@@ -180,13 +223,19 @@ impl Interp {
                 message: format!("global `{name}` used before its definition"),
                 span: expr.span,
             }),
-            ExprKind::External(path) => match builtin(path) {
-                Some(b) => Ok(Value::Builtin(b)),
-                None => Err(RunError {
-                    message: format!("unknown external `{}`", path.join(".")),
-                    span: expr.span,
-                }),
-            },
+            ExprKind::External(path) => {
+                let joined = path.join(".");
+                match builtin(path) {
+                    Some(b) => Ok(Value::Builtin(b)),
+                    None if self.host.provides(&joined) => {
+                        Ok(Value::HostFn(Rc::from(joined.as_str())))
+                    }
+                    None => Err(RunError {
+                        message: format!("unknown external `{joined}`"),
+                        span: expr.span,
+                    }),
+                }
+            }
             ExprKind::Record(fields) => {
                 let mut out = Vec::with_capacity(fields.len());
                 for field in fields {
@@ -364,6 +413,7 @@ impl Interp {
                 }
             }
             Value::Builtin(b) => self.call_builtin(*b, args, span),
+            Value::HostFn(path) => self.host.call(path, args, span),
             other => Err(RunError {
                 message: format!("cannot call {}", other.kind_name()),
                 span,
@@ -572,12 +622,15 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
             }
             Ok(true)
         }
-        (Value::Closure(_) | Value::Builtin(_), _) | (_, Value::Closure(_) | Value::Builtin(_)) => {
-            Err(RunError {
-                message: "functions cannot be compared with `==`".to_string(),
-                span,
-            })
-        }
+        (Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_), _)
+        | (_, Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)) => Err(RunError {
+            message: "functions cannot be compared with `==`".to_string(),
+            span,
+        }),
+        (Value::HostData(_), _) | (_, Value::HostData(_)) => Err(RunError {
+            message: "host values cannot be compared with `==`".to_string(),
+            span,
+        }),
         // Different kinds are simply unequal (structural, not typed — B4 adds
         // the typechecker that would reject this statically).
         _ => Ok(false),
