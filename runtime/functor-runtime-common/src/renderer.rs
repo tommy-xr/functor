@@ -7,7 +7,7 @@ use crate::asset::AssetCache;
 use crate::material::BasicMaterial;
 use crate::shadow::{self, ShadowMap};
 use crate::{
-    DebugRenderMode, Frame, FrameTime, RenderContext, RenderPass, Scene3D, SceneContext,
+    Camera, DebugRenderMode, Frame, FrameTime, RenderContext, RenderPass, Scene3D, SceneContext,
     ShadowUniforms, Viewport,
 };
 
@@ -32,6 +32,9 @@ pub fn render_frame(
     scene_context: &SceneContext,
     shadow_map: &ShadowMap,
     frame: &Frame,
+    // The camera to render from — usually `&frame.camera`; stereo shells pass
+    // each per-eye camera (`Camera::stereo_eyes`) with a per-eye viewport.
+    camera: &Camera,
     frame_time: FrameTime,
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
@@ -99,8 +102,8 @@ pub fn render_frame(
 
     // The game supplies the camera; derive view/projection from it + the aspect.
     let world_matrix = Matrix4::identity();
-    let view_matrix = frame.camera.view_matrix();
-    let projection_matrix = frame.camera.projection_matrix(viewport.aspect());
+    let view_matrix = camera.view_matrix();
+    let projection_matrix = camera.projection_matrix(viewport.aspect());
 
     // Root material for nodes that don't set their own (scenes typically override
     // per-node); initialized against this frame's context.

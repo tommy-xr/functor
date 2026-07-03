@@ -175,6 +175,21 @@ struct Args {
     /// now; glTF models are unaffected until normal import lands.
     #[arg(long, value_enum, default_value_t = DebugRenderArg::Default)]
     debug_render: DebugRenderArg,
+
+    /// Render side-by-side stereo: the frame's camera is split into left/right
+    /// eye cameras (`--stereo-ipd` apart, parallel gaze) rendered into the
+    /// left|right halves of the window — the "full SBS" layout 3D displays
+    /// accept (e.g. Xreal glasses in 3D mode, which treat a 3840x1080 signal
+    /// as two 1920x1080 eyes). The UI overlay is drawn once across the whole
+    /// window, so it won't fuse in 3D — fine for dev, not for shipping.
+    #[arg(long)]
+    stereo_sbs: bool,
+
+    /// Eye separation for --stereo-sbs, in world units. The default assumes
+    /// meter-scale worlds (human IPD ≈ 64mm); raise it for larger-unit worlds
+    /// to deepen the 3D effect.
+    #[arg(long, default_value_t = 0.064)]
+    stereo_ipd: f32,
 }
 
 /// Read back the framebuffer just rendered (called before swap_buffers, so the
@@ -786,18 +801,47 @@ Escape again to quit"
                 player.respatialize_voices();
             }
 
-            // Shadow + forward passes, shared with the web runtime.
-            functor_runtime_common::render_frame(
-                &gl,
-                shader_version,
-                asset_cache.clone(),
-                &scene_context,
-                &shadow_map,
-                &frame,
-                time.clone(),
-                viewport,
-                args.debug_render.into(),
-            );
+            // Shadow + forward passes, shared with the web runtime. In stereo
+            // mode, render the same frame twice — once per eye camera into each
+            // half of the window. (The shadow pass runs per eye; it must start
+            // unscissored, so scissor is reset before each call — same contract
+            // as the netsim viewer's panes.)
+            if args.stereo_sbs {
+                let (left_cam, right_cam) = frame.camera.stereo_eyes(args.stereo_ipd);
+                let half_w = (fb_width as u32) / 2;
+                let eyes = [
+                    (left_cam, functor_runtime_common::Viewport::with_offset(0, 0, half_w, fb_height as u32)),
+                    (right_cam, functor_runtime_common::Viewport::with_offset(half_w, 0, half_w, fb_height as u32)),
+                ];
+                for (camera, eye_viewport) in &eyes {
+                    gl.disable(glow::SCISSOR_TEST);
+                    functor_runtime_common::render_frame(
+                        &gl,
+                        shader_version,
+                        asset_cache.clone(),
+                        &scene_context,
+                        &shadow_map,
+                        &frame,
+                        camera,
+                        time.clone(),
+                        *eye_viewport,
+                        args.debug_render.into(),
+                    );
+                }
+            } else {
+                functor_runtime_common::render_frame(
+                    &gl,
+                    shader_version,
+                    asset_cache.clone(),
+                    &scene_context,
+                    &shadow_map,
+                    &frame,
+                    &frame.camera,
+                    time.clone(),
+                    viewport,
+                    args.debug_render.into(),
+                );
+            }
 
             // 2D UI overlay: the game's declarative `ui model` View, lowered to a
             // text overlay on top of the 3D frame. Drawn before capture so it

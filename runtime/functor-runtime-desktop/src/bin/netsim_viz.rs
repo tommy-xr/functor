@@ -211,6 +211,7 @@ fn main() {
                     &scene_context,
                     &shadow_map,
                     &frame,
+                    &frame.camera,
                     time.clone(),
                     viewport,
                     DebugRenderMode::Default,

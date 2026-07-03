@@ -1019,6 +1019,7 @@ async fn run_async() -> Result<(), JsValue> {
                 &scene_context,
                 &shadow_map,
                 &frame,
+                &frame.camera,
                 frame_time.clone(),
                 viewport,
                 debug_render_mode,
