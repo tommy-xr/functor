@@ -21,6 +21,7 @@
 
 mod registry;
 mod scene;
+mod timeline;
 mod world;
 
 #[cfg(test)]
@@ -28,4 +29,5 @@ mod goldens;
 
 pub use registry::*;
 pub use scene::*;
+pub use timeline::*;
 pub use world::*;

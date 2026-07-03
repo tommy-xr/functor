@@ -82,6 +82,64 @@ fn determinism_golden_two_worlds_stay_byte_identical() {
     assert!(pos[1] < 2.0 && pos[1] > 0.0, "unexpected rest pose {pos:?}");
 }
 
+/// Drive a `Timeline` + sim through the scripted scenario (the `Simulatable`
+/// path: commands, not direct reconcile calls).
+fn drive<T: Timeline<World>>(tl: &mut T, sim: &mut World, frames: u64) {
+    for f in 0..frames {
+        let cmds = vec![Command::DeclareScene(scene_at(f))];
+        tl.record(f, sim, &cmds);
+        sim.step(&cmds);
+    }
+}
+
+#[test]
+fn strategy_equivalence_golden_keyframes_match_snapshot_ring_for_every_seek() {
+    // Record the same run through both cadences (keyframes-every-16 leaves
+    // most frames snapshot-less; the every-frame ring is the O(1) oracle).
+    let mut kf = TimelineLog::keyframes(16);
+    let mut kf_sim = World::new([0.0, -9.81, 0.0]);
+    drive(&mut kf, &mut kf_sim, FRAMES);
+
+    let mut ring = TimelineLog::snapshot_ring();
+    let mut ring_sim = World::new([0.0, -9.81, 0.0]);
+    drive(&mut ring, &mut ring_sim, FRAMES);
+
+    // Every recorded frame must seek byte-identical under both strategies —
+    // this is both rewind-correctness and a determinism check (the doc's
+    // trait contract: seek(K) == restore-earlier + re-step).
+    for k in 0..FRAMES {
+        kf.seek(k, &mut kf_sim);
+        ring.seek(k, &mut ring_sim);
+        assert!(
+            Simulatable::snapshot(&kf_sim) == Simulatable::snapshot(&ring_sim),
+            "strategies disagree at seek({k})"
+        );
+    }
+}
+
+#[test]
+fn replay_golden_replayonly_seek_to_end_matches_live_run() {
+    let mut live = World::new([0.0, -9.81, 0.0]);
+    let mut tl = TimelineLog::replay_only();
+    drive(&mut tl, &mut live, FRAMES);
+    let live_end = Simulatable::snapshot(&live);
+
+    // The replay-only cadence holds a single frame-0 snapshot; seeking the
+    // last frame replays the entire command log through fresh arenas.
+    let mut replayed = World::new([0.0, 0.0, 0.0]);
+    tl.seek(FRAMES - 1, &mut replayed);
+    // seek lands on the *pre-step* state of the last frame; finish with the
+    // log's own final entry to compare against the live end state.
+    for cmds in tl.commands_since(FRAMES - 1).to_vec() {
+        replayed.step(&cmds);
+    }
+
+    assert!(
+        Simulatable::snapshot(&replayed) == live_end,
+        "ReplayOnly seek-to-end diverged from the live run"
+    );
+}
+
 #[test]
 fn restore_golden_snapshot_plus_replay_matches_live_run() {
     // Snapshot at frame 20 — *before* the despawn (30), respawn (60), and
