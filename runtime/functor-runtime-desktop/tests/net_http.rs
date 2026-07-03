@@ -84,7 +84,10 @@ fn http_request_response_round_trip() {
         push_response(1, 200, fromString("pong".to_string()));
 
         // Tick 2: the inbox drains -> the request's tagger -> Done(200, "pong").
-        tick(FrameTime { tts: 0.016, dts: 0.016 });
+        tick(FrameTime {
+            tts: 0.016,
+            dts: 0.016,
+        });
 
         let done = state_debug().to_string();
         assert!(

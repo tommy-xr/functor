@@ -78,8 +78,7 @@ impl Game for HotReloadGame {
 
     fn mouse_wheel(&mut self, delta: i32) {
         unsafe {
-            let func: Symbol<fn(i32)> =
-                self.library.as_ref().unwrap().get(b"mouse_wheel").unwrap();
+            let func: Symbol<fn(i32)> = self.library.as_ref().unwrap().get(b"mouse_wheel").unwrap();
             func(delta)
         }
     }

@@ -74,7 +74,10 @@ fn websocket_server_accepts_and_echoes() {
         push_connected(fromString(BIND.to_string()), 1);
 
         // Tick 2: routed -> the game greets the client (Send "welcome" to id 1).
-        tick(FrameTime { tts: 0.016, dts: 0.016 });
+        tick(FrameTime {
+            tts: 0.016,
+            dts: 0.016,
+        });
         let connected = state_debug().to_string();
         assert!(
             connected.contains("client-connected"),
@@ -88,8 +91,15 @@ fn websocket_server_accepts_and_echoes() {
         );
 
         // Inject a message from that client; the server echoes it back.
-        push_message(fromString(BIND.to_string()), 1, fromString("ahoy".to_string()));
-        tick(FrameTime { tts: 0.032, dts: 0.016 });
+        push_message(
+            fromString(BIND.to_string()),
+            1,
+            fromString("ahoy".to_string()),
+        );
+        tick(FrameTime {
+            tts: 0.032,
+            dts: 0.016,
+        });
         let echoed = state_debug().to_string();
         assert!(
             echoed.contains("echoed") && echoed.contains("ahoy"),

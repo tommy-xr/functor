@@ -63,10 +63,14 @@ unsafe fn encode_framebuffer_png(gl: &glow::Context, width: u32, height: u32) ->
         let src = (height as usize - 1 - row) * stride;
         flipped[row * stride..(row + 1) * stride].copy_from_slice(&pixels[src..src + stride]);
     }
-    let img = image::RgbaImage::from_raw(width, height, flipped).expect("framebuffer size mismatch");
+    let img =
+        image::RgbaImage::from_raw(width, height, flipped).expect("framebuffer size mismatch");
     let mut bytes: Vec<u8> = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-        .expect("encode png");
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .expect("encode png");
     bytes
 }
 
@@ -80,13 +84,18 @@ fn main() {
         match a.as_str() {
             "--capture" => capture = it.next(),
             "--capture-after" => {
-                capture_after = it.next().and_then(|s| s.parse().ok()).unwrap_or(capture_after)
+                capture_after = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(capture_after)
             }
             _ => paths.push(a),
         }
     }
     if paths.is_empty() {
-        eprintln!("usage: functor-netsim-viz [--capture <png> [--capture-after <n>]] <dylib|sample> ...");
+        eprintln!(
+            "usage: functor-netsim-viz [--capture <png> [--capture-after <n>]] <dylib|sample> ..."
+        );
         eprintln!("   e.g. functor-netsim-viz mpserver mpclient mpclient");
         std::process::exit(2);
     }
@@ -106,7 +115,9 @@ fn main() {
     unsafe {
         let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
         glfw.window_hint(glfw::WindowHint::ContextVersion(4, 1));
-        glfw.window_hint(glfw::WindowHint::OpenGlProfile(glfw::OpenGlProfileHint::Core));
+        glfw.window_hint(glfw::WindowHint::OpenGlProfile(
+            glfw::OpenGlProfileHint::Core,
+        ));
         #[cfg(target_os = "macos")]
         glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
 
@@ -118,8 +129,9 @@ fn main() {
         window.set_key_polling(true);
 
         // Arc so the egui overlay painter can share the same GL context.
-        let gl =
-            Arc::new(glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _));
+        let gl = Arc::new(glow::Context::from_loader_function(|s| {
+            window.get_proc_address(s) as *const _
+        }));
         gl.enable(glow::DEPTH_TEST);
 
         let asset_cache = Arc::new(AssetCache::new());
@@ -143,7 +155,11 @@ fn main() {
             last_frame = frame_start;
             if dt > 0.0 {
                 let inst = 1.0 / dt;
-                fps = if fps == 0.0 { inst } else { fps * 0.9 + inst * 0.1 };
+                fps = if fps == 0.0 {
+                    inst
+                } else {
+                    fps * 0.9 + inst * 0.1
+                };
             }
 
             glfw.poll_events();

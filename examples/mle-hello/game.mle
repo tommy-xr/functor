@@ -1,0 +1,36 @@
+// mle-hello — the first real-language Functor game (docs/mle.md Track C2).
+// A ring of gradient cubes orbits a pulsing sphere. Run with:
+//
+//   functor-runner --mle --game-path examples/mle-hello/game.mle
+//
+// The producer contract: `init` is the initial model value; `tick` steps it;
+// `draw` returns a Frame. Transforms apply outermost-last, so
+// `|> Scene.translate(radius…) |> Scene.rotateY(angle)` places a cube on the
+// ring at `angle`.
+
+let count = 12.0
+let tau = 6.2831853
+
+let ringCube = (spin: Float, i: Float) =>
+  Scene.cube()
+    |> Scene.color(0.25 + 0.75 * (i / count), 0.35, 0.95 - 0.65 * (i / count))
+    |> Scene.rotateY(i * 0.7 + spin * 2.0)
+    |> Scene.translate(4.0, Math.sin(i + spin * 3.0) * 0.6, 0.0)
+    |> Scene.rotateY(i * tau / count + spin)
+
+let centerpiece = (spin: Float) =>
+  Scene.sphere()
+    |> Scene.color(1.0, 0.8, 0.2)
+    |> Scene.scale(1.1 + 0.25 * Math.sin(spin * 4.0))
+
+let init = { spin: 0.0 }
+
+let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt * 0.5 }
+
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 3.5, -9.0, 0.0, 0.0, 0.0),
+    Scene.group([
+      centerpiece(model.spin),
+      Scene.group(List.range(count) |> List.map((i) => ringCube(model.spin, i))),
+    ]))

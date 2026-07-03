@@ -132,80 +132,84 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                 (Method::Post, "/capture") => {
                     let (resp_tx, resp_rx) = mpsc::channel::<Result<Vec<u8>, CaptureError>>();
                     if tx.send(DebugRequest::Capture(resp_tx)).is_err() {
-                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
                         continue;
                     }
                     match resp_rx.recv() {
                         Ok(Ok(png)) => {
                             let header =
-                                Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..]).unwrap();
+                                Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..])
+                                    .unwrap();
                             let resp = Response::from_data(png).with_header(header);
                             let _ = request.respond(resp);
                         }
                         // No GL to read back (e.g. headless) — Service Unavailable.
                         Ok(Err(CaptureError::Unavailable(msg))) => {
-                            let _ = request
-                                .respond(Response::from_string(msg).with_status_code(503));
+                            let _ =
+                                request.respond(Response::from_string(msg).with_status_code(503));
                         }
                         // A genuine readback/encode failure — Internal Error.
                         Ok(Err(CaptureError::Failed(msg))) => {
-                            let _ = request
-                                .respond(Response::from_string(msg).with_status_code(500));
+                            let _ =
+                                request.respond(Response::from_string(msg).with_status_code(500));
                         }
                         Err(_) => {
-                            let _ = request
-                                .respond(Response::from_string("capture failed").with_status_code(500));
+                            let _ = request.respond(
+                                Response::from_string("capture failed").with_status_code(500),
+                            );
                         }
                     }
                 }
                 (Method::Get, "/state") => {
                     let (resp_tx, resp_rx) = mpsc::channel::<RuntimeState>();
                     if tx.send(DebugRequest::State(resp_tx)).is_err() {
-                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
                         continue;
                     }
                     match resp_rx.recv() {
                         Ok(state) => {
-                            let header = Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"application/json"[..],
-                            )
-                            .unwrap();
+                            let header =
+                                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                    .unwrap();
                             let resp = Response::from_string(state.to_json()).with_header(header);
                             let _ = request.respond(resp);
                         }
                         Err(_) => {
-                            let _ = request
-                                .respond(Response::from_string("state failed").with_status_code(500));
+                            let _ = request.respond(
+                                Response::from_string("state failed").with_status_code(500),
+                            );
                         }
                     }
                 }
                 (Method::Get, "/scene") => {
                     let (resp_tx, resp_rx) = mpsc::channel::<String>();
                     if tx.send(DebugRequest::Scene(resp_tx)).is_err() {
-                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
                         continue;
                     }
                     match resp_rx.recv() {
                         Ok(json) => {
-                            let header = Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"application/json"[..],
-                            )
-                            .unwrap();
+                            let header =
+                                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                    .unwrap();
                             let resp = Response::from_string(json).with_header(header);
                             let _ = request.respond(resp);
                         }
                         Err(_) => {
-                            let _ = request
-                                .respond(Response::from_string("scene failed").with_status_code(500));
+                            let _ = request.respond(
+                                Response::from_string("scene failed").with_status_code(500),
+                            );
                         }
                     }
                 }
                 (Method::Post, "/input") => {
                     let mut body = String::new();
                     if request.as_reader().read_to_string(&mut body).is_err() {
-                        let _ = request.respond(Response::from_string("bad body").with_status_code(400));
+                        let _ = request
+                            .respond(Response::from_string("bad body").with_status_code(400));
                         continue;
                     }
                     let cmd: InputCommand = match serde_json::from_str(&body) {
@@ -220,7 +224,8 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                     };
                     let (resp_tx, resp_rx) = mpsc::channel();
                     if tx.send(DebugRequest::Input(cmd, resp_tx)).is_err() {
-                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
                         continue;
                     }
                     match resp_rx.recv() {
@@ -228,18 +233,21 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                             let _ = request.respond(Response::from_string("ok"));
                         }
                         Ok(Err(msg)) => {
-                            let _ = request.respond(Response::from_string(msg).with_status_code(400));
+                            let _ =
+                                request.respond(Response::from_string(msg).with_status_code(400));
                         }
                         Err(_) => {
-                            let _ = request
-                                .respond(Response::from_string("input failed").with_status_code(500));
+                            let _ = request.respond(
+                                Response::from_string("input failed").with_status_code(500),
+                            );
                         }
                     }
                 }
                 (Method::Post, "/time") => {
                     let mut body = String::new();
                     if request.as_reader().read_to_string(&mut body).is_err() {
-                        let _ = request.respond(Response::from_string("bad body").with_status_code(400));
+                        let _ = request
+                            .respond(Response::from_string("bad body").with_status_code(400));
                         continue;
                     }
                     let cmd: TimeCommand = match serde_json::from_str(&body) {
@@ -254,7 +262,8 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                     };
                     let (resp_tx, resp_rx) = mpsc::channel();
                     if tx.send(DebugRequest::Time(cmd, resp_tx)).is_err() {
-                        let _ = request.respond(Response::from_string("runtime gone").with_status_code(503));
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
                         continue;
                     }
                     match resp_rx.recv() {
@@ -262,8 +271,9 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                             let _ = request.respond(Response::from_string("ok"));
                         }
                         Err(_) => {
-                            let _ = request
-                                .respond(Response::from_string("time failed").with_status_code(500));
+                            let _ = request.respond(
+                                Response::from_string("time failed").with_status_code(500),
+                            );
                         }
                     }
                 }
@@ -287,7 +297,8 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                     let _ = request.respond(Response::from_string(body).with_header(header));
                 }
                 _ => {
-                    let _ = request.respond(Response::from_string("not found").with_status_code(404));
+                    let _ =
+                        request.respond(Response::from_string("not found").with_status_code(404));
                 }
             }
         }
