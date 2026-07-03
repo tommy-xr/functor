@@ -102,15 +102,17 @@ pub struct MleDuration(pub f64);
 /// lies in `(prevTts, tts]` — a pure function of the global clock. No
 /// per-timer identity, no frame-to-frame diffing, and it survives a hot
 /// reload for free. A non-positive period never fires.
+///
+/// Precision: `tts` is f32-sourced (the protocol's `FrameTime`), so with a
+/// period that has no exact binary representation a boundary can land one
+/// frame late — but the floor comparison is monotone and telescoping over
+/// adjacent frame windows, so a firing is never lost or doubled (and the F#
+/// executor computes on the same f32s: exact parity).
+#[derive(Clone)]
 pub enum SubTree {
     None,
-    Every {
-        period_seconds: f64,
-        msg: Value,
-    },
-    /// Children are `Sub` host values, validated at construction; the walk
-    /// re-checks via [`sub_of`] (cheap) rather than storing a parallel tree.
-    Batch(Vec<Value>),
+    Every { period_seconds: f64, msg: Value },
+    Batch(Vec<SubTree>),
 }
 
 pub struct MleSub(pub SubTree);
@@ -705,15 +707,19 @@ impl Host for FunctorHost {
             },
             "Sub.batch" => match args.as_slice() {
                 [Value::List(items)] => {
+                    let mut subs = Vec::with_capacity(items.len());
                     for item in items.iter() {
-                        if sub_of(item).is_none() {
-                            return err(format!(
-                                "Sub.batch items must be Subs, got {}",
-                                item.kind_name()
-                            ));
+                        match sub_of(item) {
+                            Some(sub) => subs.push(sub.0.clone()),
+                            None => {
+                                return err(format!(
+                                    "Sub.batch items must be Subs, got {}",
+                                    item.kind_name()
+                                ))
+                            }
                         }
                     }
-                    Ok(host(MleSub(SubTree::Batch(items.to_vec()))))
+                    Ok(host(MleSub(SubTree::Batch(subs))))
                 }
                 _ => usage("Sub.batch([sub, …])"),
             },
@@ -811,16 +817,11 @@ pub fn sub_messages_for_frame(subs: &Value, prev_tts: f64, tts: f64) -> Result<V
         ));
     };
     let mut msgs = Vec::new();
-    collect_fired(&sub.0, prev_tts, tts, &mut msgs)?;
+    collect_fired(&sub.0, prev_tts, tts, &mut msgs);
     Ok(msgs)
 }
 
-fn collect_fired(
-    sub: &SubTree,
-    prev_tts: f64,
-    tts: f64,
-    msgs: &mut Vec<Value>,
-) -> Result<(), String> {
+fn collect_fired(sub: &SubTree, prev_tts: f64, tts: f64, msgs: &mut Vec<Value>) {
     match sub {
         SubTree::None => {}
         SubTree::Every {
@@ -835,13 +836,10 @@ fn collect_fired(
         }
         SubTree::Batch(items) => {
             for item in items.iter() {
-                // Validated at construction; a miss here is a host bug.
-                let inner = sub_of(item).ok_or("internal: non-Sub in Sub.batch")?;
-                collect_fired(&inner.0, prev_tts, tts, msgs)?;
+                collect_fired(item, prev_tts, tts, msgs);
             }
         }
     }
-    Ok(())
 }
 
 /// Physical dimensions (shape extents, radii, mass) must be strictly
@@ -1360,6 +1358,34 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
              ])";
         assert_eq!(fired(src, 1.9, 2.0), ["Slow", "Fast(2)"]);
         assert_eq!(fired(src, 2.0, 2.5), ["Fast(2)"]);
+    }
+
+    /// Walking a non-binary period over noisy f32-sourced frame times, the
+    /// firing count telescopes exactly: fires = boundary count of the whole
+    /// span, no message lost or doubled, no matter where the frame edges
+    /// land. (Timing may jitter by a frame; the COUNT is exact.)
+    #[test]
+    fn firing_count_telescopes_over_noisy_frames() {
+        let sub = eval(
+            "type Msg = | Pulse\n\
+             let main = () => Sub.every(Time.millis(300.0), Pulse)",
+        );
+        // f32-truncated, uneven frame edges (dt ~16.7ms), like the runner's.
+        let mut edges: Vec<f64> = Vec::new();
+        let mut t: f32 = 0.5;
+        for i in 0..600 {
+            t += 0.0167 + (i % 7) as f32 * 0.0011;
+            edges.push(t as f64);
+        }
+        let mut fires = 0;
+        for pair in edges.windows(2) {
+            fires += sub_messages_for_frame(&sub, pair[0], pair[1])
+                .expect("a Sub tree")
+                .len();
+        }
+        let (first, last) = (edges[0], edges[edges.len() - 1]);
+        let expected = ((last / 0.3).floor() - (first / 0.3).floor()) as usize;
+        assert_eq!(fires, expected, "over ({first}, {last}]");
     }
 
     /// Bare numbers are not durations — the Angle teaching error, for time.
