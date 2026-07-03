@@ -144,6 +144,9 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     if (options.mlePath && options.dylibPath) {
       throw new Error("mlePath and dylibPath are mutually exclusive");
     }
+    if (options.headless && options.visible) {
+      throw new Error("headless and visible are mutually exclusive");
+    }
     // An .mle source runs through the interpreter; otherwise a built dylib.
     const gamePath = options.mlePath
       ? isAbsolute(options.mlePath)
@@ -171,6 +174,10 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     }
     if (options.headless) {
       runnerArgs.push("--headless");
+    } else if (!options.visible) {
+      // Hidden by default: the window keeps its GL context (capture() works)
+      // but is never shown and never steals focus or the cursor.
+      runnerArgs.push("--hidden");
     }
 
     const logLines: string[] = [];
