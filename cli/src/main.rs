@@ -127,12 +127,26 @@ async fn main() -> tokio::io::Result<()> {
 
     // An MLE project (functor.json: `"language": "mle"`) routes build/run/
     // develop to the interpreter — no Fable, no cargo, hot reload built in.
-    if let Some(project) = commands::mle_project::detect(&working_directory_str) {
+    // Only build/run/develop are language-routed; anything else (Init, and
+    // Inspect handled earlier) falls through to the normal dispatch.
+    let is_routed = matches!(
+        &args.command,
+        Command::Build { .. } | Command::Run { .. } | Command::Develop { .. }
+    );
+    if let Some(project) = commands::mle_project::detect(&working_directory_str)
+        .filter(|_| is_routed)
+    {
         let res = match &args.command {
-            Command::Init { .. } | Command::Inspect { .. } => unreachable!("handled below/earlier"),
-            Command::Build { environment } => project.build(&working_directory_str).map(|_| {
-                let _ = environment; // nothing target-specific to build
-            }),
+            Command::Init { .. } | Command::Inspect { .. } => unreachable!("is_routed excludes"),
+            Command::Build { environment } => {
+                if matches!(Environment::default(environment), Environment::Wasm) {
+                    Err(io::Error::other(
+                        "mle on wasm is not wired yet (docs/mle.md Track C5) — use `build native`",
+                    ))
+                } else {
+                    project.build(&working_directory_str)
+                }
+            }
             Command::Run {
                 environment,
                 runner_args,

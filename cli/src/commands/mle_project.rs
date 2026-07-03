@@ -101,8 +101,10 @@ impl MleProject {
         if develop {
             println!("[mle] develop: hot reload is built in — edit {} and save", self.entry);
         }
-        let entry_str = entry.file_name().unwrap().to_str().unwrap().to_string();
-        let mut args = vec!["--mle", "--game-path", entry_str.as_str()];
+        // The runner's cwd is the project dir, so the entry passes through
+        // as-is — `src/game.mle` keeps its subdirectory.
+        let _ = entry; // existence validated above
+        let mut args = vec!["--mle", "--game-path", self.entry.as_str()];
         args.extend(runner_args.iter().map(|s| s.as_str()));
         let commands = vec![ShellCommand {
             prefix: "[Functor Runner]",
