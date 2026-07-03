@@ -15,9 +15,14 @@ shape every decision:
    `physicsScape : model -> PhysicsScene` declares the bodies that *should* exist,
    reconciled against a live world each frame — the same shape as `draw3d`
    (`Scene3D`) and `soundScape` (`AudioScene`).
-2. **Determinism.** Same inputs → same simulation, byte-for-byte, so we can
-   rewind, replay, and verify in the deterministic netsim. This forces a fixed
-   timestep and deterministic body ordering from day one.
+2. **Local determinism.** Same binary, same inputs → same simulation,
+   byte-for-byte — so we can rewind, replay, and verify in the deterministic
+   netsim. *Local* (single-binary) determinism is sufficient for every scenario
+   we target — replay, time-travel debugging, and both netcode modes (there is
+   only single ownership at any time) — and Rapier provides it with default
+   features. Cross-platform determinism is a **non-goal** (see Determinism).
+   This still forces a fixed timestep and deterministic body ordering from day
+   one.
 3. **Rewindable + networkable.** Pause / rewind / replay locally, and — the north
    star — client-side prediction + server reconciliation for the multiplayer
    target (`docs/multiplayer.md`'s netcode epic). Both are the *same machinery*:
@@ -316,20 +321,54 @@ are just the two common collections; a model can carry as many as its netcode ne
 
 ## Determinism
 
+**The requirement is local (single-binary) determinism, and Rapier provides it
+with default features**: the same simulation, on the same machine, with the same
+Rapier and rustc versions, produces bit-identical results
+([Rapier docs](https://rapier.rs/docs/user_guides/rust/determinism/)). This tier
+covers everything we're building:
+
+- **Rewind / replay / time-travel debugging** — re-simulation happens in the same
+  process that recorded the history.
+- **Mode A (server-authoritative + prediction)** — the client replays *its own*
+  inputs on *its own* machine, starting from a server snapshot that arrives *as
+  data*; it never has to bit-match the server's simulation. Float divergence
+  between client and server just means slightly larger corrections, which
+  converge.
+- **Mode B (split ownership, state-sync)** — each entity is simulated by exactly
+  one owner, who broadcasts its state; peers render it kinematically. Nobody
+  re-simulates anyone else's entities, so nothing needs to match across machines.
+
+**Cross-platform determinism (native ↔ wasm, x86 ↔ ARM) is a non-goal.** It is
+only needed for *input-only lockstep* — everyone simulates everything from
+inputs, no state on the wire — a mode we don't plan to build. Rapier's
+`enhanced-determinism` flag provides it, but it is mutually exclusive with
+`simd-stable` / `simd-nightly` / `parallel`, so it trades solver performance for
+a guarantee we don't need. It stays documented here as the escape hatch if
+lockstep ever becomes real, with fixed-point as the further fallback if
+cross-target goldens won't converge (Photon Quantum's path). One consequence
+worth naming: recording a repro on desktop and replaying it in the browser is
+out of scope — a replay is bound to the binary that recorded it.
+
+What local determinism requires from us (the fine print):
+
 - **Fixed-step accumulator** in the shell (never variable dt).
-- Rapier features **`enhanced-determinism`** + **`serde-serialize`**.
-- **Deterministic reconcile order** (sort by tag) for spawn/despawn/insert.
+- Rapier feature **`serde-serialize`** (snapshots); otherwise **default
+  features** — no `enhanced-determinism`. (If we later enable `parallel`, first
+  verify it is deterministic run-to-run on one machine — the Phase 1 golden
+  catches this.)
+- **Deterministic reconcile order across the whole world history, removals
+  included.** Rapier arena handles depend on the full insert/*remove* sequence,
+  not just the final set of bodies — so the reconcile diff (sort by tag) must be
+  fully deterministic for despawns too. Snapshot-based seeks (`KeyframeLog`,
+  `SnapshotRing`) are safe by construction (serde restores the arenas exactly);
+  `ReplayOnly` re-executes the history and leans on this.
+- **Replays are valid per-build only.** Fine for time-travel debugging (same
+  session) and netcode (ephemeral); don't persist replays as long-lived
+  artifacts. Hot-reloading the *game dylib* is safe — Rapier lives in the
+  runtime shell, which is unchanged — but rebuilding the *runtime* invalidates
+  recorded history.
 - No wall-clock / unseeded RNG leakage (netsim already uses a seeded SplitMix64).
-
-Two determinism tiers, with very different costs — this drives the netcode order:
-
-- **Single-binary replay determinism** (same build re-simulating its own recent
-  frames). Cheap and robust with the above. **Enough for server-authoritative +
-  prediction.**
-- **Cross-platform determinism** (native ↔ wasm, x86 ↔ ARM). Hard — f32 / libm
-  differences. Required only for lockstep / peer-owned simulation. **Validate with
-  goldens; never assume.** (Serious deterministic-netcode engines go fixed-point
-  for this reason — a fallback if cross-target goldens won't converge.)
+- **Validate with goldens; never assume** (Phase 1).
 
 ## Rewind: the `Simulatable` / `Timeline` seam
 
@@ -397,9 +436,31 @@ strategy choice is runtime config, defaulting to `KeyframeLog`.
   client declares its own player `Local` (predicted) and everything else `Remote`
   (kinematic, interpolated from snapshots). On an authoritative snapshot for frame
   K, `reconcile` restores K and replays stored local inputs K→now.
-- **Mode B — split ownership** (deferred; needs cross-platform determinism). Each
-  entity's `Authority` decides who simulates it; peers render others as kinematic.
-  Same reconciler; gated behind the cross-target determinism goldens.
+- **Mode B — split ownership** (deferred). Each entity's `Authority` decides who
+  simulates it; peers render others as kinematic, driven from broadcast state.
+  Owner-is-truth, so this needs **no cross-machine determinism at all** — see
+  Determinism.
+
+**Authority boundaries have a consistency problem that no determinism tier
+solves:** when two differently-owned dynamic bodies collide (my ball hits your
+ball), each owner resolves the contact seeing the other body as kinematic
+(infinite mass), and the two outcomes can disagree physically. This is resolved
+by design — ownership handoff on contact, or routing contested interactions
+through the server — not by determinism. Deferring Mode B defers this too, but
+any split-ownership scene (including the `mpserver`/`mpclient` demo below) hits
+it as soon as owned bodies can touch.
+
+**Target topology (networked VR): client-owned player movement, server-owned
+everything else.** Each client is authoritative over its own player pose —
+head/hands are tracked input; there is nothing sensible for a server to
+"correct" — declared `Local` and broadcast as state; peers render it
+`Remote`/kinematic. Every other physics body (props, projectiles, grabbed
+objects) is server-owned, so all contested interactions resolve in one place
+(the Source model — see Prior art). This is a small, fixed instance of the
+authority machinery above: pure state-sync, no cross-machine determinism, and
+the boundary problem reduces to player-touches-prop, which the server
+arbitrates (the player body is kinematic to the server's world, so props can't
+push the player — the usual VR choice).
 
 ## Culmination: pause / rewind / replay via keyboard
 
@@ -420,6 +481,29 @@ An `examples/hello-physics` scene (a few `dynamic` boxes settling on a `fixedBod
 plane) drives this. The egui overlay shows **read-only status** — current frame,
 paused/live, timeline strategy, history depth — since egui input isn't wired yet;
 all control is via the keyboard, exactly as scoped.
+
+## Debug visualization (wireframes via Rapier's debug renderer)
+
+Rapier ships its own debug renderer behind the **`debug-render`** feature:
+`DebugRenderPipeline` walks the live world and emits colored line segments —
+collider wireframes, contacts, joints, rigid-body frames, with granular passes
+(`render_colliders` / `render_contacts` / …) — through a one-method
+`DebugRenderBackend` trait (`draw_line(object, a, b, color)`). We adopt it
+rather than writing our own:
+
+- **Engine side**: `World::debug_lines() -> Vec<Line>` (a tiny backend impl that
+  collects segments into plain data). Render-only, world-untouched — zero
+  determinism impact — and being plain data it is *also text-dumpable*, the
+  line-set sibling of `World::dump()` for headless/LLM inspection.
+- **Shell side**: both runtimes draw the line list as a GL line pass over the
+  frame. `functor-runner` already has a `--debug-render <mode>` flag — physics
+  wireframes become a mode (e.g. `--debug-render physics`), so captures and
+  golden scenarios can show physics state with no game-code changes; a runtime
+  keyboard toggle joins the pause/rewind keys in `hello-physics`.
+
+This is the visual proof of reconcile correctness (declared scene vs what the
+solver actually holds) and makes divergence bugs — a body the renderer draws in
+one place and physics has in another — visible immediately.
 
 ## Test harness (extends `functor-netsim`)
 
@@ -473,8 +557,10 @@ It's worth building in two steps, because they exercise different machinery:
 
 | Phase | Scope | Targets |
 | --- | --- | --- |
-| **1. Shell spine** | Rapier dep (`enhanced-determinism` + `serde-serialize`), `physics` module (`PhysicsScene`/`Body`/`reconcile`/`WorldId` registry), fixed-step accumulator, `Simulatable` + `Timeline` traits, `KeyframeLog`, snapshot + text/JSON dump. Determinism + strategy-equivalence + replay goldens. **No F# surface.** | native+wasm (Rust) |
+| **1a. World spine** | Rapier dep (`serde-serialize`, default features), `physics` module (`PhysicsScene`/`Body`/`reconcile`/`WorldId` registry), fixed-step accumulator, snapshot + text/JSON dump. Determinism + restore-replay goldens. **No F# surface.** | native+wasm (Rust) |
+| **1b. Timeline seam** | `Simulatable` + `Timeline` traits, `KeyframeLog` (default) + `SnapshotRing` + `ReplayOnly`, strategy-equivalence + replay goldens. | native+wasm (Rust) |
 | **2. `physicsScape` + read-back** | `Game` hook + builder/runner, reconcile pipeline, `DrawContext` record on `draw3d` (`ctx.physics` view), `Physics.synced` sub, `examples/hello-physics`. | both |
+| **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, line pass in both shells, `--debug-render physics` mode + keyboard toggle in `hello-physics`. | both |
 | **3. Commands** | `applyImpulse`/`applyForce`/`setVelocity`/`teleport` (plain-data effects). | both |
 | **4. Queries** | `raycast`/`shapeCast` (async tagger, token registry). | both |
 | **5. Collision events** | `Physics.events` sub. | both |
@@ -482,7 +568,10 @@ It's worth building in two steps, because they exercise different machinery:
 | **6. Pause/rewind/replay** | timeline-control effects + keyboard wiring + egui status overlay (the culmination). | both |
 | **7a. Networked physics (state-sync)** | `Authority`, `mpserver`/`mpclient` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
 | **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
-| **8. Cross-target determinism** | native↔wasm determinism validation (gated on Phase 1 goldens); fixed-point fallback if needed. | both |
+
+(No cross-target determinism phase: neither netcode mode needs it — see
+Determinism. `enhanced-determinism` + cross-target goldens is the documented
+escape hatch if input-only lockstep is ever pursued.)
 
 ## Prior art
 
@@ -497,6 +586,19 @@ It's worth building in two steps, because they exercise different machinery:
   stack — the closest living reference); Photon Quantum (commercial deterministic
   ECS + **fixed-point** physics — the proof that cross-platform determinism pushes
   you to fixed-point).
+- **Authority models in shipped games**: **Source / HL2** — the server owns
+  *all* VPhysics; props are never client-predicted, only interpolated ~100 ms in
+  the past. The one predicted subsystem is the hand-written, deterministic
+  shared player-movement code, replayed against the input buffer on each
+  authoritative update (Mode A restricted to a tiny engine-free state). The
+  gravity gun is a server-side shadow controller velocity-steering the held prop
+  toward a view attachment — so the prop visibly lags the predicted view in
+  HL2DM; ragdolls/gibs are client-only cosmetics (our `client` collection).
+  Ownership conflicts are *defined away* by never splitting ownership; the
+  budget goes to hiding latency (prediction, interpolation, lag compensation).
+  **Rocket League** — also server-authoritative, but the client predicts the
+  *entire* Bullet world at a fixed 120 Hz tick and resimulates on correction:
+  the closest shipped proof of Mode A / Phase 7b over a whole physics world.
 - **Networked-physics literature**: Gabriel Gambetta, *Fast-Paced Multiplayer*
   (prediction / reconciliation / interpolation — read first); Glenn Fiedler,
   *Networked Physics* (lockstep vs. snapshot vs. state-sync, for physics

@@ -82,6 +82,7 @@ pub mod math;
 pub mod mle_prelude;
 pub mod model;
 pub mod net;
+pub mod physics;
 pub mod protocol;
 pub mod render;
 mod render_context;
