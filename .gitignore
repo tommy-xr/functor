@@ -43,3 +43,4 @@ perf*
 
 # Local Journal
 .journal.md
+*.vsix
