@@ -14,7 +14,10 @@
 //! Scene.group([scene, …])                                   -> Scene
 //! Scene.color(scene, r, g, b)                               -> Scene
 //! Scene.translate(scene, x, y, z)                           -> Scene
-//! Scene.rotateX/rotateY/rotateZ(scene, radians)             -> Scene
+//! Scene.rotateX/rotateY/rotateZ(scene, angle)               -> Scene
+//! Angle.degrees(n) / Angle.radians(n)                       -> Angle
+//!   (rotations and camera angles take Angle VALUES, never bare numbers —
+//!    degree/radian confusion is unrepresentable)
 //! Scene.scale(scene, k)                                     -> Scene
 //! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
@@ -61,6 +64,21 @@ pub struct MleFrame(pub Frame);
 
 /// A [`Light`] as an opaque MLE value.
 pub struct MleLight(pub Light);
+
+/// An [`Angle`] as an opaque MLE value — `Angle.degrees(…)`/`Angle.radians(…)`.
+/// Rotation/camera functions accept ONLY this, never a bare number, making
+/// degree/radian confusion unrepresentable (the F# side's `Math.Angle`
+/// discipline, carried across the boundary).
+pub struct MleAngle(pub Angle);
+
+impl HostData for MleAngle {
+    fn type_name(&self) -> &'static str {
+        "Angle"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 impl HostData for MleLight {
     fn type_name(&self) -> &'static str {
@@ -125,6 +143,8 @@ const PATHS: &[&str] = &[
     "Scene.scale",
     "Scene.lit",
     "Scene.emissive",
+    "Angle.degrees",
+    "Angle.radians",
     "Camera.lookAt",
     "Camera.firstPerson",
     "Light.ambient",
@@ -232,18 +252,25 @@ impl Host for FunctorHost {
                 }
                 _ => usage("Scene.translate(scene, x, y, z)"),
             },
+            "Angle.degrees" => match args.as_slice() {
+                [n] => Ok(host(MleAngle(Angle::from_degrees(num(n, span)? as f32)))),
+                _ => usage("Angle.degrees(n)"),
+            },
+            "Angle.radians" => match args.as_slice() {
+                [n] => Ok(host(MleAngle(Angle::from_radians(num(n, span)? as f32)))),
+                _ => usage("Angle.radians(n)"),
+            },
             "Scene.rotateX" | "Scene.rotateY" | "Scene.rotateZ" => match args.as_slice() {
-                [scene, radians] => {
-                    let angle: cgmath::Rad<f32> =
-                        Angle::from_radians(num(radians, span)? as f32).into();
+                [scene, angle] => {
+                    let angle: cgmath::Rad<f32> = angle_of(angle, path, span)?.into();
                     let xform = match path {
                         "Scene.rotateX" => Matrix4::from_angle_x(angle),
                         "Scene.rotateY" => Matrix4::from_angle_y(angle),
                         _ => Matrix4::from_angle_z(angle),
                     };
-                    wrap_transform(scene, xform, &format!("{path}(scene, radians)"), span)
+                    wrap_transform(scene, xform, &format!("{path}(scene, angle)"), span)
                 }
-                _ => return usage(&format!("{path}(scene, radians)")),
+                _ => return usage(&format!("{path}(scene, angle)")),
             },
             "Scene.scale" => match args.as_slice() {
                 [scene, k] => {
@@ -270,17 +297,20 @@ impl Host for FunctorHost {
                 _ => usage("Camera.lookAt(ex, ey, ez, tx, ty, tz)"),
             },
             "Camera.firstPerson" => match args.as_slice() {
-                [ex, ey, ez, yaw, pitch, fov_deg] => Ok(host(MleCamera(Camera::first_person(
+                [ex, ey, ez, yaw, pitch, fov] => Ok(host(MleCamera(Camera::first_person(
                     [
                         num(ex, span)? as f32,
                         num(ey, span)? as f32,
                         num(ez, span)? as f32,
                     ],
-                    Angle::from_radians(num(yaw, span)? as f32),
-                    Angle::from_radians(num(pitch, span)? as f32),
-                    Angle::from_degrees(num(fov_deg, span)? as f32),
+                    angle_of(yaw, "Camera.firstPerson yaw", span)?,
+                    angle_of(pitch, "Camera.firstPerson pitch", span)?,
+                    angle_of(fov, "Camera.firstPerson fov", span)?,
                 )))),
-                _ => usage("Camera.firstPerson(ex, ey, ez, yawRad, pitchRad, fovDeg)"),
+                _ => usage(
+                    "Camera.firstPerson(ex, ey, ez, yaw, pitch, fov) — Angle values \
+(Angle.degrees/Angle.radians)",
+                ),
             },
             "Light.ambient" => match args.as_slice() {
                 [r, g, b] => Ok(host(MleLight(Light::ambient(
@@ -380,6 +410,32 @@ fn num(value: &Value, span: Span) -> Result<f64, RunError> {
         }),
         other => Err(RunError {
             message: format!("expected a number, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
+/// Extract an [`Angle`] — rotation/camera functions accept ONLY Angle values,
+/// so a bare number gets a teaching error instead of a silent unit guess.
+fn angle_of(value: &Value, what: &str, span: Span) -> Result<Angle, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MleAngle>()
+            .map(|a| a.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected an Angle, got {}", value.kind_name()),
+                span,
+            }),
+        Value::Number(_) => Err(RunError {
+            message: format!(
+                "{what}: expected an Angle, got a bare number — say which unit: \
+Angle.degrees(…) or Angle.radians(…)"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected an Angle, got {}", other.kind_name()),
             span,
         }),
     }
@@ -507,7 +563,7 @@ mod tests {
             "let main = () =>\n\
              Frame.create(\n\
                Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
-               Scene.translate(Scene.rotateY(Scene.cube(), 1.5707964), 3.0, 0.0, 0.0))",
+               Scene.translate(Scene.rotateY(Scene.cube(), Angle.degrees(90.0)), 3.0, 0.0, 0.0))",
         );
         // World composition for nested Groups is parent-first:
         // world = T * R, so a cube corner rotates about the cube's own origin
@@ -553,7 +609,7 @@ mod tests {
         let frame = frame_of(
             "let main = () =>
              Frame.createLit(
-               Camera.firstPerson(0.0, 3.5, -8.0, 0.0, -0.3, 60.0),
+               Camera.firstPerson(0.0, 3.5, -8.0, Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
                Scene.group([
                  Scene.plane() |> Scene.scale(24.0) |> Scene.lit(0.6, 0.6, 0.62),
                  Scene.sphere() |> Scene.emissive(1.0, 0.3, 0.25),
@@ -586,6 +642,40 @@ mod tests {
             .err()
             .expect("should fail");
         assert_eq!(failure.error.message, "expected a number, got a string");
+    }
+
+    // [units, tier 1] rotations/camera angles refuse bare numbers with a
+    // teaching error — degree/radian confusion is unrepresentable.
+    #[test]
+    fn bare_numbers_are_not_angles() {
+        let module =
+            mle::lower(mle::parse("let main = () => Scene.cube() |> Scene.rotateY(1.57)").unwrap())
+                .unwrap();
+        let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            failure.error.message,
+            "Scene.rotateY: expected an Angle, got a bare number — say which unit: \
+Angle.degrees(…) or Angle.radians(…)"
+        );
+    }
+
+    // Degrees and radians agree where they should: 90° == τ/4 rad.
+    #[test]
+    fn degrees_and_radians_agree() {
+        let deg = frame_of(
+            "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+Scene.cube() |> Scene.rotateY(Angle.degrees(90.0)))",
+        );
+        let rad = frame_of(
+            "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
+        );
+        assert_eq!(
+            serde_json::to_string(&deg.scene).unwrap(),
+            serde_json::to_string(&rad.scene).unwrap()
+        );
     }
 
     // A value the prelude doesn't serve still errors as unknown.

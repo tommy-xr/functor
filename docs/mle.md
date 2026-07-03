@@ -183,6 +183,12 @@ snapshots — no GPU, fully agent-verifiable.
       state/replay invariants survive untouched. Typechecked: slot types fix
       at the initializer; updates check against declared record types.
       *Verify:* 18 semantics/error/diagnostic tests + example goldens. (done)
+- [x] **Units, tier 1: branded `Angle` values** (2026-07-03; design:
+      `~/notes/ideas/mle-language/units.md`). `Angle.degrees(n)` /
+      `Angle.radians(n)` opaque host values; rotations and camera angles
+      REFUSE bare numbers with a teaching error — degree/radian confusion
+      is unrepresentable, matching the F# side's `Math.Angle` discipline.
+      Tier 2 (F#-style units of measure with unit algebra) rides on B7.
 - [ ] **B7. Hindley–Milner inference** (decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade

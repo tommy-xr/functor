@@ -42,7 +42,9 @@ let tick = (m, dt, tts) => m
 
 let draw = (m, tts: Float) =>
   Frame.createLit(
-    Camera.firstPerson(0.0, 3.5, -8.0, 0.0, -0.3, 60.0),
+    Camera.firstPerson(
+      0.0, 3.5, -8.0,
+      Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(24.0) |> Scene.lit(0.6, 0.6, 0.62),
       whiteShapes(),

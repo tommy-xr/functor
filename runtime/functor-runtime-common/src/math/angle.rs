@@ -1,5 +1,6 @@
 use cgmath::Rad;
 
+#[derive(Clone, Copy)]
 pub struct Angle {
     ang: cgmath::Rad<f32>,
 }
