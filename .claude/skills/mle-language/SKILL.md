@@ -114,7 +114,9 @@ let draw = (model, tts) => Frame.create(camera, scene)
 ```
 
 `examples/mle-hello/game.mle` is the reference. The model shows live at the
-debug server's `GET /state`.
+debug server's `GET /state`. **Hot reload is on by default**: saving the
+`.mle` file reloads it in ~1 frame with the model preserved (a broken edit
+keeps the old program running; an edited `init` takes effect on restart).
 
 Transforms wrap in Group nodes: the **outer call applies last in world
 space** — `s |> Scene.rotateY(r) |> Scene.translate(x, 0.0, 0.0)` rotates in
