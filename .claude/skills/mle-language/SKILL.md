@@ -85,8 +85,9 @@ for the roadmap).
 ## Builtins (the whole registry)
 
 `List.map(list, fn)` · `List.filter(list, fn)` · `List.fold(list, fn, init)`
-(callback is `(acc, x) => …`) · `List.maximum(list)` · `Text.concat(a, b)` ·
-`Text.fromFloat(n)` · `Text.toBullets(list)` · `Math.clamp01(n)`
+(callback is `(acc, x) => …`) · `List.range(n)` (`[0 … n-1]`) ·
+`List.maximum(list)` · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
+`Text.toBullets(list)` · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)`
 
 ## Functor prelude (only under the engine host — `FunctorHost`)
 
@@ -103,6 +104,17 @@ scene |> Scene.scale(k)
 Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
 Frame.create(camera, scene)                                // what draw returns
 ```
+
+A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:
+
+```mle
+let init = { … }                       // the initial model (a value)
+let tick = (model, dt, tts) => model'  // per-frame step
+let draw = (model, tts) => Frame.create(camera, scene)
+```
+
+`examples/mle-hello/game.mle` is the reference. The model shows live at the
+debug server's `GET /state`.
 
 Transforms wrap in Group nodes: the **outer call applies last in world
 space** — `s |> Scene.rotateY(r) |> Scene.translate(x, 0.0, 0.0)` rotates in

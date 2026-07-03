@@ -145,6 +145,8 @@ pub fn builtin_signature(b: Builtin) -> Type {
             ],
             Unknown,
         ),
+        // List.range : (Float) => List<Float>
+        Builtin::ListRange => func(vec![Float], List(Box::new(Float))),
         // List.maximum : (List<Float>) => Float
         Builtin::ListMaximum => func(vec![List(Box::new(Float))], Float),
         // Text.concat : (String, String) => String
@@ -153,8 +155,8 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::TextFromFloat => func(vec![Float], String),
         // Text.toBullets : (List<String>) => String
         Builtin::TextToBullets => func(vec![List(Box::new(String))], String),
-        // Math.clamp01 : (Float) => Float
-        Builtin::MathClamp01 => func(vec![Float], Float),
+        // Math.clamp01 / sin / cos : (Float) => Float
+        Builtin::MathClamp01 | Builtin::MathSin | Builtin::MathCos => func(vec![Float], Float),
     }
 }
 

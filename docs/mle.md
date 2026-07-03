@@ -60,8 +60,8 @@ edit→frame vs today's multi-second rebuild). If perf is bad, the plan pivots t
 bytecode-VM-first; Track A is unaffected either way. Code is explicitly
 discarded afterwards.
 
-**Results (2026-07-01, spike in `runtime/functor-runtime-desktop/src/mle_spike.rs`,
-run via `functor-runner --mle --game-path examples/mle-spike/game.mle`):**
+**Results (2026-07-01; the spike was deleted in C2 when the real producer
+replaced it — `--mle` now runs the actual interpreter):**
 
 - **Perf: yes, decisively.** Release build, naive tree-walker, scene rebuilt
   from scratch every frame: **63.6µs/frame at 51 entities (0.4%** of a 60fps
@@ -225,10 +225,19 @@ Starts once A2 + B3 exist.
       *Verify (done):* unit tests assert the protocol data `.mle` snippets
       emit, incl. wire round-trip and the mle-hello mapped-group shape;
       prelude + mle crate build for wasm32 (ready for C5). (done)
-- [ ] **C2. `MleProducer`.** Implements `GameProducer`; `functor.json` grows a
-      `language` field. First game: spinning cube (`examples/mle-hello`).
-      *Verify:* `--capture-frame` golden; headless SDK e2e reads the MLE model
-      via `/state`.
+- [x] **C2. `MleGame` — the real producer.** `mle_game.rs` runs `.mle` logic
+      through `mle::Session` + the C1 prelude behind the existing `--mle`
+      flag, **deleting the Milestone-0 spike**. Contract: `init` value,
+      `tick(model, dt, tts)`, `draw(model, tts) -> Frame`; the model is a
+      plain MLE value held by the host (the C3 reload seam). Type
+      diagnostics print as warnings at load; per-frame errors keep the last
+      good model/frame. First game: `examples/mle-hello` (ring of cubes +
+      pulsing sphere; exercises `with`-updates, `let`, pipelines,
+      `List.range`/`Math.sin` — both added here). Release perf: tick 5.2µs +
+      draw 47.7µs = 0.3% of budget at 13 entities.
+      *Verify (done):* byte-identical `--fixed-time` captures; headless
+      `/state` shows the live MLE model. (`functor.json` `language` field —
+      CLI wiring — deferred to C4 alongside input.)
 - [ ] **C3. Hot-reload — the payoff.** File-watch → reparse → rebind, model
       preserved (already serializable data; no dylib, no cargo, no cache).
       *Verify:* SDK e2e: mutate state → edit `.mle` → assert state survived AND

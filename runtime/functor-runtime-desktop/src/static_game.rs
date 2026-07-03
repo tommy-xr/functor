@@ -123,8 +123,9 @@ impl Game for StaticGame {
 
     fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
         unsafe {
-            let func: Symbol<fn(fable_library_rust::String_::LrcStr, i32, fable_library_rust::String_::LrcStr)> =
-                self.library.get(b"net_push_conn_message").unwrap();
+            let func: Symbol<
+                fn(fable_library_rust::String_::LrcStr, i32, fable_library_rust::String_::LrcStr),
+            > = self.library.get(b"net_push_conn_message").unwrap();
             func(
                 fable_library_rust::String_::fromString(key),
                 conn,
@@ -143,8 +144,9 @@ impl Game for StaticGame {
 
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
         unsafe {
-            let func: Symbol<fn(fable_library_rust::String_::LrcStr, i32, fable_library_rust::String_::LrcStr)> =
-                self.library.get(b"net_push_conn_error").unwrap();
+            let func: Symbol<
+                fn(fable_library_rust::String_::LrcStr, i32, fable_library_rust::String_::LrcStr),
+            > = self.library.get(b"net_push_conn_error").unwrap();
             func(
                 fable_library_rust::String_::fromString(key),
                 conn,

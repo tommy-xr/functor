@@ -77,7 +77,10 @@ fn websocket_connect_send_receive() {
         push_connected(fromString(ENDPOINT.to_string()), 1);
 
         // Tick 2: routed to the decoder -> model `connected` + Effect.send "hello".
-        tick(FrameTime { tts: 0.016, dts: 0.016 });
+        tick(FrameTime {
+            tts: 0.016,
+            dts: 0.016,
+        });
         let connected = state_debug().to_string();
         assert!(
             connected.contains("connected"),
@@ -91,10 +94,17 @@ fn websocket_connect_send_receive() {
         );
 
         // Inject a message on the connection.
-        push_message(fromString(ENDPOINT.to_string()), 1, fromString("echo-hello".to_string()));
+        push_message(
+            fromString(ENDPOINT.to_string()),
+            1,
+            fromString("echo-hello".to_string()),
+        );
 
         // Tick 3: delivered to the model.
-        tick(FrameTime { tts: 0.032, dts: 0.016 });
+        tick(FrameTime {
+            tts: 0.032,
+            dts: 0.016,
+        });
         let got = state_debug().to_string();
         assert!(
             got.contains("got-message") && got.contains("echo-hello"),

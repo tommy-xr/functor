@@ -153,6 +153,70 @@ pub fn run_with_host(
     }
 }
 
+/// A persistent interpreter session for embedding (the C2 producer): load a
+/// module once, then call top-level functions per frame. Globals are
+/// evaluated at load; each `call` runs with a fresh interpreter over the
+/// session's globals (Rc-cheap clones), so per-frame state lives entirely in
+/// the VALUES passed in and returned — the model stays data (hot-reload can
+/// swap the session and keep the model; docs/mle.md C3).
+pub struct Session {
+    globals: HashMap<String, Value>,
+}
+
+impl Session {
+    /// Evaluate a module's top-level defs (eagerly, in file order — the same
+    /// semantics as [`run`]) into a session.
+    pub fn load(module: &Module, host: &mut dyn Host) -> Result<Session, RunFailure> {
+        let mut interp = Interp {
+            globals: HashMap::new(),
+            mut_slots: HashMap::new(),
+            trace: Vec::new(),
+            tracing: Tracing::Off,
+            depth: 0,
+            call_depth: 0,
+            host,
+        };
+        match interp.run_module(module) {
+            Ok(_) => Ok(Session {
+                globals: interp.globals,
+            }),
+            Err(error) => Err(RunFailure {
+                error,
+                trace: interp.trace,
+            }),
+        }
+    }
+
+    /// The value of a top-level def, if any.
+    pub fn global(&self, name: &str) -> Option<Value> {
+        self.globals.get(name).cloned()
+    }
+
+    /// Call the top-level function `name` with `args`. `span` 0..0 is used
+    /// for errors with no better location (the caller is not MLE code).
+    pub fn call(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        host: &mut dyn Host,
+    ) -> Result<Value, RunError> {
+        let callee = self.globals.get(name).cloned().ok_or_else(|| RunError {
+            message: format!("no top-level `let {name}` in the module"),
+            span: Span::new(0, 0),
+        })?;
+        let mut interp = Interp {
+            globals: self.globals.clone(),
+            mut_slots: HashMap::new(),
+            trace: Vec::new(),
+            tracing: Tracing::Off,
+            depth: 0,
+            call_depth: 0,
+            host,
+        };
+        interp.call(callee, args, name.to_string(), Span::new(0, 0), None)
+    }
+}
+
 struct Interp<'h> {
     globals: HashMap<String, Value>,
     /// Live `let mut` slots, keyed by binding, as a stack per binding (the
@@ -623,6 +687,16 @@ impl Interp<'_> {
             },
             // NaN handling follows Rust's `f64::max` (IEEE maximumNumber):
             // NaN elements are ignored unless every element is NaN.
+            // `List.range(n)` -> [0, 1, …, n-1] as Floats; n truncates.
+            Builtin::ListRange => match args.as_slice() {
+                [Value::Number(n)] => {
+                    let count = n.max(0.0) as usize;
+                    Ok(Value::List(Rc::new(
+                        (0..count).map(|i| Value::Number(i as f64)).collect(),
+                    )))
+                }
+                _ => err("List.range(n) expects one number".to_string()),
+            },
             Builtin::ListMaximum => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut best: Option<f64> = None;
@@ -677,6 +751,14 @@ impl Interp<'_> {
             Builtin::MathClamp01 => match args.as_slice() {
                 [Value::Number(n)] => Ok(Value::Number(n.clamp(0.0, 1.0))),
                 _ => err("Math.clamp01(n) expects one number".to_string()),
+            },
+            Builtin::MathSin => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(n.sin())),
+                _ => err("Math.sin(n) expects one number".to_string()),
+            },
+            Builtin::MathCos => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(n.cos())),
+                _ => err("Math.cos(n) expects one number".to_string()),
             },
         }
     }
@@ -750,6 +832,9 @@ pub enum Builtin {
     ListMap,
     ListFilter,
     ListFold,
+    ListRange,
+    MathSin,
+    MathCos,
     ListMaximum,
     TextConcat,
     TextFromFloat,
@@ -764,11 +849,14 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.map" => Builtin::ListMap,
         "List.filter" => Builtin::ListFilter,
         "List.fold" => Builtin::ListFold,
+        "List.range" => Builtin::ListRange,
         "List.maximum" => Builtin::ListMaximum,
         "Text.concat" => Builtin::TextConcat,
         "Text.fromFloat" => Builtin::TextFromFloat,
         "Text.toBullets" => Builtin::TextToBullets,
         "Math.clamp01" => Builtin::MathClamp01,
+        "Math.sin" => Builtin::MathSin,
+        "Math.cos" => Builtin::MathCos,
         _ => return None,
     })
 }
@@ -779,11 +867,14 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListMap => "List.map",
         Builtin::ListFilter => "List.filter",
         Builtin::ListFold => "List.fold",
+        Builtin::ListRange => "List.range",
         Builtin::ListMaximum => "List.maximum",
         Builtin::TextConcat => "Text.concat",
         Builtin::TextFromFloat => "Text.fromFloat",
         Builtin::TextToBullets => "Text.toBullets",
         Builtin::MathClamp01 => "Math.clamp01",
+        Builtin::MathSin => "Math.sin",
+        Builtin::MathCos => "Math.cos",
     }
 }
 

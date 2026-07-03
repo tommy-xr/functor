@@ -20,7 +20,8 @@ pub mod types;
 pub mod value;
 
 pub use eval::{
-    render_trace, run, run_with_host, Host, NoHost, RunFailure, RunOutcome, RunRecord, Tracing,
+    render_trace, run, run_with_host, Host, NoHost, RunFailure, RunOutcome, RunRecord, Session,
+    Tracing,
 };
 pub use lower::lower;
 pub use parser::parse;

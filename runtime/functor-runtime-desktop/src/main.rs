@@ -23,7 +23,7 @@ mod audio;
 mod debug_server;
 mod game;
 mod hot_reload_game;
-mod mle_spike;
+mod mle_game;
 mod net_dispatch;
 mod replay_game;
 mod static_game;
@@ -126,9 +126,9 @@ struct Args {
     #[arg(long)]
     hot: bool,
 
-    /// THROWAWAY (docs/mle.md Milestone 0): treat --game-path as an `.mle`
-    /// source file and run it through the embedded spike interpreter instead
-    /// of loading a game dylib. Hot-reloads on save; prints per-frame eval cost.
+    /// Treat --game-path as an `.mle` source file and run it through the MLE
+    /// interpreter with the Functor prelude instead of loading a game dylib
+    /// (docs/mle.md Track C2). Prints per-frame eval cost every 300 frames.
     #[arg(long)]
     mle: bool,
 
@@ -285,9 +285,7 @@ fn deliver_net_ws(
     }
     while let Ok(event) = ws_rx.try_recv() {
         match event {
-            ws_host::HostNetEvent::Connected { key, id } => {
-                game.net_push_connected(key, id as i32)
-            }
+            ws_host::HostNetEvent::Connected { key, id } => game.net_push_connected(key, id as i32),
             ws_host::HostNetEvent::Message { key, id, text } => {
                 game.net_push_conn_message(key, id as i32, text)
             }
@@ -507,7 +505,7 @@ pub async fn main() {
     println!("Working directory: {:?}", env::current_dir());
 
     let mut game: Box<dyn Game> = if args.mle {
-        Box::new(mle_spike::MleGame::create(game_path.as_str()))
+        Box::new(mle_game::MleGame::create(game_path.as_str()))
     } else if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
     } else if args.hot {

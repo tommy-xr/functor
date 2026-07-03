@@ -128,7 +128,9 @@ fn assert_scenario_matches(scenario: &Scenario) {
 }
 
 fn assert_images_match(actual_path: &Path, golden_path: &Path) {
-    let actual = image::open(actual_path).expect("open captured png").to_rgba8();
+    let actual = image::open(actual_path)
+        .expect("open captured png")
+        .to_rgba8();
     let golden = image::open(golden_path)
         .unwrap_or_else(|e| panic!("open golden {}: {e}", golden_path.display()))
         .to_rgba8();
@@ -176,7 +178,10 @@ fn native_scenarios_match_golden() {
         .into_iter()
         .filter(|s| s.targets.iter().any(|t| t == "native"))
         .collect();
-    assert!(!scenarios.is_empty(), "no native golden scenarios in manifest");
+    assert!(
+        !scenarios.is_empty(),
+        "no native golden scenarios in manifest"
+    );
 
     for scenario in &scenarios {
         println!("--- golden scenario: {} ---", scenario.name);

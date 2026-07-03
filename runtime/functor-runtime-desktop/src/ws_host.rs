@@ -25,10 +25,24 @@ use tokio_tungstenite::tungstenite::Message;
 /// A socket event for the main loop to push into the game (keyed by the
 /// connection's routing key — endpoint for a client, bind addr for a server).
 pub enum HostNetEvent {
-    Connected { key: String, id: u64 },
-    Message { key: String, id: u64, text: String },
-    Disconnected { key: String, id: u64 },
-    Error { key: String, id: u64, message: String },
+    Connected {
+        key: String,
+        id: u64,
+    },
+    Message {
+        key: String,
+        id: u64,
+        text: String,
+    },
+    Disconnected {
+        key: String,
+        id: u64,
+    },
+    Error {
+        key: String,
+        id: u64,
+        message: String,
+    },
 }
 
 /// What a per-connection task should do next.
@@ -387,9 +401,16 @@ mod tests {
         };
 
         // Client -> server message surfaces as a keyed Message.
-        client.send(Message::Text("hi-server".into())).await.unwrap();
+        client
+            .send(Message::Text("hi-server".into()))
+            .await
+            .unwrap();
         match recv(&rx) {
-            HostNetEvent::Message { key: k, id: i, text } => {
+            HostNetEvent::Message {
+                key: k,
+                id: i,
+                text,
+            } => {
                 assert_eq!(k, key);
                 assert_eq!(i, id);
                 assert_eq!(text, "hi-server");

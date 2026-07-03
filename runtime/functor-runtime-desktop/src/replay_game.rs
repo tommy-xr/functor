@@ -29,8 +29,7 @@ fn load_error(path: &str, message: String) -> ! {
 
 impl ReplayGame {
     pub fn create(path: &str) -> ReplayGame {
-        let src = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| load_error(path, e.to_string()));
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| load_error(path, e.to_string()));
         // A recording is either a single Frame or an array of them. Pick the
         // parse by the file's shape so a malformed recording reports the
         // error from the parse that was actually intended (a bad frame inside
