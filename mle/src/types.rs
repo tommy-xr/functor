@@ -15,25 +15,36 @@
 //! - `List<T>`.
 //! - Function types, from lambda annotations
 //!   (`(a: Float, b: Float): Float => …`); an unannotated return type is the
-//!   body's type when that is known.
+//!   body's type when that is known (inferred in a single quiet enrichment
+//!   pass — a *chain* of unannotated-return functions may stay Unknown).
+//!
+//! Note that nominality exists **only in annotations**: the runtime's record
+//! equality and field access are structural (`value_eq` has no type tags), so
+//! nominal diagnostics catch annotation-level intent, not runtime crashes.
 //!
 //! ## What is checked
 //!
-//! Arithmetic/comparison/unary-minus operand types; `==` across two
-//! *different* known types (always `false` — almost certainly a bug); record
-//! literals against a declared record type where one is expected (a return
-//! annotation, an argument of a call with a known signature); field access on
-//! a known record type; call arity and argument types where the callee's
-//! function type is known — including the builtins, whose signatures live in
-//! [`builtin_signature`] with generic slots as Unknown (no instantiation:
-//! `List.map`'s element types simply aren't tracked); return annotations
-//! against the body's type; and type-argument arity (`Position<Float>` is an
-//! error, an *unknown* type name is not).
+//! Arithmetic/comparison/unary-minus operand types; `==` across known types
+//! that *cannot* be equal at runtime (different primitive/list/function
+//! kinds, or record types whose declared field shapes differ — equality is
+//! structural, so same-shaped nominal types may legitimately compare) and on
+//! two functions (always a runtime error); record literals against a declared
+//! record type where one is expected (a return annotation, an argument of a
+//! call with a known signature) and against any *non*-record expectation (a
+//! record literal is never a Float); field access on a known record type;
+//! call arity and argument types where the callee's function type is known —
+//! including the builtins, whose signatures live in [`builtin_signature`]
+//! with generic slots as Unknown (no instantiation: `List.map`'s element
+//! types simply aren't tracked); return annotations against the body's type;
+//! and type-argument arity (`Position<Float>` is an error, an *unknown* type
+//! name is not).
 //!
 //! Top-level `let`s contribute what their value's shape declares (a lambda's
-//! annotations, a literal's type); everything else is Unknown. Signatures are
-//! collected before bodies are checked, so forward references between
-//! functions see full signatures (matching the interpreter's late binding).
+//! annotations, a literal's type), then a quiet single-pass inference
+//! upgrades what it can (an unannotated lambda return, a list literal's
+//! element type). Signatures are collected before bodies are checked, so
+//! forward references between functions see full signatures (matching the
+//! interpreter's late binding).
 //!
 //! [`check`] walks the whole module and returns **every** diagnostic, sorted
 //! by source position — it never stops at the first error.
@@ -83,8 +94,9 @@ impl fmt::Display for Type {
 }
 
 /// Gradual compatibility: true unless the two types are known to disagree.
-/// Unknown (at any depth) is compatible with everything, so this returning
-/// `false` means the code *cannot* be well-typed at runtime.
+/// Unknown (at any depth) is compatible with everything. (Incompatibility is
+/// an annotation-level claim, not a runtime guarantee — nominality only
+/// exists in annotations; see the module doc.)
 pub fn compatible(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Unknown, _) | (_, Type::Unknown) => true,
@@ -154,6 +166,7 @@ pub fn check(module: &Module) -> Vec<CheckError> {
         globals: HashMap::new(),
         locals: HashMap::new(),
         diags: Vec::new(),
+        quiet: false,
     };
 
     // Record type names first (nominal references may be forward), then
@@ -191,6 +204,22 @@ pub fn check(module: &Module) -> Vec<CheckError> {
         checker.globals.insert(def.name.clone(), ty);
     }
 
+    // Quiet enrichment: one inference pass upgrades what annotations alone
+    // couldn't say (an unannotated lambda's return from its body, a list
+    // literal's element type), so the diagnostic pass below checks against
+    // the best-known signatures. Single pass by design — a chain of
+    // unannotated-return functions stays Unknown (gradual, no fixed point).
+    checker.quiet = true;
+    for def in &module.defs {
+        let inferred = checker.infer(&def.value);
+        let entry = checker
+            .globals
+            .get_mut(&def.name)
+            .expect("inserted in the pre-pass");
+        *entry = merge_known(entry.clone(), inferred);
+    }
+    checker.quiet = false;
+
     for def in &module.defs {
         checker.infer(&def.value);
     }
@@ -207,11 +236,36 @@ struct Checker {
     /// are never shadowed or popped).
     locals: HashMap<u32, Type>,
     diags: Vec<CheckError>,
+    /// Suppress diagnostics (the quiet enrichment pass — the loud pass walks
+    /// the same nodes again and reports once).
+    quiet: bool,
+}
+
+/// Prefer the known parts of two views of the same definition's type: the
+/// annotation-derived signature, upgraded by inference where the annotation
+/// said Unknown.
+fn merge_known(stored: Type, inferred: Type) -> Type {
+    match (stored, inferred) {
+        (Type::Unknown, inferred) => inferred,
+        (Type::Fn(params, ret), Type::Fn(inferred_params, inferred_ret))
+            if params.len() == inferred_params.len() =>
+        {
+            let params = params
+                .into_iter()
+                .zip(inferred_params)
+                .map(|(s, i)| merge_known(s, i))
+                .collect();
+            Type::Fn(params, Box::new(merge_known(*ret, *inferred_ret)))
+        }
+        (stored, _) => stored,
+    }
 }
 
 impl Checker {
     fn diag(&mut self, span: Span, message: String) {
-        self.diags.push(CheckError { message, span });
+        if !self.quiet {
+            self.diags.push(CheckError { message, span });
+        }
     }
 
     /// Resolve an annotation to a [`Type`]. Unknown type *names* are not
@@ -287,6 +341,17 @@ impl Checker {
         match (&expr.kind, expected) {
             (ExprKind::Record(fields), Type::Record(name)) => {
                 self.check_record_literal(fields, name, expr.span);
+            }
+            // A record literal can never be a primitive/list/function,
+            // whatever nominal type it might otherwise satisfy.
+            (ExprKind::Record(fields), _) => {
+                self.diag(
+                    expr.span,
+                    format!("{what}: expected {expected}, got a record literal"),
+                );
+                for field in fields {
+                    self.infer(&field.value);
+                }
             }
             (ExprKind::List(items), Type::List(elem)) => {
                 for item in items {
@@ -508,18 +573,58 @@ impl Checker {
                 self.require_float(op, rhs, rhs_span);
                 Type::Bool
             }
-            // `==` across two different known types is always `false` —
-            // almost certainly a bug, so it is an error, not a lint.
+            // `==` is an error only where the runtime outcome is certain:
+            // comparing functions always fails at runtime, and operands whose
+            // known types cannot be equal always yield `false`. Runtime
+            // equality is STRUCTURAL, so two same-shaped nominal record types
+            // may legitimately compare — only differing declared shapes are
+            // errors.
             BinOp::Eq => {
-                if !compatible(lhs, rhs) {
-                    self.diag(
-                        node_span,
-                        format!("`==` compares different types {lhs} and {rhs} (always false)"),
-                    );
+                match (lhs, rhs) {
+                    (Type::Fn(..), Type::Fn(..)) => {
+                        self.diag(
+                            node_span,
+                            "functions cannot be compared with `==`".to_string(),
+                        );
+                    }
+                    (Type::Record(x), Type::Record(y)) => {
+                        if x != y && !self.same_record_shape(x, y) {
+                            self.diag(
+                                node_span,
+                                format!(
+                                    "`==` compares records with different shapes \
+                                     ({x} and {y}) — always false"
+                                ),
+                            );
+                        }
+                    }
+                    _ => {
+                        if !compatible(lhs, rhs) {
+                            self.diag(
+                                node_span,
+                                format!(
+                                    "`==` compares different types {lhs} and {rhs} (always false)"
+                                ),
+                            );
+                        }
+                    }
                 }
                 Type::Bool
             }
         }
+    }
+
+    /// Whether two declared record types have the same field-name set with
+    /// pairwise-compatible types — i.e. their values can be structurally
+    /// equal at runtime.
+    fn same_record_shape(&self, x: &str, y: &str) -> bool {
+        let (Some(xf), Some(yf)) = (self.records.get(x), self.records.get(y)) else {
+            return true; // unknown decl: stay gradual
+        };
+        xf.len() == yf.len()
+            && xf
+                .iter()
+                .all(|(name, ty)| yf.iter().any(|(n, t)| n == name && compatible(ty, t)))
     }
 
     fn require_float(&mut self, op: BinOp, ty: &Type, span: Span) {

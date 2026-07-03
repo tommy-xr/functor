@@ -298,3 +298,83 @@ fn expected_list_types_check_elements() {
     );
     assert_eq!(message, "`P` has no field `y`");
 }
+
+// --- Cross-engine review pins (C1-stack review of B4) ---
+
+// Runtime equality is structural: two same-shaped nominal types may compare
+// (and can be true) — NOT an error. [Claude H1]
+#[test]
+fn same_shaped_records_may_compare() {
+    assert_clean(
+        "type A = { x: Float }\n\
+         type B = { x: Float }\n\
+         let same = (a: A, b: B): Bool => a == b",
+    );
+}
+
+// Differing declared shapes guarantee structural inequality — error.
+#[test]
+fn different_shaped_records_compare_error() {
+    let diags = check_src(
+        "type A = { x: Float }\n\
+         type B = { y: Float }\n\
+         let never = (a: A, b: B): Bool => a == b",
+    );
+    assert_eq!(diags.len(), 1);
+    assert!(diags[0]
+        .0
+        .contains("`==` compares records with different shapes"));
+}
+
+// Comparing two known functions always fails at runtime. [Claude L2]
+#[test]
+fn function_equality_is_an_error() {
+    let diags = check_src(
+        "let f = (x: Float): Float => x\n\
+         let g = (x: Float): Float => x\n\
+         let bad = (): Bool => f == g",
+    );
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].0, "functions cannot be compared with `==`");
+}
+
+// A record literal can never satisfy a known non-record type. [Claude M1]
+#[test]
+fn record_literal_in_float_position_errors() {
+    let diags = check_src(
+        "let f = (a: Float): Float => a + a\n\
+         let main = () => f({ x: 1.0 })",
+    );
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].0,
+        "argument 1 of `f`: expected Float, got a record literal"
+    );
+}
+
+// Quiet enrichment: an unannotated lambda return is inferred from its body,
+// so downstream checks fire. [Codex High, probe 1]
+#[test]
+fn inferred_return_type_flows_to_callers() {
+    let diags = check_src(
+        "let f = (a: Float) => a\n\
+         let main = (): Bool => f(1.0)",
+    );
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].0, "return value: expected Bool, got Float");
+}
+
+// Quiet enrichment: a top-level list literal contributes its element type.
+// [Codex High, probe 2]
+#[test]
+fn top_level_list_literal_type_flows() {
+    let diags = check_src(
+        "let xs = [1.0]\n\
+         let main = (): String => Text.toBullets(xs)",
+    );
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].0,
+        "argument 1 of `Text.toBullets`: expected List<String>, got List<Float>"
+    );
+}
