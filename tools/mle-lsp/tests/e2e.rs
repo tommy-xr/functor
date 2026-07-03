@@ -101,7 +101,7 @@ fn diagnostics_over_real_stdio() {
 
     // An unknown request gets MethodNotFound and the server keeps serving.
     server.send(json!({
-        "jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/definition",
         "params": {},
     }));
     let response = server.recv();
@@ -120,6 +120,21 @@ fn diagnostics_over_real_stdio() {
     assert_eq!(publish["method"], "textDocument/publishDiagnostics");
     assert_eq!(publish["params"]["uri"], URI);
     assert_eq!(publish["params"]["diagnostics"], json!([]));
+
+    // Hover over the now-valid document: quick info for `x` at line 0 col 4.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 0, "character": 4 },
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(response["id"], 3);
+    assert_eq!(
+        response["result"]["contents"]["value"], "```mle\nx : Float\n```",
+        "hover response: {response}"
+    );
 
     // Clean shutdown.
     server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));

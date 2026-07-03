@@ -258,9 +258,16 @@ First-class `.mle` editor support, built on the `mle` crate's front-end
       errors as spanned diagnostics on open/change. *Verify:* framed-protocol
       e2e test drives the real binary (broken doc → diagnostic, fix → clear,
       unknown method → MethodNotFound).
-- [ ] **D3. Hover types & go-to-definition.** Deferred: hover needs B4's
-      typechecker; go-to-def needs a use→definition query over the IR (it
-      already carries spans on every node, but no query API yet).
+- [x] **D3a. Hover types + type diagnostics in-editor.** `mle::hover`
+      (language-aware, unit-tested: innermost node at an offset →
+      `name : Type` from the checker's per-expression table, honest
+      `Unknown` for unannotated code) behind `textDocument/hover` with
+      UTF-16-correct positions; `mle check`'s full diagnostic set now
+      publishes alongside parse/lower errors. *Verify:* 8 hover unit tests +
+      the framed e2e drives a real hover round-trip.
+- [ ] **D3b. Go-to-definition.** Needs a use→definition query over the IR
+      (it already carries spans on every node, but no query API yet); the
+      hover node-walk is the natural starting point.
 
 ## Endgame — replace F#
 

@@ -8,9 +8,12 @@
 //! bill of health) is published via `textDocument/publishDiagnostics`.
 //!
 //! Document sync is **full** (`textDocumentSync: 1`): every change carries
-//! the whole buffer, so the server keeps no state at all — diagnostics are
-//! computed straight from the incoming text.
+//! the whole buffer. The server keeps one piece of state — a uri→text map —
+//! to answer `textDocument/hover` (quick info: `name : Type` from the
+//! gradual checker, via `mle::hover`). Diagnostics cover parse, lowering,
+//! and every `mle::check` type diagnostic.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 
 use serde_json::{json, Value};
@@ -33,6 +36,7 @@ fn main() {
 /// it is 1 (EOF — the client vanished — is a quiet 0).
 fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
     let mut shutdown_seen = false;
+    let mut documents: HashMap<String, String> = HashMap::new();
     while let Some(message) = read_message(reader) {
         let method = message["method"].as_str().unwrap_or("").to_string();
         let id = message.get("id").cloned();
@@ -56,7 +60,7 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
             // --- Requests (have an id; must be answered). ---
             ("initialize", Some(id)) => {
                 let result = json!({
-                    "capabilities": { "textDocumentSync": 1 },
+                    "capabilities": { "textDocumentSync": 1, "hoverProvider": true },
                     "serverInfo": { "name": "mle-lsp" },
                 });
                 write_message(
@@ -69,6 +73,17 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                 write_message(
                     writer,
                     &json!({ "jsonrpc": "2.0", "id": id, "result": null }),
+                );
+            }
+            ("textDocument/hover", Some(id)) => {
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                let result = documents
+                    .get(uri)
+                    .and_then(|text| hover(text, &params["position"]))
+                    .unwrap_or(Value::Null);
+                write_message(
+                    writer,
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 );
             }
             (_, Some(id)) => {
@@ -87,6 +102,7 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
                 let text = params["textDocument"]["text"].as_str().unwrap_or("");
                 publish_diagnostics(writer, uri, text);
+                documents.insert(uri.to_string(), text.to_string());
             }
             ("textDocument/didChange", None) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
@@ -97,10 +113,12 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                     .and_then(|change| change["text"].as_str())
                 {
                     publish_diagnostics(writer, uri, text);
+                    documents.insert(uri.to_string(), text.to_string());
                 }
             }
             ("textDocument/didClose", None) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                documents.remove(uri);
                 // Clear stale squiggles for the closed file.
                 write_diagnostics(writer, uri, vec![]);
             }
@@ -115,23 +133,62 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
 /// diagnostic for the first parse/lower failure, or an empty list (which
 /// clears previous diagnostics) when the module is clean.
 fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
-    let error = match mle::parse(text) {
-        Err(err) => Some((err.message, err.span)),
-        Ok(program) => match mle::lower(program) {
-            Err(err) => Some((err.message, err.span)),
-            Ok(_) => None,
-        },
-    };
-    let diagnostics = match error {
-        Some((message, span)) => vec![json!({
+    let diagnostic = |message: &str, span: mle::Span| {
+        json!({
             "range": span_to_range(text, span),
             "severity": 1, // Error
             "source": "mle",
             "message": message,
-        })],
-        None => vec![],
+        })
+    };
+    // Parse and lowering stop at the first error; a clean module then gets
+    // ALL of the gradual checker's type diagnostics.
+    let diagnostics = match mle::parse(text) {
+        Err(err) => vec![diagnostic(&err.message, err.span)],
+        Ok(program) => match mle::lower(program) {
+            Err(err) => vec![diagnostic(&err.message, err.span)],
+            Ok(module) => mle::check(&module)
+                .into_iter()
+                .map(|err| diagnostic(&err.message, err.span))
+                .collect(),
+        },
     };
     write_diagnostics(writer, uri, diagnostics);
+}
+
+/// Answer a hover request: parse/lower/check the buffer, find the innermost
+/// node at the (UTF-16) position, and render `name : Type` as markdown.
+fn hover(text: &str, position: &Value) -> Option<Value> {
+    let offset = position_to_offset(text, position)?;
+    let module = mle::lower(mle::parse(text).ok()?).ok()?;
+    let (_, types) = mle::check_with_types(&module);
+    let (span, hover_text) = mle::hover::hover_text(&module, &types, offset)?;
+    Some(json!({
+        "contents": { "kind": "markdown", "value": format!("```mle\n{hover_text}\n```") },
+        "range": span_to_range(text, span),
+    }))
+}
+
+/// Invert [`lsp_position`]: an LSP `{line, character}` (UTF-16 code units)
+/// to a byte offset. Clamps past-end-of-line characters to the line end.
+fn position_to_offset(text: &str, position: &Value) -> Option<usize> {
+    let line = position["line"].as_u64()? as usize;
+    let character = position["character"].as_u64()? as usize;
+    let line_start = if line == 0 {
+        0
+    } else {
+        text.match_indices('\n').nth(line - 1)?.0 + 1
+    };
+    let line_text = &text[line_start..];
+    let line_text = &line_text[..line_text.find('\n').unwrap_or(line_text.len())];
+    let mut units = 0;
+    for (byte, ch) in line_text.char_indices() {
+        if units >= character {
+            return Some(line_start + byte);
+        }
+        units += ch.len_utf16();
+    }
+    Some(line_start + line_text.len())
 }
 
 fn write_diagnostics(writer: &mut impl Write, uri: &str, diagnostics: Vec<Value>) {

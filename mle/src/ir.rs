@@ -34,6 +34,14 @@ pub struct BindingId(pub(crate) u32);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ExprId(pub(crate) u32);
 
+impl ExprId {
+    /// The raw id, for keying external per-node tables
+    /// ([`crate::types::ExprTypes`]).
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
 // Compact `d0` / `b0` / `e0` forms keep the pretty-Debug IR (and the
 // committed `.ir` goldens) readable, like `Span`'s `start..end`.
 impl fmt::Debug for DefId {

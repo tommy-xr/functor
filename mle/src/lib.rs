@@ -10,6 +10,7 @@
 
 pub mod ast;
 pub mod eval;
+pub mod hover;
 pub mod ir;
 mod lexer;
 mod lower;
@@ -24,7 +25,7 @@ pub use eval::{
 pub use lower::lower;
 pub use parser::parse;
 pub use span::{line_col, Span};
-pub use types::check;
+pub use types::{check, check_with_types, ExprTypes};
 pub use value::{HostData, Value};
 
 /// A lex or parse failure: a message plus the span of the offending source.
