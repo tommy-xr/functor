@@ -392,7 +392,13 @@ out of scope — a replay is bound to the binary that recorded it.
 
 What local determinism requires from us (the fine print):
 
-- **Fixed-step accumulator** in the shell (never variable dt).
+- **Fixed-step accumulator** in the shell (never variable dt), fed **only** by
+  the harness's `FrameTime.dts` — physics has no clock of its own. This is the
+  shock2quest lesson (tommy-xr/shock2quest#298: debug-paused game, physics kept
+  integrating on wall-clock): here the debug server's `POST /time` pause/step
+  controls physics for free because pausing pins `dts = 0` and the accumulator
+  consumes nothing. Verified empirically: a paused scene is byte-identical
+  across wall-clock time; `advance` steps it exactly.
 - Rapier feature **`serde-serialize`** (snapshots); otherwise **default
   features** — no `enhanced-determinism`. (If we later enable `parallel`, first
   verify it is deterministic run-to-run on one machine — the Phase 1 golden
