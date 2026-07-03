@@ -150,6 +150,8 @@ Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)
 Light.directional(dx, dy, dz, r, g, b, intensity) |> Light.castShadows
 Frame.create(camera, scene)                                // what draw returns
 Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
+Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
+Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
 
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body
@@ -180,18 +182,30 @@ let draw = (model, tts) => Frame.create(camera, scene)
 let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
+let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
+let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
+                                            // OPTIONAL, but requires update
 let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …])  // OPTIONAL
 ```
 
-Frame order: `tick` → `physics` (reconcile + fixed-step, 60Hz accumulator)
-→ `draw` — physics reads in `draw` see this frame's stepped world; reads in
-`tick` see the *previous* frame's (so on the very first frame, and inside
-the `physics` hook itself, declared bodies don't exist yet — keep reads in
-`draw`). The physics world survives hot reload (like the model); deleting
-the `physics` hook drops it. Gotcha: `--fixed-time T` pins the clock with
-`dts = 0`, so physics **never steps** under it — bodies render at their
+Subscription timers are **stateless**: `Sub.every` fires when an integer
+multiple of its period lies in `(prevTts, tts]` — the global time grid, so
+a long frame fires ONCE (missed boundaries collapse) and timers tick right
+through a hot reload. Fired messages fold through `update` before `tick`.
+Durations, like Angles, are branded values — `Sub.every(0.5, …)` is a
+teaching error; say `Time.seconds(0.5)` or `Time.millis(500.0)`.
+
+Frame order: subscriptions→`update` → `tick` → `physics` (reconcile +
+fixed-step, 60Hz accumulator) → `draw` — physics reads in `draw` see this
+frame's stepped world; reads in `tick` see the *previous* frame's (so on
+the very first frame, and inside the `physics` hook itself, declared bodies
+don't exist yet — keep reads in `draw`). The physics world survives hot
+reload (like the model); deleting the `physics` hook drops it. Gotcha:
+`--fixed-time T` pins the clock with `dts = 0`, so physics **never steps**
+under it (and the subscription grid never crosses) — bodies render at their
 declared pose. Capture physics with plain `--capture-time` (and a settled
-scene for reproducibility) instead.
+scene for reproducibility) instead; capture timer-driven changes via the
+debug server's `/time` advance.
 
 A project dir with `functor.json` `{"language": "mle", "entry": "game.mle"}`
 works with the CLI: `functor -d dir build` (typecheck, diagnostics are

@@ -10,6 +10,9 @@
 //! let init = { … }                       // the initial model (a value)
 //! let tick = (model, dt, tts) => model'  // per-frame step
 //! let draw = (model, tts) => Frame.create(camera, scene)
+//! // optional MVU pair (C4b-2) — timer messages fold through update:
+//! let update = (model, msg) => model'
+//! let subscriptions = (model) => Sub.every(Time.seconds(1.0), Msg)
 //! let physics = (model) => Physics.scene(gx, gy, gz, [body, …])  // OPTIONAL
 //! ```
 //!
@@ -25,7 +28,9 @@
 
 use std::time::Instant;
 
-use functor_runtime_common::mle_prelude::{frame_value, physics_scene_value, FunctorHost};
+use functor_runtime_common::mle_prelude::{
+    frame_value, physics_scene_value, sub_messages_for_frame, FunctorHost,
+};
 use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
@@ -42,6 +47,13 @@ pub struct MleGame {
     has_input: bool,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
+    has_subscriptions: bool,
+    /// The previous frame's total-time, the left edge of the `(prev, tts]`
+    /// window subscriptions fire over. `None` until the first frame has run
+    /// (nothing fires on frame one — mirroring the F# executor). Producer
+    /// state, not model state: it survives a hot reload, and the stateless
+    /// time-grid semantics of `Sub.every` do the rest.
+    prev_tts: Option<f64>,
     has_physics: bool,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
@@ -71,6 +83,7 @@ struct Loaded {
     has_input: bool,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
+    has_subscriptions: bool,
     has_physics: bool,
 }
 
@@ -124,6 +137,22 @@ fn load_game(path: &str) -> Result<Loaded, String> {
     if has_mouse_wheel {
         require_function(path, &session, "mouseWheel", 2)?;
     }
+    // The MVU pair: `subscriptions(model)` declares timers whose fired
+    // messages fold through `update(model, msg)` — so subscriptions without
+    // an update have nowhere to deliver.
+    let has_subscriptions = session.global("subscriptions").is_some();
+    if has_subscriptions {
+        require_function(path, &session, "subscriptions", 1)?;
+        if session.global("update").is_none() {
+            return Err(format!(
+                "{path}: `subscriptions` produces messages but there is no \
+`let update = (model, msg) => …` to receive them"
+            ));
+        }
+    }
+    if session.global("update").is_some() {
+        require_function(path, &session, "update", 2)?;
+    }
     // Optional physics: `physics(model) => Physics.scene(…)` declares the
     // bodies that should exist; the host reconciles + fixed-steps the world
     // after each tick (docs/physics.md).
@@ -138,6 +167,7 @@ fn load_game(path: &str) -> Result<Loaded, String> {
         has_input,
         has_mouse_move,
         has_mouse_wheel,
+        has_subscriptions,
         has_physics,
     })
 }
@@ -171,6 +201,8 @@ impl MleGame {
             has_input: loaded.has_input,
             has_mouse_move: loaded.has_mouse_move,
             has_mouse_wheel: loaded.has_mouse_wheel,
+            has_subscriptions: loaded.has_subscriptions,
+            prev_tts: None,
             has_physics: loaded.has_physics,
             last_frame: empty_frame(),
             last_error: None,
@@ -227,6 +259,46 @@ impl MleGame {
         }
     }
 
+    /// Fire subscription timers over `(prev_tts, tts]` and fold their
+    /// messages through `update`, before this frame's `tick` — the message
+    /// drain seam (docs/mle.md C4b-2; B6's effects will feed this same
+    /// path). Subscriptions are recomputed from the current model each
+    /// frame, so a model change can silence a timer. Errors report per
+    /// message and processing continues — one bad message must not stall
+    /// the rest, and dedupe keeps a persistent bug to one line.
+    fn pump_subscriptions(&mut self, tts: f64) {
+        // Advance the window even without subscriptions (or on frame one),
+        // so a hot reload that ADDS subscriptions starts from a sane edge.
+        let prev = self.prev_tts.replace(tts);
+        if !self.has_subscriptions {
+            return;
+        }
+        let Some(prev) = prev else {
+            return;
+        };
+        let subs =
+            match self
+                .session
+                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(subs) => subs,
+                Err(err) => return self.frame_error("subscriptions", &err),
+            };
+        let msgs = match sub_messages_for_frame(&subs, prev, tts) {
+            Ok(msgs) => msgs,
+            Err(message) => return self.report_once(format!("[mle] {message}")),
+        };
+        for msg in msgs {
+            match self
+                .session
+                .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
+            {
+                Ok(model) => self.model = model,
+                Err(err) => self.frame_error("update", &err),
+            }
+        }
+    }
+
     fn report_stats(&mut self) {
         if self.frames > 0 && self.frames % STATS_EVERY == 0 {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
@@ -267,6 +339,9 @@ impl Game for MleGame {
                 self.has_input = loaded.has_input;
                 self.has_mouse_move = loaded.has_mouse_move;
                 self.has_mouse_wheel = loaded.has_mouse_wheel;
+                self.has_subscriptions = loaded.has_subscriptions;
+                // prev_tts is deliberately kept: `Sub.every` fires on the
+                // global time grid, so timers tick right through a reload.
                 self.has_physics = loaded.has_physics;
                 // The physics world is deliberately KEPT, like the model: it
                 // lives in this process's registry, so bodies stay where they
@@ -284,13 +359,18 @@ takes effect on restart)",
                 );
             }
             Err(message) => {
-                self.report_once(format!("[mle] reload failed, keeping old program: {message}"));
+                self.report_once(format!(
+                    "[mle] reload failed, keeping old program: {message}"
+                ));
             }
         }
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
         let started = Instant::now();
+        // Subscriptions first, so `tick` sees a model that has absorbed this
+        // frame's messages (the F# executor's ordering).
+        self.pump_subscriptions(frame_time.tts as f64);
         let args = vec![
             self.model.clone(),
             Value::Number(frame_time.dts as f64),
@@ -430,4 +510,52 @@ fn empty_frame() -> Frame {
             xform: Matrix4::identity(),
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write `src` to a temp .mle file and return `load_game`'s error.
+    fn load_err(name: &str, src: &str) -> String {
+        let path =
+            std::env::temp_dir().join(format!("mle-game-test-{}-{name}.mle", std::process::id()));
+        std::fs::write(&path, src).expect("write temp game");
+        let err = load_game(path.to_str().expect("utf-8 temp path"))
+            .err()
+            .expect("load should fail");
+        let _ = std::fs::remove_file(&path);
+        err
+    }
+
+    const BASE: &str = "let init = { n: 0.0 }\n\
+         let tick = (m, dt, tts) => m\n\
+         let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n";
+
+    /// Subscriptions produce messages; without an `update` they have nowhere
+    /// to go — a load error, not a per-frame one.
+    #[test]
+    fn subscriptions_require_update() {
+        let err = load_err(
+            "subs-no-update",
+            &format!("{BASE}let subscriptions = (m) => Sub.none()\n"),
+        );
+        assert!(
+            err.contains("no `let update = (model, msg) => …` to receive them"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The MVU pair is arity-validated at load like every other entry point.
+    #[test]
+    fn update_arity_is_validated() {
+        let err = load_err(
+            "update-arity",
+            &format!("{BASE}let update = (m) => m\nlet subscriptions = (m) => Sub.none()\n"),
+        );
+        assert!(
+            err.contains("`update` must take 2 parameter(s), takes 1"),
+            "unexpected error: {err}"
+        );
+    }
 }
