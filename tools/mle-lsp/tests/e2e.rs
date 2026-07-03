@@ -137,8 +137,8 @@ fn diagnostics_over_real_stdio() {
     );
 
     // Clean shutdown.
-    server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
-    assert_eq!(server.recv()["id"], 3);
+    server.send(json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    assert_eq!(server.recv()["id"], 4);
     server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
     let status = server.child.wait().expect("wait for exit");
     assert!(status.success(), "server exited with {status}");

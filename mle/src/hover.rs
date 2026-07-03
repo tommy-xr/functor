@@ -61,6 +61,27 @@ fn visit(expr: &Expr, types: &ExprTypes, consider: &mut impl FnMut(Span, String)
         ExprKind::External(path) => {
             consider(expr.span, format!("{} : {ty}", path.join(".")));
         }
+        ExprKind::Let {
+            name,
+            mutable,
+            value,
+            body,
+            ..
+        } => {
+            // The binder-name region (`let [mut] name =`), like def names.
+            if expr.span.start < value.span.start {
+                let value_ty = types.get(&value.id.raw()).cloned().unwrap_or(Type::Unknown);
+                let label = if *mutable {
+                    format!("mut {name} : {value_ty}")
+                } else {
+                    format!("{name} : {value_ty}")
+                };
+                consider(Span::new(expr.span.start, value.span.start), label);
+            }
+            consider(expr.span, ty.to_string());
+            visit(value, types, consider);
+            visit(body, types, consider);
+        }
         ExprKind::Lambda { params, body, .. } => {
             consider(expr.span, ty.to_string());
             for param in params.iter() {
@@ -184,5 +205,58 @@ mod tests {
         let module = crate::lower(crate::parse(src).unwrap()).unwrap();
         let (_, types) = check_with_types(&module);
         assert!(hover_text(&module, &types, src.len()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::types::check_with_types;
+
+    fn hover_at(src: &str, needle: &str) -> String {
+        let module = crate::lower(crate::parse(src).expect("parse")).expect("lower");
+        let (_, types) = check_with_types(&module);
+        let offset = src.find(needle).expect("needle present");
+        hover_text(&module, &types, offset)
+            .map(|(_, text)| text)
+            .expect("hover present")
+    }
+
+    // [AGREED review] literals in structurally-checked positions hover with
+    // their checked type, not Unknown.
+    #[test]
+    fn checked_record_literal_hovers_with_its_type() {
+        let src = "type P = { x: Float }\nlet mk = (): P => { x: 1.0 }";
+        assert_eq!(hover_at(src, "{ x: 1.0 }"), "P");
+    }
+
+    #[test]
+    fn checked_list_literal_hovers_with_its_type() {
+        let src = "let f = (): List<Float> => [1.0, 2.0]";
+        assert_eq!(hover_at(src, "[1.0"), "List<Float>");
+    }
+
+    // [review] inner nodes of a binary spine are recorded too.
+    #[test]
+    fn inner_binary_nodes_hover_with_their_type() {
+        let src = "let f = (x: Float) => x + x + x";
+        let inner_plus = src.find('+').unwrap();
+        let module = crate::lower(crate::parse(src).unwrap()).unwrap();
+        let (_, types) = check_with_types(&module);
+        let (_, text) = hover_text(&module, &types, inner_plus).unwrap();
+        assert_eq!(text, "Float");
+    }
+
+    // [review] let/mut binder names hover with `name : Type`.
+    #[test]
+    fn let_binder_name_hovers_named() {
+        let src = "let f = (x: Float) => let y = x in y + 1.0";
+        assert_eq!(hover_at(src, "y ="), "y : Float");
+    }
+
+    #[test]
+    fn mut_binder_name_hovers_named() {
+        let src = "let f = (x: Float) => let mut a = x in a := a + 1.0; a";
+        assert_eq!(hover_at(src, "mut a ="), "mut a : Float");
     }
 }

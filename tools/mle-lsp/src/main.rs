@@ -3,9 +3,9 @@
 //!
 //! Hand-rolled LSP over stdio: a blocking read loop with `Content-Length`
 //! framing and `serde_json` dispatch — no async runtime, no LSP framework.
-//! The one feature is diagnostics: on `didOpen`/`didChange` the buffer is fed
-//! through [`mle::parse`] and [`mle::lower`], and the first error (or a clean
-//! bill of health) is published via `textDocument/publishDiagnostics`.
+//! On `didOpen`/`didChange` the buffer is fed through [`mle::parse`],
+//! [`mle::lower`], and [`mle::check`]; the first parse/lower error, or ALL
+//! type diagnostics, publish via `textDocument/publishDiagnostics`.
 //!
 //! Document sync is **full** (`textDocumentSync: 1`): every change carries
 //! the whole buffer. The server keeps one piece of state — a uri→text map —
@@ -129,9 +129,9 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
     0
 }
 
-/// Run the MLE front-end over `text` and publish the outcome: one Error
-/// diagnostic for the first parse/lower failure, or an empty list (which
-/// clears previous diagnostics) when the module is clean.
+/// Run the MLE front-end over `text` and publish the outcome: one diagnostic
+/// for the first parse/lower failure, every `mle::check` type diagnostic for
+/// a lowered module, or an empty list (clearing squiggles) when clean.
 fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
     let diagnostic = |message: &str, span: mle::Span| {
         json!({

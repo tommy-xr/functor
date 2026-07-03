@@ -356,6 +356,10 @@ impl Checker {
         match (&expr.kind, expected) {
             (ExprKind::Record(fields), Type::Record(name)) => {
                 self.check_record_literal(fields, name, expr.span);
+                // Structural paths bypass `infer`, so record the checked
+                // type here or hover would honestly-but-wrongly say Unknown
+                // (and a stale quiet-pass entry could linger).
+                self.expr_types.insert(expr.id.raw(), expected.clone());
             }
             // A record literal can never be a primitive/list/function,
             // whatever nominal type it might otherwise satisfy.
@@ -372,6 +376,7 @@ impl Checker {
                 for item in items {
                     self.expect(item, elem, "list element");
                 }
+                self.expr_types.insert(expr.id.raw(), expected.clone());
             }
             _ => {
                 let got = self.infer(expr);
@@ -623,15 +628,18 @@ impl Checker {
                 let mut spine = Vec::new();
                 let mut leaf = expr;
                 while let ExprKind::Binary { op, lhs, rhs } = &leaf.kind {
-                    spine.push((*op, rhs.as_ref(), leaf.span));
+                    spine.push((*op, rhs.as_ref(), leaf.span, leaf.id));
                     leaf = lhs;
                 }
                 let mut acc = self.infer(leaf);
                 let mut acc_span = leaf.span;
-                for (op, rhs, node_span) in spine.into_iter().rev() {
+                for (op, rhs, node_span, node_id) in spine.into_iter().rev() {
                     let rhs_ty = self.infer(rhs);
                     acc = self.binary(op, &acc, acc_span, &rhs_ty, rhs.span, node_span);
                     acc_span = node_span;
+                    // Spine nodes never pass through the recording `infer`
+                    // wrapper (the walk is iterative) — record each here.
+                    self.expr_types.insert(node_id.raw(), acc.clone());
                 }
                 acc
             }
