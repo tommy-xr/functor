@@ -149,9 +149,17 @@ struct Args {
     #[arg(long)]
     headless: bool,
 
+    /// Create the GL window hidden: it is never shown, never takes focus, and
+    /// never captures the cursor, so a run doesn't steal input from the user.
+    /// A hidden window keeps a valid GL context and framebuffer, so rendering,
+    /// --capture-frame, and the debug server's /capture all work unchanged.
+    /// Implied by --capture-frame. (With --headless there is no window at all.)
+    #[arg(long, conflicts_with = "headless")]
+    hidden: bool,
+
     /// Write a PNG of the rendered frame to this path, then exit. The capture
     /// happens on the first frame after --capture-time seconds of wall-clock
-    /// time, so assets have a chance to load.
+    /// time, so assets have a chance to load. Implies --hidden.
     #[arg(long)]
     capture_frame: Option<String>,
 
@@ -531,6 +539,11 @@ pub async fn main() {
         return;
     }
 
+    // Hidden window: never shown / focused / cursor-capturing, so the run
+    // doesn't steal input from the user. Capture runs are hidden by default —
+    // there's no reason a scripted screenshot should grab the mouse.
+    let hidden = args.hidden || args.capture_frame.is_some();
+
     unsafe {
         let (gl, shader_version, mut window, mut glfw, events) = {
             use glfw::Context;
@@ -543,6 +556,9 @@ pub async fn main() {
             ));
             #[cfg(target_os = "macos")]
             glfw.window_hint(glfw::WindowHint::OpenGlForwardCompat(true));
+            if hidden {
+                glfw.window_hint(glfw::WindowHint::Visible(false));
+            }
 
             // glfw window creation
             // --------------------
@@ -562,7 +578,10 @@ pub async fn main() {
             // hot-reload loop: tweak code in the editor while the game runs);
             // click recaptures; Escape while released quits. Losing focus
             // also releases, so cmd-tabbing away hands the pointer back.
-            window.set_cursor_mode(glfw::CursorMode::Disabled);
+            // A hidden window never gets focus, so it must not grab the cursor.
+            if !hidden {
+                window.set_cursor_mode(glfw::CursorMode::Disabled);
+            }
 
             let gl =
                 glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _);
@@ -594,8 +613,9 @@ pub async fn main() {
         let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
         let mut mouse_pos: (i32, i32) = (0, 0);
         // Whether the window owns the pointer (free-look). See the Escape /
-        // MouseButton / Focus arms in the event loop.
-        let mut cursor_captured = true;
+        // MouseButton / Focus arms in the event loop. A hidden window never
+        // captures (and never receives the events that would toggle this).
+        let mut cursor_captured = !hidden;
 
         use glfw::Context;
 
@@ -681,8 +701,11 @@ Escape again to quit"
                             window.set_should_close(true)
                         }
                     }
-                    // A click while released recaptures for free-look.
-                    glfw::WindowEvent::MouseButton(_, Action::Press, _) if !cursor_captured => {
+                    // A click while released recaptures for free-look. Never
+                    // on a hidden window — it must not grab the pointer.
+                    glfw::WindowEvent::MouseButton(_, Action::Press, _)
+                        if !cursor_captured && !hidden =>
+                    {
                         window.set_cursor_mode(glfw::CursorMode::Disabled);
                         cursor_captured = true;
                     }
