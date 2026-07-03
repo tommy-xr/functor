@@ -475,6 +475,19 @@ fn constructor_patterns_bind_positionally() {
     );
 }
 
+/// A leading `-` folds into a number-literal pattern. [Claude L — B5 review]
+#[test]
+fn negative_number_literal_pattern() {
+    assert_eq!(
+        main_result("let main = () => match 0.0 - 1.0 with | -1.0 => \"neg\" | _ => \"other\""),
+        "\"neg\""
+    );
+    assert_eq!(
+        main_result("let main = () => match 1.0 with | -1.0 => \"neg\" | _ => \"other\""),
+        "\"other\""
+    );
+}
+
 /// No arm matching is a spanned runtime error naming the value.
 #[test]
 fn error_no_pattern_matched() {

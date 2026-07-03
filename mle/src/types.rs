@@ -928,7 +928,11 @@ is {other}"
             // errors.
             BinOp::Eq => {
                 match (lhs, rhs) {
-                    (Type::Fn(..), Type::Fn(..)) => {
+                    // One known function operand is enough: the runtime
+                    // rejects `==` whenever EITHER side is a function
+                    // (closure, builtin, or unapplied constructor), so the
+                    // other operand's type — even Unknown — cannot save it.
+                    (Type::Fn(..), _) | (_, Type::Fn(..)) => {
                         self.diag(
                             node_span,
                             "functions cannot be compared with `==`".to_string(),

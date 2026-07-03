@@ -3,52 +3,54 @@ Module {
         TypeDef {
             id: d0,
             name: "Shape",
-            variants: [
-                VariantDecl {
-                    name: "Circle",
-                    fields: [
-                        FieldTy {
-                            name: "radius",
-                            ty: TypeName {
-                                name: "Float",
-                                args: [],
-                                span: 320..325,
+            body: Variants(
+                [
+                    VariantDecl {
+                        name: "Circle",
+                        fields: [
+                            FieldTy {
+                                name: "radius",
+                                ty: TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 320..325,
+                                },
+                                span: 312..325,
                             },
-                            span: 312..325,
-                        },
-                    ],
-                    span: 305..326,
-                },
-                VariantDecl {
-                    name: "Rect",
-                    fields: [
-                        FieldTy {
-                            name: "w",
-                            ty: TypeName {
-                                name: "Float",
-                                args: [],
-                                span: 339..344,
+                        ],
+                        span: 305..326,
+                    },
+                    VariantDecl {
+                        name: "Rect",
+                        fields: [
+                            FieldTy {
+                                name: "w",
+                                ty: TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 339..344,
+                                },
+                                span: 336..344,
                             },
-                            span: 336..344,
-                        },
-                        FieldTy {
-                            name: "h",
-                            ty: TypeName {
-                                name: "Float",
-                                args: [],
-                                span: 349..354,
+                            FieldTy {
+                                name: "h",
+                                ty: TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 349..354,
+                                },
+                                span: 346..354,
                             },
-                            span: 346..354,
-                        },
-                    ],
-                    span: 331..355,
-                },
-                VariantDecl {
-                    name: "Point",
-                    fields: [],
-                    span: 360..365,
-                },
-            ],
+                        ],
+                        span: 331..355,
+                    },
+                    VariantDecl {
+                        name: "Point",
+                        fields: [],
+                        span: 360..365,
+                    },
+                ],
+            ),
             span: 288..365,
         },
     ],

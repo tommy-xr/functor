@@ -75,25 +75,12 @@ pub struct Module {
 /// is carried through from the AST verbatim, fields keeping their symbolic
 /// [`TypeName`]s; other types reference this one by name. Constructor names
 /// live in the *value* namespace (see [`crate::lower`]).
+#[derive(Debug)]
 pub struct TypeDef {
     pub id: DefId,
     pub name: String,
     pub body: TypeBody,
     pub span: Span,
-}
-
-// Hand-written so the pretty-Debug output (and the committed `.ir` goldens)
-// keeps the pre-variant `fields:` shape for record declarations.
-impl fmt::Debug for TypeDef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = f.debug_struct("TypeDef");
-        s.field("id", &self.id).field("name", &self.name);
-        match &self.body {
-            TypeBody::Record(fields) => s.field("fields", fields),
-            TypeBody::Variants(variants) => s.field("variants", variants),
-        };
-        s.field("span", &self.span).finish()
-    }
 }
 
 /// A lowered top-level `let`. `name` is the def's stable identity.

@@ -91,6 +91,15 @@ pub fn lower(program: ast::Program) -> Result<Module, LowerError> {
                 }
             }
             ast::Item::Type(decl) => {
+                // Builtin type names would shadow the primitives in
+                // annotations (the checker resolves `Float` before user
+                // types), yielding nonsense like "expected Float, got Float".
+                if matches!(decl.name.as_str(), "Float" | "Bool" | "String" | "List") {
+                    return Err(LowerError {
+                        message: format!("cannot redeclare builtin type `{}`", decl.name),
+                        span: decl.span,
+                    });
+                }
                 if !type_names.insert(decl.name.clone()) {
                     return Err(LowerError {
                         message: format!("duplicate definition `{}`", decl.name),

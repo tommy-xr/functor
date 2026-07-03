@@ -343,6 +343,20 @@ fn function_equality_is_an_error() {
     assert_eq!(diags[0].0, "functions cannot be compared with `==`");
 }
 
+// ONE known function operand is enough — the runtime rejects `==` whenever
+// either side is a function (including an unapplied constructor), so an
+// Unknown other side cannot make it succeed. [Codex M — B5 review]
+#[test]
+fn function_equality_against_unknown_is_an_error() {
+    let diags = check_src(
+        "type Shape =\n\
+         | Circle(radius: Float)\n\
+         let f = (x): Bool => Circle == x",
+    );
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].0, "functions cannot be compared with `==`");
+}
+
 // A record literal can never satisfy a known non-record type. [Claude M1]
 #[test]
 fn record_literal_in_float_position_errors() {

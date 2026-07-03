@@ -90,6 +90,16 @@ fn error_unknown_name() {
     );
 }
 
+/// Redeclaring a builtin type name would shadow the primitive in annotations
+/// ("expected Float, got Float"). [Claude L — B5 review]
+#[test]
+fn error_redeclare_builtin_type() {
+    let (message, _, _) = lower_err("type Float = | Foo");
+    assert_eq!(message, "cannot redeclare builtin type `Float`");
+    let (message, _, _) = lower_err("type List = { head: Float }");
+    assert_eq!(message, "cannot redeclare builtin type `List`");
+}
+
 /// A lowering error's position points at the offending identifier itself.
 #[test]
 fn error_span_points_at_identifier() {

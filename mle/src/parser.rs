@@ -13,7 +13,7 @@
 //! assign    := ident ":=" expr ";" expr
 //! match     := "match" expr "with" ("|" pattern "=>" expr)+
 //! pattern   := "_" | lowerIdent | upperIdent ("(" subpat,+ ")")?
-//!            | "true" | "false" | number | string
+//!            | "true" | "false" | "-"? number | string
 //! subpat    := "_" | lowerIdent
 //! pipeline  := cmp ("|>" cmp)*
 //! cmp       := add (("<" | ">" | "==") add)*        (left-assoc)
@@ -374,6 +374,19 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
     }
 
     fn pattern(&mut self) -> Result<Pattern, ParseError> {
+        // A leading `-` folds into a number literal — patterns contain no
+        // expressions, so this is the only unary minus they need.
+        if self.peek_kind() == &TokenKind::Minus {
+            if let TokenKind::Number(n) = self.nth_kind(1) {
+                let n = *n;
+                let minus = self.bump();
+                let number = self.bump();
+                return Ok(Pattern {
+                    kind: PatternKind::Number(-n),
+                    span: minus.span.to(number.span),
+                });
+            }
+        }
         let span = self.peek().span;
         let kind = match self.peek_kind() {
             TokenKind::Number(n) => {

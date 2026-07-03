@@ -6,7 +6,6 @@
 //! shape makes error spans and future formatting honest.
 
 use crate::span::Span;
-use std::fmt;
 
 #[derive(Debug)]
 pub struct Program {
@@ -29,24 +28,11 @@ pub struct LetDecl {
 
 /// `type Position = { x: Float, y: Float }` (a record type) or
 /// `type Shape = | Circle(radius: Float) | Point` (a variant type).
+#[derive(Debug)]
 pub struct TypeDecl {
     pub name: String,
     pub body: TypeBody,
     pub span: Span,
-}
-
-// Hand-written so the pretty-Debug output (and the committed `.ast` goldens)
-// keeps the pre-variant `fields:` shape for record declarations.
-impl fmt::Debug for TypeDecl {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = f.debug_struct("TypeDecl");
-        s.field("name", &self.name);
-        match &self.body {
-            TypeBody::Record(fields) => s.field("fields", fields),
-            TypeBody::Variants(variants) => s.field("variants", variants),
-        };
-        s.field("span", &self.span).finish()
-    }
 }
 
 /// What a `type` declares: a record shape, or one-or-more variant

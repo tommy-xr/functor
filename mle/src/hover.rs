@@ -150,10 +150,10 @@ fn children(expr: &Expr) -> Vec<&Expr> {
         ExprKind::Neg(inner) => vec![inner],
         ExprKind::Let { value, body, .. } => vec![value, body],
         ExprKind::Assign { value, rest, .. } => vec![value, rest],
-        ExprKind::Match { scrutinee, arms } => std::iter::once(scrutinee.as_ref())
-            .chain(arms.iter().map(|arm| &arm.body))
-            .collect(),
-        ExprKind::Number(_)
+        // Match is caller-handled (see the doc comment): `visit` must walk
+        // pattern-var spans too, which are not expression nodes.
+        ExprKind::Match { .. }
+        | ExprKind::Number(_)
         | ExprKind::String(_)
         | ExprKind::Bool(_)
         | ExprKind::Local { .. }

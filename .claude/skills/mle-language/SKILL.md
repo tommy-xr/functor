@@ -106,10 +106,11 @@ and the conditional is a **bool-literal match**
   works anywhere (`Shape.Circle` does NOT — it stays an unknown external),
   which is why ctor names must be unique ACROSS all variant types in the
   module, and `let Circle = …` alongside a ctor `Circle` is a
-  duplicate-definition error. Locals (params, pattern vars) may still
-  shadow a ctor.
+  duplicate-definition error. An (uppercase) param may still shadow a ctor;
+  pattern vars can't (they are forced lowercase).
 - **Patterns are minimal**: `Ctor(x, _)` / `Ctor` / bare name / `_` /
-  literals (`true`, `false`, numbers, strings — equality match). Ctor
+  literals (`true`, `false`, numbers incl. negative, strings — equality
+  match). Ctor
   sub-patterns are names or `_` only — no nested ctors, no literals inside.
   Pattern vars are immutable bindings; lambdas may capture them. First
   matching arm wins; no arm matching is a spanned runtime error. Unapplied
