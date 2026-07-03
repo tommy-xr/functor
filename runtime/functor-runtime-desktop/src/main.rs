@@ -28,6 +28,7 @@ mod net_dispatch;
 mod replay_game;
 mod static_game;
 mod ws_host;
+mod xreal;
 
 /// Translate a GLFW key into the canonical engine key code passed across the
 /// game boundary. Unmapped keys become InputKey::Unknown.
@@ -190,6 +191,19 @@ struct Args {
     /// to deepen the 3D effect.
     #[arg(long, default_value_t = 0.064, value_parser = parse_stereo_ipd)]
     stereo_ipd: f32,
+
+    /// Drive the view with Xreal One head tracking (3DoF): reads the glasses'
+    /// IMU over TCP (they expose a USB network interface — no drivers needed),
+    /// and rotates the game's camera by your head orientation. Calibrates
+    /// against gyro bias for the first ~0.5s (keep the glasses still); F1
+    /// recenters. Disable the glasses' own stabilizer/anchor modes (on-glasses
+    /// OSD), or the two trackers fight. Combine with --stereo-sbs for 3D.
+    #[arg(long)]
+    xreal_tracking: bool,
+
+    /// Address of the glasses' IMU stream, for --xreal-tracking.
+    #[arg(long, default_value_t = xreal::DEFAULT_ADDR.to_string())]
+    xreal_addr: String,
 }
 
 /// `--stereo-ipd` must be a positive, finite world-unit distance: NaN/inf
@@ -670,6 +684,13 @@ pub async fn main() {
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<u64>();
         let mut audio_player = audio::AudioPlayer::new(audio_tx);
 
+        // Xreal head tracking: a background thread owns the TCP stream +
+        // sensor fusion; the loop reads the latest orientation each frame and
+        // rotates the game's camera with it. None when the flag is off.
+        let xreal_tracker = args
+            .xreal_tracking
+            .then(|| xreal::XrealTracker::spawn(args.xreal_addr.clone()));
+
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
             // The frame time handed to the game. Pinning it (--fixed-time, or the
@@ -711,6 +732,16 @@ Escape again to quit"
                     glfw::WindowEvent::MouseButton(_, Action::Press, _) if !cursor_captured => {
                         window.set_cursor_mode(glfw::CursorMode::Disabled);
                         cursor_captured = true;
+                    }
+                    // F1 recenters head tracking (runner-level, never reaches
+                    // the game): current head pose becomes "straight ahead".
+                    glfw::WindowEvent::Key(Key::F1, _, Action::Press, _)
+                        if xreal_tracker.is_some() =>
+                    {
+                        if let Some(tracker) = &xreal_tracker {
+                            tracker.request_recenter();
+                            println!("[xreal] recentered");
+                        }
                     }
                     // Always honor key releases and focus-loss, even while other
                     // input is ignored (pinned clock) — otherwise a key held at
@@ -778,10 +809,17 @@ Escape again to quit"
             // The game supplies the camera/scene/lights as part of its frame.
             let frame = game.render(time.clone());
 
-            // Audio: set the listener from this frame's camera, then play any
+            // The camera actually viewed/heard: the game's camera, rotated by
+            // the head orientation when Xreal tracking is on.
+            let view_camera = match &xreal_tracker {
+                Some(tracker) => xreal::apply_head_rotation(&frame.camera, tracker.orientation()),
+                None => frame.camera.clone(),
+            };
+
+            // Audio: set the listener from the viewed camera, then play any
             // one-shots the tick queued (positioned ones pan relative to it).
             if let Some(player) = &mut audio_player {
-                player.set_listener(frame.camera.eye, frame.camera.target, frame.camera.up);
+                player.set_listener(view_camera.eye, view_camera.target, view_camera.up);
             }
             let audio_json = game.audio_drain_commands();
             if audio_json != "[]" {
@@ -818,7 +856,7 @@ Escape again to quit"
             // unscissored, so scissor is reset before each call — same contract
             // as the netsim viewer's panes.)
             if args.stereo_sbs {
-                let (left_cam, right_cam) = frame.camera.stereo_eyes(args.stereo_ipd);
+                let (left_cam, right_cam) = view_camera.stereo_eyes(args.stereo_ipd);
                 // Odd widths: the right eye absorbs the extra column, so the
                 // two viewports tile the framebuffer exactly (no stale strip).
                 let half_w = (fb_width as u32) / 2;
@@ -850,7 +888,7 @@ Escape again to quit"
                     &scene_context,
                     &shadow_map,
                     &frame,
-                    &frame.camera,
+                    &view_camera,
                     time.clone(),
                     viewport,
                     args.debug_render.into(),
