@@ -164,8 +164,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// Evaluate a module's top-level defs (eagerly, in file order — the same
-    /// semantics as [`run`]) into a session.
+    /// Evaluate a module's top-level defs (eagerly, in file order) into a
+    /// session. Unlike [`run`], a `main` def is NOT called — loading a game
+    /// must not execute anything beyond its initializers.
     pub fn load(module: &Module, host: &mut dyn Host) -> Result<Session, RunFailure> {
         let mut interp = Interp {
             globals: HashMap::new(),
@@ -176,7 +177,7 @@ impl Session {
             call_depth: 0,
             host,
         };
-        match interp.run_module(module) {
+        match interp.eval_defs(module) {
             Ok(_) => Ok(Session {
                 globals: interp.globals,
             }),
@@ -232,13 +233,20 @@ struct Interp<'h> {
 }
 
 impl Interp<'_> {
-    fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
+    /// Evaluate every top-level def, eagerly, in file order (no `main` call —
+    /// that is [`Interp::run_module`]'s CLI behavior, not a load semantic).
+    fn eval_defs(&mut self, module: &Module) -> Result<Vec<(String, Value)>, RunError> {
         let mut bindings = Vec::new();
         for def in &module.defs {
             let value = self.eval(&def.value, &Env::empty())?;
             self.globals.insert(def.name.clone(), value.clone());
             bindings.push((def.name.clone(), value));
         }
+        Ok(bindings)
+    }
+
+    fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
+        let bindings = self.eval_defs(module)?;
         match module.defs.iter().find(|def| def.name == "main") {
             Some(main_def) => Ok(RunOutcome::Main(self.call_main(main_def)?)),
             None => Ok(RunOutcome::Bindings(bindings)),
@@ -687,14 +695,21 @@ impl Interp<'_> {
             },
             // NaN handling follows Rust's `f64::max` (IEEE maximumNumber):
             // NaN elements are ignored unless every element is NaN.
-            // `List.range(n)` -> [0, 1, …, n-1] as Floats; n truncates.
+            // `List.range(n)` -> [0, 1, …, n-1] as Floats; n truncates. The
+            // count must be finite and sane: MLE numbers permit `inf`
+            // (IEEE division), and `inf as usize` would ask the allocator
+            // for usize::MAX elements — a process-killing panic, not a
+            // recoverable frame error.
             Builtin::ListRange => match args.as_slice() {
-                [Value::Number(n)] => {
+                [Value::Number(n)] if n.is_finite() && *n <= 1_000_000.0 => {
                     let count = n.max(0.0) as usize;
                     Ok(Value::List(Rc::new(
                         (0..count).map(|i| Value::Number(i as f64)).collect(),
                     )))
                 }
+                [Value::Number(n)] => err(format!(
+                    "List.range needs a finite count up to 1000000, got {n}"
+                )),
                 _ => err("List.range(n) expects one number".to_string()),
             },
             Builtin::ListMaximum => match args.as_slice() {

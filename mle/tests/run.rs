@@ -373,3 +373,65 @@ fn update_validates_target_before_evaluating_value() {
         "the replacement must not have run: {rendered}"
     );
 }
+
+// --- C2 review pins: Session semantics + new builtins ---
+
+// [AGREED by both engines] loading a module must NOT execute a `main` def —
+// a game file may define one for `mle run` debugging.
+#[test]
+fn session_load_does_not_run_main() {
+    let module = mle::lower(
+        mle::parse(
+            "let init = { n: 1.0 }\n\
+             let main = () => 1.0 + \"boom\"",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let session = match mle::Session::load(&module, &mut mle::NoHost) {
+        Ok(session) => session,
+        Err(failure) => panic!("load must not run main: {}", failure.error.message),
+    };
+    match session.global("init") {
+        Some(Value::Record(_)) => {}
+        Some(other) => panic!("expected the init record, got {other}"),
+        None => panic!("init missing"),
+    }
+}
+
+#[test]
+fn session_calls_top_level_functions() {
+    let module = mle::lower(mle::parse("let tick = (n) => { v: n + 1.0 }").unwrap()).unwrap();
+    let session = match mle::Session::load(&module, &mut mle::NoHost) {
+        Ok(session) => session,
+        Err(failure) => panic!("load failed: {}", failure.error.message),
+    };
+    let out = match session.call("tick", vec![Value::Number(1.0)], &mut mle::NoHost) {
+        Ok(out) => out,
+        Err(err) => panic!("call failed: {}", err.message),
+    };
+    assert_eq!(out.to_string(), "{ v: 2 }");
+    let missing = session.call("nope", vec![], &mut mle::NoHost);
+    assert!(missing.is_err());
+}
+
+// [review High] a non-finite or huge range count is a frame error, not a
+// process-killing allocator panic.
+#[test]
+fn range_rejects_non_finite_and_huge_counts() {
+    let (message, _, _) = run_err("let main = () => List.range(1.0 / 0.0)");
+    assert_eq!(
+        message,
+        "List.range needs a finite count up to 1000000, got inf"
+    );
+    let (message, _, _) = run_err("let main = () => List.range(1000000000000.0)");
+    assert!(message.starts_with("List.range needs a finite count"));
+}
+
+#[test]
+fn new_builtins_evaluate() {
+    assert_eq!(main_result("let main = () => List.range(2.7)"), "[0, 1]");
+    assert_eq!(main_result("let main = () => List.range(-3.0)"), "[]");
+    assert_eq!(main_result("let main = () => Math.sin(0.0)"), "0");
+    assert_eq!(main_result("let main = () => Math.cos(0.0)"), "1");
+}
