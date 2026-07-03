@@ -28,8 +28,16 @@ use crate::game::Game;
 
 pub struct MleGame {
     path: String,
+    src: String,
     session: Session,
     model: Value,
+    /// The last successfully drawn frame, kept so a bad draw shows the last
+    /// good picture instead of a blank.
+    last_frame: Frame,
+    /// The last per-frame error printed, to avoid flooding stderr at 60fps
+    /// with the same message (a persistent error prints once until it
+    /// changes).
+    last_error: Option<String>,
     // rolling per-frame eval cost, printed every STATS_EVERY frames (the C6
     // perf gate watches these).
     frames: u64,
@@ -74,18 +82,47 @@ impl MleGame {
                 &failure.error.message,
             ),
         };
+        // The producer contract is knowable at load — fail loud here, not
+        // once per frame: `init` must be a model VALUE, `tick`/`draw` must
+        // be functions of the right arity.
         let model = session.global("init").unwrap_or_else(|| {
             eprintln!("error: {path} has no top-level `let init = …`");
             std::process::exit(1);
         });
+        if matches!(
+            model,
+            Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
+        ) {
+            eprintln!("error: {path}: `init` must be a model value, not a function");
+            std::process::exit(1);
+        }
+        require_function(path, &session, "tick", 3);
+        require_function(path, &session, "draw", 2);
         println!("[mle] loaded {path}");
         MleGame {
             path: path.to_string(),
+            src,
             session,
             model,
+            last_frame: empty_frame(),
+            last_error: None,
             frames: 0,
             tick_ns: 0,
             draw_ns: 0,
+        }
+    }
+
+    /// Report a per-frame error with its source position, once per distinct
+    /// message (a 60fps loop must not flood stderr with one persistent bug).
+    fn frame_error(&mut self, stage: &str, err: &mle::RunError) {
+        let (line, col) = mle::line_col(&self.src, err.span.start);
+        let rendered = format!(
+            "[mle] {stage} error at {}:{line}:{col}: {}",
+            self.path, err.message
+        );
+        if self.last_error.as_deref() != Some(rendered.as_str()) {
+            eprintln!("{rendered}");
+            self.last_error = Some(rendered);
         }
     }
 
@@ -118,7 +155,7 @@ impl Game for MleGame {
         ];
         match self.session.call("tick", args, &mut FunctorHost) {
             Ok(model) => self.model = model,
-            Err(err) => eprintln!("[mle] tick error in {}: {}", self.path, err.message),
+            Err(err) => self.frame_error("tick", &err),
         }
         self.tick_ns += started.elapsed().as_nanos() as u64;
         self.frames += 1;
@@ -132,24 +169,26 @@ impl Game for MleGame {
     fn render(&mut self, frame_time: FrameTime) -> Frame {
         let started = Instant::now();
         let args = vec![self.model.clone(), Value::Number(frame_time.tts as f64)];
-        let frame = match self.session.call("draw", args, &mut FunctorHost) {
+        match self.session.call("draw", args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
-                Some(frame) => frame.clone(),
+                Some(frame) => self.last_frame = frame.clone(),
                 None => {
-                    eprintln!(
+                    let rendered = format!(
                         "[mle] draw must return Frame.create(camera, scene), got {}",
                         value.kind_name()
                     );
-                    empty_frame()
+                    if self.last_error.as_deref() != Some(rendered.as_str()) {
+                        eprintln!("{rendered}");
+                        self.last_error = Some(rendered);
+                    }
                 }
             },
-            Err(err) => {
-                eprintln!("[mle] draw error in {}: {}", self.path, err.message);
-                empty_frame()
-            }
-        };
+            Err(err) => self.frame_error("draw", &err),
+        }
         self.draw_ns += started.elapsed().as_nanos() as u64;
-        frame
+        // On failure this is the last good frame — a bad draw must not blank
+        // the screen.
+        self.last_frame.clone()
     }
 
     fn ui(&self) -> View {
@@ -181,6 +220,32 @@ impl Game for MleGame {
     fn audio_push_finished(&mut self, _token: i32) {}
 
     fn quit(&mut self) {}
+}
+
+/// Exit loud at load if `name` is not a function of `arity` params — the
+/// alternative is one error per frame, forever.
+fn require_function(path: &str, session: &Session, name: &str, arity: usize) {
+    match session.global(name) {
+        Some(Value::Closure(closure)) if closure.params.len() == arity => {}
+        Some(Value::Closure(closure)) => {
+            eprintln!(
+                "error: {path}: `{name}` must take {arity} parameter(s), takes {}",
+                closure.params.len()
+            );
+            std::process::exit(1);
+        }
+        Some(other) => {
+            eprintln!(
+                "error: {path}: `{name}` must be a function, got {}",
+                other.kind_name()
+            );
+            std::process::exit(1);
+        }
+        None => {
+            eprintln!("error: {path} has no top-level `let {name} = …`");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn empty_frame() -> Frame {
