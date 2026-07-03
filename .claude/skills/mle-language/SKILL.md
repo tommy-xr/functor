@@ -101,10 +101,11 @@ scene |> Scene.color(r, g, b)                              // scene-first: pipes
 scene |> Scene.lit(r, g, b)                                // diffuse+specular
 scene |> Scene.emissive(r, g, b)                           // unlit glow
 scene |> Scene.translate(x, y, z)
-scene |> Scene.rotateX(rad) / rotateY / rotateZ
+scene |> Scene.rotateX(angle) / rotateY / rotateZ          // Angle VALUES only:
+Angle.degrees(60.0) / Angle.radians(1.57)                  //   never bare numbers
 scene |> Scene.scale(k)
 Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
-Camera.firstPerson(ex, ey, ez, yawRad, pitchRad, fovDeg)
+Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)           // all three: Angles
 Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)
 Light.directional(dx, dy, dz, r, g, b, intensity) |> Light.castShadows
 Frame.create(camera, scene)                                // what draw returns
