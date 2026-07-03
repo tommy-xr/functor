@@ -8,7 +8,7 @@
 // `|> Scene.translate(radius…) |> Scene.rotateY(angle)` places a cube on the
 // ring at `angle`.
 
-let count = 15.0
+let count = 12.0
 let tau = 6.2831853
 
 let ringCube = (spin: Float, i: Float) =>
