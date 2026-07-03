@@ -1,0 +1,116 @@
+//! CLI support for MLE-language projects (docs/mle.md Track C4): a
+//! `functor.json` with `"language": "mle"` routes `build`/`run`/`develop` to
+//! the interpreter instead of the Fable→cargo pipeline.
+//!
+//! - `build` is the strict gate: parse + lower + typecheck, with `mle check`
+//!   diagnostics as **errors** (the runner treats them as warnings so the
+//!   dev loop stays permissive; the build command is where they block).
+//! - `run` spawns `functor-runner --mle` on the entry file (cwd = the game
+//!   dir, so asset paths resolve as usual).
+//! - `develop` is `run`: the MLE producer hot-reloads on save by itself — no
+//!   watchexec loop, no rebuild. State is preserved across edits.
+//! - wasm is not wired yet (docs/mle.md C5).
+
+use std::io::{Error, ErrorKind};
+use std::path::{Path, PathBuf};
+
+use crate::util::{self, get_nearby_bin, ShellCommand};
+use crate::Environment;
+
+/// The MLE project settings read from `functor.json`.
+pub struct MleProject {
+    /// The game source, relative to the project dir (default `game.mle`).
+    pub entry: String,
+}
+
+/// Read `functor.json` and return the MLE project settings when
+/// `"language": "mle"` — `None` (the F#/Fable pipeline) otherwise, including
+/// for projects whose `functor.json` is empty or has no `language` field.
+pub fn detect(working_directory: &str) -> Option<MleProject> {
+    let path = Path::new(working_directory).join("functor.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    if json.get("language").and_then(|v| v.as_str()) != Some("mle") {
+        return None;
+    }
+    let entry = json
+        .get("entry")
+        .and_then(|v| v.as_str())
+        .unwrap_or("game.mle")
+        .to_string();
+    Some(MleProject { entry })
+}
+
+impl MleProject {
+    fn entry_path(&self, working_directory: &str) -> Result<PathBuf, Error> {
+        let path = Path::new(working_directory).join(&self.entry);
+        if !path.exists() {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                format!("mle entry not found: {}", path.display()),
+            ));
+        }
+        Ok(path)
+    }
+
+    /// Parse + lower + typecheck the entry; `mle check` diagnostics are
+    /// build errors here (see the module doc).
+    pub fn build(&self, working_directory: &str) -> Result<(), Error> {
+        let path = self.entry_path(working_directory)?;
+        let display = path.display().to_string();
+        let src = std::fs::read_to_string(&path)?;
+        let fail = |span: mle::Span, message: &str| {
+            let (line, col) = mle::line_col(&src, span.start);
+            Error::other(format!("{display}:{line}:{col}: {message}"))
+        };
+        let program = mle::parse(&src).map_err(|e| fail(e.span, &e.message))?;
+        let module = mle::lower(program).map_err(|e| fail(e.span, &e.message))?;
+        let diags = mle::check(&module);
+        for diag in &diags {
+            let (line, col) = mle::line_col(&src, diag.span.start);
+            eprintln!("error: {display}:{line}:{col}: {}", diag.message);
+        }
+        if diags.is_empty() {
+            println!("[mle] {display}: ok");
+            Ok(())
+        } else {
+            Err(Error::other(format!(
+                "{} type error(s) in {display}",
+                diags.len()
+            )))
+        }
+    }
+
+    /// Spawn the runner on the entry (`run` and `develop` — hot reload is
+    /// built into the producer, so there is no separate watch loop).
+    pub async fn run(
+        &self,
+        working_directory: &str,
+        environment: &Environment,
+        runner_args: &[String],
+        develop: bool,
+    ) -> Result<(), Error> {
+        if matches!(environment, Environment::Wasm) {
+            return Err(Error::other(
+                "mle on wasm is not wired yet (docs/mle.md Track C5) — use `run native`",
+            ));
+        }
+        let entry = self.entry_path(working_directory)?;
+        let functor_runner_exe =
+            get_nearby_bin(&"functor-runner").expect("functor-runner should be available");
+        if develop {
+            println!("[mle] develop: hot reload is built in — edit {} and save", self.entry);
+        }
+        let entry_str = entry.file_name().unwrap().to_str().unwrap().to_string();
+        let mut args = vec!["--mle", "--game-path", entry_str.as_str()];
+        args.extend(runner_args.iter().map(|s| s.as_str()));
+        let commands = vec![ShellCommand {
+            prefix: "[Functor Runner]",
+            cmd: functor_runner_exe.to_str().unwrap(),
+            cwd: working_directory,
+            env: vec![],
+            args,
+        }];
+        util::ShellCommand::run_sequential(commands).await
+    }
+}

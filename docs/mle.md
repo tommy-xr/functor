@@ -257,6 +257,19 @@ Starts once A2 + B3 exist.
       subscriptions/draw3d, effect-queue drain-to-fixed-point semantics) from
       MLE. *Verify:* port `examples/primitives`; golden-compare vs the F#
       rendering.
+      - [x] **C4a. Input + CLI wiring.** Optional `input` entry point —
+        `(model, key, isDown) => model`, keys as canonical names ("W",
+        "Up") — validated at load when present, reload-aware. And
+        `functor.json` grows `"language": "mle"` (+ optional `entry`,
+        default `game.mle`): `functor build` = parse+lower+**check as
+        errors** (the strict gate; the runner keeps them warnings),
+        `run native` spawns the interpreter (proven byte-identical to a
+        direct runner invocation), `develop` = `run` (hot reload is built
+        in — no watchexec), wasm errors cleanly until C5.
+        *Verify (done):* SDK e2e asserts two key events reach the model
+        with canonical names (14/14 suite); CLI build/run/wasm probes.
+      - [ ] **C4b.** `update`/messages, subscriptions, mouse, effect-queue
+        drain semantics; port `examples/primitives` + golden.
 - [ ] **C5. Wasm.** The interpreter crate compiles to wasm32; `.mle` source
       ships in the bundle. *Verify:* wasm build of mle-hello renders.
 - [ ] **C6. Perf gate.** Measure C4 at 60fps with headroom; bytecode VM
