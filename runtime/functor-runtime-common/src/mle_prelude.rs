@@ -48,7 +48,7 @@ use std::rc::Rc;
 
 use crate::math::Angle;
 use crate::scene3d::MaterialDescription;
-use crate::{Camera, Frame, Scene3D, SceneObject};
+use crate::{Camera, Frame, Light, Scene3D, SceneObject};
 
 /// A [`Scene3D`] as an opaque MLE value.
 pub struct MleScene(pub Scene3D);
@@ -58,6 +58,18 @@ pub struct MleCamera(pub Camera);
 
 /// A [`Frame`] as an opaque MLE value — what an MLE `draw` returns.
 pub struct MleFrame(pub Frame);
+
+/// A [`Light`] as an opaque MLE value.
+pub struct MleLight(pub Light);
+
+impl HostData for MleLight {
+    fn type_name(&self) -> &'static str {
+        "Light"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 impl HostData for MleScene {
     fn type_name(&self) -> &'static str {
@@ -111,8 +123,16 @@ const PATHS: &[&str] = &[
     "Scene.rotateY",
     "Scene.rotateZ",
     "Scene.scale",
+    "Scene.lit",
+    "Scene.emissive",
     "Camera.lookAt",
+    "Camera.firstPerson",
+    "Light.ambient",
+    "Light.directional",
+    "Light.point",
+    "Light.castShadows",
     "Frame.create",
+    "Frame.createLit",
 ];
 
 impl Host for FunctorHost {
@@ -160,6 +180,29 @@ impl Host for FunctorHost {
                     scene_value(group(scenes, Matrix4::from_scale(1.0)))
                 }
                 _ => usage("Scene.group([scene, …])"),
+            },
+            // Scene first, so they pipe: `Scene.cube() |> Scene.lit(r, g, b)`.
+            "Scene.lit" | "Scene.emissive" => match args.as_slice() {
+                [scene, r, g, b] => {
+                    let (r, g, b) = (
+                        num(r, span)? as f32,
+                        num(g, span)? as f32,
+                        num(b, span)? as f32,
+                    );
+                    let Some(scene) = scene_of(scene) else {
+                        return usage(&format!("{path}(scene, r, g, b)"));
+                    };
+                    let material = if path == "Scene.lit" {
+                        MaterialDescription::lit(r, g, b, 1.0)
+                    } else {
+                        MaterialDescription::emissive(r, g, b, 1.0)
+                    };
+                    scene_value(Scene3D {
+                        obj: SceneObject::Material(material, vec![scene.clone()]),
+                        xform: Matrix4::from_scale(1.0),
+                    })
+                }
+                _ => usage(&format!("{path}(scene, r, g, b)")),
             },
             // Scene first, so it pipes: `Scene.cube() |> Scene.color(r, g, b)`.
             "Scene.color" => match args.as_slice() {
@@ -226,6 +269,88 @@ impl Host for FunctorHost {
                 )))),
                 _ => usage("Camera.lookAt(ex, ey, ez, tx, ty, tz)"),
             },
+            "Camera.firstPerson" => match args.as_slice() {
+                [ex, ey, ez, yaw, pitch, fov_deg] => Ok(host(MleCamera(Camera::first_person(
+                    [
+                        num(ex, span)? as f32,
+                        num(ey, span)? as f32,
+                        num(ez, span)? as f32,
+                    ],
+                    Angle::from_radians(num(yaw, span)? as f32),
+                    Angle::from_radians(num(pitch, span)? as f32),
+                    Angle::from_degrees(num(fov_deg, span)? as f32),
+                )))),
+                _ => usage("Camera.firstPerson(ex, ey, ez, yawRad, pitchRad, fovDeg)"),
+            },
+            "Light.ambient" => match args.as_slice() {
+                [r, g, b] => Ok(host(MleLight(Light::ambient(
+                    num(r, span)? as f32,
+                    num(g, span)? as f32,
+                    num(b, span)? as f32,
+                )))),
+                _ => usage("Light.ambient(r, g, b)"),
+            },
+            "Light.directional" => match args.as_slice() {
+                [dx, dy, dz, r, g, b, intensity] => Ok(host(MleLight(Light::directional(
+                    num(dx, span)? as f32,
+                    num(dy, span)? as f32,
+                    num(dz, span)? as f32,
+                    num(r, span)? as f32,
+                    num(g, span)? as f32,
+                    num(b, span)? as f32,
+                    num(intensity, span)? as f32,
+                )))),
+                _ => usage("Light.directional(dx, dy, dz, r, g, b, intensity)"),
+            },
+            "Light.point" => match args.as_slice() {
+                [px, py, pz, r, g, b, intensity, range] => Ok(host(MleLight(Light::point(
+                    num(px, span)? as f32,
+                    num(py, span)? as f32,
+                    num(pz, span)? as f32,
+                    num(r, span)? as f32,
+                    num(g, span)? as f32,
+                    num(b, span)? as f32,
+                    num(intensity, span)? as f32,
+                    num(range, span)? as f32,
+                )))),
+                _ => usage("Light.point(px, py, pz, r, g, b, intensity, range)"),
+            },
+            // Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
+            "Light.castShadows" => match args.as_slice() {
+                [light] => match light_of(light) {
+                    Some(inner) => Ok(host(MleLight(inner.clone().cast_shadows()))),
+                    None => usage("Light.castShadows(light)"),
+                },
+                _ => usage("Light.castShadows(light)"),
+            },
+            "Frame.createLit" => match args.as_slice() {
+                [camera, scene, Value::List(lights)] => {
+                    let (Value::HostData(cam), Some(scene)) = (camera, scene_of(scene)) else {
+                        return usage("Frame.createLit(camera, scene, [light, …])");
+                    };
+                    let Some(camera) = cam.as_any().downcast_ref::<MleCamera>() else {
+                        return usage("Frame.createLit(camera, scene, [light, …])");
+                    };
+                    let mut lit = Vec::with_capacity(lights.len());
+                    for light in lights.iter() {
+                        match light_of(light) {
+                            Some(inner) => lit.push(inner.clone()),
+                            None => {
+                                return err(format!(
+                                    "Frame.createLit lights must be Lights, got {}",
+                                    light.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(host(MleFrame(Frame {
+                        camera: camera.0.clone(),
+                        scene: scene.clone(),
+                        lights: lit,
+                    })))
+                }
+                _ => usage("Frame.createLit(camera, scene, [light, …])"),
+            },
             "Frame.create" => match args.as_slice() {
                 [camera, scene] => {
                     let (Value::HostData(cam), Some(scene)) = (camera, scene_of(scene)) else {
@@ -257,6 +382,13 @@ fn num(value: &Value, span: Span) -> Result<f64, RunError> {
             message: format!("expected a number, got {}", other.kind_name()),
             span,
         }),
+    }
+}
+
+fn light_of(value: &Value) -> Option<&Light> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleLight>().map(|l| &l.0),
+        _ => None,
     }
 }
 
@@ -412,6 +544,35 @@ mod tests {
         for (i, child) in children.iter().enumerate() {
             assert_eq!(child.xform.w.x, i as f32);
         }
+    }
+
+    // The lit pipeline: materials, all three light kinds, shadow flag, and
+    // firstPerson camera flow into a protocol Frame with lights.
+    #[test]
+    fn lit_frame_carries_lights_and_materials() {
+        let frame = frame_of(
+            "let main = () =>
+             Frame.createLit(
+               Camera.firstPerson(0.0, 3.5, -8.0, 0.0, -0.3, 60.0),
+               Scene.group([
+                 Scene.plane() |> Scene.scale(24.0) |> Scene.lit(0.6, 0.6, 0.62),
+                 Scene.sphere() |> Scene.emissive(1.0, 0.3, 0.25),
+               ]),
+               [
+                 Light.ambient(0.1, 0.1, 0.13),
+                 Light.directional(0.5, -1.0, 0.35, 1.0, 0.98, 0.95, 0.85) |> Light.castShadows,
+                 Light.point(1.0, 2.2, 0.0, 1.0, 0.3, 0.25, 1.4, 4.0),
+               ])",
+        );
+        assert_eq!(frame.lights.len(), 3);
+        assert!(frame.lights[1].casts_shadows(), "directional casts shadows");
+        // firstPerson: 60° fov, eye as given.
+        assert!((frame.camera.fov_radians - 60.0_f32.to_radians()).abs() < 1e-5);
+        assert_eq!(frame.camera.eye, [0.0, 3.5, -8.0]);
+        // The scene serializes through the protocol (Lit/Emissive materials).
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(json.contains("Lit"), "json: {json}");
+        assert!(json.contains("Emissive"), "json: {json}");
     }
 
     // Host errors are spanned MLE runtime errors, not panics.

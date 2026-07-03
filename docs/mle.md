@@ -268,8 +268,16 @@ Starts once A2 + B3 exist.
         in — no watchexec), wasm errors cleanly until C5.
         *Verify (done):* SDK e2e asserts two key events reach the model
         with canonical names (14/14 suite); CLI build/run/wasm probes.
-      - [ ] **C4b.** `update`/messages, subscriptions, mouse, effect-queue
-        drain semantics; port `examples/primitives` + golden.
+      - [x] **C4b-1. Mouse + the lit prelude + the primitives port.**
+        Optional `mouseMove(model, x, y)` / `mouseWheel(model, delta)`
+        entry points; prelude grows the lit pipeline — `Scene.lit`/
+        `Scene.emissive`, all three `Light.*` kinds + `castShadows`,
+        `Camera.firstPerson`, `Frame.createLit`. `examples/mle-primitives`
+        ports the F# golden scene (shadow-casting sun, orbiting colored
+        point lights, emissive markers) — **0.000% pixels over the golden
+        tolerance vs the F# render** at the same fixed time.
+      - [ ] **C4b-2** (wants B5's ADTs for messages): `update`/messages,
+        subscriptions, effect-queue drain semantics.
 - [ ] **C5. Wasm.** The interpreter crate compiles to wasm32; `.mle` source
       ships in the bundle. *Verify:* wasm build of mle-hello renders.
 - [ ] **C6. Perf gate.** Measure C4 at 60fps with headroom; bytecode VM

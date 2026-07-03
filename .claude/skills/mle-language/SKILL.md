@@ -98,11 +98,17 @@ Available in runner-hosted MLE (and tests via
 Scene.cube() / sphere() / cylinder() / quad() / plane()   // zero args, enforced
 Scene.group([scene, …])
 scene |> Scene.color(r, g, b)                              // scene-first: pipes
+scene |> Scene.lit(r, g, b)                                // diffuse+specular
+scene |> Scene.emissive(r, g, b)                           // unlit glow
 scene |> Scene.translate(x, y, z)
 scene |> Scene.rotateX(rad) / rotateY / rotateZ
 scene |> Scene.scale(k)
 Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
+Camera.firstPerson(ex, ey, ez, yawRad, pitchRad, fovDeg)
+Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)
+Light.directional(dx, dy, dz, r, g, b, intensity) |> Light.castShadows
 Frame.create(camera, scene)                                // what draw returns
+Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
 ```
 
 A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:
@@ -112,6 +118,8 @@ let init = { … }                       // the initial model (a value)
 let tick = (model, dt, tts) => model'  // per-frame step
 let draw = (model, tts) => Frame.create(camera, scene)
 let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"
+let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
+let mouseWheel = (model, delta) => model'   // OPTIONAL
 ```
 
 A project dir with `functor.json` `{"language": "mle", "entry": "game.mle"}`
