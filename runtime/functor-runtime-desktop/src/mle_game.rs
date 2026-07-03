@@ -95,6 +95,10 @@ fn file_mtime(path: &str) -> std::time::SystemTime {
 
 impl MleGame {
     pub fn create(path: &str) -> MleGame {
+        // Stat BEFORE reading: an edit that lands mid-load then compares
+        // unequal on the next frame and triggers a reload, instead of being
+        // silently absorbed into a stale session.
+        let mtime = file_mtime(path);
         let loaded = match load_game(path) {
             Ok(loaded) => loaded,
             Err(message) => {
@@ -105,7 +109,7 @@ impl MleGame {
         println!("[mle] loaded {path}");
         MleGame {
             path: path.to_string(),
-            mtime: file_mtime(path),
+            mtime,
             src: loaded.src,
             session: loaded.session,
             model: loaded.init,

@@ -141,6 +141,9 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
 
     const runnerBin =
       options.runnerBin ?? join(repoRoot, "target", "debug", runnerExe());
+    if (options.mlePath && options.dylibPath) {
+      throw new Error("mlePath and dylibPath are mutually exclusive");
+    }
     // An .mle source runs through the interpreter; otherwise a built dylib.
     const gamePath = options.mlePath
       ? isAbsolute(options.mlePath)
