@@ -33,6 +33,8 @@ pub struct MleGame {
     session: Session,
     model: Value,
     has_input: bool,
+    has_mouse_move: bool,
+    has_mouse_wheel: bool,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -56,6 +58,8 @@ struct Loaded {
     init: Value,
     /// The game defines the optional `input` entry point.
     has_input: bool,
+    has_mouse_move: bool,
+    has_mouse_wheel: bool,
 }
 
 /// Load, check, and contract-validate a game file. Errors come back as fully
@@ -82,8 +86,13 @@ fn load_game(path: &str) -> Result<Loaded, String> {
     let init = session
         .global("init")
         .ok_or_else(|| format!("{path} has no top-level `let init = …`"))?;
-    if matches!(init, Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)) {
-        return Err(format!("{path}: `init` must be a model value, not a function"));
+    if matches!(
+        init,
+        Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
+    ) {
+        return Err(format!(
+            "{path}: `init` must be a model value, not a function"
+        ));
     }
     require_function(path, &session, "tick", 3)?;
     require_function(path, &session, "draw", 2)?;
@@ -93,11 +102,23 @@ fn load_game(path: &str) -> Result<Loaded, String> {
     if has_input {
         require_function(path, &session, "input", 3)?;
     }
+    // Same deal for the mouse: `mouseMove(model, x, y)` in window pixels,
+    // `mouseWheel(model, delta)`.
+    let has_mouse_move = session.global("mouseMove").is_some();
+    if has_mouse_move {
+        require_function(path, &session, "mouseMove", 3)?;
+    }
+    let has_mouse_wheel = session.global("mouseWheel").is_some();
+    if has_mouse_wheel {
+        require_function(path, &session, "mouseWheel", 2)?;
+    }
     Ok(Loaded {
         src,
         session,
         init,
         has_input,
+        has_mouse_move,
+        has_mouse_wheel,
     })
 }
 
@@ -128,6 +149,8 @@ impl MleGame {
             session: loaded.session,
             model: loaded.init,
             has_input: loaded.has_input,
+            has_mouse_move: loaded.has_mouse_move,
+            has_mouse_wheel: loaded.has_mouse_wheel,
             last_frame: empty_frame(),
             last_error: None,
             frames: 0,
@@ -186,6 +209,8 @@ impl Game for MleGame {
                 self.src = loaded.src;
                 self.session = loaded.session;
                 self.has_input = loaded.has_input;
+                self.has_mouse_move = loaded.has_mouse_move;
+                self.has_mouse_wheel = loaded.has_mouse_wheel;
                 self.last_error = None;
                 println!(
                     "[mle] hot-reloaded {} in {:.2}ms (model preserved; an edited `init` \
@@ -240,8 +265,31 @@ takes effect on restart)",
             Err(err) => self.frame_error("input", &err),
         }
     }
-    fn mouse_move(&mut self, _x: i32, _y: i32) {}
-    fn mouse_wheel(&mut self, _delta: i32) {}
+    fn mouse_move(&mut self, x: i32, y: i32) {
+        if !self.has_mouse_move {
+            return;
+        }
+        let args = vec![
+            self.model.clone(),
+            Value::Number(x as f64),
+            Value::Number(y as f64),
+        ];
+        match self.session.call("mouseMove", args, &mut FunctorHost) {
+            Ok(model) => self.model = model,
+            Err(err) => self.frame_error("mouseMove", &err),
+        }
+    }
+
+    fn mouse_wheel(&mut self, delta: i32) {
+        if !self.has_mouse_wheel {
+            return;
+        }
+        let args = vec![self.model.clone(), Value::Number(delta as f64)];
+        match self.session.call("mouseWheel", args, &mut FunctorHost) {
+            Ok(model) => self.model = model,
+            Err(err) => self.frame_error("mouseWheel", &err),
+        }
+    }
 
     fn render(&mut self, frame_time: FrameTime) -> Frame {
         let started = Instant::now();
