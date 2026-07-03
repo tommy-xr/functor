@@ -7,7 +7,9 @@
 //! letDecl   := "let" ident "=" expr
 //! typeDecl  := "type" ident "=" "{" (ident ":" type),* "}"
 //! type      := ident ("<" type ("," type)* ">")?
-//! expr      := pipeline
+//! expr      := letIn | assign | pipeline
+//! letIn     := "let" "mut"? ident "=" expr "in" expr
+//! assign    := ident ":=" expr ";" expr
 //! pipeline  := cmp ("|>" cmp)*
 //! cmp       := add (("<" | ">" | "==") add)*        (left-assoc)
 //! add       := mul (("+" | "-") mul)*               (left-assoc)
@@ -17,6 +19,7 @@
 //! primary   := number | string | "true" | "false" | qualifiedIdent
 //!            | record | list | lambda | "(" expr ")"
 //! record    := "{" (ident ":" expr),* "}"
+//!            | "{" expr "with" (ident ":" expr),+ "}"
 //! list      := "[" expr,* "]"
 //! lambda    := "(" (ident (":" type)?),* ")" (":" type)? "=>" expr
 //! ```
@@ -116,6 +119,14 @@ impl Parser {
 
     fn let_decl(&mut self) -> Result<LetDecl, ParseError> {
         let kw = self.bump();
+        if self.peek_kind() == &TokenKind::Mut {
+            return Err(ParseError {
+                message: "top-level bindings cannot be mutable (globals are the hot-reload \
+rebind surface); `mut` is for `let mut … in …` inside a function"
+                    .to_string(),
+                span: self.peek().span,
+            });
+        }
         let (name, _) = self.expect_ident("a name after `let`")?;
         self.expect(TokenKind::Eq, "`=`")?;
         let value = self.expr()?;
@@ -190,9 +201,70 @@ impl Parser {
                 span: self.peek().span,
             });
         }
-        let result = self.pipeline();
+        let result = match self.peek_kind() {
+            TokenKind::Let => self.let_in(),
+            TokenKind::Ident(_) if self.nth_kind(1) == &TokenKind::ColonEq => self.assign(),
+            _ => {
+                let expr = self.pipeline();
+                // A stray `:=` after a non-name expression would otherwise
+                // surface as a baffling error at the enclosing context.
+                if expr.is_ok() && self.peek_kind() == &TokenKind::ColonEq {
+                    self.error("nothing (assignment targets must be a bare `let mut` name)")
+                } else {
+                    expr
+                }
+            }
+        };
         self.depth -= 1;
         result
+    }
+
+    /// `let [mut] name = value in body` — expression-level binding.
+    fn let_in(&mut self) -> Result<Expr, ParseError> {
+        let kw = self.bump();
+        let mutable = if self.peek_kind() == &TokenKind::Mut {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        let (name, _) = self.expect_ident("a name after `let`")?;
+        self.expect(TokenKind::Eq, "`=`")?;
+        let value = self.expr()?;
+        self.expect(TokenKind::In, "`in`")?;
+        let body = self.expr()?;
+        let span = kw.span.to(body.span);
+        Ok(Expr {
+            kind: ExprKind::Let {
+                mutable,
+                name,
+                value: Box::new(value),
+                body: Box::new(body),
+            },
+            span,
+        })
+    }
+
+    /// `name := value; rest` — the assignment always carries its
+    /// continuation (see the AST docs).
+    fn assign(&mut self) -> Result<Expr, ParseError> {
+        let (name, name_span) = self.expect_ident("a name")?;
+        self.expect(TokenKind::ColonEq, "`:=`")?;
+        let value = self.expr()?;
+        self.expect(
+            TokenKind::Semi,
+            "`;` (an assignment carries its continuation)",
+        )?;
+        let rest = self.expr()?;
+        let span = name_span.to(rest.span);
+        Ok(Expr {
+            kind: ExprKind::Assign {
+                name,
+                value: Box::new(value),
+                rest: Box::new(rest),
+            },
+            span,
+        })
     }
 
     fn pipeline(&mut self) -> Result<Expr, ParseError> {
@@ -392,8 +464,40 @@ impl Parser {
         })
     }
 
+    /// `{` begins a record literal (empty, or `name:` first) or a record
+    /// update (`{ base with … }`).
     fn record(&mut self) -> Result<Expr, ParseError> {
         let open = self.bump();
+        let literal = self.peek_kind() == &TokenKind::RBrace
+            || (matches!(self.peek_kind(), TokenKind::Ident(_))
+                && self.nth_kind(1) == &TokenKind::Colon);
+        if literal {
+            let fields = self.record_fields()?;
+            let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
+            return Ok(Expr {
+                kind: ExprKind::Record(fields),
+                span: open.span.to(close.span),
+            });
+        }
+        let base = self.expr()?;
+        self.expect(TokenKind::With, "`with` (or `name:` for a record literal)")?;
+        let fields = self.record_fields()?;
+        if fields.is_empty() {
+            // A zero-field update is always a mistake (a silent copy).
+            return self.error("at least one `name: value` after `with`");
+        }
+        let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
+        Ok(Expr {
+            kind: ExprKind::RecordUpdate {
+                base: Box::new(base),
+                fields,
+            },
+            span: open.span.to(close.span),
+        })
+    }
+
+    /// The shared `name: expr` comma list of record literals and updates.
+    fn record_fields(&mut self) -> Result<Vec<Field>, ParseError> {
         let mut fields = Vec::new();
         while self.peek_kind() != &TokenKind::RBrace {
             let (name, name_span) = self.expect_ident("a field name")?;
@@ -410,11 +514,7 @@ impl Parser {
                 break;
             }
         }
-        let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
-        Ok(Expr {
-            kind: ExprKind::Record(fields),
-            span: open.span.to(close.span),
-        })
+        Ok(fields)
     }
 
     fn list(&mut self) -> Result<Expr, ParseError> {

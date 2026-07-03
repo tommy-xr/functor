@@ -544,75 +544,188 @@ Module {
         },
         Def {
             id: d7,
+            name: "nudge",
+            value: Expr {
+                id: e49,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b7,
+                            name: "p",
+                            ty: Some(
+                                TypeName {
+                                    name: "Position",
+                                    args: [],
+                                    span: 636..644,
+                                },
+                            ),
+                            span: 633..644,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "Position",
+                            args: [],
+                            span: 647..655,
+                        },
+                    ),
+                    body: Expr {
+                        id: e48,
+                        kind: RecordUpdate {
+                            base: Expr {
+                                id: e43,
+                                kind: Local {
+                                    binding: b7,
+                                    name: "p",
+                                },
+                                span: 661..662,
+                            },
+                            fields: [
+                                Field {
+                                    name: "x",
+                                    value: Expr {
+                                        id: e47,
+                                        kind: Binary {
+                                            op: Add,
+                                            lhs: Expr {
+                                                id: e45,
+                                                kind: FieldAccess {
+                                                    object: Expr {
+                                                        id: e44,
+                                                        kind: Local {
+                                                            binding: b7,
+                                                            name: "p",
+                                                        },
+                                                        span: 671..672,
+                                                    },
+                                                    field: "x",
+                                                },
+                                                span: 671..674,
+                                            },
+                                            rhs: Expr {
+                                                id: e46,
+                                                kind: Number(
+                                                    1.0,
+                                                ),
+                                                span: 677..680,
+                                            },
+                                        },
+                                        span: 671..680,
+                                    },
+                                    span: 668..680,
+                                },
+                            ],
+                        },
+                        span: 659..682,
+                    },
+                },
+                span: 632..682,
+            },
+            span: 620..682,
+        },
+        Def {
+            id: d8,
             name: "main",
             value: Expr {
-                id: e50,
+                id: e61,
                 kind: Lambda {
                     params: [],
                     ret: None,
                     body: Expr {
-                        id: e49,
-                        kind: Call {
-                            callee: Expr {
-                                id: e43,
-                                kind: Global(
-                                    "move",
-                                ),
-                                span: 577..581,
+                        id: e60,
+                        kind: Let {
+                            binding: b8,
+                            name: "moved",
+                            mutable: false,
+                            value: Expr {
+                                id: e56,
+                                kind: Call {
+                                    callee: Expr {
+                                        id: e50,
+                                        kind: Global(
+                                            "move",
+                                        ),
+                                        span: 715..719,
+                                    },
+                                    args: [
+                                        Expr {
+                                            id: e51,
+                                            kind: Global(
+                                                "origin",
+                                            ),
+                                            span: 720..726,
+                                        },
+                                        Expr {
+                                            id: e54,
+                                            kind: Record(
+                                                [
+                                                    Field {
+                                                        name: "dx",
+                                                        value: Expr {
+                                                            id: e52,
+                                                            kind: Number(
+                                                                3.0,
+                                                            ),
+                                                            span: 734..737,
+                                                        },
+                                                        span: 730..737,
+                                                    },
+                                                    Field {
+                                                        name: "dy",
+                                                        value: Expr {
+                                                            id: e53,
+                                                            kind: Number(
+                                                                4.0,
+                                                            ),
+                                                            span: 743..746,
+                                                        },
+                                                        span: 739..746,
+                                                    },
+                                                ],
+                                            ),
+                                            span: 728..748,
+                                        },
+                                        Expr {
+                                            id: e55,
+                                            kind: Number(
+                                                0.5,
+                                            ),
+                                            span: 750..753,
+                                        },
+                                    ],
+                                },
+                                span: 715..754,
                             },
-                            args: [
-                                Expr {
-                                    id: e44,
-                                    kind: Global(
-                                        "origin",
-                                    ),
-                                    span: 582..588,
-                                },
-                                Expr {
-                                    id: e47,
-                                    kind: Record(
-                                        [
-                                            Field {
-                                                name: "dx",
-                                                value: Expr {
-                                                    id: e45,
-                                                    kind: Number(
-                                                        3.0,
-                                                    ),
-                                                    span: 596..599,
-                                                },
-                                                span: 592..599,
+                            body: Expr {
+                                id: e59,
+                                kind: Call {
+                                    callee: Expr {
+                                        id: e57,
+                                        kind: Global(
+                                            "nudge",
+                                        ),
+                                        span: 760..765,
+                                    },
+                                    args: [
+                                        Expr {
+                                            id: e58,
+                                            kind: Local {
+                                                binding: b8,
+                                                name: "moved",
                                             },
-                                            Field {
-                                                name: "dy",
-                                                value: Expr {
-                                                    id: e46,
-                                                    kind: Number(
-                                                        4.0,
-                                                    ),
-                                                    span: 605..608,
-                                                },
-                                                span: 601..608,
-                                            },
-                                        ],
-                                    ),
-                                    span: 590..610,
+                                            span: 766..771,
+                                        },
+                                    ],
                                 },
-                                Expr {
-                                    id: e48,
-                                    kind: Number(
-                                        0.5,
-                                    ),
-                                    span: 612..615,
-                                },
-                            ],
+                                span: 760..772,
+                            },
                         },
-                        span: 577..616,
+                        span: 703..772,
                     },
                 },
-                span: 571..616,
+                span: 695..772,
             },
-            span: 560..616,
+            span: 684..772,
         },
     ],
 }

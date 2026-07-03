@@ -378,3 +378,45 @@ fn top_level_list_literal_type_flows() {
         "argument 1 of `Text.toBullets`: expected List<String>, got List<Float>"
     );
 }
+
+// --- Record updates + local let/mut ---
+
+#[test]
+fn assignment_keeps_the_slot_type() {
+    let diags = check_src("let f = (x: Float) => let mut a = x in a := \"s\"; a");
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].0, "assignment to `a`: expected Float, got String");
+}
+
+#[test]
+fn update_checks_fields_against_the_declared_type() {
+    let diags = check_src(
+        "type Position = { x: Float, y: Float }\n\
+         let f = (p: Position): Position => { p with x: \"s\", z: 1.0 }",
+    );
+    assert_eq!(diags.len(), 2);
+    assert_eq!(
+        diags[0].0,
+        "field `x` of `Position`: expected Float, got String"
+    );
+    assert_eq!(diags[1].0, "`Position` has no field `z`");
+}
+
+#[test]
+fn update_on_known_non_record_errors() {
+    let diags = check_src("let f = (x: Float) => { x with y: 1.0 }");
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].0, "`with` update on Float, not a record");
+}
+
+#[test]
+fn let_in_types_flow_to_the_body() {
+    let diags = check_src("let f = (): Bool => let x = 1.0 in x");
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].0, "return value: expected Bool, got Float");
+}
+
+#[test]
+fn gradual_mut_never_false_positives() {
+    assert_clean("let f = (x) => let mut a = x in a := a + 1.0; { a with n: a }");
+}

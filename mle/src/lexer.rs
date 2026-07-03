@@ -14,6 +14,9 @@ pub enum TokenKind {
     Type,
     True,
     False,
+    Mut,
+    With,
+    In,
     LParen,
     RParen,
     LBrace,
@@ -22,6 +25,8 @@ pub enum TokenKind {
     RBracket,
     Comma,
     Colon,
+    ColonEq,
+    Semi,
     Dot,
     Eq,
     EqEq,
@@ -53,6 +58,9 @@ pub fn describe(kind: &TokenKind) -> String {
         Type => "`type`".to_string(),
         True => "`true`".to_string(),
         False => "`false`".to_string(),
+        Mut => "`mut`".to_string(),
+        With => "`with`".to_string(),
+        In => "`in`".to_string(),
         LParen => "`(`".to_string(),
         RParen => "`)`".to_string(),
         LBrace => "`{`".to_string(),
@@ -61,6 +69,8 @@ pub fn describe(kind: &TokenKind) -> String {
         RBracket => "`]`".to_string(),
         Comma => "`,`".to_string(),
         Colon => "`:`".to_string(),
+        ColonEq => "`:=`".to_string(),
+        Semi => "`;`".to_string(),
         Dot => "`.`".to_string(),
         Eq => "`=`".to_string(),
         EqEq => "`==`".to_string(),
@@ -122,9 +132,19 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                 i += 1;
                 TokenKind::Comma
             }
-            b':' => {
+            b':' => match bytes.get(i + 1) {
+                Some(b'=') => {
+                    i += 2;
+                    TokenKind::ColonEq
+                }
+                _ => {
+                    i += 1;
+                    TokenKind::Colon
+                }
+            },
+            b';' => {
                 i += 1;
-                TokenKind::Colon
+                TokenKind::Semi
             }
             b'.' => {
                 i += 1;
@@ -208,6 +228,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                     "type" => TokenKind::Type,
                     "true" => TokenKind::True,
                     "false" => TokenKind::False,
+                    "mut" => TokenKind::Mut,
+                    "with" => TokenKind::With,
+                    "in" => TokenKind::In,
                     name => TokenKind::Ident(name.to_string()),
                 }
             }

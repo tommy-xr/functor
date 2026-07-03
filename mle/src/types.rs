@@ -440,6 +440,80 @@ impl Checker {
                 }
                 Type::List(Box::new(elem.unwrap_or(Type::Unknown)))
             }
+            ExprKind::RecordUpdate { base, fields } => {
+                let base_ty = self.infer(base);
+                match &base_ty {
+                    Type::Record(name) => {
+                        let name = name.clone();
+                        for field in fields {
+                            let decl_ty = self
+                                .records
+                                .get(&name)
+                                .and_then(|decl| decl.iter().find(|(n, _)| n == &field.name))
+                                .map(|(_, ty)| ty.clone());
+                            match decl_ty {
+                                Some(ty) => {
+                                    let what = format!("field `{}` of `{name}`", field.name);
+                                    self.expect(&field.value, &ty, &what);
+                                }
+                                None => {
+                                    self.diag(
+                                        field.span,
+                                        format!("`{name}` has no field `{}`", field.name),
+                                    );
+                                    self.infer(&field.value);
+                                }
+                            }
+                        }
+                        base_ty
+                    }
+                    Type::Unknown => {
+                        for field in fields {
+                            self.infer(&field.value);
+                        }
+                        Type::Unknown
+                    }
+                    other => {
+                        self.diag(base.span, format!("`with` update on {other}, not a record"));
+                        for field in fields {
+                            self.infer(&field.value);
+                        }
+                        Type::Unknown
+                    }
+                }
+            }
+            ExprKind::LocalMut { binding, .. } => self
+                .locals
+                .get(&binding.0)
+                .cloned()
+                .unwrap_or(Type::Unknown),
+            ExprKind::Let {
+                binding,
+                value,
+                body,
+                ..
+            } => {
+                let value_ty = self.infer(value);
+                self.locals.insert(binding.0, value_ty);
+                self.infer(body)
+            }
+            ExprKind::Assign {
+                binding,
+                name,
+                value,
+                rest,
+            } => {
+                // The slot's type is fixed by its initializer: a `mut Float`
+                // stays a Float across assignments.
+                let slot_ty = self
+                    .locals
+                    .get(&binding.0)
+                    .cloned()
+                    .unwrap_or(Type::Unknown);
+                let what = format!("assignment to `{name}`");
+                self.expect(value, &slot_ty, &what);
+                self.infer(rest)
+            }
             ExprKind::FieldAccess { object, field } => {
                 let object_ty = self.infer(object);
                 match &object_ty {

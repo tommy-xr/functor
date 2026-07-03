@@ -211,3 +211,44 @@ fn error_duplicate_record_field() {
     assert_eq!(message, "duplicate record field `x`");
     assert_eq!((line, col), (1, 19));
 }
+
+// --- Mutability rules (see ~/notes mutability.md) ---
+
+#[test]
+fn error_lambda_captures_mut_read() {
+    let (message, _, _) = lower_err("let f = (x) => let mut a = x in (y) => a + y");
+    assert_eq!(message, "a function cannot capture the mutable binding `a`");
+}
+
+#[test]
+fn error_lambda_captures_mut_assign() {
+    let (message, _, _) = lower_err("let f = (x) => let mut a = x in (y) => a := y; a");
+    assert_eq!(message, "a function cannot capture the mutable binding `a`");
+}
+
+#[test]
+fn error_assign_to_immutable_let() {
+    let (message, _, _) = lower_err("let f = (x) => let a = x in a := 1.0; a");
+    assert_eq!(message, "cannot assign to immutable binding `a`");
+}
+
+#[test]
+fn error_assign_to_param() {
+    let (message, _, _) = lower_err("let f = (x) => x := 1.0; x");
+    assert_eq!(message, "cannot assign to immutable binding `x`");
+}
+
+#[test]
+fn error_assign_to_global() {
+    let (message, _, _) = lower_err("let g = 1.0\nlet f = (x) => g := 2.0; x");
+    assert_eq!(
+        message,
+        "cannot assign to top-level `g` (globals are immutable)"
+    );
+}
+
+#[test]
+fn error_duplicate_update_field() {
+    let (message, _, _) = lower_err("let f = (p) => { p with x: 1.0, x: 2.0 }");
+    assert_eq!(message, "duplicate record field `x`");
+}
