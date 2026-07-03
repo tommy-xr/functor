@@ -158,15 +158,27 @@ pub fn builtin_signature(b: Builtin) -> Type {
     }
 }
 
+/// The checker's best-known type for every expression node, keyed by the
+/// node's raw [`crate::ir::ExprId`] — the substrate for editor hover
+/// (see [`crate::hover`]).
+pub type ExprTypes = HashMap<u32, Type>;
+
 /// Check a lowered module; returns every diagnostic, sorted by position.
 /// Empty means clean.
 pub fn check(module: &Module) -> Vec<CheckError> {
+    check_with_types(module).0
+}
+
+/// [`check`], also returning the per-expression types recorded during the
+/// (final, loud) inference pass.
+pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
     let mut checker = Checker {
         records: HashMap::new(),
         globals: HashMap::new(),
         locals: HashMap::new(),
         diags: Vec::new(),
         quiet: false,
+        expr_types: HashMap::new(),
     };
 
     // Record type names first (nominal references may be forward), then
@@ -225,7 +237,7 @@ pub fn check(module: &Module) -> Vec<CheckError> {
     }
 
     checker.diags.sort_by_key(|d| d.span.start);
-    checker.diags
+    (checker.diags, checker.expr_types)
 }
 
 struct Checker {
@@ -239,6 +251,9 @@ struct Checker {
     /// Suppress diagnostics (the quiet enrichment pass — the loud pass walks
     /// the same nodes again and reports once).
     quiet: bool,
+    /// Best-known type per expression, recorded by [`Checker::infer`]. The
+    /// loud pass runs last, so its (better-informed) types win.
+    expr_types: ExprTypes,
 }
 
 /// Prefer the known parts of two views of the same definition's type: the
@@ -341,6 +356,10 @@ impl Checker {
         match (&expr.kind, expected) {
             (ExprKind::Record(fields), Type::Record(name)) => {
                 self.check_record_literal(fields, name, expr.span);
+                // Structural paths bypass `infer`, so record the checked
+                // type here or hover would honestly-but-wrongly say Unknown
+                // (and a stale quiet-pass entry could linger).
+                self.expr_types.insert(expr.id.raw(), expected.clone());
             }
             // A record literal can never be a primitive/list/function,
             // whatever nominal type it might otherwise satisfy.
@@ -357,6 +376,7 @@ impl Checker {
                 for item in items {
                     self.expect(item, elem, "list element");
                 }
+                self.expr_types.insert(expr.id.raw(), expected.clone());
             }
             _ => {
                 let got = self.infer(expr);
@@ -403,6 +423,12 @@ impl Checker {
     }
 
     fn infer(&mut self, expr: &Expr) -> Type {
+        let ty = self.infer_inner(expr);
+        self.expr_types.insert(expr.id.raw(), ty.clone());
+        ty
+    }
+
+    fn infer_inner(&mut self, expr: &Expr) -> Type {
         match &expr.kind {
             ExprKind::Number(_) => Type::Float,
             ExprKind::String(_) => Type::String,
@@ -602,15 +628,18 @@ impl Checker {
                 let mut spine = Vec::new();
                 let mut leaf = expr;
                 while let ExprKind::Binary { op, lhs, rhs } = &leaf.kind {
-                    spine.push((*op, rhs.as_ref(), leaf.span));
+                    spine.push((*op, rhs.as_ref(), leaf.span, leaf.id));
                     leaf = lhs;
                 }
                 let mut acc = self.infer(leaf);
                 let mut acc_span = leaf.span;
-                for (op, rhs, node_span) in spine.into_iter().rev() {
+                for (op, rhs, node_span, node_id) in spine.into_iter().rev() {
                     let rhs_ty = self.infer(rhs);
                     acc = self.binary(op, &acc, acc_span, &rhs_ty, rhs.span, node_span);
                     acc_span = node_span;
+                    // Spine nodes never pass through the recording `infer`
+                    // wrapper (the walk is iterative) — record each here.
+                    self.expr_types.insert(node_id.raw(), acc.clone());
                 }
                 acc
             }
