@@ -554,10 +554,14 @@ pub async fn main() {
             window.set_key_polling(true);
             window.set_cursor_pos_polling(true);
             window.set_scroll_polling(true);
+            window.set_mouse_button_polling(true);
             window.set_framebuffer_size_polling(true);
             // Capture and hide the cursor so the game gets continuous relative
             // mouse motion (free-look) instead of the pointer stopping at the
-            // window edges. Escape still closes the window.
+            // window edges. Escape RELEASES the cursor (essential for the
+            // hot-reload loop: tweak code in the editor while the game runs);
+            // click recaptures; Escape while released quits. Losing focus
+            // also releases, so cmd-tabbing away hands the pointer back.
             window.set_cursor_mode(glfw::CursorMode::Disabled);
 
             let gl =
@@ -589,6 +593,9 @@ pub async fn main() {
         // serializable, unlike the game model (which is Debug text only).
         let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
         let mut mouse_pos: (i32, i32) = (0, 0);
+        // Whether the window owns the pointer (free-look). See the Escape /
+        // MouseButton / Focus arms in the event loop.
+        let mut cursor_captured = true;
 
         use glfw::Context;
 
@@ -659,8 +666,25 @@ pub async fn main() {
             for (_, event) in glfw::flush_messages(&events) {
                 match event {
                     glfw::WindowEvent::Close => window.set_should_close(true),
+                    // First Escape releases the cursor (edit code while the
+                    // game runs — the hot-reload workflow); Escape again while
+                    // released quits, preserving the Esc-Esc exit.
                     glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                        window.set_should_close(true)
+                        if cursor_captured {
+                            window.set_cursor_mode(glfw::CursorMode::Normal);
+                            cursor_captured = false;
+                            println!(
+                                "[runner] cursor released — click the window to recapture, \
+Escape again to quit"
+                            );
+                        } else {
+                            window.set_should_close(true)
+                        }
+                    }
+                    // A click while released recaptures for free-look.
+                    glfw::WindowEvent::MouseButton(_, Action::Press, _) if !cursor_captured => {
+                        window.set_cursor_mode(glfw::CursorMode::Disabled);
+                        cursor_captured = true;
                     }
                     // Always honor key releases and focus-loss, even while other
                     // input is ignored (pinned clock) — otherwise a key held at
@@ -676,6 +700,10 @@ pub async fn main() {
                         for k in std::mem::take(&mut held_keys) {
                             game.key_event(k as i32, false);
                         }
+                        // Hand the pointer back when the window loses focus
+                        // (cmd-tab to the editor); a click recaptures.
+                        window.set_cursor_mode(glfw::CursorMode::Normal);
+                        cursor_captured = false;
                     }
                     _ if ignore_user_input => {}
                     glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
@@ -685,11 +713,16 @@ pub async fn main() {
                             held_keys.insert(k);
                         }
                     }
-                    glfw::WindowEvent::CursorPos(x, y) => {
+                    // While the cursor is released, pointer motion/scroll
+                    // must not drive the camera (you're aiming at your editor,
+                    // not the game).
+                    glfw::WindowEvent::CursorPos(x, y) if cursor_captured => {
                         mouse_pos = (x as i32, y as i32);
                         game.mouse_move(x as i32, y as i32)
                     }
-                    glfw::WindowEvent::Scroll(_, y) => game.mouse_wheel(y as i32),
+                    glfw::WindowEvent::Scroll(_, y) if cursor_captured => {
+                        game.mouse_wheel(y as i32)
+                    }
                     _ => {}
                 }
             }
