@@ -28,6 +28,7 @@ use crate::game::Game;
 
 pub struct MleGame {
     path: String,
+    mtime: std::time::SystemTime,
     src: String,
     session: Session,
     model: Value,
@@ -47,63 +48,71 @@ pub struct MleGame {
 
 const STATS_EVERY: u64 = 300;
 
-fn fail(path: &str, stage: &str, src: &str, span: mle::Span, message: &str) -> ! {
-    let (line, col) = mle::line_col(src, span.start);
-    eprintln!("error: cannot {stage} {path}:{line}:{col}: {message}");
-    std::process::exit(1);
+/// A successfully loaded, contract-validated game module.
+struct Loaded {
+    src: String,
+    session: Session,
+    init: Value,
+}
+
+/// Load, check, and contract-validate a game file. Errors come back as fully
+/// rendered strings (`path:line:col: message`) so `create` can exit loud with
+/// them and hot-reload can print-and-keep-running with the same text.
+fn load_game(path: &str) -> Result<Loaded, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let render = |stage: &str, span: mle::Span, message: &str| {
+        let (line, col) = mle::line_col(&src, span.start);
+        format!("cannot {stage} {path}:{line}:{col}: {message}")
+    };
+    let program = mle::parse(&src).map_err(|e| render("parse", e.span, &e.message))?;
+    let module = mle::lower(program).map_err(|e| render("load", e.span, &e.message))?;
+    // Type diagnostics are advisory in the dev loop: print, keep going.
+    for diag in mle::check(&module) {
+        let (line, col) = mle::line_col(&src, diag.span.start);
+        eprintln!("warning: {path}:{line}:{col}: {}", diag.message);
+    }
+    let session = Session::load(&module, &mut FunctorHost)
+        .map_err(|f| render("load", f.error.span, &f.error.message))?;
+    // The producer contract is knowable at load — fail here, not once per
+    // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
+    // right arity.
+    let init = session
+        .global("init")
+        .ok_or_else(|| format!("{path} has no top-level `let init = …`"))?;
+    if matches!(init, Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)) {
+        return Err(format!("{path}: `init` must be a model value, not a function"));
+    }
+    require_function(path, &session, "tick", 3)?;
+    require_function(path, &session, "draw", 2)?;
+    Ok(Loaded { src, session, init })
+}
+
+fn file_mtime(path: &str) -> std::time::SystemTime {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
 }
 
 impl MleGame {
     pub fn create(path: &str) -> MleGame {
-        let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("error: cannot read {path}: {e}");
-            std::process::exit(1);
-        });
-        let program = match mle::parse(&src) {
-            Ok(program) => program,
-            Err(err) => fail(path, "parse", &src, err.span, &err.message),
+        // Stat BEFORE reading: an edit that lands mid-load then compares
+        // unequal on the next frame and triggers a reload, instead of being
+        // silently absorbed into a stale session.
+        let mtime = file_mtime(path);
+        let loaded = match load_game(path) {
+            Ok(loaded) => loaded,
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
         };
-        let module = match mle::lower(program) {
-            Ok(module) => module,
-            Err(err) => fail(path, "load", &src, err.span, &err.message),
-        };
-        // Type diagnostics are advisory in the dev loop: print, keep going.
-        for diag in mle::check(&module) {
-            let (line, col) = mle::line_col(&src, diag.span.start);
-            eprintln!("warning: {path}:{line}:{col}: {}", diag.message);
-        }
-        let session = match Session::load(&module, &mut FunctorHost) {
-            Ok(session) => session,
-            Err(failure) => fail(
-                path,
-                "load",
-                &src,
-                failure.error.span,
-                &failure.error.message,
-            ),
-        };
-        // The producer contract is knowable at load — fail loud here, not
-        // once per frame: `init` must be a model VALUE, `tick`/`draw` must
-        // be functions of the right arity.
-        let model = session.global("init").unwrap_or_else(|| {
-            eprintln!("error: {path} has no top-level `let init = …`");
-            std::process::exit(1);
-        });
-        if matches!(
-            model,
-            Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
-        ) {
-            eprintln!("error: {path}: `init` must be a model value, not a function");
-            std::process::exit(1);
-        }
-        require_function(path, &session, "tick", 3);
-        require_function(path, &session, "draw", 2);
         println!("[mle] loaded {path}");
         MleGame {
             path: path.to_string(),
-            src,
-            session,
-            model,
+            mtime,
+            src: loaded.src,
+            session: loaded.session,
+            model: loaded.init,
             last_frame: empty_frame(),
             last_error: None,
             frames: 0,
@@ -143,7 +152,40 @@ impl MleGame {
 
 impl Game for MleGame {
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {
-        // C3: file-watch → reparse → new Session, model preserved.
+        // Poll the file's mtime (a stat per frame is ~free) and swap in a new
+        // session on change. THE MODEL IS KEPT: it is a plain value the host
+        // holds, so state survives the edit and all functions rebind — the
+        // dev-loop payoff the language was built for (docs/mle.md C3). A
+        // broken edit prints and keeps the old program running. Caveat until
+        // B5: closure VALUES stored inside the model keep their pre-reload
+        // bodies (globals rebind; stored closures need the (stable-id, env)
+        // representation).
+        let mtime = file_mtime(&self.path);
+        if mtime == self.mtime {
+            return;
+        }
+        self.mtime = mtime;
+        let started = Instant::now();
+        match load_game(&self.path) {
+            Ok(loaded) => {
+                self.src = loaded.src;
+                self.session = loaded.session;
+                self.last_error = None;
+                println!(
+                    "[mle] hot-reloaded {} in {:.2}ms (model preserved; an edited `init` \
+takes effect on restart)",
+                    self.path,
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+            Err(message) => {
+                let rendered = format!("[mle] reload failed, keeping old program: {message}");
+                if self.last_error.as_deref() != Some(rendered.as_str()) {
+                    eprintln!("{rendered}");
+                    self.last_error = Some(rendered);
+                }
+            }
+        }
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
@@ -222,29 +264,20 @@ impl Game for MleGame {
     fn quit(&mut self) {}
 }
 
-/// Exit loud at load if `name` is not a function of `arity` params — the
-/// alternative is one error per frame, forever.
-fn require_function(path: &str, session: &Session, name: &str, arity: usize) {
+/// `name` must be a function of `arity` params — a contract violation is
+/// reportable at load, and the alternative is one error per frame, forever.
+fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> Result<(), String> {
     match session.global(name) {
-        Some(Value::Closure(closure)) if closure.params.len() == arity => {}
-        Some(Value::Closure(closure)) => {
-            eprintln!(
-                "error: {path}: `{name}` must take {arity} parameter(s), takes {}",
-                closure.params.len()
-            );
-            std::process::exit(1);
-        }
-        Some(other) => {
-            eprintln!(
-                "error: {path}: `{name}` must be a function, got {}",
-                other.kind_name()
-            );
-            std::process::exit(1);
-        }
-        None => {
-            eprintln!("error: {path} has no top-level `let {name} = …`");
-            std::process::exit(1);
-        }
+        Some(Value::Closure(closure)) if closure.params.len() == arity => Ok(()),
+        Some(Value::Closure(closure)) => Err(format!(
+            "{path}: `{name}` must take {arity} parameter(s), takes {}",
+            closure.params.len()
+        )),
+        Some(other) => Err(format!(
+            "{path}: `{name}` must be a function, got {}",
+            other.kind_name()
+        )),
+        None => Err(format!("{path} has no top-level `let {name} = …`")),
     }
 }
 

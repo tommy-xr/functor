@@ -141,13 +141,20 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
 
     const runnerBin =
       options.runnerBin ?? join(repoRoot, "target", "debug", runnerExe());
-    const dylibPath =
-      options.dylibPath ??
-      join(gameDir, "build-native", "target", "debug", defaultDylibName());
+    if (options.mlePath && options.dylibPath) {
+      throw new Error("mlePath and dylibPath are mutually exclusive");
+    }
+    // An .mle source runs through the interpreter; otherwise a built dylib.
+    const gamePath = options.mlePath
+      ? isAbsolute(options.mlePath)
+        ? options.mlePath
+        : resolve(options.mlePath)
+      : (options.dylibPath ??
+        join(gameDir, "build-native", "target", "debug", defaultDylibName()));
 
     for (const [label, path] of [
       ["functor-runner", runnerBin],
-      ["game dylib", dylibPath],
+      [options.mlePath ? "mle game source" : "game dylib", gamePath],
     ] as const) {
       if (!existsSync(path)) {
         throw new Error(
@@ -158,7 +165,10 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
       }
     }
 
-    const runnerArgs = ["--game-path", dylibPath, "--debug-port", String(port)];
+    const runnerArgs = ["--game-path", gamePath, "--debug-port", String(port)];
+    if (options.mlePath) {
+      runnerArgs.push("--mle");
+    }
     if (options.headless) {
       runnerArgs.push("--headless");
     }

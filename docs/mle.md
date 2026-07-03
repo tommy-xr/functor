@@ -238,10 +238,21 @@ Starts once A2 + B3 exist.
       *Verify (done):* byte-identical `--fixed-time` captures; headless
       `/state` shows the live MLE model. (`functor.json` `language` field —
       CLI wiring — deferred to C4 alongside input.)
-- [ ] **C3. Hot-reload — the payoff.** File-watch → reparse → rebind, model
-      preserved (already serializable data; no dylib, no cargo, no cache).
-      *Verify:* SDK e2e: mutate state → edit `.mle` → assert state survived AND
-      behavior changed; assert edit→frame latency budget.
+- [x] **C3. Hot-reload — the payoff.** The producer polls the file's mtime
+      each frame; on change: reparse → recheck → new `Session`, **model
+      preserved** (it is a plain value the host holds — the C2 architecture's
+      whole point). A broken edit prints once and keeps the old program;
+      contract violations (missing `tick`, function `init`) reject the new
+      session the same way. Reload observed at **0.14ms** re-parse +
+      ≤ 1 frame poll — versus the multi-second Fable+cargo loop this project
+      exists to kill. Caveat until B5: closure values stored *inside* the
+      model keep pre-reload bodies (globals rebind; stored closures need the
+      `(stable-id, env)` representation).
+      *Verify (done):* SDK e2e (`mle-hot-reload.e2e.test.ts`, headless): with
+      the debug clock pinned, spin `0.3` + one post-edit step = exactly
+      `0.3 + dt×(-5)` — state survived AND behavior changed as arithmetic,
+      not a race; latency asserted < 100ms; broken-edit resilience asserted.
+      The SDK gained an `mlePath` launch option.
 - [ ] **C4. MVU parity.** Full `Game` contract (init/update/tick/input/
       subscriptions/draw3d, effect-queue drain-to-fixed-point semantics) from
       MLE. *Verify:* port `examples/primitives`; golden-compare vs the F#
