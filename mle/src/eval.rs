@@ -134,6 +134,7 @@ pub fn run_with_host(
 ) -> Result<RunRecord, RunFailure> {
     let mut interp = Interp {
         globals: HashMap::new(),
+        mut_slots: HashMap::new(),
         trace: Vec::new(),
         tracing,
         depth: 0,
@@ -154,6 +155,11 @@ pub fn run_with_host(
 
 struct Interp<'h> {
     globals: HashMap<String, Value>,
+    /// Live `let mut` slots, keyed by binding, as a stack per binding (the
+    /// same binding can be re-entered through indirect recursion). Lowering
+    /// guarantees a slot is only touched within its `let`'s dynamic extent —
+    /// mut bindings cannot be captured — so push/pop brackets are exact.
+    mut_slots: HashMap<u32, Vec<Value>>,
     trace: Vec<TraceEvent>,
     tracing: Tracing,
     depth: usize,
@@ -249,6 +255,85 @@ impl Interp<'_> {
                     out.push(self.eval(item, env)?);
                 }
                 Ok(Value::List(Rc::new(out)))
+            }
+            ExprKind::RecordUpdate { base, fields } => {
+                let base_value = self.eval(base, env)?;
+                let Value::Record(base_fields) = &base_value else {
+                    return Err(RunError {
+                        message: format!(
+                            "`with` update on {}, not a record",
+                            base_value.kind_name()
+                        ),
+                        span: expr.span,
+                    });
+                };
+                let mut out = base_fields.as_ref().clone();
+                for field in fields {
+                    let value = self.eval(&field.value, env)?;
+                    match out.iter_mut().find(|(name, _)| *name == field.name) {
+                        Some((_, slot)) => *slot = value,
+                        None => {
+                            return Err(RunError {
+                                message: format!("record has no field `{}` to update", field.name),
+                                span: field.span,
+                            })
+                        }
+                    }
+                }
+                Ok(Value::Record(Rc::new(out)))
+            }
+            ExprKind::LocalMut { binding, name } => self
+                .mut_slots
+                .get(&binding.0)
+                .and_then(|stack| stack.last())
+                .cloned()
+                .ok_or_else(|| RunError {
+                    // Unreachable if lowering is correct; fail loud.
+                    message: format!("internal: dead mut slot `{name}`"),
+                    span: expr.span,
+                }),
+            ExprKind::Let {
+                binding,
+                mutable,
+                value,
+                body,
+                ..
+            } => {
+                let value = self.eval(value, env)?;
+                if *mutable {
+                    self.mut_slots.entry(binding.0).or_default().push(value);
+                    let result = self.eval(body, env);
+                    self.mut_slots
+                        .get_mut(&binding.0)
+                        .expect("pushed above")
+                        .pop();
+                    result
+                } else {
+                    let child = env.child(vec![(*binding, value)]);
+                    self.eval(body, &child)
+                }
+            }
+            ExprKind::Assign {
+                binding,
+                name,
+                value,
+                rest,
+            } => {
+                let value = self.eval(value, env)?;
+                match self
+                    .mut_slots
+                    .get_mut(&binding.0)
+                    .and_then(|stack| stack.last_mut())
+                {
+                    Some(slot) => *slot = value,
+                    None => {
+                        return Err(RunError {
+                            message: format!("internal: dead mut slot `{name}`"),
+                            span: expr.span,
+                        })
+                    }
+                }
+                self.eval(rest, env)
             }
             ExprKind::FieldAccess { object, field } => {
                 let object_value = self.eval(object, env)?;

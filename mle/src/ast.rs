@@ -74,8 +74,32 @@ pub enum ExprKind {
     Ident(Vec<String>),
     /// `{ x: 1.0, y: 2.0 }`
     Record(Vec<Field>),
+    /// `{ base with x: 1.0 }` — a copy of `base` with the listed fields
+    /// replaced. Pure; every named field must exist on the base at runtime.
+    RecordUpdate {
+        base: Box<Expr>,
+        fields: Vec<Field>,
+    },
     /// `[1.0, 2.0, 3.0]`
     List(Vec<Expr>),
+    /// `let x = e in body` / `let mut x = e in body` — an expression-level
+    /// binding scoped to `body`. Only `mut` bindings may be assigned
+    /// ([`Self::Assign`]), and a lambda may not capture one (lowering
+    /// enforces both — see `~/notes/ideas/mle-language/mutability.md`).
+    Let {
+        mutable: bool,
+        name: String,
+        value: Box<Expr>,
+        body: Box<Expr>,
+    },
+    /// `x := e; rest` — rebind a `mut` binding, then continue with `rest`
+    /// (the assignment always carries its continuation, so no sequencing
+    /// operator or Unit type is needed).
+    Assign {
+        name: String,
+        value: Box<Expr>,
+        rest: Box<Expr>,
+    },
     /// `position.x`
     FieldAccess {
         object: Box<Expr>,

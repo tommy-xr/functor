@@ -95,10 +95,27 @@ pub fn lower(program: ast::Program) -> Result<Module, LowerError> {
 
 struct Lowerer {
     globals: HashSet<String>,
-    /// One scope per enclosing lambda; lookup walks innermost-first.
-    scopes: Vec<Vec<(String, BindingId)>>,
+    /// One level per enclosing lambda or `let … in`; lookup walks
+    /// innermost-first. A lambda's level is a *boundary*: a `mut` binding
+    /// found past one has been captured, which is an error (see the module
+    /// docs and `~/notes/ideas/mle-language/mutability.md`).
+    scopes: Vec<ScopeLevel>,
     next_binding: u32,
     next_expr: u32,
+}
+
+struct ScopeLevel {
+    lambda_boundary: bool,
+    /// (name, binding, mutable)
+    vars: Vec<(String, BindingId, bool)>,
+}
+
+/// A resolved local: where it lives and how it may be used.
+struct Resolved {
+    binding: BindingId,
+    mutable: bool,
+    /// The reference crosses a lambda boundary (it is a capture).
+    captured: bool,
 }
 
 impl Lowerer {
@@ -179,15 +196,97 @@ impl Lowerer {
                 }
                 ExprKind::List(lowered)
             }
+            ast::ExprKind::RecordUpdate { base, fields } => {
+                let base = Box::new(self.expr(*base)?);
+                let mut lowered: Vec<Field> = Vec::new();
+                for field in fields {
+                    // Duplicates would make "last one wins" silent — same
+                    // rule as record literals.
+                    if lowered.iter().any(|f| f.name == field.name) {
+                        return Err(LowerError {
+                            message: format!("duplicate record field `{}`", field.name),
+                            span: field.span,
+                        });
+                    }
+                    lowered.push(Field {
+                        name: field.name,
+                        value: self.expr(field.value)?,
+                        span: field.span,
+                    });
+                }
+                ExprKind::RecordUpdate {
+                    base,
+                    fields: lowered,
+                }
+            }
+            ast::ExprKind::Let {
+                mutable,
+                name,
+                value,
+                body,
+            } => {
+                // The value is evaluated outside the binding's scope
+                // (`let x = x in …` refers to the outer `x`).
+                let value = Box::new(self.expr(*value)?);
+                let binding = BindingId(self.next_binding);
+                self.next_binding += 1;
+                self.scopes.push(ScopeLevel {
+                    lambda_boundary: false,
+                    vars: vec![(name.clone(), binding, mutable)],
+                });
+                let body = self.expr(*body);
+                self.scopes.pop();
+                ExprKind::Let {
+                    binding,
+                    name,
+                    mutable,
+                    value,
+                    body: Box::new(body?),
+                }
+            }
+            ast::ExprKind::Assign { name, value, rest } => {
+                let resolved = match self.lookup(&name) {
+                    Some(resolved) => resolved,
+                    None => {
+                        let target = if self.globals.contains(&name) {
+                            format!("cannot assign to top-level `{name}` (globals are immutable)")
+                        } else {
+                            format!("unknown name `{name}`")
+                        };
+                        return Err(LowerError {
+                            message: target,
+                            span,
+                        });
+                    }
+                };
+                if !resolved.mutable {
+                    return Err(LowerError {
+                        message: format!("cannot assign to immutable binding `{name}`"),
+                        span,
+                    });
+                }
+                if resolved.captured {
+                    return Err(LowerError {
+                        message: format!("a function cannot capture the mutable binding `{name}`"),
+                        span,
+                    });
+                }
+                ExprKind::Assign {
+                    binding: resolved.binding,
+                    name,
+                    value: Box::new(self.expr(*value)?),
+                    rest: Box::new(self.expr(*rest)?),
+                }
+            }
             ast::ExprKind::FieldAccess { object, field } => ExprKind::FieldAccess {
                 object: Box::new(self.expr(*object)?),
                 field,
             },
             ast::ExprKind::Lambda { params, ret, body } => {
-                let mut scope: Vec<(String, BindingId)> = Vec::new();
+                let mut scope: Vec<(String, BindingId, bool)> = Vec::new();
                 let mut lowered = Vec::new();
                 for param in params {
-                    if scope.iter().any(|(n, _)| *n == param.name) {
+                    if scope.iter().any(|(n, _, _)| *n == param.name) {
                         return Err(LowerError {
                             message: format!("duplicate parameter `{}`", param.name),
                             span: param.span,
@@ -195,7 +294,7 @@ impl Lowerer {
                     }
                     let binding = BindingId(self.next_binding);
                     self.next_binding += 1;
-                    scope.push((param.name.clone(), binding));
+                    scope.push((param.name.clone(), binding, false));
                     lowered.push(Param {
                         binding,
                         name: param.name,
@@ -203,7 +302,10 @@ impl Lowerer {
                         span: param.span,
                     });
                 }
-                self.scopes.push(scope);
+                self.scopes.push(ScopeLevel {
+                    lambda_boundary: true,
+                    vars: scope,
+                });
                 let body = self.expr(*body);
                 self.scopes.pop();
                 ExprKind::Lambda {
@@ -259,11 +361,24 @@ impl Lowerer {
     /// (the AST node it came from).
     fn ident(&mut self, segments: Vec<String>, span: Span) -> Result<Expr, LowerError> {
         let first = &segments[0];
-        let base = if let Some(binding) = self.lookup(first) {
-            Some(ExprKind::Local {
-                binding,
-                name: first.clone(),
-            })
+        let base = if let Some(resolved) = self.lookup(first) {
+            if resolved.mutable && resolved.captured {
+                return Err(LowerError {
+                    message: format!("a function cannot capture the mutable binding `{first}`"),
+                    span,
+                });
+            }
+            if resolved.mutable {
+                Some(ExprKind::LocalMut {
+                    binding: resolved.binding,
+                    name: first.clone(),
+                })
+            } else {
+                Some(ExprKind::Local {
+                    binding: resolved.binding,
+                    name: first.clone(),
+                })
+            }
         } else if self.globals.contains(first) {
             Some(ExprKind::Global(first.clone()))
         } else {
@@ -305,11 +420,21 @@ impl Lowerer {
         Ok(expr)
     }
 
-    fn lookup(&self, name: &str) -> Option<BindingId> {
-        self.scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.iter().rev().find(|(n, _)| n == name))
-            .map(|(_, binding)| *binding)
+    fn lookup(&self, name: &str) -> Option<Resolved> {
+        let mut captured = false;
+        for level in self.scopes.iter().rev() {
+            if let Some((_, binding, mutable)) = level.vars.iter().rev().find(|(n, _, _)| n == name)
+            {
+                return Some(Resolved {
+                    binding: *binding,
+                    mutable: *mutable,
+                    captured,
+                });
+            }
+            // Not in this level: passing a lambda's params level means any
+            // match further out is a capture.
+            captured |= level.lambda_boundary;
+        }
+        None
     }
 }

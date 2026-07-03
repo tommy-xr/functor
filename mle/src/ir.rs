@@ -106,8 +106,35 @@ pub enum ExprKind {
     External(Vec<String>),
     /// `{ x: 1.0, y: 2.0 }`
     Record(Vec<Field>),
+    /// `{ base with x: 1.0 }` — every field must exist on the base at
+    /// runtime.
+    RecordUpdate {
+        base: Box<Expr>,
+        fields: Vec<Field>,
+    },
     /// `[1.0, 2.0, 3.0]`
     List(Vec<Expr>),
+    /// Reference to an enclosing `let mut` slot (never crosses a lambda
+    /// boundary — lowering rejects capture; see `crate::lower`).
+    LocalMut {
+        binding: BindingId,
+        name: String,
+    },
+    /// `let [mut] name = value in body`.
+    Let {
+        binding: BindingId,
+        name: String,
+        mutable: bool,
+        value: Box<Expr>,
+        body: Box<Expr>,
+    },
+    /// `name := value; rest` — rebinds a `let mut` slot, then continues.
+    Assign {
+        binding: BindingId,
+        name: String,
+        value: Box<Expr>,
+        rest: Box<Expr>,
+    },
     /// `position.x`
     FieldAccess {
         object: Box<Expr>,

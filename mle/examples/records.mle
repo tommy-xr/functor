@@ -16,4 +16,9 @@ let mirror = (p: Position): Position => { x: -p.x, y: p.y }
 
 let isOrigin = (p: Position): Bool => p.x == 0.0
 
-let main = () => move(origin, { dx: 3.0, dy: 4.0 }, 0.5)
+// Record update syntax + an expression-level `let … in`.
+let nudge = (p: Position): Position => { p with x: p.x + 1.0 }
+
+let main = () =>
+  let moved = move(origin, { dx: 3.0, dy: 4.0 }, 0.5) in
+  nudge(moved)

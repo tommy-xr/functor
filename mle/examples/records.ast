@@ -512,71 +512,177 @@ Program {
         ),
         Let(
             LetDecl {
+                name: "nudge",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "p",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Position",
+                                        args: [],
+                                        span: 636..644,
+                                    },
+                                ),
+                                span: 633..644,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Position",
+                                args: [],
+                                span: 647..655,
+                            },
+                        ),
+                        body: Expr {
+                            kind: RecordUpdate {
+                                base: Expr {
+                                    kind: Ident(
+                                        [
+                                            "p",
+                                        ],
+                                    ),
+                                    span: 661..662,
+                                },
+                                fields: [
+                                    Field {
+                                        name: "x",
+                                        value: Expr {
+                                            kind: Binary {
+                                                op: Add,
+                                                lhs: Expr {
+                                                    kind: FieldAccess {
+                                                        object: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "p",
+                                                                ],
+                                                            ),
+                                                            span: 671..672,
+                                                        },
+                                                        field: "x",
+                                                    },
+                                                    span: 671..674,
+                                                },
+                                                rhs: Expr {
+                                                    kind: Number(
+                                                        1.0,
+                                                    ),
+                                                    span: 677..680,
+                                                },
+                                            },
+                                            span: 671..680,
+                                        },
+                                        span: 668..680,
+                                    },
+                                ],
+                            },
+                            span: 659..682,
+                        },
+                    },
+                    span: 632..682,
+                },
+                span: 620..682,
+            },
+        ),
+        Let(
+            LetDecl {
                 name: "main",
                 value: Expr {
                     kind: Lambda {
                         params: [],
                         ret: None,
                         body: Expr {
-                            kind: Call {
-                                callee: Expr {
-                                    kind: Ident(
-                                        [
-                                            "move",
+                            kind: Let {
+                                mutable: false,
+                                name: "moved",
+                                value: Expr {
+                                    kind: Call {
+                                        callee: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "move",
+                                                ],
+                                            ),
+                                            span: 715..719,
+                                        },
+                                        args: [
+                                            Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "origin",
+                                                    ],
+                                                ),
+                                                span: 720..726,
+                                            },
+                                            Expr {
+                                                kind: Record(
+                                                    [
+                                                        Field {
+                                                            name: "dx",
+                                                            value: Expr {
+                                                                kind: Number(
+                                                                    3.0,
+                                                                ),
+                                                                span: 734..737,
+                                                            },
+                                                            span: 730..737,
+                                                        },
+                                                        Field {
+                                                            name: "dy",
+                                                            value: Expr {
+                                                                kind: Number(
+                                                                    4.0,
+                                                                ),
+                                                                span: 743..746,
+                                                            },
+                                                            span: 739..746,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: 728..748,
+                                            },
+                                            Expr {
+                                                kind: Number(
+                                                    0.5,
+                                                ),
+                                                span: 750..753,
+                                            },
                                         ],
-                                    ),
-                                    span: 577..581,
+                                    },
+                                    span: 715..754,
                                 },
-                                args: [
-                                    Expr {
-                                        kind: Ident(
-                                            [
-                                                "origin",
-                                            ],
-                                        ),
-                                        span: 582..588,
+                                body: Expr {
+                                    kind: Call {
+                                        callee: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "nudge",
+                                                ],
+                                            ),
+                                            span: 760..765,
+                                        },
+                                        args: [
+                                            Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "moved",
+                                                    ],
+                                                ),
+                                                span: 766..771,
+                                            },
+                                        ],
                                     },
-                                    Expr {
-                                        kind: Record(
-                                            [
-                                                Field {
-                                                    name: "dx",
-                                                    value: Expr {
-                                                        kind: Number(
-                                                            3.0,
-                                                        ),
-                                                        span: 596..599,
-                                                    },
-                                                    span: 592..599,
-                                                },
-                                                Field {
-                                                    name: "dy",
-                                                    value: Expr {
-                                                        kind: Number(
-                                                            4.0,
-                                                        ),
-                                                        span: 605..608,
-                                                    },
-                                                    span: 601..608,
-                                                },
-                                            ],
-                                        ),
-                                        span: 590..610,
-                                    },
-                                    Expr {
-                                        kind: Number(
-                                            0.5,
-                                        ),
-                                        span: 612..615,
-                                    },
-                                ],
+                                    span: 760..772,
+                                },
                             },
-                            span: 577..616,
+                            span: 703..772,
                         },
                     },
-                    span: 571..616,
+                    span: 695..772,
                 },
-                span: 560..616,
+                span: 684..772,
             },
         ),
     ],

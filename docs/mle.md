@@ -174,6 +174,15 @@ snapshots — no GPU, fully agent-verifiable.
 - [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
       handlers. *Verify:* same program under real vs fake vs replay; structured
       effect log.
+- [x] **Language: record updates + local mutability** (2026-07-02; design:
+      `~/notes/ideas/mle-language/mutability.md`). `{ base with x: 1.0 }`
+      pure record updates; expression-level `let [mut] x = e in body` with
+      `x := e; rest` assignment (`:=`, not `<-` — that's reserved for B6
+      do-blocks). `mut` bindings are **non-capturable** (a lowering error,
+      F#-style) and rejected at top level, so the acyclic-RC/serializable-
+      state/replay invariants survive untouched. Typechecked: slot types fix
+      at the initializer; updates check against declared record types.
+      *Verify:* 18 semantics/error/diagnostic tests + example goldens. (done)
 - [ ] **B7. Hindley–Milner inference** (decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade

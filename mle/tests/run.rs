@@ -288,3 +288,72 @@ fn no_main_reports_all_bindings() {
         _ => panic!("expected bindings"),
     }
 }
+
+// --- Record updates + local let/mut (see ~/notes mutability.md) ---
+
+#[test]
+fn record_update_replaces_fields() {
+    assert_eq!(
+        main_result("let main = () => { { x: 1.0, y: 2.0 } with x: 9.0 }"),
+        "{ x: 9, y: 2 }"
+    );
+}
+
+#[test]
+fn error_update_of_missing_field() {
+    let (message, _, _) = run_err("let main = () => { { x: 1.0 } with y: 2.0 }");
+    assert_eq!(message, "record has no field `y` to update");
+}
+
+#[test]
+fn error_update_on_non_record() {
+    let (message, _, _) = run_err("let main = () => { 3.0 with x: 1.0 }");
+    assert_eq!(message, "`with` update on a number, not a record");
+}
+
+#[test]
+fn let_in_binds_and_shadows() {
+    // The initializer sees the OUTER binding; the body sees the new one.
+    assert_eq!(
+        main_result("let x = 1.0\nlet main = () => let x = x + 1.0 in let x = x * 10.0 in x"),
+        "20"
+    );
+}
+
+#[test]
+fn mut_accumulates_through_assignments() {
+    assert_eq!(
+        main_result(
+            "let sum3 = (a, b, c) =>\n\
+             \x20 let mut acc = a in\n\
+             \x20 acc := acc + b;\n\
+             \x20 acc := acc + c;\n\
+             \x20 acc\n\
+             let main = () => sum3(10.0, 20.0, 30.0)"
+        ),
+        "60"
+    );
+}
+
+#[test]
+fn mut_slots_are_fresh_per_activation() {
+    // Each callback invocation gets its own slot for the same static binding.
+    assert_eq!(
+        main_result(
+            "let bump = (x) => let mut a = x in a := a + 1.0; a\n\
+             let main = () => [1.0, 5.0] |> List.map(bump)"
+        ),
+        "[2, 6]"
+    );
+}
+
+#[test]
+fn closures_may_capture_immutable_lets() {
+    assert_eq!(
+        main_result(
+            "let f = (x) => let k = x * 2.0 in (y) => k + y\n\
+             let main = () => f(2.0)(1.0)"
+        ),
+        "5"
+    );
+}
