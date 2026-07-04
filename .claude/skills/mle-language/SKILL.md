@@ -163,6 +163,27 @@ Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)
 Light.directional(dx, dy, dz, r, g, b, intensity) |> Light.castShadows
 Frame.create(camera, scene)                                // what draw returns
 Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
+RenderTarget.named("id")                                   // offscreen texture, 512x512…
+RenderTarget.named("id") |> RenderTarget.sized(w, h)       // …unless sized. Declare ONCE,
+                                                           //   use the VALUE at both sites
+                                                           //   (never a bare string — the
+                                                           //   Angle rule for identity)
+frame |> Frame.withRenderTarget(target, targetFrame)       // writer: targetFrame (a full
+                                                           //   Frame.create/createLit) is
+                                                           //   rendered into the target
+                                                           //   before frame's main pass
+                                                           //   with its OWN lights — use
+                                                           //   createLit + castShadows for
+                                                           //   a lit/shadowed feed. A scene
+                                                           //   sampling its OWN target
+                                                           //   sees last frame's image
+scene |> Scene.screen(target)                              // reader: emissive screen
+                                                           //   showing the target; an
+                                                           //   undeclared id = magenta +
+                                                           //   one warning. A quad's front
+                                                           //   is +Z — rotate the monitor
+                                                           //   to face the viewer or the
+                                                           //   feed shows mirrored
 Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
 Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
 Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (Float) => Msg

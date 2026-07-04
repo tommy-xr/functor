@@ -357,6 +357,23 @@ Starts once A2 + B3 exist.
         ADDS subscriptions starts from the current frame edge (no
         catch-up burst); prelude unit tests pin the grid math and the
         teaching errors (15/15 e2e suite).
+      - [x] **C4b-3. Render targets** (done 2026-07-04): prelude grows
+        the render-to-texture surface over the engine feature —
+        `RenderTarget.named`/`sized` (a branded handle: the Angle rule
+        applied to *identity*, so writer/reader id typos are
+        unrepresentable), `Frame.withRenderTarget(frame, target,
+        targetFrame)` (the writer: a full inner frame — camera/scene/
+        lights — rendered offscreen before the main pass, with the
+        inner frame's own lights: `Frame.createLit` + `castShadows`
+        gives a lit, shadowed feed), and `Scene.screen(scene, target)`
+        (the reader: an emissive surface showing the target's texture;
+        an undeclared id renders magenta + warns once).
+        `examples/mle-monitor` demos it: a panning security camera
+        filming the courtyard, shown live on an in-world monitor.
+        *Verify (done):* prelude unit tests pin the frame's target
+        passes, the Scene.screen wire shape, and the branded-value
+        teaching errors; deterministic `--fixed-time` captures of
+        mle-monitor show the second camera's view on the screen.
 - [x] **C5. Wasm** (done 2026-07-03). `MleWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,
