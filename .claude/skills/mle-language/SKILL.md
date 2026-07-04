@@ -153,6 +153,9 @@ Available in runner-hosted MLE (and tests via
 
 ```mle
 Scene.cube() / sphere() / cylinder() / quad() / plane()   // zero args, enforced
+Scene.model("shark.glb")                                   // glTF by path, relative to the
+                                                           //   game dir; missing file =
+                                                           //   logged error + empty fallback
 Scene.group([scene, …])
 scene |> Scene.color(r, g, b)                              // scene-first: pipes
 scene |> Scene.lit(r, g, b)                                // diffuse+specular

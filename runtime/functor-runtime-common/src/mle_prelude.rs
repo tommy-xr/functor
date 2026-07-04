@@ -11,6 +11,10 @@
 //!
 //! ```text
 //! Scene.cube() / sphere() / cylinder() / quad() / plane()   -> Scene
+//! Scene.model(path)                                         -> Scene
+//!   (a glTF file loaded by the shells' asset pipeline; the path is
+//!    relative to the game dir, exactly as F#'s `Model.file` — a missing
+//!    file logs an error and renders as the empty fallback asset)
 //! Scene.group([scene, …])                                   -> Scene
 //! Scene.color(scene, r, g, b)                               -> Scene
 //! Scene.translate(scene, x, y, z)                           -> Scene
@@ -94,7 +98,7 @@ use std::rc::Rc;
 use crate::math::Angle;
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
-use crate::scene3d::{MaterialDescription, TextureDescription};
+use crate::scene3d::{MaterialDescription, ModelDescription, ModelHandle, TextureDescription};
 use crate::{Camera, Frame, Light, Scene3D, SceneObject};
 
 /// A [`Scene3D`] as an opaque MLE value.
@@ -461,6 +465,7 @@ const PATHS: &[&str] = &[
     "Scene.cylinder",
     "Scene.quad",
     "Scene.plane",
+    "Scene.model",
     "Scene.group",
     "Scene.color",
     "Scene.translate",
@@ -542,6 +547,22 @@ impl Host for FunctorHost {
                     _ => Scene3D::plane(),
                 })
             }
+            // A glTF model by file path (relative to the game dir), the MLE
+            // face of F#'s `Model.file |> Graphics.Scene3D.model`. Loading is
+            // the shells' asset pipeline, exactly as for the dylib producers;
+            // a missing file logs an error and renders as the empty fallback.
+            "Scene.model" => match args.as_slice() {
+                [Value::String(path)] if !path.is_empty() => {
+                    scene_value(Scene3D::model(ModelDescription {
+                        handle: ModelHandle::File(path.to_string()),
+                        overrides: Vec::new(),
+                    }))
+                }
+                _ => usage(
+                    "Scene.model(\"file.glb\") — a non-empty glTF path relative to \
+the game dir",
+                ),
+            },
             "Scene.group" => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut scenes = Vec::with_capacity(items.len());
@@ -1580,6 +1601,58 @@ mod tests {
         // Each child is a translate-wrapper Group at x = i.
         for (i, child) in children.iter().enumerate() {
             assert_eq!(child.xform.w.x, i as f32);
+        }
+    }
+
+    // The E1 hello shape: Scene.model emits a protocol Model node carrying
+    // the file handle, transformable like any scene (per-model scale, then
+    // placement — the glTF-lineup composition).
+    #[test]
+    fn scene_model_emits_a_model_node() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(\n\
+               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
+               Scene.model(\"shark.glb\") |> Scene.scale(0.002) |> Scene.translate(3.0, 1.0, 3.0))",
+        );
+        // Outermost: the translate wrapper; inside it, the scale wrapper;
+        // inside that, the Model node itself.
+        let SceneObject::Group(children) = &frame.scene.obj else {
+            panic!("expected translate wrapper, got {:?}", frame.scene.obj);
+        };
+        let SceneObject::Group(inner) = &children[0].obj else {
+            panic!("expected scale wrapper, got {:?}", children[0].obj);
+        };
+        let SceneObject::Model(model) = &inner[0].obj else {
+            panic!("expected a Model node, got {:?}", inner[0].obj);
+        };
+        let ModelHandle::File(path) = &model.handle;
+        assert_eq!(path, "shark.glb");
+        assert!(model.overrides.is_empty());
+        // And the whole thing speaks the protocol.
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(json.contains("shark.glb"), "json: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // Scene.model teaches its usage: a bare number or an empty path is a
+    // spanned error, not a silently-empty scene.
+    #[test]
+    fn model_requires_a_nonempty_path_string() {
+        for src in [
+            "let main = () => Scene.model(42.0)",
+            "let main = () => Scene.model(\"\")",
+        ] {
+            let module = mle::lower(mle::parse(src).unwrap()).unwrap();
+            let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .expect("should fail");
+            assert_eq!(
+                failure.error.message,
+                "usage: Scene.model(\"file.glb\") — a non-empty glTF path relative to \
+the game dir"
+            );
         }
     }
 
