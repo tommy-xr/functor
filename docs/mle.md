@@ -292,17 +292,48 @@ snapshots — no GPU, fully agent-verifiable.
       vars inside `Box<'a>` never substituted. *Verify:* Box/Pair at two
       types in one module; instantiation constrains; pattern-field types
       flow; erased-runtime pin; goldens.
-- [ ] **B8. `.mlei` interface files** (added 2026-07-02; design already in
-      `~/notes` `syntax.md` — the OCaml `.mli` split). A module's public
+- [ ] **B8. Multi-file modules + `.mlei` interface files** (added
+      2026-07-02; design in `~/notes` `syntax.md` — the OCaml `.mli` split).
+      **Part 1 — multi-file modules — done (2026-07-04):** file = module —
+      every `.mle` in the entry file's directory IS a module named by its
+      capitalized filename stem (`utils.mle` → `Utils`; stems must be
+      identifiers); loading is EAGER (whole-program: unreferenced siblings
+      still load, check, and evaluate). Qualified access needs NO import
+      (`Utils.clamp(x)`, `Utils.Circle(…)` in expressions AND patterns,
+      `Utils.Shape` in annotations, generics included); `open Utils` brings
+      a module in unqualified, with collisions (own names, other opens)
+      refused naming both sides. Cross-file dependency CYCLES are refused
+      with the cycle path (within-file letrec unchanged); module names
+      colliding with builtin/prelude namespaces (List, Scene, …) are
+      refused. The link is one MERGED module (`mle::project::load`):
+      per-file lowering canonicalizes names (non-entry defs/types/ctor tags
+      become `M.name`; the entry stays bare — a single-file project is
+      byte-identical to before), spans offset into one project-wide space
+      (`SourceMap` renders errors per file), IDs thread across files — so
+      eval, checker, `Session`, and `rebind` consume it UNCHANGED:
+      cross-module calls are ordinary late-bound globals, and rebind stable
+      ids inherit the module prefix from def names (cross-file reloads
+      rebind stored closures correctly, same-named defs in different
+      modules stay distinct). `mle ir/check/run/trace` load the project;
+      `functor build` checks the whole program; the native producer watches
+      EVERY project file (edit/add/remove any `.mle` → hot reload, model
+      preserved). *Verify (done):* `examples/project/` fixture + 27 project
+      tests (collisions, cycle paths, protected names, per-file
+      diagnostics, byte-identity pin, cross-file rebind); SDK e2e — editing
+      a NON-entry module hot-reloads with exact-arithmetic model
+      preservation (18/18 headless).
+      Follow-ups deferred from part 1: LSP cross-file support (the
+      per-file view errors on `open` — honest but red; project-load the
+      buffer's siblings), wasm/live-preview multi-file (the web producer
+      and `reload-source` interpret ONE source text; native-first), and
+      `functor push --watch` watching only the entry file.
+      **Part 2 — `.mlei` interface files** (next): a module's public
       contract as a checked file: exported types (including **abstract**
       types that hide their representation), function signatures, and —
-      once B6 lands — effect requirements. `mle check` verifies the
+      now that B6 landed — effect requirements. `mle check` verifies the
       implementation satisfies its interface; consumers typecheck against
       the `.mlei` alone. The LLM payoff is the point: an interface file is
-      the concise, load-into-context summary of a module. Prerequisite:
-      a module story (imports across files) — today a program is one
-      `.mle` file, so B8 lands together with (or right after) multi-file
-      modules.
+      the concise, load-into-context summary of a module.
 
 ## Track C — MLE as a second producer behind the seam
 
