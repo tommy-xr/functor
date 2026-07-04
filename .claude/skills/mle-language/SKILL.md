@@ -184,6 +184,14 @@ scene |> Scene.screen(target)                              // reader: emissive s
                                                            //   is +Z — rotate the monitor
                                                            //   to face the viewer or the
                                                            //   feed shows mirrored
+Fog.linear(near, far, r, g, b)                             // Fog VALUES only (the Angle
+Fog.exp(density, r, g, b)                                  //   rule); near >= 0, far >
+                                                           //   near, density > 0 enforced
+                                                           //   with teaching errors
+frame |> Frame.withFog(fog)                                // distance fog on all forward
+                                                           //   materials incl. emissive;
+                                                           //   the fog color is also the
+                                                           //   pass's clear color
 Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
 Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
 Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (Float) => Msg

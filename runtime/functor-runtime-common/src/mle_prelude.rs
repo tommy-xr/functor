@@ -34,6 +34,10 @@
 //! Scene.screen(scene, target)                               -> Scene
 //!   (the reader: an emissive "screen" surface showing the target's texture;
 //!    an id no frame declares shows magenta and warns once)
+//! Fog.linear(near, far, r, g, b) / Fog.exp(density, r, g, b) -> Fog
+//! Frame.withFog(frame, fog)                                  -> Frame
+//!   (frame-level distance fog on every forward material, emissive included —
+//!    fog occludes glow; the fog color is also the pass's clear color)
 //! Time.seconds(n) / Time.millis(n)                          -> Duration
 //!   (like Angle: timing functions take Duration VALUES, never bare
 //!    numbers — seconds/milliseconds confusion is unrepresentable)
@@ -91,6 +95,7 @@ use mle::value::HostData;
 use mle::{Host, RunError, Span, Value};
 use std::rc::Rc;
 
+use crate::fog::Fog;
 use crate::math::Angle;
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
@@ -322,6 +327,19 @@ impl HostData for MleRenderTarget {
     }
 }
 
+/// A [`Fog`] as an opaque MLE value — `Fog.linear(…)`/`Fog.exp(…)`.
+/// `Frame.withFog` accepts ONLY this (the Angle rule).
+pub struct MleFog(pub Fog);
+
+impl HostData for MleFog {
+    fn type_name(&self) -> &'static str {
+        "Fog"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl HostData for MleDuration {
     fn type_name(&self) -> &'static str {
         "Duration"
@@ -481,6 +499,9 @@ const PATHS: &[&str] = &[
     "Frame.create",
     "Frame.createLit",
     "Frame.withRenderTarget",
+    "Frame.withFog",
+    "Fog.linear",
+    "Fog.exp",
     "RenderTarget.named",
     "RenderTarget.sized",
     "Scene.screen",
@@ -969,6 +990,45 @@ frame's main pass",
                 }
                 _ => usage("Frame.withRenderTarget(frame, target, targetFrame)"),
             },
+            "Fog.linear" => match args.as_slice() {
+                [near, far, r, g, b] => {
+                    let near = non_negative_num(near, span, "Fog.linear near")?;
+                    let far = positive_num(far, span, "Fog.linear far")?;
+                    if far <= near {
+                        return err(format!(
+                            "Fog.linear: far ({far}) must be greater than near ({near})"
+                        ));
+                    }
+                    Ok(host(MleFog(Fog::linear(
+                        near as f32,
+                        far as f32,
+                        num(r, span)? as f32,
+                        num(g, span)? as f32,
+                        num(b, span)? as f32,
+                    ))))
+                }
+                _ => usage("Fog.linear(near, far, r, g, b)"),
+            },
+            "Fog.exp" => match args.as_slice() {
+                [density, r, g, b] => Ok(host(MleFog(Fog::exp(
+                    positive_num(density, span, "Fog.exp density")? as f32,
+                    num(r, span)? as f32,
+                    num(g, span)? as f32,
+                    num(b, span)? as f32,
+                )))),
+                _ => usage("Fog.exp(density, r, g, b)"),
+            },
+            // Frame first, so it pipes: `Frame.createLit(…) |> Frame.withFog(fog)`.
+            "Frame.withFog" => match args.as_slice() {
+                [frame, fog] => {
+                    let Some(inner) = frame_value(frame) else {
+                        return usage("Frame.withFog(frame, fog)");
+                    };
+                    let fog = fog_of(fog, "Frame.withFog", span)?;
+                    Ok(host(MleFrame(Frame::with_fog(inner.clone(), fog.clone()))))
+                }
+                _ => usage("Frame.withFog(frame, fog)"),
+            },
             // Scene first, so it pipes: `Scene.quad() |> Scene.screen(feed)` —
             // an emissive (fullbright, screens glow) surface showing the
             // target's texture. A target no frame declares shows magenta.
@@ -1410,6 +1470,33 @@ with RenderTarget.named(\"…\") and pass that value at both sites"
     }
 }
 
+/// Extract a [`Fog`] — `Frame.withFog` accepts ONLY the branded value, so
+/// the predictable mistake (a bare number where a Fog belongs) gets a
+/// teaching error pointing at the constructors (the [`angle_of`] rule).
+fn fog_of<'a>(value: &'a Value, what: &str, span: Span) -> Result<&'a Fog, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MleFog>()
+            .map(|f| &f.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected a Fog, got {}", value.kind_name()),
+                span,
+            }),
+        Value::Number(_) => Err(RunError {
+            message: format!(
+                "{what}: expected a Fog, got a bare number — build one with \
+Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected a Fog, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
 fn shape_of(value: &Value) -> Option<&physics::Shape> {
     match value {
         Value::HostData(data) => data.as_any().downcast_ref::<MleShape>().map(|s| &s.0),
@@ -1776,6 +1863,54 @@ it once with RenderTarget.named(\"…\") and pass that value at both sites"
             fail("let main = () => RenderTarget.named(3.0)"),
             "usage: RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
 piped through RenderTarget.sized"
+        );
+    }
+
+    // The fog vocabulary: a branded Fog on the frame, round-tripping the
+    // protocol wire shape.
+    #[test]
+    fn mle_snippet_declares_fog() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
+             |> Frame.withFog(Fog.linear(4.0, 30.0, 0.5, 0.6, 0.7))",
+        );
+        assert_eq!(frame.fog, Some(Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7)));
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(json.contains(r#""Linear""#), "json: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // [units, tier 1 — the Angle rule] Frame.withFog accepts ONLY the branded
+    // value; a bare number gets the teaching error.
+    #[test]
+    fn bare_numbers_are_not_fog() {
+        let fail = |src: &str| {
+            let module = mle::lower(mle::parse(src).unwrap()).unwrap();
+            mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .expect("should fail")
+                .error
+                .message
+        };
+        assert_eq!(
+            fail(
+                "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+Scene.cube()) |> Frame.withFog(0.5)"
+            ),
+            "Frame.withFog: expected a Fog, got a bare number — build one with \
+Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
+        );
+        // Degenerate parameters are teaching errors at construction, not
+        // silent bad renders.
+        assert_eq!(
+            fail("let main = () => Fog.linear(10.0, 5.0, 0.5, 0.5, 0.5)"),
+            "Fog.linear: far (5) must be greater than near (10)"
+        );
+        assert_eq!(
+            fail("let main = () => Fog.exp(-1.0, 0.5, 0.5, 0.5)"),
+            "Fog.exp density must be positive, got -1"
         );
     }
 

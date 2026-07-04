@@ -390,6 +390,20 @@ Starts once A2 + B3 exist.
         passes, the Scene.screen wire shape, and the branded-value
         teaching errors; deterministic `--fixed-time` captures of
         mle-monitor show the second camera's view on the screen.
+      - [x] **C4b-4. Fog** (done 2026-07-04): prelude grows the
+        distance-fog surface over the engine feature — branded
+        `Fog.linear(near, far, r, g, b)` / `Fog.exp(density, r, g, b)`
+        values (degenerate parameters — near < 0, far <= near,
+        density <= 0 — are teaching errors at construction) and
+        `Frame.withFog(frame, fog)`. Fog applies to every forward
+        material including emissive (fog occludes glow) and drives the
+        pass's clear color, so geometry dissolves into the horizon.
+        `examples/mle-atmosphere` demos it: an identical-pillar
+        colonnade receding into fog, with an emissive drifter.
+        *Verify (done):* prelude unit tests pin the frame's fog wire
+        shape and the teaching errors; a fog-less frame renders
+        BYTE-IDENTICALLY to the pre-fog engine (base-vs-fog golden
+        captures compared with cmp — the engine PR's contract).
 - [x] **C5. Wasm** (done 2026-07-03). `MleWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,
