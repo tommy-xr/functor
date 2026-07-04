@@ -29,8 +29,8 @@
 use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
-    drain_effects, frame_value, physics_scene_value, split_model_effect, sub_messages_for_frame,
-    EffectLog, FunctorHost, RealEffects,
+    contains_effect, drain_effects, frame_value, physics_scene_value, split_model_effect,
+    sub_messages_for_frame, EffectLog, FunctorHost, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
@@ -84,7 +84,6 @@ pub struct MleGame {
 }
 
 const STATS_EVERY: u64 = 300;
-const EFFECT_LOG_CAP: usize = 256;
 
 /// A successfully loaded, contract-validated game module.
 struct Loaded {
@@ -137,6 +136,12 @@ fn load_source(path: &str, src: String) -> Result<Loaded, String> {
     ) {
         return Err(format!(
             "{path}: `init` must be a model value, not a function"
+        ));
+    }
+    if functor_runtime_common::mle_prelude::contains_effect(&init) {
+        return Err(format!(
+            "{path}: `init` contains an Effect value — Effects are commands, not data; \
+return them beside the model as `(model, effect)`"
         ));
     }
     require_function(path, &session, "tick", 3)?;
@@ -291,6 +296,17 @@ impl MleGame {
     fn absorb(&mut self, returned: Value) {
         let (model, effects) = split_model_effect(returned);
         self.model = model;
+        // Effects are commands, not data — one stored in the model would
+        // make the pair sniff ambiguous on a later return (see
+        // `split_model_effect`). Warn loud; the model is small (it is
+        // interpreted every frame anyway) so the scan is cheap.
+        if contains_effect(&self.model) {
+            self.report_once(
+                "[mle] the model contains an Effect value — Effects are commands, \
+not data; return them beside the model as `(model, effect)` instead of storing them"
+                    .to_string(),
+            );
+        }
         let Some(effects) = effects else { return };
         if self.session.global("update").is_none() {
             self.report_once(
@@ -311,10 +327,6 @@ to receive their messages; dropping them"
         );
         for message in reports {
             self.report_once(message);
-        }
-        if self.effect_log.len() > EFFECT_LOG_CAP {
-            let excess = self.effect_log.len() - EFFECT_LOG_CAP;
-            self.effect_log.drain(..excess);
         }
     }
 
@@ -651,6 +663,23 @@ mod tests {
         );
         assert!(
             err.contains("no `let update = (model, msg) => …` to receive them"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Effects are commands, not data: an Effect inside `init` would make
+    /// the pair sniff ambiguous — rejected at load. [Codex H — B6 review]
+    #[test]
+    fn init_containing_an_effect_is_rejected() {
+        let err = load_err(
+            "init-effect",
+            "let init = (0.0, Effect.none())
+             let tick = (m, dt, tts) => m
+             let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+",
+        );
+        assert!(
+            err.contains("`init` contains an Effect value"),
             "unexpected error: {err}"
         );
     }

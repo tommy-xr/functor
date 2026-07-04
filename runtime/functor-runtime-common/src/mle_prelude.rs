@@ -153,6 +153,10 @@ pub trait EffectRunner {
     fn random(&mut self) -> f64;
 }
 
+/// The structured effect log keeps this many most-recent records — enforced
+/// INSIDE the drain, so the bound holds even mid-frame.
+pub const EFFECT_LOG_CAP: usize = 256;
+
 /// One performed effect: what kind, and what value the tagger received —
 /// the structured effect log (LLM-readable, and the input to replay).
 #[derive(Clone, Debug, PartialEq)]
@@ -1095,9 +1099,11 @@ fn effect_of(value: &Value) -> Option<&MleEffect> {
 
 /// Split an entry point's return into (model, effect). The pair contract:
 /// a 2-tuple whose SECOND element is an Effect value means "model plus
-/// commands" — anything else is just the model. (Effect values only come
-/// from `Effect.*`, and one in ordinary model data would be meaningless,
-/// so the sniff is unambiguous in practice.)
+/// commands" — anything else is just the model. Effects are COMMANDS, not
+/// data: one stored inside the model would make this sniff ambiguous
+/// (`(0.0, Effect.none())` as a model would be mis-split), so producers
+/// refuse an Effect inside `init` at load and warn if one appears in an
+/// adopted model ([`contains_effect`]).
 pub fn split_model_effect(value: Value) -> (Value, Option<EffectTree>) {
     if let Value::Tuple(items) = &value {
         if items.len() == 2 {
@@ -1108,6 +1114,19 @@ pub fn split_model_effect(value: Value) -> (Value, Option<EffectTree>) {
         }
     }
     (value, None)
+}
+
+/// Does an Effect value lurk anywhere inside `value`? Effects are commands,
+/// not model data — see [`split_model_effect`]. Early-exits; containers
+/// only (host values are opaque and cannot hold MLE values).
+pub fn contains_effect(value: &Value) -> bool {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleEffect>().is_some(),
+        Value::Tuple(items) | Value::List(items) => items.iter().any(contains_effect),
+        Value::Record(fields) => fields.iter().any(|(_, v)| contains_effect(v)),
+        Value::Variant { args, .. } => args.iter().any(contains_effect),
+        _ => false,
+    }
 }
 
 /// Perform `first` and drain to a fixed point: each performed effect's
@@ -1127,8 +1146,21 @@ pub fn drain_effects(
 ) {
     const MAX_EFFECTS_PER_FRAME: usize = 1000;
     let mut queue: Vec<EffectTree> = vec![first];
-    let mut performed = 0usize;
+    // Counts every DEQUEUED node (None and Batch structure included), and is
+    // checked BEFORE the runner performs anything — so a runaway chain can't
+    // consume unbounded frame time through structural nodes, and the capped
+    // effect is never half-performed (no runner state advanced, nothing
+    // logged, no replay-log entry consumed).
+    let mut processed = 0usize;
     while let Some(tree) = queue.pop() {
+        processed += 1;
+        if processed > MAX_EFFECTS_PER_FRAME {
+            report(format!(
+                "[mle] effect drain hit the per-frame cap ({MAX_EFFECTS_PER_FRAME}); \
+dropping the rest"
+            ));
+            return;
+        }
         let (kind, value, tagger) = match tree {
             EffectTree::None => continue,
             EffectTree::Batch(items) => {
@@ -1141,15 +1173,10 @@ pub fn drain_effects(
             EffectTree::Now { tagger } => ("now", runner.now(), tagger),
             EffectTree::Random { tagger } => ("random", runner.random(), tagger),
         };
-        performed += 1;
-        if performed > MAX_EFFECTS_PER_FRAME {
-            report(format!(
-                "[mle] effect drain hit the per-frame cap ({MAX_EFFECTS_PER_FRAME}); \
-dropping the rest"
-            ));
-            return;
-        }
         log.push(EffectRecord { kind, value });
+        if log.len() > EFFECT_LOG_CAP {
+            log.remove(0);
+        }
         let msg = match session.apply(
             tagger,
             vec![Value::Number(value)],
@@ -1821,8 +1848,51 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
             &mut log,
             &mut |msg| reports.push(msg),
         );
-        assert_eq!(log.len(), 1000, "cap bounds performed effects");
+        // The log bound is enforced INSIDE the drain (not after), and the
+        // cap fires before performing the over-limit effect.
+        assert_eq!(log.len(), EFFECT_LOG_CAP, "log bounded mid-drain");
         assert!(reports.iter().any(|r| r.contains("per-frame cap")));
+    }
+
+    /// Structural nodes count toward the cap too — a giant batch of
+    /// `Effect.none()` cannot consume unbounded frame time. [Codex M]
+    #[test]
+    fn structural_nodes_count_toward_the_cap() {
+        let module =
+            mle::lower(mle::parse("let noop = (m, msg) => m").expect("parse")).expect("lower");
+        let session = match mle::Session::load(&module, &mut FunctorHost) {
+            Ok(session) => session,
+            Err(failure) => panic!("load failed: {}", failure.error.message),
+        };
+        let mut model = Value::Number(0.0);
+        let mut log = EffectLog::new();
+        let mut reports = Vec::new();
+        drain_effects(
+            &session,
+            &mut model,
+            EffectTree::Batch(vec![EffectTree::None; 1500]),
+            &mut FakeEffects::new(0.0, vec![0.5]),
+            &mut log,
+            &mut |msg| reports.push(msg),
+        );
+        assert!(log.is_empty(), "nothing performed");
+        assert!(reports.iter().any(|r| r.contains("per-frame cap")));
+    }
+
+    /// Effects are commands, not data — the deep scan that backs the
+    /// producers' init rejection and adopted-model warning. [Codex H]
+    #[test]
+    fn contains_effect_finds_nested_effects() {
+        let fx = eval("let main = () => Effect.none()");
+        assert!(contains_effect(&fx));
+        let nested = Value::Record(std::rc::Rc::new(vec![(
+            "inner".to_string(),
+            Value::List(std::rc::Rc::new(vec![Value::Tuple(std::rc::Rc::new(
+                vec![Value::Number(1.0), fx],
+            ))])),
+        )]));
+        assert!(contains_effect(&nested));
+        assert!(!contains_effect(&Value::Number(1.0)));
     }
 
     /// Bare numbers are not durations — the Angle teaching error, for time.
