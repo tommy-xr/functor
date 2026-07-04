@@ -10,8 +10,10 @@
 //! Document sync is **full** (`textDocumentSync: 1`): every change carries
 //! the whole buffer. The server keeps one piece of state — a uri→text map —
 //! to answer `textDocument/hover` (quick info: `name : Type` from the
-//! gradual checker, via `mle::hover`). Diagnostics cover parse, lowering,
-//! and every `mle::check` type diagnostic.
+//! gradual checker, via `mle::hover`) and `textDocument/definition`
+//! (go-to-definition via `mle::goto`; MLE is single-file, so the answer is
+//! always a `Location` in the same document). Diagnostics cover parse,
+//! lowering, and every `mle::check` type diagnostic.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -60,7 +62,11 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
             // --- Requests (have an id; must be answered). ---
             ("initialize", Some(id)) => {
                 let result = json!({
-                    "capabilities": { "textDocumentSync": 1, "hoverProvider": true },
+                    "capabilities": {
+                        "textDocumentSync": 1,
+                        "hoverProvider": true,
+                        "definitionProvider": true,
+                    },
                     "serverInfo": { "name": "mle-lsp" },
                 });
                 write_message(
@@ -80,6 +86,17 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                 let result = documents
                     .get(uri)
                     .and_then(|text| hover(text, &params["position"]))
+                    .unwrap_or(Value::Null);
+                write_message(
+                    writer,
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                );
+            }
+            ("textDocument/definition", Some(id)) => {
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                let result = documents
+                    .get(uri)
+                    .and_then(|text| definition(text, uri, &params["position"]))
                     .unwrap_or(Value::Null);
                 write_message(
                     writer,
@@ -167,6 +184,16 @@ fn hover(text: &str, position: &Value) -> Option<Value> {
         "contents": { "kind": "markdown", "value": format!("```mle\n{hover_text}\n```") },
         "range": span_to_range(text, span),
     }))
+}
+
+/// Answer a definition request: parse/lower the buffer, resolve the
+/// reference at the (UTF-16) position via `mle::goto`, and return the
+/// definition site as a `Location` in the same document.
+fn definition(text: &str, uri: &str, position: &Value) -> Option<Value> {
+    let offset = position_to_offset(text, position)?;
+    let module = mle::lower(mle::parse(text).ok()?).ok()?;
+    let span = mle::goto::definition_span(&module, offset)?;
+    Some(json!({ "uri": uri, "range": span_to_range(text, span) }))
 }
 
 /// Invert [`lsp_position`]: an LSP `{line, character}` (UTF-16 code units)
