@@ -691,6 +691,7 @@ impl Host for FunctorHost {
                         camera: camera.0.clone(),
                         scene: scene.clone(),
                         lights: lit,
+                        render_targets: vec![],
                     })))
                 }
                 _ => usage("Frame.createLit(camera, scene, [light, …])"),
