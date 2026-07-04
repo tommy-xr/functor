@@ -252,6 +252,9 @@ mod tests {
                 frame: Frame::new(Camera::default(), Scene3D::cube()),
             }],
             fog: Some(crate::fog::Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7)),
+            skybox: Some(crate::skybox::SkyboxDescription::new(
+                "px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg",
+            )),
         };
         assert_json_stable(&frame);
 
@@ -265,6 +268,7 @@ mod tests {
         assert!(legacy.lights.is_empty());
         assert!(legacy.render_targets.is_empty());
         assert!(legacy.fog.is_none());
+        assert!(legacy.skybox.is_none());
     }
 
     // The render-target wire vocabulary: the reader (a texture by target id)
@@ -281,6 +285,17 @@ mod tests {
         assert_wire(
             &RenderTargetDescriptor::new("feed"),
             r#"{"id":"feed","width":512,"height":512}"#,
+        );
+    }
+
+    // The skybox wire vocabulary: six face paths in GL upload order.
+    #[test]
+    fn skybox_wire_is_pinned() {
+        use crate::skybox::SkyboxDescription;
+
+        assert_wire(
+            &SkyboxDescription::new("px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg"),
+            r#"{"px":"px.jpg","nx":"nx.jpg","py":"py.jpg","ny":"ny.jpg","pz":"pz.jpg","nz":"nz.jpg"}"#,
         );
     }
 

@@ -830,6 +830,7 @@ the game dir",
                         lights: lit,
                         render_targets: vec![],
                         fog: None,
+                        skybox: None,
                     })))
                 }
                 _ => usage("Frame.createLit(camera, scene, [light, …])"),

@@ -30,3 +30,8 @@ module Frame =
     /// overlay mode shades normally, so fog applies there.
     [<Emit("functor_runtime_common::Frame::with_fog($1, $0)")>]
     let withFog (fog: Fog) (frame: Frame): Frame = nativeOnly
+
+    /// A cubemap skybox drawn behind everything, right after the frame's
+    /// clear (render-target inner frames can carry their own).
+    [<Emit("functor_runtime_common::Frame::with_skybox($1, $0)")>]
+    let withSkybox (skybox: Skybox) (frame: Frame): Frame = nativeOnly

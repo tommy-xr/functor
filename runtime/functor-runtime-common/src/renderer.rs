@@ -131,6 +131,7 @@ target frame are ignored (depth 1 only)",
             debug_render_mode,
             shadow,
             pass.frame.fog.as_ref(),
+            pass.frame.skybox.as_ref(),
             width as f32 / height as f32,
         );
         unsafe {
@@ -186,6 +187,7 @@ target frame are ignored (depth 1 only)",
         debug_render_mode,
         shadow,
         frame.fog.as_ref(),
+        frame.skybox.as_ref(),
         viewport.aspect(),
     );
 }
@@ -244,6 +246,7 @@ fn forward_pass(
     debug_render_mode: DebugRenderMode,
     shadow: Option<ShadowUniforms>,
     fog: Option<&crate::fog::Fog>,
+    skybox: Option<&crate::skybox::SkyboxDescription>,
     aspect: f32,
 ) {
     let render_context = RenderContext {
@@ -263,6 +266,12 @@ fn forward_pass(
     let world_matrix = Matrix4::identity();
     let view_matrix = camera.view_matrix();
     let projection_matrix = camera.projection_matrix(aspect);
+
+    // The skybox draws first, behind everything (it writes no depth); fog
+    // does not apply to it — the sky IS the horizon.
+    if let Some(desc) = skybox {
+        scene_context.draw_skybox(&render_context, desc, &projection_matrix, &view_matrix);
+    }
 
     // Root material for nodes that don't set their own (scenes typically override
     // per-node); initialized against this frame's context.
