@@ -492,6 +492,17 @@ Pull-based: port examples as MLE proves itself; no flag-day.
 
 - [ ] **E1.** Port `examples/hello` (glTF lineup, free-look camera) — the
       real-world bar. *Verify:* golden parity.
+      *Progress (2026-07-04):* `Scene.model(path)` joined the prelude
+      (the protocol `Model` node, same game-dir-relative path as F#'s
+      `Model.file`), and `examples/mle-hello-gltf` ports the four-model
+      lineup, the lit-primitive row, the neon sphere, the lights, and
+      the exact WASD + mouse free-look math — **byte-identical
+      (0.0000%)** to the F# render over every portable pixel, both at
+      `--fixed-time 2.0` and after an identical debug-server input
+      drive. Full golden parity is still blocked on prelude gaps
+      (documented stand-ins in the game.mle header): heightmap
+      geometry, file-texture materials (lit/emissive), and the `ui`
+      overlay hook.
 - [ ] **E2.** Port remaining examples, one PR each. *Verify:* per-example
       goldens + e2e.
 - [ ] **E3.** Delete the F# pipeline: Fable, dotnet tooling, `.fsproj`s,
