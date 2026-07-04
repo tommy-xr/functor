@@ -10,7 +10,7 @@ const KEYWORDS = new Set(["let", "type", "match", "with", "mut", "in"]);
 const ATOMS = new Set(["true", "false"]);
 
 const TOKEN =
-  /\/\/[^\n]*|"(?:[^"\\]|\\.)*"|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|[+\-*/<>=|]/g;
+  /\/\/[^\n]*|"(?:[^"\\]|\\.)*"?|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|[+\-*/<>=|]/g;
 
 const escapeHtml = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

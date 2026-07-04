@@ -108,7 +108,10 @@ let draw = (model, tts: Float) =>
     Scene.sphere()
       |> Scene.emissive(1.0, 0.3, 0.8)
       |> Scene.scale(1.0 + 0.2 * Math.sin(model.spin * 4.0)))</pre>
-          <p>Input is another pure function — slide the cube with A and D:</p>
+          <p>
+            Input is another pure function — slide the cube with A and D (click the preview
+            first so it has keyboard focus):
+          </p>
           <pre class="mle runnable">let init = { x: 0.0 }
 
 let input = (model, key, isDown) =>
@@ -130,7 +133,7 @@ let draw = (model, tts) =>
       |> Scene.translate(model.x, 0.0, 0.0))</pre>
           <p>
             And physics is declarative — describe the bodies each frame; the runtime reconciles
-            and steps the world (click the preview, then watch the ball settle):
+            and steps the world:
           </p>
           <pre class="mle runnable">let init = {}
 let tick = (m, dt, tts) => m
@@ -178,8 +181,10 @@ let draw = (m, tts) =>
             </tbody>
           </table>
           <p>
-            Any entry point may instead return a 2-tuple <code>(model', effect)</code> to issue
-            one-shot <a href="#prelude-effects">effects</a>.
+            The model-returning entry points (<code>tick</code>, <code>input</code>,
+            <code>mouseMove</code>, <code>mouseWheel</code>, <code>update</code>) may instead
+            return a 2-tuple <code>(model', effect)</code> to issue one-shot
+            <a href="#prelude-effects">effects</a>.
           </p>
           <p>
             <strong>Frame order:</strong> subscriptions → <code>update</code> → <code>tick</code>
@@ -241,7 +246,8 @@ let area = (s: Shape): Float =>
             first-class: <code>xs |> List.map(Circle)</code>. When the scrutinee's type is known,
             exhaustiveness is checked. Patterns are minimal: <code>Ctor(x, _)</code>,
             <code>Ctor</code>, tuple <code>(x, _)</code> (matched by exact arity), bare names,
-            <code>_</code>, and literals — literal arms need a catch-all.
+            <code>_</code>, and literals — number/string literal arms need a catch-all
+            (<code>true</code> + <code>false</code> together are exhaustive).
           </p>
           <p>
             <strong>Arms are greedy:</strong> a nested <code>match</code> inside an arm consumes

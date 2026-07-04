@@ -110,6 +110,8 @@ const fromBase64Url = (b64u) =>
     Uint8Array.from(atob(b64u.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))
   );
 
+let inlineB64 = null;
+
 const loadInline = (b64u) => {
   let source;
   try {
@@ -118,6 +120,16 @@ const loadInline = (b64u) => {
     setStatus("error", "✖ error", "the #src= fragment is not valid base64");
     return false;
   }
+  inlineB64 = b64u;
+  // Reflect the inline program in the picker so it (and Reset) don't lie
+  // about what's loaded.
+  if (!picker.querySelector('option[value="__inline"]')) {
+    const option = document.createElement("option");
+    option.value = "__inline";
+    option.textContent = "docs snippet";
+    picker.appendChild(option);
+  }
+  picker.value = "__inline";
   setDoc(source);
   setStatus("busy", "◌ loading…");
   frame.src = `player.html?src=${b64u}`;
@@ -147,13 +159,20 @@ for (const example of EXAMPLES) {
 }
 
 picker.addEventListener("change", () => {
+  if (picker.value === "__inline") {
+    loadInline(inlineB64);
+    return;
+  }
   const url = new URL(window.location);
   url.searchParams.set("example", picker.value);
+  url.hash = "";
   window.history.replaceState(null, "", url);
   loadExample(picker.value);
 });
 
-resetButton.addEventListener("click", () => loadExample(picker.value));
+resetButton.addEventListener("click", () =>
+  picker.value === "__inline" ? loadInline(inlineB64) : loadExample(picker.value)
+);
 
 const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
 const requested = new URLSearchParams(window.location.search).get("example");
