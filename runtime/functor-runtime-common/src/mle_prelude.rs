@@ -178,12 +178,52 @@ pub trait EffectRunner {
 /// INSIDE the drain, so the bound holds even mid-frame.
 pub const EFFECT_LOG_CAP: usize = 256;
 
+/// A performed effect's structured result: the serializable plain-data
+/// subset of [`Value`] — no closures, no host data — which is what makes
+/// results loggable, replayable, and fakeable. `now`/`random` results are
+/// `Number`s; structured effects (physics raycasts, …) carry `Record`s.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum EffectValue {
+    Number(f64),
+    Bool(bool),
+    Text(String),
+    List(Vec<EffectValue>),
+    /// Field order is construction order (deterministic, like MLE records).
+    Record(Vec<(String, EffectValue)>),
+}
+
+impl EffectValue {
+    /// The MLE value handed to the effect's tagger.
+    pub fn to_mle(&self) -> Value {
+        match self {
+            EffectValue::Number(n) => Value::Number(*n),
+            EffectValue::Bool(b) => Value::Bool(*b),
+            EffectValue::Text(s) => Value::String(Rc::from(s.as_str())),
+            EffectValue::List(items) => {
+                Value::List(Rc::new(items.iter().map(EffectValue::to_mle).collect()))
+            }
+            EffectValue::Record(fields) => Value::Record(Rc::new(
+                fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_mle()))
+                    .collect(),
+            )),
+        }
+    }
+}
+
+impl From<f64> for EffectValue {
+    fn from(n: f64) -> EffectValue {
+        EffectValue::Number(n)
+    }
+}
+
 /// One performed effect: what kind, and what value the tagger received —
 /// the structured effect log (LLM-readable, and the input to replay).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectRecord {
     pub kind: &'static str,
-    pub value: f64,
+    pub value: EffectValue,
 }
 
 pub type EffectLog = Vec<EffectRecord>;
@@ -276,7 +316,7 @@ impl ReplayEffects {
     pub fn new(log: EffectLog) -> ReplayEffects {
         ReplayEffects { log, next: 0 }
     }
-    fn take(&mut self, kind: &'static str) -> f64 {
+    fn take(&mut self, kind: &'static str) -> EffectValue {
         let record = self
             .log
             .get(self.next)
@@ -287,16 +327,26 @@ impl ReplayEffects {
             self.next, record.kind
         );
         self.next += 1;
-        record.value
+        record.value.clone()
+    }
+
+    fn take_number(&mut self, kind: &'static str) -> f64 {
+        match self.take(kind) {
+            EffectValue::Number(n) => n,
+            other => panic!(
+                "replay diverged at effect {}: recorded a non-number {other:?} for {kind}",
+                self.next - 1
+            ),
+        }
     }
 }
 
 impl EffectRunner for ReplayEffects {
     fn now(&mut self) -> f64 {
-        self.take("now")
+        self.take_number("now")
     }
     fn random(&mut self) -> f64 {
-        self.take("random")
+        self.take_number("random")
     }
 }
 
@@ -1314,33 +1364,39 @@ dropping the rest"
             }
             EffectTree::Physics(command) => {
                 // Fire-and-forget: queue on the singleton world, log the kind
-                // (there is no result value to feed a tagger), continue. Not
-                // routed through the runner — commands are per-frame *inputs*
-                // recorded by the physics Timeline, not environment reads that
-                // replay must fake.
+                // and the target tag (there is no result value to feed a
+                // tagger), continue. Not routed through the runner — commands
+                // are per-frame *inputs* recorded by the physics Timeline,
+                // not environment reads that replay must fake.
                 let kind = match &command {
                     physics::PhysicsCommand::ApplyImpulse { .. } => "physics.applyImpulse",
                     physics::PhysicsCommand::ApplyForce { .. } => "physics.applyForce",
                     physics::PhysicsCommand::SetVelocity { .. } => "physics.setVelocity",
                     physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
                 };
+                let tag = command.tag_and_kind().0.to_string();
                 physics::with_world(physics::DEFAULT_WORLD, |w| w.queue_command(command));
-                log.push(EffectRecord { kind, value: 0.0 });
+                log.push(EffectRecord {
+                    kind,
+                    value: EffectValue::Text(tag),
+                });
                 if log.len() > EFFECT_LOG_CAP {
                     log.remove(0);
                 }
                 continue;
             }
-            EffectTree::Now { tagger } => ("now", runner.now(), tagger),
-            EffectTree::Random { tagger } => ("random", runner.random(), tagger),
+            EffectTree::Now { tagger } => ("now", runner.now().into(), tagger),
+            EffectTree::Random { tagger } => ("random", runner.random().into(), tagger),
         };
+        let value: EffectValue = value;
+        let mle_value = value.to_mle();
         log.push(EffectRecord { kind, value });
         if log.len() > EFFECT_LOG_CAP {
             log.remove(0);
         }
         let msg = match session.apply(
             tagger,
-            vec![Value::Number(value)],
+            vec![mle_value],
             &format!("Effect.{kind} tagger"),
             &mut FunctorHost,
         ) {
@@ -1915,6 +1971,8 @@ piped through RenderTarget.sized"
         );
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].kind, "physics.applyImpulse");
+        // The structured log records the TARGET, not a filler number.
+        assert_eq!(log[0].value, EffectValue::Text("ball".to_string()));
 
         // The command sits queued on world 0; a declared body + step applies it.
         crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
@@ -2102,11 +2160,11 @@ piped through RenderTarget.sized"
             vec![
                 EffectRecord {
                     kind: "random",
-                    value: 0.25
+                    value: EffectValue::Number(0.25)
                 },
                 EffectRecord {
                     kind: "now",
-                    value: 99.5
+                    value: EffectValue::Number(99.5)
                 },
             ]
         );
@@ -2119,9 +2177,35 @@ piped through RenderTarget.sized"
         let (real_model, real_log) = run(&mut RealEffects::new());
         assert_eq!(real_log.len(), 2);
         assert_eq!(real_log[0].kind, "random");
-        assert!((0.0..1.0).contains(&real_log[0].value));
+        let EffectValue::Number(r0) = real_log[0].value else {
+            panic!("random should log a number");
+        };
+        assert!((0.0..1.0).contains(&r0));
         assert_eq!(real_log[1].kind, "now");
         assert!(real_model.starts_with("{ rolls: 0."));
+    }
+
+    /// Structured effect values convert to the MLE values taggers receive,
+    /// and round-trip through serde (the future disk-replay seam).
+    #[test]
+    fn effect_values_convert_and_serialize() {
+        let value = EffectValue::Record(vec![
+            ("hit".to_string(), EffectValue::Bool(true)),
+            ("distance".to_string(), EffectValue::Number(4.25)),
+            ("tag".to_string(), EffectValue::Text("crate-1".to_string())),
+        ]);
+        let mle = value.to_mle();
+        let Value::Record(fields) = &mle else {
+            panic!("expected a record, got {}", mle.kind_name());
+        };
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].0, "hit");
+        assert!(matches!(fields[0].1, Value::Bool(true)));
+        assert!(matches!(fields[1].1, Value::Number(n) if n == 4.25));
+
+        let json = serde_json::to_string(&value).expect("serialize");
+        let back: EffectValue = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, value);
     }
 
     /// A diverged replay fails loud with the position, not silently wrong.
@@ -2130,7 +2214,7 @@ piped through RenderTarget.sized"
     fn replay_divergence_fails_loud() {
         ReplayEffects::new(vec![EffectRecord {
             kind: "now",
-            value: 1.0,
+            value: EffectValue::Number(1.0),
         }])
         .random();
     }
