@@ -25,19 +25,20 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{PhysicsScene, World};
+use super::{PhysicsCommand, PhysicsScene, World};
 
 /// A fixed-step frame number.
 pub type Frame = u64;
 
 /// One frame's worth of input to a physics [`World`] step. This is what a
 /// replay re-executes, so it must capture *everything* that can change the
-/// world: today that's the declared scene (whose history is also the
-/// insert/remove history Rapier arena handles depend on); Phase 3 adds
-/// impulse/force commands as further variants.
+/// world: the declared scene (whose history is also the insert/remove
+/// history Rapier arena handles depend on) and the frame's fire-and-forget
+/// commands (impulses/forces/teleports — Phase 3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     DeclareScene(PhysicsScene),
+    Apply(PhysicsCommand),
 }
 
 /// Events produced by a step. None yet — Phase 5 (collision events) populates
@@ -81,9 +82,20 @@ impl Simulatable for World {
         for cmd in cmds {
             match cmd {
                 Command::DeclareScene(scene) => self.reconcile(scene),
+                Command::Apply(command) => self.queue_command(command.clone()),
             }
         }
+        // Same per-frame command discipline as `step_frame`: queued commands
+        // land after this frame's reconcile, forces last exactly one frame.
+        // NOTE one live-vs-timeline difference: `step_frame` may run 0–8
+        // substeps per rendered frame (commands carry over a zero-substep
+        // frame), while this seam is exactly one fixed step per recorded
+        // frame. Recording live play (Phase 6) must record commands against
+        // the FIXED frame they actually applied on, not the rendered frame
+        // they were issued on.
+        self.apply_pending();
         self.step_fixed();
+        self.clear_frame_forces();
         Vec::new()
     }
 }

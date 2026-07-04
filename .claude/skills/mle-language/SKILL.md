@@ -178,6 +178,9 @@ body |> Physics.sensor                                     // overlap-only, no f
 Physics.scene(gx, gy, gz, [body, …])                       // what `physics` returns
 Physics.position("tag")                                    // {x, y, z} of the LIVE body
 scene |> Physics.transformed("tag")                        // scene at the body's live pose
+Physics.applyImpulse("tag", x, y, z)                       // -> Effect (fire-and-forget)
+Physics.applyForce("tag", x, y, z)                         //   force lasts ONE stepped frame
+Physics.setVelocity("tag", x, y, z) / Physics.teleport("tag", x, y, z)
 ```
 
 `Physics.position` / `Physics.transformed` read the live stepped world
@@ -187,6 +190,16 @@ so only read tags your `physics` hook declares. The tag is cross-frame
 identity: same tag = same body; drop a body by not declaring it.
 Re-declaring an *unchanged* body leaves the simulation alone; *changing*
 its declared position teleports it (the divergence rule, docs/physics.md).
+
+Physics **command effects** are returned beside the model like any effect
+— `(model, Physics.applyImpulse("ball", 0.0, 5.0, 0.0))` — but carry no
+tagger: nothing folds back through `update`; observe outcomes via the
+physics reads. Commands queue at perform time and apply at the next
+stepped frame's first substep, **after reconcile** — so declaring a body
+and commanding it in the same frame works. A command naming an unknown tag
+is a deduped `[mle]` warning, not an error (the body may have despawned in
+flight). `teleport` moves the live body without touching its declaration
+(no snap-back next frame).
 
 A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:
 

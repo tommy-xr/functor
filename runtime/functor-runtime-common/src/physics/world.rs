@@ -30,6 +30,48 @@ pub const FIXED_DT: f32 = 1.0 / 60.0;
 /// unboundedly.
 pub const MAX_SUBSTEPS_PER_FRAME: u32 = 8;
 
+/// A fire-and-forget command against a declared body (docs/physics.md,
+/// Phase 3): plain serializable data, queued via [`World::queue_command`] and
+/// applied at the frame's **first fixed substep, after reconcile** — so a
+/// body declared and commanded in the same frame works. Being plain data,
+/// commands are also the Timeline's replayable per-frame input
+/// (`timeline::Command::Apply`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PhysicsCommand {
+    /// Instantaneous momentum change.
+    ApplyImpulse { tag: String, impulse: [f32; 3] },
+    /// A force applied for this frame's substeps only (cleared at frame end —
+    /// no rapier force persistence to forget about).
+    ApplyForce { tag: String, force: [f32; 3] },
+    SetVelocity { tag: String, velocity: [f32; 3] },
+    /// Move the live body without touching its declaration (the declared
+    /// cache is unchanged, so the next frame's unchanged declaration does not
+    /// snap it back).
+    Teleport { tag: String, position: [f32; 3] },
+}
+
+impl PhysicsCommand {
+    /// The command's tag and short kind name, for warnings and logs.
+    pub fn tag_and_kind(&self) -> (&str, &'static str) {
+        match self {
+            PhysicsCommand::ApplyImpulse { tag, .. } => (tag, "applyImpulse"),
+            PhysicsCommand::ApplyForce { tag, .. } => (tag, "applyForce"),
+            PhysicsCommand::SetVelocity { tag, .. } => (tag, "setVelocity"),
+            PhysicsCommand::Teleport { tag, .. } => (tag, "teleport"),
+        }
+    }
+}
+
+/// Commands queued while no physics step consumes them (a game firing
+/// commands without a `physics` hook) are bounded — drop-with-warning beats
+/// unbounded growth.
+const MAX_PENDING_COMMANDS: usize = 1024;
+
+/// Warnings are bounded too: they are only freed by a driver draining them,
+/// and a driver that never steps the world never drains — the warning buffer
+/// must not become the leak it exists to report.
+const MAX_COMMAND_WARNINGS: usize = 64;
+
 /// One colored wireframe segment from [`World::debug_lines`], in world space.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct DebugLine {
@@ -85,6 +127,21 @@ pub struct World {
     declared: BTreeMap<String, Body>,
     accumulator: f32,
     frame: u64,
+    /// Commands awaiting the next stepped frame (serialized: a snapshot taken
+    /// between queue and step must restore them for bit-exact resume).
+    #[serde(default)]
+    pending: Vec<PhysicsCommand>,
+    /// Bodies given an [`PhysicsCommand::ApplyForce`] this frame — their
+    /// forces are cleared once the frame's substeps finish. Intra-call state:
+    /// populated and cleared within one `step_frame`/`step`, so it is always
+    /// empty at any snapshot point (hence not serialized).
+    #[serde(skip, default)]
+    forced: Vec<RigidBodyHandle>,
+    /// Command problems (unknown tag, overflow) for the driver to report —
+    /// commands are applied asynchronously, so there is no call site to error
+    /// at. Drain with [`World::take_command_warnings`].
+    #[serde(skip, default)]
+    command_warnings: Vec<String>,
 }
 
 impl World {
@@ -107,6 +164,42 @@ impl World {
             declared: BTreeMap::new(),
             accumulator: 0.0,
             frame: 0,
+            pending: Vec::new(),
+            forced: Vec::new(),
+            command_warnings: Vec::new(),
+        }
+    }
+
+    /// Queue a command for the next stepped frame (applied after that frame's
+    /// reconcile, before its first substep). Problems surface later through
+    /// [`World::take_command_warnings`].
+    pub fn queue_command(&mut self, command: PhysicsCommand) {
+        if self.pending.len() >= MAX_PENDING_COMMANDS {
+            let (tag, kind) = command.tag_and_kind();
+            self.push_command_warning(format!(
+                "physics command queue full ({MAX_PENDING_COMMANDS}); dropping {kind} \
+                 \"{tag}\" (is anything stepping the world?)"
+            ));
+            return;
+        }
+        self.pending.push(command);
+    }
+
+    /// Problems from asynchronously-applied commands (unknown tags, queue
+    /// overflow), drained for the driver to report.
+    pub fn take_command_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.command_warnings)
+    }
+
+    /// Warning texts are stable per (kind, tag) — no per-frame payloads — so
+    /// the drivers' report-once dedupe actually holds for a persistent bug.
+    fn push_command_warning(&mut self, warning: String) {
+        match self.command_warnings.len().cmp(&MAX_COMMAND_WARNINGS) {
+            std::cmp::Ordering::Less => self.command_warnings.push(warning),
+            std::cmp::Ordering::Equal => self
+                .command_warnings
+                .push("further physics command warnings suppressed until drained".to_string()),
+            std::cmp::Ordering::Greater => {}
         }
     }
 
@@ -161,8 +254,17 @@ impl World {
 
     /// Accumulate real (variable) dt and run whole fixed substeps, carrying the
     /// remainder. Returns the number of substeps taken.
+    ///
+    /// Queued commands apply immediately before the first substep — and stay
+    /// pending through a zero-substep frame, so a command is never consumed by
+    /// a frame that doesn't simulate (a frame-lasting force would otherwise be
+    /// lost without ever integrating).
     pub fn step_frame(&mut self, real_dt: f32) -> u32 {
         self.accumulator += real_dt.max(0.0);
+        if self.accumulator < FIXED_DT {
+            return 0;
+        }
+        self.apply_pending();
         let mut steps = 0;
         while self.accumulator >= FIXED_DT && steps < MAX_SUBSTEPS_PER_FRAME {
             self.step_fixed();
@@ -175,6 +277,7 @@ impl World {
             // the step phase is preserved.
             self.accumulator %= FIXED_DT;
         }
+        self.clear_frame_forces();
         steps
     }
 
@@ -314,6 +417,63 @@ impl World {
             bodies,
         })
         .expect("physics dump is always serializable")
+    }
+
+    /// Apply every queued command to the live world (call after reconcile,
+    /// before the frame's substeps). Unknown tags become warnings — the body
+    /// may have despawned since the command was issued, which is a race the
+    /// game can't avoid, so it must not be fatal.
+    pub(super) fn apply_pending(&mut self) {
+        for command in std::mem::take(&mut self.pending) {
+            let (tag, kind) = command.tag_and_kind();
+            let (tag, kind) = (tag.to_string(), kind);
+            let Some(&(rb_handle, _)) = self.tags.get(tag.as_str()) else {
+                self.push_command_warning(format!(
+                    "physics {kind} for unknown tag \"{tag}\""
+                ));
+                continue;
+            };
+            // Rapier silently ignores impulses/forces/velocities on
+            // non-dynamic bodies — warn instead, matching the unknown-tag
+            // contract. (Teleport is meaningful for every kind.)
+            let is_dynamic = self.bodies[rb_handle].is_dynamic();
+            if !matches!(command, PhysicsCommand::Teleport { .. }) && !is_dynamic {
+                self.push_command_warning(format!(
+                    "physics {kind} on non-dynamic body \"{tag}\" has no effect"
+                ));
+                continue;
+            }
+            let rb = &mut self.bodies[rb_handle];
+            match &command {
+                PhysicsCommand::ApplyImpulse { impulse, .. } => {
+                    rb.apply_impulse(vec3(*impulse), true);
+                }
+                PhysicsCommand::ApplyForce { force, .. } => {
+                    // The force persists for ALL of this frame's substeps and
+                    // clears after — so a multi-substep hitch frame integrates
+                    // it longer than a normal frame. Deliberate: "one frame of
+                    // push", matching how the game experiences frames.
+                    rb.add_force(vec3(*force), true);
+                    self.forced.push(rb_handle);
+                }
+                PhysicsCommand::SetVelocity { velocity, .. } => {
+                    rb.set_linvel(vec3(*velocity), true);
+                }
+                PhysicsCommand::Teleport { position, .. } => {
+                    let rotation = *rb.rotation();
+                    rb.set_position(Pose::from_parts(vec3(*position), rotation), true);
+                }
+            }
+        }
+    }
+
+    /// Forces last exactly one stepped frame (see [`PhysicsCommand::ApplyForce`]).
+    pub(super) fn clear_frame_forces(&mut self) {
+        for handle in std::mem::take(&mut self.forced) {
+            if let Some(rb) = self.bodies.get_mut(handle) {
+                rb.reset_forces(false);
+            }
+        }
     }
 
     // ── reconcile internals ─────────────────────────────────────────────
@@ -688,6 +848,150 @@ mod tests {
         restored.restore(&snap).unwrap();
         assert_eq!(restored.frame(), w.frame());
         assert!(restored.snapshot() == snap, "restored snapshot differs");
+    }
+
+    #[test]
+    fn commands_apply_at_the_frames_first_substep() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        w.queue_command(PhysicsCommand::ApplyImpulse {
+            tag: "a".to_string(),
+            impulse: [1.0, 0.0, 0.0],
+        });
+        // Zero-substep frame: the command stays pending, nothing applied.
+        assert_eq!(w.step_frame(FIXED_DT / 4.0), 0);
+        assert_eq!(w.body_velocity("a").unwrap(), [0.0, 0.0, 0.0]);
+        // The next stepping frame consumes it (default cube mass = 1: dv = 1).
+        assert_eq!(w.step_frame(FIXED_DT), 1);
+        assert!(w.body_velocity("a").unwrap()[0] > 0.0);
+        assert!(w.take_command_warnings().is_empty());
+    }
+
+    #[test]
+    fn set_velocity_and_teleport_commands_apply() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        w.queue_command(PhysicsCommand::SetVelocity {
+            tag: "a".to_string(),
+            velocity: [0.0, 0.0, 2.0],
+        });
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "a".to_string(),
+            position: [3.0, 1.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        let (pos, _) = w.body_transform("a").unwrap();
+        // Teleported, then integrated one 1/60 step of vz = 2.
+        assert_eq!(pos[0], 3.0);
+        assert!((pos[2] - 2.0 * FIXED_DT).abs() < 1e-5);
+        // Teleport did NOT touch the declaration: re-declaring the original
+        // spawn pose is unchanged → no snap-back (the divergence rule).
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        let (after, _) = w.body_transform("a").unwrap();
+        assert_eq!(after[0], 3.0);
+    }
+
+    #[test]
+    fn forces_last_exactly_one_stepped_frame() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        w.queue_command(PhysicsCommand::ApplyForce {
+            tag: "a".to_string(),
+            force: [6.0, 0.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        let v1 = w.body_velocity("a").unwrap()[0];
+        assert!(v1 > 0.0, "force should have accelerated the body");
+        // Next frame: the force is gone; velocity holds (no gravity/friction
+        // in the air).
+        w.step_frame(FIXED_DT);
+        let v2 = w.body_velocity("a").unwrap()[0];
+        assert!((v2 - v1).abs() < 1e-6, "force leaked into the next frame");
+    }
+
+    #[test]
+    fn command_for_unknown_tag_warns_instead_of_failing() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        w.queue_command(PhysicsCommand::ApplyImpulse {
+            tag: "ghost".to_string(),
+            impulse: [1.0, 0.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        let warnings = w.take_command_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("ghost"), "{warnings:?}");
+        // Drained: asking again yields nothing.
+        assert!(w.take_command_warnings().is_empty());
+    }
+
+    #[test]
+    fn pending_commands_survive_a_snapshot() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        w.queue_command(PhysicsCommand::ApplyImpulse {
+            tag: "a".to_string(),
+            impulse: [1.0, 0.0, 0.0],
+        });
+        let snap = w.snapshot();
+        let mut restored = World::new([0.0, 0.0, 0.0]);
+        restored.restore(&snap).unwrap();
+        w.step_frame(FIXED_DT);
+        restored.step_frame(FIXED_DT);
+        assert!(
+            w.snapshot() == restored.snapshot(),
+            "pending command lost across snapshot/restore"
+        );
+        assert!(restored.body_velocity("a").unwrap()[0] > 0.0);
+    }
+
+    #[test]
+    fn command_queue_overflow_drops_with_warning() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        for _ in 0..=MAX_PENDING_COMMANDS {
+            w.queue_command(PhysicsCommand::ApplyImpulse {
+                tag: "a".to_string(),
+                impulse: [0.0, 0.0, 0.0],
+            });
+        }
+        let warnings = w.take_command_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("queue full"), "{warnings:?}");
+    }
+
+    #[test]
+    fn command_warnings_are_bounded_when_never_drained() {
+        // A driver that never steps/drains (e.g. no `physics` hook) must not
+        // leak: both the queue AND the warning buffer are capped.
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        for _ in 0..(MAX_PENDING_COMMANDS + MAX_COMMAND_WARNINGS + 100) {
+            w.queue_command(PhysicsCommand::ApplyImpulse {
+                tag: "a".to_string(),
+                impulse: [0.0, 0.0, 0.0],
+            });
+        }
+        let warnings = w.take_command_warnings();
+        assert_eq!(warnings.len(), MAX_COMMAND_WARNINGS + 1);
+        assert!(warnings.last().unwrap().contains("suppressed"), "{warnings:?}");
+    }
+
+    #[test]
+    fn command_on_non_dynamic_body_warns() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![ground()]));
+        w.queue_command(PhysicsCommand::ApplyImpulse {
+            tag: "ground".to_string(),
+            impulse: [0.0, 9.0, 0.0],
+        });
+        // Teleport IS meaningful for a fixed body: no warning for it.
+        w.queue_command(PhysicsCommand::Teleport {
+            tag: "ground".to_string(),
+            position: [0.0, -0.2, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        let warnings = w.take_command_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("non-dynamic"), "{warnings:?}");
     }
 
     #[test]
