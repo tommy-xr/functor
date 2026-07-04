@@ -323,6 +323,13 @@ impl Interp<'_> {
                 }
                 Ok(Value::Record(Rc::new(out)))
             }
+            ExprKind::Tuple(items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    values.push(self.eval(item, env)?);
+                }
+                Ok(Value::Tuple(Rc::new(values)))
+            }
             ExprKind::List(items) => {
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
@@ -855,6 +862,18 @@ fn match_pattern(pattern: &Pattern, value: &Value, vars: &mut Vec<(BindingId, Va
             }
             _ => false,
         },
+        // Arity must match exactly — a 2-pattern against a 3-tuple is a
+        // non-match, like a mismatched ctor.
+        PatternKind::Tuple(args) => match value {
+            Value::Tuple(vals) => {
+                args.len() == vals.len()
+                    && args
+                        .iter()
+                        .zip(vals.iter())
+                        .all(|(p, v)| match_pattern(p, v, vars))
+            }
+            _ => false,
+        },
         PatternKind::Number(n) => matches!(value, Value::Number(v) if v == n),
         PatternKind::Bool(b) => matches!(value, Value::Bool(v) if v == b),
         PatternKind::String(s) => matches!(value, Value::String(v) if v.as_ref() == s),
@@ -869,6 +888,18 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
         (Value::String(x), Value::String(y)) => Ok(x == y),
         (Value::Bool(x), Value::Bool(y)) => Ok(x == y),
         (Value::List(xs), Value::List(ys)) => {
+            if xs.len() != ys.len() {
+                return Ok(false);
+            }
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                if !value_eq(x, y, span)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        // Structural, element-wise; arity difference is simply unequal.
+        (Value::Tuple(xs), Value::Tuple(ys)) => {
             if xs.len() != ys.len() {
                 return Ok(false);
             }

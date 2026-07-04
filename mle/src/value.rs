@@ -18,6 +18,8 @@ pub enum Value {
     String(Rc<str>),
     Bool(bool),
     List(Rc<Vec<Value>>),
+    /// At least two elements; structural equality, `(1, 2)` display.
+    Tuple(Rc<Vec<Value>>),
     /// Field order is the construction order (deterministic output).
     Record(Rc<Vec<(String, Value)>>),
     /// A variant-type value: a constructor applied to its (positional)
@@ -108,6 +110,16 @@ impl fmt::Display for Value {
             Value::Number(n) => write!(f, "{n}"),
             Value::String(s) => write!(f, "{s:?}"),
             Value::Bool(b) => write!(f, "{b}"),
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                write!(f, ")")
+            }
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -168,6 +180,7 @@ impl Value {
             Value::String(_) => "a string",
             Value::Bool(_) => "a bool",
             Value::List(_) => "a list",
+            Value::Tuple(_) => "a tuple",
             Value::Record(_) => "a record",
             Value::Variant { .. } => "a variant",
             Value::Ctor { .. } => "a constructor",

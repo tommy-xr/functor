@@ -68,6 +68,15 @@ let report = (scores) =>
 
 let nudge = (p: Position): Position => { p with x: p.x + 1.0 }  // record update (fields must exist)
 
+let minMax = (a: Float, b: Float): Float * Float =>   // tuple: (e1, e2, …), 2+ elements
+  match a < b with
+  | true => (a, b)                            // `(e)` is GROUPING, not a 1-tuple
+  | false => (b, a)
+
+let span = (a, b) =>
+  let (lo, hi) = minMax(a, b) in              // destructuring let (sugar for a
+  hi - lo                                     //   single-arm match; no `mut`)
+
 let sum3 = (a, b, c) =>
   let mut acc = a in                          // expression let-in; `mut` = rebindable slot
   acc := acc + b;                             // assignment is `:=` and carries a continuation
@@ -81,7 +90,10 @@ Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
 loosest), unary `-`. There is **no** if/else, loops, string-concatenation
 operator, modules, or imports yet — iteration is `List.map/filter/fold`,
 and the conditional is a **bool-literal match**
-(`match x > 3.0 with | true => a | false => b`).
+(`match x > 3.0 with | true => a | false => b`). Tuples are structural:
+`(1.0, "a") == (1.0, "a")`; product types annotate as `Float * String`
+(flat — no grouping in type position). Prefer named records for anything
+that outlives an expression; tuples are for multiple returns.
 
 ## Semantics rules that WILL bite you
 
@@ -108,10 +120,11 @@ and the conditional is a **bool-literal match**
   module, and `let Circle = …` alongside a ctor `Circle` is a
   duplicate-definition error. An (uppercase) param may still shadow a ctor;
   pattern vars can't (they are forced lowercase).
-- **Patterns are minimal**: `Ctor(x, _)` / `Ctor` / bare name / `_` /
-  literals (`true`, `false`, numbers incl. negative, strings — equality
-  match). Ctor
-  sub-patterns are names or `_` only — no nested ctors, no literals inside.
+- **Patterns are minimal**: `Ctor(x, _)` / `Ctor` / `(x, _)` (tuple) /
+  bare name / `_` / literals (`true`, `false`, numbers incl. negative,
+  strings — equality match). Ctor and tuple sub-patterns are names or `_`
+  only — no nesting, no literals inside. A tuple pattern matches by EXACT
+  arity (mismatch = non-match, like ctors).
   Pattern vars are immutable bindings; lambdas may capture them. First
   matching arm wins; no arm matching is a spanned runtime error. Unapplied
   ctors are first-class (`xs |> List.map(Circle)`); the runtime checks ctor

@@ -125,6 +125,8 @@ pub enum ExprKind {
     },
     /// `[1.0, 2.0, 3.0]`
     List(Vec<Expr>),
+    /// `(1.0, "a")` — at least two elements.
+    Tuple(Vec<Expr>),
     /// Reference to an enclosing `let mut` slot (never crosses a lambda
     /// boundary — lowering rejects capture; see `crate::lower`).
     LocalMut {
@@ -218,6 +220,8 @@ pub enum PatternKind {
         name: String,
         args: Vec<Pattern>,
     },
+    /// `(x, _)` — sub-patterns are bindings or `_`; arity must match.
+    Tuple(Vec<Pattern>),
     Number(f64),
     Bool(bool),
     String(String),

@@ -77,6 +77,9 @@ pub enum Type {
     String,
     Bool,
     List(Box<Type>),
+    /// A product type: `Float * Float` in annotations. Structural, like the
+    /// runtime.
+    Tuple(Vec<Type>),
     /// A declared record type, nominal by name.
     Record(String),
     /// A declared variant type, nominal by name.
@@ -92,6 +95,15 @@ impl fmt::Display for Type {
             Type::String => write!(f, "String"),
             Type::Bool => write!(f, "Bool"),
             Type::List(elem) => write!(f, "List<{elem}>"),
+            Type::Tuple(elems) => {
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " * ")?;
+                    }
+                    write!(f, "{elem}")?;
+                }
+                Ok(())
+            }
             Type::Record(name) | Type::Variant(name) => write!(f, "{name}"),
             Type::Fn(params, ret) => {
                 write!(f, "(")?;
@@ -118,6 +130,9 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
             true
         }
         (Type::List(x), Type::List(y)) => compatible(x, y),
+        (Type::Tuple(xs), Type::Tuple(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y))
+        }
         (Type::Record(x), Type::Record(y)) => x == y,
         (Type::Variant(x), Type::Variant(y)) => x == y,
         (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
@@ -125,6 +140,17 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
                 && p1.iter().zip(p2).all(|(x, y)| compatible(x, y))
                 && compatible(r1, r2)
         }
+        _ => false,
+    }
+}
+
+/// Does this type (or, for products, any element) denote a function?
+/// Runtime `==` errors on functions at any depth it actually compares, so a
+/// known function anywhere in a compared tuple is a certain runtime error.
+fn contains_fn(ty: &Type) -> bool {
+    match ty {
+        Type::Fn(..) => true,
+        Type::Tuple(elems) => elems.iter().any(contains_fn),
         _ => false,
     }
 }
@@ -388,6 +414,14 @@ impl Checker {
                 }
                 Type::List(Box::new(self.resolve_type(&ty.args[0], report)))
             }
+            // The parser encodes a product annotation (`Float * Float`) as
+            // the reserved name `*` with the elements as args.
+            "*" => Type::Tuple(
+                ty.args
+                    .iter()
+                    .map(|arg| self.resolve_type(arg, report))
+                    .collect(),
+            ),
             name if self.records.contains_key(name) => {
                 if !ty.args.is_empty() {
                     return arity_error(self, 0);
@@ -454,6 +488,28 @@ impl Checker {
                 }
                 self.expr_types.insert(expr.id.raw(), expected.clone());
             }
+            // A tuple literal against a product expectation: check each
+            // element against its slot (so record/list elements meet their
+            // declared types instead of hiding behind Unknown).
+            (ExprKind::Tuple(items), Type::Tuple(elems)) => {
+                if items.len() != elems.len() {
+                    self.diag(
+                        expr.span,
+                        format!(
+                            "{what}: expected {expected}, got a tuple of {} element(s)",
+                            items.len()
+                        ),
+                    );
+                    for item in items {
+                        self.infer(item);
+                    }
+                    return;
+                }
+                for (i, (item, elem)) in items.iter().zip(elems.iter()).enumerate() {
+                    self.expect(item, elem, &format!("tuple element {}", i + 1));
+                }
+                self.expr_types.insert(expr.id.raw(), expected.clone());
+            }
             _ => {
                 let got = self.infer(expr);
                 if !compatible(&got, expected) {
@@ -507,6 +563,9 @@ impl Checker {
     fn infer_inner(&mut self, expr: &Expr) -> Type {
         match &expr.kind {
             ExprKind::Number(_) => Type::Float,
+            ExprKind::Tuple(items) => {
+                Type::Tuple(items.iter().map(|item| self.infer(item)).collect())
+            }
             ExprKind::String(_) => Type::String,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Local { binding, .. } => self
@@ -761,6 +820,14 @@ impl Checker {
             self.check_pattern(&arm.pattern, &scrutinee_ty);
             match &arm.pattern.kind {
                 PatternKind::Wildcard | PatternKind::Var { .. } => has_catch_all = true,
+                // Sub-patterns are irrefutable (names/`_`), so a tuple arm
+                // catches every tuple of its arity — but only if that arity
+                // CAN match the scrutinee (the mismatch itself is diagnosed
+                // in check_pattern; it must not also count as exhaustive).
+                PatternKind::Tuple(args) => match &scrutinee_ty {
+                    Type::Tuple(elems) if elems.len() != args.len() => {}
+                    _ => has_catch_all = true,
+                },
                 PatternKind::Ctor { name, .. } => covered_ctors.push(name),
                 PatternKind::Bool(true) => saw_true = true,
                 PatternKind::Bool(false) => saw_false = true,
@@ -835,6 +902,19 @@ a catch-all arm (`_` or a name)"
                         ),
                     );
                 }
+                // A known product with no arity-matching arm can never be
+                // handled (the per-arm mismatch diags say why each arm
+                // fails; this says the MATCH as a whole is uncovered).
+                Type::Tuple(elems) => {
+                    self.diag(
+                        expr.span,
+                        format!(
+                            "match on {scrutinee_ty} is not exhaustive: no arm matches a \
+{}-element tuple",
+                            elems.len()
+                        ),
+                    );
+                }
                 // Unknown stays gradual; List/Record/Fn scrutinees already
                 // drew per-pattern compatibility diagnostics above.
                 _ => {}
@@ -852,6 +932,37 @@ a catch-all arm (`_` or a name)"
             PatternKind::Var { binding, .. } => {
                 self.locals.insert(binding.0, scrutinee.clone());
             }
+            PatternKind::Tuple(args) => match scrutinee {
+                Type::Tuple(elems) => {
+                    if elems.len() != args.len() {
+                        self.diag(
+                            pattern.span,
+                            format!(
+                                "this pattern names {} element(s), but the matched \
+value is {scrutinee} — it can never match",
+                                args.len()
+                            ),
+                        );
+                    }
+                    for (arg, elem) in args.iter().zip(elems.iter()) {
+                        self.check_pattern(arg, elem);
+                    }
+                }
+                Type::Unknown => {
+                    for arg in args {
+                        self.check_pattern(arg, &Type::Unknown);
+                    }
+                }
+                other => {
+                    self.diag(
+                        pattern.span,
+                        format!("a tuple pattern cannot match {other} — it can never match"),
+                    );
+                    for arg in args {
+                        self.check_pattern(arg, &Type::Unknown);
+                    }
+                }
+            },
             PatternKind::Ctor { name, args } => match self.ctors.get(name).cloned() {
                 Some((type_name, field_tys)) => {
                     match scrutinee {
@@ -932,7 +1043,9 @@ is {other}"
                     // rejects `==` whenever EITHER side is a function
                     // (closure, builtin, or unapplied constructor), so the
                     // other operand's type — even Unknown — cannot save it.
-                    (Type::Fn(..), _) | (_, Type::Fn(..)) => {
+                    // Runtime equality recurses, so a tuple with a known
+                    // function ELEMENT is just as certain to error.
+                    _ if contains_fn(lhs) || contains_fn(rhs) => {
                         self.diag(
                             node_span,
                             "functions cannot be compared with `==`".to_string(),

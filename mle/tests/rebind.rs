@@ -303,3 +303,21 @@ fn removed_shadow_keeps_old_body_with_warning() {
     // Old behavior: x + 30.
     assert_eq!(num(&apply(&b, rebound, 2.0)), 32.0);
 }
+
+/// Closures inside tuples are reached by the reload walk.
+#[test]
+fn closures_rebind_inside_tuples() {
+    let a = module(&format!(
+        "{APPLY}let mk = (k) => (x) => x * k\nlet main = () => (mk(2.0), 1.0)"
+    ));
+    let b = module(&format!(
+        "{APPLY}let mk = (k) => (x) => x * k + 1.0\nlet main = () => (mk(2.0), 1.0)"
+    ));
+    let stored = main_value(&a);
+    let (rebound, report) = rebind_value(&stored, &a, &b);
+    assert_eq!(report.rebound, 1, "warnings: {:?}", report.warnings);
+    let Value::Tuple(items) = &rebound else {
+        panic!("expected a tuple")
+    };
+    assert_eq!(num(&apply(&b, items[0].clone(), 5.0)), 11.0);
+}

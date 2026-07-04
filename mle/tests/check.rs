@@ -83,6 +83,11 @@ fn example_shapes_checks_clean() {
     example_checks_clean("shapes");
 }
 
+#[test]
+fn example_tuples_checks_clean() {
+    example_checks_clean("tuples");
+}
+
 fn example_checks_clean(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let src = fs::read_to_string(dir.join(format!("{name}.mle"))).unwrap();
@@ -625,4 +630,78 @@ fn mixed_unknown_arm_types_stay_gradual() {
         "{SHAPE}let g = (x) => x\n\
          let f = (b: Bool): String => match b with | true => g(1.0) | false => \"s\""
     ));
+}
+
+// --- Tuples ---
+
+/// Product annotations check element-wise; a known-arity mismatch in a
+/// pattern is a can-never-match diagnostic.
+#[test]
+fn tuple_pattern_arity_mismatch_is_flagged() {
+    let diags = check_src("let f = (t: Float * String): Bool => match t with | (x, y, z) => true");
+    assert_eq!(diags.len(), 2, "{diags:?}");
+    let has = |needle: &str| diags.iter().any(|(m, _, _)| m.contains(needle));
+    assert!(
+        has("names 3 element(s), but the matched value is Float * String"),
+        "{diags:?}"
+    );
+    // The mismatched arm must NOT count as exhaustive: the match as a whole
+    // is uncovered too. [Codex M — tuples review]
+    assert!(
+        has("not exhaustive: no arm matches a 2-element tuple"),
+        "{diags:?}"
+    );
+}
+
+/// A tuple pattern against a known non-tuple can never match.
+#[test]
+fn tuple_pattern_against_non_tuple_is_flagged() {
+    let diags = check_src("let f = (n: Float) => match n with | (a, b) => a");
+    assert_eq!(diags.len(), 1);
+    assert!(
+        diags[0].0.contains("a tuple pattern cannot match Float"),
+        "unexpected: {}",
+        diags[0].0
+    );
+}
+
+/// Element types flow through patterns: destructuring a known product gives
+/// typed variables (a String element used as Float errors).
+#[test]
+fn tuple_element_types_flow_through_patterns() {
+    let diags = check_src("let f = (t: Float * String): Float => let (n, s) = t in n + s");
+    assert_eq!(diags.len(), 1);
+    assert!(diags[0].0.contains("String"), "unexpected: {}", diags[0].0);
+}
+
+/// Tuple literals meet their product expectation element-wise, so a record
+/// element gets the declared-type check instead of hiding behind Unknown.
+/// [Codex H — tuples review]
+#[test]
+fn tuple_elements_meet_declared_types() {
+    let diags = check_src("type P = { x: Float }\nlet main = (): P * Float => ({ y: 1.0 }, 2.0)");
+    assert!(
+        diags.iter().any(|(m, _, _)| m.contains("`y`")),
+        "expected the record-literal field check to fire: {diags:?}"
+    );
+}
+
+/// `==` on tuples with a known function element is a certain runtime error.
+/// [Codex M — tuples review]
+#[test]
+fn tuple_equality_with_function_elements_is_an_error() {
+    let diags = check_src("let main = () => ((x) => x, 1.0) == ((x) => x, 1.0)");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].0, "functions cannot be compared with `==`");
+}
+
+/// An arity-matching arm among mismatched ones IS exhaustive — only the
+/// per-arm mismatch diags fire.
+#[test]
+fn matching_arity_arm_satisfies_exhaustiveness() {
+    let diags = check_src(
+        "let f = (t: Float * String): Float => match t with | (x, y, z) => 0.0 | (x, y) => x",
+    );
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].0.contains("names 3 element(s)"));
 }
