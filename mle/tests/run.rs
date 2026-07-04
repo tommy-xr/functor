@@ -87,7 +87,7 @@ fn check_golden(name: &str, extension: &str) {
 
 #[test]
 fn golden_run_pure_pipeline() {
-    check_golden("pure-pipeline", "run");
+    check_golden("pure_pipeline", "run");
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn golden_run_tuples() {
 // traces exercise no additional formatting.
 #[test]
 fn golden_trace_pure_pipeline() {
-    check_golden("pure-pipeline", "trace");
+    check_golden("pure_pipeline", "trace");
 }
 
 #[test]

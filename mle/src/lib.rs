@@ -16,6 +16,7 @@ pub mod ir;
 mod lexer;
 mod lower;
 mod parser;
+pub mod project;
 pub mod rebind;
 mod span;
 pub mod types;
