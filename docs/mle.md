@@ -368,6 +368,19 @@ First-class `.mle` editor support, built on the `mle` crate's front-end
 - [ ] **D3b. Go-to-definition.** Needs a use→definition query over the IR
       (it already carries spans on every node, but no query API yet); the
       hover node-walk is the natural starting point.
+- [ ] **D4. Live game preview in the editor** (needs C5). A VSCode webview
+      panel hosting the wasm runtime: the extension pushes the LIVE buffer
+      (debounced, unsaved included) into the webview, and a new
+      `set_source(src)` wasm export mirrors the native reload path —
+      parse → lower → check-as-warnings → `Session::load` →
+      `mle::rebind_value` on the held model. `Session`/`rebind` are pure
+      Rust, so **model-preserving hot reload runs in the browser**: type,
+      and the running game updates beside the editor without losing state
+      (a broken edit keeps the old program, same as native). v1 serves via
+      `functor run wasm` + iframe; a bundled self-contained runtime can
+      come later. *Verify:* e2e-drive the wasm page directly
+      (`set_source` twice, assert model survived + behavior changed);
+      manual: edit `mle-hello` live in the panel.
 
 ## Endgame — replace F#
 
