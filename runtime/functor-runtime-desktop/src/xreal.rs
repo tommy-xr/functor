@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cgmath::{InnerSpace, Quaternion, Rotation, Vector3, Zero};
+use cgmath::{InnerSpace, Quaternion, Rotation, Rotation3, Vector3, Zero};
 use functor_runtime_common::Camera;
 
 pub const DEFAULT_ADDR: &str = "169.254.2.1:52998";
@@ -54,12 +54,15 @@ pub struct ImuSample {
 }
 
 /// Map the wire-order sensor axes into the head frame (see [`ImuSample`]).
-/// This is the ONE place axis conventions live — a best guess derived from
-/// the community drivers' remap (`[-x, -z, -y]` into their z-forward frame)
-/// with z negated for our z-backward frame; tune signs here if a live
-/// rotation reads backwards.
+/// This is the ONE place axis conventions live. Measured on hardware
+/// (2026-07-03, scripted look-up/turn-left/tilt-left with the gravity vector
+/// as the direction reference): the raw sensor frame is **(right, down,
+/// forward)** — the optical/OpenCV convention — so the head frame is a pure
+/// sign flip of y and z. Note this is a PROPER rotation (det +1); an earlier
+/// reflection-based guess flipped gyro (a pseudovector) differently from
+/// accel and mirrored every head turn.
 fn remap(v: [f32; 3]) -> Vector3<f32> {
-    Vector3::new(-v[0], -v[2], v[1])
+    Vector3::new(v[0], -v[1], -v[2])
 }
 
 /// Incremental scanner: feed raw TCP bytes, get parsed samples. Handles
@@ -217,6 +220,23 @@ impl Fusion {
     }
 }
 
+/// Reduce an absolute head orientation to its yaw-only component, for use as
+/// the recenter reference. Recentering must zero *where you're facing* but
+/// keep pitch/roll gravity-anchored — a full-pose reference taken with a
+/// tilted head would bake that tilt in as a permanently crooked horizon.
+/// Returns `None` when the gaze is within ~11° of vertical (yaw is
+/// ill-defined staring at the ceiling); callers keep the previous reference.
+fn yaw_reference(q: Quaternion<f32>) -> Option<Quaternion<f32>> {
+    let f = q.rotate_vector(-Vector3::unit_z()); // gaze in world
+    let horizontal = (f.x * f.x + f.z * f.z).sqrt();
+    if horizontal < 0.2 {
+        return None;
+    }
+    // At identity the gaze is -z; from_angle_y(θ) carries -z to
+    // (-sin θ, 0, -cos θ), so θ recovers as atan2(-x, -z).
+    Some(Quaternion::from_angle_y(cgmath::Rad(f32::atan2(-f.x, -f.z))))
+}
+
 /// Average the gyro over the calibration window to estimate its at-rest bias
 /// (the Xreal One shows ~0.9°/s on one axis). The glasses are assumed still —
 /// they're usually on the desk when the runner starts.
@@ -340,9 +360,15 @@ fn read_stream(
     let mut scanner = PacketScanner::new();
     let mut calibration: Vec<ImuSample> = Vec::with_capacity(CALIBRATION_SAMPLES);
     let mut fusion: Option<Fusion> = None;
-    // Reference pose: orientation published to the game is q_ref⁻¹ · q, so
-    // recentering just captures the current absolute orientation.
+    // Yaw-only reference pose: orientation published to the game is
+    // q_ref⁻¹ · q (see `yaw_reference` for why yaw-only).
     let mut q_ref = Quaternion::new(1.0, 0.0, 0.0, 0.0);
+    // One automatic recenter shortly after tracking starts, once the gravity
+    // correction has had time to settle — without it the view starts rotated
+    // by wherever the glasses pointed at launch, and "the scene is off-screen"
+    // is the first-run experience. F1 still recenters at will.
+    let mut auto_recenter_at: Option<u64> = None;
+    const SETTLE_NS: u64 = 2_000_000_000;
     let mut buf = [0u8; 4096];
 
     loop {
@@ -361,12 +387,35 @@ fn read_stream(
                             bias.x, bias.y, bias.z
                         );
                         fusion = Some(Fusion::new(bias));
+                        auto_recenter_at = Some(sample.timestamp_ns + SETTLE_NS);
                     }
                 }
                 Some(fusion) => {
                     fusion.update(&sample);
-                    if recenter_flag.swap(false, Ordering::Relaxed) {
-                        q_ref = fusion.orientation();
+                    let manual = recenter_flag.swap(false, Ordering::Relaxed);
+                    let auto = auto_recenter_at.is_some_and(|at| sample.timestamp_ns >= at);
+                    if manual || auto {
+                        match yaw_reference(fusion.orientation()) {
+                            Some(reference) => {
+                                q_ref = reference;
+                                // Any successful recenter disarms the pending
+                                // auto one — it must not overwrite a
+                                // deliberate F1 moments later. Staying armed
+                                // until success also means glasses that were
+                                // face-up on the desk at the 2s mark recenter
+                                // the moment they're put on (gaze drops below
+                                // vertical) instead of losing the one-shot.
+                                if auto_recenter_at.take().is_some() && !manual {
+                                    println!(
+                                        "[xreal] recentered (automatic; F1 to recenter again)"
+                                    );
+                                }
+                            }
+                            None if manual => println!(
+                                "[xreal] recenter skipped — gaze too vertical; look ahead and press F1 again"
+                            ),
+                            None => {}
+                        }
                     }
                     *shared.lock().unwrap() = q_ref.invert() * fusion.orientation();
                 }
@@ -403,13 +452,15 @@ mod tests {
     fn scanner_parses_message_with_leading_garbage_and_remaps_axes() {
         let mut scanner = PacketScanner::new();
         let mut bytes = vec![0xAB, 0xCD, 0x28, 0x36]; // garbage incl. a fake magic prefix
-        bytes.extend(message(1_000_000, [1.0, 2.0, 3.0], [0.0, 0.0, -9.8]));
+        // Wire frame is (right, down, forward); at rest worn, gravity reads
+        // -9.8 on the down axis.
+        bytes.extend(message(1_000_000, [1.0, 2.0, 3.0], [0.0, -9.8, 0.0]));
         let samples = scanner.push(&bytes);
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].timestamp_ns, 1_000_000);
-        // remap [x,y,z] -> [-x,-z,+y]
-        assert_eq!(samples[0].gyro, Vector3::new(-1.0, -3.0, 2.0));
-        assert_eq!(samples[0].accel, Vector3::new(-0.0, 9.8, 0.0));
+        // remap [x,y,z] -> [x,-y,-z]
+        assert_eq!(samples[0].gyro, Vector3::new(1.0, -2.0, -3.0));
+        assert_eq!(samples[0].accel, Vector3::new(0.0, 9.8, -0.0));
     }
 
     #[test]
@@ -567,6 +618,41 @@ mod tests {
             estimated_up.dot(target_up.normalize()) > 0.99,
             "estimated_up = {estimated_up:?}"
         );
+    }
+
+    /// Recentering a pure-yaw pose must fully cancel it: the published
+    /// relative orientation becomes identity.
+    #[test]
+    fn yaw_reference_cancels_pure_yaw() {
+        let q = Quaternion::from_angle_y(Deg(40.0));
+        let q_ref = yaw_reference(q).unwrap();
+        let rel = q_ref.invert() * q;
+        assert!(rel.s.abs() > 0.9999, "rel = {rel:?}");
+    }
+
+    /// Recentering a yawed-and-pitched pose removes only the yaw: the
+    /// relative gaze points straight ahead horizontally but keeps its pitch
+    /// (gravity anchors pitch/roll; recenter must not bake a tilt in).
+    #[test]
+    fn yaw_reference_keeps_pitch() {
+        let q = Quaternion::from_angle_y(Deg(40.0)) * Quaternion::from_angle_x(Deg(20.0));
+        let q_ref = yaw_reference(q).unwrap();
+        let rel_gaze = (q_ref.invert() * q).rotate_vector(-Vector3::unit_z());
+        // No sideways component (yaw gone)…
+        assert!(rel_gaze.x.abs() < 1e-4, "gaze = {rel_gaze:?}");
+        // …pitch preserved: from_angle_x(+20°) tips the gaze up by 20°.
+        assert!(
+            approx(rel_gaze.y, cgmath::Angle::sin(Deg(20.0f32)), 1e-4),
+            "gaze = {rel_gaze:?}"
+        );
+    }
+
+    /// Yaw is ill-defined staring at the ceiling — no reference is produced
+    /// (the caller keeps the previous one).
+    #[test]
+    fn yaw_reference_rejects_vertical_gaze() {
+        let up = Quaternion::from_angle_x(Deg(89.0));
+        assert!(yaw_reference(up).is_none());
     }
 
     #[test]
