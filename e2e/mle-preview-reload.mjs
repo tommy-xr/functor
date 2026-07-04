@@ -22,10 +22,11 @@
 //   npm run build:cli   # once, so target/debug/functor embeds the runtime
 //   node e2e/mle-preview-reload.mjs
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 const BASE = "http://127.0.0.1:8080";
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // --- The pushed sources. -----------------------------------------------------
 

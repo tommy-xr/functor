@@ -111,9 +111,19 @@
             message = String(e);
           }
           if (event.source) {
-            event.source.postMessage({ type: "mle-set-source-result", ok, message }, "*");
+            event.source.postMessage(
+              { type: "mle-set-source-result", ok, message },
+              event.origin || "*"
+            );
           }
         });
+        // Tell a hosting frame the push seam is live — the editor panel
+        // flushes the current buffer on this (edits made while the server
+        // and wasm were still starting would otherwise be dropped), and its
+        // absence tells the panel it's NOT looking at an MLE preview page.
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: "mle-preview-ready" }, "*");
+        }
       };
 
       init().then(() => {

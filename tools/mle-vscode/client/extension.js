@@ -11,6 +11,11 @@ const { spawn } = require("node:child_process");
 const { LanguageClient } = require("vscode-languageclient/node");
 
 let client;
+// The open preview panel, if any. A singleton: the dev server owns a fixed
+// port, so a second panel would race the first for it — and closing either
+// panel would kill the server out from under the other. Re-running the
+// command reveals the existing panel instead.
+let previewPanel;
 
 // Where `functor run wasm` serves the game — fixed by the CLI's dev server.
 const PREVIEW_URL = "http://127.0.0.1:8080";
@@ -68,10 +73,13 @@ function waitForServer(timeoutMs) {
   return new Promise((resolve) => {
     const deadline = Date.now() + timeoutMs;
     const poll = () => {
-      const req = http.get(PREVIEW_URL, (res) => {
+      const req = http.get(PREVIEW_URL, { timeout: 2000 }, (res) => {
         res.resume();
         resolve(true);
       });
+      // A connected-but-silent socket must not stall the poll past the
+      // deadline; destroy() surfaces as the error event below.
+      req.on("timeout", () => req.destroy());
       req.on("error", () => {
         if (Date.now() > deadline) resolve(false);
         else setTimeout(poll, 300);
@@ -85,6 +93,10 @@ function waitForServer(timeoutMs) {
 // `functor run wasm` and host the running game in a webview panel that
 // hot-reloads from the LIVE buffer (unsaved included), model preserved.
 async function openLivePreview() {
+  if (previewPanel) {
+    previewPanel.reveal();
+    return;
+  }
   const editor = vscode.window.activeTextEditor;
   if (!editor || !editor.document.fileName.endsWith(".mle")) {
     vscode.window.showErrorMessage(
@@ -110,17 +122,24 @@ async function openLivePreview() {
   const functorPath =
     vscode.workspace.getConfiguration("mle").get("functorPath") || "functor";
   const output = vscode.window.createOutputChannel("MLE Preview");
+  // The child outlives the panel by a beat (kill() on dispose, exit later),
+  // so every output write is gated on the panel still being alive — VSCode
+  // throws on appending to a disposed channel.
+  let disposed = false;
+  const log = (text) => {
+    if (!disposed) output.append(text);
+  };
   const child = spawn(functorPath, ["-d", project.dir, "run", "wasm", "--no-open"], {
     cwd: project.dir,
   });
-  child.stdout.on("data", (d) => output.append(d.toString()));
-  child.stderr.on("data", (d) => output.append(d.toString()));
+  child.stdout.on("data", (d) => log(d.toString()));
+  child.stderr.on("data", (d) => log(d.toString()));
   child.on("error", (e) => {
     vscode.window.showErrorMessage(
       `MLE: cannot start "${functorPath}" (${e.message}) — set mle.functorPath to the functor CLI binary.`
     );
   });
-  child.on("exit", (code) => output.appendLine(`[functor exited with code ${code}]`));
+  child.on("exit", (code) => log(`[functor exited with code ${code}]\n`));
 
   const panel = vscode.window.createWebviewPanel(
     "mleLivePreview",
@@ -130,6 +149,7 @@ async function openLivePreview() {
     // (and its model) alive when the panel is tabbed away.
     { enableScripts: true, retainContextWhenHidden: true }
   );
+  previewPanel = panel;
   panel.webview.html = previewHtml();
 
   // Push results surface here, non-modally: green check on a good reload,
@@ -143,7 +163,7 @@ async function openLivePreview() {
     } else {
       status.text = "$(error) MLE preview: push failed";
       status.tooltip = msg.message;
-      output.appendLine(`[push] ${msg.message}`);
+      log(`[push] ${msg.message}\n`);
     }
     status.show();
   });
@@ -160,9 +180,9 @@ async function openLivePreview() {
     }, PUSH_DEBOUNCE_MS);
   });
 
-  let disposed = false;
   panel.onDidDispose(() => {
     disposed = true;
+    previewPanel = undefined;
     clearTimeout(debounce);
     changeSub.dispose();
     status.dispose();
