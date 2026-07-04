@@ -424,7 +424,7 @@ fn pattern_binders(pattern: &Pattern, f: &mut impl FnMut(BindingId, &str)) {
 }
 
 /// Apply `f` to every direct child expression of `expr`.
-pub(crate) fn each_child(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+pub(crate) fn each_child<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
     match &expr.kind {
         ExprKind::Number(_)
         | ExprKind::String(_)

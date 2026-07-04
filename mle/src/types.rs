@@ -47,9 +47,9 @@
 //! call with a known signature) and against any *non*-record expectation (a
 //! record literal is never a Float); field access on a known record type;
 //! call arity and argument types where the callee's function type is known —
-//! including the builtins, whose signatures live in [`builtin_signature`]
-//! with generic slots as Unknown (no instantiation: `List.map`'s element
-//! types simply aren't tracked); return annotations against the body's type;
+//! including the builtins, whose generic schemes live in
+//! [`builtin_signature`] and instantiate fresh at every use (element types
+//! flow through `List.map`); return annotations against the body's type;
 //! and type-argument arity (`Position<Float>` is an error, an *unknown* type
 //! name is not). Constructors carry function types from their declarations
 //! (`Circle : (Float) => Shape`; nullary constructors are the variant type
@@ -63,12 +63,10 @@
 //! exists — and joins the arm result types (compatible where known; the
 //! match's type is Unknown unless all arms agree exactly).
 //!
-//! Top-level `let`s contribute what their value's shape declares (a lambda's
-//! annotations, a literal's type), then a quiet single-pass inference
-//! upgrades what it can (an unannotated lambda return, a list literal's
-//! element type). Signatures are collected before bodies are checked, so
-//! forward references between functions see full signatures (matching the
-//! interpreter's late binding).
+//! Top-level `let`s get placeholder signatures (annotations, with fresh
+//! variables for whatever is unannotated) before bodies are checked, so
+//! forward references see full signatures (matching the interpreter's late
+//! binding); bodies then infer in dependency (SCC) order and generalize.
 //!
 //! [`check`] walks the whole module and returns **every** diagnostic, sorted
 //! by source position — it never stops at the first error.
@@ -199,6 +197,40 @@ fn contains_fn(ty: &Type) -> bool {
     }
 }
 
+/// Every variable binding a pattern introduces (shallow — the pattern
+/// language has no nesting beyond ctor/tuple args).
+fn pattern_var_bindings(pattern: &Pattern, f: &mut impl FnMut(u32)) {
+    match &pattern.kind {
+        PatternKind::Var { binding, .. } => f(binding.0),
+        PatternKind::Ctor { args, .. } | PatternKind::Tuple(args) => {
+            for arg in args {
+                pattern_var_bindings(arg, f);
+            }
+        }
+        PatternKind::Wildcard
+        | PatternKind::Number(_)
+        | PatternKind::Bool(_)
+        | PatternKind::String(_) => {}
+    }
+}
+
+/// Rewrite variables to their position in `order` (display normalization).
+fn renumber_with(ty: &Type, order: &[u32]) -> Type {
+    match ty {
+        Type::Var(v) => {
+            let idx = order.iter().position(|o| o == v).expect("collected") as u32;
+            Type::Var(idx)
+        }
+        Type::List(e) => Type::List(Box::new(renumber_with(e, order))),
+        Type::Tuple(es) => Type::Tuple(es.iter().map(|e| renumber_with(e, order)).collect()),
+        Type::Fn(ps, r) => Type::Fn(
+            ps.iter().map(|p| renumber_with(p, order)).collect(),
+            Box::new(renumber_with(r, order)),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Free inference variables of `ty`, appended to `out` (deduplicated).
 fn free_vars_of(ty: &Type, out: &mut Vec<u32>) {
     match ty {
@@ -308,6 +340,7 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
         subst: HashMap::new(),
         next_var: 0,
         schemes: HashMap::new(),
+        in_type_decl: false,
         annot_vars: HashMap::new(),
         records: HashMap::new(),
         variants: HashMap::new(),
@@ -315,7 +348,6 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
         globals: HashMap::new(),
         locals: HashMap::new(),
         diags: Vec::new(),
-        quiet: false,
         expr_types: HashMap::new(),
     };
 
@@ -334,6 +366,7 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
             }
         }
     }
+    checker.in_type_decl = true;
     for decl in &module.types {
         match &decl.body {
             TypeBody::Record(decl_fields) => {
@@ -357,6 +390,8 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
             }
         }
     }
+
+    checker.in_type_decl = false;
 
     // Placeholder signatures: annotation-derived, with FRESH inference
     // variables where nothing is annotated (B7 — this is what makes
@@ -416,15 +451,32 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
     }
 
     checker.diags.sort_by_key(|d| d.span.start);
-    let exprs = checker
+    // ONE display order for the whole table: the same variable must hover
+    // as the same 'a everywhere (per-entry renumbering showed `q : 'a`
+    // while the signature said 'b — review F5c).
+    let mut order: Vec<u32> = Vec::new();
+    let mut expr_items: Vec<(u32, Type)> = checker
         .expr_types
         .iter()
-        .map(|(id, ty)| (*id, checker.zonk_normalized(ty)))
+        .map(|(id, ty)| (*id, checker.zonk(ty)))
         .collect();
-    let bindings = checker
+    expr_items.sort_by_key(|(id, _)| *id);
+    let mut binding_items: Vec<(u32, Type)> = checker
         .locals
         .iter()
-        .map(|(id, ty)| (*id, checker.zonk_normalized(ty)))
+        .map(|(id, ty)| (*id, checker.zonk(ty)))
+        .collect();
+    binding_items.sort_by_key(|(id, _)| *id);
+    for (_, ty) in expr_items.iter().chain(binding_items.iter()) {
+        free_vars_of(ty, &mut order);
+    }
+    let exprs = expr_items
+        .into_iter()
+        .map(|(id, ty)| (id, renumber_with(&ty, &order)))
+        .collect();
+    let bindings = binding_items
+        .into_iter()
+        .map(|(id, ty)| (id, renumber_with(&ty, &order)))
         .collect();
     (checker.diags, ExprTypes { exprs, bindings })
 }
@@ -442,17 +494,20 @@ fn scc_groups(module: &Module) -> Vec<Vec<usize>> {
     let n = module.defs.len();
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, def) in module.defs.iter().enumerate() {
-        fn refs(expr: &Expr, index_of: &HashMap<&str, usize>, out: &mut Vec<usize>) {
+        // Iterative worklist — the only whole-tree walk in `check`, and a
+        // deep binary spine must not overflow the stack (the lowerer and
+        // eval walk spines iteratively for the same reason).
+        let mut work: Vec<&Expr> = vec![&def.value];
+        while let Some(expr) = work.pop() {
             if let ExprKind::Global(name) = &expr.kind {
                 if let Some(&j) = index_of.get(name.as_str()) {
-                    if !out.contains(&j) {
-                        out.push(j);
+                    if !edges[i].contains(&j) {
+                        edges[i].push(j);
                     }
                 }
             }
-            crate::rebind::each_child(expr, &mut |child| refs(child, index_of, out));
+            crate::rebind::each_child(expr, &mut |child| work.push(child));
         }
-        refs(&def.value, &index_of, &mut edges[i]);
     }
     // Tarjan, iterative.
     let mut index = vec![usize::MAX; n];
@@ -514,6 +569,9 @@ struct Checker {
     /// Generalized top-level defs (populated as each dependency group
     /// finishes inference); instantiated fresh at every later use.
     schemes: HashMap<String, Scheme>,
+    /// Resolving a TYPE DECLARATION's field annotations (lowercase names
+    /// are refused there — see `resolve_type`).
+    in_type_decl: bool,
     /// Lowercase annotation names in the CURRENT def's signature are scoped
     /// type variables (`(xs: List<a>, f: (a) => b): List<b>`); this maps
     /// them to their variable for the def's duration.
@@ -531,9 +589,6 @@ struct Checker {
     /// are never shadowed or popped).
     locals: HashMap<u32, Type>,
     diags: Vec<CheckError>,
-    /// Suppress diagnostics (the quiet enrichment pass — the loud pass walks
-    /// the same nodes again and reports once).
-    quiet: bool,
     /// Best-known type per expression, recorded by [`Checker::infer`]. The
     /// loud pass runs last, so its (better-informed) types win.
     expr_types: HashMap<u32, Type>,
@@ -541,9 +596,7 @@ struct Checker {
 
 impl Checker {
     fn diag(&mut self, span: Span, message: String) {
-        if !self.quiet {
-            self.diags.push(CheckError { message, span });
-        }
+        self.diags.push(CheckError { message, span });
     }
 
     fn fresh(&mut self) -> Type {
@@ -580,7 +633,7 @@ impl Checker {
         if self.unify_rec(a, b, span, what) {
             return true;
         }
-        let (got, expected) = (self.zonk_normalized(a), self.zonk_normalized(b));
+        let (got, expected) = self.normalize_pair(a, b);
         self.mismatch(&expected, &got, span, what);
         false
     }
@@ -630,12 +683,10 @@ impl Checker {
         let mut free = Vec::new();
         free_vars_of(ty, &mut free);
         if free.contains(&v) {
+            let (var, ty) = self.normalize_pair(&Type::Var(v), ty);
             self.diag(
                 span,
-                format!(
-                    "{what}: cannot construct the infinite type '{} = {ty}",
-                    var_name(v)
-                ),
+                format!("{what}: cannot construct the infinite type {var} = {ty}"),
             );
             // Reported here; treat as absorbed so the wrapper doesn't add a
             // second, vaguer mismatch for the same conflict.
@@ -670,12 +721,15 @@ impl Checker {
                 other => other.clone(),
             }
         }
-        // NOT zonked: a real scheme's body is zonked at generalization time
-        // (and its quantified vars are unsolved by construction), while a
-        // builtin signature's literal Var(0)/Var(1) ids live OUTSIDE the
-        // checker's namespace — zonking them here would read unrelated
-        // solutions (the var-collision bug the `functions.mle` golden
-        // caught: List.map's 'a arriving pre-solved as Float).
+        // NOT zonked — the load-bearing invariant: a real scheme's body is
+        // zonked at generalization and its quantified vars never re-enter
+        // unification (same-group uses go through the monomorphic
+        // placeholder, later uses through fresh instantiations), while a
+        // builtin signature's literal Var(0)/Var(1) ids DO collide with
+        // live checker variables — the no-zonk rule is exactly what keeps
+        // that collision inert (zonking here read unrelated solutions: the
+        // var-collision bug the `functions.mle` golden caught, List.map's
+        // 'a arriving pre-solved as Float).
         walk(&scheme.ty, &mapping)
     }
 
@@ -694,22 +748,18 @@ impl Checker {
         let ty = self.zonk(ty);
         let mut order = Vec::new();
         free_vars_of(&ty, &mut order);
-        fn renumber(ty: &Type, order: &[u32]) -> Type {
-            match ty {
-                Type::Var(v) => {
-                    let idx = order.iter().position(|o| o == v).expect("collected") as u32;
-                    Type::Var(idx)
-                }
-                Type::List(e) => Type::List(Box::new(renumber(e, order))),
-                Type::Tuple(es) => Type::Tuple(es.iter().map(|e| renumber(e, order)).collect()),
-                Type::Fn(ps, r) => Type::Fn(
-                    ps.iter().map(|p| renumber(p, order)).collect(),
-                    Box::new(renumber(r, order)),
-                ),
-                other => other.clone(),
-            }
-        }
-        renumber(&ty, &order)
+        renumber_with(&ty, &order)
+    }
+
+    /// Normalize TWO types with ONE shared variable order — a diagnostic
+    /// showing both sides must name the same variable the same way (and
+    /// different variables differently).
+    fn normalize_pair(&self, a: &Type, b: &Type) -> (Type, Type) {
+        let (a, b) = (self.zonk(a), self.zonk(b));
+        let mut order = Vec::new();
+        free_vars_of(&a, &mut order);
+        free_vars_of(&b, &mut order);
+        (renumber_with(&a, &order), renumber_with(&b, &order))
     }
 
     /// Resolve an annotation to a [`Type`]. Unknown type *names* are not
@@ -769,10 +819,25 @@ impl Checker {
             }
             // A lowercase name is a TYPE VARIABLE, scoped to the enclosing
             // def's signature: `(xs: List<a>, f: (a) => b): List<b>`. The
-            // same name maps to the same variable within one def.
+            // same name maps to the same variable within one def. In TYPE
+            // DECLARATIONS they are refused — generic type declarations
+            // aren't designed yet, and a declaration-held variable would be
+            // module-global (first use pins it for everyone; both review
+            // engines' probe). [F4 — B7 review]
             name if name.chars().next().is_some_and(char::is_lowercase) => {
                 if !ty.args.is_empty() {
                     return arity_error(self, 0);
+                }
+                if self.in_type_decl {
+                    if report {
+                        self.diag(
+                            ty.span,
+                            format!(
+                                "type variables (`{name}`) are not supported in type declarations yet — generic type declarations are a roadmap item"
+                            ),
+                        );
+                    }
+                    return Type::Unknown;
                 }
                 if let Some(var) = self.annot_vars.get(name) {
                     return var.clone();
@@ -1199,7 +1264,10 @@ impl Checker {
             }
             ExprKind::Neg(inner) => {
                 let ty = self.infer(inner);
-                if !compatible(&ty, &Type::Float) {
+                let ty = self.zonk(&ty);
+                if let Type::Var(_) = ty {
+                    self.unify(&ty, &Type::Float, inner.span, "unary `-` operand");
+                } else if !compatible(&ty, &Type::Float) {
                     self.diag(
                         inner.span,
                         format!("unary `-` needs a Float operand, got {ty}"),
@@ -1237,14 +1305,18 @@ impl Checker {
         let mut covered_ctors: Vec<&str> = Vec::new();
         let mut result: Option<Type> = None;
         for arm in arms {
-            self.check_pattern(&arm.pattern, &scrutinee_ty);
+            // Arms after a catch-all are unreachable at runtime — they are
+            // still CHECKED (garbage draws diagnostics) but must not
+            // CONSTRAIN the scrutinee (an unreachable `"s"` arm must not
+            // pin an inferred scrutinee to String). [Codex M — B7 review]
+            self.check_pattern_constraining(&arm.pattern, &scrutinee_ty, !has_catch_all);
             match &arm.pattern.kind {
                 PatternKind::Wildcard | PatternKind::Var { .. } => has_catch_all = true,
                 // Sub-patterns are irrefutable (names/`_`), so a tuple arm
                 // catches every tuple of its arity — but only if that arity
                 // CAN match the scrutinee (the mismatch itself is diagnosed
                 // in check_pattern; it must not also count as exhaustive).
-                PatternKind::Tuple(args) => match &scrutinee_ty {
+                PatternKind::Tuple(args) => match &self.zonk(&scrutinee_ty) {
                     Type::Tuple(elems) if elems.len() != args.len() => {}
                     _ => has_catch_all = true,
                 },
@@ -1253,28 +1325,31 @@ impl Checker {
                 PatternKind::Bool(false) => saw_false = true,
                 PatternKind::Number(_) | PatternKind::String(_) => {}
             }
-            // All arms must agree where known; the match's type is the join
-            // (Unknown as soon as the arms aren't literally the same type).
+            // Arms UNIFY into one result type — a var arm is constrained by
+            // its siblings instead of collapsing the match to Unknown.
+            // [BOTH engines — B7 review]
             let body_ty = self.infer(&arm.body);
             result = Some(match result {
                 None => body_ty,
                 Some(prev) => {
-                    if !compatible(&prev, &body_ty) {
+                    if !self.unify_rec(&prev, &body_ty, arm.body.span, "match arm") {
+                        let (prev_n, body_n) = self.normalize_pair(&prev, &body_ty);
                         self.diag(
                             arm.body.span,
-                            format!("match arms have incompatible types {prev} and {body_ty}"),
+                            format!("match arms have incompatible types {prev_n} and {body_n}"),
                         );
-                    }
-                    if prev == body_ty {
-                        prev
-                    } else {
                         Type::Unknown
+                    } else {
+                        self.zonk(&prev)
                     }
                 }
             });
         }
         // Exhaustiveness fires only where the scrutinee's type is known —
-        // gradual, like every other check.
+        // RE-ZONKED: the arms' patterns may have just SOLVED it (the
+        // stale-zonk hole both engines found: an inferred-scrutinee match
+        // silently skipped exhaustiveness). [BOTH engines, High]
+        let scrutinee_ty = self.zonk(&scrutinee_ty);
         if !has_catch_all {
             match &scrutinee_ty {
                 Type::Variant(name) => {
@@ -1347,12 +1422,24 @@ a catch-all arm (`_` or a name)"
     /// variables' binding types (a bare variable binds the scrutinee's type;
     /// constructor sub-patterns bind the declared field types).
     fn check_pattern(&mut self, pattern: &Pattern, scrutinee: &Type) {
+        self.check_pattern_constraining(pattern, scrutinee, true);
+    }
+
+    fn check_pattern_constraining(&mut self, pattern: &Pattern, scrutinee: &Type, constrain: bool) {
         let scrutinee = &self.zonk(scrutinee);
         // A variable scrutinee is CONSTRAINED by the pattern: a ctor pattern
         // makes it the owning variant type, a tuple pattern a product of
         // fresh elements, a literal its primitive — then check proceeds with
-        // the solved structure.
+        // the solved structure. (Unreachable arms pass constrain: false —
+        // they are checked but must not solve the scrutinee.)
         if let Type::Var(_) = scrutinee {
+            if !constrain {
+                // Bind this arm's variables gradually and stop.
+                pattern_var_bindings(pattern, &mut |binding| {
+                    self.locals.insert(binding, Type::Unknown);
+                });
+                return;
+            }
             let constrained: Option<Type> = match &pattern.kind {
                 PatternKind::Ctor { name, .. } => self
                     .ctors
@@ -1493,9 +1580,13 @@ is {other}"
                     );
                     return Type::Bool;
                 }
-                // Otherwise equality constrains unsolved sides together
-                // (comparing a Float to a String is certainly false).
-                if matches!(lhs, Type::Var(_)) || matches!(rhs, Type::Var(_)) {
+                // Otherwise equality constrains unsolved sides together —
+                // vars at ANY depth, not just top level (`(x, 1.0) ==
+                // (1.0, 1.0)` must pin x). [Codex H — B7 review]
+                let mut vars = Vec::new();
+                free_vars_of(lhs, &mut vars);
+                free_vars_of(rhs, &mut vars);
+                if !vars.is_empty() {
                     self.unify(lhs, rhs, node_span, "`==` operands");
                     return Type::Bool;
                 }

@@ -627,31 +627,44 @@ fn match_patterns_constrain_the_scrutinee() {
     let diags = check_src(&format!(
         "{SHAPE}let f = (s) => match s with | Circle(r) => r | 1.0 => 2.0 | \"s\" => 3.0"
     ));
-    assert_eq!(diags.len(), 2, "{diags:?}");
-    assert_eq!(
-        diags[0].0,
-        "pattern matches Float, but the scrutinee is Shape"
-    );
-    assert_eq!(
-        diags[1].0,
-        "pattern matches String, but the scrutinee is Shape"
-    );
+    // Three diags: the two foreign arms AND the exhaustiveness hole the
+    // review found (the ctor arm solved the scrutinee, so the re-zonked
+    // exhaustiveness check now fires on inferred scrutinees too).
+    assert_eq!(diags.len(), 3, "{diags:?}");
+    let has = |needle: &str| diags.iter().any(|(m, _, _)| m.contains(needle));
+    assert!(has(
+        "match on `Shape` is not exhaustive: missing `Rect`, `Point`"
+    ));
+    assert!(has("pattern matches Float, but the scrutinee is Shape"));
+    assert!(has("pattern matches String, but the scrutinee is Shape"));
     // Constraining flows THROUGH calls: g is the identity, so matching
-    // g(s) against Point pins s to Shape — cleanly.
-    assert_clean(&format!(
+    // g(s) against Point pins s to Shape — and the inferred scrutinee gets
+    // the SAME exhaustiveness protection an annotated one does.
+    let diags = check_src(&format!(
         "{SHAPE}let g = (s) => s\n\
          let f = (s) => match g(s) with | Point => 1.0"
     ));
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0]
+        .0
+        .contains("match on `Shape` is not exhaustive: missing `Circle`, `Rect`"));
 }
 
 /// Mixed known/Unknown arm types join to Unknown (no diagnostic), so the
 /// match result stays gradual.
 #[test]
-fn mixed_unknown_arm_types_stay_gradual() {
-    assert_clean(&format!(
+fn polymorphic_arm_results_are_constrained() {
+    // B7: `g` is the identity, so `g(1.0)` IS Float — returning it where
+    // the annotation promises String is caught at the arm join (the old
+    // gradual checker saw Unknown and stayed silent).
+    let (message, _, _) = single_diag(&format!(
         "{SHAPE}let g = (x) => x\n\
          let f = (b: Bool): String => match b with | true => g(1.0) | false => \"s\""
     ));
+    assert_eq!(
+        message,
+        "match arms have incompatible types Float and String"
+    );
 }
 
 // --- Tuples ---
@@ -817,4 +830,77 @@ fn unannotated_defs_get_inferred_signatures() {
         .expect("type recorded")
         .to_string();
     assert_eq!(ty, "(List<Float>, Float) => List<Float>");
+}
+
+// --- B7 review fixes (both engines) ---
+
+/// Unary `-` constrains its operand like binary arithmetic — a check-clean
+/// negate-a-string is gone. [BOTH engines]
+#[test]
+fn unary_minus_constrains_the_operand() {
+    let (message, _, _) = single_diag("let f = (x) => -x\nlet y = f(\"s\")");
+    assert_eq!(message, "argument 1 of `f`: expected Float, got String");
+}
+
+/// Match arms unify into ONE result type — a var arm is pinned by its
+/// siblings instead of collapsing the match to Unknown. [BOTH engines]
+#[test]
+fn arm_results_unify() {
+    let (message, _, _) = single_diag(
+        "let f = (b, x) => match b with | true => x | false => 1.0\n\
+         let z = f(true, \"s\")",
+    );
+    assert_eq!(message, "argument 2 of `f`: expected Float, got String");
+}
+
+/// `==` pins variables at ANY depth, not just top level. [Codex H]
+#[test]
+fn equality_constrains_nested_variables() {
+    let (message, _, _) = single_diag("let f = (x) => (x, 1.0) == (1.0, 1.0)\nlet y = f((z) => z)");
+    assert_eq!(message, "argument 1 of `f`: expected Float, got ('a) => 'a");
+}
+
+/// Unreachable arms (after a catch-all) are checked but must not CONSTRAIN
+/// the scrutinee. [Codex M]
+#[test]
+fn unreachable_arms_do_not_constrain() {
+    assert_clean("let f = (x) => (match x with | _ => 1.0 | \"s\" => 2.0) + x");
+}
+
+/// Bool and literal matches on INFERRED scrutinees get exhaustiveness too
+/// (the stale-zonk hole). [BOTH engines, High]
+#[test]
+fn inferred_scrutinees_get_exhaustiveness() {
+    let (message, _, _) = single_diag("let f = (x) => match x with | true => 1.0");
+    assert!(
+        message.contains("match on Bool is not exhaustive: missing `false`"),
+        "unexpected: {message}"
+    );
+    let (message, _, _) = single_diag("let f = (x) => match x with | 2.0 => 1.0");
+    assert!(message.contains("not exhaustive"), "unexpected: {message}");
+}
+
+/// Type variables in DECLARATIONS are refused with a teaching error —
+/// a declaration-held variable would be module-global (first use pins it
+/// for everyone). [BOTH engines]
+#[test]
+fn type_decl_variables_are_refused() {
+    let (message, _, _) = single_diag("type Box = | Full(v: a) | Empty\nlet p = Full(1.0)");
+    assert!(
+        message.contains("type variables (`a`) are not supported in type declarations yet"),
+        "unexpected: {message}"
+    );
+}
+
+/// Diagnostics normalize BOTH sides with one variable order — the same
+/// variable never wears two names in one message. [Claude M]
+#[test]
+fn diagnostic_variables_share_one_order() {
+    let (message, _, _) = single_diag("let f = (x) => List.fold(x, x, 1.0)");
+    // x is both the list and the folder: 'a is the element type in BOTH
+    // sides of the message (got is normalized first), 'b the accumulator.
+    assert_eq!(
+        message,
+        "argument 2 of `List.fold`: expected ('b, 'a) => 'b, got List<'a>"
+    );
 }
