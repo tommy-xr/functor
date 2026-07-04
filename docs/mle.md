@@ -248,7 +248,7 @@ snapshots — no GPU, fully agent-verifiable.
       REFUSE bare numbers with a teaching error — degree/radian confusion
       is unrepresentable, matching the F# side's `Math.Angle` discipline.
       Tier 2 (F#-style units of measure with unit algebra) rides on B7.
-- [ ] **B7. Hindley–Milner inference** (decided 2026-07-02; **after effects
+- [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade
       the B4 gradual checker to real inference: type variables + unification,
@@ -259,7 +259,23 @@ snapshots — no GPU, fully agent-verifiable.
       with teeth needs one answer), and unification-error UX (every mismatch
       must cite the source spans of *both* sides — legible errors were the
       reason annotations came first; see `~/notes` `open-questions.md`).
-      *Verify:* unannotated examples get full inferred signatures (an
+      **Done:** type variables + unification with occurs check;
+      let-polymorphism generalized per SCC of the def call graph (mutual
+      recursion monomorphic inside its group; `id` at two types in one
+      module works); generic builtin schemes (element types flow through
+      `List.map`/`filter`/`fold`); lowercase annotation names are scoped
+      type variables; record literals resolve nominally F#-style (user
+      decision: unique field-set match, ambiguity asks for annotation;
+      anonymous records stay gradual); Unknown remains ONLY the
+      host/dynamic seam and never binds a variable; conflicts report once
+      with full zonked types, labeled by where the expectation came from.
+      Inference has teeth: unannotated bad calls, mixed lists,
+      contradictory mut use, and foreign match arms are all caught now.
+      *Verify (done):* both shipped games + all example goldens check
+      clean under inference; `(xs, k) => List.map(xs, (x) => x * k)`
+      hovers as `(List<Float>, Float) => List<Float>`; teeth + occurs +
+      ambiguity + SCC polymorphism pinned (215 mle tests).
+      *Original verify:* unannotated examples get full inferred signatures (an
       `mle types` dump, goldened); the B4 diagnostic suite still passes;
       probe battery re-run (no legal program rejected).
 
