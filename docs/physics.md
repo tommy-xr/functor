@@ -165,7 +165,13 @@ module PhysicsScene =
     let empty  () : PhysicsScene
 ```
 
-**Commands — plain-data effects** (operate on the default singleton world; later
+**Commands — plain-data effects.** *Shipped (Phase 3) on the MLE surface as B6
+effect variants* — `Physics.applyImpulse("tag", x, y, z)` etc., returned beside
+the model; tagger-less (outcomes are observed via the physics reads). Commands
+queue at perform time and apply **after the frame's reconcile, before its first
+substep** (so same-frame declare+command works); `applyForce` lasts exactly one
+stepped frame; they are the Timeline's `Command::Apply` replay input. The F#
+sketch (operate on the default singleton world; later
 overloads take an explicit world):
 
 ```fsharp
@@ -555,8 +561,9 @@ it rather than writing our own:
   shading, then `render_debug_lines` draws the collected segments as a
   depth-tested GL line pass (`LEQUAL`, so lines coincident with collider
   surfaces don't z-fight) — works in mono and stereo, and in captures
-  (`--capture-frame`) with no game-code changes. Native-only until the wasm
-  shell grows a physics world.
+  (`--capture-frame`) with no game-code changes. The overlay pass is wired
+  natively only (the wasm shell steps physics since C5, but its renderer
+  doesn't draw the line pass yet).
 
 This is the visual proof of reconcile correctness (declared scene vs what the
 solver actually holds) and makes divergence bugs — a body the renderer draws in
@@ -619,7 +626,7 @@ It's worth building in two steps, because they exercise different machinery:
 | **2. MLE surface + read-back** | `Physics.*` prelude (shape/body/scene builders, `position`/`transformed` live reads), optional `physics` hook in the MLE driver (tick → reconcile+fixed-step → draw), prelude tests. | native (MLE) |
 | **2c. `examples/mle-physics`** | Crates settling on a ground slab, hot-reload demo, golden scenario, PR GIF/PNG. | native (MLE) |
 | **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, depth-tested line pass, `--debug-render physics` mode. **Shipped.** | native |
-| **3. Commands** | `applyImpulse`/`applyForce`/`setVelocity`/`teleport` (plain-data effects). | both |
+| **3. Commands** | `Physics.applyImpulse`/`applyForce`/`setVelocity`/`teleport` as B6 effect variants: queued at perform time, applied after the frame's reconcile before its first substep; forces last one stepped frame; recorded as `timeline::Command::Apply` in the goldens. **Shipped (MLE).** | native+wasm (MLE) |
 | **4. Queries** | `raycast`/`shapeCast` (async tagger, token registry). | both |
 | **5. Collision events** | `Physics.events` sub. | both |
 | **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `hello-physics` grows a bullet/debris archetype. | both |

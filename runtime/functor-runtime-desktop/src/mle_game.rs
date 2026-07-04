@@ -274,10 +274,17 @@ impl MleGame {
         match self.session.call("physics", args, &mut FunctorHost) {
             Ok(value) => match physics_scene_value(&value) {
                 Some(scene) => {
-                    physics::with_world(physics::DEFAULT_WORLD, |w| {
+                    let warnings = physics::with_world(physics::DEFAULT_WORLD, |w| {
                         w.reconcile(scene);
                         w.step_frame(dts);
+                        w.take_command_warnings()
                     });
+                    // Command effects apply asynchronously (queued at perform
+                    // time, applied at the step), so their problems — unknown
+                    // tag, queue overflow — surface here, deduped.
+                    for warning in warnings.into_iter().flatten() {
+                        self.report_once(format!("[mle] {warning}"));
+                    }
                 }
                 None => self.report_once(format!(
                     "[mle] physics must return Physics.scene(gx, gy, gz, [body, …]), got {}",

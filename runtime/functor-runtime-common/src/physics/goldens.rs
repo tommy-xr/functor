@@ -56,11 +56,25 @@ fn scene_at(frame: u64) -> PhysicsScene {
 
 const FRAMES: u64 = 120;
 
-/// Drive a world through the scripted scenario up to (excluding) `to`.
+/// The frame's full command list — the declared scene, plus (at frame 45) an
+/// impulse kicking crate "a", exercising the Phase 3 command path: queued,
+/// applied after reconcile, replayed like any other input.
+fn commands_at(frame: u64) -> Vec<Command> {
+    let mut cmds = vec![Command::DeclareScene(scene_at(frame))];
+    if frame == 45 {
+        cmds.push(Command::Apply(PhysicsCommand::ApplyImpulse {
+            tag: "a".to_string(),
+            impulse: [0.0, 4.0, 1.5],
+        }));
+    }
+    cmds
+}
+
+/// Drive a world through the scripted scenario up to (excluding) `to`, via
+/// the `Simulatable` seam (the same path the Timeline replays through).
 fn run(world: &mut World, from: u64, to: u64) {
     for f in from..to {
-        world.reconcile(&scene_at(f));
-        world.step_fixed();
+        world.step(&commands_at(f));
     }
 }
 
@@ -69,12 +83,13 @@ fn determinism_golden_two_worlds_stay_byte_identical() {
     let mut a = World::new([0.0, -9.81, 0.0]);
     let mut b = World::new([0.0, -9.81, 0.0]);
     for f in 0..FRAMES {
-        let scene = scene_at(f);
-        a.reconcile(&scene);
-        b.reconcile(&scene);
-        a.step_fixed();
-        b.step_fixed();
-        assert!(a.snapshot() == b.snapshot(), "worlds diverged at frame {f}");
+        let cmds = commands_at(f);
+        a.step(&cmds);
+        b.step(&cmds);
+        assert!(
+            World::snapshot(&a) == World::snapshot(&b),
+            "worlds diverged at frame {f}"
+        );
     }
     // Sanity: the scenario actually simulated something (crates fell and hit
     // the ground), so byte-equality above wasn't comparing static worlds.
@@ -82,11 +97,12 @@ fn determinism_golden_two_worlds_stay_byte_identical() {
     assert!(pos[1] < 2.0 && pos[1] > 0.0, "unexpected rest pose {pos:?}");
 }
 
-/// Drive a `Timeline` + sim through the scripted scenario (the `Simulatable`
-/// path: commands, not direct reconcile calls).
+/// Drive a `Timeline` + sim through the scripted scenario — including the
+/// frame-45 impulse, so every `seek` in the goldens below also proves that
+/// recorded commands re-apply during replay.
 fn drive<T: Timeline<World>>(tl: &mut T, sim: &mut World, frames: u64) {
     for f in 0..frames {
-        let cmds = vec![Command::DeclareScene(scene_at(f))];
+        let cmds = commands_at(f);
         tl.record(f, sim, &cmds);
         sim.step(&cmds);
     }

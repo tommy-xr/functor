@@ -56,6 +56,8 @@
 //! Physics.scene(gx, gy, gz, [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
 //! Physics.transformed(scene, tag)                           -> Scene
+//! Physics.applyImpulse/applyForce/setVelocity/teleport(tag, x, y, z)
+//!                                                           -> Effect
 //! ```
 //!
 //! The `Physics.*` reads target the singleton world the shell reconciles and
@@ -154,6 +156,12 @@ pub enum EffectTree {
         tagger: Value,
     },
     Batch(Vec<EffectTree>),
+    /// A fire-and-forget physics command (docs/physics.md Phase 3): no
+    /// tagger — performing it queues the command on the singleton world,
+    /// applied at the next stepped frame's first substep (after reconcile).
+    /// The game observes the outcome through the physics reads, not a
+    /// message.
+    Physics(physics::PhysicsCommand),
 }
 
 pub struct MleEffect(pub EffectTree);
@@ -500,6 +508,10 @@ const PATHS: &[&str] = &[
     "Physics.scene",
     "Physics.position",
     "Physics.transformed",
+    "Physics.applyImpulse",
+    "Physics.applyForce",
+    "Physics.setVelocity",
+    "Physics.teleport",
 ];
 
 impl Host for FunctorHost {
@@ -862,6 +874,37 @@ impl Host for FunctorHost {
             // Scene first, so it pipes: the way MLE draws a physics body —
             // `Scene.cube() |> Scene.lit(…) |> Physics.transformed("crate-1")`
             // places the visual at the body's live pose (position + rotation).
+            // Command EFFECTS (docs/physics.md Phase 3): fire-and-forget,
+            // returned beside the model like any effect —
+            // `(model, Physics.applyImpulse("ball", 0.0, 5.0, 0.0))`.
+            // Performing one queues it on the singleton world; it applies at
+            // the next stepped frame's first substep, AFTER reconcile — so a
+            // body declared and commanded in the same frame works.
+            "Physics.applyImpulse" | "Physics.applyForce" | "Physics.setVelocity"
+            | "Physics.teleport" => match args.as_slice() {
+                [Value::String(tag), x, y, z] => {
+                    let tag = tag.to_string();
+                    let v = [
+                        num(x, span)? as f32,
+                        num(y, span)? as f32,
+                        num(z, span)? as f32,
+                    ];
+                    let command = match path {
+                        "Physics.applyImpulse" => {
+                            physics::PhysicsCommand::ApplyImpulse { tag, impulse: v }
+                        }
+                        "Physics.applyForce" => {
+                            physics::PhysicsCommand::ApplyForce { tag, force: v }
+                        }
+                        "Physics.setVelocity" => {
+                            physics::PhysicsCommand::SetVelocity { tag, velocity: v }
+                        }
+                        _ => physics::PhysicsCommand::Teleport { tag, position: v },
+                    };
+                    Ok(host(MleEffect(EffectTree::Physics(command))))
+                }
+                _ => usage(&format!("{path}(tag, x, y, z)")),
+            },
             "Physics.transformed" => match args.as_slice() {
                 [scene, Value::String(tag)] => {
                     let Some(inner) = scene_of(scene) else {
@@ -1266,6 +1309,25 @@ dropping the rest"
                 // Preserve declaration order against the LIFO queue.
                 for item in items.into_iter().rev() {
                     queue.push(item);
+                }
+                continue;
+            }
+            EffectTree::Physics(command) => {
+                // Fire-and-forget: queue on the singleton world, log the kind
+                // (there is no result value to feed a tagger), continue. Not
+                // routed through the runner — commands are per-frame *inputs*
+                // recorded by the physics Timeline, not environment reads that
+                // replay must fake.
+                let kind = match &command {
+                    physics::PhysicsCommand::ApplyImpulse { .. } => "physics.applyImpulse",
+                    physics::PhysicsCommand::ApplyForce { .. } => "physics.applyForce",
+                    physics::PhysicsCommand::SetVelocity { .. } => "physics.setVelocity",
+                    physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
+                };
+                physics::with_world(physics::DEFAULT_WORLD, |w| w.queue_command(command));
+                log.push(EffectRecord { kind, value: 0.0 });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
                 }
                 continue;
             }
@@ -1819,6 +1881,56 @@ piped through RenderTarget.sized"
                 failure.error.message
             );
         }
+    }
+
+    // The Phase 3 command path end to end: an entry point returns
+    // (model, Physics.applyImpulse(…)); draining queues the command on the
+    // singleton world; the next step applies it.
+    #[test]
+    fn physics_command_effects_queue_and_apply() {
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let effect = eval(
+            "let main = () => Physics.applyImpulse(\"ball\", 2.0, 0.0, 0.0)",
+        );
+        let Value::HostData(data) = &effect else {
+            panic!("expected an Effect");
+        };
+        let tree = &data.as_any().downcast_ref::<MleEffect>().expect("Effect").0;
+
+        // Drain it the way the producer does (no session/update involvement —
+        // physics effects are tagger-less).
+        let module = mle::lower(mle::parse("let update = (m, msg) => m").unwrap()).unwrap();
+        let session = mle::Session::load(&module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
+        let mut model = Value::Number(0.0);
+        let mut log = EffectLog::new();
+        let mut runner = FakeEffects::new(0.0, vec![]);
+        drain_effects(
+            &session,
+            &mut model,
+            tree.clone(),
+            &mut runner,
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+        );
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].kind, "physics.applyImpulse");
+
+        // The command sits queued on world 0; a declared body + step applies it.
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&crate::physics::PhysicsScene::create(
+                [0.0, 0.0, 0.0],
+                vec![crate::physics::Body::dynamic(
+                    "ball".to_string(),
+                    crate::physics::Shape::Sphere { radius: 0.5 },
+                )],
+            ));
+            w.step_frame(1.0 / 60.0);
+            let v = w.body_velocity("ball").unwrap();
+            assert!(v[0] > 0.0, "impulse not applied: {v:?}");
+            assert!(w.take_command_warnings().is_empty());
+        });
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 
     // A missing tag is a loud spanned error, not a sentinel value.
