@@ -140,19 +140,21 @@ impl ProjectError {
 /// then its sibling `.mle` files in name order. (Subdirectories are not
 /// scanned — a directory is one flat module space.)
 pub fn project_files(entry_path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let dir = entry_path.parent().filter(|p| !p.as_os_str().is_empty());
-    let mut siblings: Vec<PathBuf> = match dir {
-        Some(dir) => std::fs::read_dir(dir)?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension().and_then(|e| e.to_str()) == Some("mle")
-                    && path.is_file()
-                    && path.file_name() != entry_path.file_name()
-            })
-            .collect(),
-        None => Vec::new(),
+    // A bare relative entry ("game.mle") has an EMPTY parent — that still
+    // means the current directory, not "no siblings".
+    let dir = match entry_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
     };
+    let mut siblings: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|e| e.to_str()) == Some("mle")
+                && path.is_file()
+                && path.file_name() != entry_path.file_name()
+        })
+        .collect();
     siblings.sort();
     let mut files = vec![entry_path.to_path_buf()];
     files.extend(siblings);
