@@ -1,7 +1,7 @@
 {
   "name": "mle-vscode",
   "displayName": "MLE",
-  "description": "Language support for MLE (.mle): syntax highlighting and diagnostics via the mle-lsp language server.",
+  "description": "Language support for MLE (.mle): syntax highlighting and diagnostics via the mle-lsp language server, plus a live game preview panel with model-preserving hot reload.",
   "version": "0.1.0",
   "publisher": "functor",
   "license": "MIT",
@@ -16,6 +16,22 @@
     "onLanguage:mle"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "mle.openLivePreview",
+        "title": "MLE: Open Live Preview"
+      }
+    ],
+    "configuration": {
+      "title": "MLE",
+      "properties": {
+        "mle.functorPath": {
+          "type": "string",
+          "default": "functor",
+          "description": "Path to the `functor` CLI binary the live preview uses to serve the game (resolved from PATH by default)."
+        }
+      }
+    },
     "languages": [
       {
         "id": "mle",

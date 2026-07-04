@@ -405,19 +405,29 @@ First-class `.mle` editor support, built on the `mle` crate's front-end
 - [ ] **D3b. Go-to-definition.** Needs a use→definition query over the IR
       (it already carries spans on every node, but no query API yet); the
       hover node-walk is the natural starting point.
-- [ ] **D4. Live game preview in the editor** (needs C5). A VSCode webview
-      panel hosting the wasm runtime: the extension pushes the LIVE buffer
-      (debounced, unsaved included) into the webview, and a new
-      `set_source(src)` wasm export mirrors the native reload path —
-      parse → lower → check-as-warnings → `Session::load` →
-      `mle::rebind_value` on the held model. `Session`/`rebind` are pure
-      Rust, so **model-preserving hot reload runs in the browser**: type,
-      and the running game updates beside the editor without losing state
-      (a broken edit keeps the old program, same as native). v1 serves via
+- [x] **D4. Live game preview in the editor** (done 2026-07-03, needs C5).
+      A VSCode webview panel hosting the wasm runtime: the extension's
+      **"MLE: Open Live Preview"** command serves the project
+      (`functor run wasm --no-open`, binary from `mle.functorPath`) in a
+      full-size iframe and pushes the LIVE buffer (300ms debounce, unsaved
+      included) into it, and the new `mle_set_source` wasm export mirrors
+      the native reload path — parse → lower → check-as-warnings →
+      `Session::load` → `mle::rebind_value` on the held model (the web
+      producer keeps its lowered `Module` like the desktop one).
+      `Session`/`rebind` are pure Rust, so **model-preserving hot reload
+      runs in the browser**: type, and the running game updates beside the
+      editor without losing state (a broken edit keeps the old program,
+      same as native; the error lands in the status bar). v1 serves via
       `functor run wasm` + iframe; a bundled self-contained runtime can
-      come later. *Verify:* e2e-drive the wasm page directly
-      (`set_source` twice, assert model survived + behavior changed);
-      manual: edit `mle-hello` live in the panel.
+      come later. *Verify (done):* headless-Chromium e2e
+      (`node e2e/mle-preview-reload.mjs`, self-serving) drives the page's
+      postMessage seam on `mle-hello`: a green push reloads with "model
+      preserved" and the center pixel turns green; a probe whose tick
+      errors iff `spin <= 0.5` runs clean while its inversion errors —
+      spin only exceeds 0.5 by accumulating ACROSS reloads, so the model
+      demonstrably survived; a broken push is rejected with the parse
+      error and the old program keeps rendering; a push after the broken
+      one lands (12/12); manual: edit `mle-hello` live in the panel.
 
 ## Endgame — replace F#
 

@@ -8,8 +8,11 @@
 //!
 //! - the `.mle` source arrives over HTTP (fetched by `run_async` from the dev
 //!   server, which serves the project directory) instead of the filesystem;
-//! - no hot reload (the browser reloads the whole page — like the F# bridge's
-//!   `check_hot_reload` no-op);
+//! - no file-watch hot reload (there is no filesystem to watch), but the
+//!   PUSH path exists (docs/mle.md D4): `reload_source` mirrors the desktop
+//!   runner's `POST /reload-source` — parse → lower → check-as-warnings →
+//!   `Session::load` → `mle::rebind_value` on the held model — reachable
+//!   from the page via the `mle_set_source` wasm export in `lib.rs`;
 //! - no per-frame perf stats (`std::time::Instant` panics on wasm; the C6
 //!   perf gate measures natively);
 //! - input events arrive from the page via the `mle_*` wasm exports below,
@@ -32,6 +35,10 @@ use wasm_bindgen::prelude::*;
 pub struct MleWebGame {
     path: String,
     src: String,
+    /// The lowered module the current session came from — kept (like the
+    /// desktop producer) so a pushed reload can rebind model-stored closures
+    /// (old module × new module).
+    module: mle::ir::Module,
     session: Session,
     model: Value,
     has_input: bool,
@@ -47,7 +54,7 @@ pub struct MleWebGame {
     /// Performs `Effect.*` commands (B6). `RealEffects` is wasm-safe: its
     /// clock is `Date.now()` on this target.
     effect_runner: RealEffects,
-    /// The structured effect log (bounded) — see the desktop producer.
+    /// The structured effect log (bounded inside the drain).
     effect_log: EffectLog,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
@@ -58,108 +65,170 @@ pub struct MleWebGame {
     last_error: Option<String>,
 }
 
-impl MleWebGame {
-    /// Load, check, and contract-validate fetched game source — the web
-    /// counterpart of the desktop `load_game`. Errors come back as fully
-    /// rendered strings (`path:line:col: message`) for `run_async` to fail
-    /// loud with (there is no keep-running fallback: a page load either gets
-    /// a valid game or a console error).
-    pub fn create(path: &str, src: String) -> Result<MleWebGame, String> {
-        let render = |stage: &str, span: mle::Span, message: &str| {
-            let (line, col) = mle::line_col(&src, span.start);
-            format!("cannot {stage} {path}:{line}:{col}: {message}")
-        };
-        let program = mle::parse(&src).map_err(|e| render("parse", e.span, &e.message))?;
-        let module = mle::lower(program).map_err(|e| render("load", e.span, &e.message))?;
-        // Type diagnostics are advisory in the dev loop: warn, keep going
-        // (the CLI's `build` is the strict gate).
-        for diag in mle::check(&module) {
-            let (line, col) = mle::line_col(&src, diag.span.start);
-            web_sys::console::warn_1(
-                &format!("warning: {path}:{line}:{col}: {}", diag.message).into(),
-            );
-        }
-        let session = Session::load(&module, &mut FunctorHost)
-            .map_err(|f| render("load", f.error.span, &f.error.message))?;
-        // The producer contract is knowable at load — fail here, not once per
-        // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
-        // right arity.
-        let init = session
-            .global("init")
-            .ok_or_else(|| format!("{path} has no top-level `let init = …`"))?;
-        if matches!(
-            init,
-            Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
-        ) {
-            return Err(format!(
-                "{path}: `init` must be a model value, not a function"
-            ));
-        }
-        if functor_runtime_common::mle_prelude::contains_effect(&init) {
-            return Err(format!(
-                "{path}: `init` contains an Effect value — Effects are commands, not data; \
+/// A successfully loaded, contract-validated game module (the desktop
+/// producer's `Loaded`, verbatim minus the file-shaped fields).
+struct Loaded {
+    src: String,
+    module: mle::ir::Module,
+    session: Session,
+    init: Value,
+    has_input: bool,
+    has_mouse_move: bool,
+    has_mouse_wheel: bool,
+    has_subscriptions: bool,
+    has_physics: bool,
+}
+
+/// Load, check, and contract-validate game source — the web counterpart of
+/// the desktop `load_source`, shared by the page-load path (`create`) and
+/// the editor push path (`reload_source`). Errors come back as fully
+/// rendered strings (`path:line:col: message`); `path` is only a label for
+/// error rendering.
+fn load_source(path: &str, src: String) -> Result<Loaded, String> {
+    let render = |stage: &str, span: mle::Span, message: &str| {
+        let (line, col) = mle::line_col(&src, span.start);
+        format!("cannot {stage} {path}:{line}:{col}: {message}")
+    };
+    let program = mle::parse(&src).map_err(|e| render("parse", e.span, &e.message))?;
+    let module = mle::lower(program).map_err(|e| render("load", e.span, &e.message))?;
+    // Type diagnostics are advisory in the dev loop: warn, keep going
+    // (the CLI's `build` is the strict gate).
+    for diag in mle::check(&module) {
+        let (line, col) = mle::line_col(&src, diag.span.start);
+        web_sys::console::warn_1(&format!("warning: {path}:{line}:{col}: {}", diag.message).into());
+    }
+    let session = Session::load(&module, &mut FunctorHost)
+        .map_err(|f| render("load", f.error.span, &f.error.message))?;
+    // The producer contract is knowable at load — fail here, not once per
+    // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
+    // right arity.
+    let init = session
+        .global("init")
+        .ok_or_else(|| format!("{path} has no top-level `let init = …`"))?;
+    if matches!(
+        init,
+        Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
+    ) {
+        return Err(format!(
+            "{path}: `init` must be a model value, not a function"
+        ));
+    }
+    if contains_effect(&init) {
+        return Err(format!(
+            "{path}: `init` contains an Effect value — Effects are commands, not data; \
 return them beside the model as `(model, effect)`"
+        ));
+    }
+    require_function(path, &session, "tick", 3)?;
+    require_function(path, &session, "draw", 2)?;
+    // `input` is optional (many games are non-interactive), but when
+    // present it must honor the contract: (model, key, isDown) => model.
+    let has_input = session.global("input").is_some();
+    if has_input {
+        require_function(path, &session, "input", 3)?;
+    }
+    // Same deal for the mouse: `mouseMove(model, x, y)` in window pixels,
+    // `mouseWheel(model, delta)`.
+    let has_mouse_move = session.global("mouseMove").is_some();
+    if has_mouse_move {
+        require_function(path, &session, "mouseMove", 3)?;
+    }
+    let has_mouse_wheel = session.global("mouseWheel").is_some();
+    if has_mouse_wheel {
+        require_function(path, &session, "mouseWheel", 2)?;
+    }
+    // The MVU pair: `subscriptions(model)` declares timers whose fired
+    // messages fold through `update(model, msg)` — so subscriptions
+    // without an update have nowhere to deliver.
+    let has_subscriptions = session.global("subscriptions").is_some();
+    if has_subscriptions {
+        require_function(path, &session, "subscriptions", 1)?;
+        if session.global("update").is_none() {
+            return Err(format!(
+                "{path}: `subscriptions` produces messages but there is no \
+`let update = (model, msg) => …` to receive them"
             ));
         }
-        require_function(path, &session, "tick", 3)?;
-        require_function(path, &session, "draw", 2)?;
-        // `input` is optional (many games are non-interactive), but when
-        // present it must honor the contract: (model, key, isDown) => model.
-        let has_input = session.global("input").is_some();
-        if has_input {
-            require_function(path, &session, "input", 3)?;
-        }
-        // Same deal for the mouse: `mouseMove(model, x, y)` in window pixels,
-        // `mouseWheel(model, delta)`.
-        let has_mouse_move = session.global("mouseMove").is_some();
-        if has_mouse_move {
-            require_function(path, &session, "mouseMove", 3)?;
-        }
-        let has_mouse_wheel = session.global("mouseWheel").is_some();
-        if has_mouse_wheel {
-            require_function(path, &session, "mouseWheel", 2)?;
-        }
-        // The MVU pair: `subscriptions(model)` declares timers whose fired
-        // messages fold through `update(model, msg)` — so subscriptions
-        // without an update have nowhere to deliver.
-        let has_subscriptions = session.global("subscriptions").is_some();
-        if has_subscriptions {
-            require_function(path, &session, "subscriptions", 1)?;
-            if session.global("update").is_none() {
-                return Err(format!(
-                    "{path}: `subscriptions` produces messages but there is no \
-`let update = (model, msg) => …` to receive them"
-                ));
-            }
-        }
-        if session.global("update").is_some() {
-            require_function(path, &session, "update", 2)?;
-        }
-        // Optional physics: `physics(model) => Physics.scene(…)` declares the
-        // bodies that should exist; the host reconciles + fixed-steps the
-        // world after each tick (docs/physics.md). Rapier is pure Rust, so
-        // the world runs in the browser exactly as it does natively.
-        let has_physics = session.global("physics").is_some();
-        if has_physics {
-            require_function(path, &session, "physics", 1)?;
-        }
+    }
+    if session.global("update").is_some() {
+        require_function(path, &session, "update", 2)?;
+    }
+    // Optional physics: `physics(model) => Physics.scene(…)` declares the
+    // bodies that should exist; the host reconciles + fixed-steps the
+    // world after each tick (docs/physics.md). Rapier is pure Rust, so
+    // the world runs in the browser exactly as it does natively.
+    let has_physics = session.global("physics").is_some();
+    if has_physics {
+        require_function(path, &session, "physics", 1)?;
+    }
+    Ok(Loaded {
+        src,
+        module,
+        session,
+        init,
+        has_input,
+        has_mouse_move,
+        has_mouse_wheel,
+        has_subscriptions,
+        has_physics,
+    })
+}
+
+impl MleWebGame {
+    /// Build the producer from fetched game source. Errors come back fully
+    /// rendered for `run_async` to fail loud with (there is no keep-running
+    /// fallback: a page load either gets a valid game or a console error).
+    pub fn create(path: &str, src: String) -> Result<MleWebGame, String> {
+        let loaded = load_source(path, src)?;
         web_sys::console::log_1(&format!("[mle] loaded {path}").into());
         Ok(MleWebGame {
             path: path.to_string(),
-            src,
-            session,
-            model: init,
-            has_input,
-            has_mouse_move,
-            has_mouse_wheel,
-            has_subscriptions,
+            src: loaded.src,
+            module: loaded.module,
+            session: loaded.session,
+            model: loaded.init,
+            has_input: loaded.has_input,
+            has_mouse_move: loaded.has_mouse_move,
+            has_mouse_wheel: loaded.has_mouse_wheel,
+            has_subscriptions: loaded.has_subscriptions,
             prev_tts: None,
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
-            has_physics,
+            has_physics: loaded.has_physics,
             last_frame: empty_frame(),
             last_error: None,
         })
+    }
+
+    /// Swap in a freshly loaded program, KEEPING THE MODEL — the desktop
+    /// producer's `swap_in`, verbatim. `init` from the new program is
+    /// deliberately unused: state survives the edit, and closures stored in
+    /// the model rebind to the edited code (B5 part 2, `mle::rebind_value`).
+    /// The physics world is deliberately KEPT too, like the model: it lives
+    /// in this process's registry, so bodies stay where they are across the
+    /// edit (removing the `physics` hook drops the world). `prev_tts` is kept
+    /// as well: `Sub.every` fires on the global time grid, so timers tick
+    /// right through a reload. Returns the number of stored closures rebound,
+    /// for the status line.
+    fn swap_in(&mut self, loaded: Loaded) -> usize {
+        let (model, report) = mle::rebind_value(&self.model, &self.module, &loaded.module);
+        self.model = model;
+        for warning in &report.warnings {
+            web_sys::console::warn_1(&format!("[mle] reload: {warning}").into());
+        }
+        self.src = loaded.src;
+        self.module = loaded.module;
+        self.session = loaded.session;
+        self.has_input = loaded.has_input;
+        self.has_mouse_move = loaded.has_mouse_move;
+        self.has_mouse_wheel = loaded.has_mouse_wheel;
+        self.has_subscriptions = loaded.has_subscriptions;
+        self.has_physics = loaded.has_physics;
+        if !self.has_physics {
+            physics::remove_world(physics::DEFAULT_WORLD);
+        }
+        self.last_error = None;
+        report.rebound
     }
 
     /// Fire subscription timers over `(prev_tts, tts]` and fold their
@@ -173,9 +242,7 @@ return them beside the model as `(model, effect)`"
         let (model, effects) = split_model_effect(returned);
         self.model = model;
         // Effects are commands, not data — one stored in the model would
-        // make the pair sniff ambiguous on a later return (see
-        // `split_model_effect`). Warn loud; the model is small (it is
-        // interpreted every frame anyway) so the scan is cheap.
+        // make the pair sniff ambiguous on a later return.
         if contains_effect(&self.model) {
             self.log_once(
                 "[mle] the model contains an Effect value — Effects are commands, \
@@ -287,8 +354,32 @@ to receive their messages; dropping them"
 }
 
 impl GameProducer for MleWebGame {
-    // Hot reload is native-only (docs/mle.md C3); on web, reload the page.
+    // File-watch hot reload is native-only (docs/mle.md C3) — there is no
+    // filesystem here. The PUSH path below is the web's reload.
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {}
+
+    fn reload_source(&mut self, source: &str) -> Result<String, String> {
+        // The editor push path (docs/mle.md D4), same semantics as the
+        // desktop runner's `POST /reload-source`: model preserved, a broken
+        // push keeps the old program (and the error goes back to the pusher,
+        // who is looking at the source that caused it). No mtime bookkeeping
+        // — the browser has no file watcher; pushes are the only reload.
+        let started = js_sys::Date::now();
+        let loaded = load_source(&self.path, source.to_string())?;
+        let rebound = self.swap_in(loaded);
+        let stored = if rebound > 0 {
+            format!("; {rebound} stored closure(s) rebound")
+        } else {
+            String::new()
+        };
+        let status = format!(
+            "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
+            self.path,
+            js_sys::Date::now() - started
+        );
+        web_sys::console::log_1(&format!("[mle] {status}").into());
+        Ok(status)
+    }
 
     fn tick(&mut self, frame_time: FrameTime) {
         // Subscriptions first, so `tick` sees a model that has absorbed this

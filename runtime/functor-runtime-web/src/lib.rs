@@ -101,6 +101,43 @@ async fn create_mle_game(path: &str) -> Result<mle_game::MleWebGame, String> {
     mle_game::MleWebGame::create(path, src)
 }
 
+thread_local! {
+    /// The live producer, shared between the frame loop and the
+    /// `mle_set_source` export below (docs/mle.md D4). `None` until
+    /// `run_async` has built it (still fetching, or the load failed).
+    static GAME: RefCell<Option<Rc<RefCell<Box<dyn GameProducer>>>>> =
+        const { RefCell::new(None) };
+}
+
+/// Is the game producer installed yet? The preview page polls this before
+/// announcing readiness — a push before the producer exists would be
+/// dropped ("game is not running yet").
+#[wasm_bindgen]
+pub fn mle_is_running() -> bool {
+    GAME.with(|g| g.borrow().is_some())
+}
+
+/// Hot-swap the running game's logic from pushed `.mle` source — the wasm
+/// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md
+/// D4). Same semantics: the model is preserved (`mle::rebind_value`), a
+/// broken push keeps the old program running. `Ok` carries a short status
+/// line; `Err` (a JS throw) the rendered load error. On the F# page the
+/// producer's default `reload_source` refuses honestly.
+#[wasm_bindgen]
+pub fn mle_set_source(source: String) -> Result<String, String> {
+    let game = GAME.with(|g| g.borrow().clone());
+    let Some(game) = game else {
+        return Err("game is not running yet (still loading, or the load failed)".to_string());
+    };
+    // JS is single-threaded and postMessage handlers never run mid-frame, so
+    // this borrow can't collide with the frame loop's — but a panic here
+    // would poison the page, so refuse instead of unwrapping.
+    let Ok(mut game) = game.try_borrow_mut() else {
+        return Err("runtime is mid-frame; retry".to_string());
+    };
+    game.reload_source(&source)
+}
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = game, js_name = render)]
@@ -464,10 +501,7 @@ fn spatial_head(
 
 /// Fetch + decode a sound to an `AudioBuffer`, caching by path so repeat uses
 /// (one-shots and looping voices) are instant. `None` on any load/decode error.
-async fn decode_buffer(
-    ctx: &web_sys::AudioContext,
-    sound: &str,
-) -> Option<web_sys::AudioBuffer> {
+async fn decode_buffer(ctx: &web_sys::AudioContext, sound: &str) -> Option<web_sys::AudioBuffer> {
     use wasm_bindgen::JsCast;
 
     if let Some(b) = AUDIO_BUFFERS.with(|b| b.borrow().get(sound).cloned()) {
@@ -861,7 +895,7 @@ async fn run_async() -> Result<(), JsValue> {
     // WebSocket events — see its doc): the MLE producer has no effects yet
     // (its drains return "[]"), so no completion ever needs to reach it.
     // Revisit when MLE grows effects (Track C4b-2).
-    let mut game: Box<dyn GameProducer> = match mle_game_path() {
+    let game: Box<dyn GameProducer> = match mle_game_path() {
         Some(path) => match create_mle_game(&path).await {
             Ok(game) => Box::new(game),
             Err(message) => {
@@ -872,6 +906,10 @@ async fn run_async() -> Result<(), JsValue> {
         },
         None => Box::new(WasmGame),
     };
+    // Share the producer with the `mle_set_source` export (docs/mle.md D4):
+    // the frame loop below and the editor push path borrow the same instance.
+    let game = Rc::new(RefCell::new(game));
+    GAME.with(|g| *g.borrow_mut() = Some(game.clone()));
 
     // Load game
     unsafe {
@@ -1006,6 +1044,10 @@ async fn run_async() -> Result<(), JsValue> {
         let mut sized = false;
 
         *g.borrow_mut() = Some(Closure::new(move || {
+            // The frame's exclusive borrow of the shared producer. Cannot
+            // collide with `mle_set_source`: JS is single-threaded, and
+            // message handlers only run between rAF callbacks.
+            let mut game = game.borrow_mut();
             let now = performance.now() as f32;
             // Pin the frame time when `?fixed-time` is set (deterministic capture).
             let frame_time = match fixed_time {
@@ -1021,24 +1063,24 @@ async fn run_async() -> Result<(), JsValue> {
             // Deliver page input queued since the last frame (the MLE path's
             // `mle_*` exports; empty and free on the F# path, whose page feeds
             // the game module directly).
-            mle_game::drain_input(&mut *game);
+            mle_game::drain_input(&mut **game);
 
             game.tick(frame_time.clone());
 
             // Perform any networking commands this frame's tick queued; results
             // are pushed back into the inbox asynchronously and decoded by a later
             // tick (see dispatch_net_commands).
-            dispatch_net_commands(&*game);
+            dispatch_net_commands(&**game);
             // Play any one-shot sounds this frame's tick queued (fetch + decode
             // the first time, then from the cache).
-            dispatch_audio_commands(&*game);
-            dispatch_conn_commands(&*game, &ws_state);
+            dispatch_audio_commands(&**game);
+            dispatch_conn_commands(&**game, &ws_state);
 
             let frame: Frame = game.render(frame_time.clone());
 
             // Soundscape: aim the listener from this frame's camera, then
             // reconcile the desired looping voices against the live ones.
-            update_soundscape(&*game, &frame.camera);
+            update_soundscape(&**game, &frame.camera);
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes. In
