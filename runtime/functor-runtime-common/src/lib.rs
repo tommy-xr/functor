@@ -92,6 +92,7 @@ mod renderer;
 mod scene3d;
 mod shader;
 pub mod shadow;
+pub mod skybox;
 mod shader_program;
 pub mod texture;
 pub mod ui;
@@ -108,6 +109,7 @@ pub use light::*;
 pub use render_context::*;
 pub use render_target::RenderTargetDescriptor;
 pub use renderer::*;
+pub use skybox::SkyboxDescription;
 pub use scene3d::*;
 pub use viewport::*;
 

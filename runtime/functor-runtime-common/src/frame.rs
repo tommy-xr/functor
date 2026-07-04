@@ -1,7 +1,10 @@
 use fable_library_rust::NativeArray_::Array;
 use serde::{Deserialize, Serialize};
 
-use crate::{fog::Fog, render_target::RenderTargetDescriptor, Camera, Light, Scene3D};
+use crate::{
+    fog::Fog, render_target::RenderTargetDescriptor, skybox::SkyboxDescription, Camera, Light,
+    Scene3D,
+};
 
 /// A named offscreen pass: `frame` (its own camera/scene/lights) is rendered
 /// into `target`'s texture before the owning frame's main pass, and sampled via
@@ -28,6 +31,9 @@ pub struct Frame {
     /// Frame-level distance fog; its color also drives the pass's clear color.
     #[serde(default)]
     pub fog: Option<Fog>,
+    /// A cubemap skybox drawn behind everything (fog does not apply to it).
+    #[serde(default)]
+    pub skybox: Option<SkyboxDescription>,
 }
 
 impl Frame {
@@ -40,6 +46,7 @@ impl Frame {
             lights: vec![],
             render_targets: vec![],
             fog: None,
+            skybox: None,
         }
     }
 
@@ -50,6 +57,7 @@ impl Frame {
             lights: lights.to_vec(),
             render_targets: vec![],
             fog: None,
+            skybox: None,
         }
     }
 
@@ -73,6 +81,14 @@ impl Frame {
     /// first so it pipes (`frame |> Frame.withFog(fog)`).
     pub fn with_fog(mut frame: Frame, fog: Fog) -> Frame {
         frame.fog = Some(fog);
+        frame
+    }
+
+    /// A cubemap skybox for this frame's pass, drawn behind everything right
+    /// after the clear. Subject-first so it pipes
+    /// (`frame |> Frame.withSkybox(sky)`).
+    pub fn with_skybox(mut frame: Frame, skybox: SkyboxDescription) -> Frame {
+        frame.skybox = Some(skybox);
         frame
     }
 }

@@ -22,6 +22,7 @@ type SpotLight =
 [<Erase; Emit("functor_runtime_common::Light")>] type Light = | Noop
 [<Erase; Emit("functor_runtime_common::RenderTargetDescriptor")>] type RenderTarget = | Noop
 [<Erase; Emit("functor_runtime_common::Fog")>] type Fog = | Noop
+[<Erase; Emit("functor_runtime_common::SkyboxDescription")>] type Skybox = | Noop
 
 module Scene3D =
 
@@ -172,6 +173,14 @@ module Scene3D =
         /// atmospheric falloff.
         let exp (density: float32) (color: Color): Fog =
             expRaw (density, color.r, color.g, color.b)
+
+    module Skybox =
+        /// The six cube faces by path (+X, -X, +Y, -Y, +Z, -Z), fetched like
+        /// any file texture. While the faces load, the frame's clear color
+        /// shows; a face that fails to load disables the skybox with one
+        /// warning. Fog does not apply to the skybox — it IS the horizon.
+        [<Emit("functor_runtime_common::SkyboxDescription::files($0, $1, $2, $3, $4, $5)")>]
+        let files (px: string) (nx: string) (py: string) (ny: string) (pz: string) (nz: string): Skybox = nativeOnly
 
     module RenderTarget =
         /// A named offscreen render target, 512x512 until piped through `sized`.

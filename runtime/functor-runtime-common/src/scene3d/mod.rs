@@ -11,8 +11,8 @@ use fable_library_rust::NativeArray_::Array;
 use crate::{
     asset::{
         self,
-        pipelines::{ModelPipeline, TexturePipeline},
-        AssetHandle, BuiltAssetPipeline,
+        pipelines::{ModelPipeline, RawImagePipeline, TexturePipeline},
+        AssetCache, AssetHandle, AssetPollState, BuiltAssetPipeline,
     },
     geometry::{self, Geometry},
     material::{
@@ -23,7 +23,10 @@ use crate::{
     math::Angle,
     model::{Model, Skeleton},
     render_target::{warn_line, RenderTargetBuffers, RenderTargetDescriptor},
-    texture::{RuntimeTexture, Texture2D},
+    shader::{Shader, ShaderType},
+    shader_program::{ShaderProgram, UniformLocation},
+    skybox::{SkyboxDescription, SKYBOX_FRAGMENT_SHADER_SOURCE, SKYBOX_VERTEX_SHADER_SOURCE},
+    texture::{RuntimeTexture, Texture2D, TextureData},
     DebugRenderMode, RenderContext, RenderPass,
 };
 
@@ -52,6 +55,27 @@ pub struct SceneContext {
     render_targets: RefCell<HashMap<String, RenderTargetBuffers>>,
     render_target_warned: RefCell<HashSet<String>>,
     fallback_texture: RefCell<Option<glow::Texture>>,
+    // Cubemap skyboxes, keyed by the joined six face paths. Like render
+    // targets they persist across frames/hot reloads and are never evicted
+    // (TODO). Faces decode through `raw_image_pipeline` (no GL hydration);
+    // the cubemap uploads once when all six are ready.
+    raw_image_pipeline: Arc<BuiltAssetPipeline<TextureData>>,
+    skyboxes: RefCell<HashMap<String, SkyboxEntry>>,
+    skybox_program: RefCell<Option<(ShaderProgram, SkyboxUniforms)>>,
+}
+
+enum SkyboxEntry {
+    /// Six pending face loads, in `SkyboxDescription::faces` order.
+    Loading(Vec<Arc<AssetHandle<TextureData>>>),
+    Ready(glow::Texture),
+    /// A face failed to load or validate; warned once, never retried.
+    Failed,
+}
+
+struct SkyboxUniforms {
+    view_loc: UniformLocation,
+    projection_loc: UniformLocation,
+    skybox_loc: UniformLocation,
 }
 
 impl SceneContext {
@@ -68,6 +92,9 @@ impl SceneContext {
             render_targets: RefCell::new(HashMap::new()),
             render_target_warned: RefCell::new(HashSet::new()),
             fallback_texture: RefCell::new(None),
+            raw_image_pipeline: asset::build_pipeline(Box::new(RawImagePipeline)),
+            skyboxes: RefCell::new(HashMap::new()),
+            skybox_program: RefCell::new(None),
         }
     }
 
@@ -151,6 +178,198 @@ impl SceneContext {
     pub fn warn_once(&self, key: &str, message: &str) {
         if self.render_target_warned.borrow_mut().insert(key.to_string()) {
             warn_line(message);
+        }
+    }
+
+    /// The cubemap for `desc`, once all six faces have loaded. `None` while
+    /// faces are still loading (skip the draw — the clear color shows) or
+    /// after a failure (warned once, never retried).
+    fn skybox_texture(
+        &self,
+        gl: &glow::Context,
+        asset_cache: &Arc<AssetCache>,
+        desc: &SkyboxDescription,
+    ) -> Option<glow::Texture> {
+        let key = desc.faces().join("\n");
+        let mut skyboxes = self.skyboxes.borrow_mut();
+        let entry = skyboxes.entry(key.clone()).or_insert_with(|| {
+            SkyboxEntry::Loading(
+                desc.faces()
+                    .iter()
+                    .map(|path| {
+                        asset_cache
+                            .load_asset_with_pipeline(self.raw_image_pipeline.clone(), path)
+                    })
+                    .collect(),
+            )
+        });
+
+        match entry {
+            SkyboxEntry::Ready(texture) => Some(*texture),
+            SkyboxEntry::Failed => None,
+            SkyboxEntry::Loading(handles) => {
+                // Poll EVERY handle each call: futures only advance when
+                // polled (noop waker), and a wasm fetch doesn't even start
+                // until its first poll — an early return on the first
+                // pending face would serialize the six downloads.
+                let mut faces: Vec<Arc<TextureData>> = Vec::with_capacity(6);
+                let mut pending = false;
+                let mut failed: Option<&str> = None;
+                for (handle, path) in handles.iter().zip(desc.faces()) {
+                    match handle.poll_state() {
+                        AssetPollState::Loaded(data) => faces.push(data),
+                        AssetPollState::Loading => pending = true,
+                        AssetPollState::Failed => failed = Some(path),
+                    }
+                }
+                if let Some(path) = failed {
+                    let message = format!(
+                        "[skybox] face \"{path}\" failed to load — skybox \
+disabled for this set"
+                    );
+                    *entry = SkyboxEntry::Failed;
+                    drop(skyboxes);
+                    self.warn_once(&key, &message);
+                    return None;
+                }
+                if pending {
+                    return None;
+                }
+                // All six decoded: validate (square, uniform, non-empty —
+                // a 0x0 face is the raw pipeline's undecodable sentinel).
+                let (w, h) = (faces[0].width, faces[0].height);
+                let valid =
+                    w > 0 && w == h && faces.iter().all(|f| f.width == w && f.height == h);
+                if !valid {
+                    *entry = SkyboxEntry::Failed;
+                    drop(skyboxes);
+                    self.warn_once(
+                        &key,
+                        "[skybox] faces must all be square and the same size — \
+skybox disabled for this set",
+                    );
+                    return None;
+                }
+                let texture = unsafe {
+                    let texture = gl.create_texture().expect("skybox cubemap");
+                    gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(texture));
+                    for (i, face) in faces.iter().enumerate() {
+                        gl.tex_image_2d(
+                            glow::TEXTURE_CUBE_MAP_POSITIVE_X + i as u32,
+                            0,
+                            glow::RGBA8 as i32,
+                            w as i32,
+                            h as i32,
+                            0,
+                            glow::RGBA,
+                            glow::UNSIGNED_BYTE,
+                            glow::PixelUnpackData::Slice(Some(&face.bytes)),
+                        );
+                    }
+                    gl.tex_parameter_i32(
+                        glow::TEXTURE_CUBE_MAP,
+                        glow::TEXTURE_MIN_FILTER,
+                        glow::LINEAR as i32,
+                    );
+                    gl.tex_parameter_i32(
+                        glow::TEXTURE_CUBE_MAP,
+                        glow::TEXTURE_MAG_FILTER,
+                        glow::LINEAR as i32,
+                    );
+                    // Single declared mip level: unambiguously complete (the
+                    // ShadowMap/render-target macOS recipe).
+                    gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP, glow::TEXTURE_BASE_LEVEL, 0);
+                    gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP, glow::TEXTURE_MAX_LEVEL, 0);
+                    gl.tex_parameter_i32(
+                        glow::TEXTURE_CUBE_MAP,
+                        glow::TEXTURE_WRAP_S,
+                        glow::CLAMP_TO_EDGE as i32,
+                    );
+                    gl.tex_parameter_i32(
+                        glow::TEXTURE_CUBE_MAP,
+                        glow::TEXTURE_WRAP_T,
+                        glow::CLAMP_TO_EDGE as i32,
+                    );
+                    gl.tex_parameter_i32(
+                        glow::TEXTURE_CUBE_MAP,
+                        glow::TEXTURE_WRAP_R,
+                        glow::CLAMP_TO_EDGE as i32,
+                    );
+                    gl.bind_texture(glow::TEXTURE_CUBE_MAP, None);
+                    texture
+                };
+                *entry = SkyboxEntry::Ready(texture);
+                Some(texture)
+            }
+        }
+    }
+
+    /// Draw `desc`'s skybox: right after the pass's clear, before
+    /// `Scene3D::render`. The unit cube is drawn from the inside (this
+    /// engine never enables face culling), glued to the camera by a
+    /// translation-stripped view, at NDC depth 1.0 (`gl_Position.xyww`) —
+    /// LEQUAL lets it pass against the cleared depth, and `depth_mask(false)`
+    /// keeps it from occluding anything. Skipped (clear color shows) while
+    /// faces load or after a face failure.
+    pub fn draw_skybox(
+        &self,
+        render_context: &RenderContext,
+        desc: &SkyboxDescription,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+    ) {
+        let gl = render_context.gl;
+        let Some(texture) = self.skybox_texture(gl, &render_context.asset_cache, desc) else {
+            return;
+        };
+
+        {
+            let mut program = self.skybox_program.borrow_mut();
+            if program.is_none() {
+                let vertex = Shader::build(
+                    gl,
+                    ShaderType::Vertex,
+                    SKYBOX_VERTEX_SHADER_SOURCE,
+                    render_context.shader_version,
+                );
+                let fragment = Shader::build(
+                    gl,
+                    ShaderType::Fragment,
+                    SKYBOX_FRAGMENT_SHADER_SOURCE,
+                    render_context.shader_version,
+                );
+                let shader = ShaderProgram::link(gl, &vertex, &fragment);
+                let uniforms = SkyboxUniforms {
+                    view_loc: shader.get_uniform_location(gl, "view"),
+                    projection_loc: shader.get_uniform_location(gl, "projection"),
+                    skybox_loc: shader.get_uniform_location(gl, "skybox"),
+                };
+                *program = Some((shader, uniforms));
+            }
+        }
+
+        // Strip the view translation so the box is centered on the camera.
+        let mut view = *view_matrix;
+        view.w = cgmath::vec4(0.0, 0.0, 0.0, 1.0);
+
+        let program = self.skybox_program.borrow();
+        let (shader, uniforms) = program.as_ref().expect("skybox program just initialized");
+        unsafe {
+            shader.use_program(gl);
+            shader.set_uniform_matrix4(gl, &uniforms.view_loc, &view);
+            shader.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
+            shader.set_uniform_1i(gl, &uniforms.skybox_loc, 0);
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(texture));
+
+            gl.depth_func(glow::LEQUAL);
+            gl.depth_mask(false);
+        }
+        self.cube.borrow_mut().draw(gl);
+        unsafe {
+            gl.depth_mask(true);
+            gl.depth_func(glow::LESS);
+            gl.bind_texture(glow::TEXTURE_CUBE_MAP, None);
         }
     }
 }
