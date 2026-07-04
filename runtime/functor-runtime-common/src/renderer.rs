@@ -59,7 +59,11 @@ pub fn render_frame(
     let mut declared = std::collections::HashSet::new();
     for pass in &frame.render_targets {
         if declared.insert(pass.target.id.as_str()) {
-            scene_context.ensure_render_target(gl, &pass.target);
+            scene_context.ensure_render_target(
+                gl,
+                &pass.target,
+                crate::fog::clear_color(pass.frame.fog.as_ref()),
+            );
         } else {
             scene_context.warn_once(
                 &format!("duplicate:{}", pass.target.id),
@@ -111,7 +115,8 @@ target frame are ignored (depth 1 only)",
             // The FBO owns the whole texture — no scissoring wanted (the main
             // pass re-enables it, clipped to its viewport pane).
             gl.disable(glow::SCISSOR_TEST);
-            gl.clear_color(0.1, 0.2, 0.3, 1.0);
+            let [r, g, b] = crate::fog::clear_color(pass.frame.fog.as_ref());
+            gl.clear_color(r, g, b, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
         forward_pass(
@@ -125,6 +130,7 @@ target frame are ignored (depth 1 only)",
             frame_time.clone(),
             debug_render_mode,
             shadow,
+            pass.frame.fog.as_ref(),
             width as f32 / height as f32,
         );
         unsafe {
@@ -163,7 +169,8 @@ target frame are ignored (depth 1 only)",
             viewport.height as i32,
         );
         gl.enable(glow::SCISSOR_TEST);
-        gl.clear_color(0.1, 0.2, 0.3, 1.0);
+        let [r, g, b] = crate::fog::clear_color(frame.fog.as_ref());
+        gl.clear_color(r, g, b, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
     }
 
@@ -178,6 +185,7 @@ target frame are ignored (depth 1 only)",
         frame_time,
         debug_render_mode,
         shadow,
+        frame.fog.as_ref(),
         viewport.aspect(),
     );
 }
@@ -235,6 +243,7 @@ fn forward_pass(
     frame_time: FrameTime,
     debug_render_mode: DebugRenderMode,
     shadow: Option<ShadowUniforms>,
+    fog: Option<&crate::fog::Fog>,
     aspect: f32,
 ) {
     let render_context = RenderContext {
@@ -246,6 +255,8 @@ fn forward_pass(
         lights,
         render_pass: RenderPass::Forward,
         shadow,
+        fog,
+        camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
     };
 
     // The game supplies the camera; derive view/projection from it + the aspect.

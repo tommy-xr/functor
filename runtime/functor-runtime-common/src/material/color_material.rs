@@ -1,6 +1,7 @@
 use cgmath::Matrix4;
 use cgmath::Vector4;
 
+use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -14,7 +15,10 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 view;
         uniform mat4 projection;
 
+        out vec3 worldPos;
+
         void main() {
+            worldPos = (world * vec4(inPos, 1.0)).xyz;
             gl_Position = projection * view * world * vec4(inPos, 1.0);
         }
 "#;
@@ -22,10 +26,12 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
+        in vec3 worldPos;
+
         uniform vec4 color;
 
         void main() {
-            fragColor = color;
+            fragColor = vec4(applyFog(color.rgb, worldPos), color.a);
         }
 "#;
 
@@ -34,6 +40,7 @@ struct Uniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     color_loc: UniformLocation,
+    fog: FogUniforms,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -58,10 +65,11 @@ impl Material for ColorMaterial {
                 );
 
                 // fragment shader
+                let fragment_source = format!("{}\n{}", FOG_GLSL, FRAGMENT_SHADER_SOURCE);
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
-                    FRAGMENT_SHADER_SOURCE,
+                    &fragment_source,
                     ctx.shader_version,
                 );
                 // link shaders
@@ -77,6 +85,7 @@ impl Material for ColorMaterial {
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     color_loc: shader.get_uniform_location(ctx.gl, "color"),
+                    fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -102,7 +111,8 @@ impl Material for ColorMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                p.set_uniform_vec4(ctx.gl, &uniforms.color_loc, &self.0)
+                p.set_uniform_vec4(ctx.gl, &uniforms.color_loc, &self.0);
+                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }
 

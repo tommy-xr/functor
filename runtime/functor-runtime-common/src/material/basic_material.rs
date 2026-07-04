@@ -1,5 +1,6 @@
 use cgmath::Matrix4;
 
+use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -15,9 +16,11 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 projection;
 
         out vec2 texCoord;
+        out vec3 worldPos;
 
         void main() {
             texCoord = inTex;
+            worldPos = (world * vec4(inPos, 1.0)).xyz;
             gl_Position = projection * view * world * vec4(inPos, 1.0);
         }
 "#;
@@ -26,12 +29,13 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
         in vec2 texCoord;
+        in vec3 worldPos;
 
         uniform sampler2D texture1;
 
         void main() {
-            //fragColor = vec4(texCoord.x, texCoord.y, 0.0, 1.0);
-            fragColor = texture(texture1, texCoord);
+            vec4 c = texture(texture1, texCoord);
+            fragColor = vec4(applyFog(c.rgb, worldPos), c.a);
         }
 "#;
 
@@ -40,6 +44,7 @@ struct Uniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     texture_loc: UniformLocation,
+    fog: FogUniforms,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -64,10 +69,11 @@ impl Material for BasicMaterial {
                 );
 
                 // fragment shader
+                let fragment_source = format!("{}\n{}", FOG_GLSL, FRAGMENT_SHADER_SOURCE);
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
-                    FRAGMENT_SHADER_SOURCE,
+                    &fragment_source,
                     ctx.shader_version,
                 );
                 // link shaders
@@ -83,6 +89,7 @@ impl Material for BasicMaterial {
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
+                    fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -108,7 +115,8 @@ impl Material for BasicMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0)
+                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
+                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }
 

@@ -1,6 +1,7 @@
 use cgmath::Matrix4;
 use cgmath::Vector4;
 
+use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -19,28 +20,35 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 projection;
 
         out vec2 texCoord;
+        out vec3 worldPos;
 
         void main() {
             texCoord = inTex;
+            worldPos = (world * vec4(inPos, 1.0)).xyz;
             gl_Position = projection * view * world * vec4(inPos, 1.0);
         }
 "#;
 
+// Fog still applies to emissive surfaces — fog occludes glow — so a distant
+// neon sign fades into the murk like everything else.
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
         in vec2 texCoord;
+        in vec3 worldPos;
 
         uniform vec4 emissiveColor;
         uniform sampler2D texture1;
         uniform int useTexture;
 
         void main() {
+            vec4 c;
             if (useTexture == 1) {
-                fragColor = texture(texture1, texCoord) * emissiveColor;
+                c = texture(texture1, texCoord) * emissiveColor;
             } else {
-                fragColor = emissiveColor;
+                c = emissiveColor;
             }
+            fragColor = vec4(applyFog(c.rgb, worldPos), c.a);
         }
 "#;
 
@@ -51,6 +59,7 @@ struct Uniforms {
     emissive_color_loc: UniformLocation,
     texture_loc: UniformLocation,
     use_texture_loc: UniformLocation,
+    fog: FogUniforms,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -75,10 +84,11 @@ impl Material for EmissiveMaterial {
                     ctx.shader_version,
                 );
 
+                let fragment_source = format!("{}\n{}", FOG_GLSL, FRAGMENT_SHADER_SOURCE);
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
-                    FRAGMENT_SHADER_SOURCE,
+                    &fragment_source,
                     ctx.shader_version,
                 );
 
@@ -95,6 +105,7 @@ impl Material for EmissiveMaterial {
                     emissive_color_loc: shader.get_uniform_location(ctx.gl, "emissiveColor"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     use_texture_loc: shader.get_uniform_location(ctx.gl, "useTexture"),
+                    fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -122,6 +133,7 @@ impl Material for EmissiveMaterial {
                 p.set_uniform_vec4(ctx.gl, &uniforms.emissive_color_loc, &self.color);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
+                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }
 

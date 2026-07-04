@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use cgmath::Matrix4;
+use cgmath::{Matrix4, Vector3};
 
-use crate::{asset::AssetCache, FrameTime, Light};
+use crate::{asset::AssetCache, fog::Fog, FrameTime, Light};
 
 /// Which rendering pass is in flight. `DepthOnly` (e.g. filling a shadow map)
 /// draws geometry with a trivial depth material from the light's viewpoint;
@@ -118,4 +118,12 @@ pub struct RenderContext<'a> {
     /// The directional shadow map + light matrix, when shadows are active.
     /// `None` during the depth pass and when no light casts shadows.
     pub shadow: Option<ShadowUniforms>,
+    /// Frame-level distance fog (from `Frame.fog`), applied by every forward
+    /// material. `None` during depth passes and fog-less frames. The
+    /// normals/tangents debug materials ignore it (no fog block in their
+    /// shaders); the physics overlay mode shades normally, so fog applies.
+    pub fog: Option<&'a Fog>,
+    /// The pass camera's world position — frame-constant, computed once per
+    /// pass rather than per draw (the fog shader blends by distance from it).
+    pub camera_pos: Vector3<f32>,
 }

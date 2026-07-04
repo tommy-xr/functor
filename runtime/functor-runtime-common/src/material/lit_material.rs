@@ -4,6 +4,7 @@ use cgmath::Vector3;
 use cgmath::Vector4;
 use glow::HasContext;
 
+use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::light::{pack_lights, MAX_LIGHTS};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
@@ -187,7 +188,7 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
             if (useTexture == 1) {
                 albedo = texture(texture1, texCoord) * baseColor;
             }
-            fragColor = vec4(albedo.rgb * diffuseLight + specularLight, albedo.a);
+            fragColor = vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a);
         }
 "#;
 
@@ -212,6 +213,7 @@ struct Uniforms {
     view_pos_loc: UniformLocation,
     normal_map_loc: UniformLocation,
     use_normal_map_loc: UniformLocation,
+    fog: FogUniforms,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -237,8 +239,8 @@ impl Material for LitMaterial {
                     ctx.shader_version,
                 );
 
-                let fragment_source =
-                    FRAGMENT_SHADER_TEMPLATE.replace("__MAX_LIGHTS__", &MAX_LIGHTS.to_string());
+                let fragment_source = format!("{}\n{}", FOG_GLSL, FRAGMENT_SHADER_TEMPLATE)
+                    .replace("__MAX_LIGHTS__", &MAX_LIGHTS.to_string());
                 let fragment_shader =
                     Shader::build(ctx.gl, ShaderType::Fragment, &fragment_source, ctx.shader_version);
 
@@ -271,6 +273,7 @@ impl Material for LitMaterial {
                     view_pos_loc: shader.get_uniform_location(ctx.gl, "viewPos"),
                     normal_map_loc: shader.get_uniform_location(ctx.gl, "normalMap"),
                     use_normal_map_loc: shader.get_uniform_location(ctx.gl, "useNormalMap"),
+                    fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -350,6 +353,8 @@ impl Material for LitMaterial {
                         p.set_uniform_1i(ctx.gl, &uniforms.shadow_enabled_loc, 0);
                     }
                 }
+
+                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }
 

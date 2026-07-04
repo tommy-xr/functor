@@ -64,6 +64,12 @@ impl ShaderProgram {
         }
     }
 
+    pub fn set_uniform_1f(&self, gl: &glow::Context, uniform_location: &UniformLocation, f: f32) {
+        unsafe {
+            gl.uniform_1_f32(Some(&uniform_location.native_uniform_location), f);
+        }
+    }
+
     /// Upload a `float[]` uniform.
     pub fn set_uniform_1fv(&self, gl: &glow::Context, uniform_location: &UniformLocation, v: &[f32]) {
         unsafe {
