@@ -9,28 +9,36 @@
 //! - **Rebind, not content-address**: a stored closure adopts the edited
 //!   code, exactly like `tick` does. Its captured environment is carried
 //!   over — new code, old data.
-//! - **Stable ids by name, resolved at the boundary**: a lambda's id is its
-//!   enclosing def's name (`spawn`), with `#k` ordinals for lambdas after
-//!   the first in traversal order (`spawn#1`, …). Runtime closures carry
-//!   only their [`ExprId`]; both id tables are derived HERE, at reload
-//!   time, off the hot path.
+//! - **Stable ids by name/path, never by bare index** (the note's explicit
+//!   warning): a lambda's id is its enclosing def's name plus a path of
+//!   NAMED segments where the source provides names — record fields
+//!   (`make/fn/.mul`), `let` binders (`=f`) — with positional segments
+//!   (`[2]`, `:0`, `|1`) only where nothing is named. Named positions are
+//!   stable under inserting/removing siblings; a lambda that only has a
+//!   positional identity can still drift on such edits — give it a `let`
+//!   name to give it a stable identity.
+//! - **Identity resolved at the boundary**: runtime closures carry only
+//!   their [`ExprId`]; both id tables are derived HERE, at reload time,
+//!   off the hot path.
 //! - **Fail loud, keep running**: a closure whose id has no match in the
-//!   new module (renamed/deleted def, shifted ordinal), or whose new body
-//!   captures a name the old env cannot supply, keeps its old behavior and
-//!   reports a warning — a reload must never kill the session.
+//!   new module, whose new body captures a name the old one didn't, or
+//!   whose capture is now made by a different KIND of binder (a parameter
+//!   vs a `let` vs a pattern variable) keeps its old behavior and reports
+//!   a warning — a reload must never kill the session.
 //!
-//! Captured-env carry-over is BY NAME: binding ids are module-specific, so
-//! the new lambda's free variables (name + new id) are resolved against the
-//! old env innermost-first via the old module's binder-name table, and a
-//! fresh single-scope env is built. Values inside that env are rebound
-//! recursively (closures capturing closures), as are values inside lists,
-//! records, and variants. MLE data is acyclic (immutable values, late-bound
-//! recursion), so the walk terminates.
+//! Captured-env carry-over resolves each free variable of the NEW body
+//! against the OLD lambda's own free list (name → the exact old
+//! `BindingId` the old code referred to → its value in the saved env) —
+//! never by scanning the env chain, so a stale shadowed binding of the
+//! same name can't be picked up. Carried values rebind recursively
+//! (closures capturing closures), as do values inside lists, records, and
+//! variants. MLE data is acyclic (immutable values, late-bound recursion),
+//! so the walk terminates.
 //!
 //! A stale closure from TWO reloads ago (kept once with a warning) carries
-//! an id from a module we no longer have; ids are sequential per module, so
-//! lookup could collide. The body `Rc` pointer-identity guard makes that
-//! impossible: a closure only rebinds if its body IS the old module's node
+//! an id from a module we no longer have; ids could collide, so the body
+//! `Rc` pointer-identity guard makes it unidentifiable rather than wrongly
+//! identified: a closure only rebinds if its body IS the old module's node
 //! for that id.
 
 use std::collections::HashMap;
@@ -48,6 +56,26 @@ pub struct RebindReport {
     pub warnings: Vec<String>,
 }
 
+/// What kind of binder introduced a binding — carried captures must agree
+/// (a `k` that was a parameter and is now a `let` is a semantic change the
+/// old saved value can't stand in for; see the module doc).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum BinderKind {
+    Param,
+    Let,
+    PatternVar,
+}
+
+impl BinderKind {
+    fn describe(self) -> &'static str {
+        match self {
+            BinderKind::Param => "a parameter",
+            BinderKind::Let => "a `let`",
+            BinderKind::PatternVar => "a pattern variable",
+        }
+    }
+}
+
 /// One lambda of a module, keyed by stable id.
 struct LambdaInfo {
     params: Rc<Vec<Param>>,
@@ -55,7 +83,8 @@ struct LambdaInfo {
     expr_id: ExprId,
     /// Free variables of the body — captured LOCALS only (globals are
     /// late-bound by name and need no carry-over): `(name, binding)` pairs
-    /// in first-use order.
+    /// in first-use order. Names are unique within one lambda (lexical
+    /// scoping: every free use of a name sees the same binding).
     free: Vec<(String, BindingId)>,
 }
 
@@ -63,14 +92,12 @@ struct LambdaInfo {
 struct ModuleIndex {
     by_stable: HashMap<String, LambdaInfo>,
     stable_by_expr: HashMap<u32, String>,
-    /// Binder name for every binding id (params, `let`s, pattern vars) —
-    /// the table that makes old envs resolvable by name.
-    binder_names: HashMap<u32, String>,
+    binder_kinds: HashMap<u32, BinderKind>,
 }
 
 /// Rebind every closure reachable from `value`: closures created by
 /// `old` whose stable id resolves in `new` get the new code with their
-/// captured env carried over by name. Everything else is preserved.
+/// captured env carried over. Everything else is preserved.
 pub fn rebind_value(value: &Value, old: &Module, new: &Module) -> (Value, RebindReport) {
     let old_index = index_module(old);
     let new_index = index_module(new);
@@ -113,6 +140,10 @@ fn rebind_closure(
     new: &ModuleIndex,
     report: &mut RebindReport,
 ) -> Value {
+    // A kept closure is kept ATOMICALLY: its captured env is not walked, so
+    // closures inside it stay on their old bodies too — the old body refers
+    // to old binding ids, and mixing rebuilt inner values into it would be
+    // incoherent. The warning names the outermost closure.
     let keep = |report: &mut RebindReport, why: String| {
         report.warnings.push(why);
         Value::Closure(closure.clone())
@@ -120,12 +151,12 @@ fn rebind_closure(
     // Identify the closure against the OLD module. The pointer guard makes a
     // stale id (a closure kept across an earlier reload) unidentifiable
     // rather than wrongly identified.
-    let stable = old.stable_by_expr.get(&closure.expr_id.raw()).filter(|id| {
-        old.by_stable
-            .get(id.as_str())
-            .is_some_and(|info| Rc::ptr_eq(&info.body, &closure.body))
-    });
-    let Some(stable) = stable else {
+    let old_info = old
+        .stable_by_expr
+        .get(&closure.expr_id.raw())
+        .and_then(|id| old.by_stable.get(id.as_str()).map(|info| (id, info)))
+        .filter(|(_, info)| Rc::ptr_eq(&info.body, &closure.body));
+    let Some((stable, old_info)) = old_info else {
         return keep(
             report,
             "a stored closure predates the previous reload; keeping its old body".to_string(),
@@ -140,22 +171,59 @@ fn rebind_closure(
             ),
         );
     };
-    // Carry the captured env over BY NAME: resolve each free variable of the
-    // NEW body against the OLD env (innermost-first), rebinding the carried
-    // values themselves recursively.
+    // An arity change would rebind cleanly and then fail at every call
+    // site, one frame later and with a worse message — report it HERE.
+    if info.params.len() != closure.params.len() {
+        return keep(
+            report,
+            format!(
+                "stored closure `{stable}` changed arity ({} -> {} parameters); \
+keeping its old body",
+                closure.params.len(),
+                info.params.len()
+            ),
+        );
+    }
+    // Carry the captured env over: each free variable of the NEW body must
+    // be a capture the OLD body also made (same name, same kind of binder) —
+    // then the value comes from the exact binding the old code referred to.
     let mut vars = Vec::with_capacity(info.free.len());
     for (name, new_binding) in &info.free {
-        let is_name = |b: BindingId| old.binder_names.get(&b.0) == Some(name);
-        let Some(value) = closure.env.find_by(is_name) else {
+        let Some((_, old_binding)) = old_info.free.iter().find(|(n, _)| n == name) else {
             return keep(
                 report,
                 format!(
-                    "stored closure `{stable}` now captures `{name}`, which its saved \
-environment does not have; keeping its old body"
+                    "stored closure `{stable}` now captures `{name}`, which it did not \
+capture before; keeping its old body"
                 ),
             );
         };
-        let value = walk(&value.clone(), old, new, report);
+        let (old_kind, new_kind) = (
+            old.binder_kinds.get(&old_binding.0).copied(),
+            new.binder_kinds.get(&new_binding.0).copied(),
+        );
+        if old_kind != new_kind {
+            let describe = |k: Option<BinderKind>| k.map_or("unknown", BinderKind::describe);
+            return keep(
+                report,
+                format!(
+                    "stored closure `{stable}` captures `{name}` differently after the \
+edit ({} before, {} now); keeping its old body",
+                    describe(old_kind),
+                    describe(new_kind)
+                ),
+            );
+        }
+        let Some(value) = closure.env.lookup(*old_binding) else {
+            return keep(
+                report,
+                format!(
+                    "stored closure `{stable}`: its saved environment is missing \
+`{name}`; keeping its old body"
+                ),
+            );
+        };
+        let value = walk(&value, old, new, report);
         vars.push((*new_binding, value));
     }
     report.rebound += 1;
@@ -168,76 +236,130 @@ environment does not have; keeping its old body"
 }
 
 /// Derive a module's lambda-identity index (both directions) plus its
-/// binder-name table. Runs only at the reload boundary.
+/// binder-kind table. Runs only at the reload boundary.
 fn index_module(module: &Module) -> ModuleIndex {
     let mut index = ModuleIndex {
         by_stable: HashMap::new(),
         stable_by_expr: HashMap::new(),
-        binder_names: HashMap::new(),
+        binder_kinds: HashMap::new(),
     };
     for def in &module.defs {
-        let mut ordinal = 0usize;
-        collect(&def.value, &def.name, &mut ordinal, &mut index);
+        let mut path: Vec<String> = Vec::new();
+        collect(&def.value, &def.name, &mut path, &mut index);
     }
     index
 }
 
-/// Walk one def's expression tree: record every binder's name, and register
-/// each lambda under `def` / `def#k` (traversal order).
-fn collect(expr: &Expr, def: &str, ordinal: &mut usize, index: &mut ModuleIndex) {
-    if let ExprKind::Lambda { params, body, .. } = &expr.kind {
-        let stable = if *ordinal == 0 {
-            def.to_string()
-        } else {
-            format!("{def}#{ordinal}")
-        };
-        *ordinal += 1;
-        for param in params.iter() {
-            index
-                .binder_names
-                .insert(param.binding.0, param.name.clone());
-        }
-        let mut free = Vec::new();
-        let mut bound: Vec<BindingId> = params.iter().map(|p| p.binding).collect();
-        free_vars(body, &mut bound, &mut free);
-        index.stable_by_expr.insert(expr.id.0, stable.clone());
-        index.by_stable.insert(
-            stable,
-            LambdaInfo {
-                params: params.clone(),
-                body: body.clone(),
-                expr_id: expr.id,
-                free,
-            },
-        );
-    }
-    each_child(expr, &mut |child| collect(child, def, ordinal, index));
-    // Binders outside lambdas (top-level initializers' `let`s) still need
-    // names for the table; pattern/let binders are recorded in free_vars for
-    // lambda bodies, so cover the rest here.
-    record_binders(expr, index);
-}
-
-fn record_binders(expr: &Expr, index: &mut ModuleIndex) {
+/// Walk one def's expression tree building path-based ids (see the module
+/// doc) and the binder-kind table. Every multi-child edge contributes a
+/// segment — named where the source names it — so ids are unique; a def's
+/// root lambda gets the bare def name.
+fn collect(expr: &Expr, def: &str, path: &mut Vec<String>, index: &mut ModuleIndex) {
+    let seg = |expr: &Expr, segment: String, path: &mut Vec<String>, index: &mut ModuleIndex| {
+        path.push(segment);
+        collect(expr, def, path, index);
+        path.pop();
+    };
     match &expr.kind {
-        ExprKind::Let { binding, name, .. } => {
-            index.binder_names.insert(binding.0, name.clone());
+        ExprKind::Lambda { params, body, .. } => {
+            let stable = if path.is_empty() {
+                def.to_string()
+            } else {
+                format!("{def}/{}", path.join("/"))
+            };
+            for param in params.iter() {
+                index
+                    .binder_kinds
+                    .insert(param.binding.0, BinderKind::Param);
+            }
+            let mut free = Vec::new();
+            let mut bound: Vec<BindingId> = params.iter().map(|p| p.binding).collect();
+            free_vars(body, &mut bound, &mut free);
+            index.stable_by_expr.insert(expr.id.raw(), stable.clone());
+            index.by_stable.insert(
+                stable,
+                LambdaInfo {
+                    params: params.clone(),
+                    body: body.clone(),
+                    expr_id: expr.id,
+                    free,
+                },
+            );
+            seg(body, "fn".to_string(), path, index);
         }
-        ExprKind::Match { arms, .. } => {
-            for arm in arms {
-                pattern_binders(&arm.pattern, &mut |binding, name| {
-                    index.binder_names.insert(binding.0, name.to_string());
-                });
+        ExprKind::Let {
+            binding,
+            name,
+            value,
+            body,
+            ..
+        } => {
+            index.binder_kinds.insert(binding.0, BinderKind::Let);
+            seg(value, format!("={name}"), path, index);
+            // The body is the continuation — transparent, so wrapping code
+            // in a new `let` does not shift ids further down the spine.
+            collect(body, def, path, index);
+        }
+        ExprKind::Assign {
+            name, value, rest, ..
+        } => {
+            seg(value, format!(":={name}"), path, index);
+            collect(rest, def, path, index);
+        }
+        ExprKind::Record(fields) => {
+            for field in fields {
+                seg(&field.value, format!(".{}", field.name), path, index);
             }
         }
-        _ => {}
+        ExprKind::RecordUpdate { base, fields } => {
+            seg(base, "base".to_string(), path, index);
+            for field in fields {
+                seg(&field.value, format!(".{}", field.name), path, index);
+            }
+        }
+        ExprKind::List(items) => {
+            for (i, item) in items.iter().enumerate() {
+                seg(item, format!("[{i}]"), path, index);
+            }
+        }
+        ExprKind::Call { callee, args } => {
+            seg(callee, "callee".to_string(), path, index);
+            for (i, arg) in args.iter().enumerate() {
+                seg(arg, format!(":{i}"), path, index);
+            }
+        }
+        ExprKind::Binary { lhs, rhs, .. } => {
+            seg(lhs, "lhs".to_string(), path, index);
+            seg(rhs, "rhs".to_string(), path, index);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            seg(scrutinee, "match".to_string(), path, index);
+            for (i, arm) in arms.iter().enumerate() {
+                pattern_binders(&arm.pattern, &mut |binding, _| {
+                    index.binder_kinds.insert(binding.0, BinderKind::PatternVar);
+                });
+                seg(&arm.body, format!("|{i}"), path, index);
+            }
+        }
+        // Single-child edges are transparent: uniqueness is preserved, and
+        // e.g. negating or field-accessing around a lambda keeps its id.
+        ExprKind::Neg(inner) => collect(inner, def, path, index),
+        ExprKind::FieldAccess { object, .. } => collect(object, def, path, index),
+        ExprKind::Number(_)
+        | ExprKind::String(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Local { .. }
+        | ExprKind::LocalMut { .. }
+        | ExprKind::Global(_)
+        | ExprKind::External(_)
+        | ExprKind::Ctor { .. } => {}
     }
 }
 
 /// Free variables of `body`: `Local` references whose binding is not in
 /// `bound` (params of the lambda itself plus binders introduced inside).
 /// `LocalMut` cannot cross a lambda boundary (lowering rejects the capture),
-/// so only `Local` matters. First-use order, deduplicated.
+/// so only `Local` matters. First-use order, deduplicated by binding.
 fn free_vars(expr: &Expr, bound: &mut Vec<BindingId>, free: &mut Vec<(String, BindingId)>) {
     match &expr.kind {
         ExprKind::Local { binding, name } => {
@@ -251,6 +373,7 @@ fn free_vars(expr: &Expr, bound: &mut Vec<BindingId>, free: &mut Vec<(String, Bi
             body,
             ..
         } => {
+            // MLE `let` is non-recursive: the value cannot see the binding.
             free_vars(value, bound, free);
             bound.push(*binding);
             free_vars(body, bound, free);

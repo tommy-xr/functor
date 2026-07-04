@@ -100,20 +100,6 @@ impl Env {
         }
         None
     }
-
-    /// Innermost-first search by predicate over binding ids — the reload
-    /// rebinder resolves captured names against an old env this way (ids are
-    /// module-specific, names are the stable key; see [`crate::rebind`]).
-    pub(crate) fn find_by(&self, pred: impl Fn(BindingId) -> bool) -> Option<&Value> {
-        let mut cur = self;
-        while let Some(scope) = &cur.0 {
-            if let Some((_, value)) = scope.vars.iter().rev().find(|(b, _)| pred(*b)) {
-                return Some(value);
-            }
-            cur = &scope.parent;
-        }
-        None
-    }
 }
 
 impl fmt::Display for Value {
