@@ -18,8 +18,11 @@ cd examples/hello
 functor-runner --game-path build-native/target/debug/libgame_native.dylib --debug-port 8077
 ```
 
-The server binds **localhost only** (`127.0.0.1:<PORT>`). HTTP handlers never touch GL;
-each request is handed to the render loop and fulfilled once per frame.
+The server binds **localhost by default** (`127.0.0.1:<PORT>`); `--debug-bind 0.0.0.0`
+exposes it to the LAN for remote develop (see `POST /reload-source`) — there is no auth,
+so bind wide only on networks where arbitrary game-code pushes are acceptable. HTTP
+handlers never touch GL; each request is handed to the render loop and fulfilled once
+per frame.
 
 ## Headless mode
 
@@ -65,6 +68,7 @@ functor-runner --game-path <dylib> --debug-port 8077 --hidden
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `POST /input` | inject input (see below) |
 | `POST /time` | control the frame clock (see below) |
+| `POST /reload-source` | swap game logic from the request body (see below) |
 
 ### `POST /input`
 
@@ -87,6 +91,22 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 `--fixed-time <T>` pins the clock from launch (equivalent to an initial `set`).
 While the clock is pinned, **user keyboard/mouse input from the window is ignored**, but
 injected `/input` still applies — so an external driver has deterministic control.
+
+### `POST /reload-source` — network hot-reload (MLE)
+
+The body is the raw `.mle` source. The runner validates it and swaps the session with
+**the model preserved** — the same semantics as the file-watch reload. A broken push
+returns **400** with the rendered load error and keeps the old program running; producers
+whose logic isn't source-shaped (compiled dylibs, replays) also return 400. This is the
+remote develop path: run the game on another machine or device
+(`--debug-port <P> --debug-bind 0.0.0.0`), then push from the project dir:
+
+```sh
+functor -d mygame push <host>:<port>          # push once
+functor -d mygame push <host>:<port> --watch  # re-push on every save
+```
+
+(`curl --data-binary @game.mle http://<host>:<port>/reload-source` works too.)
 
 ## Two workflows
 

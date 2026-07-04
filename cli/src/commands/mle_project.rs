@@ -115,4 +115,103 @@ impl MleProject {
         }];
         util::ShellCommand::run_sequential(commands).await
     }
+
+    /// Push the entry source to a running runner's `POST /reload-source`
+    /// (its debug server) — once, or on every save with `watch`. The runner
+    /// validates the pushed source and keeps its old program on a broken
+    /// push, so errors come back as the 400 body and the watch loop just
+    /// keeps watching. A transport failure (runner not up yet, cable out)
+    /// retries on the next poll rather than losing the edit.
+    pub async fn push(
+        &self,
+        working_directory: &str,
+        addr: &str,
+        watch: bool,
+    ) -> Result<(), Error> {
+        let path = self.entry_path(working_directory)?;
+        if !watch {
+            let src = std::fs::read_to_string(&path)?;
+            return match post_reload_source(addr, &src).map_err(|e| {
+                Error::other(format!(
+                    "cannot reach http://{addr}/reload-source: {e} — is the runner up \
+with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
+                ))
+            })? {
+                (200, body) => {
+                    println!("[mle] {body}");
+                    Ok(())
+                }
+                (status, body) => Err(Error::other(format!("push rejected ({status}): {body}"))),
+            };
+        }
+
+        println!(
+            "[mle] watching {} — pushing to http://{addr}/reload-source on save (Ctrl-C to stop)",
+            self.entry
+        );
+        // Track the last content ATTEMPTED, not the file mtime: coarse-mtime
+        // filesystems can miss rapid saves, and atomic-save editors briefly
+        // unlink the file mid-save (a failed read here just waits for the
+        // next poll). A rejected push records its content too — that
+        // revision's verdict is in; wait for the next edit.
+        let mut attempted: Option<String> = None;
+        loop {
+            if let Ok(src) = std::fs::read_to_string(&path) {
+                if attempted.as_deref() != Some(src.as_str()) {
+                    match post_reload_source(addr, &src) {
+                        Ok((200, body)) => {
+                            println!("[mle] {body}");
+                            attempted = Some(src);
+                        }
+                        Ok((status, body)) => {
+                            eprintln!("[mle] push rejected ({status}): {body}");
+                            attempted = Some(src);
+                        }
+                        // Transport failure: leave `attempted` unset so the
+                        // same content retries on the next poll.
+                        Err(e) => eprintln!("[mle] push failed ({e}); retrying…"),
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
+}
+
+/// Minimal HTTP POST over std::net — one dependency-free request to the
+/// runner's tiny_http server. Returns (status, body). `Connection: close`
+/// keeps the read side trivial (read to EOF, split headers off).
+fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
+    use std::io::{Read, Write};
+    use std::net::ToSocketAddrs;
+    let timeout = std::time::Duration::from_secs(5);
+    // connect_timeout, not connect: a blackholed host must fail in 5s, not
+    // the OS's ~75s TCP give-up.
+    let sockaddr = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| Error::other(format!("cannot resolve {addr}")))?;
+    let mut stream = std::net::TcpStream::connect_timeout(&sockaddr, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    write!(
+        stream,
+        "POST /reload-source HTTP/1.1\r\nHost: {addr}\r\nContent-Type: text/plain\r\n\
+Content-Length: {}\r\nConnection: close\r\n\r\n",
+        source.len()
+    )?;
+    stream.write_all(source.as_bytes())?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| Error::other(format!("malformed HTTP response: {response:.80}")))?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.trim().to_string())
+        .unwrap_or_default();
+    Ok((status, body))
 }

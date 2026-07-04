@@ -66,6 +66,20 @@ enum Command {
         #[command(subcommand)]
         target: InspectTarget,
     },
+    /// Push the game's MLE source to a running functor-runner over the
+    /// network (POST /reload-source on its debug server) — the remote develop
+    /// loop. The runner can be on another machine or device; reloads preserve
+    /// the model. MLE projects only.
+    Push {
+        /// The runner's debug server, host:port. Start the runner with
+        /// `--debug-port <PORT>` (plus `--debug-bind 0.0.0.0` when remote).
+        addr: String,
+
+        /// Keep watching the entry file and re-push on every save,
+        /// instead of pushing once and exiting.
+        #[arg(long)]
+        watch: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -126,12 +140,15 @@ async fn main() -> tokio::io::Result<()> {
     println!("Running command: {:?}", args.command);
 
     // An MLE project (functor.json: `"language": "mle"`) routes build/run/
-    // develop to the interpreter — no Fable, no cargo, hot reload built in.
-    // Only build/run/develop are language-routed; anything else (Init, and
-    // Inspect handled earlier) falls through to the normal dispatch.
+    // develop/push to the interpreter — no Fable, no cargo, hot reload built
+    // in. Only those are language-routed; anything else (Init, and Inspect
+    // handled earlier) falls through to the normal dispatch.
     let is_routed = matches!(
         &args.command,
-        Command::Build { .. } | Command::Run { .. } | Command::Develop { .. }
+        Command::Build { .. }
+            | Command::Run { .. }
+            | Command::Develop { .. }
+            | Command::Push { .. }
     );
     if let Some(project) = commands::mle_project::detect(&working_directory_str)
         .filter(|_| is_routed)
@@ -174,6 +191,9 @@ async fn main() -> tokio::io::Result<()> {
                         true,
                     )
                     .await
+            }
+            Command::Push { addr, watch } => {
+                project.push(&working_directory_str, addr, *watch).await
             }
         };
         return finish(res);
@@ -218,6 +238,10 @@ async fn main() -> tokio::io::Result<()> {
             )
             .await
         }
+        Command::Push { .. } => Err(io::Error::other(
+            "push requires an MLE project (functor.json with \"language\": \"mle\") — \
+compiled games reload from their rebuilt dylib, not pushed source",
+        )),
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
     };

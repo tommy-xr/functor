@@ -173,11 +173,19 @@ struct Args {
     #[arg(long)]
     fixed_time: Option<f32>,
 
-    /// Start an HTTP control server on 127.0.0.1:<PORT> (localhost only) exposing
-    /// POST /capture (image/png of the next frame) and GET /state (runtime JSON).
+    /// Start an HTTP control server on <--debug-bind>:<PORT> exposing
+    /// POST /capture (image/png of the next frame), GET /state (runtime JSON),
+    /// and POST /reload-source (network hot-reload for MLE games).
     /// Omit to disable the server entirely.
     #[arg(long)]
     debug_port: Option<u16>,
+
+    /// Interface the debug server binds to. The default keeps it local;
+    /// 0.0.0.0 exposes it to the LAN for remote develop (a dev machine
+    /// pushing source to this runner). No auth — bind wide only on networks
+    /// where arbitrary game-code pushes are acceptable.
+    #[arg(long, default_value = "127.0.0.1")]
+    debug_bind: String,
 
     /// Override shading with a diagnostic view across the whole frame (e.g.
     /// `normals` to visualize surface normals as color). Primitives only for
@@ -424,6 +432,9 @@ fn service_debug_request(
                 .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
             let _ = resp.send(json);
         }
+        debug_server::DebugRequest::ReloadSource(source, resp) => {
+            let _ = resp.send(game.reload_source(&source));
+        }
         debug_server::DebugRequest::Input(cmd, resp) => {
             let result = match cmd {
                 debug_server::InputCommand::Key { key, down } => match key_from_str(&key) {
@@ -567,7 +578,9 @@ pub async fn main() {
     // Optional debug control server. Runs on its own thread; the GL loop drains
     // its request channel once per frame (see below). None when --debug-port is
     // not given, so behavior is unchanged.
-    let debug_requests = args.debug_port.map(debug_server::spawn);
+    let debug_requests = args
+        .debug_port
+        .map(|port| debug_server::spawn(&args.debug_bind, port));
 
     // Headless: drive the game + debug server with no GL window, and return.
     if args.headless {
