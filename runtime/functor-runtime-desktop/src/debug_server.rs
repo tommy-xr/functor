@@ -14,6 +14,7 @@
 //! `POST /input`, `POST /time`. See `docs/debug-runtime.md` for usage and the
 //! observe-vs-drive workflows.
 
+use std::io::Read;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -103,15 +104,22 @@ pub enum DebugRequest {
     Input(InputCommand, Sender<Result<(), String>>),
     /// `POST /time` — set/advance/resume the clock; reply once applied.
     Time(TimeCommand, Sender<()>),
+    /// `POST /reload-source` — swap the game's logic from the pushed source
+    /// (body = the raw `.mle` text), preserving the model. Ok carries a status
+    /// line; Err the load error (400) — a broken push keeps the old program.
+    ReloadSource(String, Sender<Result<String, String>>),
 }
 
 /// Start the debug HTTP server on a background thread. Returns the receiving end
 /// of the request channel; the GL loop should `try_recv()` it once per frame.
-/// Binds localhost only.
-pub fn spawn(port: u16) -> Receiver<DebugRequest> {
+/// `bind` is the interface to listen on — 127.0.0.1 (the default) keeps it
+/// local; 0.0.0.0 exposes it to the LAN for remote develop (`/reload-source`
+/// from a dev machine to a runner on another device). There is no auth: only
+/// bind wide on networks where arbitrary game-code pushes are acceptable.
+pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
     let (tx, rx) = mpsc::channel::<DebugRequest>();
 
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("{}:{}", bind, port);
     let server = match Server::http(&addr) {
         Ok(s) => s,
         Err(e) => {
@@ -277,6 +285,60 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                         }
                     }
                 }
+                (Method::Post, "/reload-source") => {
+                    // This endpoint can be LAN-exposed (--debug-bind), so
+                    // bound the body: game source is KBs, and an unbounded
+                    // read_to_string is an OOM invitation. Chunked bodies
+                    // (no declared length) are rejected the same way.
+                    const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+                    match request.body_length() {
+                        Some(len) if len <= MAX_SOURCE_BYTES => {}
+                        _ => {
+                            let _ = request.respond(
+                                Response::from_string(
+                                    "source too large (or missing Content-Length); limit is 4MB",
+                                )
+                                .with_status_code(413),
+                            );
+                            continue;
+                        }
+                    }
+                    let mut body = String::new();
+                    let mut reader = request.as_reader();
+                    // (&mut reader): `take` needs Sized, and `as_reader`
+                    // hands back `&mut dyn Read`.
+                    if std::io::Read::take(&mut reader, MAX_SOURCE_BYTES as u64 + 1)
+                        .read_to_string(&mut body)
+                        .is_err()
+                        || body.len() > MAX_SOURCE_BYTES
+                    {
+                        let _ = request
+                            .respond(Response::from_string("bad body").with_status_code(400));
+                        continue;
+                    }
+                    let (resp_tx, resp_rx) = mpsc::channel();
+                    if tx.send(DebugRequest::ReloadSource(body, resp_tx)).is_err() {
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
+                        continue;
+                    }
+                    match resp_rx.recv() {
+                        Ok(Ok(status)) => {
+                            let _ = request.respond(Response::from_string(status));
+                        }
+                        // A load error in the pushed source (or a producer
+                        // that can't reload) — the pusher's mistake: 400.
+                        Ok(Err(msg)) => {
+                            let _ =
+                                request.respond(Response::from_string(msg).with_status_code(400));
+                        }
+                        Err(_) => {
+                            let _ = request.respond(
+                                Response::from_string("reload failed").with_status_code(500),
+                            );
+                        }
+                    }
+                }
                 (Method::Get, "/") => {
                     // Static endpoint index for discoverability (e.g. an LLM
                     // probing the port). No GL access needed, so reply directly.
@@ -288,7 +350,8 @@ pub fn spawn(port: u16) -> Receiver<DebugRequest> {
                             "GET /state": "runtime state JSON: frame, tts, viewport, input (held_keys + mouse), model (Debug text)",
                             "GET /scene": "current frame as JSON: camera + scene + lights",
                             "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1}",
-                            "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}"
+                            "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}",
+                            "POST /reload-source": "swap game logic from the request body (raw .mle source), model preserved — 400 with the load error on a broken push"
                         }
                     })
                     .to_string();
