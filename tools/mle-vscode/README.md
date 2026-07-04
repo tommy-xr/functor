@@ -5,6 +5,14 @@ Language support for `.mle` files (docs/mle.md Track D):
 - **Syntax highlighting** — TextMate grammar (`syntaxes/mle.tmLanguage.json`).
 - **Diagnostics** — parse/lower errors as you type, via the `mle-lsp` language
   server (`tools/mle-lsp` in this repo) speaking LSP over stdio.
+- **Live preview** — the **"MLE: Open Live Preview"** command (docs/mle.md D4)
+  serves the active file's project with `functor run wasm` in a webview panel
+  beside the editor, and hot-reloads it from the **live buffer** (unsaved
+  included, ~300ms debounce) with the model preserved — type, and the running
+  game updates without losing state. A broken edit keeps the old program
+  running; push results land in the status bar (errors also in the
+  "MLE Preview" output channel). Needs the `functor` CLI on PATH (or point
+  the `mle.functorPath` setting at the binary).
 
 ## Prerequisite: `mle-lsp` on PATH
 
