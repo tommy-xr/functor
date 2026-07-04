@@ -975,3 +975,47 @@ fn generic_arity_is_checked() {
     );
     assert_eq!(message, "`Box` takes 1 type argument(s), got 0");
 }
+
+// --- Generics review fixes (Codex) ---
+
+/// Recursive and forward generic references resolve at the declared arity
+/// (variant param counts are pre-seeded, like records). [Codex H]
+#[test]
+fn recursive_generic_declarations_resolve() {
+    assert_clean(
+        "type L<a> = | Cons(h: a, t: L<a>) | Nil\n\
+         let sum = (l: L<Float>): Float =>\n\
+           match l with\n\
+           | Cons(h, t) => h + sum(t)\n\
+           | Nil => 0.0\n\
+         let go = () => sum(Cons(1.0, Cons(2.0, Nil)))",
+    );
+}
+
+/// Same declaration with incompatible arguments is certainly-false `==`;
+/// cross-declaration shape comparison uses SUBSTITUTED fields. [Codex H]
+#[test]
+fn generic_record_equality_certainty() {
+    let (message, _, _) = single_diag(
+        "type R<a> = { x: a }\n\
+         let eq = (a: R<String>, b: R<Float>): Bool => a == b",
+    );
+    assert!(message.contains("always false"), "unexpected: {message}");
+    let (message, _, _) = single_diag(
+        "type R<a> = { x: a }\n\
+         type S = { x: Float }\n\
+         let eq = (r: R<String>, s: S): Bool => r == s",
+    );
+    assert!(message.contains("always false"), "unexpected: {message}");
+}
+
+/// A function smuggled through a generic ARGUMENT is still a certain `==`
+/// runtime error. [Codex H]
+#[test]
+fn functions_inside_generic_nominals_cannot_compare() {
+    let (message, _, _) = single_diag(
+        "type Box<a> = | Full(v: a)\n\
+         let main = (): Bool => Full((x) => x) == Full((x) => x)",
+    );
+    assert_eq!(message, "functions cannot be compared with `==`");
+}

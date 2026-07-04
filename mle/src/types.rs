@@ -210,6 +210,10 @@ fn contains_fn(ty: &Type) -> bool {
     match ty {
         Type::Fn(..) => true,
         Type::Tuple(elems) => elems.iter().any(contains_fn),
+        // A generic nominal can carry a function in its ARGUMENTS
+        // (`Box<(Float) => Float>`) even when the declaration's own fields
+        // are just parameters — recurse. [Codex H — generics review]
+        Type::Record(_, args) | Type::Variant(_, args) => args.iter().any(contains_fn),
         _ => false,
     }
 }
@@ -417,7 +421,10 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
             TypeBody::Variants(variants) => {
                 checker.variants.insert(
                     decl.name.clone(),
-                    variants.iter().map(|v| v.name.clone()).collect(),
+                    (
+                        decl.params.len(),
+                        variants.iter().map(|v| v.name.clone()).collect(),
+                    ),
                 );
             }
         }
@@ -651,9 +658,12 @@ struct Checker {
     /// out-of-band namespace like the builtins': never unified raw, always
     /// [`subst_params`]-substituted first.
     records: HashMap<String, (usize, Vec<(String, Type)>)>,
-    /// Declared variant types: name → constructor names, in declaration
-    /// order (the exhaustiveness universe).
-    variants: HashMap<String, Vec<String>>,
+    /// Declared variant types: name → (type-parameter count, constructor
+    /// names in declaration order — the exhaustiveness universe). The param
+    /// count is pre-seeded before field resolution, so recursive and
+    /// forward generic references (`type L<a> = | Cons(h: a, t: L<a>)`)
+    /// resolve at the right arity. [Codex H — generics review]
+    variants: HashMap<String, (usize, Vec<String>)>,
     /// Declared constructors: name → (owning variant type, field types in
     /// declaration order). Names are module-unique (lowering enforces it).
     /// ctor name → (owning type, its param count, field types with the
@@ -838,15 +848,6 @@ impl Checker {
         Scheme { vars, ty }
     }
 
-    /// Zonk with display normalization: free variables renumber to 'a, 'b, …
-    /// in first-appearance order — hover and signatures read cleanly.
-    fn zonk_normalized(&self, ty: &Type) -> Type {
-        let ty = self.zonk(ty);
-        let mut order = Vec::new();
-        free_vars_of(&ty, &mut order);
-        renumber_with(&ty, &order)
-    }
-
     /// Normalize TWO types with ONE shared variable order — a diagnostic
     /// showing both sides must name the same variable the same way (and
     /// different variables differently).
@@ -914,12 +915,7 @@ impl Checker {
                 Type::Record(name.to_string(), args)
             }
             name if self.variants.contains_key(name) => {
-                let params = self
-                    .ctors
-                    .values()
-                    .find(|(t, _, _)| t == name)
-                    .map(|(_, p, _)| *p)
-                    .unwrap_or(0);
+                let params = self.variants.get(name).map(|(p, _)| *p).unwrap_or(0);
                 if ty.args.len() != params {
                     return arity_error(self, params);
                 }
@@ -1481,7 +1477,7 @@ the type: `type Name<{name}> = …`"
                     let missing: Vec<String> = self
                         .variants
                         .get(name)
-                        .map(|declared| {
+                        .map(|(_, declared)| {
                             declared
                                 .iter()
                                 .filter(|c| !covered_ctors.contains(&c.as_str()))
@@ -1739,8 +1735,23 @@ is {other}"
                             "functions cannot be compared with `==`".to_string(),
                         );
                     }
-                    (Type::Record(x, _), Type::Record(y, _)) => {
-                        if x != y && !self.same_record_shape(x, y) {
+                    (Type::Record(x, xargs), Type::Record(y, yargs)) => {
+                        // Same declaration, incompatible arguments: the
+                        // substituted fields cannot be equal — certainly
+                        // false. [Codex H — generics review]
+                        if x == y
+                            && (xargs.len() != yargs.len()
+                                || xargs.iter().zip(yargs).any(|(a, b)| !compatible(a, b)))
+                        {
+                            self.diag(
+                                node_span,
+                                format!(
+                                    "`==` compares records with different shapes \
+                                     ({lhs} and {rhs}) — always false"
+                                ),
+                            );
+                        }
+                        if x != y && !self.same_record_shape(x, xargs, y, yargs) {
                             self.diag(
                                 node_span,
                                 format!(
@@ -1769,14 +1780,19 @@ is {other}"
     /// Whether two declared record types have the same field-name set with
     /// pairwise-compatible types — i.e. their values can be structurally
     /// equal at runtime.
-    fn same_record_shape(&self, x: &str, y: &str) -> bool {
+    /// Compare two record types' SUBSTITUTED field shapes — raw declaration
+    /// fields hold parameter placeholders whose `compatible` is trivially
+    /// true, hiding concrete disagreements. [Codex H — generics review]
+    fn same_record_shape(&self, x: &str, xargs: &[Type], y: &str, yargs: &[Type]) -> bool {
         let (Some((_, xf)), Some((_, yf))) = (self.records.get(x), self.records.get(y)) else {
             return true; // unknown decl: stay gradual
         };
         xf.len() == yf.len()
-            && xf
-                .iter()
-                .all(|(name, ty)| yf.iter().any(|(n, t)| n == name && compatible(ty, t)))
+            && xf.iter().all(|(name, ty)| {
+                yf.iter().any(|(n, t)| {
+                    n == name && compatible(&subst_params(ty, xargs), &subst_params(t, yargs))
+                })
+            })
     }
 
     fn require_float(&mut self, op: BinOp, ty: &Type, span: Span) {
