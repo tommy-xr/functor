@@ -262,6 +262,8 @@ through a hot reload. Fired messages fold through `update` before `tick`.
 Durations, like Angles, are branded values — `Sub.every(0.5, …)` is a
 teaching error; say `Time.seconds(0.5)` or `Time.millis(500.0)`.
 
+A bare-model arm and a `(model, effect)` arm may mix in one match — the
+checker lifts bare to `(model, Effect.none())`, matching the producer.
 Effects are one-shot commands: the producer performs each one, applies its
 tagger to the result (`Effect.random(Rolled)` → `Rolled(0.42)`), and folds
 the message back through `update` — which may itself return more effects
