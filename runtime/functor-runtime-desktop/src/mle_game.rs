@@ -35,16 +35,23 @@ use functor_runtime_common::mle_prelude::{
 use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
+use mle::project::SourceMap;
 use mle::{Session, Value};
+use std::path::PathBuf;
+use std::time::SystemTime;
 
 use crate::game::Game;
 
 pub struct MleGame {
     path: String,
-    mtime: std::time::SystemTime,
-    src: String,
-    /// The lowered module the current session came from — kept so a reload
-    /// can rebind model-stored closures (old module × new module).
+    /// Per-file mtimes of the WHOLE project (every sibling `.mle` — B8:
+    /// file = module), so editing a non-entry module hot-reloads too; a
+    /// file appearing or disappearing changes the stamp as well.
+    stamp: Vec<(PathBuf, SystemTime)>,
+    /// Renders the merged module's project-wide spans back to file:line:col.
+    sources: SourceMap,
+    /// The lowered (merged) module the current session came from — kept so
+    /// a reload can rebind model-stored closures (old module × new module).
     module: mle::ir::Module,
     session: Session,
     model: Value,
@@ -85,9 +92,9 @@ pub struct MleGame {
 
 const STATS_EVERY: u64 = 300;
 
-/// A successfully loaded, contract-validated game module.
+/// A successfully loaded, contract-validated game project.
 struct Loaded {
-    src: String,
+    sources: SourceMap,
     module: mle::ir::Module,
     session: Session,
     init: Value,
@@ -99,31 +106,39 @@ struct Loaded {
     has_physics: bool,
 }
 
-/// Load, check, and contract-validate a game file. Errors come back as fully
+/// Load, check, and contract-validate a game project (B8: the entry plus
+/// every sibling `.mle` file — file = module). Errors come back as fully
 /// rendered strings (`path:line:col: message`) so `create` can exit loud with
 /// them and hot-reload can print-and-keep-running with the same text.
 fn load_game(path: &str) -> Result<Loaded, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    load_source(path, src)
+    load_project(path, None)
 }
 
-/// The source-shaped half of [`load_game`]: check and contract-validate
-/// already-obtained source. `path` is only a label for error rendering — the
-/// network reload path (`reload_source`) has no file behind the source.
+/// The source-shaped half of [`load_game`]: the pushed source stands in for
+/// the ENTRY file (the network reload path, `reload_source`); sibling
+/// modules still load from disk.
 fn load_source(path: &str, src: String) -> Result<Loaded, String> {
-    let render = |stage: &str, span: mle::Span, message: &str| {
-        let (line, col) = mle::line_col(&src, span.start);
-        format!("cannot {stage} {path}:{line}:{col}: {message}")
-    };
-    let program = mle::parse(&src).map_err(|e| render("parse", e.span, &e.message))?;
-    let module = mle::lower(program).map_err(|e| render("load", e.span, &e.message))?;
+    load_project(path, Some(src))
+}
+
+fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String> {
+    let project = mle::project::load_with_entry_source(std::path::Path::new(path), entry_src)
+        .map_err(|e| format!("cannot load {}", e.render()))?;
+    let module = project.module;
+    let sources = project.sources;
     // Type diagnostics are advisory in the dev loop: print, keep going.
     for diag in mle::check(&module) {
-        let (line, col) = mle::line_col(&src, diag.span.start);
-        eprintln!("warning: {path}:{line}:{col}: {}", diag.message);
+        eprintln!(
+            "warning: {}",
+            sources.render(diag.span.start, &diag.message)
+        );
     }
-    let session = Session::load(&module, &mut FunctorHost)
-        .map_err(|f| render("load", f.error.span, &f.error.message))?;
+    let session = Session::load(&module, &mut FunctorHost).map_err(|f| {
+        format!(
+            "cannot load {}",
+            sources.render(f.error.span.start, &f.error.message)
+        )
+    })?;
     // The producer contract is knowable at load — fail here, not once per
     // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
     // right arity.
@@ -186,7 +201,7 @@ return them beside the model as `(model, effect)`"
         require_function(path, &session, "physics", 1)?;
     }
     Ok(Loaded {
-        src,
+        sources,
         module,
         session,
         init,
@@ -198,10 +213,21 @@ return them beside the model as `(model, effect)`"
     })
 }
 
-fn file_mtime(path: &str) -> std::time::SystemTime {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+/// Per-file mtimes of every `.mle` file in the entry's project, sorted by
+/// path — the hot-reload change stamp. Any edited, added, or removed file
+/// changes the stamp (a file we cannot stat contributes UNIX_EPOCH, so a
+/// mid-save disappearing file still registers as a change).
+fn project_stamp(path: &str) -> Vec<(PathBuf, SystemTime)> {
+    let files = mle::project::project_files(std::path::Path::new(path)).unwrap_or_default();
+    files
+        .into_iter()
+        .map(|file| {
+            let mtime = std::fs::metadata(&file)
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            (file, mtime)
+        })
+        .collect()
 }
 
 impl MleGame {
@@ -209,7 +235,7 @@ impl MleGame {
         // Stat BEFORE reading: an edit that lands mid-load then compares
         // unequal on the next frame and triggers a reload, instead of being
         // silently absorbed into a stale session.
-        let mtime = file_mtime(path);
+        let stamp = project_stamp(path);
         let loaded = match load_game(path) {
             Ok(loaded) => loaded,
             Err(message) => {
@@ -220,8 +246,8 @@ impl MleGame {
         println!("[mle] loaded {path}");
         MleGame {
             path: path.to_string(),
-            mtime,
-            src: loaded.src,
+            stamp,
+            sources: loaded.sources,
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
@@ -251,12 +277,13 @@ impl MleGame {
         }
     }
 
-    /// Report a per-frame error with its source position (deduped).
+    /// Report a per-frame error with its source position (deduped). The
+    /// span identifies the file too (project-wide spans), so an error inside
+    /// a sibling module names that module's file.
     fn frame_error(&mut self, stage: &str, err: &mle::RunError) {
-        let (line, col) = mle::line_col(&self.src, err.span.start);
         let rendered = format!(
-            "[mle] {stage} error at {}:{line}:{col}: {}",
-            self.path, err.message
+            "[mle] {stage} error at {}",
+            self.sources.render(err.span.start, &err.message)
         );
         self.report_once(rendered);
     }
@@ -394,7 +421,7 @@ to receive their messages; dropping them"
         for warning in &report.warnings {
             eprintln!("[mle] reload: {warning}");
         }
-        self.src = loaded.src;
+        self.sources = loaded.sources;
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
@@ -428,20 +455,21 @@ to receive their messages; dropping them"
 
 impl Game for MleGame {
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {
-        // Poll the file's mtime (a stat per frame is ~free) and swap in a new
-        // session on change. THE MODEL IS KEPT: it is a plain value the host
-        // holds, so state survives the edit and all functions rebind — the
-        // dev-loop payoff the language was built for (docs/mle.md C3).
-        // Closures STORED IN THE MODEL rebind too (B5 part 2,
-        // `mle::rebind`): they adopt the edited code with their captured env
-        // carried over; one that can't be matched keeps its old body with a
-        // loud warning. A broken edit prints and keeps the old program
-        // running.
-        let mtime = file_mtime(&self.path);
-        if mtime == self.mtime {
+        // Poll every project file's mtime (a few stats per frame is ~free)
+        // and swap in a new session on change — editing a SIBLING module
+        // hot-reloads exactly like editing the entry (B8). THE MODEL IS
+        // KEPT: it is a plain value the host holds, so state survives the
+        // edit and all functions rebind — the dev-loop payoff the language
+        // was built for (docs/mle.md C3). Closures STORED IN THE MODEL
+        // rebind too (B5 part 2, `mle::rebind`): they adopt the edited code
+        // with their captured env carried over; one that can't be matched
+        // keeps its old body with a loud warning. A broken edit prints and
+        // keeps the old program running.
+        let stamp = project_stamp(&self.path);
+        if stamp == self.stamp {
             return;
         }
-        self.mtime = mtime;
+        self.stamp = stamp;
         let started = Instant::now();
         match load_game(&self.path) {
             Ok(loaded) => {
@@ -480,11 +508,11 @@ impl Game for MleGame {
         } else {
             String::new()
         };
-        // Absorb any disk mtime observed up to now: a save that landed
+        // Absorb any disk mtimes observed up to now: a save that landed
         // earlier this frame (after check_hot_reload ran, before this push
         // was serviced) is by definition older than the push and must not
         // revert it next frame. Saves after this instant still win.
-        self.mtime = file_mtime(&self.path);
+        self.stamp = project_stamp(&self.path);
         let status = format!(
             "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
             self.path,
@@ -644,15 +672,20 @@ fn empty_frame() -> Frame {
 mod tests {
     use super::*;
 
-    /// Write `src` to a temp .mle file and return `load_game`'s error.
+    /// Write `src` as `game.mle` in its own temp directory (a directory is
+    /// a whole project since B8 — a shared temp dir would drag stray `.mle`
+    /// files in as sibling modules) and return `load_game`'s error.
     fn load_err(name: &str, src: &str) -> String {
-        let path =
-            std::env::temp_dir().join(format!("mle-game-test-{}-{name}.mle", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("mle-game-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let path = dir.join("game.mle");
         std::fs::write(&path, src).expect("write temp game");
         let err = load_game(path.to_str().expect("utf-8 temp path"))
             .err()
             .expect("load should fail");
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
         err
     }
 
