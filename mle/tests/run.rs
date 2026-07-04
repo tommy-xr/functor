@@ -632,3 +632,18 @@ fn destructuring_let_arity_mismatch_fails_loud() {
         run_err("let f = (t) => let (a, b) = t in a + b\nlet main = () => f((1.0, 2.0, 3.0))");
     assert_eq!(message, "no pattern matched (1, 2, 3)");
 }
+
+/// Generic ADTs at runtime: the checker's parameters are erased — one Box
+/// works at every type (the runtime was already untyped; this pins that
+/// generics stayed checker-only).
+#[test]
+fn generic_adts_run_type_erased() {
+    assert_eq!(
+        main_result(
+            "type Box<v> = | Full(value: v) | Empty\n\
+             let orElse = (b, d) => match b with | Full(v) => v | Empty => d\n\
+             let main = () => (orElse(Full(1.0), 0.0), orElse(Full(\"s\"), \"\"), orElse(Empty, 9.0))"
+        ),
+        "(1, \"s\", 9)"
+    );
+}

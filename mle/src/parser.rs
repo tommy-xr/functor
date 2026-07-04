@@ -5,7 +5,8 @@
 //! ```text
 //! program   := (letDecl | typeDecl)*
 //! letDecl   := "let" ident "=" expr
-//! typeDecl  := "type" ident "=" ("{" (ident ":" type),* "}" | variant+)
+//! typeDecl  := "type" ident ("<" ident ("," ident)* ">")?
+//!              "=" ("{" (ident ":" type),* "}" | variant+)
 //! variant   := "|" upperIdent ("(" (ident ":" type),+ ")")?
 //! type      := tatom ("*" tatom)*                    (flat products)
 //! tatom     := ident ("<" type ("," type)* ">")?
@@ -153,6 +154,41 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
     fn type_decl(&mut self) -> Result<TypeDecl, ParseError> {
         let kw = self.bump();
         let (name, _) = self.expect_ident("a name after `type`")?;
+        // Optional type parameters: `type Box<a, b> = …` — lowercase names
+        // (uppercase would shadow declared types; the checker enforces the
+        // case, the grammar just collects idents).
+        let mut params = Vec::new();
+        if self.peek_kind() == &TokenKind::Lt {
+            self.bump();
+            loop {
+                let (param, param_span) = self.expect_ident("a type parameter name")?;
+                if !param.chars().next().is_some_and(char::is_lowercase) {
+                    return Err(ParseError {
+                        message: format!(
+                            "type parameters are lowercase (`{}`), like annotation type variables",
+                            param.to_lowercase()
+                        ),
+                        span: param_span,
+                    });
+                }
+                if params.contains(&param) {
+                    return Err(ParseError {
+                        message: format!("duplicate type parameter `{param}`"),
+                        span: param_span,
+                    });
+                }
+                params.push(param);
+                if self.peek_kind() == &TokenKind::Comma {
+                    self.bump();
+                    if self.peek_kind() == &TokenKind::Gt {
+                        break; // trailing comma
+                    }
+                } else {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt, "`,` or `>`")?;
+        }
         self.expect(TokenKind::Eq, "`=`")?;
         match self.peek_kind() {
             TokenKind::LBrace => {
@@ -176,6 +212,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 let close = self.expect(TokenKind::RBrace, "`,` or `}`")?;
                 Ok(TypeDecl {
                     name,
+                    params,
                     body: TypeBody::Record(fields),
                     span: kw.span.to(close.span),
                 })
@@ -191,6 +228,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                     .to(variants.last().expect("at least one variant").span);
                 Ok(TypeDecl {
                     name,
+                    params,
                     body: TypeBody::Variants(variants),
                     span,
                 })

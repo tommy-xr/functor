@@ -145,6 +145,7 @@ namespace)",
         let id = DefId(index as u32);
         match item {
             ast::Item::Type(decl) => types.push(TypeDef {
+                params: decl.params.clone(),
                 id,
                 name: decl.name,
                 body: decl.body,

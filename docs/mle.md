@@ -279,6 +279,19 @@ snapshots — no GPU, fully agent-verifiable.
       `mle types` dump, goldened); the B4 diagnostic suite still passes;
       probe battery re-run (no legal program rejected).
 
+- [x] **Language: generic type declarations** (done 2026-07-04, the B7
+      follow-up both review engines asked for). `type Box<v> = | Full(value:
+      v) | Empty` / `type Pair<x, y> = { … }`: checker-only (the runtime
+      was already type-erased) — declarations store parameter placeholders
+      in an out-of-band Var namespace (the builtin-scheme trick),
+      substituted at every use; ctors instantiate fresh per use; record
+      literals solve the parameters; patterns take the scrutinee's
+      arguments; arity + duplicate/uppercase/undeclared-param teaching
+      errors. Found and fixed: three type walkers (zonk / instantiate /
+      renumber) predating generics treated nominal types as leaves, so
+      vars inside `Box<'a>` never substituted. *Verify:* Box/Pair at two
+      types in one module; instantiation constrains; pattern-field types
+      flow; erased-runtime pin; goldens.
 - [ ] **B8. `.mlei` interface files** (added 2026-07-02; design already in
       `~/notes` `syntax.md` — the OCaml `.mli` split). A module's public
       contract as a checked file: exported types (including **abstract**

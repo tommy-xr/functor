@@ -3,6 +3,7 @@ Program {
         Type(
             TypeDecl {
                 name: "Position",
+                params: [],
                 body: Record(
                     [
                         FieldTy {
@@ -31,6 +32,7 @@ Program {
         Type(
             TypeDecl {
                 name: "Velocity",
+                params: [],
                 body: Record(
                     [
                         FieldTy {

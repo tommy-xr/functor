@@ -27,10 +27,14 @@ pub struct LetDecl {
 }
 
 /// `type Position = { x: Float, y: Float }` (a record type) or
-/// `type Shape = | Circle(radius: Float) | Point` (a variant type).
+/// `type Shape = | Circle(radius: Float) | Point` (a variant type),
+/// optionally generic: `type Box<a> = | Full(v: a) | Empty`.
 #[derive(Debug)]
 pub struct TypeDecl {
     pub name: String,
+    /// Declared type parameters, lowercase (`<a, b>`); empty when the
+    /// declaration is not generic.
+    pub params: Vec<String>,
     pub body: TypeBody,
     pub span: Span,
 }
