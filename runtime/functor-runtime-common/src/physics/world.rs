@@ -30,6 +30,35 @@ pub const FIXED_DT: f32 = 1.0 / 60.0;
 /// unboundedly.
 pub const MAX_SUBSTEPS_PER_FRAME: u32 = 8;
 
+/// One colored wireframe segment from [`World::debug_lines`], in world space.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct DebugLine {
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    /// Plain RGBA in 0..1 (converted from the HSLA rapier emits).
+    pub color: [f32; 4],
+}
+
+/// Rapier's debug colors are HSLA; convert once at collection so consumers
+/// (GL overlay, text dumps) get ordinary RGBA.
+fn hsla_to_rgba([h, s, l, a]: [f32; 4]) -> [f32; 4] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    // rem_euclid: a negative hue must land in [0, 360), not keep its sign
+    // (Rust `%` would send it to sector 0 with a negative chroma offset).
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    [r + m, g + m, b + m, a]
+}
+
 /// A live Rapier world plus the reconcile bookkeeping that maps declared
 /// [`Body`] tags onto Rapier handles.
 #[derive(Serialize, Deserialize)]
@@ -198,6 +227,50 @@ impl World {
         let rb = self.bodies.get(*rb_handle)?;
         let v = rb.linvel();
         Some([v.x, v.y, v.z])
+    }
+
+    /// The world as colored wireframe line segments, via Rapier's own debug
+    /// renderer (docs/physics.md, "Debug visualization"): collider shapes,
+    /// rigid-body frames, joints, and contacts. Render-only — reads the world,
+    /// never steps it — and plain data, so it works for a GL overlay and for
+    /// headless/text inspection alike.
+    pub fn debug_lines(&self) -> Vec<DebugLine> {
+        struct Collect(Vec<DebugLine>);
+        impl DebugRenderBackend for Collect {
+            fn draw_line(
+                &mut self,
+                _object: DebugRenderObject,
+                a: Vector,
+                b: Vector,
+                color: DebugColor,
+            ) {
+                self.0.push(DebugLine {
+                    a: [a.x, a.y, a.z],
+                    b: [b.x, b.y, b.z],
+                    color: hsla_to_rgba(color),
+                });
+            }
+        }
+
+        let mut collect = Collect(Vec::new());
+        // The pipeline is scratch state (like PhysicsPipeline); a debug-only
+        // path can afford to rebuild it per call. Rapier's default mode omits
+        // CONTACTS — add it back, since touching-points are exactly what a
+        // physics debug view is for. (This is rapier's DebugRenderMode, not
+        // the crate's shading enum of the same name.)
+        DebugRenderPipeline::new(
+            DebugRenderStyle::default(),
+            DebugRenderMode::default() | DebugRenderMode::CONTACTS,
+        )
+        .render(
+            &mut collect,
+            &self.bodies,
+            &self.colliders,
+            &self.impulse_joints,
+            &self.multibody_joints,
+            &self.narrow_phase,
+        );
+        collect.0
     }
 
     /// Headless observability (docs/physics.md, "drivable and observable
@@ -615,6 +688,36 @@ mod tests {
         restored.restore(&snap).unwrap();
         assert_eq!(restored.frame(), w.frame());
         assert!(restored.snapshot() == snap, "restored snapshot differs");
+    }
+
+    #[test]
+    fn hsla_converts_to_expected_rgba() {
+        // Pure green, and rapier's default dynamic-collider crimson.
+        assert_eq!(hsla_to_rgba([120.0, 1.0, 0.5, 1.0]), [0.0, 1.0, 0.0, 1.0]);
+        let [r, g, b, a] = hsla_to_rgba([340.0, 1.0, 0.3, 1.0]);
+        assert!(r > 0.55 && g == 0.0 && b > 0.15 && a == 1.0, "{r} {g} {b}");
+        // Negative hue lands in [0,360) instead of producing negative chroma.
+        let [r, ..] = hsla_to_rgba([-30.0, 1.0, 0.5, 1.0]);
+        assert!((0.0..=1.0).contains(&r));
+    }
+
+    #[test]
+    fn debug_lines_cover_declared_bodies() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        assert!(w.debug_lines().is_empty());
+        w.reconcile(&scene(vec![ground(), crate_at("a", [0.0, 0.51, 0.0])]));
+        for _ in 0..30 {
+            w.step_fixed();
+        }
+        let lines = w.debug_lines();
+        // Two cuboid colliders' worth of wireframe + body axes + the resting
+        // contact — the exact count is rapier's business; non-empty and finite
+        // is the contract.
+        assert!(lines.len() > 20, "expected a real wireframe, got {}", lines.len());
+        for line in &lines {
+            assert!(line.a.iter().chain(&line.b).all(|v| v.is_finite()));
+            assert!(line.color.iter().all(|c| (0.0..=1.0).contains(c)));
+        }
     }
 
     #[test]

@@ -120,3 +120,137 @@ pub fn render_frame(
         &root_material,
     );
 }
+
+/// Draw a batch of colored world-space line segments over the current
+/// framebuffer — the physics wireframe overlay (`--debug-render physics`,
+/// lines from `physics::World::debug_lines`). Depth-tested against the frame
+/// just rendered, so wireframes sit *on* their bodies instead of x-raying
+/// through the scene.
+///
+/// Debug-only path: the shader and buffers are built and torn down per call,
+/// matching the crate's per-frame material style — simplicity over premature
+/// caching for a diagnostic overlay.
+///
+/// Precondition: call immediately after `render_frame` with the same
+/// camera/viewport — the GL viewport and scissor are inherited from it (the
+/// `viewport` parameter is used for the aspect ratio only), which is what
+/// clips the overlay to the right pane in stereo/multi-pane layouts.
+pub fn render_debug_lines(
+    gl: &glow::Context,
+    shader_version: &str,
+    camera: &Camera,
+    viewport: Viewport,
+    lines: &[crate::physics::DebugLine],
+) {
+    if lines.is_empty() {
+        return;
+    }
+
+    // Interleave [pos.xyz, color.rgba] per vertex, two vertices per line.
+    let mut vertices: Vec<f32> = Vec::with_capacity(lines.len() * 14);
+    for line in lines {
+        for p in [line.a, line.b] {
+            vertices.extend_from_slice(&p);
+            vertices.extend_from_slice(&line.color);
+        }
+    }
+
+    let view_projection: Matrix4<f32> =
+        camera.projection_matrix(viewport.aspect()) * camera.view_matrix();
+
+    unsafe {
+        let program = gl.create_program().expect("create debug line program");
+        let sources = [
+            (
+                glow::VERTEX_SHADER,
+                format!(
+                    "{shader_version}\n\
+                     layout(location = 0) in vec3 a_pos;\n\
+                     layout(location = 1) in vec4 a_color;\n\
+                     uniform mat4 u_view_projection;\n\
+                     out vec4 v_color;\n\
+                     void main() {{\n\
+                         v_color = a_color;\n\
+                         gl_Position = u_view_projection * vec4(a_pos, 1.0);\n\
+                     }}"
+                ),
+            ),
+            (
+                glow::FRAGMENT_SHADER,
+                format!(
+                    "{shader_version}\n\
+                     precision mediump float;\n\
+                     in vec4 v_color;\n\
+                     out vec4 frag_color;\n\
+                     void main() {{ frag_color = v_color; }}"
+                ),
+            ),
+        ];
+        let mut shaders = Vec::new();
+        for (kind, source) in sources {
+            let shader = gl.create_shader(kind).expect("create debug line shader");
+            gl.shader_source(shader, &source);
+            gl.compile_shader(shader);
+            if !gl.get_shader_compile_status(shader) {
+                panic!(
+                    "debug line shader failed to compile: {}",
+                    gl.get_shader_info_log(shader)
+                );
+            }
+            gl.attach_shader(program, shader);
+            shaders.push(shader);
+        }
+        gl.link_program(program);
+        if !gl.get_program_link_status(program) {
+            panic!(
+                "debug line program failed to link: {}",
+                gl.get_program_info_log(program)
+            );
+        }
+        for shader in shaders {
+            gl.detach_shader(program, shader);
+            gl.delete_shader(shader);
+        }
+
+        gl.use_program(Some(program));
+        // Same matrix→slice idiom as `shader_program::set_uniform_matrix4`.
+        let mvp = cgmath::conv::array4x4(view_projection);
+        let mvp_raw = core::slice::from_raw_parts(mvp.as_ptr() as *const f32, 16);
+        gl.uniform_matrix_4_f32_slice(
+            gl.get_uniform_location(program, "u_view_projection")
+                .as_ref(),
+            false,
+            mvp_raw,
+        );
+
+        let vao = gl.create_vertex_array().expect("create debug line vao");
+        gl.bind_vertex_array(Some(vao));
+        let vbo = gl.create_buffer().expect("create debug line vbo");
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        // Same raw-bytes view the mesh upload path uses (indexed_mesh.rs).
+        let vertices_u8: &[u8] = core::slice::from_raw_parts(
+            vertices.as_ptr() as *const u8,
+            std::mem::size_of_val(vertices.as_slice()),
+        );
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::STREAM_DRAW);
+        let stride = (7 * std::mem::size_of::<f32>()) as i32;
+        gl.enable_vertex_attrib_array(0);
+        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
+        gl.enable_vertex_attrib_array(1);
+        gl.vertex_attrib_pointer_f32(1, 4, glow::FLOAT, false, stride, 3 * 4);
+
+        // Wireframes lie exactly ON collider surfaces, so with LESS half their
+        // pixels lose the depth test to the coincident face (z-fighting).
+        // LEQUAL lets equal-depth line pixels win; restore LESS after.
+        gl.depth_func(glow::LEQUAL);
+        gl.draw_arrays(glow::LINES, 0, (vertices.len() / 7) as i32);
+        gl.depth_func(glow::LESS);
+
+        gl.bind_vertex_array(None);
+        gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        gl.use_program(None);
+        gl.delete_buffer(vbo);
+        gl.delete_vertex_array(vao);
+        gl.delete_program(program);
+    }
+}

@@ -105,6 +105,8 @@ enum DebugRenderArg {
     Normals,
     /// Visualize world-space surface tangents as RGB.
     Tangents,
+    /// Normal shading plus the physics collider/contact wireframe overlay.
+    Physics,
 }
 
 impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
@@ -113,6 +115,7 @@ impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
             DebugRenderArg::Default => functor_runtime_common::DebugRenderMode::Default,
             DebugRenderArg::Normals => functor_runtime_common::DebugRenderMode::Normals,
             DebugRenderArg::Tangents => functor_runtime_common::DebugRenderMode::Tangents,
+            DebugRenderArg::Physics => functor_runtime_common::DebugRenderMode::Physics,
         }
     }
 }
@@ -878,6 +881,18 @@ Escape again to quit"
                 player.respatialize_voices();
             }
 
+            // Physics wireframe overlay (--debug-render physics): collect the
+            // live world's lines once per frame, drawn over each rendered view
+            // below. Read-only; an empty/no-physics world yields no lines.
+            let physics_debug_lines = matches!(args.debug_render, DebugRenderArg::Physics)
+                .then(|| {
+                    functor_runtime_common::physics::with_world(
+                        functor_runtime_common::physics::DEFAULT_WORLD,
+                        |w| w.debug_lines(),
+                    )
+                })
+                .flatten();
+
             // Shadow + forward passes, shared with the web runtime. In stereo
             // mode, render the same frame twice — once per eye camera into each
             // half of the window. (The shadow pass runs per eye; it must start
@@ -907,6 +922,15 @@ Escape again to quit"
                         *eye_viewport,
                         args.debug_render.into(),
                     );
+                    if let Some(lines) = &physics_debug_lines {
+                        functor_runtime_common::render_debug_lines(
+                            &gl,
+                            shader_version,
+                            camera,
+                            *eye_viewport,
+                            lines,
+                        );
+                    }
                 }
             } else {
                 functor_runtime_common::render_frame(
@@ -921,6 +945,15 @@ Escape again to quit"
                     viewport,
                     args.debug_render.into(),
                 );
+                if let Some(lines) = &physics_debug_lines {
+                    functor_runtime_common::render_debug_lines(
+                        &gl,
+                        shader_version,
+                        &view_camera,
+                        viewport,
+                        lines,
+                    );
+                }
             }
 
             // 2D UI overlay: the game's declarative `ui model` View, lowered to a

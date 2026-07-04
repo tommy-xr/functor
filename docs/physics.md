@@ -541,22 +541,22 @@ all control is via the keyboard, exactly as scoped.
 
 ## Debug visualization (wireframes via Rapier's debug renderer)
 
-Rapier ships its own debug renderer behind the **`debug-render`** feature:
-`DebugRenderPipeline` walks the live world and emits colored line segments —
-collider wireframes, contacts, joints, rigid-body frames, with granular passes
-(`render_colliders` / `render_contacts` / …) — through a one-method
-`DebugRenderBackend` trait (`draw_line(object, a, b, color)`). We adopt it
-rather than writing our own:
+**Shipped (Phase 2b).** Rapier ships its own debug renderer behind the
+**`debug-render`** feature: `DebugRenderPipeline` walks the live world and
+emits colored line segments — collider wireframes, contacts, joints,
+rigid-body frames — through a one-method `DebugRenderBackend` trait. We adopt
+it rather than writing our own:
 
-- **Engine side**: `World::debug_lines() -> Vec<Line>` (a tiny backend impl that
-  collects segments into plain data). Render-only, world-untouched — zero
-  determinism impact — and being plain data it is *also text-dumpable*, the
-  line-set sibling of `World::dump()` for headless/LLM inspection.
-- **Shell side**: both runtimes draw the line list as a GL line pass over the
-  frame. `functor-runner` already has a `--debug-render <mode>` flag — physics
-  wireframes become a mode (e.g. `--debug-render physics`), so captures and
-  golden scenarios can show physics state with no game-code changes; a runtime
-  keyboard toggle joins the pause/rewind keys in `hello-physics`.
+- **Engine side**: `World::debug_lines() -> Vec<DebugLine>` (a tiny backend
+  impl collecting segments into plain RGBA'd data). Render-only,
+  world-untouched — zero determinism impact — and being plain serializable
+  data it is *also text-dumpable*, the line-set sibling of `World::dump()`.
+- **Shell side**: `--debug-render physics` renders the frame with normal
+  shading, then `render_debug_lines` draws the collected segments as a
+  depth-tested GL line pass (`LEQUAL`, so lines coincident with collider
+  surfaces don't z-fight) — works in mono and stereo, and in captures
+  (`--capture-frame`) with no game-code changes. Native-only until the wasm
+  shell grows a physics world.
 
 This is the visual proof of reconcile correctness (declared scene vs what the
 solver actually holds) and makes divergence bugs — a body the renderer draws in
@@ -618,7 +618,7 @@ It's worth building in two steps, because they exercise different machinery:
 | **1b. Timeline seam** | `Simulatable` + `Timeline` traits, `TimelineLog` with the three cadences (`keyframes(n)` default / `snapshot_ring` / `replay_only`), strategy-equivalence + replay goldens. | native+wasm (Rust) |
 | **2. MLE surface + read-back** | `Physics.*` prelude (shape/body/scene builders, `position`/`transformed` live reads), optional `physics` hook in the MLE driver (tick → reconcile+fixed-step → draw), prelude tests. | native (MLE) |
 | **2c. `examples/mle-physics`** | Crates settling on a ground slab, hot-reload demo, golden scenario, PR GIF/PNG. | native (MLE) |
-| **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, line pass, `--debug-render physics` mode. | native |
+| **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, depth-tested line pass, `--debug-render physics` mode. **Shipped.** | native |
 | **3. Commands** | `applyImpulse`/`applyForce`/`setVelocity`/`teleport` (plain-data effects). | both |
 | **4. Queries** | `raycast`/`shapeCast` (async tagger, token registry). | both |
 | **5. Collision events** | `Physics.events` sub. | both |
