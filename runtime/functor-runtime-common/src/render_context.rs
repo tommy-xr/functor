@@ -39,6 +39,12 @@ pub enum DebugRenderMode {
     /// the guard for the tangent vertex attribute (glTF import + analytic
     /// generation), as `Normals` is for normals.
     Tangents,
+    /// Normal shading plus a physics wireframe overlay: the live world's
+    /// colliders/contacts as colored lines (rapier's debug renderer via
+    /// `physics::World::debug_lines`), making declared-vs-simulated divergence
+    /// visible at a glance. Native-only today (the wasm shell has no physics
+    /// world yet, so on wasm this shades like `Default`).
+    Physics,
 }
 
 impl DebugRenderMode {
@@ -50,6 +56,7 @@ impl DebugRenderMode {
             DebugRenderMode::Default => "default",
             DebugRenderMode::Normals => "normals",
             DebugRenderMode::Tangents => "tangents",
+            DebugRenderMode::Physics => "physics",
         }
     }
 
@@ -60,6 +67,7 @@ impl DebugRenderMode {
             "default" => Some(DebugRenderMode::Default),
             "normals" => Some(DebugRenderMode::Normals),
             "tangents" => Some(DebugRenderMode::Tangents),
+            "physics" => Some(DebugRenderMode::Physics),
             _ => None,
         }
     }
@@ -71,7 +79,12 @@ mod tests {
 
     #[test]
     fn from_label_roundtrips_every_variant() {
-        for mode in [DebugRenderMode::Default, DebugRenderMode::Normals] {
+        for mode in [
+            DebugRenderMode::Default,
+            DebugRenderMode::Normals,
+            DebugRenderMode::Tangents,
+            DebugRenderMode::Physics,
+        ] {
             assert_eq!(DebugRenderMode::from_label(mode.label()), Some(mode));
         }
     }

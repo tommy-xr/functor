@@ -205,7 +205,9 @@ reload (like the model); deleting the `physics` hook drops it. Gotcha:
 under it (and the subscription grid never crosses) — bodies render at their
 declared pose. Capture physics with plain `--capture-time` (and a settled
 scene for reproducibility) instead; capture timer-driven changes via the
-debug server's `/time` advance.
+debug server's `/time` advance. To *see* colliders, run with
+`--debug-render physics`: normal shading plus the live world's wireframes
+(collider outlines, contacts, body frames).
 
 A project dir with `functor.json` `{"language": "mle", "entry": "game.mle"}`
 works with the CLI: `functor -d dir build` (typecheck, diagnostics are
