@@ -525,6 +525,13 @@ impl Game for MleGame {
         // untouched — a later save still wins via the mtime watcher
         // (last-write-wins, from either side).
         let started = Instant::now();
+        // Stamp BEFORE reading sources (the same rule as `create`): a
+        // sibling saved mid-load then compares unequal next frame and
+        // triggers a reload (around the pushed entry), instead of its mtime
+        // being absorbed while the session holds its stale content. Any save
+        // already on disk here is either in this load or older than the
+        // push — absorbing its mtime is correct either way.
+        let stamp = project_stamp(&self.path);
         let loaded = load_source(&self.path, source.to_string())?;
         self.pushed_entry = Some(source.to_string());
         let rebound = self.swap_in(loaded);
@@ -533,11 +540,7 @@ impl Game for MleGame {
         } else {
             String::new()
         };
-        // Absorb any disk mtimes observed up to now: a save that landed
-        // earlier this frame (after check_hot_reload ran, before this push
-        // was serviced) is by definition older than the push and must not
-        // revert it next frame. Saves after this instant still win.
-        self.stamp = project_stamp(&self.path);
+        self.stamp = stamp;
         let status = format!(
             "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
             self.path,
