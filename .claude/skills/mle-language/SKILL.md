@@ -211,7 +211,10 @@ A project dir with `functor.json` `{"language": "mle", "entry": "game.mle"}`
 works with the CLI: `functor -d dir build` (typecheck, diagnostics are
 errors), `run native`, `develop` (hot reload is built in).
 
-`examples/mle-hello/game.mle` is the reference. The model shows live at the
+`examples/mle-hello/game.mle` is the reference
+(`examples/mle-physics/game.mle` for the physics hook, including the
+rising-edge input latch — GLFW key repeats arrive as `isDown = true`).
+The model shows live at the
 debug server's `GET /state`. **Hot reload is on by default**: saving the
 `.mle` file reloads it in ~1 frame with the model preserved (a broken edit
 keeps the old program running; an edited `init` takes effect on restart).

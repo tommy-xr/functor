@@ -1,0 +1,83 @@
+// mle-physics — the reference physics example (docs/physics.md, Phase 2c).
+// Crates and a ball tumble onto a slab, drawn at their live simulated poses
+// via Physics.transformed. Press SPACE to re-drop everything: the changed
+// declared spawn poses teleport the bodies (the divergence rule) and the
+// pile falls again. Run with:
+//
+//   functor-runner --mle --game-path examples/mle-physics/game.mle
+//   functor -d examples/mle-physics run native
+//
+// The physics world lives host-side: edit this file while it runs and (as
+// long as tags and declarations are unchanged) the bodies stay exactly
+// where they were — hot reload keeps model + world.
+
+let crateCount = 5.0
+
+// Pseudo-scatter: a deterministic hash of crate index + drop generation, so
+// every SPACE press declares fresh spawn poses without any RNG. Within a
+// generation the declarations are byte-identical each frame, so the
+// divergence rule leaves settled bodies alone (they can sleep).
+let scatterX = (drop, i) => Math.sin(i * 12.9898 + drop * 3.7) * 1.6
+let scatterZ = (drop, i) => Math.cos(i * 78.2330 + drop * 1.3) * 1.6
+
+let crateTag = (i) => Text.concat("crate-", Text.fromFloat(i))
+
+let crateBody = (drop, i) =>
+  Physics.dynamic(crateTag(i), Physics.box(1.0, 1.0, 1.0))
+    |> Physics.at(scatterX(drop, i), 3.0 + i * 1.3, scatterZ(drop, i))
+    |> Physics.friction(0.6)
+    |> Physics.restitution(0.2)
+
+// One body per slot: 0 = ground, 1 = ball, the rest = crates — built with a
+// literal match because MLE has no List.append yet. The ball's scatter seed
+// (9.0) is just a value disjoint from the crate indices 0..4. The slab sits
+// with its TOP face at y = 0, so visuals on the ground plane line up with
+// resting bodies.
+let bodyAt = (drop, i) =>
+  match i with
+  | 0.0 => Physics.fixed("ground", Physics.box(24.0, 0.4, 24.0)) |> Physics.at(0.0, -0.2, 0.0)
+  | 1.0 =>
+    (Physics.dynamic("ball", Physics.sphere(0.6))
+      |> Physics.at(scatterX(drop, 9.0) * 0.5, 5.5, scatterZ(drop, 9.0) * 0.5)
+      |> Physics.restitution(0.55))
+  | n => crateBody(drop, n - 2.0)
+
+let physics = (model) =>
+  Physics.scene(0.0, -9.81, 0.0,
+    List.range(crateCount + 2.0) |> List.map((i) => bodyAt(model.drop, i)))
+
+// Tints stay in 0..1 for any crateCount thanks to clamp01.
+let crateVisual = (i) =>
+  Scene.cube()
+    |> Scene.lit(Math.clamp01(0.55 + 0.09 * i), Math.clamp01(0.42 - 0.04 * i), 0.28)
+    |> Physics.transformed(crateTag(i))
+
+let init = { drop: 0.0, spaceHeld: false }
+
+let tick = (model, dt, tts) => model
+
+// Rising-edge detection: GLFW delivers key REPEATS as `isDown = true` too,
+// so holding SPACE would re-drop every repeat without the spaceHeld latch.
+let input = (model, key, isDown) =>
+  match key with
+  | "Space" =>
+    (match isDown with
+     | false => { model with spaceHeld: false }
+     | true =>
+       (match model.spaceHeld with
+        | true => model
+        | false => { model with drop: model.drop + 1.0, spaceHeld: true }))
+  | _ => model
+
+let draw = (model, tts) =>
+  Frame.createLit(
+    Camera.lookAt(10.5, 7.5, -10.5, 0.0, 0.8, 0.0),
+    Scene.group([
+      Scene.plane() |> Scene.scale(24.0) |> Scene.lit(0.55, 0.58, 0.62),
+      Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(0.95, 0.35, 0.25) |> Physics.transformed("ball"),
+      Scene.group(List.range(crateCount) |> List.map(crateVisual)),
+    ]),
+    [
+      Light.ambient(0.12, 0.12, 0.15),
+      Light.directional(0.5, -1.0, 0.35, 1.0, 0.98, 0.95, 0.9) |> Light.castShadows,
+    ])
