@@ -20,6 +20,7 @@ type SpotLight =
 [<Erase; Emit("functor_runtime_common::MeshSelector")>] type MeshSelector = | Noop
 [<Erase; Emit("functor_runtime_common::MeshOverride")>] type MeshOverride = | Noop
 [<Erase; Emit("functor_runtime_common::Light")>] type Light = | Noop
+[<Erase; Emit("functor_runtime_common::RenderTargetDescriptor")>] type RenderTarget = | Noop
 
 module Scene3D =
 
@@ -140,6 +141,26 @@ module Scene3D =
     module Texture =
         [<Emit("functor_runtime_common::TextureDescription::file($0)")>]
         let file (str: string): Texture = nativeOnly
+
+        /// The texture a render target is drawn into (see Frame.withRenderTarget).
+        /// Usable anywhere a Texture is: Material.texture / emissiveTexture /
+        /// litTexture. Sampling a target no frame declares shows magenta.
+        /// Gotcha: a quad's front is +Z, so a camera looking down +Z at an
+        /// unrotated quad sees its BACK — a mirrored feed. Rotate the monitor
+        /// to face the viewer.
+        [<Emit("functor_runtime_common::TextureDescription::render_target($0)")>]
+        let renderTarget (target: RenderTarget): Texture = nativeOnly
+
+    module RenderTarget =
+        /// A named offscreen render target, 512x512 until piped through `sized`.
+        /// Declare once and use the value at both sites: the writer
+        /// (Frame.withRenderTarget) and the reader (Texture.renderTarget); the
+        /// name is the target's identity across frames and hot reloads.
+        [<Emit("functor_runtime_common::RenderTargetDescriptor::named($0)")>]
+        let named (name: string): RenderTarget = nativeOnly
+
+        [<Emit("functor_runtime_common::RenderTargetDescriptor::sized($2, $0, $1)")>]
+        let sized (width: float32) (height: float32) (target: RenderTarget): RenderTarget = nativeOnly
 
     module Transform = 
         [<Emit("functor_runtime_common::Scene3D::translate_x($1, $0)")>]

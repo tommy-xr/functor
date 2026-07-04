@@ -1,4 +1,5 @@
 use cgmath::{vec4, Vector4};
+use glow::HasContext;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -112,16 +113,7 @@ impl MaterialDescription {
                 color_material
             }
             MaterialDescription::Texture(t) => {
-                match t {
-                    TextureDescription::File(file) => {
-                        let asset = context.asset_cache.load_asset_with_pipeline(
-                            scene_context.texture_pipeline.clone(),
-                            &file,
-                        );
-
-                        asset.get().bind(0, context);
-                    }
-                };
+                bind_texture_description(t, 0, context, scene_context);
 
                 let mut basic_material = BasicMaterial::create();
                 basic_material.initialize(&context);
@@ -150,9 +142,9 @@ impl MaterialDescription {
     }
 }
 
-/// Bind an optional albedo texture to unit 0; returns whether one was bound (the
+/// Bind an optional texture to unit `unit`; returns whether one was bound (the
 /// shaders sample the texture only when their corresponding `use…` uniform is
-/// set. Binds to texture unit `unit`.
+/// set).
 fn bind_optional_texture(
     texture: &Option<TextureDescription>,
     unit: u32,
@@ -160,14 +152,55 @@ fn bind_optional_texture(
     scene_context: &SceneContext,
 ) -> bool {
     match texture {
-        Some(TextureDescription::File(file)) => {
+        Some(t) => {
+            bind_texture_description(t, unit, context, scene_context);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Bind a texture description to unit `unit`: a file texture through the asset
+/// pipeline, or a render target's read texture (last completed write). A target
+/// id no frame declares binds a 1x1 magenta fallback and warns once.
+fn bind_texture_description(
+    texture: &TextureDescription,
+    unit: u32,
+    context: &RenderContext,
+    scene_context: &SceneContext,
+) {
+    match texture {
+        TextureDescription::File(file) => {
             let asset = context
                 .asset_cache
                 .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
             asset.get().bind(unit, context);
-            true
         }
-        None => false,
+        TextureDescription::RenderTarget(id) => {
+            // Select the unit BEFORE any lazy fallback creation: creating the
+            // fallback binds/unbinds TEXTURE_2D on the active unit, which would
+            // otherwise clobber a texture bound to a lower unit moments ago
+            // (e.g. a Lit albedo on unit 0 while resolving a missing normal
+            // map on unit 2).
+            unsafe {
+                context.gl.active_texture(glow::TEXTURE0 + unit);
+            }
+            let texture = scene_context
+                .render_target_read_texture(id)
+                .unwrap_or_else(|| {
+                    scene_context.warn_once(
+                        id,
+                        &format!(
+                            "[render-target] a material samples \"{id}\" but no \
+Frame.withRenderTarget declares it — binding the magenta fallback"
+                        ),
+                    );
+                    scene_context.fallback_texture(context.gl)
+                });
+            unsafe {
+                context.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            }
+        }
     }
 }
 

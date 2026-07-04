@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::{cell::RefCell, sync::Arc};
+
+use glow::HasContext;
 
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,7 @@ use crate::{
     },
     math::Angle,
     model::{Model, Skeleton},
+    render_target::{warn_line, RenderTargetBuffers, RenderTargetDescriptor},
     texture::{RuntimeTexture, Texture2D},
     DebugRenderMode, RenderContext, RenderPass,
 };
@@ -43,6 +46,12 @@ pub struct SceneContext {
     // Heightmaps are parameterized, so they're cached by a content hash (rows,
     // cols, heights) — static terrain builds its GL mesh once and reuses it.
     heightmaps: RefCell<HashMap<u64, Box<dyn Geometry>>>,
+    // Render targets persist across frames/hot reloads, keyed by the target's
+    // string id (the cross-frame identity). Buffers for ids a game stops
+    // declaring are kept until exit — TODO: evict.
+    render_targets: RefCell<HashMap<String, RenderTargetBuffers>>,
+    render_target_warned: RefCell<HashSet<String>>,
+    fallback_texture: RefCell<Option<glow::Texture>>,
 }
 
 impl SceneContext {
@@ -56,6 +65,86 @@ impl SceneContext {
             heightmaps: RefCell::new(HashMap::new()),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
+            render_targets: RefCell::new(HashMap::new()),
+            render_target_warned: RefCell::new(HashSet::new()),
+            fallback_texture: RefCell::new(None),
+        }
+    }
+
+    /// Create (or recreate, if the declared size changed) the buffers for a
+    /// render target. Called for every declared target before any pass runs.
+    pub fn ensure_render_target(&self, gl: &glow::Context, desc: &RenderTargetDescriptor) {
+        let mut targets = self.render_targets.borrow_mut();
+        let stale = targets
+            .get(&desc.id)
+            .is_some_and(|b| (b.width, b.height) != (desc.width.max(1), desc.height.max(1)));
+        if stale {
+            targets.remove(&desc.id).unwrap().delete(gl);
+        }
+        targets
+            .entry(desc.id.clone())
+            .or_insert_with(|| RenderTargetBuffers::new(gl, desc.width, desc.height));
+    }
+
+    /// The framebuffer + size a target pass renders into. Handles are `Copy` —
+    /// the borrow is released before rendering starts.
+    pub fn render_target_write(&self, id: &str) -> Option<(glow::Framebuffer, u32, u32)> {
+        self.render_targets
+            .borrow()
+            .get(id)
+            .map(|b| (b.write_fbo(), b.width, b.height))
+    }
+
+    /// Publish a finished target pass: readers now sample the new image.
+    pub fn finish_render_target_write(&self, id: &str) {
+        if let Some(buffers) = self.render_targets.borrow_mut().get_mut(id) {
+            buffers.swap();
+        }
+    }
+
+    /// The texture materials sample for a target id, if it exists.
+    pub fn render_target_read_texture(&self, id: &str) -> Option<glow::Texture> {
+        self.render_targets.borrow().get(id).map(|b| b.read_texture())
+    }
+
+    /// A 1x1 magenta texture bound when a material references a render target
+    /// no frame declares — loud on screen, and `warn_once` says why.
+    pub fn fallback_texture(&self, gl: &glow::Context) -> glow::Texture {
+        let mut fallback = self.fallback_texture.borrow_mut();
+        *fallback.get_or_insert_with(|| unsafe {
+            let texture = gl.create_texture().expect("fallback texture");
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                1,
+                1,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&[255, 0, 255, 255])),
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            texture
+        })
+    }
+
+    /// Log `message` the first time `key` is seen (per-key, once per run) —
+    /// render-loop warnings must not spam every frame.
+    pub fn warn_once(&self, key: &str, message: &str) {
+        if self.render_target_warned.borrow_mut().insert(key.to_string()) {
+            warn_line(message);
         }
     }
 }

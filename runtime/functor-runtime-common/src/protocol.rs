@@ -179,12 +179,16 @@ mod tests {
     }
 
     // A representative draw3d output: every Shape variant, every SceneObject
-    // variant, transformed geometry, a material wrapper, and all four light
-    // kinds.
+    // variant, transformed geometry, a material wrapper, all four light
+    // kinds, and a render-target pass with a scene that samples it.
     #[test]
     fn frame_round_trips() {
         use crate::math::Angle;
-        use crate::{MaterialDescription, ModelDescription, ModelHandle};
+        use crate::render_target::RenderTargetDescriptor;
+        use crate::{
+            MaterialDescription, ModelDescription, ModelHandle, RenderTargetPass,
+            TextureDescription,
+        };
         use cgmath::{Matrix4, SquareMatrix};
         use fable_library_rust::NativeArray_;
 
@@ -208,6 +212,16 @@ mod tests {
                     handle: ModelHandle::File("barrel.glb".to_string()),
                     overrides: vec![],
                 }),
+                // A monitor: samples the "feed" render target declared below.
+                Scene3D {
+                    obj: SceneObject::Material(
+                        MaterialDescription::emissive_texture(TextureDescription::RenderTarget(
+                            "feed".to_string(),
+                        )),
+                        vec![Scene3D::quad()],
+                    ),
+                    xform: Matrix4::identity(),
+                },
             ]),
             xform: Matrix4::identity(),
         };
@@ -222,16 +236,39 @@ mod tests {
                     0.0, 3.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 15.0, 0.5,
                 ),
             ],
+            render_targets: vec![RenderTargetPass {
+                target: RenderTargetDescriptor::new("feed"),
+                frame: Frame::new(Camera::default(), Scene3D::cube()),
+            }],
         };
         assert_json_stable(&frame);
 
-        // `lights` was added to Frame later; a frame serialized without it
-        // must still decode (serde(default)) — old producers stay readable.
-        // This literal also pins the minimal Frame wire shape.
+        // `lights` was added to Frame later (`render_targets` later still); a
+        // frame serialized without them must still decode (serde(default)) —
+        // old producers stay readable. This literal also pins the minimal
+        // Frame wire shape.
         let legacy: Frame =
             serde_json::from_str(r#"{"camera":{"eye":[0.0,0.0,-5.0],"target":[0.0,0.0,0.0],"up":[0.0,1.0,0.0],"fov_radians":0.785,"near":0.1,"far":100.0},"scene":{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}}"#)
                 .expect("frame without lights decodes");
         assert!(legacy.lights.is_empty());
+        assert!(legacy.render_targets.is_empty());
+    }
+
+    // The render-target wire vocabulary: the reader (a texture by target id)
+    // and the writer's descriptor (id + size). Both sides key on the id string.
+    #[test]
+    fn render_target_wire_is_pinned() {
+        use crate::render_target::RenderTargetDescriptor;
+        use crate::TextureDescription;
+
+        assert_wire(
+            &TextureDescription::RenderTarget("feed".to_string()),
+            r#"{"RenderTarget":"feed"}"#,
+        );
+        assert_wire(
+            &RenderTargetDescriptor::new("feed"),
+            r#"{"id":"feed","width":512,"height":512}"#,
+        );
     }
 
     #[test]
