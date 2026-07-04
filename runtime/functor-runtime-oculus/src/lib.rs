@@ -40,6 +40,10 @@ const GLES_MINOR: i32 = 2;
 
 /// Color format for the swapchains (GL_SRGB8_ALPHA8): the compositor expects
 /// sRGB-encoded output, and an sRGB internal format makes GL do the encode.
+/// TODO(device bring-up): the shared shaders are gamma-naive (desktop/web
+/// write raw values to non-sRGB targets), so the format-driven encode here
+/// will render brighter than the desktop reference — expect to make the
+/// shared pipeline gamma-explicit once it's visible on device.
 const COLOR_FORMAT: u32 = glow::SRGB8_ALPHA8;
 
 struct EglContext {
@@ -64,9 +68,18 @@ fn init_egl() -> EglContext {
     let display = unsafe { instance.get_display(egl::DEFAULT_DISPLAY) }.expect("EGL display");
     instance.initialize(display).expect("EGL initialize");
 
+    // EGL_OPENGL_ES3_BIT: not exposed by khronos-egl's 1.4 API surface (it's
+    // an EGL 1.5 / KHR_create_context constant), value per the Khronos
+    // registry.
+    const OPENGL_ES3_BIT: egl::Int = 0x0040;
+
     let mut chosen = None;
     let configs = {
-        let mut configs = Vec::with_capacity(64);
+        // Size to the driver's real count — Adreno exposes hundreds, and a
+        // truncated list can hide the one config we need (`get_configs` fills
+        // only up to the Vec's capacity).
+        let count = instance.get_config_count(display).expect("EGL config count");
+        let mut configs = Vec::with_capacity(count);
         instance
             .get_configs(display, &mut configs)
             .expect("EGL configs");
@@ -74,6 +87,9 @@ fn init_egl() -> EglContext {
     };
     for config in configs {
         let attr = |a: egl::Int| instance.get_config_attrib(display, config, a).unwrap_or(-1);
+        // Exact 8888, no depth/stencil (per-eye renderbuffers own depth), no
+        // MSAA — plus the two masks Meta's reference ovrEgl checks: the
+        // config must back an ES3 context and a pbuffer surface.
         if attr(egl::RED_SIZE) == 8
             && attr(egl::GREEN_SIZE) == 8
             && attr(egl::BLUE_SIZE) == 8
@@ -81,12 +97,14 @@ fn init_egl() -> EglContext {
             && attr(egl::DEPTH_SIZE) == 0
             && attr(egl::STENCIL_SIZE) == 0
             && attr(egl::SAMPLES) == 0
+            && attr(egl::RENDERABLE_TYPE) & OPENGL_ES3_BIT != 0
+            && attr(egl::SURFACE_TYPE) & egl::PBUFFER_BIT != 0
         {
             chosen = Some(config);
             break;
         }
     }
-    let config = chosen.expect("no 8888 EGL config without MSAA");
+    let config = chosen.expect("no ES3-capable 8888 EGL config without MSAA");
 
     let context = instance
         .create_context(
@@ -184,9 +202,13 @@ fn create_eye_target(
                 glow::RENDERBUFFER,
                 Some(depth),
             );
-            debug_assert_eq!(
-                gl.check_framebuffer_status(glow::FRAMEBUFFER),
-                glow::FRAMEBUFFER_COMPLETE
+            // A real check, not debug_assert: in a release APK an incomplete
+            // FBO would otherwise become silent garbage on the display.
+            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            assert_eq!(
+                status,
+                glow::FRAMEBUFFER_COMPLETE,
+                "swapchain framebuffer incomplete: 0x{status:x}"
             );
             fbo
         })
@@ -224,16 +246,24 @@ fn camera_from_view(view: &xr::View) -> Camera {
 }
 
 /// Placeholder frame until the MLE producer is wired (device bring-up): an
-/// empty scene under a directional light — render_frame still exercises the
-/// full shadow + forward pipeline, proving the shared renderer on GLES.
+/// empty scene under a shadow-casting directional light, so `render_frame`
+/// runs the full shadow + forward pipeline every frame — the point of phase 1
+/// is proving the shared renderer's whole GLES path, not just a clear.
 fn placeholder_frame() -> Frame {
     use cgmath::SquareMatrix;
-    Frame::new(
+    let light = functor_runtime_common::Light::Directional {
+        direction: [-0.4, -1.0, -0.3],
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        casts_shadows: true,
+    };
+    Frame::new_lit(
         Camera::default(),
         functor_runtime_common::Scene3D {
             obj: functor_runtime_common::SceneObject::Group(vec![]),
             xform: cgmath::Matrix4::identity(),
         },
+        vec![light].into(),
     )
 }
 
@@ -269,6 +299,10 @@ pub fn android_main(app: AndroidApp) {
 
     let mut extensions = xr::ExtensionSet::default();
     extensions.khr_opengl_es_enable = true;
+    // Required on Android: openxr only chains the activity/JVM context into
+    // xrCreateInstance (XrInstanceCreateInfoAndroidKHR) when this is set —
+    // without it the runtime can reject instance creation.
+    extensions.khr_android_create_instance = true;
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -286,11 +320,23 @@ pub fn android_main(app: AndroidApp) {
         .system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)
         .expect("no HMD system");
 
-    // The runtime requires this call before create_session even though the
-    // requirements themselves are informational for GLES 3.2.
-    let _reqs = instance
+    // The spec requires this call before create_session — and requires the
+    // app to verify its GLES version is inside the supported range; a clear
+    // panic here beats on-device UB.
+    let reqs = instance
         .graphics_requirements::<xr::OpenGlEs>(system)
         .expect("graphics requirements");
+    let requested = xr::Version::new(GLES_MAJOR as u16, GLES_MINOR as u16, 0);
+    log::info!(
+        "GLES {GLES_MAJOR}.{GLES_MINOR} requested; runtime supports {} – {}",
+        reqs.min_api_version_supported,
+        reqs.max_api_version_supported
+    );
+    assert!(
+        requested >= reqs.min_api_version_supported
+            && requested <= reqs.max_api_version_supported,
+        "GLES {GLES_MAJOR}.{GLES_MINOR} outside the runtime's supported range"
+    );
 
     let (session, mut frame_wait, mut frame_stream) = unsafe {
         instance.create_session::<xr::OpenGlEs>(
@@ -304,13 +350,26 @@ pub fn android_main(app: AndroidApp) {
     }
     .expect("create session");
 
+    // STAGE (floor-origin, room-scale) preferred; LOCAL (head-origin) is the
+    // portable baseline when the runtime has no stage bounds set up.
     let stage = session
         .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
-        .expect("stage space");
+        .unwrap_or_else(|e| {
+            log::warn!("STAGE reference space unavailable ({e}); falling back to LOCAL");
+            session
+                .create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)
+                .expect("local space")
+        });
 
     let view_config_views = instance
         .enumerate_view_configuration_views(system, xr::ViewConfigurationType::PRIMARY_STEREO)
         .expect("view config views");
+    // Fail with a clear message rather than XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED.
+    let formats = session.enumerate_swapchain_formats().expect("formats");
+    assert!(
+        formats.contains(&COLOR_FORMAT),
+        "runtime does not offer SRGB8_ALPHA8 swapchains (offered: {formats:x?})"
+    );
     let mut eyes: Vec<EyeTarget> = view_config_views
         .iter()
         .map(|v| create_eye_target(&gl, &session, v))
@@ -326,7 +385,10 @@ pub fn android_main(app: AndroidApp) {
     let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
 
     let start = std::time::Instant::now();
-    let mut last_tts = 0.0f32;
+    // Lazy: seconds pass between android_main and the first rendered frame
+    // (session READY), and the session can pause — the first frame after
+    // either must not hand the game a giant dts.
+    let mut last_tts: Option<f32> = None;
     let mut session_running = false;
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
@@ -404,10 +466,10 @@ pub fn android_main(app: AndroidApp) {
         // this the way the desktop loop does.
         let tts = start.elapsed().as_secs_f32();
         let frame_time = FrameTime {
-            dts: tts - last_tts,
+            dts: last_tts.map_or(0.0, |last| tts - last),
             tts,
         };
-        last_tts = tts;
+        last_tts = Some(tts);
 
         // TODO(device bring-up): MLE producer + debug server here — the game
         // produces this frame; today it's the placeholder scene.
@@ -442,17 +504,17 @@ pub fn android_main(app: AndroidApp) {
             eye.swapchain.release_image().expect("release image");
         }
 
-        let rect = xr::Rect2Di {
-            offset: xr::Offset2Di { x: 0, y: 0 },
-            extent: xr::Extent2Di {
-                width: eyes[0].width as i32,
-                height: eyes[0].height as i32,
-            },
-        };
         let projection_views: Vec<_> = views
             .iter()
             .zip(eyes.iter())
             .map(|(view, eye)| {
+                let rect = xr::Rect2Di {
+                    offset: xr::Offset2Di { x: 0, y: 0 },
+                    extent: xr::Extent2Di {
+                        width: eye.width as i32,
+                        height: eye.height as i32,
+                    },
+                };
                 xr::CompositionLayerProjectionView::new()
                     .pose(view.pose)
                     .fov(view.fov)

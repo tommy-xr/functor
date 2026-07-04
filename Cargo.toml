@@ -7,7 +7,6 @@ members = [
     "runtime/functor-netsim",
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
-    "runtime/functor-runtime-oculus",
     "runtime/functor-runtime-web",
     "src",
     "tools/mle-lsp",

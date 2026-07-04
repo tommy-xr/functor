@@ -7,6 +7,13 @@ edition = "2021"
 # cdylib. See README.md for the build pipeline and src/lib.rs for the
 # architecture; stack rationale (openxr from crates.io, android-activity,
 # cargo-ndk) is documented there too.
+#
+# Its OWN workspace, deliberately outside the root one (like the examples'
+# build-native crates): android-activity → ndk-sys hard-fails to compile for
+# non-Android targets, so root-workspace membership would break every bare
+# `cargo build`/`cargo check`/rust-analyzer run on the host.
+[workspace]
+
 [lib]
 crate-type = ["cdylib"]
 
