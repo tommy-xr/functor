@@ -1,13 +1,22 @@
-// examples/mle-atmosphere — distance fog (a skybox joins in the next PR).
+// examples/mle-atmosphere — distance fog + a cubemap skybox.
 //
 // A colonnade of identical pillars recedes into linear fog: every pillar has
 // the same size and albedo, so any visible difference between near and far
-// ones IS the fog. The fog color drives the clear color, so the far pillars
-// dissolve into the horizon instead of silhouetting. An emissive drifter
-// weaves through the colonnade — fog occludes glow too. All animation
-// derives from tts, so captures are deterministic under --fixed-time.
+// ones IS the fog. The fog color is tuned toward the sky's horizon band, so
+// the far pillars dissolve into the sky. An emissive drifter weaves through
+// the colonnade — fog occludes glow too (but not the sky: it IS the
+// horizon). All animation derives from tts, so captures are deterministic
+// under --fixed-time.
+//
+// The skybox faces are not checked in — run `npm run fetch:assets` first.
+// While they load, the fog color shows in place of the sky.
 
-let fog = Fog.linear(6.0, 26.0, 0.62, 0.68, 0.78)
+let fog = Fog.linear(6.0, 26.0, 0.93, 0.95, 0.96)
+
+let sky = Skybox.files(
+  "TropicalSunnyDay_px.jpg", "TropicalSunnyDay_nx.jpg",
+  "TropicalSunnyDay_py.jpg", "TropicalSunnyDay_ny.jpg",
+  "TropicalSunnyDay_pz.jpg", "TropicalSunnyDay_nz.jpg")
 
 // One pillar at depth i (world z = i * 3), staggered left/right.
 let pillar = (i: Float) =>
@@ -40,3 +49,4 @@ let draw = (m, tts: Float) =>
     ]),
     lights())
   |> Frame.withFog(fog)
+  |> Frame.withSkybox(sky)

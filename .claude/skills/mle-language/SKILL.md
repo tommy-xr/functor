@@ -268,6 +268,14 @@ frame |> Frame.withFog(fog)                                // distance fog on al
                                                            //   materials incl. emissive;
                                                            //   the fog color is also the
                                                            //   pass's clear color
+Skybox.files(px, nx, py, ny, pz, nz)                       // Skybox VALUES only: six face
+frame |> Frame.withSkybox(sky)                             //   paths (+X..-Z). Faces are
+                                                           //   fetched assets (not checked
+                                                           //   in) resolved from the game
+                                                           //   dir; while they load the
+                                                           //   clear color shows, a failed
+                                                           //   face = one warning + no sky.
+                                                           //   Fog never fogs the sky
 Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
 Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
 Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (Float) => Msg

@@ -64,6 +64,11 @@
 //!    text lines stacked in a column, pinned to a screen corner. Only the
 //!    corner the port needed exists; the rest arrive with a port that
 //!    needs them. `Ui.panel` takes the view FIRST, so it pipes.)
+//! Skybox.files(px, nx, py, ny, pz, nz)                       -> Skybox
+//! Frame.withSkybox(frame, sky)                               -> Frame
+//!   (a cubemap sky drawn behind everything; while the six faces load the
+//!    clear color shows, a failed face disables the sky with one warning;
+//!    fog does not apply to the sky — it IS the horizon)
 //! Time.seconds(n) / Time.millis(n)                          -> Duration
 //!   (like Angle: timing functions take Duration VALUES, never bare
 //!    numbers — seconds/milliseconds confusion is unrepresentable)
@@ -127,6 +132,7 @@ use crate::ui::{self, View};
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{MaterialDescription, ModelDescription, ModelHandle, TextureDescription};
+use crate::skybox::SkyboxDescription;
 use crate::{Camera, Frame, Light, Scene3D, SceneObject, Shape};
 
 /// A [`Scene3D`] as an opaque MLE value.
@@ -528,6 +534,19 @@ impl HostData for MleFog {
     }
 }
 
+/// A [`SkyboxDescription`] as an opaque MLE value — `Skybox.files(…)`.
+/// `Frame.withSkybox` accepts ONLY this (the Angle rule).
+pub struct MleSkybox(pub SkyboxDescription);
+
+impl HostData for MleSkybox {
+    fn type_name(&self) -> &'static str {
+        "Skybox"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl HostData for MleDuration {
     fn type_name(&self) -> &'static str {
         "Duration"
@@ -704,6 +723,8 @@ const PATHS: &[&str] = &[
     "Frame.withFog",
     "Fog.linear",
     "Fog.exp",
+    "Frame.withSkybox",
+    "Skybox.files",
     "RenderTarget.named",
     "RenderTarget.sized",
     "Scene.screen",
@@ -1404,6 +1425,35 @@ frame's main pass",
                 }
                 _ => usage("Frame.withFog(frame, fog)"),
             },
+            "Skybox.files" => match args.as_slice() {
+                [Value::String(px), Value::String(nx), Value::String(py), Value::String(ny), Value::String(pz), Value::String(nz)]
+                    if ![px, nx, py, ny, pz, nz].iter().any(|s| s.is_empty()) =>
+                {
+                    Ok(host(MleSkybox(SkyboxDescription::new(
+                        px.to_string(),
+                        nx.to_string(),
+                        py.to_string(),
+                        ny.to_string(),
+                        pz.to_string(),
+                        nz.to_string(),
+                    ))))
+                }
+                _ => usage(
+                    "Skybox.files(px, nx, py, ny, pz, nz) — six non-empty face \
+paths (+X, -X, +Y, -Y, +Z, -Z)",
+                ),
+            },
+            // Frame first, so it pipes: `frame |> Frame.withSkybox(sky)`.
+            "Frame.withSkybox" => match args.as_slice() {
+                [frame, sky] => {
+                    let Some(inner) = frame_value(frame) else {
+                        return usage("Frame.withSkybox(frame, skybox)");
+                    };
+                    let sky = skybox_of(sky, "Frame.withSkybox", span)?;
+                    Ok(host(MleFrame(Frame::with_skybox(inner.clone(), sky.clone()))))
+                }
+                _ => usage("Frame.withSkybox(frame, skybox)"),
+            },
             // Scene first, so it pipes: `Scene.quad() |> Scene.screen(feed)` —
             // an emissive (fullbright, screens glow) surface showing the
             // target's texture. A target no frame declares shows magenta.
@@ -2057,6 +2107,37 @@ fn scene_of(value: &Value) -> Option<&Scene3D> {
     }
 }
 
+/// Extract a [`SkyboxDescription`] — `Frame.withSkybox` accepts ONLY the
+/// branded value, so the predictable mistake (a bare path string) gets a
+/// teaching error pointing at `Skybox.files` (the [`angle_of`] rule).
+fn skybox_of<'a>(
+    value: &'a Value,
+    what: &str,
+    span: Span,
+) -> Result<&'a SkyboxDescription, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MleSkybox>()
+            .map(|s| &s.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected a Skybox, got {}", value.kind_name()),
+                span,
+            }),
+        Value::String(_) => Err(RunError {
+            message: format!(
+                "{what}: expected a Skybox, got a bare string — build one with \
+Skybox.files(px, nx, py, ny, pz, nz)"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected a Skybox, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
 /// Extract a [`RenderTargetDescriptor`] — both use sites accept ONLY the
 /// branded value, so the predictable mistake (a bare id string) gets a
 /// teaching error pointing at `RenderTarget.named` instead of a generic
@@ -2640,6 +2721,56 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
         assert_eq!(
             fail("let main = () => Fog.exp(-1.0, 0.5, 0.5, 0.5)"),
             "Fog.exp density must be positive, got -1"
+        );
+    }
+
+    // The skybox vocabulary: a branded Skybox on the frame, six faces in GL
+    // upload order, round-tripping the protocol wire shape.
+    #[test]
+    fn mle_snippet_declares_a_skybox() {
+        let frame = frame_of(
+            "let sky = Skybox.files(\"px.jpg\", \"nx.jpg\", \"py.jpg\", \"ny.jpg\", \
+\"pz.jpg\", \"nz.jpg\")\n\
+             let main = () =>\n\
+             Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
+             |> Frame.withSkybox(sky)",
+        );
+        let sky = frame.skybox.as_ref().expect("skybox set");
+        assert_eq!(
+            sky.faces(),
+            ["px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg"]
+        );
+        let json = serde_json::to_string(&frame).expect("serialize");
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // [units, tier 1 — the Angle rule] Frame.withSkybox accepts ONLY the
+    // branded value; a bare path string gets the teaching error, and empty
+    // face paths are rejected at construction.
+    #[test]
+    fn bare_strings_are_not_skyboxes() {
+        let fail = |src: &str| {
+            let module = mle::lower(mle::parse(src).unwrap()).unwrap();
+            mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .expect("should fail")
+                .error
+                .message
+        };
+        assert_eq!(
+            fail(
+                "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+Scene.cube()) |> Frame.withSkybox(\"sky.jpg\")"
+            ),
+            "Frame.withSkybox: expected a Skybox, got a bare string — build one with \
+Skybox.files(px, nx, py, ny, pz, nz)"
+        );
+        assert_eq!(
+            fail("let main = () => Skybox.files(\"px.jpg\", \"\", \"py.jpg\", \"ny.jpg\", \
+\"pz.jpg\", \"nz.jpg\")"),
+            "usage: Skybox.files(px, nx, py, ny, pz, nz) — six non-empty face \
+paths (+X, -X, +Y, -Y, +Z, -Z)"
         );
     }
 

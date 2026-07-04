@@ -448,6 +448,20 @@ Starts once A2 + B3 exist.
         shape and the teaching errors; a fog-less frame renders
         BYTE-IDENTICALLY to the pre-fog engine (base-vs-fog golden
         captures compared with cmp — the engine PR's contract).
+      - [x] **C4b-5. Skybox** (done 2026-07-04): prelude grows the
+        cubemap-sky surface — branded
+        `Skybox.files(px, nx, py, ny, pz, nz)` (six non-empty face
+        paths, +X..-Z) and `Frame.withSkybox(frame, sky)`. The sky
+        draws behind everything after the pass's clear; while the six
+        faces load the clear color shows, and a failed face disables
+        the sky with one warning. Fog does not apply to the sky.
+        `examples/mle-atmosphere` gains the TropicalSunnyDay sky
+        (fetched via `npm run fetch:assets`, gitignored), with the fog
+        color tuned to the sky's horizon band so the colonnade
+        dissolves INTO the sky.
+        *Verify (done):* prelude unit tests pin the skybox wire shape,
+        face order, and teaching errors; deterministic captures show
+        the sky behind the fogged colonnade.
 - [x] **C5. Wasm** (done 2026-07-03). `MleWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,
