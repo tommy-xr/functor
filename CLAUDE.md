@@ -138,6 +138,11 @@ own framebuffer; ideal for verifying rendering changes). The CLI forwards extra 
 Add `--fixed-time T` to pin the game's frame time to a constant `T`, making the rendered pose
 deterministic (byte-identical PNGs) for reproducible captures and golden images.
 
+`--capture-frame` implies `--hidden`: the GL window is created invisible and never takes focus
+or captures the cursor, so capture runs don't steal input from the user. For debug-server
+sessions (`--debug-port`) prefer passing `--hidden` explicitly — or `--headless` when no pixels
+are needed at all (see `docs/debug-runtime.md`).
+
 **Golden-image test:** `npm run test:golden` renders `hello` at a fixed time and compares the
 capture to a committed reference (`runtime/functor-runtime-desktop/tests/golden.rs`). It's
 `#[ignore]`d (needs a GL display + the built dylib), so it runs locally/manually, not in CI.

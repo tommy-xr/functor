@@ -55,6 +55,8 @@ The CLI forwards capture flags to `functor-runner`:
   PNGs) — use it for stills and every GIF frame.
 - `--capture-time` is wall-clock seconds before the shot; `0.8` is enough for the
   window/GL to initialize.
+- `--capture-frame` implies `--hidden`: the GL window is never shown and never
+  steals focus or the cursor, so captures are safe to run while the user works.
 - Pick 1–2 flattering times for the stills.
 
 ## 3. Capture a looping GIF

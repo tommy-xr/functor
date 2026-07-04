@@ -41,6 +41,19 @@ GPU window. Limitations vs. windowed:
   delivered — don't gate game logic on audio completion when running headless.
 - `--capture-frame` is rejected (it needs GL).
 
+## Hidden window mode
+
+If you need **pixels** but not a window, add `--hidden` instead: the GL window is
+created but never shown, never takes focus, and never captures the cursor, so a
+run doesn't steal input from whoever is at the machine. A hidden window keeps a
+valid GL context and framebuffer, so rendering, `/capture`, and `--capture-frame`
+work unchanged (audio too). `--capture-frame` implies `--hidden` — a scripted
+screenshot run has no reason to grab your mouse.
+
+```sh
+functor-runner --game-path <dylib> --debug-port 8077 --hidden
+```
+
 ## Endpoints
 
 `GET /` returns this list as JSON (discoverability).
