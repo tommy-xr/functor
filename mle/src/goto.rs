@@ -146,22 +146,28 @@ fn pattern_binders(pattern: &Pattern, binders: &mut HashMap<u32, Span>) {
 /// target) to `consider`.
 fn visit(expr: &Expr, targets: &Targets, consider: &mut impl FnMut(Span, Span)) {
     match &expr.kind {
-        ExprKind::Local { binding, .. } | ExprKind::LocalMut { binding, .. } => {
-            offer(expr.span, targets.binders.get(&binding.0), consider);
+        ExprKind::Local { binding, name } | ExprKind::LocalMut { binding, name } => {
+            let region = name_region(expr.span, name);
+            offer(region, targets.binders.get(&binding.0), consider);
         }
         ExprKind::Global(name) => {
-            offer(expr.span, targets.globals.get(name), consider);
+            offer(
+                name_region(expr.span, name),
+                targets.globals.get(name),
+                consider,
+            );
         }
         ExprKind::Ctor { name, .. } => {
-            offer(expr.span, targets.ctors.get(name), consider);
+            offer(
+                name_region(expr.span, name),
+                targets.ctors.get(name),
+                consider,
+            );
         }
-        // The `name := …` target is a mut reference too; its region is the
-        // expression's start up to the assigned value.
-        ExprKind::Assign { binding, value, .. } => {
-            if expr.span.start < value.span.start {
-                let region = Span::new(expr.span.start, value.span.start);
-                offer(region, targets.binders.get(&binding.0), consider);
-            }
+        // The `name := …` target is a mut reference too.
+        ExprKind::Assign { binding, name, .. } => {
+            let region = name_region(expr.span, name);
+            offer(region, targets.binders.get(&binding.0), consider);
             for child in children(expr) {
                 visit(child, targets, consider);
             }
@@ -196,17 +202,20 @@ fn visit(expr: &Expr, targets: &Targets, consider: &mut impl FnMut(Span, Span)) 
 /// clickable region is the name part only — sub-patterns are binders, not
 /// references (and today they cannot nest further constructors).
 fn pattern_refs(pattern: &Pattern, targets: &Targets, consider: &mut impl FnMut(Span, Span)) {
-    if let PatternKind::Ctor { name, args } = &pattern.kind {
-        let end = args
-            .first()
-            .map(|arg| arg.span.start)
-            .unwrap_or(pattern.span.end);
-        offer(
-            Span::new(pattern.span.start, end),
-            targets.ctors.get(name),
-            consider,
-        );
+    if let PatternKind::Ctor { name, .. } = &pattern.kind {
+        let region = name_region(pattern.span, name);
+        offer(region, targets.ctors.get(name), consider);
     }
+}
+
+/// The leading-name region of a reference span. A reference's span is not
+/// always just the name: an uppercase-qualified field access (`Foo.x` with
+/// `Foo` a binding) lowers to a chain whose every node carries the whole
+/// `Foo.x` span (see `lower`'s `ident`), an assignment's span covers
+/// `name := value; rest`, and a ctor pattern's covers `Ctor(x, _)` — in
+/// each, only the leading name references the definition.
+fn name_region(span: Span, name: &str) -> Span {
+    Span::new(span.start, (span.start + name.len()).min(span.end))
 }
 
 /// A type annotation references a declared type wherever its name appears,
@@ -280,6 +289,8 @@ mod tests {
         let src = "let f = (x: Float) => let mut a = x in a := a + 1.0; a";
         assert_eq!(def_at_last(src, "a"), Some("let mut a = "));
         assert_eq!(def_at(src, "a :="), Some("let mut a = "));
+        // …but the `:=` itself is not a reference.
+        assert_eq!(def_at(src, ":="), None);
     }
 
     #[test]
@@ -295,6 +306,16 @@ mod tests {
     fn global_reference_resolves_to_the_def() {
         let src = "let double = (x: Float): Float => x * 2.0\nlet main = () => double(2.0)";
         assert_eq!(def_at(src, "double(2.0)"), Some("let double = "));
+    }
+
+    // `Foo.x` on an uppercase binding lowers to a field-access chain whose
+    // every node carries the whole `Foo.x` span — only the base name is the
+    // reference [codex review Medium].
+    #[test]
+    fn qualified_field_access_resolves_the_base_only() {
+        let src = "let Foo = { x: 1.0 }\nlet y = Foo.x";
+        assert_eq!(def_at(src, "Foo.x"), Some("let Foo = "));
+        assert_eq!(def_at_last(src, "x"), None); // the `.x` field segment
     }
 
     // --- Constructors ---
