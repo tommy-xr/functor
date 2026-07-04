@@ -222,6 +222,9 @@ a:hover {
 .tok-t { color: var(--amber); }
 .tok-n { color: #c792ff; }
 .tok-c { color: #6a5a96; font-style: italic; }
+.tok-s { color: var(--green); }
+.tok-a { color: #ff9f43; }
+.tok-o { color: var(--pink-soft); }
 
 .how-it-works ol {
   padding-left: 20px;
@@ -411,5 +414,155 @@ a:hover {
   .editor-pane {
     border-right: none;
     border-bottom: 1px solid var(--line);
+  }
+}
+
+/* ------------------------------------------------------------------- docs */
+
+.docs-layout {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 780px);
+  gap: 40px;
+  max-width: 1060px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+.docs-nav {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.docs-nav a {
+  color: var(--text-dim);
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
+}
+
+.docs-nav a:hover {
+  color: var(--cyan);
+  border-left-color: var(--cyan);
+  text-shadow: none;
+}
+
+.docs-main h1 {
+  font-family: var(--font-display);
+  letter-spacing: 0.06em;
+  font-size: 1.7rem;
+}
+
+.docs-main h2 {
+  font-family: var(--font-display);
+  letter-spacing: 0.05em;
+  font-size: 1.15rem;
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--pink-soft);
+}
+
+.docs-main h3 {
+  font-size: 0.95rem;
+  color: var(--amber);
+  margin-top: 28px;
+}
+
+.docs-main p,
+.docs-main li {
+  color: var(--text-dim);
+  font-size: 0.92rem;
+}
+
+.docs-main strong,
+.docs-main em {
+  color: var(--text);
+}
+
+.docs-main code {
+  color: var(--green);
+  font-size: 0.88em;
+}
+
+.docs-main pre {
+  position: relative;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--cyan);
+  border-radius: 6px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-size: 0.83rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.docs-main pre.shell {
+  border-left-color: var(--amber);
+  color: var(--text-dim);
+}
+
+.docs-main table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.docs-main th,
+.docs-main td {
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  vertical-align: top;
+}
+
+.docs-main th {
+  color: var(--text);
+  background: var(--bg-panel);
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+}
+
+.try-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  color: #16032f;
+  background: linear-gradient(90deg, var(--cyan), var(--pink-soft));
+  border-radius: 3px;
+  padding: 4px 10px;
+  text-transform: uppercase;
+}
+
+.try-button:hover {
+  box-shadow: 0 0 14px rgba(39, 232, 247, 0.6);
+  text-shadow: none;
+}
+
+.docs-footnote {
+  margin-top: 32px;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+@media (max-width: 720px) {
+  .docs-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .docs-nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 12px;
   }
 }

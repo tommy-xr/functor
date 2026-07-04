@@ -93,6 +93,37 @@ window.addEventListener("message", (event) => {
   }
 });
 
+const setDoc = (source) => {
+  clearTimeout(pushTimer);
+  previewReady = false;
+  dirty = false;
+  programmaticEdit = true;
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+  programmaticEdit = false;
+};
+
+// An inline program from the URL fragment (the docs' "try it" buttons):
+// #src=<base64url> becomes the editor buffer and the player's ?src= data:
+// URL, so it starts with a fresh init — no served file involved.
+const fromBase64Url = (b64u) =>
+  new TextDecoder().decode(
+    Uint8Array.from(atob(b64u.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))
+  );
+
+const loadInline = (b64u) => {
+  let source;
+  try {
+    source = fromBase64Url(b64u);
+  } catch {
+    setStatus("error", "✖ error", "the #src= fragment is not valid base64");
+    return false;
+  }
+  setDoc(source);
+  setStatus("busy", "◌ loading…");
+  frame.src = `player.html?src=${b64u}`;
+  return true;
+};
+
 const loadExample = async (id) => {
   const url = `examples/${encodeURIComponent(id)}.mle`;
   const response = await fetch(url);
@@ -101,14 +132,9 @@ const loadExample = async (id) => {
     return;
   }
   const source = await response.text();
-  clearTimeout(pushTimer);
-  previewReady = false;
-  dirty = false;
-  programmaticEdit = true;
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
-  programmaticEdit = false;
   // A fresh iframe (fresh model: init runs) rather than a source push, so
   // switching examples resets state; the ready announcement re-arms pushes.
+  setDoc(source);
   setStatus("busy", "◌ loading…");
   frame.src = `player.html?game=${encodeURIComponent(url)}`;
 };
@@ -129,10 +155,11 @@ picker.addEventListener("change", () => {
 
 resetButton.addEventListener("click", () => loadExample(picker.value));
 
+const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
 const requested = new URLSearchParams(window.location.search).get("example");
 const initial = EXAMPLES.some((e) => e.id === requested) ? requested : EXAMPLES[0].id;
 picker.value = initial;
-loadExample(initial);
+if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initial);
 
 // Test seam for the headless e2e (e2e/site-sandbox.mjs): set the buffer and
 // observe results without synthesizing keyboard events.

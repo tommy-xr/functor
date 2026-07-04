@@ -12,7 +12,10 @@
 //   5. a good edit after the broken one recovers;
 //   6. every example in the picker loads to "live" and ticks cleanly (the
 //      repo examples are copied in at build time — this catches one breaking
-//      on wasm).
+//      on wasm);
+//   7. the docs page highlights its MLE blocks, and a "try it" button's
+//      program loads live in the sandbox (the #src= → player ?src= data-URL
+//      path, fresh init).
 //
 // Run manually (needs the wasm bundle):
 //
@@ -175,6 +178,35 @@ for (const example of ["hero", "orbit", "physics", "monitor"]) {
     check(`example '${example}' loads live and ticks cleanly`, errors.length === 0, errors.join("\n"));
   } catch {
     check(`example '${example}' loads live and ticks cleanly`, false, consoleLog.slice(-5).join("\n"));
+  }
+  await page.close();
+}
+
+// --- 7. Docs page + "try it" into the sandbox. --------------------------------
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/docs.html`);
+  const highlighted = await page.locator("pre.mle span.tok-k").count();
+  const tryButtons = await page.locator("a.try-button").count();
+  check("docs page highlights MLE blocks", highlighted > 10, `${highlighted} keyword spans`);
+  check("docs page offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
+
+  // Follow the first try-it link in THIS page (target=_blank would detach).
+  const href = await page.locator("a.try-button").first().getAttribute("href");
+  await page.goto(`${BASE}/${href}`);
+  try {
+    await page.waitForFunction(
+      () => window.__sandbox && window.__sandbox.status().state === "live",
+      { timeout: 30000 }
+    );
+    await sleep(400);
+    const pixel = await centerPixel(playerFrame(page));
+    // The first runnable is the magenta spinning cube on the GL clear color —
+    // just assert something got drawn (not solid clear color everywhere is
+    // hard to probe; the live status is the main assertion).
+    check("docs try-it program loads live in the sandbox", true, `center = rgb(${pixel})`);
+  } catch {
+    check("docs try-it program loads live in the sandbox", false, href);
   }
   await page.close();
 }

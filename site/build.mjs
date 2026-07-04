@@ -16,7 +16,7 @@ const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = `${site}dist`;
 
-const PAGES = ["index.html", "sandbox.html", "player.html", "styles.css"];
+const PAGES = ["index.html", "sandbox.html", "player.html", "docs.html", "styles.css"];
 
 const PKG = `${root}runtime/functor-runtime-web/pkg`;
 const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
@@ -54,11 +54,11 @@ for (const [name, path] of Object.entries(EXAMPLES)) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`],
+  entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`],
   bundle: true,
   minify: true,
   format: "esm",
-  outfile: `${dist}/assets/sandbox.js`,
+  outdir: `${dist}/assets`,
   logLevel: "info",
 });
 
