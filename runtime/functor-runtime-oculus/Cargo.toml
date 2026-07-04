@@ -14,6 +14,14 @@ edition = "2021"
 # `cargo build`/`cargo check`/rust-analyzer run on the host.
 [workspace]
 
+# Same debug-info trim as the root workspace — full debug info across the
+# whole dependency graph made target-android balloon to ~10GB and fill disks.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false
+
 [lib]
 crate-type = ["cdylib"]
 
@@ -32,6 +40,7 @@ libloading = "0.8"
 glow = "0.17"
 cgmath = "0.18"
 log = "0.4"
+serde_json = "1.0"
 android_logger = "0.14"
 
 # cargo-apk packaging metadata (`cargo apk build` from this directory).
