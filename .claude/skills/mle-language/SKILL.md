@@ -224,7 +224,9 @@ debug server's `/time` advance. To *see* colliders, run with
 
 A project dir with `functor.json` `{"language": "mle", "entry": "game.mle"}`
 works with the CLI: `functor -d dir build` (typecheck, diagnostics are
-errors), `run native`, `develop` (hot reload is built in).
+errors), `run native`, `develop` (hot reload is built in), and `run wasm`
+(the `.mle` ships as text and is interpreted in the browser; hot reload is
+native-only — reload the page to pick up edits).
 
 `examples/mle-hello/game.mle` is the reference
 (`examples/mle-physics/game.mle` for the physics hook, including the

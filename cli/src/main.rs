@@ -155,15 +155,10 @@ async fn main() -> tokio::io::Result<()> {
     {
         let res = match &args.command {
             Command::Init { .. } | Command::Inspect { .. } => unreachable!("is_routed excludes"),
-            Command::Build { environment } => {
-                if matches!(Environment::default(environment), Environment::Wasm) {
-                    Err(io::Error::other(
-                        "mle on wasm is not wired yet (docs/mle.md Track C5) — use `build native`",
-                    ))
-                } else {
-                    project.build(&working_directory_str)
-                }
-            }
+            // `build` is target-independent for MLE: the strict typecheck
+            // gate is the whole build — nothing compiles for either target
+            // (native interprets the file; wasm serves it as text).
+            Command::Build { .. } => project.build(&working_directory_str),
             Command::Run {
                 environment,
                 runner_args,

@@ -9,12 +9,15 @@
 //!   dir, so asset paths resolve as usual).
 //! - `develop` is `run`: the MLE producer hot-reloads on save by itself — no
 //!   watchexec loop, no rebuild. State is preserved across edits.
-//! - wasm is not wired yet (docs/mle.md C5).
+//! - `run wasm` serves the project with the MLE index page (docs/mle.md C5):
+//!   nothing compiles — the `.mle` source ships as text, fetched and
+//!   interpreted by the embedded web runtime. Hot reload is native-only;
+//!   reload the page to pick up edits.
 
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
-use crate::util::{self, get_nearby_bin, ShellCommand};
+use crate::util::{self, get_nearby_bin, ShellCommand, WasmDevServer};
 use crate::Environment;
 
 /// The MLE project settings read from `functor.json`.
@@ -91,15 +94,16 @@ impl MleProject {
         develop: bool,
     ) -> Result<(), Error> {
         if matches!(environment, Environment::Wasm) {
-            return Err(Error::other(
-                "mle on wasm is not wired yet (docs/mle.md Track C5) — use `run native`",
-            ));
+            return self.run_wasm(working_directory, runner_args, develop).await;
         }
         let entry = self.entry_path(working_directory)?;
         let functor_runner_exe =
             get_nearby_bin(&"functor-runner").expect("functor-runner should be available");
         if develop {
-            println!("[mle] develop: hot reload is built in — edit {} and save", self.entry);
+            println!(
+                "[mle] develop: hot reload is built in — edit {} and save",
+                self.entry
+            );
         }
         // The runner's cwd is the project dir, so the entry passes through
         // as-is — `src/game.mle` keeps its subdirectory.
@@ -176,6 +180,68 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
     }
+
+    /// Serve the project at 127.0.0.1:8080 with the MLE index page (docs/
+    /// mle.md C5). The `.mle` entry ships as text — the dev server's
+    /// filesystem route serves it from the project dir and the embedded web
+    /// runtime fetches + interprets it. Mirrors the F# wasm arm of
+    /// `commands::run` (`--no-open` handling included).
+    async fn run_wasm(
+        &self,
+        working_directory: &str,
+        runner_args: &[String],
+        develop: bool,
+    ) -> Result<(), Error> {
+        self.entry_path(working_directory)?; // fail before serving, not per fetch
+
+        // The dev server can only serve files INSIDE the project dir — an
+        // entry that escapes it (absolute, or `..`) is readable natively but
+        // unfetchable by the page. Fail loud here, not as a browser 404.
+        if entry_escapes_project(&self.entry) {
+            return Err(Error::other(format!(
+                "mle on wasm serves the project directory over HTTP, so `entry` must be a \
+relative path inside it (got {})",
+                self.entry
+            )));
+        }
+        if develop {
+            println!("[mle] develop (wasm): hot reload is native-only — reload the page to pick up edits");
+        }
+        let no_open = runner_args.iter().any(|a| a == "--no-open");
+        let ignored: Vec<&str> = runner_args
+            .iter()
+            .filter(|a| a.as_str() != "--no-open")
+            .map(|s| s.as_str())
+            .collect();
+        if !ignored.is_empty() {
+            eprintln!(
+                "warning: ignoring runner args (not supported for wasm): {}",
+                ignored.join(" ")
+            );
+        }
+
+        let wasm_server_start = WasmDevServer::start_mle(working_directory, &self.entry);
+        if no_open {
+            println!(
+                "[Functor] wasm server at http://127.0.0.1:8080 (--no-open: skipping browser)"
+            );
+        } else {
+            let cmd = if std::env::consts::OS == "windows" {
+                "start"
+            } else {
+                "open"
+            };
+            let commands = vec![ShellCommand {
+                prefix: "[Open Browser]",
+                cmd,
+                cwd: working_directory,
+                env: vec![],
+                args: vec!["http://127.0.0.1:8080"],
+            }];
+            util::ShellCommand::run_sequential(commands).await?;
+        }
+        wasm_server_start.await
+    }
 }
 
 /// Minimal HTTP POST over std::net — one dependency-free request to the
@@ -214,4 +280,28 @@ Content-Length: {}\r\nConnection: close\r\n\r\n",
         .map(|(_, b)| b.trim().to_string())
         .unwrap_or_default();
     Ok((status, body))
+}
+
+/// True when `entry` can't be served by the wasm dev server, which roots at
+/// the project directory: absolute paths and any `..` component escape it.
+fn entry_escapes_project(entry: &str) -> bool {
+    Path::new(entry).is_absolute() || entry.split(['/', '\\']).any(|seg| seg == "..")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::entry_escapes_project;
+
+    #[test]
+    fn entries_inside_the_project_are_servable() {
+        assert!(!entry_escapes_project("game.mle"));
+        assert!(!entry_escapes_project("src/game.mle"));
+    }
+
+    #[test]
+    fn escaping_entries_are_rejected() {
+        assert!(entry_escapes_project("../shared/game.mle"));
+        assert!(entry_escapes_project("src/../../game.mle"));
+        assert!(entry_escapes_project("/tmp/game.mle"));
+    }
 }

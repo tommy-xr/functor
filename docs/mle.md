@@ -341,8 +341,25 @@ Starts once A2 + B3 exist.
         ADDS subscriptions starts from the current frame edge (no
         catch-up burst); prelude unit tests pin the grid math and the
         teaching errors (15/15 e2e suite).
-- [ ] **C5. Wasm.** The interpreter crate compiles to wasm32; `.mle` source
-      ships in the bundle. *Verify:* wasm build of mle-hello renders.
+- [x] **C5. Wasm** (done 2026-07-03). `MleWebGame` in the web runtime — the
+      wasm sibling of the desktop producer behind the same `GameProducer`
+      seam: identical load-contract validation, MVU subscriptions pump,
+      physics hook (rapier is pure Rust — the world steps in the browser),
+      per-frame error dedupe + last-good-frame. Nothing compiles: the `.mle`
+      source ships as TEXT — `functor run wasm` serves the project dir with
+      an MLE index page (`index-mle.html`, entry substituted in by the dev
+      server), the page sets `window.__mleGamePath`, and the runtime fetches
+      + interprets it. Page input reaches the producer via `mle_*` wasm
+      exports, queued and drained before each tick. Hot reload stays
+      native-only — on web, reload the page (the server reads the file per
+      fetch, so edits are one refresh away).
+      *Verify (done):* mle + web runtime build clean for wasm32; CLI
+      build/run wasm probes on `examples/mle-hello` — the served index page,
+      wasm bundle, and `.mle` source all curl back correctly; entry
+      substitution unit-tested; headless-Chromium probe renders the game
+      (ring + sphere) AND proves the Beat subscription folded through
+      `update` (sphere center yellow → magenta across a 1s boundary, the
+      exact beat arithmetic); `cargo test -p functor_runtime_common` green.
 - [ ] **C6. Perf gate.** Measure C4 at 60fps with headroom; bytecode VM
       (roadmap phase 7) only if the tree-walker doesn't hold.
       *Verify:* frame-time assertion in the e2e harness.
