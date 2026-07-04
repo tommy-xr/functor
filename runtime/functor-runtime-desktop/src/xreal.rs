@@ -392,17 +392,29 @@ fn read_stream(
                 }
                 Some(fusion) => {
                     fusion.update(&sample);
-                    let auto = auto_recenter_at
-                        .is_some_and(|at| sample.timestamp_ns >= at);
-                    if auto {
-                        auto_recenter_at = None;
-                    }
-                    if recenter_flag.swap(false, Ordering::Relaxed) || auto {
-                        if let Some(reference) = yaw_reference(fusion.orientation()) {
-                            q_ref = reference;
-                            if auto {
-                                println!("[xreal] recentered (automatic; F1 to recenter again)");
+                    let manual = recenter_flag.swap(false, Ordering::Relaxed);
+                    let auto = auto_recenter_at.is_some_and(|at| sample.timestamp_ns >= at);
+                    if manual || auto {
+                        match yaw_reference(fusion.orientation()) {
+                            Some(reference) => {
+                                q_ref = reference;
+                                // Any successful recenter disarms the pending
+                                // auto one — it must not overwrite a
+                                // deliberate F1 moments later. Staying armed
+                                // until success also means glasses that were
+                                // face-up on the desk at the 2s mark recenter
+                                // the moment they're put on (gaze drops below
+                                // vertical) instead of losing the one-shot.
+                                if auto_recenter_at.take().is_some() && !manual {
+                                    println!(
+                                        "[xreal] recentered (automatic; F1 to recenter again)"
+                                    );
+                                }
                             }
+                            None if manual => println!(
+                                "[xreal] recenter skipped — gaze too vertical; look ahead and press F1 again"
+                            ),
+                            None => {}
                         }
                     }
                     *shared.lock().unwrap() = q_ref.invert() * fusion.orientation();
