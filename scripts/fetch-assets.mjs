@@ -20,6 +20,10 @@ const TARGETS = [
     dir: "examples/lighting",
     assets: ["shark.glb"],
   },
+  {
+    dir: "examples/mle-hello-gltf",
+    assets: ["shark.glb", "ExplodingBarrel.glb", "fish.glb", "Xbot.glb"],
+  },
 ];
 
 async function exists(filePath) {
