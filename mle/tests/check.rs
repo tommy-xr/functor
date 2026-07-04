@@ -83,6 +83,11 @@ fn example_shapes_checks_clean() {
     example_checks_clean("shapes");
 }
 
+#[test]
+fn example_tuples_checks_clean() {
+    example_checks_clean("tuples");
+}
+
 fn example_checks_clean(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let src = fs::read_to_string(dir.join(format!("{name}.mle"))).unwrap();
@@ -625,4 +630,42 @@ fn mixed_unknown_arm_types_stay_gradual() {
         "{SHAPE}let g = (x) => x\n\
          let f = (b: Bool): String => match b with | true => g(1.0) | false => \"s\""
     ));
+}
+
+// --- Tuples ---
+
+/// Product annotations check element-wise; a known-arity mismatch in a
+/// pattern is a can-never-match diagnostic.
+#[test]
+fn tuple_pattern_arity_mismatch_is_flagged() {
+    let diags = check_src("let f = (t: Float * String): Bool => match t with | (x, y, z) => true");
+    assert_eq!(diags.len(), 1);
+    assert!(
+        diags[0]
+            .0
+            .contains("names 3 element(s), but the matched value is Float * String"),
+        "unexpected: {}",
+        diags[0].0
+    );
+}
+
+/// A tuple pattern against a known non-tuple can never match.
+#[test]
+fn tuple_pattern_against_non_tuple_is_flagged() {
+    let diags = check_src("let f = (n: Float) => match n with | (a, b) => a");
+    assert_eq!(diags.len(), 1);
+    assert!(
+        diags[0].0.contains("a tuple pattern cannot match Float"),
+        "unexpected: {}",
+        diags[0].0
+    );
+}
+
+/// Element types flow through patterns: destructuring a known product gives
+/// typed variables (a String element used as Float errors).
+#[test]
+fn tuple_element_types_flow_through_patterns() {
+    let diags = check_src("let f = (t: Float * String): Float => let (n, s) = t in n + s");
+    assert_eq!(diags.len(), 1);
+    assert!(diags[0].0.contains("String"), "unexpected: {}", diags[0].0);
 }

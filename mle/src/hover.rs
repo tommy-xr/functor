@@ -121,7 +121,7 @@ fn pattern_vars(pattern: &Pattern, types: &ExprTypes, consider: &mut impl FnMut(
             let ty = types.binding(*binding).cloned().unwrap_or(Type::Unknown);
             consider(pattern.span, format!("{name} : {ty}"));
         }
-        PatternKind::Ctor { args, .. } => {
+        PatternKind::Ctor { args, .. } | PatternKind::Tuple(args) => {
             for arg in args {
                 pattern_vars(arg, types, consider);
             }
@@ -142,6 +142,7 @@ fn children(expr: &Expr) -> Vec<&Expr> {
             .chain(fields.iter().map(|f| &f.value))
             .collect(),
         ExprKind::List(items) => items.iter().collect(),
+        ExprKind::Tuple(items) => items.iter().collect(),
         ExprKind::FieldAccess { object, .. } => vec![object],
         ExprKind::Call { callee, args } => std::iter::once(callee.as_ref())
             .chain(args.iter())

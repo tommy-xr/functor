@@ -7,13 +7,16 @@
 //! letDecl   := "let" ident "=" expr
 //! typeDecl  := "type" ident "=" ("{" (ident ":" type),* "}" | variant+)
 //! variant   := "|" upperIdent ("(" (ident ":" type),+ ")")?
-//! type      := ident ("<" type ("," type)* ">")?
+//! type      := tatom ("*" tatom)*                    (flat products)
+//! tatom     := ident ("<" type ("," type)* ">")?
 //! expr      := letIn | assign | match | pipeline
-//! letIn     := "let" "mut"? ident "=" expr "in" expr
+//! letIn     := "let" ("mut"? ident | tuplePat) "=" expr "in" expr
+//!              (a tuple-pattern let is sugar for a single-arm match)
 //! assign    := ident ":=" expr ";" expr
 //! match     := "match" expr "with" ("|" pattern "=>" expr)+
 //! pattern   := "_" | lowerIdent | upperIdent ("(" subpat,+ ")")?
-//!            | "true" | "false" | "-"? number | string
+//!            | tuplePat | "true" | "false" | "-"? number | string
+//! tuplePat  := "(" subpat ("," subpat)+ ","? ")"
 //! subpat    := "_" | lowerIdent
 //! pipeline  := cmp ("|>" cmp)*
 //! cmp       := add (("<" | ">" | "==") add)*        (left-assoc)
@@ -22,7 +25,8 @@
 //! unary     := "-" unary | postfix
 //! postfix   := primary ("(" expr,* ")" | "." ident)*
 //! primary   := number | string | "true" | "false" | qualifiedIdent
-//!            | record | list | lambda | "(" expr ")"
+//!            | record | list | tuple | lambda | "(" expr ")"
+//! tuple     := "(" expr ("," expr)+ ","? ")"
 //! record    := "{" (ident ":" expr),* "}"
 //!            | "{" expr "with" (ident ":" expr),+ "}"
 //! list      := "[" expr,* "]"
@@ -261,7 +265,53 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             let close = self.expect(TokenKind::Gt, "`,` or `>`")?;
             span = span.to(close.span);
         }
+        let mut ty = TypeName { name, args, span };
+        // A product annotation: `Float * Float * String`. Encoded as the
+        // reserved name `*` with the elements as args (an identifier can
+        // never lex as `*`, so this cannot collide with a user type). Flat —
+        // no grouping in type position yet.
+        if self.peek_kind() == &TokenKind::Star {
+            let mut elems = vec![ty];
+            while self.peek_kind() == &TokenKind::Star {
+                self.bump();
+                elems.push(self.type_atom()?);
+            }
+            let span = elems
+                .first()
+                .expect("non-empty")
+                .span
+                .to(elems.last().expect("non-empty").span);
+            ty = TypeName {
+                name: "*".to_string(),
+                args: elems,
+                span,
+            };
+        }
         self.depth -= 1;
+        Ok(ty)
+    }
+
+    /// One element of a product type: a named type with optional generic
+    /// args, but no `*` continuation (that's the caller's loop).
+    fn type_atom(&mut self) -> Result<TypeName, ParseError> {
+        let (name, mut span) = self.expect_ident("a type name")?;
+        let mut args = Vec::new();
+        if self.peek_kind() == &TokenKind::Lt {
+            self.bump();
+            loop {
+                args.push(self.type_name()?);
+                if self.peek_kind() == &TokenKind::Comma {
+                    self.bump();
+                    if self.peek_kind() == &TokenKind::Gt {
+                        break; // trailing comma
+                    }
+                } else {
+                    break;
+                }
+            }
+            let close = self.expect(TokenKind::Gt, "`,` or `>`")?;
+            span = span.to(close.span);
+        }
         Ok(TypeName { name, args, span })
     }
 
@@ -301,6 +351,36 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         } else {
             false
         };
+        // Destructuring: `let (a, b) = e in body` is sugar for a
+        // single-arm match (sub-patterns are irrefutable, so the arm always
+        // matches a tuple of the right arity).
+        if self.peek_kind() == &TokenKind::LParen {
+            if mutable {
+                return Err(ParseError {
+                    message: "`mut` cannot destructure — bind a name, or use plain `let`"
+                        .to_string(),
+                    span: self.peek().span,
+                });
+            }
+            let pattern = self.tuple_pattern()?;
+            self.expect(TokenKind::Eq, "`=`")?;
+            let value = self.expr()?;
+            self.expect(TokenKind::In, "`in`")?;
+            let body = self.expr()?;
+            let span = kw.span.to(body.span);
+            let arm_span = pattern.span.to(body.span);
+            return Ok(Expr {
+                kind: ExprKind::Match {
+                    scrutinee: Box::new(value),
+                    arms: vec![MatchArm {
+                        pattern,
+                        body,
+                        span: arm_span,
+                    }],
+                },
+                span,
+            });
+        }
         let (name, _) = self.expect_ident("a name after `let`")?;
         self.expect(TokenKind::Eq, "`=`")?;
         let value = self.expr()?;
@@ -418,9 +498,39 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             }
             // Uppercase: always a constructor pattern, never a variable.
             TokenKind::Ident(_) => return self.ctor_pattern(),
+            TokenKind::LParen => return self.tuple_pattern(),
             _ => return self.error("a pattern"),
         };
         Ok(Pattern { kind, span })
+    }
+
+    /// `(x, _)` / `(a, b, c)` — sub-patterns are variable bindings or `_`
+    /// only (like ctor patterns); at least two elements.
+    fn tuple_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let open = self.expect(TokenKind::LParen, "`(`")?;
+        let mut args = Vec::new();
+        loop {
+            args.push(self.sub_pattern()?);
+            if self.peek_kind() == &TokenKind::Comma {
+                self.bump();
+                if self.peek_kind() == &TokenKind::RParen {
+                    break; // trailing comma
+                }
+            } else {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RParen, "`,` or `)`")?;
+        if args.len() < 2 {
+            return Err(ParseError {
+                message: "a tuple pattern needs at least two elements".to_string(),
+                span: open.span.to(close.span),
+            });
+        }
+        Ok(Pattern {
+            kind: PatternKind::Tuple(args),
+            span: open.span.to(close.span),
+        })
     }
 
     /// `Circle(r, _)` / `Point` — sub-patterns are variable bindings or `_`
@@ -805,12 +915,35 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
 
     /// Parentheses don't create an AST node; the inner expression's span is
     /// widened to cover them so every span still maps to exact source text.
+    /// `(e)` is grouping; `(e1, e2, …)` is a tuple literal (≥ 2 elements,
+    /// trailing comma allowed).
     fn paren(&mut self) -> Result<Expr, ParseError> {
         let open = self.bump();
         let mut expr = self.expr()?;
-        let close = self.expect(TokenKind::RParen, "`)`")?;
-        expr.span = open.span.to(close.span);
-        Ok(expr)
+        if self.peek_kind() != &TokenKind::Comma {
+            let close = self.expect(TokenKind::RParen, "`)`")?;
+            expr.span = open.span.to(close.span);
+            return Ok(expr);
+        }
+        let mut items = vec![expr];
+        while self.peek_kind() == &TokenKind::Comma {
+            self.bump();
+            if self.peek_kind() == &TokenKind::RParen {
+                break; // trailing comma
+            }
+            items.push(self.expr()?);
+        }
+        let close = self.expect(TokenKind::RParen, "`,` or `)`")?;
+        if items.len() < 2 {
+            return Err(ParseError {
+                message: "a tuple needs at least two elements (`(e)` is grouping)".to_string(),
+                span: open.span.to(close.span),
+            });
+        }
+        Ok(Expr {
+            kind: ExprKind::Tuple(items),
+            span: open.span.to(close.span),
+        })
     }
 }
 

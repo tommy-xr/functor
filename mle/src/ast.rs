@@ -101,6 +101,9 @@ pub enum ExprKind {
     },
     /// `[1.0, 2.0, 3.0]`
     List(Vec<Expr>),
+    /// `(1.0, "a")` — at least two elements (`(e)` is grouping, not a
+    /// 1-tuple).
+    Tuple(Vec<Expr>),
     /// `let x = e in body` / `let mut x = e in body` — an expression-level
     /// binding scoped to `body`. Only `mut` bindings may be assigned
     /// ([`Self::Assign`]), and a lambda may not capture one (lowering
@@ -188,6 +191,9 @@ pub enum PatternKind {
         name: String,
         args: Vec<Pattern>,
     },
+    /// `(x, _)` — element sub-patterns are variable bindings or `_` only
+    /// (like ctor patterns); arity must match the matched tuple exactly.
+    Tuple(Vec<Pattern>),
     Number(f64),
     Bool(bool),
     String(String),

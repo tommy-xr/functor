@@ -120,6 +120,9 @@ fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut Rebind
         Value::List(items) => Value::List(Rc::new(
             items.iter().map(|v| walk(v, old, new, report)).collect(),
         )),
+        Value::Tuple(items) => Value::Tuple(Rc::new(
+            items.iter().map(|v| walk(v, old, new, report)).collect(),
+        )),
         Value::Record(fields) => Value::Record(Rc::new(
             fields
                 .iter()
@@ -322,6 +325,11 @@ fn collect(expr: &Expr, def: &str, path: &mut Vec<String>, index: &mut ModuleInd
                 seg(item, format!("[{i}]"), path, index);
             }
         }
+        ExprKind::Tuple(items) => {
+            for (i, item) in items.iter().enumerate() {
+                seg(item, format!("({i})"), path, index);
+            }
+        }
         ExprKind::Call { callee, args } => {
             seg(callee, "callee".to_string(), path, index);
             for (i, arg) in args.iter().enumerate() {
@@ -403,7 +411,7 @@ fn free_vars(expr: &Expr, bound: &mut Vec<BindingId>, free: &mut Vec<(String, Bi
 fn pattern_binders(pattern: &Pattern, f: &mut impl FnMut(BindingId, &str)) {
     match &pattern.kind {
         PatternKind::Var { binding, name } => f(*binding, name),
-        PatternKind::Ctor { args, .. } => {
+        PatternKind::Ctor { args, .. } | PatternKind::Tuple(args) => {
             for arg in args {
                 pattern_binders(arg, f);
             }
@@ -438,6 +446,11 @@ fn each_child(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             }
         }
         ExprKind::List(items) => {
+            for item in items {
+                f(item);
+            }
+        }
+        ExprKind::Tuple(items) => {
             for item in items {
                 f(item);
             }

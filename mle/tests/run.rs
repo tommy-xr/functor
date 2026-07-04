@@ -105,6 +105,11 @@ fn golden_run_shapes() {
     check_golden("shapes", "run");
 }
 
+#[test]
+fn golden_run_tuples() {
+    check_golden("tuples", "run");
+}
+
 // One trace golden pins the full enter/exit format; the other examples'
 // traces exercise no additional formatting.
 #[test]
@@ -588,4 +593,42 @@ fn closures_capture_pattern_vars() {
         )),
         "5"
     );
+}
+
+// --- Tuples ---
+
+/// Arity mismatch is a non-match (like ctors), not an error — and equality
+/// is structural with arity difference simply unequal.
+#[test]
+fn tuple_match_and_equality_semantics() {
+    assert_eq!(
+        main_result(
+            "let main = () => match (1.0, 2.0) with | (a, b, c) => a | (a, b) => a + b | _ => 0.0"
+        ),
+        "3"
+    );
+    assert_eq!(
+        main_result("let main = () => (1.0, 2.0) == (1.0, 2.0, 3.0)"),
+        "false"
+    );
+    assert_eq!(
+        main_result("let main = () => ((1.0, \"x\"), true) == ((1.0, \"x\"), true)"),
+        "true"
+    );
+}
+
+/// `(e)` stays grouping; a trailing comma is allowed in real tuples.
+#[test]
+fn parens_are_grouping_not_one_tuples() {
+    assert_eq!(main_result("let main = () => (1.0 + 2.0) * 2.0"), "6");
+    assert_eq!(main_result("let main = () => (1.0, 2.0,)"), "(1, 2)");
+}
+
+/// The destructuring let is exactly a single-arm match: a wrong-arity value
+/// is a spanned "no pattern matched" runtime error.
+#[test]
+fn destructuring_let_arity_mismatch_fails_loud() {
+    let (message, _, _) =
+        run_err("let f = (t) => let (a, b) = t in a + b\nlet main = () => f((1.0, 2.0, 3.0))");
+    assert_eq!(message, "no pattern matched (1, 2, 3)");
 }

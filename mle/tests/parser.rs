@@ -63,6 +63,11 @@ fn golden_shapes() {
     check_golden("shapes");
 }
 
+#[test]
+fn golden_tuples() {
+    check_golden("tuples");
+}
+
 /// Parse a deliberately broken input; return the error's (message, line, col).
 fn parse_err(src: &str) -> (String, usize, usize) {
     let err = mle::parse(src).expect_err("input should fail to parse");
@@ -100,9 +105,11 @@ fn error_record_field_missing_colon() {
 
 #[test]
 fn error_unclosed_paren() {
+    // With tuples in the grammar, the comma reads as a tuple continuing —
+    // the error lands on the `=>` that can't follow an element.
     assert_eq!(
         parse_err("let f = (a, b => a"),
-        ("expected `)`, found `,`".to_string(), 1, 11)
+        ("expected `,` or `)`, found `=>`".to_string(), 1, 15)
     );
 }
 
@@ -345,4 +352,42 @@ fn match_arm_bodies_are_full_expressions() {
     };
     assert_eq!(arms.len(), 2);
     assert!(matches!(&arms[0].body.kind, ExprKind::Binary { .. }));
+}
+
+// --- Tuples ---
+
+#[test]
+fn error_one_element_tuple() {
+    assert_eq!(
+        parse_err("let a = (1.0,)"),
+        (
+            "a tuple needs at least two elements (`(e)` is grouping)".to_string(),
+            1,
+            9
+        )
+    );
+}
+
+#[test]
+fn error_one_element_tuple_pattern() {
+    assert_eq!(
+        parse_err("let f = (t) => match t with | (a) => a"),
+        (
+            "a tuple pattern needs at least two elements".to_string(),
+            1,
+            31
+        )
+    );
+}
+
+#[test]
+fn error_mut_cannot_destructure() {
+    assert_eq!(
+        parse_err("let f = (t) => let mut (a, b) = t in a"),
+        (
+            "`mut` cannot destructure — bind a name, or use plain `let`".to_string(),
+            1,
+            24
+        )
+    );
 }

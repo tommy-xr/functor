@@ -77,6 +77,9 @@ pub enum Type {
     String,
     Bool,
     List(Box<Type>),
+    /// A product type: `Float * Float` in annotations. Structural, like the
+    /// runtime.
+    Tuple(Vec<Type>),
     /// A declared record type, nominal by name.
     Record(String),
     /// A declared variant type, nominal by name.
@@ -92,6 +95,15 @@ impl fmt::Display for Type {
             Type::String => write!(f, "String"),
             Type::Bool => write!(f, "Bool"),
             Type::List(elem) => write!(f, "List<{elem}>"),
+            Type::Tuple(elems) => {
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " * ")?;
+                    }
+                    write!(f, "{elem}")?;
+                }
+                Ok(())
+            }
             Type::Record(name) | Type::Variant(name) => write!(f, "{name}"),
             Type::Fn(params, ret) => {
                 write!(f, "(")?;
@@ -118,6 +130,9 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
             true
         }
         (Type::List(x), Type::List(y)) => compatible(x, y),
+        (Type::Tuple(xs), Type::Tuple(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y))
+        }
         (Type::Record(x), Type::Record(y)) => x == y,
         (Type::Variant(x), Type::Variant(y)) => x == y,
         (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
@@ -388,6 +403,14 @@ impl Checker {
                 }
                 Type::List(Box::new(self.resolve_type(&ty.args[0], report)))
             }
+            // The parser encodes a product annotation (`Float * Float`) as
+            // the reserved name `*` with the elements as args.
+            "*" => Type::Tuple(
+                ty.args
+                    .iter()
+                    .map(|arg| self.resolve_type(arg, report))
+                    .collect(),
+            ),
             name if self.records.contains_key(name) => {
                 if !ty.args.is_empty() {
                     return arity_error(self, 0);
@@ -507,6 +530,9 @@ impl Checker {
     fn infer_inner(&mut self, expr: &Expr) -> Type {
         match &expr.kind {
             ExprKind::Number(_) => Type::Float,
+            ExprKind::Tuple(items) => {
+                Type::Tuple(items.iter().map(|item| self.infer(item)).collect())
+            }
             ExprKind::String(_) => Type::String,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Local { binding, .. } => self
@@ -761,6 +787,10 @@ impl Checker {
             self.check_pattern(&arm.pattern, &scrutinee_ty);
             match &arm.pattern.kind {
                 PatternKind::Wildcard | PatternKind::Var { .. } => has_catch_all = true,
+                // Sub-patterns are irrefutable (names/`_`), so a tuple arm
+                // catches every tuple of its arity; arity/kind mismatches
+                // against a KNOWN scrutinee are diagnosed in check_pattern.
+                PatternKind::Tuple(_) => has_catch_all = true,
                 PatternKind::Ctor { name, .. } => covered_ctors.push(name),
                 PatternKind::Bool(true) => saw_true = true,
                 PatternKind::Bool(false) => saw_false = true,
@@ -852,6 +882,37 @@ a catch-all arm (`_` or a name)"
             PatternKind::Var { binding, .. } => {
                 self.locals.insert(binding.0, scrutinee.clone());
             }
+            PatternKind::Tuple(args) => match scrutinee {
+                Type::Tuple(elems) => {
+                    if elems.len() != args.len() {
+                        self.diag(
+                            pattern.span,
+                            format!(
+                                "this pattern names {} element(s), but the matched \
+value is {scrutinee} — it can never match",
+                                args.len()
+                            ),
+                        );
+                    }
+                    for (arg, elem) in args.iter().zip(elems.iter()) {
+                        self.check_pattern(arg, elem);
+                    }
+                }
+                Type::Unknown => {
+                    for arg in args {
+                        self.check_pattern(arg, &Type::Unknown);
+                    }
+                }
+                other => {
+                    self.diag(
+                        pattern.span,
+                        format!("a tuple pattern cannot match {other} — it can never match"),
+                    );
+                    for arg in args {
+                        self.check_pattern(arg, &Type::Unknown);
+                    }
+                }
+            },
             PatternKind::Ctor { name, args } => match self.ctors.get(name).cloned() {
                 Some((type_name, field_tys)) => {
                     match scrutinee {

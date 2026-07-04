@@ -267,6 +267,13 @@ impl Lowerer {
                 }
                 ExprKind::List(lowered)
             }
+            ast::ExprKind::Tuple(items) => {
+                let mut lowered = Vec::new();
+                for item in items {
+                    lowered.push(self.expr(item)?);
+                }
+                ExprKind::Tuple(lowered)
+            }
             ast::ExprKind::RecordUpdate { base, fields } => {
                 let base = Box::new(self.expr(*base)?);
                 let mut lowered: Vec<Field> = Vec::new();
@@ -481,6 +488,13 @@ impl Lowerer {
                     name,
                     args: lowered,
                 }
+            }
+            ast::PatternKind::Tuple(args) => {
+                let mut lowered = Vec::new();
+                for arg in args {
+                    lowered.push(self.pattern(arg, vars)?);
+                }
+                PatternKind::Tuple(lowered)
             }
             ast::PatternKind::Number(n) => PatternKind::Number(n),
             ast::PatternKind::Bool(b) => PatternKind::Bool(b),

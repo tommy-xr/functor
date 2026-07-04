@@ -196,7 +196,7 @@ snapshots — no GPU, fully agent-verifiable.
       recursive captures, deleted-def / new-capture warnings, stale-id
       guard, data passthrough); pinned-clock SDK e2e — edit a stored
       `vel` closure's body live, `x' = x + newBody(oldK · dt)` exactly.
-- [ ] **Language: tuples.** Real F#-style tuples, landing BEFORE B6 (which
+- [x] **Language: tuples** (done 2026-07-03). Real F#-style tuples, landing BEFORE B6 (which
       consumes them: `update`/`tick` return `(model, effects)` pairs, the
       F# contract's shape). Scope: `(a, b)` literals (≥ 2 elements — `(e)`
       stays grouping); tuple patterns in `match` (`| (x, y) =>`, shallow
@@ -209,7 +209,11 @@ snapshots — no GPU, fully agent-verifiable.
       records stay the LLM-native default for anything that outlives an
       expression). Skill updated in the same PR. *Verify:* semantics +
       error + checker tests, goldens, an example using a
-      multiple-return function.
+      multiple-return function. *Verify (done):* `mle/examples/tuples.mle`
+      + full goldens; parser/run/check/rebind pin tests (arity-mismatch =
+      non-match, structural equality, `(e)` stays grouping, 1-tuple and
+      mut-destructure teaching errors, element types flow through
+      patterns, closures inside tuples rebind); 205 mle tests green.
 - [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
       handlers; `update`/`tick` return `(model, effects)` tuples. *Verify:* same
       program under real vs fake vs replay; structured effect log.

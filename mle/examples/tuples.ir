@@ -1,0 +1,804 @@
+Module {
+    types: [
+        TypeDef {
+            id: d0,
+            name: "Msg",
+            body: Variants(
+                [
+                    VariantDecl {
+                        name: "Moved",
+                        fields: [
+                            FieldTy {
+                                name: "dx",
+                                ty: TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 334..339,
+                                },
+                                span: 330..339,
+                            },
+                            FieldTy {
+                                name: "dy",
+                                ty: TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 345..350,
+                                },
+                                span: 341..350,
+                            },
+                        ],
+                        span: 324..351,
+                    },
+                ],
+            ),
+            span: 309..351,
+        },
+    ],
+    defs: [
+        Def {
+            id: d1,
+            name: "minMax",
+            value: Expr {
+                id: e10,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b0,
+                            name: "a",
+                            ty: Some(
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 414..419,
+                                },
+                            ),
+                            span: 411..419,
+                        },
+                        Param {
+                            binding: b1,
+                            name: "b",
+                            ty: Some(
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 424..429,
+                                },
+                            ),
+                            span: 421..429,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "*",
+                            args: [
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 432..437,
+                                },
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 440..445,
+                                },
+                            ],
+                            span: 432..445,
+                        },
+                    ),
+                    body: Expr {
+                        id: e9,
+                        kind: Match {
+                            scrutinee: Expr {
+                                id: e2,
+                                kind: Binary {
+                                    op: Lt,
+                                    lhs: Expr {
+                                        id: e0,
+                                        kind: Local {
+                                            binding: b0,
+                                            name: "a",
+                                        },
+                                        span: 457..458,
+                                    },
+                                    rhs: Expr {
+                                        id: e1,
+                                        kind: Local {
+                                            binding: b1,
+                                            name: "b",
+                                        },
+                                        span: 461..462,
+                                    },
+                                },
+                                span: 457..462,
+                            },
+                            arms: [
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Bool(
+                                            true,
+                                        ),
+                                        span: 472..476,
+                                    },
+                                    body: Expr {
+                                        id: e5,
+                                        kind: Tuple(
+                                            [
+                                                Expr {
+                                                    id: e3,
+                                                    kind: Local {
+                                                        binding: b0,
+                                                        name: "a",
+                                                    },
+                                                    span: 481..482,
+                                                },
+                                                Expr {
+                                                    id: e4,
+                                                    kind: Local {
+                                                        binding: b1,
+                                                        name: "b",
+                                                    },
+                                                    span: 484..485,
+                                                },
+                                            ],
+                                        ),
+                                        span: 480..486,
+                                    },
+                                    span: 470..486,
+                                },
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Bool(
+                                            false,
+                                        ),
+                                        span: 491..496,
+                                    },
+                                    body: Expr {
+                                        id: e8,
+                                        kind: Tuple(
+                                            [
+                                                Expr {
+                                                    id: e6,
+                                                    kind: Local {
+                                                        binding: b1,
+                                                        name: "b",
+                                                    },
+                                                    span: 501..502,
+                                                },
+                                                Expr {
+                                                    id: e7,
+                                                    kind: Local {
+                                                        binding: b0,
+                                                        name: "a",
+                                                    },
+                                                    span: 504..505,
+                                                },
+                                            ],
+                                        ),
+                                        span: 500..506,
+                                    },
+                                    span: 489..506,
+                                },
+                            ],
+                        },
+                        span: 451..506,
+                    },
+                },
+                span: 410..506,
+            },
+            span: 397..506,
+        },
+        Def {
+            id: d2,
+            name: "span",
+            value: Expr {
+                id: e19,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b2,
+                            name: "a",
+                            ty: None,
+                            span: 520..521,
+                        },
+                        Param {
+                            binding: b3,
+                            name: "b",
+                            ty: None,
+                            span: 523..524,
+                        },
+                    ],
+                    ret: None,
+                    body: Expr {
+                        id: e18,
+                        kind: Match {
+                            scrutinee: Expr {
+                                id: e14,
+                                kind: Call {
+                                    callee: Expr {
+                                        id: e11,
+                                        kind: Global(
+                                            "minMax",
+                                        ),
+                                        span: 546..552,
+                                    },
+                                    args: [
+                                        Expr {
+                                            id: e12,
+                                            kind: Local {
+                                                binding: b2,
+                                                name: "a",
+                                            },
+                                            span: 553..554,
+                                        },
+                                        Expr {
+                                            id: e13,
+                                            kind: Local {
+                                                binding: b3,
+                                                name: "b",
+                                            },
+                                            span: 556..557,
+                                        },
+                                    ],
+                                },
+                                span: 546..558,
+                            },
+                            arms: [
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Tuple(
+                                            [
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b4,
+                                                        name: "lo",
+                                                    },
+                                                    span: 536..538,
+                                                },
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b5,
+                                                        name: "hi",
+                                                    },
+                                                    span: 540..542,
+                                                },
+                                            ],
+                                        ),
+                                        span: 535..543,
+                                    },
+                                    body: Expr {
+                                        id: e17,
+                                        kind: Binary {
+                                            op: Sub,
+                                            lhs: Expr {
+                                                id: e15,
+                                                kind: Local {
+                                                    binding: b5,
+                                                    name: "hi",
+                                                },
+                                                span: 564..566,
+                                            },
+                                            rhs: Expr {
+                                                id: e16,
+                                                kind: Local {
+                                                    binding: b4,
+                                                    name: "lo",
+                                                },
+                                                span: 569..571,
+                                            },
+                                        },
+                                        span: 564..571,
+                                    },
+                                    span: 535..571,
+                                },
+                            ],
+                        },
+                        span: 531..571,
+                    },
+                },
+                span: 519..571,
+            },
+            span: 508..571,
+        },
+        Def {
+            id: d3,
+            name: "describe",
+            value: Expr {
+                id: e28,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b6,
+                            name: "pair",
+                            ty: Some(
+                                TypeName {
+                                    name: "*",
+                                    args: [
+                                        TypeName {
+                                            name: "Float",
+                                            args: [],
+                                            span: 666..671,
+                                        },
+                                        TypeName {
+                                            name: "String",
+                                            args: [],
+                                            span: 674..680,
+                                        },
+                                    ],
+                                    span: 666..680,
+                                },
+                            ),
+                            span: 660..680,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "String",
+                            args: [],
+                            span: 683..689,
+                        },
+                    ),
+                    body: Expr {
+                        id: e27,
+                        kind: Match {
+                            scrutinee: Expr {
+                                id: e20,
+                                kind: Local {
+                                    binding: b6,
+                                    name: "pair",
+                                },
+                                span: 701..705,
+                            },
+                            arms: [
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Tuple(
+                                            [
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b7,
+                                                        name: "n",
+                                                    },
+                                                    span: 716..717,
+                                                },
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b8,
+                                                        name: "label",
+                                                    },
+                                                    span: 719..724,
+                                                },
+                                            ],
+                                        ),
+                                        span: 715..725,
+                                    },
+                                    body: Expr {
+                                        id: e26,
+                                        kind: Call {
+                                            callee: Expr {
+                                                id: e21,
+                                                kind: External(
+                                                    [
+                                                        "Text",
+                                                        "concat",
+                                                    ],
+                                                ),
+                                                span: 729..740,
+                                            },
+                                            args: [
+                                                Expr {
+                                                    id: e22,
+                                                    kind: Local {
+                                                        binding: b8,
+                                                        name: "label",
+                                                    },
+                                                    span: 741..746,
+                                                },
+                                                Expr {
+                                                    id: e25,
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            id: e23,
+                                                            kind: External(
+                                                                [
+                                                                    "Text",
+                                                                    "fromFloat",
+                                                                ],
+                                                            ),
+                                                            span: 748..762,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                id: e24,
+                                                                kind: Local {
+                                                                    binding: b7,
+                                                                    name: "n",
+                                                                },
+                                                                span: 763..764,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 748..765,
+                                                },
+                                            ],
+                                        },
+                                        span: 729..766,
+                                    },
+                                    span: 713..766,
+                                },
+                            ],
+                        },
+                        span: 695..766,
+                    },
+                },
+                span: 659..766,
+            },
+            span: 644..766,
+        },
+        Def {
+            id: d4,
+            name: "step",
+            value: Expr {
+                id: e38,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b9,
+                            name: "msg",
+                            ty: Some(
+                                TypeName {
+                                    name: "Msg",
+                                    args: [],
+                                    span: 848..851,
+                                },
+                            ),
+                            span: 843..851,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "*",
+                            args: [
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 854..859,
+                                },
+                                TypeName {
+                                    name: "Float",
+                                    args: [],
+                                    span: 862..867,
+                                },
+                            ],
+                            span: 854..867,
+                        },
+                    ),
+                    body: Expr {
+                        id: e37,
+                        kind: Match {
+                            scrutinee: Expr {
+                                id: e29,
+                                kind: Local {
+                                    binding: b9,
+                                    name: "msg",
+                                },
+                                span: 879..882,
+                            },
+                            arms: [
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Ctor {
+                                            name: "Moved",
+                                            args: [
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b10,
+                                                        name: "dx",
+                                                    },
+                                                    span: 898..900,
+                                                },
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b11,
+                                                        name: "dy",
+                                                    },
+                                                    span: 902..904,
+                                                },
+                                            ],
+                                        },
+                                        span: 892..905,
+                                    },
+                                    body: Expr {
+                                        id: e36,
+                                        kind: Tuple(
+                                            [
+                                                Expr {
+                                                    id: e32,
+                                                    kind: Binary {
+                                                        op: Mul,
+                                                        lhs: Expr {
+                                                            id: e30,
+                                                            kind: Local {
+                                                                binding: b10,
+                                                                name: "dx",
+                                                            },
+                                                            span: 910..912,
+                                                        },
+                                                        rhs: Expr {
+                                                            id: e31,
+                                                            kind: Number(
+                                                                2.0,
+                                                            ),
+                                                            span: 915..918,
+                                                        },
+                                                    },
+                                                    span: 910..918,
+                                                },
+                                                Expr {
+                                                    id: e35,
+                                                    kind: Binary {
+                                                        op: Mul,
+                                                        lhs: Expr {
+                                                            id: e33,
+                                                            kind: Local {
+                                                                binding: b11,
+                                                                name: "dy",
+                                                            },
+                                                            span: 920..922,
+                                                        },
+                                                        rhs: Expr {
+                                                            id: e34,
+                                                            kind: Number(
+                                                                2.0,
+                                                            ),
+                                                            span: 925..928,
+                                                        },
+                                                    },
+                                                    span: 920..928,
+                                                },
+                                            ],
+                                        ),
+                                        span: 909..929,
+                                    },
+                                    span: 890..929,
+                                },
+                            ],
+                        },
+                        span: 873..929,
+                    },
+                },
+                span: 842..929,
+            },
+            span: 831..929,
+        },
+        Def {
+            id: d5,
+            name: "main",
+            value: Expr {
+                id: e65,
+                kind: Lambda {
+                    params: [],
+                    ret: None,
+                    body: Expr {
+                        id: e64,
+                        kind: Match {
+                            scrutinee: Expr {
+                                id: e45,
+                                kind: Call {
+                                    callee: Expr {
+                                        id: e39,
+                                        kind: Global(
+                                            "step",
+                                        ),
+                                        span: 965..969,
+                                    },
+                                    args: [
+                                        Expr {
+                                            id: e44,
+                                            kind: Call {
+                                                callee: Expr {
+                                                    id: e40,
+                                                    kind: Ctor {
+                                                        name: "Moved",
+                                                        arity: 2,
+                                                    },
+                                                    span: 970..975,
+                                                },
+                                                args: [
+                                                    Expr {
+                                                        id: e41,
+                                                        kind: Number(
+                                                            1.5,
+                                                        ),
+                                                        span: 976..979,
+                                                    },
+                                                    Expr {
+                                                        id: e43,
+                                                        kind: Neg(
+                                                            Expr {
+                                                                id: e42,
+                                                                kind: Number(
+                                                                    0.5,
+                                                                ),
+                                                                span: 982..985,
+                                                            },
+                                                        ),
+                                                        span: 981..985,
+                                                    },
+                                                ],
+                                            },
+                                            span: 970..986,
+                                        },
+                                    ],
+                                },
+                                span: 965..987,
+                            },
+                            arms: [
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Tuple(
+                                            [
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b12,
+                                                        name: "vx",
+                                                    },
+                                                    span: 955..957,
+                                                },
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b13,
+                                                        name: "vy",
+                                                    },
+                                                    span: 959..961,
+                                                },
+                                            ],
+                                        ),
+                                        span: 954..962,
+                                    },
+                                    body: Expr {
+                                        id: e63,
+                                        kind: Tuple(
+                                            [
+                                                Expr {
+                                                    id: e49,
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            id: e46,
+                                                            kind: Global(
+                                                                "span",
+                                                            ),
+                                                            span: 994..998,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                id: e47,
+                                                                kind: Number(
+                                                                    9.0,
+                                                                ),
+                                                                span: 999..1002,
+                                                            },
+                                                            Expr {
+                                                                id: e48,
+                                                                kind: Number(
+                                                                    3.0,
+                                                                ),
+                                                                span: 1004..1007,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 994..1008,
+                                                },
+                                                Expr {
+                                                    id: e54,
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            id: e50,
+                                                            kind: Global(
+                                                                "describe",
+                                                            ),
+                                                            span: 1010..1018,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                id: e53,
+                                                                kind: Tuple(
+                                                                    [
+                                                                        Expr {
+                                                                            id: e51,
+                                                                            kind: Local {
+                                                                                binding: b12,
+                                                                                name: "vx",
+                                                                            },
+                                                                            span: 1020..1022,
+                                                                        },
+                                                                        Expr {
+                                                                            id: e52,
+                                                                            kind: String(
+                                                                                "vx: ",
+                                                                            ),
+                                                                            span: 1024..1030,
+                                                                        },
+                                                                    ],
+                                                                ),
+                                                                span: 1019..1031,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 1010..1032,
+                                                },
+                                                Expr {
+                                                    id: e62,
+                                                    kind: Binary {
+                                                        op: Eq,
+                                                        lhs: Expr {
+                                                            id: e57,
+                                                            kind: Tuple(
+                                                                [
+                                                                    Expr {
+                                                                        id: e55,
+                                                                        kind: Local {
+                                                                            binding: b12,
+                                                                            name: "vx",
+                                                                        },
+                                                                        span: 1035..1037,
+                                                                    },
+                                                                    Expr {
+                                                                        id: e56,
+                                                                        kind: Local {
+                                                                            binding: b13,
+                                                                            name: "vy",
+                                                                        },
+                                                                        span: 1039..1041,
+                                                                    },
+                                                                ],
+                                                            ),
+                                                            span: 1034..1042,
+                                                        },
+                                                        rhs: Expr {
+                                                            id: e61,
+                                                            kind: Tuple(
+                                                                [
+                                                                    Expr {
+                                                                        id: e58,
+                                                                        kind: Number(
+                                                                            3.0,
+                                                                        ),
+                                                                        span: 1047..1050,
+                                                                    },
+                                                                    Expr {
+                                                                        id: e60,
+                                                                        kind: Neg(
+                                                                            Expr {
+                                                                                id: e59,
+                                                                                kind: Number(
+                                                                                    1.0,
+                                                                                ),
+                                                                                span: 1053..1056,
+                                                                            },
+                                                                        ),
+                                                                        span: 1052..1056,
+                                                                    },
+                                                                ],
+                                                            ),
+                                                            span: 1046..1057,
+                                                        },
+                                                    },
+                                                    span: 1034..1057,
+                                                },
+                                            ],
+                                        ),
+                                        span: 993..1058,
+                                    },
+                                    span: 954..1058,
+                                },
+                            ],
+                        },
+                        span: 950..1058,
+                    },
+                },
+                span: 942..1058,
+            },
+            span: 931..1058,
+        },
+    ],
+}
