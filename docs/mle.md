@@ -422,9 +422,21 @@ Starts once A2 + B3 exist.
       (ring + sphere) AND proves the Beat subscription folded through
       `update` (sphere center yellow → magenta across a 1s boundary, the
       exact beat arithmetic); `cargo test -p functor_runtime_common` green.
-- [ ] **C6. Perf gate.** Measure C4 at 60fps with headroom; bytecode VM
-      (roadmap phase 7) only if the tree-walker doesn't hold.
-      *Verify:* frame-time assertion in the e2e harness.
+- [x] **C6. Perf gate** (done 2026-07-04). The tree-walker holds — no
+      bytecode VM (roadmap phase 7) needed. Measured on a 100-entity lit
+      scene (per-entity model updates in `tick`, per-entity transforms in
+      `draw`, shadow-casting sun + two orbiting point lights — heavier
+      than any shipped example), free-running headless at ~60Hz, debug
+      build, Apple Silicon: **tick 211µs + draw 2116µs ≈ 2.3ms/frame =
+      14.0% of the 16.6ms budget**. Draw dominates ~10:1 — the cost is
+      building ~100 prelude scene nodes per frame, not the MVU fold.
+      *Verify (done):* `mle-perf.e2e.test.ts` free-runs that load on the
+      wall clock for two 300-frame stats windows and asserts the last
+      window's tick+draw stays under **25% of the budget (4167µs)** —
+      generous headroom by design, so the gate catches order-of-magnitude
+      regressions (an accidental deep-clone per frame), not scheduler
+      noise; the measured numbers are printed so CI logs double as a
+      perf record.
 
 ## Track D — IDE tooling
 
