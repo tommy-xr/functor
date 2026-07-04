@@ -1,6 +1,7 @@
 //! End-to-end test: spawn the real `mle-lsp` binary and speak framed LSP to
 //! it over stdin/stdout — initialize, open a broken document, assert the
-//! diagnostic, fix it, assert the clear, and check unknown requests get
+//! diagnostic, fix it, assert the clear, round-trip a hover and a
+//! definition (hit and null), and check unknown requests get
 //! MethodNotFound without killing the server.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -69,6 +70,10 @@ fn diagnostics_over_real_stdio() {
     let response = server.recv();
     assert_eq!(response["id"], 1);
     assert_eq!(response["result"]["capabilities"]["textDocumentSync"], 1);
+    assert_eq!(
+        response["result"]["capabilities"]["definitionProvider"],
+        true
+    );
 
     server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
 
@@ -101,7 +106,7 @@ fn diagnostics_over_real_stdio() {
 
     // An unknown request gets MethodNotFound and the server keeps serving.
     server.send(json!({
-        "jsonrpc": "2.0", "id": 2, "method": "textDocument/definition",
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/implementation",
         "params": {},
     }));
     let response = server.recv();
@@ -136,9 +141,55 @@ fn diagnostics_over_real_stdio() {
         "hover response: {response}"
     );
 
+    // didChange to a document with a global reference, for definition.
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": URI, "version": 3 },
+            "contentChanges": [ { "text":
+                "let double = (x: Float): Float => x * 2.0\nlet main = () => double(2.0)" } ],
+        },
+    }));
+    assert_eq!(server.recv()["params"]["diagnostics"], json!([]));
+
+    // Definition on `double(2.0)` (line 1 char 17) → the `let double = `
+    // region of line 0, as a Location in the same document.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 4, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 1, "character": 17 },
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(response["id"], 4);
+    assert_eq!(
+        response["result"],
+        json!({
+            "uri": URI,
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 13 },
+            },
+        }),
+        "definition response: {response}"
+    );
+
+    // Definition on the `=` of line 0 (no reference there) → null.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 0, "character": 11 },
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(response["id"], 5);
+    assert_eq!(response["result"], Value::Null, "expected null: {response}");
+
     // Clean shutdown.
-    server.send(json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
-    assert_eq!(server.recv()["id"], 4);
+    server.send(json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }));
+    assert_eq!(server.recv()["id"], 6);
     server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
     let status = server.child.wait().expect("wait for exit");
     assert!(status.success(), "server exited with {status}");

@@ -435,9 +435,20 @@ First-class `.mle` editor support, built on the `mle` crate's front-end
       UTF-16-correct positions; `mle check`'s full diagnostic set now
       publishes alongside parse/lower errors. *Verify:* 8 hover unit tests +
       the framed e2e drives a real hover round-trip.
-- [ ] **D3b. Go-to-definition.** Needs a use→definition query over the IR
-      (it already carries spans on every node, but no query API yet); the
-      hover node-walk is the natural starting point.
+- [x] **D3b. Go-to-definition.** `mle::goto::definition_span` (a hover-style
+      innermost-node walk over the IR): local references — params, `let`
+      binders, pattern variables, `:=` targets — resolve by `BindingId` (so
+      shadowing is already right); globals to their def's `let name =`
+      region; constructor uses (expressions AND patterns) to their
+      `VariantDecl`; declared-type annotation names (params, returns,
+      type-decl fields, generic args) to their `type` declaration; anything
+      else `None`. Surfaced as `textDocument/definition`
+      (`definitionProvider: true` — VSCode wires F12 automatically).
+      *Verify (done):* 16 unit tests cover every resolution case incl.
+      shadowing, binders-are-not-references, and off-node → None; the
+      framed-protocol e2e drives a real definition round-trip (hit → the
+      correct range, empty spot → null; the unknown-method probe moved to
+      `textDocument/implementation`); `cargo test -p mle -p mle-lsp` green.
 - [x] **D4. Live game preview in the editor** (done 2026-07-03, needs C5).
       A VSCode webview panel hosting the wasm runtime: the extension's
       **"MLE: Open Live Preview"** command serves the project
