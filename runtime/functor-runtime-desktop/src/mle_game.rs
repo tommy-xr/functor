@@ -42,6 +42,9 @@ pub struct MleGame {
     path: String,
     mtime: std::time::SystemTime,
     src: String,
+    /// The lowered module the current session came from — kept so a reload
+    /// can rebind model-stored closures (old module × new module).
+    module: mle::ir::Module,
     session: Session,
     model: Value,
     has_input: bool,
@@ -77,6 +80,7 @@ const STATS_EVERY: u64 = 300;
 /// A successfully loaded, contract-validated game module.
 struct Loaded {
     src: String,
+    module: mle::ir::Module,
     session: Session,
     init: Value,
     /// The game defines the optional `input` entry point.
@@ -162,6 +166,7 @@ fn load_game(path: &str) -> Result<Loaded, String> {
     }
     Ok(Loaded {
         src,
+        module,
         session,
         init,
         has_input,
@@ -196,6 +201,7 @@ impl MleGame {
             path: path.to_string(),
             mtime,
             src: loaded.src,
+            module: loaded.module,
             session: loaded.session,
             model: loaded.init,
             has_input: loaded.has_input,
@@ -321,11 +327,12 @@ impl Game for MleGame {
         // Poll the file's mtime (a stat per frame is ~free) and swap in a new
         // session on change. THE MODEL IS KEPT: it is a plain value the host
         // holds, so state survives the edit and all functions rebind — the
-        // dev-loop payoff the language was built for (docs/mle.md C3). A
-        // broken edit prints and keeps the old program running. Caveat until
-        // B5: closure VALUES stored inside the model keep their pre-reload
-        // bodies (globals rebind; stored closures need the (stable-id, env)
-        // representation).
+        // dev-loop payoff the language was built for (docs/mle.md C3).
+        // Closures STORED IN THE MODEL rebind too (B5 part 2,
+        // `mle::rebind`): they adopt the edited code with their captured env
+        // carried over; one that can't be matched keeps its old body with a
+        // loud warning. A broken edit prints and keeps the old program
+        // running.
         let mtime = file_mtime(&self.path);
         if mtime == self.mtime {
             return;
@@ -334,7 +341,13 @@ impl Game for MleGame {
         let started = Instant::now();
         match load_game(&self.path) {
             Ok(loaded) => {
+                let (model, report) = mle::rebind_value(&self.model, &self.module, &loaded.module);
+                self.model = model;
+                for warning in &report.warnings {
+                    eprintln!("[mle] reload: {warning}");
+                }
                 self.src = loaded.src;
+                self.module = loaded.module;
                 self.session = loaded.session;
                 self.has_input = loaded.has_input;
                 self.has_mouse_move = loaded.has_mouse_move;
@@ -351,9 +364,14 @@ impl Game for MleGame {
                     physics::remove_world(physics::DEFAULT_WORLD);
                 }
                 self.last_error = None;
+                let stored = if report.rebound > 0 {
+                    format!("; {} stored closure(s) rebound", report.rebound)
+                } else {
+                    String::new()
+                };
                 println!(
-                    "[mle] hot-reloaded {} in {:.2}ms (model preserved; an edited `init` \
-takes effect on restart)",
+                    "[mle] hot-reloaded {} in {:.2}ms (model preserved{stored}; an edited \
+`init` takes effect on restart)",
                     self.path,
                     started.elapsed().as_secs_f64() * 1000.0
                 );

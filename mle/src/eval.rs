@@ -435,6 +435,7 @@ impl Interp<'_> {
                 params: params.clone(),
                 body: body.clone(),
                 env: env.clone(),
+                expr_id: expr.id,
             }))),
             ExprKind::Call { callee, args } => {
                 let callee_value = self.eval(callee, env)?;

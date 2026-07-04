@@ -60,6 +60,12 @@ pub struct Closure {
     pub params: Rc<Vec<Param>>,
     pub body: Rc<Expr>,
     pub env: Env,
+    /// The lambda's node id in the module that created it — the hook
+    /// hot-reload rebinding resolves to a *stable* id at the reload boundary
+    /// (see [`crate::rebind`]; runtime closures stay lean, Decision 3 of the
+    /// closures design note). Guarded by body pointer identity there, so a
+    /// stale id from an older module can never mis-rebind.
+    pub expr_id: crate::ir::ExprId,
 }
 
 /// Lexical environment: one scope per enclosing lambda call, as a persistent
