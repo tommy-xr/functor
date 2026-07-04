@@ -1,0 +1,11 @@
+// A generic sibling ADT: constructors and type arguments cross module
+// boundaries (`Shapes.Full(0.75)` builds a `Shapes.Box<Float>` anywhere).
+
+type Box<v> =
+  | Full(value: v)
+  | Empty
+
+let map = (b, f) =>
+  match b with
+  | Full(x) => Full(f(x))
+  | Empty => Empty
