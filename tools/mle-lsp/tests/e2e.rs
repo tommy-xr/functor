@@ -1,6 +1,7 @@
 //! End-to-end test: spawn the real `mle-lsp` binary and speak framed LSP to
 //! it over stdin/stdout — initialize, open a broken document, assert the
-//! diagnostic, fix it, assert the clear, and check unknown requests get
+//! diagnostic, fix it, assert the clear, round-trip a hover and a
+//! definition (hit and null), and check unknown requests get
 //! MethodNotFound without killing the server.
 
 use std::io::{BufRead, BufReader, Read, Write};

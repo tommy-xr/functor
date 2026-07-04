@@ -22,8 +22,8 @@ cargo run -q -p mle -- check file.mle   # gradual typechecker: ALL diagnostics, 
 
 Errors are always `file:line:col: error: message`. Tests live in `mle/tests/`
 with goldens next to `mle/examples/` (`UPDATE_GOLDENS=1 cargo test -p mle`
-regenerates). VSCode gets live parse/lower/type diagnostics and
-`name : Type` hover via `tools/mle-lsp`.
+regenerates). VSCode gets live parse/lower/type diagnostics,
+`name : Type` hover, and go-to-definition via `tools/mle-lsp`.
 
 ## Syntax subset
 
