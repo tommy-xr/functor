@@ -1,0 +1,59 @@
+[package]
+name = "functor_runtime_oculus"
+version = "0.1.0"
+edition = "2021"
+
+# The Quest (Meta Horizon OS) runtime shell: an OpenXR + EGL/GLES Android
+# cdylib. See README.md for the build pipeline and src/lib.rs for the
+# architecture; stack rationale (openxr from crates.io, android-activity,
+# cargo-ndk) is documented there too.
+#
+# Its OWN workspace, deliberately outside the root one (like the examples'
+# build-native crates): android-activity → ndk-sys hard-fails to compile for
+# non-Android targets, so root-workspace membership would break every bare
+# `cargo build`/`cargo check`/rust-analyzer run on the host.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+functor_runtime_common = { path = "../functor-runtime-common" }
+# Default `loaded` feature: dlopens libopenxr_loader.so at runtime — the APK
+# must bundle Meta's loader (see README), but plain `cargo ndk build` needs
+# nothing. (shock2quest-era vendoring of openxrs is obsolete: the GLES/Android
+# support it back-ported shipped upstream in openxr 0.18, Feb 2024.)
+openxr = "0.21"
+# Modern replacement for the deprecated ndk-glue: provides android_main and
+# feeds ndk-context, which openxr's initialize_android_loader() reads.
+android-activity = { version = "0.6", features = ["native-activity"] }
+khronos-egl = { version = "6.0", features = ["dynamic"] }
+libloading = "0.8"
+glow = "0.17"
+cgmath = "0.18"
+log = "0.4"
+android_logger = "0.14"
+
+# cargo-apk packaging metadata (`cargo apk build` from this directory).
+# functor-runner-on-Quest is a tool APK, like functor-runner is a binary: the
+# game arrives over the network (POST /reload-source), not baked in.
+[package.metadata.android]
+package = "dev.functor.runner"
+build_targets = ["aarch64-linux-android"]
+runtime_libs = "lib"
+
+[package.metadata.android.sdk]
+min_sdk_version = 29
+target_sdk_version = 32
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.vr.headtracking"
+required = true
+version = 1
+
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.MAIN"]
+categories = [
+    "com.oculus.intent.category.VR",
+    "android.intent.category.LAUNCHER",
+]

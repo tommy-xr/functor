@@ -5,6 +5,8 @@
     "clean": "git clean -fdX",
 
     "build:cli": "cargo build --bin functor-runner && wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
+    "build:oculus": "ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-sdk} CARGO_TARGET_DIR=target-android cargo ndk -t arm64-v8a build --manifest-path runtime/functor-runtime-oculus/Cargo.toml",
+    "build:oculus:apk": "ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-sdk} ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-/opt/homebrew/share/android-sdk/ndk/24.0.8215888} CARGO_TARGET_DIR=$PWD/target-android cargo apk build --manifest-path runtime/functor-runtime-oculus/Cargo.toml",
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "generate:audio": "node scripts/generate-audio.mjs",
     "test:golden": "npm run build:examples:hello:rust && cargo build --manifest-path examples/hello/build-native/Cargo.toml && npm run build:examples:lighting:rust && cargo build --manifest-path examples/lighting/build-native/Cargo.toml && npm run build:examples:primitives:rust && cargo build --manifest-path examples/primitives/build-native/Cargo.toml && npm run build:examples:synthwave:rust && cargo build --manifest-path examples/synthwave/build-native/Cargo.toml && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",

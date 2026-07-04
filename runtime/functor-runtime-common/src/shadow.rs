@@ -210,6 +210,21 @@ pub fn render_shadow_pass(
     let identity = Matrix4::identity();
 
     unsafe {
+        // Remember the caller's render target and restore it after the pass.
+        // On desktop/web that's the default framebuffer (0) and restoring is a
+        // no-op — but XR shells render into per-eye swapchain FBOs, and
+        // resetting to the default there would send the whole forward pass
+        // into an invisible pbuffer. Reconstructing a framebuffer key from
+        // the GL query is native-only (glow's web backend uses opaque slotmap
+        // keys); on wasm the canvas default framebuffer IS the target, so
+        // `None` is exact there.
+        #[cfg(not(target_arch = "wasm32"))]
+        let previous_fbo = std::num::NonZeroU32::new(
+            gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32,
+        )
+        .map(glow::NativeFramebuffer);
+        #[cfg(target_arch = "wasm32")]
+        let previous_fbo: Option<glow::Framebuffer> = None;
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(shadow_map.fbo));
         gl.viewport(0, 0, shadow_map.size as i32, shadow_map.size as i32);
         // Disable the scissor test for the duration of the pass: the forward pass
@@ -236,6 +251,6 @@ pub fn render_shadow_pass(
             &depth_material,
         );
 
-        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
     }
 }
