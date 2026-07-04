@@ -251,18 +251,20 @@ mod tests {
                 target: RenderTargetDescriptor::new("feed"),
                 frame: Frame::new(Camera::default(), Scene3D::cube()),
             }],
+            fog: Some(crate::fog::Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7)),
         };
         assert_json_stable(&frame);
 
-        // `lights` was added to Frame later (`render_targets` later still); a
-        // frame serialized without them must still decode (serde(default)) —
-        // old producers stay readable. This literal also pins the minimal
-        // Frame wire shape.
+        // `lights` was added to Frame later (`render_targets` and `fog` later
+        // still); a frame serialized without them must still decode
+        // (serde(default)) — old producers stay readable. This literal also
+        // pins the minimal Frame wire shape.
         let legacy: Frame =
             serde_json::from_str(r#"{"camera":{"eye":[0.0,0.0,-5.0],"target":[0.0,0.0,0.0],"up":[0.0,1.0,0.0],"fov_radians":0.785,"near":0.1,"far":100.0},"scene":{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}}"#)
                 .expect("frame without lights decodes");
         assert!(legacy.lights.is_empty());
         assert!(legacy.render_targets.is_empty());
+        assert!(legacy.fog.is_none());
     }
 
     // The render-target wire vocabulary: the reader (a texture by target id)
@@ -279,6 +281,21 @@ mod tests {
         assert_wire(
             &RenderTargetDescriptor::new("feed"),
             r#"{"id":"feed","width":512,"height":512}"#,
+        );
+    }
+
+    // The fog wire vocabulary: both models, color as a plain [r,g,b].
+    #[test]
+    fn fog_wire_is_pinned() {
+        use crate::fog::Fog;
+
+        assert_wire(
+            &Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7),
+            r#"{"Linear":{"near":4.0,"far":30.0,"color":[0.5,0.6,0.7]}}"#,
+        );
+        assert_wire(
+            &Fog::exp(0.08, 0.5, 0.6, 0.7),
+            r#"{"Exp":{"density":0.08,"color":[0.5,0.6,0.7]}}"#,
         );
     }
 

@@ -58,7 +58,12 @@ pub struct RenderTargetBuffers {
 }
 
 impl RenderTargetBuffers {
-    pub fn new(gl: &glow::Context, width: u32, height: u32) -> RenderTargetBuffers {
+    pub fn new(
+        gl: &glow::Context,
+        width: u32,
+        height: u32,
+        clear: [f32; 3],
+    ) -> RenderTargetBuffers {
         let width = width.max(1);
         let height = height.max(1);
         unsafe {
@@ -126,12 +131,13 @@ impl RenderTargetBuffers {
                     Some(depth_rbo),
                 );
 
-                // Clear to the standard background so a read before the first
-                // write (frame 1 of a self-viewing target) shows the clear
-                // color, never uninitialized memory.
+                // Clear to the pass's background (the fog color when the
+                // target frame declares fog) so a read before the first write
+                // (frame 1 of a self-viewing target) shows the clear color,
+                // never uninitialized memory.
                 gl.disable(glow::SCISSOR_TEST);
                 gl.viewport(0, 0, width as i32, height as i32);
-                gl.clear_color(0.1, 0.2, 0.3, 1.0);
+                gl.clear_color(clear[0], clear[1], clear[2], 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
                 fbos[i] = Some(fbo);

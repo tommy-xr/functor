@@ -202,6 +202,9 @@ pub fn render_shadow_pass(
         lights,
         render_pass: RenderPass::DepthOnly,
         shadow: None,
+        // Fog is a forward-pass concern; the depth pass renders no color.
+        fog: None,
+        camera_pos: cgmath::Vector3::new(0.0, 0.0, 0.0),
     };
 
     let mut depth_material = DepthMaterial::create();

@@ -21,6 +21,7 @@ type SpotLight =
 [<Erase; Emit("functor_runtime_common::MeshOverride")>] type MeshOverride = | Noop
 [<Erase; Emit("functor_runtime_common::Light")>] type Light = | Noop
 [<Erase; Emit("functor_runtime_common::RenderTargetDescriptor")>] type RenderTarget = | Noop
+[<Erase; Emit("functor_runtime_common::Fog")>] type Fog = | Noop
 
 module Scene3D =
 
@@ -150,6 +151,27 @@ module Scene3D =
         /// to face the viewer.
         [<Emit("functor_runtime_common::TextureDescription::render_target($0)")>]
         let renderTarget (target: RenderTarget): Texture = nativeOnly
+
+    module Fog =
+        // Private float-based FFI shims; the public API takes a Color record
+        // (the Light module's pattern).
+        [<Emit("functor_runtime_common::Fog::linear($0, $1, $2, $3, $4)")>]
+        let private linearRaw (near: float32, far: float32, r: float32, g: float32, b: float32): Fog = nativeOnly
+
+        [<Emit("functor_runtime_common::Fog::exp($0, $1, $2, $3)")>]
+        let private expRaw (density: float32, r: float32, g: float32, b: float32): Fog = nativeOnly
+
+        /// Linear distance fog: fully clear at `near`, fully `color` by `far`
+        /// (world units, radial distance from the camera). The color also
+        /// becomes the frame's clear color, so geometry dissolves into the
+        /// horizon instead of silhouetting against the background.
+        let linear (near: float32) (far: float32) (color: Color): Fog =
+            linearRaw (near, far, color.r, color.g, color.b)
+
+        /// Exponential fog: `factor = exp(-density * distance)` — the classic
+        /// atmospheric falloff.
+        let exp (density: float32) (color: Color): Fog =
+            expRaw (density, color.r, color.g, color.b)
 
     module RenderTarget =
         /// A named offscreen render target, 512x512 until piped through `sized`.

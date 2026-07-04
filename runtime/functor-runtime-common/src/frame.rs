@@ -1,7 +1,7 @@
 use fable_library_rust::NativeArray_::Array;
 use serde::{Deserialize, Serialize};
 
-use crate::{render_target::RenderTargetDescriptor, Camera, Light, Scene3D};
+use crate::{fog::Fog, render_target::RenderTargetDescriptor, Camera, Light, Scene3D};
 
 /// A named offscreen pass: `frame` (its own camera/scene/lights) is rendered
 /// into `target`'s texture before the owning frame's main pass, and sampled via
@@ -25,6 +25,9 @@ pub struct Frame {
     /// targets inside a target's own frame are ignored (depth 1 for now).
     #[serde(default)]
     pub render_targets: Vec<RenderTargetPass>,
+    /// Frame-level distance fog; its color also drives the pass's clear color.
+    #[serde(default)]
+    pub fog: Option<Fog>,
 }
 
 impl Frame {
@@ -36,6 +39,7 @@ impl Frame {
             scene,
             lights: vec![],
             render_targets: vec![],
+            fog: None,
         }
     }
 
@@ -45,6 +49,7 @@ impl Frame {
             scene,
             lights: lights.to_vec(),
             render_targets: vec![],
+            fog: None,
         }
     }
 
@@ -60,6 +65,14 @@ impl Frame {
             target,
             frame: target_frame,
         });
+        frame
+    }
+
+    /// Distance fog for this frame's forward pass (all forward materials,
+    /// including emissive; the fog color becomes the clear color). Subject-
+    /// first so it pipes (`frame |> Frame.withFog(fog)`).
+    pub fn with_fog(mut frame: Frame, fog: Fog) -> Frame {
+        frame.fog = Some(fog);
         frame
     }
 }

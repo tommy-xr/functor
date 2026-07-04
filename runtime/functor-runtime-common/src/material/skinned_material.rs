@@ -1,5 +1,6 @@
 use cgmath::Matrix4;
 
+use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -22,11 +23,12 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         out vec2 texCoord;
         out vec3 weights;
+        out vec3 worldPos;
 
         void main() {
 
             // Compute the skinning matrix
-            mat4 skinMatrix = 
+            mat4 skinMatrix =
                 inWeights.x * jointTransforms[int(inJointIndices.x)] +
                 inWeights.y * jointTransforms[int(inJointIndices.y)] +
                 inWeights.z * jointTransforms[int(inJointIndices.z)] +
@@ -37,6 +39,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
             // Apply the skinning transformation
             vec4 skinnedPos = skinMatrix * vec4(inPos, 1.0);
+            worldPos = (world * skinnedPos).xyz;
 
             gl_Position = projection * view * world * skinnedPos;
         }
@@ -47,13 +50,13 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         in vec2 texCoord;
         in vec3 weights;
+        in vec3 worldPos;
 
         uniform sampler2D texture1;
 
         void main() {
-            //fragColor = vec4(texCoord.x, texCoord.y, 0.0, 1.0);
-            fragColor = texture(texture1, texCoord);
-            //fragColor = vec4(weights.x / 50.0, weights.y / 50.0, weights.z / 50.0, 1.0);
+            vec4 c = texture(texture1, texCoord);
+            fragColor = vec4(applyFog(c.rgb, worldPos), c.a);
         }
 "#;
 
@@ -63,6 +66,7 @@ struct Uniforms {
     projection_loc: UniformLocation,
     texture_loc: UniformLocation,
     joint_transforms_loc: UniformLocation,
+    fog: FogUniforms,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -87,10 +91,11 @@ impl Material for SkinnedMaterial {
                 );
 
                 // fragment shader
+                let fragment_source = format!("{}\n{}", FOG_GLSL, FRAGMENT_SHADER_SOURCE);
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
-                    FRAGMENT_SHADER_SOURCE,
+                    &fragment_source,
                     ctx.shader_version,
                 );
                 // link shaders
@@ -107,6 +112,7 @@ impl Material for SkinnedMaterial {
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
+                    fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -142,6 +148,7 @@ impl Material for SkinnedMaterial {
                 }
 
                 p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);
+                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }
 

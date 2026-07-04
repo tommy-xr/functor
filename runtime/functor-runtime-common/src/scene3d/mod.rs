@@ -72,8 +72,14 @@ impl SceneContext {
     }
 
     /// Create (or recreate, if the declared size changed) the buffers for a
-    /// render target. Called for every declared target before any pass runs.
-    pub fn ensure_render_target(&self, gl: &glow::Context, desc: &RenderTargetDescriptor) {
+    /// render target. Called for every declared target before any pass runs;
+    /// `clear` is the target pass's background (its fog color when fogged).
+    pub fn ensure_render_target(
+        &self,
+        gl: &glow::Context,
+        desc: &RenderTargetDescriptor,
+        clear: [f32; 3],
+    ) {
         let mut targets = self.render_targets.borrow_mut();
         let stale = targets
             .get(&desc.id)
@@ -83,7 +89,7 @@ impl SceneContext {
         }
         targets
             .entry(desc.id.clone())
-            .or_insert_with(|| RenderTargetBuffers::new(gl, desc.width, desc.height));
+            .or_insert_with(|| RenderTargetBuffers::new(gl, desc.width, desc.height, clear));
     }
 
     /// The framebuffer + size a target pass renders into. Handles are `Copy` —
