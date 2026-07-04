@@ -60,6 +60,12 @@ pub struct Closure {
     pub params: Rc<Vec<Param>>,
     pub body: Rc<Expr>,
     pub env: Env,
+    /// The lambda's node id in the module that created it — the hook
+    /// hot-reload rebinding resolves to a *stable* id at the reload boundary
+    /// (see [`crate::rebind`]; runtime closures stay lean, Decision 3 of the
+    /// closures design note). Guarded by body pointer identity there, so a
+    /// stale id from an older module can never mis-rebind.
+    pub expr_id: crate::ir::ExprId,
 }
 
 /// Lexical environment: one scope per enclosing lambda call, as a persistent
@@ -89,6 +95,20 @@ impl Env {
         while let Some(scope) = &cur.0 {
             if let Some((_, value)) = scope.vars.iter().find(|(b, _)| *b == binding) {
                 return Some(value.clone());
+            }
+            cur = &scope.parent;
+        }
+        None
+    }
+
+    /// Innermost-first search by predicate over binding ids — the reload
+    /// rebinder resolves captured names against an old env this way (ids are
+    /// module-specific, names are the stable key; see [`crate::rebind`]).
+    pub(crate) fn find_by(&self, pred: impl Fn(BindingId) -> bool) -> Option<&Value> {
+        let mut cur = self;
+        while let Some(scope) = &cur.0 {
+            if let Some((_, value)) = scope.vars.iter().rev().find(|(b, _)| pred(*b)) {
+                return Some(value);
             }
             cur = &scope.parent;
         }

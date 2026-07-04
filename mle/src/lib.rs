@@ -15,6 +15,7 @@ pub mod ir;
 mod lexer;
 mod lower;
 mod parser;
+pub mod rebind;
 mod span;
 pub mod types;
 pub mod value;
@@ -25,6 +26,7 @@ pub use eval::{
 };
 pub use lower::lower;
 pub use parser::parse;
+pub use rebind::{rebind_value, RebindReport};
 pub use span::{line_col, Span};
 pub use types::{check, check_with_types, ExprTypes};
 pub use value::{HostData, Value};
