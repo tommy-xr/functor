@@ -1,0 +1,141 @@
+<html>
+  <!-- The site's runtime host page: the sibling of the CLI dev server's
+       index-mle.html (runtime/functor-runtime-web/index-mle.html), except the
+       .mle entry comes from the `?game=` query instead of being substituted
+       server-side — so one static page can host every example. The input
+       mapping and the postMessage set-source seam are copied from that page;
+       keep them in sync when the runtime's mle_* exports change. -->
+  <head>
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0221; }
+      /* Fill the frame; the runtime sizes the drawable buffer (and GL
+         viewport) to match this displayed size each frame, scaled for HiDPI. */
+      #canvas { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <script type="module">
+
+      import init, {
+        mle_key_event,
+        mle_mouse_move,
+        mle_mouse_wheel,
+        mle_is_running,
+        mle_set_source,
+      } from "./pkg/functor_runtime_web.js";
+
+      // The MLE entry, from `?game=<path>` (a path relative to this page).
+      // Must be set before init(): the runtime reads it at start to choose the
+      // interpreter producer. The runtime fetches it as a URL, so encode each
+      // path segment while keeping subdirectories.
+      const requested = new URLSearchParams(window.location.search).get("game");
+      // Same-origin relative paths only: reject absolute/protocol-relative
+      // URLs so the page can't be pointed at a third-party source.
+      const game =
+        requested && !requested.startsWith("/") && !requested.includes(":")
+          ? requested
+          : "examples/hero.mle";
+      window.__mleGamePath = game.split("/").map(encodeURIComponent).join("/");
+
+      // Map a browser KeyboardEvent.code to the canonical key code expected by
+      // the game (functor_runtime_common::Key as i32). Keep in sync with
+      // index-mle.html / index.html: A=1..Z=26, then the entries below.
+      const keyCode = (code) => {
+        if (code.length === 4 && code.startsWith("Key")) {
+          return code.charCodeAt(3) - 64;
+        }
+        switch (code) {
+          case "ArrowUp": return 27;
+          case "ArrowDown": return 28;
+          case "ArrowLeft": return 29;
+          case "ArrowRight": return 30;
+          case "Space": return 31;
+          case "Enter": return 32;
+          case "Escape": return 33;
+          default: return 0;
+        }
+      };
+
+      const setupInput = () => {
+        const canvas = document.getElementById("canvas");
+
+        window.addEventListener("keydown", (e) => {
+          const code = keyCode(e.code);
+          if (code === 0) return;
+          e.preventDefault();
+          if (!e.repeat) mle_key_event(code, true);
+        });
+        window.addEventListener("keyup", (e) => {
+          const code = keyCode(e.code);
+          if (code === 0) return;
+          mle_key_event(code, false);
+        });
+
+        // Mouse free-look: click the canvas to pointer-lock, accumulate
+        // relative motion so the game's delta logic matches native.
+        canvas.addEventListener("click", () => canvas.requestPointerLock());
+        let ax = 0;
+        let ay = 0;
+        document.addEventListener("mousemove", (e) => {
+          ax += e.movementX;
+          ay += e.movementY;
+          mle_mouse_move(ax, ay);
+        });
+
+        canvas.addEventListener("wheel", (e) => {
+          e.preventDefault();
+          mle_mouse_wheel(Math.sign(e.deltaY));
+        });
+      };
+
+      // The live-edit seam: the hosting page (the sandbox) posts the full
+      // .mle source and the runtime hot-swaps it, model preserved. Pushes are
+      // accepted only from the HOSTING frame; replies go only to the sender.
+      const setupSetSource = () => {
+        window.addEventListener("message", (event) => {
+          if (event.source !== window.parent) return;
+          const data = event.data;
+          if (!data || data.type !== "mle-set-source" || typeof data.source !== "string") return;
+          let ok = true;
+          let message = "";
+          try {
+            message = mle_set_source(data.source);
+          } catch (e) {
+            // A broken push: the wasm export throws the rendered load error
+            // and the old program keeps running.
+            ok = false;
+            message = String(e);
+          }
+          if (event.source) {
+            event.source.postMessage(
+              { type: "mle-set-source-result", ok, message },
+              event.origin || "*"
+            );
+          }
+        });
+        // Announce once the PRODUCER is installed (not just the wasm module):
+        // run_async still has to fetch the source, so poll mle_is_running().
+        if (window.parent !== window) {
+          const announce = () => {
+            if (mle_is_running()) {
+              window.parent.postMessage({ type: "mle-preview-ready" }, "*");
+            } else {
+              setTimeout(announce, 50);
+            }
+          };
+          announce();
+        }
+      };
+
+      init().then(() => {
+        // In a deterministic capture (?fixed-time), don't wire up input — a
+        // stray mouse move would turn the camera.
+        const deterministic = new URLSearchParams(window.location.search).has("fixed-time");
+        if (!deterministic) setupInput();
+        setupSetSource();
+      });
+    </script>
+  </body>
+</html>

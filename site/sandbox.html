@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>functor sandbox — live MLE playground</title>
+    <meta
+      name="description"
+      content="Write MLE in the browser and watch the scene hot-reload live, model preserved."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="sandbox-page">
+    <header class="sandbox-header">
+      <a class="wordmark" href="./">FUNCTOR<span class="wordmark-accent">//SANDBOX</span></a>
+      <div class="sandbox-controls">
+        <label class="picker-label" for="example-picker">scene</label>
+        <select id="example-picker"></select>
+        <button id="reset" type="button" title="Reload the example (resets the model)">
+          ↺ reset
+        </button>
+        <span id="status" class="status-pill" data-state="busy">◌ loading…</span>
+      </div>
+      <a class="header-link" href="https://github.com/tommy-xr/functor">GitHub ↗</a>
+    </header>
+
+    <main class="sandbox-split">
+      <section class="editor-pane">
+        <div id="editor"></div>
+        <pre id="status-log" hidden></pre>
+      </section>
+      <section class="preview-pane">
+        <iframe id="player" title="live game preview" allow="pointer-lock"></iframe>
+      </section>
+    </main>
+
+    <footer class="sandbox-footer">
+      <p>
+        Edits hot-reload the running game <em>with the model preserved</em> — the wave keeps
+        rolling while you retune it. A broken edit keeps the old program running. Click the
+        scene for mouse-look where a scene supports it.
+      </p>
+    </footer>
+
+    <script type="module" src="assets/sandbox.js"></script>
+  </body>
+</html>
