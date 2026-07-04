@@ -182,7 +182,17 @@ module Physics =
     let teleport     (tag: string) (pos: Vector3)     : effect<'msg>
 ```
 
-**Queries — async tagger** (the `Effect.httpGet` shape: token-keyed registry,
+**Queries — tagger effects.** *Shipped (Phase 4) on the MLE surface*:
+`Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)` — the tagger
+receives `{hit: Bool, x, y, z, nx, ny, nz, distance, tag}`. Queries are
+**deferred**: held through the frame's pre-step effect drains and performed
+right after the physics step, their messages folding through a second
+`update` pass before `draw` — "commands apply at the step; queries answer
+after it" — so results are same-frame **fresh** (the staleness the original
+frame order implied is designed out). Results ride the B6.5 structured effect
+log, so the fake/replay runners can can/replay raycasts — physics-query logic
+is testable without a world. `shapeCast` follows the same seam later. The F#
+sketch (the `Effect.httpGet` shape: token-keyed registry,
 result delivered as a message next drain):
 
 ```fsharp
@@ -627,7 +637,7 @@ It's worth building in two steps, because they exercise different machinery:
 | **2c. `examples/mle-physics`** | Crates settling on a ground slab, hot-reload demo, golden scenario, PR GIF/PNG. | native (MLE) |
 | **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, depth-tested line pass, `--debug-render physics` mode. **Shipped.** | native |
 | **3. Commands** | `Physics.applyImpulse`/`applyForce`/`setVelocity`/`teleport` as B6 effect variants: queued at perform time, applied after the frame's reconcile before its first substep; forces last one stepped frame; recorded as `timeline::Command::Apply` in the goldens. **Shipped (MLE).** | native+wasm (MLE) |
-| **4. Queries** | `raycast`/`shapeCast` (async tagger, token registry). | both |
+| **4. Queries** | `Physics.raycast` as a deferred tagger effect over the B6.5 structured-payload broker (`EffectValue`); performed post-step for same-frame freshness; fake/replay runners can raycasts. `shapeCast` deferred until a game needs it. **Shipped (MLE).** | native+wasm (MLE) |
 | **5. Collision events** | `Physics.events` sub. | both |
 | **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `hello-physics` grows a bullet/debris archetype. | both |
 | **6. Pause/rewind/replay** | timeline-control effects + keyboard wiring + egui status overlay (the culmination). | both |

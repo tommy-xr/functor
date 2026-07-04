@@ -72,6 +72,16 @@ const MAX_PENDING_COMMANDS: usize = 1024;
 /// must not become the leak it exists to report.
 const MAX_COMMAND_WARNINGS: usize = 64;
 
+/// The nearest intersection from [`World::raycast`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RayHit {
+    pub tag: String,
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    /// World units from the ray origin (the direction is normalized).
+    pub distance: f32,
+}
+
 /// One colored wireframe segment from [`World::debug_lines`], in world space.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct DebugLine {
@@ -330,6 +340,48 @@ impl World {
         let rb = self.bodies.get(*rb_handle)?;
         let v = rb.linvel();
         Some([v.x, v.y, v.z])
+    }
+
+    /// Cast a ray against the live world (docs/physics.md Phase 4): the
+    /// nearest hit's tag, world-space point, surface normal, and distance.
+    /// `dir` need not be normalized (it is here, so `max_dist` is in world
+    /// units); a zero direction yields `None`.
+    ///
+    /// Answers against the broad phase **as of the last step** — a world that
+    /// has never stepped misses everything (the MLE drivers hold deferred
+    /// queries until a frame that actually substepped, so game code only sees
+    /// answers from a simulated world; direct callers should step first).
+    /// Sensor colliders are hittable like any other (rapier's default query
+    /// filter) — an invisible trigger volume can occlude a solid body behind
+    /// it.
+    pub fn raycast(&self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> Option<RayHit> {
+        let d = vec3(dir);
+        let len = d.length();
+        if !(len.is_finite() && len > 0.0) {
+            return None;
+        }
+        let ray = rapier3d::prelude::Ray::new(vec3(origin), d / len);
+        let pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.bodies,
+            &self.colliders,
+            QueryFilter::default(),
+        );
+        let (col_handle, hit) = pipeline.cast_ray_and_get_normal(&ray, max_dist, true)?;
+        // Reverse handle→tag lookup: scenes are small; a scan beats carrying
+        // a second map in every snapshot.
+        let tag = self
+            .tags
+            .iter()
+            .find(|(_, &(_, col))| col == col_handle)
+            .map(|(tag, _)| tag.clone())?;
+        let point = ray.origin + ray.dir * hit.time_of_impact;
+        Some(RayHit {
+            tag,
+            position: [point.x, point.y, point.z],
+            normal: [hit.normal.x, hit.normal.y, hit.normal.z],
+            distance: hit.time_of_impact,
+        })
     }
 
     /// The world as colored wireframe line segments, via Rapier's own debug
@@ -992,6 +1044,37 @@ mod tests {
         let warnings = w.take_command_warnings();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("non-dynamic"), "{warnings:?}");
+    }
+
+    #[test]
+    fn raycast_hits_the_nearest_body_with_tag_point_and_normal() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        // The crate floats clear of the ground in a ZERO-gravity scene (the
+        // shared `scene()` helper declares -9.81, which would sag it a step),
+        // so the asserted geometry is exact: center 0.7, top face at 1.2.
+        w.reconcile(&PhysicsScene::create(
+            [0.0, 0.0, 0.0],
+            vec![ground(), crate_at("a", [0.0, 0.7, 0.0])],
+        ));
+        // The broad phase ingests colliders at the step — mirror the real
+        // query path, which always runs post-step.
+        w.step_fixed();
+        // Straight down from above: the crate's top face wins over the ground
+        // beneath it.
+        let hit = w.raycast([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 100.0).unwrap();
+        assert_eq!(hit.tag, "a");
+        assert!((hit.position[1] - 1.2).abs() < 1e-4, "{:?}", hit.position);
+        assert!((hit.normal[1] - 1.0).abs() < 1e-4, "{:?}", hit.normal);
+        assert!((hit.distance - 3.8).abs() < 1e-4, "{}", hit.distance);
+        // Direction need not be normalized: distance stays in world units.
+        let hit2 = w.raycast([0.0, 5.0, 0.0], [0.0, -7.0, 0.0], 100.0).unwrap();
+        assert!((hit2.distance - 3.8).abs() < 1e-4);
+        // Beyond max distance, zero direction: misses. Off to the side: the
+        // ground.
+        assert!(w.raycast([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 3.0).is_none());
+        assert!(w.raycast([0.0, 5.0, 0.0], [0.0, 0.0, 0.0], 10.0).is_none());
+        let g = w.raycast([5.0, 5.0, 5.0], [0.0, -1.0, 0.0], 100.0).unwrap();
+        assert_eq!(g.tag, "ground");
     }
 
     #[test]
