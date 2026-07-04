@@ -10,6 +10,7 @@
 
 pub mod ast;
 pub mod eval;
+pub mod goto;
 pub mod hover;
 pub mod ir;
 mod lexer;

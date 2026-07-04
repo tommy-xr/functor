@@ -134,8 +134,8 @@ fn pattern_vars(pattern: &Pattern, types: &ExprTypes, consider: &mut impl FnMut(
 }
 
 /// The direct sub-expressions of a node (Lambda and Match handled by the
-/// caller).
-fn children(expr: &Expr) -> Vec<&Expr> {
+/// caller). Shared with [`crate::goto`], whose walk has the same shape.
+pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::Record(fields) => fields.iter().map(|f| &f.value).collect(),
         ExprKind::RecordUpdate { base, fields } => std::iter::once(base.as_ref())
