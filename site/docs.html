@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>functor docs — the MLE language</title>
+    <meta
+      name="description"
+      content="Get started with functor and learn MLE — the tiny live-editable game language. Every full program here runs in the sandbox with one click."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="docs-page">
+    <header class="sandbox-header">
+      <a class="wordmark" href="./">FUNCTOR<span class="wordmark-accent">//DOCS</span></a>
+      <div class="sandbox-controls"></div>
+      <a class="header-link" href="sandbox.html">Sandbox</a>
+      <a class="header-link" href="https://github.com/tommy-xr/functor">GitHub ↗</a>
+    </header>
+
+    <div class="docs-layout">
+      <nav class="docs-nav">
+        <a href="#get-started">Get started</a>
+        <a href="#complete-game">A complete game</a>
+        <a href="#contract">The game contract</a>
+        <a href="#language">The language</a>
+        <a href="#prelude">The prelude</a>
+        <a href="#builtins">Builtins</a>
+        <a href="#sharp-edges">Sharp edges</a>
+      </nav>
+
+      <main class="docs-main">
+        <h1>MLE — the functor game language</h1>
+        <p>
+          MLE is a deliberately small, F#-inspired language for game logic. It is
+          <em>interpreted</em> — the source ships as text and runs natively, in the browser, and
+          in the <a href="sandbox.html">sandbox</a> — and it hot-reloads with your game's state
+          preserved. Every full program on this page has a <strong>▶ try it</strong> button that
+          opens it live in the sandbox.
+        </p>
+
+        <section id="get-started">
+          <h2>Get started</h2>
+          <p>
+            The fastest path is the <a href="sandbox.html">sandbox</a> — nothing to install. For
+            local development you need Rust (stable), Node 22, and
+            <code>wasm-pack</code>; then:
+          </p>
+          <pre class="shell">git clone https://github.com/tommy-xr/functor && cd functor
+npm run build:cli                    # builds the functor CLI + runtimes</pre>
+          <p>An MLE project is a directory with two files:</p>
+          <pre class="shell"># functor.json
+{ "language": "mle", "entry": "game.mle" }</pre>
+          <p>And the game itself — here is the smallest interesting one:</p>
+          <pre class="mle runnable">let init = {}
+let tick = (m, dt, tts) => m
+let draw = (m, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),
+    Scene.cube()
+      |> Scene.emissive(1.0, 0.2, 0.8)
+      |> Scene.rotateY(Angle.radians(tts)))</pre>
+          <p>Run it:</p>
+          <pre class="shell">functor -d . run native      # desktop window
+functor -d . run wasm        # serves it in the browser
+functor -d . develop         # hot-reload loop: save the file, see it in ~1 frame
+functor -d . build           # typecheck (diagnostics are errors)</pre>
+          <p>
+            <strong>Hot reload preserves the model.</strong> Under <code>develop</code> (and in
+            the sandbox), saving an edit swaps the program under the <em>running</em> state: a
+            bouncing ball keeps bouncing, mid-arc, with your new gravity. A broken edit keeps the
+            old program running and shows the error. An edited <code>init</code> takes effect on
+            restart, not on reload.
+          </p>
+        </section>
+
+        <section id="complete-game">
+          <h2>A complete game</h2>
+          <p>
+            A game is Model–View–Update: <code>init</code> is the starting model,
+            <code>tick</code> steps it every frame, <code>draw</code> renders it, and messages
+            (from timers, effects) fold through <code>update</code>. This one pulses a sphere and
+            counts beats once a second:
+          </p>
+          <pre class="mle runnable">// a pulsing sphere with a beat counter
+type Msg = | Beat
+
+let init = { spin: 0.0, beat: 0.0 }
+
+let tick = (model, dt: Float, tts: Float) =>
+  { model with spin: model.spin + dt }
+
+let update = (model, msg) =>
+  match msg with
+  | Beat => { model with beat: model.beat + 1.0 }
+
+let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
+
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),
+    Scene.sphere()
+      |> Scene.emissive(1.0, 0.3, 0.8)
+      |> Scene.scale(1.0 + 0.2 * Math.sin(model.spin * 4.0)))</pre>
+          <p>
+            Input is another pure function — slide the cube with A and D (click the preview
+            first so it has keyboard focus):
+          </p>
+          <pre class="mle runnable">let init = { x: 0.0 }
+
+let input = (model, key, isDown) =>
+  match isDown with
+  | false => model
+  | true =>
+    (match key with
+     | "A" => { model with x: model.x - 0.5 }
+     | "D" => { model with x: model.x + 0.5 }
+     | _ => model)
+
+let tick = (model, dt, tts) => model
+
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(0.0, 2.0, -8.0, 0.0, 0.0, 0.0),
+    Scene.cube()
+      |> Scene.emissive(0.2, 0.9, 1.0)
+      |> Scene.translate(model.x, 0.0, 0.0))</pre>
+          <p>
+            And physics is declarative — describe the bodies each frame; the runtime reconciles
+            and steps the world:
+          </p>
+          <pre class="mle runnable">let init = {}
+let tick = (m, dt, tts) => m
+
+let physics = (m) =>
+  Physics.scene(0.0, -9.81, 0.0, [
+    Physics.fixed("ground", Physics.box(20.0, 0.4, 20.0))
+      |> Physics.at(0.0, -0.2, 0.0),
+    Physics.dynamic("ball", Physics.sphere(0.5))
+      |> Physics.at(0.3, 4.0, 0.0)
+      |> Physics.restitution(0.8),
+  ])
+
+let draw = (m, tts) =>
+  Frame.createLit(
+    Camera.lookAt(0.0, 3.0, -8.0, 0.0, 1.0, 0.0),
+    Scene.group([
+      Scene.plane() |> Scene.scale(20.0) |> Scene.lit(0.4, 0.45, 0.55),
+      Scene.sphere()
+        |> Scene.scale(0.5)
+        |> Scene.lit(1.0, 0.4, 0.6)
+        |> Physics.transformed("ball"),
+    ]),
+    [
+      Light.ambient(0.15, 0.15, 0.2),
+      Light.directional(0.4, -1.0, 0.3, 1.0, 0.95, 0.9, 0.9) |> Light.castShadows,
+    ])</pre>
+        </section>
+
+        <section id="contract">
+          <h2>The game contract</h2>
+          <p>A runner-hosted game defines these top-level bindings:</p>
+          <table>
+            <thead><tr><th>binding</th><th>shape</th><th></th></tr></thead>
+            <tbody>
+              <tr><td><code>init</code></td><td><code>{ … }</code></td><td>the initial model — a <em>value</em>, not a function</td></tr>
+              <tr><td><code>tick</code></td><td><code>(model, dt, tts) => model'</code></td><td>per-frame step; <code>dt</code> seconds since last frame, <code>tts</code> total time</td></tr>
+              <tr><td><code>draw</code></td><td><code>(model, tts) => Frame</code></td><td>pure frame description</td></tr>
+              <tr><td><code>input</code></td><td><code>(model, key, isDown) => model'</code></td><td>optional; <code>key</code> is <code>"W"</code>, <code>"Up"</code>, <code>"Space"</code>, … — key <em>repeats</em> arrive as <code>isDown = true</code>, so latch if you need edges</td></tr>
+              <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
+              <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
+              <tr><td><code>update</code></td><td><code>(model, msg) => model'</code></td><td>optional; messages are your variant values</td></tr>
+              <tr><td><code>subscriptions</code></td><td><code>(model) => Sub</code></td><td>optional (requires <code>update</code>); declarative timers</td></tr>
+              <tr><td><code>physics</code></td><td><code>(model) => Physics.scene(…)</code></td><td>optional; declarative bodies, reconciled each frame</td></tr>
+            </tbody>
+          </table>
+          <p>
+            The model-returning entry points (<code>tick</code>, <code>input</code>,
+            <code>mouseMove</code>, <code>mouseWheel</code>, <code>update</code>) may instead
+            return a 2-tuple <code>(model', effect)</code> to issue one-shot
+            <a href="#prelude-effects">effects</a>.
+          </p>
+          <p>
+            <strong>Frame order:</strong> subscriptions → <code>update</code> → <code>tick</code>
+            → physics (fixed-step 60&nbsp;Hz) → <code>draw</code>. Physics reads in
+            <code>draw</code> see <em>this</em> frame's stepped world; reads in <code>tick</code>
+            see the previous frame's — so on the very first frame declared bodies don't exist
+            yet. Keep physics reads in <code>draw</code>.
+          </p>
+        </section>
+
+        <section id="language">
+          <h2>The language</h2>
+
+          <h3>Values and bindings</h3>
+          <pre class="mle">let threshold = 10          // every number is a Float (f64)
+let name = "neon\n"         // strings: \" \\ \n \t
+let on = true
+let origin = { x: 0.0, y: 0.0 }
+let scores = [1.0, 2.0, 3.0]</pre>
+          <p>
+            Line comments only (<code>//</code>). Top-level definitions are mutually visible
+            inside function bodies (and late-bound — that's the hot-reload seam), but a top-level
+            <em>initializer</em> may only use names defined above it.
+          </p>
+
+          <h3>Functions</h3>
+          <pre class="mle">let area = (w: Float, h: Float): Float => w * h   // annotations optional
+let describe = (score) => Text.concat("score: ", Text.fromFloat(score))</pre>
+          <p>
+            Typing is <em>gradual</em>: unannotated values check against everything; annotations
+            buy diagnostics (<code>functor build</code> reports them all). Recursion depth is
+            capped (~200) — deep iteration belongs in <code>List.*</code>.
+          </p>
+
+          <h3>Records</h3>
+          <pre class="mle">type Position = { x: Float, y: Float }        // nominal in annotations
+
+let p = { x: 0.0, y: 1.0 }
+let nudged = { p with x: p.x + 1.0 }          // update: fields must exist</pre>
+
+          <h3>Variants and match</h3>
+          <pre class="mle">type Shape =
+  | Circle(radius: Float)     // leading | required — first alternative too
+  | Rect(w: Float, h: Float)
+  | Point                     // nullary: no parens, ever
+
+let c = Circle(2.0)           // constructors are CALLED positionally
+let shapes = [c, Rect(3.0, 4.0), Point]
+
+let area = (s: Shape): Float =>
+  match s with
+  | Circle(r) => 3.14 * r * r // ctor patterns bind positionally
+  | Rect(w, _) => w * w       // sub-patterns: names or _ only (no nesting)
+  | Point => 0.0</pre>
+          <p>
+            Constructors resolve <em>bare</em> and live in the value namespace
+            (<code>Shape.Circle</code> does <strong>not</strong> work), so constructor names must
+            be unique across all variant types in the file. Unapplied constructors are
+            first-class: <code>xs |> List.map(Circle)</code>. When the scrutinee's type is known,
+            exhaustiveness is checked. Patterns are minimal: <code>Ctor(x, _)</code>,
+            <code>Ctor</code>, tuple <code>(x, _)</code> (matched by exact arity), bare names,
+            <code>_</code>, and literals — number/string literal arms need a catch-all
+            (<code>true</code> + <code>false</code> together are exhaustive).
+          </p>
+          <p>
+            <strong>Arms are greedy:</strong> a nested <code>match</code> inside an arm consumes
+            the following <code>|</code> arms as its own — parenthesize the inner match.
+          </p>
+
+          <h3>The conditional</h3>
+          <p>There is no <code>if</code>/<code>else</code>. The conditional is a bool-literal match:</p>
+          <pre class="mle">let sizeOf = (n: Float): String =>
+  match n > 10.0 with
+  | true => "big"
+  | false => "small"</pre>
+
+          <h3>Pipelines</h3>
+          <p>
+            <code>|></code> <strong>prepends</strong> the piped value:
+            <code>x |> f(a)</code> is <code>f(x, a)</code>. Every prelude function therefore
+            takes its subject (list, scene, body) first.
+          </p>
+          <pre class="mle">let isHigh = (score) => score > 10.0
+let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
+
+let report = (scores) =>
+  scores
+    |> List.filter(isHigh)
+    |> List.map(describe)
+    |> Text.toBullets</pre>
+
+          <h3>Tuples</h3>
+          <pre class="mle">let minMax = (a: Float, b: Float): Float * Float =>
+  match a &lt; b with
+  | true => (a, b)            // (e) is grouping, not a 1-tuple
+  | false => (b, a)
+
+let span = (a, b) =>
+  let (lo, hi) = minMax(a, b) in   // destructuring let
+  hi - lo</pre>
+          <p>
+            Tuples are structural (2+ elements) and are for multiple returns; prefer named
+            records for anything that outlives an expression.
+          </p>
+
+          <h3>Local mutation</h3>
+          <pre class="mle">let sum3 = (a, b, c) =>
+  let mut acc = a in          // a rebindable slot; expression let-in
+  acc := acc + b;             // assignment is := and carries a continuation
+  acc := acc + c;
+  acc</pre>
+          <p>
+            <code>mut</code> is local-only: no top-level <code>let mut</code>, and a lambda may
+            not capture an enclosing <code>mut</code> slot. Params, globals, and plain
+            <code>let</code>s are immutable.
+          </p>
+
+          <h3>Operators and equality</h3>
+          <p>
+            <code>+ - * /</code>, <code>&lt; > ==</code>, unary <code>-</code>; conventional
+            precedence, pipelines bind loosest. <code>==</code> is structural (comparing
+            functions is a runtime error). Division is IEEE (<code>1.0/0.0</code> is
+            <code>inf</code>); the engine boundary rejects non-finite numbers. There are no
+            loops, modules, or imports — iteration is <code>List.map/filter/fold</code>.
+          </p>
+        </section>
+
+        <section id="prelude">
+          <h2>The prelude</h2>
+          <p>
+            Available in runner-hosted games (the CLI, the sandbox) — not in the bare
+            <code>mle</code> interpreter.
+          </p>
+
+          <h3>Scene</h3>
+          <table>
+            <tbody>
+              <tr><td><code>Scene.cube() / sphere() / cylinder() / quad() / plane()</code></td><td>primitives (zero args, enforced); <code>plane</code> lies in XZ (ground), <code>quad</code> in XY — a quad's front is +Z</td></tr>
+              <tr><td><code>Scene.group([scene, …])</code></td><td>compose</td></tr>
+              <tr><td><code>scene |> Scene.color(r, g, b)</code></td><td>flat unlit color</td></tr>
+              <tr><td><code>scene |> Scene.lit(r, g, b)</code></td><td>diffuse + specular (needs lights)</td></tr>
+              <tr><td><code>scene |> Scene.emissive(r, g, b)</code></td><td>unlit glow</td></tr>
+              <tr><td><code>scene |> Scene.translate(x, y, z)</code></td><td rowspan="3">transforms wrap outward: the <em>outer</em> call applies last in world space — <code>s |> rotateY(r) |> translate(x, 0.0, 0.0)</code> rotates in place, then moves</td></tr>
+              <tr><td><code>scene |> Scene.rotateX/Y/Z(angle)</code></td></tr>
+              <tr><td><code>scene |> Scene.scale(k)</code></td></tr>
+            </tbody>
+          </table>
+          <p>
+            Coordinates are <strong>Y-up, right-handed</strong>: +Y up, +X right, ground in XZ.
+            Angles are branded values: <code>Angle.degrees(60.0)</code> /
+            <code>Angle.radians(1.57)</code> — never bare numbers.
+          </p>
+
+          <h3>Camera, lights, frames</h3>
+          <table>
+            <tbody>
+              <tr><td><code>Camera.lookAt(ex, ey, ez, tx, ty, tz)</code></td><td>up = +Y, fov 45°</td></tr>
+              <tr><td><code>Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)</code></td><td>all three are Angles; yaw 0 / pitch 0 looks down +Z</td></tr>
+              <tr><td><code>Light.ambient(r, g, b)</code></td><td></td></tr>
+              <tr><td><code>Light.directional(dx, dy, dz, r, g, b, intensity)</code></td><td><code>|> Light.castShadows</code> for a shadowed key light</td></tr>
+              <tr><td><code>Light.point(px, py, pz, r, g, b, intensity, range)</code></td><td></td></tr>
+              <tr><td><code>Frame.create(camera, scene)</code></td><td>what <code>draw</code> returns</td></tr>
+              <tr><td><code>Frame.createLit(camera, scene, [light, …])</code></td><td>lit + shadowed</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Render targets</h3>
+          <pre class="mle">let feed = RenderTarget.named("security") |> RenderTarget.sized(256.0, 256.0)</pre>
+          <table>
+            <tbody>
+              <tr><td><code>frame |> Frame.withRenderTarget(target, targetFrame)</code></td><td>writer: renders a full frame (own camera + lights) into the target before the main pass</td></tr>
+              <tr><td><code>scene |> Scene.screen(target)</code></td><td>reader: an emissive screen showing the target</td></tr>
+            </tbody>
+          </table>
+          <p>
+            Declare a target <em>once</em> and use the value at both sites (never a bare
+            string). A scene sampling its own target sees last frame's image. The
+            <em>Render targets</em> example in the sandbox is the reference.
+          </p>
+
+          <h3>Time, subscriptions<span id="prelude-effects"></span>, effects</h3>
+          <table>
+            <tbody>
+              <tr><td><code>Time.seconds(1.0) / Time.millis(500.0)</code></td><td>Durations are branded, like Angles</td></tr>
+              <tr><td><code>Sub.every(duration, Msg)</code></td><td>stateless global time grid: a long frame fires once; timers tick through hot reload</td></tr>
+              <tr><td><code>Sub.none() / Sub.batch([sub, …])</code></td><td></td></tr>
+              <tr><td><code>Effect.random(Tagger) / Effect.now(Tagger)</code></td><td>one-shots; the tagger is a function <code>(Float) => Msg</code> — <code>random</code> gives [0,1), <code>now</code> epoch seconds</td></tr>
+              <tr><td><code>Effect.none() / Effect.batch([fx, …])</code></td><td>return <code>(model', effect)</code> from any entry point</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Physics</h3>
+          <table>
+            <tbody>
+              <tr><td><code>Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)</code></td><td>shapes; box takes <em>full</em> extents</td></tr>
+              <tr><td><code>Physics.dynamic("tag", shape)</code></td><td>simulated; also <code>kinematic</code> / <code>fixed</code></td></tr>
+              <tr><td><code>body |> Physics.at(x, y, z)</code></td><td>spawn pose; also <code>velocity</code>, <code>mass</code>, <code>friction</code>, <code>restitution</code>, <code>sensor</code></td></tr>
+              <tr><td><code>Physics.scene(gx, gy, gz, [body, …])</code></td><td>what the <code>physics</code> hook returns</td></tr>
+              <tr><td><code>Physics.position("tag")</code></td><td><code>{x, y, z}</code> of the live body</td></tr>
+              <tr><td><code>scene |> Physics.transformed("tag")</code></td><td>draw a scene at the body's live pose</td></tr>
+            </tbody>
+          </table>
+          <p>
+            The tag is cross-frame identity: same tag = same body; drop a body by not declaring
+            it. Re-declaring an unchanged body leaves the simulation alone; changing its declared
+            position teleports it. Reading a tag your <code>physics</code> hook doesn't declare
+            is a runtime error. The physics world survives hot reload, like the model.
+          </p>
+        </section>
+
+        <section id="builtins">
+          <h2>Builtins</h2>
+          <table>
+            <tbody>
+              <tr><td><code>List.map(list, fn)</code> · <code>List.filter(list, fn)</code></td><td rowspan="2">the subject comes first — pipeline-friendly</td></tr>
+              <tr><td><code>List.fold(list, fn, init)</code> — callback is <code>(acc, x) => …</code></td></tr>
+              <tr><td><code>List.range(n)</code></td><td><code>[0 … n-1]</code></td></tr>
+              <tr><td><code>List.maximum(list)</code></td><td></td></tr>
+              <tr><td><code>Text.concat(a, b)</code> · <code>Text.fromFloat(n)</code> · <code>Text.toBullets(list)</code></td><td></td></tr>
+              <tr><td><code>Math.sin(n)</code> · <code>Math.cos(n)</code> · <code>Math.clamp01(n)</code></td><td></td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="sharp-edges">
+          <h2>Sharp edges</h2>
+          <ul>
+            <li><code>x |> f(a)</code> is <code>f(x, a)</code> — pipelines <em>prepend</em>.</li>
+            <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
+            <li>No <code>if</code>/<code>else</code> — use a bool-literal <code>match</code>.</li>
+            <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
+            <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
+            <li>Constructor names are global to the file's value namespace; nullary constructors never take parens.</li>
+            <li>Key repeats arrive as <code>isDown = true</code> — latch for rising edges.</li>
+            <li>Physics reads belong in <code>draw</code>; in <code>tick</code> you see last frame's world.</li>
+            <li>Engine values (<code>&lt;Scene></code>, <code>&lt;Frame></code>, …) are opaque: pass them around, don't compare or inspect them.</li>
+          </ul>
+          <p class="docs-footnote">
+            This page tracks the language exactly — if a construct isn't here, it doesn't parse.
+            The roadmap lives in <a href="https://github.com/tommy-xr/functor/blob/main/docs/mle.md">docs/mle.md</a>.
+          </p>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="assets/docs.js"></script>
+  </body>
+</html>

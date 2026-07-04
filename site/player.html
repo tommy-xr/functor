@@ -30,14 +30,22 @@
       // Must be set before init(): the runtime reads it at start to choose the
       // interpreter producer. The runtime fetches it as a URL, so encode each
       // path segment while keeping subdirectories.
-      const requested = new URLSearchParams(window.location.search).get("game");
+      const params = new URLSearchParams(window.location.search);
+      // ?src=<base64url> carries an inline program (the docs' "try it"
+      // buttons): the runtime fetches __mleGamePath as a URL, and a data:
+      // URL delivers the source with a fresh init — unlike a set-source
+      // push, which deliberately preserves the running model.
+      const src = params.get("src");
+      const requested = params.get("game");
       // Same-origin relative paths only: reject absolute/protocol-relative
       // URLs so the page can't be pointed at a third-party source.
       const game =
         requested && !requested.startsWith("/") && !requested.includes(":")
           ? requested
           : "examples/hero.mle";
-      window.__mleGamePath = game.split("/").map(encodeURIComponent).join("/");
+      window.__mleGamePath = src
+        ? "data:text/plain;base64," + src.replace(/-/g, "+").replace(/_/g, "/")
+        : game.split("/").map(encodeURIComponent).join("/");
 
       // Map a browser KeyboardEvent.code to the canonical key code expected by
       // the game (functor_runtime_common::Key as i32). Keep in sync with
