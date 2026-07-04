@@ -173,6 +173,11 @@ fn type_name_text(ty: &TypeName) -> String {
         return ty.name.clone();
     }
     let args: Vec<String> = ty.args.iter().map(type_name_text).collect();
+    // The parser encodes product annotations under the reserved name `*` —
+    // render them back as the source spelling, not `*<A, B>`.
+    if ty.name == "*" {
+        return args.join(" * ");
+    }
     format!("{}<{}>", ty.name, args.join(", "))
 }
 

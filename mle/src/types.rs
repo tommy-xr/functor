@@ -144,6 +144,17 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// Does this type (or, for products, any element) denote a function?
+/// Runtime `==` errors on functions at any depth it actually compares, so a
+/// known function anywhere in a compared tuple is a certain runtime error.
+fn contains_fn(ty: &Type) -> bool {
+    match ty {
+        Type::Fn(..) => true,
+        Type::Tuple(elems) => elems.iter().any(contains_fn),
+        _ => false,
+    }
+}
+
 /// The signature of a builtin (kept in sync with [`crate::eval`]'s registry
 /// by matching on [`Builtin`]). Generic slots are Unknown rather than
 /// instantiated type variables — e.g. `List.map : (List<T>, (T) => U) =>
@@ -477,6 +488,28 @@ impl Checker {
                 }
                 self.expr_types.insert(expr.id.raw(), expected.clone());
             }
+            // A tuple literal against a product expectation: check each
+            // element against its slot (so record/list elements meet their
+            // declared types instead of hiding behind Unknown).
+            (ExprKind::Tuple(items), Type::Tuple(elems)) => {
+                if items.len() != elems.len() {
+                    self.diag(
+                        expr.span,
+                        format!(
+                            "{what}: expected {expected}, got a tuple of {} element(s)",
+                            items.len()
+                        ),
+                    );
+                    for item in items {
+                        self.infer(item);
+                    }
+                    return;
+                }
+                for (i, (item, elem)) in items.iter().zip(elems.iter()).enumerate() {
+                    self.expect(item, elem, &format!("tuple element {}", i + 1));
+                }
+                self.expr_types.insert(expr.id.raw(), expected.clone());
+            }
             _ => {
                 let got = self.infer(expr);
                 if !compatible(&got, expected) {
@@ -788,9 +821,13 @@ impl Checker {
             match &arm.pattern.kind {
                 PatternKind::Wildcard | PatternKind::Var { .. } => has_catch_all = true,
                 // Sub-patterns are irrefutable (names/`_`), so a tuple arm
-                // catches every tuple of its arity; arity/kind mismatches
-                // against a KNOWN scrutinee are diagnosed in check_pattern.
-                PatternKind::Tuple(_) => has_catch_all = true,
+                // catches every tuple of its arity — but only if that arity
+                // CAN match the scrutinee (the mismatch itself is diagnosed
+                // in check_pattern; it must not also count as exhaustive).
+                PatternKind::Tuple(args) => match &scrutinee_ty {
+                    Type::Tuple(elems) if elems.len() != args.len() => {}
+                    _ => has_catch_all = true,
+                },
                 PatternKind::Ctor { name, .. } => covered_ctors.push(name),
                 PatternKind::Bool(true) => saw_true = true,
                 PatternKind::Bool(false) => saw_false = true,
@@ -862,6 +899,19 @@ impl Checker {
                         format!(
                             "match on {scrutinee_ty} is not exhaustive: literal patterns need \
 a catch-all arm (`_` or a name)"
+                        ),
+                    );
+                }
+                // A known product with no arity-matching arm can never be
+                // handled (the per-arm mismatch diags say why each arm
+                // fails; this says the MATCH as a whole is uncovered).
+                Type::Tuple(elems) => {
+                    self.diag(
+                        expr.span,
+                        format!(
+                            "match on {scrutinee_ty} is not exhaustive: no arm matches a \
+{}-element tuple",
+                            elems.len()
                         ),
                     );
                 }
@@ -993,7 +1043,9 @@ is {other}"
                     // rejects `==` whenever EITHER side is a function
                     // (closure, builtin, or unapplied constructor), so the
                     // other operand's type — even Unknown — cannot save it.
-                    (Type::Fn(..), _) | (_, Type::Fn(..)) => {
+                    // Runtime equality recurses, so a tuple with a known
+                    // function ELEMENT is just as certain to error.
+                    _ if contains_fn(lhs) || contains_fn(rhs) => {
                         self.diag(
                             node_span,
                             "functions cannot be compared with `==`".to_string(),
