@@ -262,15 +262,23 @@ place, then moves (the order the source reads). Engine values (`<Scene>`,
 `<Camera>`, `<Frame>`) are opaque: they can be passed around but not
 inspected, compared, or serialized.
 
-## Typechecking model (gradual)
+## Typechecking model (Hindley–Milner + gradual seams)
 
-`mle check` fires only where BOTH sides are known; unannotated = `Unknown` =
-compatible with everything. Annotations buy diagnostics. Record and variant
-annotations are nominal; the runtime is structural. A `mut` slot's type
-fixes at its initializer. A known-typed `match` scrutinee buys exhaustiveness
-checking (all ctors, or `true`+`false`, or a catch-all) and typed pattern
-variables; arm results must agree where known. Full Hindley–Milner is
-roadmapped (B7) after effects.
+`mle check` runs REAL INFERENCE (B7): unannotated code gets full types via
+unification with let-polymorphism — generic functions instantiate fresh at
+every use, element types flow through `List.map`/`filter`/`fold`, and
+lowercase annotation names are type variables (`(xs: List<a>, f: (a) =>
+b): List<b>`). Inference has teeth: unannotated bad calls, mixed-element
+lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
+at genuinely-dynamic seams (host values, unrecognized Uppercase type
+names) and absorbs anything. Record literals resolve nominally, F#-style:
+the unique declared type with exactly that field set (no match = anonymous
+data, still fine; two same-shaped declarations make a bare literal
+ambiguous — annotate). A `mut` slot's type fixes at its initializer. A
+`match`'s patterns CONSTRAIN its scrutinee (first ctor arm pins the
+variant type; a foreign literal arm is a can-never-match error);
+exhaustiveness checks all ctors / `true`+`false` / catch-all; arm results
+must agree.
 
 ## Keeping this skill honest
 
