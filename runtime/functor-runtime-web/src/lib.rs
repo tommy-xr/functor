@@ -24,6 +24,8 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 use wasm_bindgen::prelude::*;
 
+mod mle_game;
+
 fn window() -> web_sys::Window {
     web_sys::window().expect("no global `window` exists")
 }
@@ -72,6 +74,31 @@ fn fixed_time_from_url() -> Option<f32> {
         }
     }
     None
+}
+
+/// The wasm counterpart of the desktop `--mle --game-path` flags: the page
+/// sets `window.__mleGamePath` to the entry file before initializing this
+/// module (the CLI's MLE index page substitutes the project's `functor.json`
+/// entry — see `index-mle.html` / the CLI's `wasm_dev_server.rs`), and the
+/// runtime fetches + interprets that source instead of bridging to a game
+/// wasm module. Absent (the F# path) this returns `None`.
+fn mle_game_path() -> Option<String> {
+    js_sys::Reflect::get(&window(), &JsValue::from_str("__mleGamePath"))
+        .ok()
+        .and_then(|v| v.as_string())
+}
+
+/// Fetch the `.mle` source and build the interpreter producer. Failures are
+/// rendered strings (fetch status, parse/load position, contract violation)
+/// for `run_async` to fail loud with.
+async fn create_mle_game(path: &str) -> Result<mle_game::MleWebGame, String> {
+    let (status, src) = perform_fetch(HttpMethod::Get, path, &[], &[])
+        .await
+        .map_err(|e| format!("cannot fetch {path}: {e}"))?;
+    if status != 200 {
+        return Err(format!("cannot fetch {path}: HTTP {status}"));
+    }
+    mle_game::MleWebGame::create(path, src)
 }
 
 #[wasm_bindgen]
@@ -247,6 +274,13 @@ fn dispatch_net_commands(game: &dyn GameProducer) {
     }
 }
 
+// NOTE: completions push through a fresh stateless `WasmGame` (the F# game
+// module holds the real state behind the wasm_bindgen externs). The MLE
+// producer (`mle_game::MleWebGame`) is NOT reachable from here — safe today
+// because MLE has no effects (its drains return "[]", so nothing ever needs
+// completing), but when MLE grows effects (Track B6/C4b-2) these sites need a
+// shared handle to the live producer or they'll throw `game is not defined`
+// on the MLE page.
 async fn perform_and_push(cmd: NetCommand) {
     let NetCommand::HttpRequest {
         token,
@@ -739,6 +773,9 @@ fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>
 fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     // Idempotent by key (matches the native host); a re-declared connection
     // reattaches rather than opening a second socket.
+    // NOTE: like perform_and_push, event callbacks push through `WasmGame`
+    // (the F# externs) — unreachable on the MLE page until MLE grows effects;
+    // see the note on perform_and_push.
     if state.borrow().by_key.contains_key(&key) {
         return;
     }
@@ -817,6 +854,25 @@ impl AssetLoader for WasmAssetLoader {
 }
 
 async fn run_async() -> Result<(), JsValue> {
+    // Choose the producer for this page (docs/mle.md Track A2/C5): an MLE
+    // entry declared by the page runs through the in-runtime interpreter;
+    // otherwise the wasm_bindgen bridge to the F# game module. The concrete
+    // WasmGame stays the completion target for async pushes (fetch results,
+    // WebSocket events — see its doc): the MLE producer has no effects yet
+    // (its drains return "[]"), so no completion ever needs to reach it.
+    // Revisit when MLE grows effects (Track C4b-2).
+    let mut game: Box<dyn GameProducer> = match mle_game_path() {
+        Some(path) => match create_mle_game(&path).await {
+            Ok(game) => Box::new(game),
+            Err(message) => {
+                let rendered = format!("[mle] error: {message}");
+                web_sys::console::error_1(&rendered.as_str().into());
+                return Err(JsValue::from_str(&rendered));
+            }
+        },
+        None => Box::new(WasmGame),
+    };
+
     // Load game
     unsafe {
         // Create a context from a WebGL2 context on wasm32 targets
@@ -904,14 +960,6 @@ async fn run_async() -> Result<(), JsValue> {
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
         gl.enable(glow::DEPTH_TEST);
-        // The producer this loop drives — the wasm_bindgen bridge to the game
-        // module, behind the shared GameProducer seam (docs/mle.md, Track A2).
-        // Deliberately the concrete type, not a Box<dyn>: the async completions
-        // (fetch results, WebSocket events) push through their own stateless
-        // WasmGame, so swapping in a different web producer requires threading
-        // a shared handle into perform_and_push/ws_connect first — a boxed
-        // producer here would compile and then silently lose those events.
-        let mut game = WasmGame;
         let ws_state = Rc::new(RefCell::new(WsClient::default()));
         let f = Rc::new(RefCell::new(None));
         let g = f.clone();
@@ -970,22 +1018,27 @@ async fn run_async() -> Result<(), JsValue> {
 
             last_time = now;
 
+            // Deliver page input queued since the last frame (the MLE path's
+            // `mle_*` exports; empty and free on the F# path, whose page feeds
+            // the game module directly).
+            mle_game::drain_input(&mut *game);
+
             game.tick(frame_time.clone());
 
             // Perform any networking commands this frame's tick queued; results
             // are pushed back into the inbox asynchronously and decoded by a later
             // tick (see dispatch_net_commands).
-            dispatch_net_commands(&game);
+            dispatch_net_commands(&*game);
             // Play any one-shot sounds this frame's tick queued (fetch + decode
             // the first time, then from the cache).
-            dispatch_audio_commands(&game);
-            dispatch_conn_commands(&game, &ws_state);
+            dispatch_audio_commands(&*game);
+            dispatch_conn_commands(&*game, &ws_state);
 
             let frame: Frame = game.render(frame_time.clone());
 
             // Soundscape: aim the listener from this frame's camera, then
             // reconcile the desired looping voices against the live ones.
-            update_soundscape(&game, &frame.camera);
+            update_soundscape(&*game, &frame.camera);
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes. In

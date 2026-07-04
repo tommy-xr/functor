@@ -8,6 +8,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
+# The MLE language, for the in-runtime interpreter producer (docs/mle.md C5).
+mle = { path = "../../mle" }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 glow = "0.17"
 cgmath = "0.18.0"
