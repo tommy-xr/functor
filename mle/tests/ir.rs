@@ -45,7 +45,7 @@ fn check_golden(name: &str) {
 
 #[test]
 fn golden_pure_pipeline() {
-    check_golden("pure-pipeline");
+    check_golden("pure_pipeline");
 }
 
 #[test]

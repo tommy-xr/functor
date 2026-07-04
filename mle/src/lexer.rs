@@ -90,7 +90,12 @@ pub fn describe(kind: &TokenKind) -> String {
     }
 }
 
-pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
+/// Lex `src`. `base` is added to every span — a project loads several files
+/// into one global span space (each file gets a distinct base), so every
+/// downstream span (AST, IR, diagnostics, runtime errors) identifies its
+/// file as well as its position; `mle::project::SourceMap` renders them.
+/// Single-file callers pass 0.
+pub fn lex(src: &str, base: usize) -> Result<Vec<Token>, ParseError> {
     let bytes = src.as_bytes();
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -205,7 +210,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                 }
             },
             b'"' => {
-                let (kind, next) = lex_string(src, i)?;
+                let (kind, next) = lex_string(src, i, base)?;
                 i = next;
                 kind
             }
@@ -242,18 +247,18 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                 let c = src[i..].chars().next().expect("lex is on a char boundary");
                 return Err(ParseError {
                     message: format!("unexpected character `{c}`"),
-                    span: Span::new(i, i + c.len_utf8()),
+                    span: Span::new(base + i, base + i + c.len_utf8()),
                 });
             }
         };
         tokens.push(Token {
             kind,
-            span: Span::new(start, i),
+            span: Span::new(base + start, base + i),
         });
     }
     tokens.push(Token {
         kind: TokenKind::Eof,
-        span: Span::new(src.len(), src.len()),
+        span: Span::new(base + src.len(), base + src.len()),
     });
     Ok(tokens)
 }
@@ -261,7 +266,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
 /// Lex a string literal starting at its opening quote. Escapes: `\"`, `\\`,
 /// `\n`, `\t`. Returns the token kind and the index just past the closing
 /// quote. An unterminated string reports its span at the opening quote.
-fn lex_string(src: &str, start: usize) -> Result<(TokenKind, usize), ParseError> {
+fn lex_string(src: &str, start: usize, base: usize) -> Result<(TokenKind, usize), ParseError> {
     let bytes = src.as_bytes();
     let mut out: Vec<u8> = Vec::new();
     let mut i = start + 1;
@@ -270,7 +275,7 @@ fn lex_string(src: &str, start: usize) -> Result<(TokenKind, usize), ParseError>
             None => {
                 return Err(ParseError {
                     message: "unterminated string".to_string(),
-                    span: Span::new(start, start + 1),
+                    span: Span::new(base + start, base + start + 1),
                 })
             }
             Some(b'"') => {
@@ -290,7 +295,7 @@ fn lex_string(src: &str, start: usize) -> Result<(TokenKind, usize), ParseError>
                         let escaped_len = src[i + 1..].chars().next().map_or(0, char::len_utf8);
                         return Err(ParseError {
                             message: "unknown escape sequence".to_string(),
-                            span: Span::new(i, i + 1 + escaped_len),
+                            span: Span::new(base + i, base + i + 1 + escaped_len),
                         });
                     }
                 };

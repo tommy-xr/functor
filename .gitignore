@@ -48,3 +48,4 @@ perf*
 # Android builds use an isolated target dir (a cleaner/analyzer race on the
 # shared target/ corrupts cross-compile fingerprints)
 target-android/
+runtime/functor-runtime-web/pkg

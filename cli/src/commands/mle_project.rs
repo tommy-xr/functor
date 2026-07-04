@@ -56,29 +56,29 @@ impl MleProject {
         Ok(path)
     }
 
-    /// Parse + lower + typecheck the entry; `mle check` diagnostics are
-    /// build errors here (see the module doc).
+    /// Load the project (B8: the entry plus every sibling `.mle` file —
+    /// file = module) and typecheck the whole program; `mle check`
+    /// diagnostics are build errors here (see the module doc).
     pub fn build(&self, working_directory: &str) -> Result<(), Error> {
         let path = self.entry_path(working_directory)?;
         let display = path.display().to_string();
-        let src = std::fs::read_to_string(&path)?;
-        let fail = |span: mle::Span, message: &str| {
-            let (line, col) = mle::line_col(&src, span.start);
-            Error::other(format!("{display}:{line}:{col}: {message}"))
-        };
-        let program = mle::parse(&src).map_err(|e| fail(e.span, &e.message))?;
-        let module = mle::lower(program).map_err(|e| fail(e.span, &e.message))?;
-        let diags = mle::check(&module);
+        let project = mle::project::load(&path).map_err(|e| Error::other(e.render()))?;
+        let diags = project.check();
         for diag in &diags {
-            let (line, col) = mle::line_col(&src, diag.span.start);
-            eprintln!("error: {display}:{line}:{col}: {}", diag.message);
+            let rendered = project.sources.render(diag.span.start, &diag.message);
+            eprintln!("error: {rendered}");
         }
         if diags.is_empty() {
-            println!("[mle] {display}: ok");
+            let modules = project.sources.files().len();
+            let and_siblings = match modules {
+                1 => String::new(),
+                n => format!(" (+ {} sibling module(s))", n - 1),
+            };
+            println!("[mle] {display}{and_siblings}: ok");
             Ok(())
         } else {
             Err(Error::other(format!(
-                "{} type error(s) in {display}",
+                "{} type error(s) in the {display} project",
                 diags.len()
             )))
         }

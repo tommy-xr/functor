@@ -31,12 +31,17 @@ fn assert_clean(src: &str) {
     assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
 }
 
-/// The `mle check` diagnostics for `examples/broken.mle`, compared against
-/// the committed `broken.check` golden (rendered exactly as the CLI prints
-/// them). Regenerate with `UPDATE_GOLDENS=1 cargo test -p mle`.
+/// The `mle check` diagnostics for `examples/checks/broken.mle`, compared
+/// against the committed `broken.check` golden (rendered exactly as the CLI
+/// prints them). Regenerate with `UPDATE_GOLDENS=1 cargo test -p mle`.
+/// (The file lives in its own subdirectory: with B8's file=module project
+/// loading, every `.mle` in a directory loads together, and a deliberately
+/// broken sibling would fail `mle run` on the clean examples.)
 #[test]
 fn golden_check_broken() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("checks");
     let src = fs::read_to_string(dir.join("broken.mle")).unwrap();
     let golden_path = dir.join("broken.check");
     let actual: String = check_src(&src)
@@ -65,7 +70,7 @@ fn golden_check_broken() {
 
 #[test]
 fn example_pure_pipeline_checks_clean() {
-    example_checks_clean("pure-pipeline");
+    example_checks_clean("pure_pipeline");
 }
 
 #[test]

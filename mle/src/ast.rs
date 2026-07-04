@@ -16,6 +16,17 @@ pub struct Program {
 pub enum Item {
     Let(LetDecl),
     Type(TypeDecl),
+    Open(OpenDecl),
+}
+
+/// `open Utils` — bring a sibling module's defs, constructors, and types
+/// into scope unqualified (B8 modules; qualified access `Utils.x` needs no
+/// `open`). `open` is a *contextual* keyword: it only means this at the top
+/// level, so `open` stays usable as an ordinary name everywhere else.
+#[derive(Debug)]
+pub struct OpenDecl {
+    pub module: String,
+    pub span: Span,
 }
 
 /// `let name = expr` — the expr may be a lambda (`let f = (a, b) => …`).

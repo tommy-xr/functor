@@ -52,7 +52,14 @@ use crate::ParseError;
 
 /// Parse a whole source file into a [`Program`].
 pub fn parse(src: &str) -> Result<Program, ParseError> {
-    let tokens = lex(src)?;
+    parse_with_base(src, 0)
+}
+
+/// [`parse`] with a span base: every span is offset by `base`, placing the
+/// file in a project-wide span space (see [`crate::lexer::lex`] and
+/// [`crate::project`]).
+pub(crate) fn parse_with_base(src: &str, base: usize) -> Result<Program, ParseError> {
+    let tokens = lex(src, base)?;
     Parser {
         tokens,
         pos: 0,
@@ -128,10 +135,35 @@ impl Parser {
             match self.peek_kind() {
                 TokenKind::Let => items.push(Item::Let(self.let_decl()?)),
                 TokenKind::Type => items.push(Item::Type(self.type_decl()?)),
-                _ => return self.error("`let` or `type` at top level"),
+                // `open` is contextual: only an `open` in item position is
+                // the module directive, so the name stays usable elsewhere.
+                TokenKind::Ident(name) if name == "open" => {
+                    items.push(Item::Open(self.open_decl()?))
+                }
+                _ => return self.error("`let`, `type`, or `open` at top level"),
             }
         }
         Ok(Program { items })
+    }
+
+    /// `open Utils` — the module name is capitalized, like the file-derived
+    /// module names it refers to.
+    fn open_decl(&mut self) -> Result<OpenDecl, ParseError> {
+        let kw = self.bump();
+        let (module, module_span) = self.expect_ident("a module name after `open`")?;
+        if !starts_uppercase(&module) {
+            return Err(ParseError {
+                message: format!(
+                    "module names are capitalized: `open {}`",
+                    capitalize(&module)
+                ),
+                span: module_span,
+            });
+        }
+        Ok(OpenDecl {
+            module,
+            span: kw.span.to(module_span),
+        })
     }
 
     fn let_decl(&mut self) -> Result<LetDecl, ParseError> {
@@ -285,7 +317,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 span: self.peek().span,
             });
         }
-        let (name, mut span) = self.expect_ident("a type name")?;
+        let (name, mut span) = self.qualified_type_head()?;
         let mut args = Vec::new();
         if self.peek_kind() == &TokenKind::Lt {
             self.bump();
@@ -329,10 +361,28 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         Ok(ty)
     }
 
+    /// A type-position name, possibly module-qualified: `Shape` or
+    /// `Utils.Shape` (one level — modules do not nest). The dotted form is
+    /// kept as a single dotted [`TypeName::name`]; lowering canonicalizes it
+    /// against the project (see `crate::lower`).
+    fn qualified_type_head(&mut self) -> Result<(String, Span), ParseError> {
+        let (mut name, mut span) = self.expect_ident("a type name")?;
+        if starts_uppercase(&name)
+            && self.peek_kind() == &TokenKind::Dot
+            && matches!(self.nth_kind(1), TokenKind::Ident(_))
+        {
+            self.bump();
+            let (member, member_span) = self.expect_ident("a type name after `.`")?;
+            name = format!("{name}.{member}");
+            span = span.to(member_span);
+        }
+        Ok((name, span))
+    }
+
     /// One element of a product type: a named type with optional generic
     /// args, but no `*` continuation (that's the caller's loop).
     fn type_atom(&mut self) -> Result<TypeName, ParseError> {
-        let (name, mut span) = self.expect_ident("a type name")?;
+        let (name, mut span) = self.qualified_type_head()?;
         let mut args = Vec::new();
         if self.peek_kind() == &TokenKind::Lt {
             self.bump();
@@ -574,7 +624,15 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
     /// `Circle(r, _)` / `Point` — sub-patterns are variable bindings or `_`
     /// only (the deliberately-minimal B5 pattern language; no nesting).
     fn ctor_pattern(&mut self) -> Result<Pattern, ParseError> {
-        let (name, name_span) = self.expect_ident("a constructor name")?;
+        let (mut name, mut name_span) = self.expect_ident("a constructor name")?;
+        // Module-qualified: `Utils.Circle(r)` — one dotted level, like
+        // qualified type names.
+        if self.peek_kind() == &TokenKind::Dot && matches!(self.nth_kind(1), TokenKind::Ident(_)) {
+            self.bump();
+            let (member, member_span) = self.expect_ident("a constructor name after `.`")?;
+            name = format!("{name}.{member}");
+            name_span = name_span.to(member_span);
+        }
         let mut args = Vec::new();
         let mut span = name_span;
         if self.peek_kind() == &TokenKind::LParen {
@@ -987,4 +1045,13 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
 
 fn starts_uppercase(s: &str) -> bool {
     s.chars().next().is_some_and(char::is_uppercase)
+}
+
+/// Uppercase the first character (module names: `utils` → `Utils`).
+pub(crate) fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }

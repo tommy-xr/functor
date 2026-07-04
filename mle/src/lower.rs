@@ -18,6 +18,27 @@
 //! Duplicate parameter names within one lambda are errors for the same
 //! reason (the last one would silently win).
 //!
+//! ## Modules (B8)
+//!
+//! Within a project (see [`crate::project`]) a module lowers with a
+//! [`ProjectEnv`]: every sibling file's exports are visible, **qualified by
+//! default** (`Utils.clamp`, `Utils.Circle`, `Utils.Shape` — no import
+//! needed), and `open Utils` brings a module's defs/constructors/types into
+//! scope unqualified (collisions with this module's own names or another
+//! `open` are errors naming both sides). Lowering **canonicalizes** names
+//! into one project-wide namespace: a non-entry module `M`'s defs, types,
+//! and constructor tags become `M.name`, while the **entry module stays
+//! bare** — so a single-file project lowers byte-identically to plain
+//! [`lower`], and the entry's `init`/`tick`/`draw` contract keys don't
+//! change. Cross-module value references become ordinary
+//! [`ExprKind::Global`]s ("Utils.clamp") — late-bound at call time like any
+//! global, which is exactly the hot-reload rebind seam — and constructor
+//! references/patterns carry canonical tags, so cross-module `match` works
+//! structurally. The lowered modules concatenate into ONE merged
+//! [`Module`]; [`IdBases`] threads ID counters across files so the merged
+//! module is a single ID space (as it is a single span space — see
+//! [`crate::lexer::lex`]).
+//!
 //! ## Name resolution
 //!
 //! For an identifier `first(.rest)*` (the parser only builds multi-segment
@@ -33,9 +54,15 @@
 //! - `first` names a declared variant constructor → [`ExprKind::Ctor`]
 //!   (the `Type.Ctor` qualified form is deliberately NOT supported — a
 //!   qualified name whose head is a type name stays an unknown external).
+//! - `first` names an `open`ed module's def or constructor → the qualified
+//!   [`ExprKind::Global`] / [`ExprKind::Ctor`].
+//! - `first` names a sibling module → resolve `rest[0]` against its exports
+//!   (def or constructor; an unknown member is an error); further segments
+//!   become field access. (Builtins like `List.map` cannot collide: module
+//!   names matching builtin/prelude namespaces are refused at project load.)
 //! - Otherwise, a qualified name (`Text.toBullets`) → [`ExprKind::External`],
-//!   kept symbolic until the builtin registry arrives in B3 — and an
-//!   unqualified name is an "unknown name" error at the identifier's span.
+//!   the builtin/host seam — and an unqualified name is an "unknown name"
+//!   error at the identifier's span (with a hint when it names a module).
 //!
 //! ## Match lowering
 //!
@@ -61,8 +88,80 @@ use crate::span::Span;
 use crate::LowerError;
 use std::collections::{HashMap, HashSet};
 
-/// Lower a parsed [`ast::Program`] to an IR [`Module`].
+/// Lower a parsed [`ast::Program`] to an IR [`Module`] (single-file: no
+/// project context, IDs from zero).
 pub fn lower(program: ast::Program) -> Result<Module, LowerError> {
+    lower_module(program, None, IdBases::default()).map(|(module, _, _)| module)
+}
+
+/// What a module contributes to sibling files, derived from its AST before
+/// lowering: top-level `let` names, constructors (with arities), and type
+/// names. Duplicates are NOT validated here — lowering the module itself
+/// reports them.
+#[derive(Default)]
+pub(crate) struct Exports {
+    pub defs: HashSet<String>,
+    pub ctors: HashMap<String, usize>,
+    pub types: HashSet<String>,
+}
+
+pub(crate) fn exports_of(program: &ast::Program) -> Exports {
+    let mut exports = Exports::default();
+    for item in &program.items {
+        match item {
+            ast::Item::Let(decl) => {
+                exports.defs.insert(decl.name.clone());
+            }
+            ast::Item::Type(decl) => {
+                exports.types.insert(decl.name.clone());
+                if let ast::TypeBody::Variants(variants) = &decl.body {
+                    for variant in variants {
+                        exports
+                            .ctors
+                            .insert(variant.name.clone(), variant.fields.len());
+                    }
+                }
+            }
+            ast::Item::Open(_) => {}
+        }
+    }
+    exports
+}
+
+/// The project context a module lowers in (see the module docs): its own
+/// name, the entry module's name (entry members canonicalize BARE), and
+/// every module's exports (self included).
+pub(crate) struct ProjectEnv<'a> {
+    pub name: &'a str,
+    pub entry: &'a str,
+    pub modules: &'a HashMap<String, Exports>,
+}
+
+/// Starting IDs for a module's lowering: a project threads these across its
+/// files so [`DefId`]/[`BindingId`]/[`ExprId`]s are unique project-wide.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct IdBases {
+    pub def: u32,
+    pub binding: u32,
+    pub expr: u32,
+}
+
+/// [`lower`] within a project. Returns the lowered module, the next free
+/// IDs, and the sibling modules this one references — the project's
+/// dependency edges (`open`s included).
+pub(crate) fn lower_in_project(
+    program: ast::Program,
+    env: &ProjectEnv,
+    bases: IdBases,
+) -> Result<(Module, IdBases, HashSet<String>), LowerError> {
+    lower_module(program, Some(env), bases)
+}
+
+fn lower_module(
+    program: ast::Program,
+    project: Option<&ProjectEnv>,
+    bases: IdBases,
+) -> Result<(Module, IdBases, HashSet<String>), LowerError> {
     // Pass 1: collect top-level names so defs are mutually visible (see
     // module docs) and duplicates fail loud. Types and values are separate
     // namespaces; constructors join the VALUE namespace (they resolve bare),
@@ -73,6 +172,7 @@ pub fn lower(program: ast::Program) -> Result<Module, LowerError> {
     let mut type_names = HashSet::new();
     for item in &program.items {
         match item {
+            ast::Item::Open(_) => {}
             ast::Item::Let(decl) => {
                 if ctors.contains_key(&decl.name) {
                     return Err(LowerError {
@@ -131,42 +231,195 @@ namespace)",
         }
     }
 
+    // Pass 1b: process `open`s, after the module's own names are known (an
+    // `open` may precede or follow the definitions it collides with).
+    // Collisions are eager load errors naming both sides — even for names
+    // the module never uses.
+    let mut open_values: HashMap<String, OpenedName> = HashMap::new();
+    let mut open_types: HashMap<String, String> = HashMap::new();
+    let mut deps: HashSet<String> = HashSet::new();
+    for item in &program.items {
+        let ast::Item::Open(decl) = item else {
+            continue;
+        };
+        let Some(env) = project else {
+            return Err(LowerError {
+                message: format!(
+                    "unknown module `{}` — modules are sibling `.mle` files loaded through the \
+project entry (this file is being lowered on its own)",
+                    decl.module
+                ),
+                span: decl.span,
+            });
+        };
+        if decl.module == env.name {
+            return Err(LowerError {
+                message: format!(
+                    "`open {}` in module `{}` itself — a module's own names are already in scope",
+                    decl.module, decl.module
+                ),
+                span: decl.span,
+            });
+        }
+        let Some(exports) = env.modules.get(&decl.module) else {
+            return Err(LowerError {
+                message: format!(
+                    "unknown module `{}` — modules are the sibling `.mle` files next to the entry",
+                    decl.module
+                ),
+                span: decl.span,
+            });
+        };
+        deps.insert(decl.module.clone());
+        // Value namespace: the opened module's defs and constructors.
+        let mut values: Vec<(&String, Option<usize>)> = exports
+            .defs
+            .iter()
+            .map(|d| (d, None))
+            .chain(exports.ctors.iter().map(|(c, a)| (c, Some(*a))))
+            .collect();
+        values.sort_by_key(|(name, _)| name.as_str().to_string());
+        for (name, arity) in values {
+            if globals.contains(name) || ctors.contains_key(name) {
+                return Err(LowerError {
+                    message: format!(
+                        "open {}: `{name}` collides with this module's own `{name}` — qualify \
+uses as `{}.{name}` instead of opening",
+                        decl.module, decl.module
+                    ),
+                    span: decl.span,
+                });
+            }
+            if let Some(prev) = open_values.get(name) {
+                return Err(LowerError {
+                    message: format!(
+                        "open {}: `{name}` is already in scope from `open {}` — qualify uses \
+(`{}.{name}` / `{}.{name}`)",
+                        decl.module,
+                        prev.module(),
+                        prev.module(),
+                        decl.module
+                    ),
+                    span: decl.span,
+                });
+            }
+            let opened = match arity {
+                Some(arity) => OpenedName::Ctor(decl.module.clone(), arity),
+                None => OpenedName::Def(decl.module.clone()),
+            };
+            open_values.insert(name.clone(), opened);
+        }
+        // Type namespace.
+        let mut types: Vec<&String> = exports.types.iter().collect();
+        types.sort();
+        for name in types {
+            if type_names.contains(name) {
+                return Err(LowerError {
+                    message: format!(
+                        "open {}: type `{name}` collides with this module's own `{name}` — \
+qualify uses as `{}.{name}` instead of opening",
+                        decl.module, decl.module
+                    ),
+                    span: decl.span,
+                });
+            }
+            if let Some(prev) = open_types.get(name) {
+                return Err(LowerError {
+                    message: format!(
+                        "open {}: type `{name}` is already in scope from `open {prev}` — \
+qualify uses (`{prev}.{name}` / `{}.{name}`)",
+                        decl.module, decl.module
+                    ),
+                    span: decl.span,
+                });
+            }
+            open_types.insert(name.clone(), decl.module.clone());
+        }
+    }
+
     // Pass 2: lower items in file order.
     let mut lowerer = Lowerer {
         globals,
         ctors,
+        types: type_names,
+        project,
+        open_values,
+        open_types,
+        deps,
         scopes: Vec::new(),
-        next_binding: 0,
-        next_expr: 0,
+        next_binding: bases.binding,
+        next_expr: bases.expr,
     };
+    let mut next_def = bases.def;
     let mut types = Vec::new();
     let mut defs = Vec::new();
-    for (index, item) in program.items.into_iter().enumerate() {
-        let id = DefId(index as u32);
+    for item in program.items {
         match item {
-            ast::Item::Type(decl) => types.push(TypeDef {
-                params: decl.params.clone(),
-                id,
-                name: decl.name,
-                body: decl.body,
-                span: decl.span,
-            }),
-            ast::Item::Let(decl) => defs.push(Def {
-                id,
-                name: decl.name,
-                value: lowerer.expr(decl.value)?,
-                span: decl.span,
-            }),
+            // Opens were consumed in pass 1b; they leave no IR (and no
+            // DefId — a file without opens numbers exactly as before).
+            ast::Item::Open(_) => {}
+            ast::Item::Type(decl) => {
+                let id = DefId(next_def);
+                next_def += 1;
+                types.push(TypeDef {
+                    params: decl.params.clone(),
+                    id,
+                    name: lowerer.self_qualify(&decl.name),
+                    body: lowerer.canon_type_body(decl.body)?,
+                    span: decl.span,
+                });
+            }
+            ast::Item::Let(decl) => {
+                let id = DefId(next_def);
+                next_def += 1;
+                defs.push(Def {
+                    id,
+                    name: lowerer.self_qualify(&decl.name),
+                    value: lowerer.expr(decl.value)?,
+                    span: decl.span,
+                });
+            }
         }
     }
-    Ok(Module { types, defs })
+    let bases = IdBases {
+        def: next_def,
+        binding: lowerer.next_binding,
+        expr: lowerer.next_expr,
+    };
+    Ok((Module { types, defs }, bases, lowerer.deps))
 }
 
-struct Lowerer {
+/// A name an `open` brought into scope: which module provides it, and (for
+/// constructors) the declared arity.
+#[derive(Clone)]
+enum OpenedName {
+    Def(String),
+    Ctor(String, usize),
+}
+
+impl OpenedName {
+    fn module(&self) -> &str {
+        match self {
+            OpenedName::Def(module) | OpenedName::Ctor(module, _) => module,
+        }
+    }
+}
+
+struct Lowerer<'p> {
     globals: HashSet<String>,
     /// Declared variant constructors: name → declared field count. Part of
     /// the value namespace (pass 1 guarantees no overlap with `globals`).
     ctors: HashMap<String, usize>,
+    /// This module's own declared type names (bare).
+    types: HashSet<String>,
+    /// The project context, when lowering as part of one (B8 modules).
+    project: Option<&'p ProjectEnv<'p>>,
+    /// Names brought into scope by `open`s (collision-free by pass 1b).
+    open_values: HashMap<String, OpenedName>,
+    /// Type names brought into scope by `open`s: name → providing module.
+    open_types: HashMap<String, String>,
+    /// Sibling modules this module references (the project dep edges).
+    deps: HashSet<String>,
     /// One level per enclosing lambda or `let … in`; lookup walks
     /// innermost-first. A lambda's level is a *boundary*: a `mut` binding
     /// found past one has been captured, which is an error (see the module
@@ -190,11 +443,111 @@ struct Resolved {
     captured: bool,
 }
 
-impl Lowerer {
+impl Lowerer<'_> {
     fn expr_id(&mut self) -> ExprId {
         let id = ExprId(self.next_expr);
         self.next_expr += 1;
         id
+    }
+
+    /// Canonicalize `member` of `module`: `M.member`, except the ENTRY
+    /// module's members stay bare (see the module docs).
+    fn qualify(&self, module: &str, member: &str) -> String {
+        match self.project {
+            Some(env) if module != env.entry => format!("{module}.{member}"),
+            _ => member.to_string(),
+        }
+    }
+
+    /// Canonicalize one of this module's own members.
+    fn self_qualify(&self, member: &str) -> String {
+        match self.project {
+            Some(env) => self.qualify(env.name, member),
+            None => member.to_string(),
+        }
+    }
+
+    /// Record a cross-module reference (the project dependency edge).
+    fn dep(&mut self, module: &str) {
+        if self.project.is_some_and(|env| env.name != module) {
+            self.deps.insert(module.to_string());
+        }
+    }
+
+    /// Canonicalize a type annotation (see the module docs): this module's
+    /// own type names and `open`ed ones gain their module qualifier;
+    /// `Module.Type` references resolve against the project (an unknown
+    /// member of a KNOWN module is an error; an unknown head stays symbolic
+    /// — the checker's gradual seam).
+    fn canon_type(&mut self, ty: ast::TypeName) -> Result<ast::TypeName, LowerError> {
+        let args = ty
+            .args
+            .into_iter()
+            .map(|arg| self.canon_type(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let name = if let Some((module, member)) = ty.name.split_once('.') {
+            match self.project.and_then(|env| env.modules.get(module)) {
+                Some(exports) => {
+                    if !exports.types.contains(member) {
+                        return Err(LowerError {
+                            message: format!("module `{module}` has no type `{member}`"),
+                            span: ty.span,
+                        });
+                    }
+                    let module = module.to_string();
+                    self.dep(&module);
+                    self.qualify(&module, member)
+                }
+                None => ty.name,
+            }
+        } else if self.types.contains(&ty.name) {
+            self.self_qualify(&ty.name)
+        } else if let Some(module) = self.open_types.get(&ty.name).cloned() {
+            self.dep(&module);
+            self.qualify(&module, &ty.name)
+        } else {
+            ty.name
+        };
+        Ok(ast::TypeName {
+            name,
+            args,
+            span: ty.span,
+        })
+    }
+
+    /// Canonicalize a type declaration's body: field annotations, and (for
+    /// variants) the constructor names — the canonical tags runtime variant
+    /// values carry.
+    fn canon_type_body(&mut self, body: ast::TypeBody) -> Result<ast::TypeBody, LowerError> {
+        let canon_fields = |lowerer: &mut Self,
+                            fields: Vec<ast::FieldTy>|
+         -> Result<Vec<ast::FieldTy>, LowerError> {
+            fields
+                .into_iter()
+                .map(|field| {
+                    Ok(ast::FieldTy {
+                        ty: lowerer.canon_type(field.ty)?,
+                        name: field.name,
+                        span: field.span,
+                    })
+                })
+                .collect()
+        };
+        Ok(match body {
+            ast::TypeBody::Record(fields) => ast::TypeBody::Record(canon_fields(self, fields)?),
+            ast::TypeBody::Variants(variants) => ast::TypeBody::Variants(
+                variants
+                    .into_iter()
+                    .map(|variant| {
+                        Ok(ast::VariantDecl {
+                            name: self.self_qualify(&variant.name),
+                            fields: canon_fields(self, variant.fields)?,
+                            span: variant.span,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, LowerError>>()?,
+            ),
+        })
     }
 
     // Recursion depth is bounded by the parser's `MAX_DEPTH` guard — except
@@ -374,13 +727,15 @@ impl Lowerer {
                     let binding = BindingId(self.next_binding);
                     self.next_binding += 1;
                     scope.push((param.name.clone(), binding, false));
+                    let ty = param.ty.map(|ty| self.canon_type(ty)).transpose()?;
                     lowered.push(Param {
                         binding,
                         name: param.name,
-                        ty: param.ty,
+                        ty,
                         span: param.span,
                     });
                 }
+                let ret = ret.map(|ty| self.canon_type(ty)).transpose()?;
                 self.scopes.push(ScopeLevel {
                     lambda_boundary: true,
                     vars: scope,
@@ -441,6 +796,44 @@ impl Lowerer {
         })
     }
 
+    /// Resolve a pattern's constructor name to its canonical tag + arity:
+    /// this module's own constructors, `open`ed ones, and module-qualified
+    /// `Utils.Circle` forms.
+    fn resolve_pattern_ctor(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> Result<(String, usize), LowerError> {
+        if let Some((module, member)) = name.split_once('.') {
+            let Some(exports) = self.project.and_then(|env| env.modules.get(module)) else {
+                return Err(LowerError {
+                    message: format!("unknown module `{module}` in pattern `{name}`"),
+                    span,
+                });
+            };
+            let Some(&arity) = exports.ctors.get(member) else {
+                return Err(LowerError {
+                    message: format!("module `{module}` has no constructor `{member}`"),
+                    span,
+                });
+            };
+            let module = module.to_string();
+            self.dep(&module);
+            return Ok((self.qualify(&module, member), arity));
+        }
+        if let Some(&arity) = self.ctors.get(name) {
+            return Ok((self.self_qualify(name), arity));
+        }
+        if let Some(OpenedName::Ctor(module, arity)) = self.open_values.get(name).cloned() {
+            self.dep(&module);
+            return Ok((self.qualify(&module, name), arity));
+        }
+        Err(LowerError {
+            message: format!("unknown constructor `{name}`"),
+            span,
+        })
+    }
+
     /// Lower one pattern, appending its variable bindings to `vars` (the
     /// caller pushes them as the arm body's scope). Pattern nesting is
     /// bounded by the grammar (constructor sub-patterns are leaves), so
@@ -466,12 +859,7 @@ impl Lowerer {
                 PatternKind::Var { binding, name }
             }
             ast::PatternKind::Ctor { name, args } => {
-                let Some(&arity) = self.ctors.get(&name) else {
-                    return Err(LowerError {
-                        message: format!("unknown constructor `{name}`"),
-                        span,
-                    });
-                };
+                let (canonical, arity) = self.resolve_pattern_ctor(&name, span)?;
                 if args.len() != arity {
                     return Err(LowerError {
                         message: format!(
@@ -486,7 +874,7 @@ impl Lowerer {
                     lowered.push(self.pattern(arg, vars)?);
                 }
                 PatternKind::Ctor {
-                    name,
+                    name: canonical,
                     args: lowered,
                 }
             }
@@ -550,17 +938,62 @@ impl Lowerer {
                 })
             }
         } else if self.globals.contains(first) {
-            Some(ExprKind::Global(first.clone()))
+            Some(ExprKind::Global(self.self_qualify(first)))
         } else if let Some(&arity) = self.ctors.get(first) {
             Some(ExprKind::Ctor {
-                name: first.clone(),
+                name: self.self_qualify(first),
                 arity,
             })
+        } else if let Some(opened) = self.open_values.get(first).cloned() {
+            match opened {
+                OpenedName::Def(module) => {
+                    self.dep(&module);
+                    Some(ExprKind::Global(self.qualify(&module, first)))
+                }
+                OpenedName::Ctor(module, arity) => {
+                    self.dep(&module);
+                    Some(ExprKind::Ctor {
+                        name: self.qualify(&module, first),
+                        arity,
+                    })
+                }
+            }
         } else {
             None
         };
-        let kind = match base {
-            Some(kind) => kind,
+        let (kind, consumed) = match base {
+            Some(kind) => (kind, 1),
+            // A module-qualified reference: `Utils.clamp` / `Utils.Circle`.
+            // (Module names never collide with builtin namespaces like
+            // `List` — the project refuses them at load — so trying modules
+            // before the External seam is unambiguous.)
+            None if segments.len() > 1
+                && self
+                    .project
+                    .is_some_and(|env| env.modules.contains_key(first)) =>
+            {
+                let module = first.clone();
+                let member = &segments[1];
+                let exports = self
+                    .project
+                    .and_then(|env| env.modules.get(&module))
+                    .expect("checked above");
+                let kind = if exports.defs.contains(member) {
+                    ExprKind::Global(self.qualify(&module, member))
+                } else if let Some(&arity) = exports.ctors.get(member) {
+                    ExprKind::Ctor {
+                        name: self.qualify(&module, member),
+                        arity,
+                    }
+                } else {
+                    return Err(LowerError {
+                        message: format!("module `{module}` has no `{member}`"),
+                        span,
+                    });
+                };
+                self.dep(&module);
+                (kind, 2)
+            }
             None if segments.len() > 1 => {
                 return Ok(Expr {
                     id: self.expr_id(),
@@ -569,10 +1002,18 @@ impl Lowerer {
                 })
             }
             None => {
+                let hint = if self
+                    .project
+                    .is_some_and(|env| env.modules.contains_key(first))
+                {
+                    format!(" — `{first}` is a module; reference a member (`{first}.name`)")
+                } else {
+                    String::new()
+                };
                 return Err(LowerError {
-                    message: format!("unknown name `{first}`"),
+                    message: format!("unknown name `{first}`{hint}"),
                     span,
-                })
+                });
             }
         };
         let mut expr = Expr {
@@ -582,7 +1023,7 @@ impl Lowerer {
         };
         // `Foo.bar` where `Foo` is a binding: the qualifier syntax was really
         // field access on that value (see `ast::ExprKind::Ident`).
-        for field in segments.into_iter().skip(1) {
+        for field in segments.into_iter().skip(consumed) {
             expr = Expr {
                 id: self.expr_id(),
                 kind: ExprKind::FieldAccess {

@@ -1,12 +1,17 @@
 //! The `mle` CLI. Five subcommands:
 //!
 //! ```text
-//! mle parse <file.mle>   # print the surface AST (pretty-Debug)
-//! mle ir <file.mle>      # parse + lower; print the core IR (pretty-Debug)
-//! mle check <file.mle>   # typecheck; silent when clean, all diagnostics when not
-//! mle run <file.mle>     # evaluate; print main's result, or every binding
+//! mle parse <file.mle>   # print the surface AST (pretty-Debug; this file only)
+//! mle ir <file.mle>      # load the project; print the merged core IR
+//! mle check <file.mle>   # typecheck the project; all diagnostics, exit 1
+//! mle run <file.mle>     # evaluate; print main's result, or the entry's bindings
 //! mle trace <file.mle>   # evaluate with the call trace; print the trace
 //! ```
+//!
+//! `ir`/`check`/`run`/`trace` treat the file as a project entry (B8): every
+//! sibling `.mle` file in its directory loads with it — file = module,
+//! whole-program checking. `parse` stays single-file (it shows one file's
+//! surface syntax).
 //!
 //! On failure (parse, lowering, checking, or runtime) prints
 //! `file:line:col: error: message` to stderr and exits nonzero. `check` is
@@ -26,34 +31,52 @@ fn main() {
             exit(2);
         }
     };
-    let src = match std::fs::read_to_string(path) {
-        Ok(src) => src,
+    if command == "parse" {
+        let src = match std::fs::read_to_string(path) {
+            Ok(src) => src,
+            Err(err) => {
+                eprintln!("error: cannot read {path}: {err}");
+                exit(1);
+            }
+        };
+        match mle::parse(&src) {
+            Ok(program) => println!("{program:#?}"),
+            Err(err) => {
+                let (line, col) = mle::line_col(&src, err.span.start);
+                eprintln!("{path}:{line}:{col}: error: {}", err.message);
+                exit(1);
+            }
+        }
+        return;
+    }
+
+    // Project commands: the file is the entry; siblings load with it.
+    let project = match mle::project::load(std::path::Path::new(path)) {
+        Ok(project) => project,
         Err(err) => {
-            eprintln!("error: cannot read {path}: {err}");
+            eprintln!(
+                "{}:{}:{}: error: {}",
+                err.path.display(),
+                err.line,
+                err.col,
+                err.message
+            );
             exit(1);
         }
     };
-    let program = match mle::parse(&src) {
-        Ok(program) => program,
-        Err(err) => fail(path, &src, err.span, &err.message),
-    };
-    if command == "parse" {
-        println!("{program:#?}");
-        return;
-    }
-    let module = match mle::lower(program) {
-        Ok(module) => module,
-        Err(err) => fail(path, &src, err.span, &err.message),
-    };
     if command == "ir" {
-        println!("{module:#?}");
+        println!("{:#?}", project.module);
         return;
     }
     if command == "check" {
-        let diags = mle::check(&module);
+        let diags = project.check();
         for diag in &diags {
-            let (line, col) = mle::line_col(&src, diag.span.start);
-            eprintln!("{path}:{line}:{col}: error: {}", diag.message);
+            let (file, line, col) = project.sources.resolve(diag.span.start);
+            eprintln!(
+                "{}:{line}:{col}: error: {}",
+                file.path.display(),
+                diag.message
+            );
         }
         if !diags.is_empty() {
             exit(1);
@@ -65,7 +88,7 @@ fn main() {
     } else {
         mle::Tracing::Off
     };
-    let record = match mle::run(&module, tracing) {
+    let record = match mle::run(&project.module, tracing) {
         Ok(record) => record,
         Err(failure) => {
             // A failing run is when the execution story matters most: print
@@ -73,7 +96,13 @@ fn main() {
             if command == "trace" {
                 print!("{}", mle::render_trace(&failure.trace));
             }
-            fail(path, &src, failure.error.span, &failure.error.message)
+            let (file, line, col) = project.sources.resolve(failure.error.span.start);
+            eprintln!(
+                "{}:{line}:{col}: error: {}",
+                file.path.display(),
+                failure.error.message
+            );
+            exit(1);
         }
     };
     if command == "trace" {
@@ -84,14 +113,12 @@ fn main() {
         mle::RunOutcome::Main(value) => println!("{value}"),
         mle::RunOutcome::Bindings(bindings) => {
             for (name, value) in bindings {
-                println!("{name} = {value}");
+                // Sibling modules' bindings are qualified ("Utils.x") —
+                // report the ENTRY's bindings, the program the user ran.
+                if !name.contains('.') {
+                    println!("{name} = {value}");
+                }
             }
         }
     }
-}
-
-fn fail(path: &str, src: &str, span: mle::Span, message: &str) -> ! {
-    let (line, col) = mle::line_col(src, span.start);
-    eprintln!("{path}:{line}:{col}: error: {message}");
-    exit(1);
 }

@@ -13,12 +13,16 @@ it doesn't parse — do not invent syntax from F#/OCaml habits.
 ## Verification loop (always available, no GPU)
 
 ```sh
-cargo run -q -p mle -- parse file.mle    # surface AST (spans on every node)
-cargo run -q -p mle -- ir file.mle      # name-resolved core IR
-cargo run -q -p mle -- run file.mle     # evaluate: main()'s result, or all bindings
+cargo run -q -p mle -- parse file.mle    # surface AST (spans on every node; this file only)
+cargo run -q -p mle -- ir file.mle      # name-resolved core IR (merged project)
+cargo run -q -p mle -- run file.mle     # evaluate: main()'s result, or the entry's bindings
 cargo run -q -p mle -- trace file.mle   # enter/exit call story with values (kept on failure)
-cargo run -q -p mle -- check file.mle   # gradual typechecker: ALL diagnostics, exit 1
+cargo run -q -p mle -- check file.mle   # typechecker: ALL diagnostics, exit 1
 ```
+
+`ir`/`check`/`run`/`trace` treat the file as a PROJECT ENTRY: every sibling
+`.mle` in its directory loads with it (file = module — see Modules below),
+so scratch files must live in their own directory, not a shared one.
 
 Errors are always `file:line:col: error: message`. Tests live in `mle/tests/`
 with goldens next to `mle/examples/` (`UPDATE_GOLDENS=1 cargo test -p mle`
@@ -91,13 +95,78 @@ let main = () => report([12.0, 3.5, 40.0])    // zero-param main is run's entry 
 ```
 
 Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
-loosest), unary `-`. There is **no** if/else, loops, string-concatenation
-operator, modules, or imports yet — iteration is `List.map/filter/fold`,
+loosest), unary `-`. There is **no** if/else, loops, or string-concatenation
+operator — iteration is `List.map/filter/fold`,
 and the conditional is a **bool-literal match**
 (`match x > 3.0 with | true => a | false => b`). Tuples are structural:
 `(1.0, "a") == (1.0, "a")`; product types annotate as `Float * String`
 (flat — no grouping in type position). Prefer named records for anything
 that outlives an expression; tuples are for multiple returns.
+
+## Modules (multi-file projects)
+
+**File = module.** Every `.mle` file in the entry file's directory IS a
+module, named by its filename stem with the first letter capitalized
+(`utils.mle` → `Utils`); the entry file (functor.json `entry`, default
+`game.mle`; the file you hand the CLI) is the program root. Loading is
+EAGER and whole-program: ALL sibling `.mle` files load, check, and
+evaluate together — an unreferenced (or broken, or stray scratch) sibling
+still counts. File stems must be identifiers (`pure_pipeline.mle`, not
+`pure-pipeline.mle` — that's a load error).
+
+```mle
+// utils.mle                                  // → module Utils
+type Shape = | Circle(radius: Float) | Point
+let tau = 6.28
+let area = (s: Shape): Float =>
+  match s with
+  | Circle(r) => 3.14 * r * r
+  | Point => 0.0
+```
+
+```mle
+// game.mle (the entry)
+open Utils                                    // bring Utils in unqualified
+
+let a = area(Circle(2.0)) + tau               // via the open…
+let b = Utils.area(Utils.Circle(2.0))         // …or QUALIFIED — no open needed
+let biggest = (shapes: List<Utils.Shape>) =>  // qualified types in annotations
+  shapes |> List.map(area) |> List.maximum
+let grab = (s) =>
+  match s with
+  | Utils.Circle(r) => r                      // qualified ctor PATTERNS work too
+  | Utils.Point => 0.0
+```
+
+- **Qualified access needs NO import**: `Utils.clamp(x)`, `Utils.Circle(…)`
+  (expressions and patterns, first-class when unapplied), `Utils.Shape` /
+  `Utils.Box<Float>` in annotations. `open Utils` adds unqualified access;
+  a name collision with the module's own defs or another `open` is a load
+  error naming both sides (qualify instead). `open` is contextual — it
+  stays a valid binding name.
+- **Cross-file dependency cycles are refused** (load error with the path,
+  `Game → Utils → Game`); ANY cross-file reference — a qualified use, an
+  `open` (even unused), a type annotation — is a dependency edge. Within
+  one file, letrec-style mutual recursion is unchanged. A module's
+  top-level initializers may demand globals of modules it depends on
+  (they evaluate first); siblings may reference the entry (`Game.foo`) if
+  that creates no cycle.
+- **Protected namespaces**: a file whose module name collides with a
+  builtin/prelude namespace (List, Text, Math, Scene, Camera, Frame,
+  Light, Angle, Time, Sub, Effect, Physics, RenderTarget) is a load error
+  — rename the file.
+- Constructor names must be unique per MODULE (not per project); values
+  from a non-entry module display with their canonical tag
+  (`Utils.Circle(2)` in run/trace/`/state` output). The entry's own names
+  stay bare — a single-file project behaves exactly as before.
+- **Hot reload watches every project file**: editing, adding, or removing
+  ANY `.mle` in the directory reloads with the model preserved (stored
+  closures rebind per module — a def moved between files is a rename and
+  keeps its old body with a warning).
+- Current limits: `run wasm` and the VSCode live preview interpret ONE
+  source text (multi-file is native-only for now); the LSP checks single
+  files in isolation, so a project file's `open`/cross-module references
+  show as unknown there; `.mlei` interface files are B8 part 2.
 
 ## Semantics rules that WILL bite you
 
@@ -318,11 +387,12 @@ inspected, compared, or serialized.
 `mle check` runs REAL INFERENCE (B7): unannotated code gets full types via
 unification with let-polymorphism — generic functions instantiate fresh at
 every use, element types flow through `List.map`/`filter`/`fold`, and
-lowercase annotation names are type variables (`(xs: List<a>, f: (a) =>
-b): List<b>`). Inference has teeth: unannotated bad calls, mixed-element
+lowercase annotation names are type variables (`(xs: List<a>, seed: b): List<b>`). Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized Uppercase type
-names) and absorbs anything. Generic declarations (`type Pair<x, y> = { first: x, second: y }`)
+names) and absorbs anything. (Function TYPES cannot be written in
+annotations yet — `f: (a) => b` does not parse; leave higher-order
+parameters unannotated and let inference type them.) Generic declarations (`type Pair<x, y> = { first: x, second: y }`)
 instantiate fresh per use; an UNDECLARED lowercase name in a declaration is
 a teaching error. Record literals resolve nominally, F#-style:
 the unique declared type with exactly that field set (no match = anonymous
