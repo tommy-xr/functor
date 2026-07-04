@@ -14,6 +14,7 @@
 //! `POST /input`, `POST /time`. See `docs/debug-runtime.md` for usage and the
 //! observe-vs-drive workflows.
 
+use std::io::Read;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -285,8 +286,32 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                     }
                 }
                 (Method::Post, "/reload-source") => {
+                    // This endpoint can be LAN-exposed (--debug-bind), so
+                    // bound the body: game source is KBs, and an unbounded
+                    // read_to_string is an OOM invitation. Chunked bodies
+                    // (no declared length) are rejected the same way.
+                    const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+                    match request.body_length() {
+                        Some(len) if len <= MAX_SOURCE_BYTES => {}
+                        _ => {
+                            let _ = request.respond(
+                                Response::from_string(
+                                    "source too large (or missing Content-Length); limit is 4MB",
+                                )
+                                .with_status_code(413),
+                            );
+                            continue;
+                        }
+                    }
                     let mut body = String::new();
-                    if request.as_reader().read_to_string(&mut body).is_err() {
+                    let mut reader = request.as_reader();
+                    // (&mut reader): `take` needs Sized, and `as_reader`
+                    // hands back `&mut dyn Read`.
+                    if std::io::Read::take(&mut reader, MAX_SOURCE_BYTES as u64 + 1)
+                        .read_to_string(&mut body)
+                        .is_err()
+                        || body.len() > MAX_SOURCE_BYTES
+                    {
                         let _ = request
                             .respond(Response::from_string("bad body").with_status_code(400));
                         continue;

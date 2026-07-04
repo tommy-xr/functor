@@ -415,6 +415,11 @@ impl Game for MleGame {
         } else {
             String::new()
         };
+        // Absorb any disk mtime observed up to now: a save that landed
+        // earlier this frame (after check_hot_reload ran, before this push
+        // was serviced) is by definition older than the push and must not
+        // revert it next frame. Saves after this instant still win.
+        self.mtime = file_mtime(&self.path);
         let status = format!(
             "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
             self.path,
