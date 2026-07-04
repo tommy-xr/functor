@@ -22,6 +22,18 @@
 //! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
+//! RenderTarget.named(id)                                    -> RenderTarget
+//! RenderTarget.sized(target, w, h)                          -> RenderTarget
+//!   (a named offscreen texture, 512x512 unless sized; declare ONCE, use the
+//!    value at both sites — the writer and the reader — so writer/reader id
+//!    typos are unrepresentable, the Angle rule applied to identity)
+//! Frame.withRenderTarget(frame, target, targetFrame)        -> Frame
+//!   (the writer: targetFrame — its own camera/scene/lights — is rendered
+//!    into the target before frame's main pass; a scene sampling its own
+//!    target sees last frame's image)
+//! Scene.screen(scene, target)                               -> Scene
+//!   (the reader: an emissive "screen" surface showing the target's texture;
+//!    an id no frame declares shows magenta and warns once)
 //! Time.seconds(n) / Time.millis(n)                          -> Duration
 //!   (like Angle: timing functions take Duration VALUES, never bare
 //!    numbers — seconds/milliseconds confusion is unrepresentable)
@@ -79,7 +91,8 @@ use std::rc::Rc;
 
 use crate::math::Angle;
 use crate::physics;
-use crate::scene3d::MaterialDescription;
+use crate::render_target::RenderTargetDescriptor;
+use crate::scene3d::{MaterialDescription, TextureDescription};
 use crate::{Camera, Frame, Light, Scene3D, SceneObject};
 
 /// A [`Scene3D`] as an opaque MLE value.
@@ -285,6 +298,22 @@ impl EffectRunner for ReplayEffects {
 /// discipline, carried across the boundary).
 pub struct MleAngle(pub Angle);
 
+/// A [`RenderTargetDescriptor`] as an opaque MLE value — declared once via
+/// `RenderTarget.named` and used at both sites: the writer
+/// (`Frame.withRenderTarget`) and the reader (`Scene.screen`). Both accept
+/// ONLY this, never a bare string, so a writer/reader id typo is
+/// unrepresentable (the Angle rule, applied to identity).
+pub struct MleRenderTarget(pub RenderTargetDescriptor);
+
+impl HostData for MleRenderTarget {
+    fn type_name(&self) -> &'static str {
+        "RenderTarget"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl HostData for MleDuration {
     fn type_name(&self) -> &'static str {
         "Duration"
@@ -443,6 +472,10 @@ const PATHS: &[&str] = &[
     "Light.castShadows",
     "Frame.create",
     "Frame.createLit",
+    "Frame.withRenderTarget",
+    "RenderTarget.named",
+    "RenderTarget.sized",
+    "Scene.screen",
     "Time.seconds",
     "Time.millis",
     "Sub.none",
@@ -848,6 +881,71 @@ impl Host for FunctorHost {
                 }
                 _ => usage("Physics.transformed(scene, tag)"),
             },
+            "RenderTarget.named" => match args.as_slice() {
+                [Value::String(name)] if !name.is_empty() => Ok(host(MleRenderTarget(
+                    RenderTargetDescriptor::new(name.to_string()),
+                ))),
+                _ => usage(
+                    "RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
+piped through RenderTarget.sized",
+                ),
+            },
+            // Target first, so it pipes:
+            // `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
+            "RenderTarget.sized" => match args.as_slice() {
+                [target, w, h] => {
+                    let inner = target_of(target, "RenderTarget.sized", span)?;
+                    let w = positive_num(w, span, "RenderTarget.sized width")?;
+                    let h = positive_num(h, span, "RenderTarget.sized height")?;
+                    Ok(host(MleRenderTarget(
+                        inner.clone().sized(w as f32, h as f32),
+                    )))
+                }
+                _ => usage("RenderTarget.sized(target, width, height)"),
+            },
+            // Frame first, so it pipes:
+            // `Frame.createLit(…) |> Frame.withRenderTarget(feed, feedFrame)`.
+            "Frame.withRenderTarget" => match args.as_slice() {
+                [frame, target, target_frame] => {
+                    let (Some(outer), Some(inner)) =
+                        (frame_value(frame), frame_value(target_frame))
+                    else {
+                        return usage(
+                            "Frame.withRenderTarget(frame, target, targetFrame) — targetFrame \
+is a Frame.create/createLit(…) rendered into the target each frame, before \
+frame's main pass",
+                        );
+                    };
+                    let target = target_of(target, "Frame.withRenderTarget", span)?;
+                    Ok(host(MleFrame(Frame::with_render_target(
+                        outer.clone(),
+                        target.clone(),
+                        inner.clone(),
+                    ))))
+                }
+                _ => usage("Frame.withRenderTarget(frame, target, targetFrame)"),
+            },
+            // Scene first, so it pipes: `Scene.quad() |> Scene.screen(feed)` —
+            // an emissive (fullbright, screens glow) surface showing the
+            // target's texture. A target no frame declares shows magenta.
+            "Scene.screen" => match args.as_slice() {
+                [scene, target] => {
+                    let Some(scene) = scene_of(scene) else {
+                        return usage("Scene.screen(scene, target)");
+                    };
+                    let target = target_of(target, "Scene.screen", span)?;
+                    scene_value(Scene3D {
+                        obj: SceneObject::Material(
+                            MaterialDescription::emissive_texture(
+                                TextureDescription::render_target(target.clone()),
+                            ),
+                            vec![scene.clone()],
+                        ),
+                        xform: Matrix4::from_scale(1.0),
+                    })
+                }
+                _ => usage("Scene.screen(scene, target)"),
+            },
             "Frame.create" => match args.as_slice() {
                 [camera, scene] => {
                     let (Value::HostData(cam), Some(scene)) = (camera, scene_of(scene)) else {
@@ -1217,6 +1315,38 @@ fn scene_of(value: &Value) -> Option<&Scene3D> {
     }
 }
 
+/// Extract a [`RenderTargetDescriptor`] — both use sites accept ONLY the
+/// branded value, so the predictable mistake (a bare id string) gets a
+/// teaching error pointing at `RenderTarget.named` instead of a generic
+/// usage line (the [`angle_of`] rule, applied to identity).
+fn target_of<'a>(
+    value: &'a Value,
+    what: &str,
+    span: Span,
+) -> Result<&'a RenderTargetDescriptor, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MleRenderTarget>()
+            .map(|t| &t.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected a RenderTarget, got {}", value.kind_name()),
+                span,
+            }),
+        Value::String(_) => Err(RunError {
+            message: format!(
+                "{what}: expected a RenderTarget, got a bare string — declare it once \
+with RenderTarget.named(\"…\") and pass that value at both sites"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected a RenderTarget, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
 fn shape_of(value: &Value) -> Option<&physics::Shape> {
     match value {
         Value::HostData(data) => data.as_any().downcast_ref::<MleShape>().map(|s| &s.0),
@@ -1492,6 +1622,98 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
                 "`{path}` fell through to the internal fallback: {message}"
             );
         }
+    }
+
+    // The render-target vocabulary end to end: a branded target declared once
+    // (named + sized), used at the reader (Scene.screen) and the writer
+    // (Frame.withRenderTarget) — the frame carries the pass, the scene carries
+    // the texture reference, and the whole thing speaks the protocol.
+    #[test]
+    fn mle_snippet_declares_a_render_target_frame() {
+        let frame = frame_of(
+            "let feed = RenderTarget.named(\"security\") |> RenderTarget.sized(256.0, 128.0)\n\
+             let main = () =>\n\
+             Frame.createLit(\n\
+               Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0),\n\
+               Scene.group([\n\
+                 Scene.plane() |> Scene.lit(0.6, 0.6, 0.6),\n\
+                 Scene.quad() |> Scene.screen(feed),\n\
+               ]),\n\
+               [Light.ambient(0.1, 0.1, 0.1)])\n\
+             |> Frame.withRenderTarget(feed, Frame.createLit(\n\
+                  Camera.lookAt(0.0, 4.0, -6.0, 0.0, 0.5, 0.0),\n\
+                  Scene.cube() |> Scene.lit(0.8, 0.2, 0.2),\n\
+                  [Light.ambient(0.2, 0.2, 0.2)]))",
+        );
+        assert_eq!(frame.render_targets.len(), 1);
+        let pass = &frame.render_targets[0];
+        assert_eq!(pass.target.id, "security");
+        assert_eq!((pass.target.width, pass.target.height), (256, 128));
+        assert_eq!(pass.frame.lights.len(), 1);
+        assert!(pass.frame.render_targets.is_empty());
+        // The reader's wire shape: the screen material samples the target by id.
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(json.contains(r#""RenderTarget":"security""#), "json: {json}");
+        // And the whole frame round-trips through the protocol.
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // Scene.screen is an emissive (fullbright) white surface over the target's
+    // texture — screens glow, unaffected by scene lighting.
+    #[test]
+    fn screen_material_is_emissive_white_over_the_target_texture() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(\n\
+               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
+               Scene.quad() |> Scene.screen(RenderTarget.named(\"feed\")))",
+        );
+        let json = serde_json::to_string(&frame.scene).expect("serialize");
+        assert!(
+            json.contains(r#""Emissive":{"color":[1.0,1.0,1.0,1.0],"texture":{"RenderTarget":"feed"}}"#),
+            "json: {json}"
+        );
+    }
+
+    // [units, tier 1 — the Angle rule applied to identity] both sites accept
+    // ONLY the branded RenderTarget value; a bare string / wrong value is a
+    // spanned usage error, so writer/reader id typos are unrepresentable.
+    #[test]
+    fn bare_strings_are_not_render_targets() {
+        let fail = |src: &str| {
+            let module = mle::lower(mle::parse(src).unwrap()).unwrap();
+            mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .expect("should fail")
+                .error
+                .message
+        };
+        assert_eq!(
+            fail("let main = () => Scene.quad() |> Scene.screen(\"security\")"),
+            "Scene.screen: expected a RenderTarget, got a bare string — declare it once \
+with RenderTarget.named(\"…\") and pass that value at both sites"
+        );
+        assert_eq!(
+            fail(
+                "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+Scene.cube()) |> Frame.withRenderTarget(\"feed\", Frame.create(\
+Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube()))"
+            ),
+            "Frame.withRenderTarget: expected a RenderTarget, got a bare string — declare \
+it once with RenderTarget.named(\"…\") and pass that value at both sites"
+        );
+        assert_eq!(
+            fail(
+                "let main = () => RenderTarget.named(\"x\") |> RenderTarget.sized(-1.0, 4.0)"
+            ),
+            "RenderTarget.sized width must be positive, got -1"
+        );
+        assert_eq!(
+            fail("let main = () => RenderTarget.named(3.0)"),
+            "usage: RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
+piped through RenderTarget.sized"
+        );
     }
 
     // The physics vocabulary: an MLE snippet declares a PhysicsScene the
