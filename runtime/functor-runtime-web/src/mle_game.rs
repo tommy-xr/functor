@@ -19,7 +19,8 @@
 use std::cell::RefCell;
 
 use functor_runtime_common::mle_prelude::{
-    frame_value, physics_scene_value, sub_messages_for_frame, FunctorHost,
+    drain_effects, frame_value, physics_scene_value, split_model_effect, sub_messages_for_frame,
+    EffectLog, FunctorHost, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
@@ -43,6 +44,11 @@ pub struct MleWebGame {
     /// desktop producer).
     prev_tts: Option<f64>,
     has_physics: bool,
+    /// Performs `Effect.*` commands (B6). `RealEffects` is wasm-safe: its
+    /// clock is `Date.now()` on this target.
+    effect_runner: RealEffects,
+    /// The structured effect log (bounded) — see the desktop producer.
+    effect_log: EffectLog,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -142,6 +148,8 @@ impl MleWebGame {
             has_mouse_wheel,
             has_subscriptions,
             prev_tts: None,
+            effect_runner: RealEffects::new(),
+            effect_log: EffectLog::new(),
             has_physics,
             last_frame: empty_frame(),
             last_error: None,
@@ -152,6 +160,40 @@ impl MleWebGame {
     /// messages through `update`, before this frame's `tick` — the message
     /// drain seam (docs/mle.md C4b-2), same semantics as the desktop
     /// producer. Errors report per message and processing continues.
+    /// Take an entry point's return: split off any `(model, effect)` pair,
+    /// adopt the model, and drain the effects to a fixed point through
+    /// `update` (docs/mle.md B6) — mirrors the desktop producer.
+    fn absorb(&mut self, returned: Value) {
+        const EFFECT_LOG_CAP: usize = 256;
+        let (model, effects) = split_model_effect(returned);
+        self.model = model;
+        let Some(effects) = effects else { return };
+        if self.session.global("update").is_none() {
+            self.log_once(
+                "[mle] effects returned but there is no `let update = (model, msg) => …` \
+to receive their messages; dropping them"
+                    .to_string(),
+            );
+            return;
+        }
+        let mut reports: Vec<String> = Vec::new();
+        drain_effects(
+            &self.session,
+            &mut self.model,
+            effects,
+            &mut self.effect_runner,
+            &mut self.effect_log,
+            &mut |message| reports.push(message),
+        );
+        for message in reports {
+            self.log_once(message);
+        }
+        if self.effect_log.len() > EFFECT_LOG_CAP {
+            let excess = self.effect_log.len() - EFFECT_LOG_CAP;
+            self.effect_log.drain(..excess);
+        }
+    }
+
     fn pump_subscriptions(&mut self, tts: f64) {
         // Advance the window even without subscriptions (or on frame one),
         // so the edge is always sane.
@@ -179,7 +221,7 @@ impl MleWebGame {
                 .session
                 .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
             {
-                Ok(model) => self.model = model,
+                Ok(returned) => self.absorb(returned),
                 Err(err) => self.frame_error("update", &err),
             }
         }
@@ -246,7 +288,7 @@ impl GameProducer for MleWebGame {
             Value::Number(frame_time.tts as f64),
         ];
         match self.session.call("tick", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("tick", &err),
         }
         self.step_physics(frame_time.dts);
@@ -268,7 +310,7 @@ impl GameProducer for MleWebGame {
             Value::Bool(is_down),
         ];
         match self.session.call("input", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("input", &err),
         }
     }
@@ -283,7 +325,7 @@ impl GameProducer for MleWebGame {
             Value::Number(y as f64),
         ];
         match self.session.call("mouseMove", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("mouseMove", &err),
         }
     }
@@ -294,7 +336,7 @@ impl GameProducer for MleWebGame {
         }
         let args = vec![self.model.clone(), Value::Number(delta as f64)];
         match self.session.call("mouseWheel", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("mouseWheel", &err),
         }
     }

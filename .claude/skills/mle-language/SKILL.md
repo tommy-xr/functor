@@ -165,6 +165,8 @@ Frame.create(camera, scene)                                // what draw returns
 Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
 Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
 Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
+Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (Float) => Msg
+Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
 
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body
@@ -196,6 +198,9 @@ let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
 let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
+                                            // ANY entry point may instead return
+                                            // (model', effect) — a 2-tuple whose
+                                            // second element is an Effect value
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
                                             // OPTIONAL, but requires update
 let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …])  // OPTIONAL
@@ -207,6 +212,14 @@ a long frame fires ONCE (missed boundaries collapse) and timers tick right
 through a hot reload. Fired messages fold through `update` before `tick`.
 Durations, like Angles, are branded values — `Sub.every(0.5, …)` is a
 teaching error; say `Time.seconds(0.5)` or `Time.millis(500.0)`.
+
+Effects are one-shot commands: the producer performs each one, applies its
+tagger to the result (`Effect.random(Rolled)` → `Rolled(0.42)`), and folds
+the message back through `update` — which may itself return more effects
+(drained same-frame to a fixed point, capped). Every performed effect
+lands in a structured log; under a fake/replay runner the same program is
+exactly deterministic (that's the test seam). Taggers must be functions —
+`Effect.now(3.0)` is a construction-time error.
 
 Frame order: subscriptions→`update` → `tick` → `physics` (reconcile +
 fixed-step, 60Hz accumulator) → `draw` — physics reads in `draw` see this

@@ -28,6 +28,13 @@
 //! Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) -> Sub
 //!   (the game's `subscriptions` returns one of these; fired messages are
 //!    folded through `update` — see the producers' drain seam)
+//! Effect.none() / Effect.batch([fx,…])                       -> Effect
+//! Effect.now(tagger) / Effect.random(tagger)                 -> Effect
+//!   (one-shot commands: `update`/`tick` may return `(model, effect)`
+//!    tuples; the producer performs each effect via its EffectRunner —
+//!    real, fake, or replay — and folds `tagger(result)` back through
+//!    `update`, draining to a fixed point. Taggers run same-frame, so no
+//!    closure ever outlives its session.)
 //!
 //! Physics.box(w, h, d) / sphere(r) / capsule(hh, r)         -> Shape
 //! Physics.dynamic/kinematic/fixed(tag, shape)               -> Body
@@ -117,6 +124,157 @@ pub enum SubTree {
 
 pub struct MleSub(pub SubTree);
 
+/// A one-shot effect as an opaque MLE value — what `update`/`tick` may
+/// return beside the model (`(model, effect)`). The imperative dual of
+/// [`SubTree`]: "do this once, then hand my tagger the result". Performed
+/// by the producer through an [`EffectRunner`] (real / fake / replay), so
+/// the same program is testable and replayable — the B6 broker contract.
+#[derive(Clone)]
+pub enum EffectTree {
+    None,
+    /// Wall-clock time: the tagger gets seconds since the Unix epoch.
+    Now {
+        tagger: Value,
+    },
+    /// A uniform float in [0, 1).
+    Random {
+        tagger: Value,
+    },
+    Batch(Vec<EffectTree>),
+}
+
+pub struct MleEffect(pub EffectTree);
+
+/// Performs effects. `Real` asks the world; `Fake` gives fixed values
+/// (tests); `Replay` feeds back a recorded [`EffectLog`] — same program,
+/// three worlds, one contract (docs/mle.md B6).
+pub trait EffectRunner {
+    fn now(&mut self) -> f64;
+    fn random(&mut self) -> f64;
+}
+
+/// One performed effect: what kind, and what value the tagger received —
+/// the structured effect log (LLM-readable, and the input to replay).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectRecord {
+    pub kind: &'static str,
+    pub value: f64,
+}
+
+pub type EffectLog = Vec<EffectRecord>;
+
+/// The real world: system clock, xorshift PRNG seeded from it (no new
+/// dependency; game-quality randomness, not crypto).
+pub struct RealEffects {
+    rng_state: u64,
+}
+
+/// Epoch seconds from the platform clock. `std::time::SystemTime` is
+/// unimplemented on `wasm32-unknown-unknown` (it panics), so the browser
+/// build asks `Date.now()` instead.
+fn epoch_seconds() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() / 1000.0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+    }
+}
+
+impl RealEffects {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> RealEffects {
+        let seed = (epoch_seconds() * 1e9) as u64;
+        RealEffects {
+            rng_state: seed | 1,
+        }
+    }
+}
+
+impl EffectRunner for RealEffects {
+    fn now(&mut self) -> f64 {
+        epoch_seconds()
+    }
+    fn random(&mut self) -> f64 {
+        // xorshift64*; map the top 53 bits into [0, 1).
+        let mut x = self.rng_state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.rng_state = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Fixed answers, for tests: `now` is a constant, `random` cycles a
+/// sequence.
+pub struct FakeEffects {
+    pub now: f64,
+    pub randoms: Vec<f64>,
+    next: usize,
+}
+
+impl FakeEffects {
+    pub fn new(now: f64, randoms: Vec<f64>) -> FakeEffects {
+        FakeEffects {
+            now,
+            randoms,
+            next: 0,
+        }
+    }
+}
+
+impl EffectRunner for FakeEffects {
+    fn now(&mut self) -> f64 {
+        self.now
+    }
+    fn random(&mut self) -> f64 {
+        let v = self.randoms[self.next % self.randoms.len()];
+        self.next += 1;
+        v
+    }
+}
+
+/// Replays a recorded log in order. A kind mismatch means the program
+/// diverged from the recording — fail loud with the position.
+pub struct ReplayEffects {
+    log: EffectLog,
+    next: usize,
+}
+
+impl ReplayEffects {
+    pub fn new(log: EffectLog) -> ReplayEffects {
+        ReplayEffects { log, next: 0 }
+    }
+    fn take(&mut self, kind: &'static str) -> f64 {
+        let record = self
+            .log
+            .get(self.next)
+            .unwrap_or_else(|| panic!("replay log exhausted at effect {}", self.next));
+        assert_eq!(
+            record.kind, kind,
+            "replay diverged at effect {}: recorded {}, program asked for {kind}",
+            self.next, record.kind
+        );
+        self.next += 1;
+        record.value
+    }
+}
+
+impl EffectRunner for ReplayEffects {
+    fn now(&mut self) -> f64 {
+        self.take("now")
+    }
+    fn random(&mut self) -> f64 {
+        self.take("random")
+    }
+}
+
 /// An [`Angle`] as an opaque MLE value — `Angle.degrees(…)`/`Angle.radians(…)`.
 /// Rotation/camera functions accept ONLY this, never a bare number, making
 /// degree/radian confusion unrepresentable (the F# side's `Math.Angle`
@@ -135,6 +293,15 @@ impl HostData for MleDuration {
 impl HostData for MleSub {
     fn type_name(&self) -> &'static str {
         "Sub"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HostData for MleEffect {
+    fn type_name(&self) -> &'static str {
+        "Effect"
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -277,6 +444,10 @@ const PATHS: &[&str] = &[
     "Sub.none",
     "Sub.every",
     "Sub.batch",
+    "Effect.none",
+    "Effect.now",
+    "Effect.random",
+    "Effect.batch",
     "Physics.box",
     "Physics.sphere",
     "Physics.capsule",
@@ -705,6 +876,50 @@ impl Host for FunctorHost {
                 }))),
                 _ => usage("Sub.every(duration, msg)"),
             },
+            "Effect.none" => match args.as_slice() {
+                [] => Ok(host(MleEffect(EffectTree::None))),
+                _ => usage("Effect.none()"),
+            },
+            // The tagger is an MLE function value, applied by the producer
+            // with the performed result; validated as callable here so a
+            // `Effect.now(3.0)` fails at construction, not mid-drain.
+            "Effect.now" | "Effect.random" => match args.as_slice() {
+                [tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
+                    let tree = if path == "Effect.now" {
+                        EffectTree::Now {
+                            tagger: tagger.clone(),
+                        }
+                    } else {
+                        EffectTree::Random {
+                            tagger: tagger.clone(),
+                        }
+                    };
+                    Ok(host(MleEffect(tree)))
+                }
+                [other] => err(format!(
+                    "{path}(tagger): the tagger must be a function of the result, got {}",
+                    other.kind_name()
+                )),
+                _ => usage(&format!("{path}(tagger)")),
+            },
+            "Effect.batch" => match args.as_slice() {
+                [Value::List(items)] => {
+                    let mut fx = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        match effect_of(item) {
+                            Some(effect) => fx.push(effect.0.clone()),
+                            None => {
+                                return err(format!(
+                                    "Effect.batch items must be Effects, got {}",
+                                    item.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(host(MleEffect(EffectTree::Batch(fx))))
+                }
+                _ => usage("Effect.batch([effect, …])"),
+            },
             "Sub.batch" => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut subs = Vec::with_capacity(items.len());
@@ -868,6 +1083,95 @@ fn non_negative_num(value: &Value, span: Span, what: &str) -> Result<f64, RunErr
             message: format!("{what} must not be negative, got {n}"),
             span,
         })
+    }
+}
+
+fn effect_of(value: &Value) -> Option<&MleEffect> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleEffect>(),
+        _ => None,
+    }
+}
+
+/// Split an entry point's return into (model, effect). The pair contract:
+/// a 2-tuple whose SECOND element is an Effect value means "model plus
+/// commands" — anything else is just the model. (Effect values only come
+/// from `Effect.*`, and one in ordinary model data would be meaningless,
+/// so the sniff is unambiguous in practice.)
+pub fn split_model_effect(value: Value) -> (Value, Option<EffectTree>) {
+    if let Value::Tuple(items) = &value {
+        if items.len() == 2 {
+            if let Some(effect) = effect_of(&items[1]) {
+                let tree = effect.0.clone();
+                return (items[0].clone(), Some(tree));
+            }
+        }
+    }
+    (value, None)
+}
+
+/// Perform `first` and drain to a fixed point: each performed effect's
+/// tagger result is folded through `update`, whose return may carry MORE
+/// effects — capped so a self-sustaining chain cannot hang the frame (the
+/// F# executor's `maxEffectsPerFrame` discipline). Every performed effect
+/// is appended to `log` (the structured effect log; replay's input).
+/// Errors report through `report` (deduped by the producer) and drop that
+/// effect — one bad tagger must not stall the rest.
+pub fn drain_effects(
+    session: &mle::Session,
+    model: &mut Value,
+    first: EffectTree,
+    runner: &mut dyn EffectRunner,
+    log: &mut EffectLog,
+    report: &mut dyn FnMut(String),
+) {
+    const MAX_EFFECTS_PER_FRAME: usize = 1000;
+    let mut queue: Vec<EffectTree> = vec![first];
+    let mut performed = 0usize;
+    while let Some(tree) = queue.pop() {
+        let (kind, value, tagger) = match tree {
+            EffectTree::None => continue,
+            EffectTree::Batch(items) => {
+                // Preserve declaration order against the LIFO queue.
+                for item in items.into_iter().rev() {
+                    queue.push(item);
+                }
+                continue;
+            }
+            EffectTree::Now { tagger } => ("now", runner.now(), tagger),
+            EffectTree::Random { tagger } => ("random", runner.random(), tagger),
+        };
+        performed += 1;
+        if performed > MAX_EFFECTS_PER_FRAME {
+            report(format!(
+                "[mle] effect drain hit the per-frame cap ({MAX_EFFECTS_PER_FRAME}); \
+dropping the rest"
+            ));
+            return;
+        }
+        log.push(EffectRecord { kind, value });
+        let msg = match session.apply(
+            tagger,
+            vec![Value::Number(value)],
+            &format!("Effect.{kind} tagger"),
+            &mut FunctorHost,
+        ) {
+            Ok(msg) => msg,
+            Err(e) => {
+                report(format!("[mle] Effect.{kind} tagger error: {}", e.message));
+                continue;
+            }
+        };
+        match session.call("update", vec![model.clone(), msg], &mut FunctorHost) {
+            Ok(returned) => {
+                let (next_model, more) = split_model_effect(returned);
+                *model = next_model;
+                if let Some(more) = more {
+                    queue.push(more);
+                }
+            }
+            Err(e) => report(format!("[mle] update error: {}", e.message)),
+        }
     }
 }
 
@@ -1386,6 +1690,139 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         let (first, last) = (edges[0], edges[edges.len() - 1]);
         let expected = ((last / 0.3).floor() - (first / 0.3).floor()) as usize;
         assert_eq!(fires, expected, "over ({first}, {last}]");
+    }
+
+    /// The B6 broker contract: the same program under fake and replay
+    /// runners produces the SAME model — the fake run's structured log IS
+    /// replay's input. (Real differs only in the values the world supplies.)
+    #[test]
+    fn same_program_under_fake_and_replay() {
+        let src = "type Msg = | Rolled(n: Float) | Stamped(t: Float)\n\
+             let update = (m, msg) =>\n\
+               match msg with\n\
+               | Rolled(n) => ({ m with rolls: m.rolls + n }, Effect.now(Stamped))\n\
+               | Stamped(t) => { m with at: t }\n\
+             let roll = (m) => (m, Effect.random(Rolled))";
+        let module = mle::lower(mle::parse(src).expect("parse")).expect("lower");
+        let session = match mle::Session::load(&module, &mut FunctorHost) {
+            Ok(session) => session,
+            Err(failure) => panic!("load failed: {}", failure.error.message),
+        };
+        let init = || {
+            Value::Record(std::rc::Rc::new(vec![
+                ("rolls".to_string(), Value::Number(0.0)),
+                ("at".to_string(), Value::Number(0.0)),
+            ]))
+        };
+        let run = |runner: &mut dyn EffectRunner| {
+            let mut model = init();
+            let mut log = EffectLog::new();
+            let returned = session
+                .call("roll", vec![model.clone()], &mut FunctorHost)
+                .expect("roll");
+            let (m, fx) = split_model_effect(returned);
+            model = m;
+            drain_effects(
+                &session,
+                &mut model,
+                fx.expect("an effect"),
+                runner,
+                &mut log,
+                &mut |msg| panic!("unexpected report: {msg}"),
+            );
+            (model.to_string(), log)
+        };
+        // Fake world: random = 0.25, now = 99.5 — exact arithmetic.
+        let (fake_model, fake_log) = run(&mut FakeEffects::new(99.5, vec![0.25]));
+        assert_eq!(fake_model, "{ rolls: 0.25, at: 99.5 }");
+        assert_eq!(
+            fake_log,
+            vec![
+                EffectRecord {
+                    kind: "random",
+                    value: 0.25
+                },
+                EffectRecord {
+                    kind: "now",
+                    value: 99.5
+                },
+            ]
+        );
+        // Replay the log: same model, no world consulted.
+        let (replay_model, replay_log) = run(&mut ReplayEffects::new(fake_log.clone()));
+        assert_eq!(replay_model, fake_model);
+        assert_eq!(replay_log, fake_log);
+        // The real world: same SHAPE (both effects performed, chain drained),
+        // world-supplied values.
+        let (real_model, real_log) = run(&mut RealEffects::new());
+        assert_eq!(real_log.len(), 2);
+        assert_eq!(real_log[0].kind, "random");
+        assert!((0.0..1.0).contains(&real_log[0].value));
+        assert_eq!(real_log[1].kind, "now");
+        assert!(real_model.starts_with("{ rolls: 0."));
+    }
+
+    /// A diverged replay fails loud with the position, not silently wrong.
+    #[test]
+    #[should_panic(expected = "replay diverged at effect 0")]
+    fn replay_divergence_fails_loud() {
+        ReplayEffects::new(vec![EffectRecord {
+            kind: "now",
+            value: 1.0,
+        }])
+        .random();
+    }
+
+    /// Effect construction refuses non-function taggers, and batches refuse
+    /// non-effects — construction-time teaching errors, not mid-drain ones.
+    #[test]
+    fn effect_construction_is_validated() {
+        let module = mle::lower(mle::parse("let main = () => Effect.now(3.0)").unwrap()).unwrap();
+        let failure = mle::run_with_host(&module, mle::Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            failure.error.message,
+            "Effect.now(tagger): the tagger must be a function of the result, got a number"
+        );
+        let module =
+            mle::lower(mle::parse("let main = () => Effect.batch([1.0])").unwrap()).unwrap();
+        let failure = mle::run_with_host(&module, mle::Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            failure.error.message,
+            "Effect.batch items must be Effects, got a number"
+        );
+    }
+
+    /// The drain cap stops a self-sustaining effect chain instead of hanging
+    /// the frame.
+    #[test]
+    fn effect_drain_cap_stops_runaway_chains() {
+        let src = "type Msg = | Again(n: Float)\n\
+             let again = (n) => Again(n)\n\
+             let update = (m, msg) => (m + 1.0, Effect.random(Again))";
+        let module = mle::lower(mle::parse(src).expect("parse")).expect("lower");
+        let session = match mle::Session::load(&module, &mut FunctorHost) {
+            Ok(session) => session,
+            Err(failure) => panic!("load failed: {}", failure.error.message),
+        };
+        let mut model = Value::Number(0.0);
+        let mut log = EffectLog::new();
+        let mut reports = Vec::new();
+        drain_effects(
+            &session,
+            &mut model,
+            EffectTree::Random {
+                tagger: session.global("again").expect("tagger fn"),
+            },
+            &mut FakeEffects::new(0.0, vec![0.5]),
+            &mut log,
+            &mut |msg| reports.push(msg),
+        );
+        assert_eq!(log.len(), 1000, "cap bounds performed effects");
+        assert!(reports.iter().any(|r| r.contains("per-frame cap")));
     }
 
     /// Bare numbers are not durations — the Angle teaching error, for time.
