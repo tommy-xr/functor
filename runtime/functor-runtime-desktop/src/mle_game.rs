@@ -96,6 +96,13 @@ struct Loaded {
 /// them and hot-reload can print-and-keep-running with the same text.
 fn load_game(path: &str) -> Result<Loaded, String> {
     let src = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    load_source(path, src)
+}
+
+/// The source-shaped half of [`load_game`]: check and contract-validate
+/// already-obtained source. `path` is only a label for error rendering — the
+/// network reload path (`reload_source`) has no file behind the source.
+fn load_source(path: &str, src: String) -> Result<Loaded, String> {
     let render = |stage: &str, span: mle::Span, message: &str| {
         let (line, col) = mle::line_col(&src, span.start);
         format!("cannot {stage} {path}:{line}:{col}: {message}")
@@ -305,6 +312,38 @@ impl MleGame {
         }
     }
 
+    /// Swap in a freshly loaded program, KEEPING THE MODEL — the shared tail
+    /// of both reload paths (file watch and network push). `init` from the
+    /// new program is deliberately unused: state survives the edit, and
+    /// closures stored in the model rebind to the edited code (B5 part 2,
+    /// `mle::rebind_value`). The physics world is deliberately KEPT too, like
+    /// the model: it lives in this process's registry, so bodies stay where
+    /// they are across the edit and the next frame's declaration re-diffs
+    /// against them (removing the `physics` hook drops the world). `prev_tts`
+    /// is kept as well: `Sub.every` fires on the global time grid, so timers
+    /// tick right through a reload. Returns the number of stored closures
+    /// rebound, for the status line.
+    fn swap_in(&mut self, loaded: Loaded) -> usize {
+        let (model, report) = mle::rebind_value(&self.model, &self.module, &loaded.module);
+        self.model = model;
+        for warning in &report.warnings {
+            eprintln!("[mle] reload: {warning}");
+        }
+        self.src = loaded.src;
+        self.module = loaded.module;
+        self.session = loaded.session;
+        self.has_input = loaded.has_input;
+        self.has_mouse_move = loaded.has_mouse_move;
+        self.has_mouse_wheel = loaded.has_mouse_wheel;
+        self.has_subscriptions = loaded.has_subscriptions;
+        self.has_physics = loaded.has_physics;
+        if !self.has_physics {
+            physics::remove_world(physics::DEFAULT_WORLD);
+        }
+        self.last_error = None;
+        report.rebound
+    }
+
     fn report_stats(&mut self) {
         if self.frames > 0 && self.frames % STATS_EVERY == 0 {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
@@ -341,31 +380,9 @@ impl Game for MleGame {
         let started = Instant::now();
         match load_game(&self.path) {
             Ok(loaded) => {
-                let (model, report) = mle::rebind_value(&self.model, &self.module, &loaded.module);
-                self.model = model;
-                for warning in &report.warnings {
-                    eprintln!("[mle] reload: {warning}");
-                }
-                self.src = loaded.src;
-                self.module = loaded.module;
-                self.session = loaded.session;
-                self.has_input = loaded.has_input;
-                self.has_mouse_move = loaded.has_mouse_move;
-                self.has_mouse_wheel = loaded.has_mouse_wheel;
-                self.has_subscriptions = loaded.has_subscriptions;
-                // prev_tts is deliberately kept: `Sub.every` fires on the
-                // global time grid, so timers tick right through a reload.
-                self.has_physics = loaded.has_physics;
-                // The physics world is deliberately KEPT, like the model: it
-                // lives in this process's registry, so bodies stay where they
-                // are across the edit and the next frame's declaration
-                // re-diffs against them (removing the hook drops the world).
-                if !self.has_physics {
-                    physics::remove_world(physics::DEFAULT_WORLD);
-                }
-                self.last_error = None;
-                let stored = if report.rebound > 0 {
-                    format!("; {} stored closure(s) rebound", report.rebound)
+                let rebound = self.swap_in(loaded);
+                let stored = if rebound > 0 {
+                    format!("; {rebound} stored closure(s) rebound")
                 } else {
                     String::new()
                 };
@@ -382,6 +399,29 @@ impl Game for MleGame {
                 ));
             }
         }
+    }
+
+    fn reload_source(&mut self, source: &str) -> Result<String, String> {
+        // Same semantics as the file-watch path: model preserved, a broken
+        // push keeps the old program (and the error goes back to the pusher,
+        // who is looking at the source that caused it). The on-disk file is
+        // untouched — a later save still wins via the mtime watcher
+        // (last-write-wins, from either side).
+        let started = Instant::now();
+        let loaded = load_source(&self.path, source.to_string())?;
+        let rebound = self.swap_in(loaded);
+        let stored = if rebound > 0 {
+            format!("; {rebound} stored closure(s) rebound")
+        } else {
+            String::new()
+        };
+        let status = format!(
+            "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
+            self.path,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        println!("[mle] {status}");
+        Ok(status)
     }
 
     fn tick(&mut self, frame_time: FrameTime) {

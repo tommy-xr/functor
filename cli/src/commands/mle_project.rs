@@ -115,4 +115,94 @@ impl MleProject {
         }];
         util::ShellCommand::run_sequential(commands).await
     }
+
+    /// Push the entry source to a running runner's `POST /reload-source`
+    /// (its debug server) — once, or on every save with `watch`. The runner
+    /// validates the pushed source and keeps its old program on a broken
+    /// push, so errors come back as the 400 body and the loop just keeps
+    /// watching. A transport failure (runner not up yet, cable out) retries
+    /// on the next poll rather than losing the edit.
+    pub async fn push(
+        &self,
+        working_directory: &str,
+        addr: &str,
+        watch: bool,
+    ) -> Result<(), Error> {
+        let path = self.entry_path(working_directory)?;
+        let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        if watch {
+            println!(
+                "[mle] watching {} — pushing to http://{addr}/reload-source on save (Ctrl-C to stop)",
+                self.entry
+            );
+        }
+        // `None` != any real mtime, so the first iteration always pushes.
+        let mut pushed: Option<std::time::SystemTime> = None;
+        loop {
+            let current = mtime(&path);
+            if current != pushed {
+                let src = std::fs::read_to_string(&path)?;
+                match post_reload_source(addr, &src) {
+                    Ok((200, body)) => {
+                        println!("[mle] {body}");
+                        pushed = current;
+                    }
+                    Ok((status, body)) => {
+                        // The runner rejected the source (a load error) —
+                        // that's this revision's verdict; wait for the next
+                        // edit rather than re-pushing the same broken text.
+                        eprintln!("[mle] push rejected ({status}): {body}");
+                        pushed = current;
+                        if !watch {
+                            return Err(Error::other("push rejected"));
+                        }
+                    }
+                    Err(e) => {
+                        if !watch {
+                            return Err(Error::other(format!(
+                                "cannot reach http://{addr}/reload-source: {e} — is the \
+runner up with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
+                            )));
+                        }
+                        eprintln!("[mle] push failed ({e}); retrying…");
+                    }
+                }
+            }
+            if !watch && pushed.is_some() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
+}
+
+/// Minimal HTTP POST over std::net — one dependency-free request to the
+/// runner's tiny_http server. Returns (status, body). `Connection: close`
+/// keeps the read side trivial (read to EOF, split headers off).
+fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
+    use std::io::{Read, Write};
+    let timeout = std::time::Duration::from_secs(5);
+    let mut stream = std::net::TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    write!(
+        stream,
+        "POST /reload-source HTTP/1.1\r\nHost: {addr}\r\nContent-Type: text/plain\r\n\
+Content-Length: {}\r\nConnection: close\r\n\r\n",
+        source.len()
+    )?;
+    stream.write_all(source.as_bytes())?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let status = response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| Error::other(format!("malformed HTTP response: {response:.80}")))?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.trim().to_string())
+        .unwrap_or_default();
+    Ok((status, body))
 }

@@ -86,6 +86,17 @@ pub trait GameProducer {
     /// page) may never call it.
     fn check_hot_reload(&mut self, frame_time: crate::FrameTime);
 
+    /// Replace the game's logic from source text pushed over the wire — the
+    /// network hot-reload path (a dev machine pushing to a runner on another
+    /// device, e.g. a headset). Same semantics as the file-watch reload:
+    /// the model is preserved, a broken push keeps the old program running.
+    /// `Ok` carries a short status line for the pusher. The default is the
+    /// honest refusal for producers whose logic isn't source-shaped
+    /// (compiled dylibs, replays).
+    fn reload_source(&mut self, _source: &str) -> Result<String, String> {
+        Err("this producer does not support source reload (not an .mle game)".to_string())
+    }
+
     fn tick(&mut self, frame_time: crate::FrameTime);
 
     /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.
