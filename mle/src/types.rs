@@ -1452,18 +1452,7 @@ the type: `type Name<{name}> = …`"
             let body_ty = self.infer(&arm.body);
             result = Some(match result {
                 None => body_ty,
-                Some(prev) => {
-                    if !self.unify_rec(&prev, &body_ty, arm.body.span, "match arm") {
-                        let (prev_n, body_n) = self.normalize_pair(&prev, &body_ty);
-                        self.diag(
-                            arm.body.span,
-                            format!("match arms have incompatible types {prev_n} and {body_n}"),
-                        );
-                        Type::Unknown
-                    } else {
-                        self.zonk(&prev)
-                    }
-                }
+                Some(prev) => self.join_arms(prev, body_ty, arm.body.span),
             });
         }
         // Exhaustiveness fires only where the scrutinee's type is known —
@@ -1537,6 +1526,39 @@ a catch-all arm (`_` or a name)"
             }
         }
         result.unwrap_or(Type::Unknown)
+    }
+
+    /// Join two match arms' types. Plain unification, with ONE contract
+    /// lift first: the B6 producer treats a bare model as
+    /// `(model, Effect.none())`, so an arm returning `m` beside an arm
+    /// returning `(m, effect)` joins as the PAIR — otherwise the unifier
+    /// is asked for the infinite type `'a = 'a * Unknown` and every
+    /// effect-returning game fails `functor build`. The lift keys on the
+    /// pair's second element being the host seam (Unknown), so real tuple
+    /// mismatches (`(m, 1.0)` vs `m`) still error.
+    fn join_arms(&mut self, prev: Type, body: Type, span: Span) -> Type {
+        let (p, b) = (self.zonk(&prev), self.zonk(&body));
+        for (pair, bare) in [(&p, &b), (&b, &p)] {
+            if let Type::Tuple(items) = pair {
+                if items.len() == 2
+                    && items[1] == Type::Unknown
+                    && !matches!(bare, Type::Tuple(_))
+                    && self.unify_rec(bare, &items[0], span, "match arm")
+                {
+                    return Type::Tuple(vec![self.zonk(&items[0]), Type::Unknown]);
+                }
+            }
+        }
+        if !self.unify_rec(&p, &b, span, "match arm") {
+            let (prev_n, body_n) = self.normalize_pair(&p, &b);
+            self.diag(
+                span,
+                format!("match arms have incompatible types {prev_n} and {body_n}"),
+            );
+            Type::Unknown
+        } else {
+            self.zonk(&p)
+        }
     }
 
     /// Check one pattern against the scrutinee's type and record its

@@ -1019,3 +1019,26 @@ fn functions_inside_generic_nominals_cannot_compare() {
     );
     assert_eq!(message, "functions cannot be compared with `==`");
 }
+
+/// The B6 contract lift: a bare-model arm beside a (model, effect) arm
+/// joins as the pair (the producer treats bare as (m, Effect.none())) —
+/// without this, every effect game failed `functor build` on the occurs
+/// check ('a = 'a * Unknown). Both arm orders; annotated models too.
+#[test]
+fn effect_pair_arms_join_with_bare_model_arms() {
+    for src in [
+        "type Msg = | Roll | Rolled(n: Float)\n\
+         let update = (m, msg) => match msg with | Roll => (m, Effect.random(Rolled)) | Rolled(n) => m",
+        "type Msg = | Roll | Rolled(n: Float)\n\
+         let update = (m, msg) => match msg with | Rolled(n) => m | Roll => (m, Effect.random(Rolled))",
+        "type Model = { roll: Float }\n\
+         type Msg = | Roll | Rolled(n: Float)\n\
+         let update = (m: Model, msg) => match msg with | Roll => (m, Effect.random(Rolled)) | Rolled(n) => { m with roll: n }",
+    ] {
+        let diags = check_src(src);
+        assert!(diags.is_empty(), "should lift: {src}\n{diags:?}");
+    }
+    // The lift keys on the HOST seam — a real tuple mismatch still errors.
+    let diags = check_src("let f = (b, m) => match b with | true => (m, 1.0) | false => m");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+}
