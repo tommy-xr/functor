@@ -385,16 +385,48 @@ impl ExprTypes {
     }
 }
 
+/// Which record types are visible UNQUALIFIED per module — a multi-file
+/// project (B8, [`crate::project`]) hands this to [`check_with_scopes`] so
+/// a bare record literal only resolves nominally against types in scope
+/// where it is written (its own module's plus `open`ed ones). Without it,
+/// an unreferenced sibling declaring a same-shaped type would make an
+/// existing literal ambiguous — an implicit cross-module dependency the
+/// project's dependency graph never sees. Annotated positions are
+/// unaffected (a qualified annotation reaches any module's type).
+#[derive(Default)]
+pub struct RecordLiteralScopes {
+    /// Def-name prefix (the module: `"Utils"`; `""` for the entry, whose
+    /// canonical names are bare) → visible canonical record-type names.
+    pub by_module: HashMap<String, std::collections::HashSet<String>>,
+}
+
 /// Check a lowered module; returns every diagnostic, sorted by position.
-/// Empty means clean.
+/// Empty means clean. Single-module: every declared record type is in
+/// scope for literal resolution (see [`RecordLiteralScopes`]).
 pub fn check(module: &Module) -> Vec<CheckError> {
-    check_with_types(module).0
+    check_impl(module, None).0
+}
+
+/// [`check`] for a merged multi-file module, with per-module record-literal
+/// scopes (see [`RecordLiteralScopes`]; `crate::project::Project::check`
+/// is the caller-facing seam).
+pub fn check_with_scopes(module: &Module, scopes: &RecordLiteralScopes) -> Vec<CheckError> {
+    check_impl(module, Some(scopes)).0
 }
 
 /// [`check`], also returning the per-expression types recorded during the
 /// (final, loud) inference pass.
 pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
+    check_impl(module, None)
+}
+
+fn check_impl(
+    module: &Module,
+    scopes: Option<&RecordLiteralScopes>,
+) -> (Vec<CheckError>, ExprTypes) {
     let mut checker = Checker {
+        scopes,
+        current_module: String::new(),
         subst: HashMap::new(),
         next_var: 0,
         schemes: HashMap::new(),
@@ -501,6 +533,13 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
         for &i in &group {
             let def = &module.defs[i];
             checker.annot_vars.clear();
+            // The def's module, from its canonical name ("Utils.foo" →
+            // "Utils"; bare → the entry) — scopes bare record literals.
+            checker.current_module = def
+                .name
+                .split_once('.')
+                .map(|(module, _)| module.to_string())
+                .unwrap_or_default();
             let placeholder = checker
                 .globals
                 .get(&def.name)
@@ -637,7 +676,12 @@ fn scc_groups(module: &Module) -> Vec<Vec<usize>> {
     components
 }
 
-struct Checker {
+struct Checker<'s> {
+    /// Per-module record-literal visibility (multi-file projects only —
+    /// `None` checks a single module, where everything is visible).
+    scopes: Option<&'s RecordLiteralScopes>,
+    /// The module owning the def currently being inferred (`""` = entry).
+    current_module: String,
     /// The substitution: solved inference variables (B7). Types are read
     /// through it via [`Checker::zonk`].
     subst: HashMap<u32, Type>,
@@ -679,9 +723,22 @@ struct Checker {
     expr_types: HashMap<u32, Type>,
 }
 
-impl Checker {
+impl Checker<'_> {
     fn diag(&mut self, span: Span, message: String) {
         self.diags.push(CheckError { message, span });
+    }
+
+    /// May a bare record literal in the CURRENT def resolve to `name`?
+    /// Only types in scope unqualified there (see [`RecordLiteralScopes`]);
+    /// without scopes (single module) everything is a candidate.
+    fn literal_candidate(&self, name: &str) -> bool {
+        match self.scopes {
+            Some(scopes) => scopes
+                .by_module
+                .get(&self.current_module)
+                .is_some_and(|visible| visible.contains(name)),
+            None => true,
+        }
     }
 
     fn fresh(&mut self) -> Type {
@@ -1134,6 +1191,7 @@ the type: `type Name<{name}> = …`"
                 let matches: Vec<String> = self
                     .records
                     .iter()
+                    .filter(|(name, _)| self.literal_candidate(name))
                     .filter(|(_, (_, decl))| {
                         let mut declared: Vec<&str> =
                             decl.iter().map(|(n, _)| n.as_str()).collect();

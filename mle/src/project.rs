@@ -37,6 +37,8 @@ use crate::ir::Module;
 use crate::lower::{exports_of, lower_in_project, Exports, IdBases, ProjectEnv};
 use crate::parser::{capitalize, parse_with_base};
 use crate::span::line_col;
+use crate::types::RecordLiteralScopes;
+use crate::CheckError;
 
 /// Namespaces the language or the Functor prelude own; a module (file) name
 /// colliding with one is a load-time error.
@@ -64,6 +66,19 @@ pub struct Project {
     pub sources: SourceMap,
     /// The entry file's module name (`game.mle` → `Game`).
     pub entry: String,
+    /// Per-module record-literal visibility (own + `open`ed types) —
+    /// [`Project::check`] hands it to the checker so a bare literal never
+    /// resolves against an unrelated sibling's type.
+    scopes: RecordLiteralScopes,
+}
+
+impl Project {
+    /// Typecheck the whole program (every module, referenced or not) —
+    /// [`crate::check`] with the project's record-literal scopes. Spans
+    /// render through [`Project::sources`].
+    pub fn check(&self) -> Vec<CheckError> {
+        crate::types::check_with_scopes(&self.module, &self.scopes)
+    }
 }
 
 /// One file of a project, with its base offset in the project-wide span
@@ -262,7 +277,37 @@ come from file names, capitalized",
     let mut bases = IdBases::default();
     let mut lowered: Vec<Module> = Vec::new();
     let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut scopes = RecordLiteralScopes::default();
     for (index, (file, program)) in files.iter().zip(programs).enumerate() {
+        // Record-literal visibility for this module: its own types plus its
+        // `open`ed modules' (by canonical name — the entry's are bare).
+        let canon = |module: &str, name: &str| {
+            if module == entry {
+                name.to_string()
+            } else {
+                format!("{module}.{name}")
+            }
+        };
+        let mut visible: HashSet<String> = exports[&file.module]
+            .types
+            .iter()
+            .map(|name| canon(&file.module, name))
+            .collect();
+        for item in &program.items {
+            let ast::Item::Open(decl) = item else {
+                continue;
+            };
+            if let Some(opened) = exports.get(&decl.module) {
+                visible.extend(opened.types.iter().map(|name| canon(&decl.module, name)));
+            }
+        }
+        let prefix = if file.module == entry {
+            String::new()
+        } else {
+            file.module.clone()
+        };
+        scopes.by_module.insert(prefix, visible);
+
         let env = ProjectEnv {
             name: &file.module,
             entry: &entry,
@@ -318,6 +363,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         module: merged,
         sources: SourceMap { files },
         entry,
+        scopes,
     })
 }
 

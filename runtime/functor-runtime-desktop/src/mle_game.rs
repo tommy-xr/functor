@@ -48,6 +48,12 @@ pub struct MleGame {
     /// file = module), so editing a non-entry module hot-reloads too; a
     /// file appearing or disappearing changes the stamp as well.
     stamp: Vec<(PathBuf, SystemTime)>,
+    /// The last ENTRY source accepted over `reload_source`, kept so a
+    /// sibling-file save reloads AROUND the pushed buffer instead of
+    /// reverting the entry to disk. Cleared when the entry file itself
+    /// changes on disk (last-write-wins, from either side — the existing
+    /// push contract, now per file).
+    pushed_entry: Option<String>,
     /// Renders the merged module's project-wide spans back to file:line:col.
     sources: SourceMap,
     /// The lowered (merged) module the current session came from — kept so
@@ -124,15 +130,15 @@ fn load_source(path: &str, src: String) -> Result<Loaded, String> {
 fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String> {
     let project = mle::project::load_with_entry_source(std::path::Path::new(path), entry_src)
         .map_err(|e| format!("cannot load {}", e.render()))?;
-    let module = project.module;
-    let sources = project.sources;
     // Type diagnostics are advisory in the dev loop: print, keep going.
-    for diag in mle::check(&module) {
+    for diag in project.check() {
         eprintln!(
             "warning: {}",
-            sources.render(diag.span.start, &diag.message)
+            project.sources.render(diag.span.start, &diag.message)
         );
     }
+    let module = project.module;
+    let sources = project.sources;
     let session = Session::load(&module, &mut FunctorHost).map_err(|f| {
         format!(
             "cannot load {}",
@@ -217,6 +223,12 @@ return them beside the model as `(model, effect)`"
 /// path — the hot-reload change stamp. Any edited, added, or removed file
 /// changes the stamp (a file we cannot stat contributes UNIX_EPOCH, so a
 /// mid-save disappearing file still registers as a change).
+/// The entry file's mtime within a stamp ([`project_files`] lists the
+/// entry first).
+fn entry_mtime(stamp: &[(PathBuf, SystemTime)]) -> Option<SystemTime> {
+    stamp.first().map(|(_, mtime)| *mtime)
+}
+
 fn project_stamp(path: &str) -> Vec<(PathBuf, SystemTime)> {
     let files = mle::project::project_files(std::path::Path::new(path)).unwrap_or_default();
     files
@@ -247,6 +259,7 @@ impl MleGame {
         MleGame {
             path: path.to_string(),
             stamp,
+            pushed_entry: None,
             sources: loaded.sources,
             module: loaded.module,
             session: loaded.session,
@@ -469,9 +482,20 @@ impl Game for MleGame {
         if stamp == self.stamp {
             return;
         }
+        // Disk wins for the ENTRY only when the entry file itself changed;
+        // a sibling-only change reloads around a pushed entry buffer, so a
+        // live-preview push isn't silently reverted by editing a sibling.
+        let entry_changed = entry_mtime(&stamp) != entry_mtime(&self.stamp);
         self.stamp = stamp;
+        if entry_changed {
+            self.pushed_entry = None;
+        }
         let started = Instant::now();
-        match load_game(&self.path) {
+        let loaded = match &self.pushed_entry {
+            Some(src) => load_source(&self.path, src.clone()),
+            None => load_game(&self.path),
+        };
+        match loaded {
             Ok(loaded) => {
                 let rebound = self.swap_in(loaded);
                 let stored = if rebound > 0 {
@@ -502,6 +526,7 @@ impl Game for MleGame {
         // (last-write-wins, from either side).
         let started = Instant::now();
         let loaded = load_source(&self.path, source.to_string())?;
+        self.pushed_entry = Some(source.to_string());
         let rebound = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
@@ -676,8 +701,7 @@ mod tests {
     /// a whole project since B8 — a shared temp dir would drag stray `.mle`
     /// files in as sibling modules) and return `load_game`'s error.
     fn load_err(name: &str, src: &str) -> String {
-        let dir =
-            std::env::temp_dir().join(format!("mle-game-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("mle-game-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let path = dir.join("game.mle");
@@ -722,6 +746,56 @@ mod tests {
             err.contains("`init` contains an Effect value"),
             "unexpected error: {err}"
         );
+    }
+
+    /// A pushed entry buffer survives a SIBLING-file reload: editing
+    /// `config.mle` must reload around the pushed `game.mle`, and only an
+    /// on-disk edit of the entry itself reverts to disk (last-write-wins,
+    /// per file). [Codex Medium — B8 review]
+    #[test]
+    fn pushed_entry_survives_sibling_reloads() {
+        let dir = std::env::temp_dir().join(format!("mle-game-test-{}-push", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.mle");
+        let disk_game = format!("{BASE}let probe = 1.0\n");
+        std::fs::write(&entry, &disk_game).expect("write entry");
+        std::fs::write(dir.join("config.mle"), "let k = 1.0\n").expect("write sibling");
+        let mut game = MleGame::create(entry.to_str().expect("utf-8 path"));
+
+        // Push an entry variant distinguishable from the disk one.
+        let pushed = format!("{BASE}let probe = 2.0\n");
+        game.reload_source(&pushed).expect("push should load");
+        assert_eq!(
+            game.session.global("probe").expect("probe").to_string(),
+            "2"
+        );
+
+        // Edit the SIBLING: the reload must keep the pushed entry.
+        std::thread::sleep(std::time::Duration::from_millis(20)); // distinct mtime
+        std::fs::write(dir.join("config.mle"), "let k = 5.0\n").expect("edit sibling");
+        game.check_hot_reload(FrameTime { tts: 0.0, dts: 0.0 });
+        assert_eq!(
+            game.session.global("probe").expect("probe").to_string(),
+            "2",
+            "a sibling edit must not revert the pushed entry"
+        );
+        assert_eq!(
+            game.session.global("Config.k").expect("k").to_string(),
+            "5",
+            "the sibling edit itself must have landed"
+        );
+
+        // Edit the ENTRY on disk: disk wins, the push is dropped.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&entry, format!("{BASE}let probe = 3.0\n")).expect("edit entry");
+        game.check_hot_reload(FrameTime { tts: 0.0, dts: 0.0 });
+        assert_eq!(
+            game.session.global("probe").expect("probe").to_string(),
+            "3",
+            "an on-disk entry edit wins over the stale push"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The MVU pair is arity-validated at load like every other entry point.

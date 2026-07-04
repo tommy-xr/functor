@@ -69,7 +69,7 @@ fn main() {
         return;
     }
     if command == "check" {
-        let diags = mle::check(&project.module);
+        let diags = project.check();
         for diag in &diags {
             let (file, line, col) = project.sources.resolve(diag.span.start);
             eprintln!(

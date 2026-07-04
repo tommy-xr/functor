@@ -96,7 +96,7 @@ fn fixture_runs_and_checks_clean() {
         .join("project")
         .join("game.mle");
     let project = mle::project::load(&entry).unwrap_or_else(|e| panic!("{}", e.render()));
-    let diags = mle::check(&project.module);
+    let diags = project.check();
     assert!(diags.is_empty(), "fixture should check clean: {diags:?}");
     let record =
         mle::run(&project.module, Tracing::Off).unwrap_or_else(|f| panic!("{}", f.error.message));
@@ -470,7 +470,7 @@ fn unreferenced_sibling_diagnostics_surface_with_their_file() {
         ],
     );
     let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
-    let diags = mle::check(&project.module);
+    let diags = project.check();
     assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
     let rendered = project
         .sources
@@ -501,7 +501,7 @@ fn cross_module_generics_check() {
         ],
     );
     let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
-    let diags = mle::check(&project.module);
+    let diags = project.check();
     assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
     assert!(
         diags[0]
@@ -509,6 +509,97 @@ fn cross_module_generics_check() {
             .contains("expected Boxes.Box<Float>, got Boxes.Box<String>"),
         "unexpected diagnostic: {}",
         diags[0].message
+    );
+}
+
+/// An UNREFERENCED sibling declaring a same-shaped record type must not
+/// capture (or make ambiguous) a bare record literal elsewhere — literal
+/// resolution is scoped to types visible unqualified where the literal is
+/// written. [Codex High — B8 review]
+#[test]
+fn stray_sibling_type_does_not_capture_bare_literals() {
+    let scratch = Scratch::new(
+        "literal-scope",
+        &[
+            (
+                "game.mle",
+                "type Position = { x: Float, y: Float }
+                 let p = { x: 1.0, y: 2.0 }
+let main = () => p.x
+",
+            ),
+            // Same field shape, never referenced, never opened.
+            (
+                "debug.mle",
+                "type Point = { x: Float, y: Float }
+",
+            ),
+        ],
+    );
+    let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
+    let diags = project.check();
+    assert!(
+        diags.is_empty(),
+        "the stray sibling type must not interfere: {diags:?}"
+    );
+}
+
+/// `open`ed types ARE literal-visible: a bare literal matching an opened
+/// type resolves to it nominally (proven by the resulting type error)…
+#[test]
+fn opened_types_are_literal_visible() {
+    let scratch = Scratch::new(
+        "literal-open",
+        &[
+            (
+                "game.mle",
+                "open Vec
+let f = () => { x: 1.0, y: 2.0 }
+let bad = f() + 1.0
+",
+            ),
+            (
+                "vec.mle",
+                "type V2 = { x: Float, y: Float }
+",
+            ),
+        ],
+    );
+    let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
+    let diags = project.check();
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
+    assert!(
+        diags[0].message.contains("Vec.V2"),
+        "the literal should have resolved to Vec.V2: {}",
+        diags[0].message
+    );
+}
+
+/// …while the SAME program without the `open` stays gradual: the sibling's
+/// type is not in scope unqualified, so the literal is anonymous data.
+#[test]
+fn unopened_sibling_literals_stay_gradual() {
+    let scratch = Scratch::new(
+        "literal-no-open",
+        &[
+            (
+                "game.mle",
+                "let f = () => { x: 1.0, y: 2.0 }
+let bad = f() + 1.0
+",
+            ),
+            (
+                "vec.mle",
+                "type V2 = { x: Float, y: Float }
+",
+            ),
+        ],
+    );
+    let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
+    let diags = project.check();
+    assert!(
+        diags.is_empty(),
+        "an unopened sibling type must not resolve the literal: {diags:?}"
     );
 }
 

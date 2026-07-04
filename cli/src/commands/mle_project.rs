@@ -63,7 +63,7 @@ impl MleProject {
         let path = self.entry_path(working_directory)?;
         let display = path.display().to_string();
         let project = mle::project::load(&path).map_err(|e| Error::other(e.render()))?;
-        let diags = mle::check(&project.module);
+        let diags = project.check();
         for diag in &diags {
             let rendered = project.sources.render(diag.span.start, &diag.message);
             eprintln!("error: {rendered}");
