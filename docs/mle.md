@@ -167,7 +167,7 @@ snapshots — no GPU, fully agent-verifiable.
       + committed `broken.check` diagnostic golden (all diagnostics, sorted,
       `file:line:col`); per-diagnostic message/span unit tests; the three
       examples check clean. (done)
-- [ ] **B5. Match/ADTs + storable closures.** The game-logic essentials.
+- [x] **B5. Match/ADTs + storable closures.** The game-logic essentials.
       **Part 1 — ADTs + `match` — done (2026-07-03):** variant `type`
       declarations (`| Ctor(name: Type, …)` / nullary `| Ctor`; leading `|`
       required, first alternative included); constructors live in the value
@@ -179,10 +179,23 @@ snapshots — no GPU, fully agent-verifiable.
       equality; gradual checking with exhaustiveness (missing ctors named),
       foreign-ctor/literal-compatibility diagnostics, typed pattern
       variables, and arm-result joins; hover for ctor signatures and pattern
-      vars; `examples/shapes.mle` + goldens. **Remaining: storable
-      closures** serialized as `(stable-id, env)`. *Verify:* serialize a
-      value graph containing a closure → deserialize → call it;
-      rename-then-restore fails loud.
+      vars; `examples/shapes.mle` + goldens.
+      **Part 2 — storable closures — done (2026-07-03):** closures stored
+      in the model rebind across a hot reload (`mle::rebind`; design:
+      `closures.md` — rebind not content-address, ids by stable name,
+      identity resolved at the boundary). A lambda's id is its def's name
+      + `#k` traversal ordinals; runtime closures carry only their ExprId
+      (both id tables derived at reload time, off the hot path); captured
+      envs carry over BY NAME with recursive rebinding through containers
+      and captured closures; unmatched ids / unresolvable captures keep
+      the old body with a loud warning, and an Rc pointer guard makes
+      stale ids from older modules unidentifiable rather than
+      misidentified. Serialize-to-bytes rides on the state protocol later
+      — the `(stable-id, env)` split is done here.
+      *Verify (done):* 7 rebind unit tests (adopt+keep-env, containers,
+      recursive captures, deleted-def / new-capture warnings, stale-id
+      guard, data passthrough); pinned-clock SDK e2e — edit a stored
+      `vel` closure's body live, `x' = x + newBody(oldK · dt)` exactly.
 - [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
       handlers. *Verify:* same program under real vs fake vs replay; structured
       effect log.
@@ -263,9 +276,9 @@ Starts once A2 + B3 exist.
       contract violations (missing `tick`, function `init`) reject the new
       session the same way. Reload observed at **0.14ms** re-parse +
       ≤ 1 frame poll — versus the multi-second Fable+cargo loop this project
-      exists to kill. Caveat until B5: closure values stored *inside* the
-      model keep pre-reload bodies (globals rebind; stored closures need the
-      `(stable-id, env)` representation).
+      exists to kill. (The original caveat — closure values stored *inside*
+      the model kept pre-reload bodies — was removed by B5 part 2: stored
+      closures now rebind too.)
       *Verify (done):* SDK e2e (`mle-hot-reload.e2e.test.ts`, headless): with
       the debug clock pinned, spin `0.3` + one post-edit step = exactly
       `0.3 + dt×(-5)` — state survived AND behavior changed as arithmetic,
