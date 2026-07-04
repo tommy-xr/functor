@@ -109,6 +109,14 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+/// Is the game producer installed yet? The preview page polls this before
+/// announcing readiness — a push before the producer exists would be
+/// dropped ("game is not running yet").
+#[wasm_bindgen]
+pub fn mle_is_running() -> bool {
+    GAME.with(|g| g.borrow().is_some())
+}
+
 /// Hot-swap the running game's logic from pushed `.mle` source — the wasm
 /// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md
 /// D4). Same semantics: the model is preserved (`mle::rebind_value`), a
@@ -493,10 +501,7 @@ fn spatial_head(
 
 /// Fetch + decode a sound to an `AudioBuffer`, caching by path so repeat uses
 /// (one-shots and looping voices) are instant. `None` on any load/decode error.
-async fn decode_buffer(
-    ctx: &web_sys::AudioContext,
-    sound: &str,
-) -> Option<web_sys::AudioBuffer> {
+async fn decode_buffer(ctx: &web_sys::AudioContext, sound: &str) -> Option<web_sys::AudioBuffer> {
     use wasm_bindgen::JsCast;
 
     if let Some(b) = AUDIO_BUFFERS.with(|b| b.borrow().get(sound).cloned()) {

@@ -16,9 +16,14 @@ let client;
 // panel would kill the server out from under the other. Re-running the
 // command reveals the existing panel instead.
 let previewPanel;
+// The preview's dev-server child process — module-scoped so deactivate()
+// can kill it even if the panel outlives the command's closure (extension
+// reload/disable with the panel open must not orphan the server).
+let previewChild;
 
 // Where `functor run wasm` serves the game — fixed by the CLI's dev server.
 const PREVIEW_URL = "http://127.0.0.1:8080";
+const PREVIEW_ORIGIN = new URL(PREVIEW_URL).origin;
 // Edits push the full live buffer after this quiet period; the reload itself
 // is ~1ms in the runtime, so this is the whole edit→preview latency.
 const PUSH_DEBOUNCE_MS = 300;
@@ -41,6 +46,13 @@ function activate(context) {
 }
 
 function deactivate() {
+  // The panel usually kills its child on dispose, but extension
+  // reload/disable can tear us down with the panel still open — don't
+  // orphan the dev server on port 8080.
+  if (previewChild) {
+    previewChild.kill();
+    previewChild = undefined;
+  }
   return client ? client.stop() : undefined;
 }
 
@@ -132,6 +144,7 @@ async function openLivePreview() {
   const child = spawn(functorPath, ["-d", project.dir, "run", "wasm", "--no-open"], {
     cwd: project.dir,
   });
+  previewChild = child;
   child.stdout.on("data", (d) => log(d.toString()));
   child.stderr.on("data", (d) => log(d.toString()));
   child.on("error", (e) => {
@@ -155,8 +168,31 @@ async function openLivePreview() {
   // Push results surface here, non-modally: green check on a good reload,
   // the load error on a broken one (the old program keeps running).
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+  // Readiness is the page's own announcement (origin-checked in the
+  // bridge): it proves 8080 is really the MLE preview — anything else
+  // answering HTTP there never sends it — and it's the moment to flush the
+  // CURRENT buffer, so edits made before the runtime came up (or while the
+  // file sat unsaved) are not dropped.
+  let ready = false;
+  let readyTimeout;
+  const pushCurrentBuffer = async () => {
+    try {
+      const doc = await vscode.workspace.openTextDocument(entryPath);
+      panel.webview.postMessage({ type: "mle-set-source", source: doc.getText() });
+    } catch (e) {
+      log(`[push] cannot read ${entryPath}: ${e}\n`);
+    }
+  };
   panel.webview.onDidReceiveMessage((msg) => {
-    if (!msg || msg.type !== "mle-set-source-result") return;
+    if (!msg) return;
+    if (msg.type === "mle-preview-ready") {
+      if (ready) return;
+      ready = true;
+      clearTimeout(readyTimeout);
+      pushCurrentBuffer();
+      return;
+    }
+    if (msg.type !== "mle-set-source-result") return;
     if (msg.ok) {
       status.text = "$(check) MLE preview: reloaded";
       status.tooltip = msg.message;
@@ -183,7 +219,9 @@ async function openLivePreview() {
   panel.onDidDispose(() => {
     disposed = true;
     previewPanel = undefined;
+    previewChild = undefined;
     clearTimeout(debounce);
+    clearTimeout(readyTimeout);
     changeSub.dispose();
     status.dispose();
     child.kill();
@@ -196,6 +234,13 @@ async function openLivePreview() {
   if (disposed) return;
   if (up) {
     panel.webview.postMessage({ type: "mle-preview-navigate", url: PREVIEW_URL });
+    readyTimeout = setTimeout(() => {
+      if (ready || disposed) return;
+      vscode.window.showErrorMessage(
+        `MLE: ${PREVIEW_URL} answered but never announced the MLE preview — ` +
+          `is something else using that port?`
+      );
+    }, SERVER_WAIT_MS);
   } else {
     vscode.window.showErrorMessage(
       `MLE: the functor dev server did not come up at ${PREVIEW_URL} — see the "MLE Preview" output.`
@@ -236,11 +281,15 @@ function previewHtml() {
           frame.style.display = "block";
           document.getElementById("waiting").style.display = "none";
         } else if (data.type === "mle-set-source") {
-          // Extension → game page. The game page accepts any origin (it
-          // already runs arbitrary local game code) and replies to us.
+          // Extension → game page (the page only accepts pushes from its
+          // parent — us).
           if (frame.contentWindow) frame.contentWindow.postMessage(data, "*");
-        } else if (data.type === "mle-set-source-result") {
-          // Game page → extension.
+        } else if (data.type === "mle-set-source-result" || data.type === "mle-preview-ready") {
+          // Game page → extension. Only trust the page we framed: anything
+          // else on that port (or the game code itself) must not spoof
+          // results or readiness.
+          if (event.source !== frame.contentWindow) return;
+          if (event.origin && event.origin !== "${PREVIEW_ORIGIN}") return;
           vscode.postMessage(data);
         }
       });

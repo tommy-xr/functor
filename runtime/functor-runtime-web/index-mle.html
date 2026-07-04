@@ -21,6 +21,7 @@
         mle_key_event,
         mle_mouse_move,
         mle_mouse_wheel,
+        mle_is_running,
         mle_set_source,
       } from "./pkg/functor_runtime_web.js";
 
@@ -94,10 +95,12 @@
       // VSCode webview's iframe bridge, or a test driving this page directly)
       // posts the full .mle source and the runtime hot-swaps it, model
       // preserved — the postMessage face of the desktop runner's
-      // POST /reload-source. Accept any origin (this page already runs
-      // arbitrary game code served locally), but reply only to the sender.
+      // POST /reload-source. Pushes are accepted only from the HOSTING
+      // frame (the game code running in this page could otherwise spoof
+      // them); replies go only to the sender.
       const setupSetSource = () => {
         window.addEventListener("message", (event) => {
+          if (event.source !== window.parent) return;
           const data = event.data;
           if (!data || data.type !== "mle-set-source" || typeof data.source !== "string") return;
           let ok = true;
@@ -117,12 +120,22 @@
             );
           }
         });
-        // Tell a hosting frame the push seam is live — the editor panel
+        // Tell the hosting frame the push seam is live — the editor panel
         // flushes the current buffer on this (edits made while the server
         // and wasm were still starting would otherwise be dropped), and its
         // absence tells the panel it's NOT looking at an MLE preview page.
+        // "Live" means the PRODUCER is installed, not just the wasm module:
+        // run_async still has to fetch the source, so poll — a ready sent
+        // before mle_is_running() would invite a push that gets dropped.
         if (window.parent !== window) {
-          window.parent.postMessage({ type: "mle-preview-ready" }, "*");
+          const announce = () => {
+            if (mle_is_running()) {
+              window.parent.postMessage({ type: "mle-preview-ready" }, "*");
+            } else {
+              setTimeout(announce, 50);
+            }
+          };
+          announce();
         }
       };
 
