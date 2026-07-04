@@ -30,6 +30,9 @@ use std::sync::Arc;
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 use cgmath::{Quaternion, Rotation, Vector3};
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::debug_server;
+use functor_runtime_common::mle_game::MleGame;
+use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::{Camera, Frame, FrameTime, SceneContext, Viewport};
 use khronos_egl as egl;
 use openxr as xr;
@@ -245,26 +248,79 @@ fn camera_from_view(view: &xr::View) -> Camera {
     }
 }
 
-/// Placeholder frame until the MLE producer is wired (device bring-up): an
-/// empty scene under a shadow-casting directional light, so `render_frame`
-/// runs the full shadow + forward pipeline every frame — the point of phase 1
-/// is proving the shared renderer's whole GLES path, not just a clear.
-fn placeholder_frame() -> Frame {
-    use cgmath::SquareMatrix;
-    let light = functor_runtime_common::Light::Directional {
-        direction: [-0.4, -1.0, -0.3],
-        color: [1.0, 1.0, 1.0],
-        intensity: 1.0,
-        casts_shadows: true,
-    };
-    Frame::new_lit(
-        Camera::default(),
-        functor_runtime_common::Scene3D {
-            obj: functor_runtime_common::SceneObject::Group(vec![]),
-            xform: cgmath::Matrix4::identity(),
-        },
-        vec![light].into(),
-    )
+/// The built-in demo game the APK boots into — replaced live over the
+/// network via `POST /reload-source` (`functor push <quest-ip>:8077`). The
+/// runtime is a tool; games are text.
+const DEMO_GAME: &str = include_str!("demo.mle");
+
+/// The port the on-device debug server listens on, LAN-wide: this runtime IS
+/// a dev tool, and the network is how games reach it. Same no-auth caveat as
+/// `--debug-bind 0.0.0.0` on desktop (docs/debug-runtime.md).
+const DEBUG_PORT: u16 = 8077;
+
+/// The demo scene has no lights of its own yet, so the shell adds a
+/// shadow-casting sun when the game supplies none — this also keeps the full
+/// shadow + forward GLES pipeline exercised every frame.
+fn ensure_lit(mut frame: Frame) -> Frame {
+    if frame.lights.is_empty() {
+        frame.lights.push(functor_runtime_common::Light::Directional {
+            direction: [-0.4, -1.0, -0.3],
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            casts_shadows: true,
+        });
+    }
+    frame
+}
+
+/// Service one debug request on the frame loop — the headset subset of the
+/// desktop runner's handler: no framebuffer readback yet, no clock control
+/// (the compositor owns frame timing), no runtime-held input state.
+fn service_debug_request(
+    req: debug_server::DebugRequest,
+    game: &mut MleGame,
+    frame: &Frame,
+    frame_count: u64,
+    tts: f32,
+    (width, height): (u32, u32),
+) {
+    match req {
+        debug_server::DebugRequest::Capture(resp) => {
+            let _ = resp.send(Err(debug_server::CaptureError::Unavailable(
+                "capture is not implemented on the headset yet".to_string(),
+            )));
+        }
+        debug_server::DebugRequest::State(resp) => {
+            let _ = resp.send(debug_server::RuntimeState {
+                frame: frame_count,
+                tts,
+                width,
+                height,
+                model: game.state_debug(),
+                held_keys: vec![],
+                mouse: (0, 0),
+            });
+        }
+        debug_server::DebugRequest::Scene(resp) => {
+            let json = serde_json::to_string_pretty(frame)
+                .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
+            let _ = resp.send(json);
+        }
+        debug_server::DebugRequest::ReloadSource(source, resp) => {
+            let _ = resp.send(game.reload_source(&source));
+        }
+        debug_server::DebugRequest::Input(_, resp) => {
+            let _ = resp.send(Err(
+                "injected input is not supported on the headset yet".to_string()
+            ));
+        }
+        debug_server::DebugRequest::Time(_, resp) => {
+            // The XR compositor owns frame timing; acknowledge without effect
+            // so a desktop-oriented script doesn't hang on the channel.
+            log::warn!("/time is not supported on the headset (compositor-driven clock)");
+            let _ = resp.send(());
+        }
+    }
 }
 
 #[no_mangle]
@@ -380,6 +436,14 @@ pub fn android_main(app: AndroidApp) {
         eyes[0].height
     );
 
+    // The game: boots into the embedded demo, replaced live over the network.
+    let mut game = MleGame::from_source("<built-in demo.mle>", DEMO_GAME)
+        .expect("the embedded demo game must load");
+    // The on-device debug server (LAN-wide by design — this runtime is a dev
+    // tool): /state, /scene, and the POST /reload-source push target.
+    let debug_requests = debug_server::spawn("0.0.0.0", DEBUG_PORT);
+    let mut frame_count: u64 = 0;
+
     let asset_cache = Arc::new(AssetCache::new());
     let scene_context = SceneContext::new();
     let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
@@ -462,8 +526,7 @@ pub fn android_main(app: AndroidApp) {
             )
             .expect("locate views");
 
-        // Frame time from wall clock for now; the MLE producer step will own
-        // this the way the desktop loop does.
+        // Frame time from the wall clock, like the desktop loop's default.
         let tts = start.elapsed().as_secs_f32();
         let frame_time = FrameTime {
             dts: last_tts.map_or(0.0, |last| tts - last),
@@ -471,9 +534,27 @@ pub fn android_main(app: AndroidApp) {
         };
         last_tts = Some(tts);
 
-        // TODO(device bring-up): MLE producer + debug server here — the game
-        // produces this frame; today it's the placeholder scene.
-        let frame = placeholder_frame();
+        // The MVU beat, same order as the desktop loop: tick the game, then
+        // render its pure Frame (the shell will supply per-eye cameras — the
+        // game's own camera is ignored on the headset; your head is the
+        // camera).
+        game.tick(frame_time.clone());
+        let frame = ensure_lit(game.render(frame_time.clone()));
+
+        // Service debug requests after the frame is produced, so /scene and
+        // /state observe this frame (and /reload-source lands between
+        // frames, exactly like the desktop loop).
+        while let Ok(req) = debug_requests.try_recv() {
+            service_debug_request(
+                req,
+                &mut game,
+                &frame,
+                frame_count,
+                tts,
+                (eyes[0].width, eyes[0].height),
+            );
+        }
+        frame_count += 1;
 
         for (eye, view) in eyes.iter_mut().zip(views.iter()) {
             use glow::HasContext;

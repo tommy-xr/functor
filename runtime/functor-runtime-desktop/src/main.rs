@@ -15,15 +15,16 @@ use hot_reload_game::HotReloadGame;
 use static_game::StaticGame;
 
 use crate::game::Game;
+// Shared with the Quest runtime shell: the MLE producer and the HTTP debug
+// server now live in functor_runtime_common (native targets only).
+use functor_runtime_common::{debug_server, mle_game};
 
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
 
 mod audio;
-mod debug_server;
 mod game;
 mod hot_reload_game;
-mod mle_game;
 mod net_dispatch;
 mod replay_game;
 mod static_game;

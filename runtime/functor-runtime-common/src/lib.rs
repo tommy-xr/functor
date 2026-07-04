@@ -80,6 +80,15 @@ mod light;
 pub mod material;
 pub mod math;
 pub mod mle_prelude;
+// The MLE producer + the HTTP debug server, shared by the native shells
+// (desktop functor-runner and the Quest runtime) — the pieces that make a
+// shell a *tool*: interpret a game from source, and expose the
+// observe/drive/reload endpoints. Not for wasm (std::fs, threads, sockets;
+// the browser shell has its own dev-server story).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod debug_server;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mle_game;
 pub mod model;
 pub mod net;
 pub mod physics;

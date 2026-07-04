@@ -28,19 +28,21 @@
 
 use std::time::Instant;
 
-use functor_runtime_common::mle_prelude::{
+use crate::mle_prelude::{
     frame_value, physics_scene_value, sub_messages_for_frame, FunctorHost,
 };
-use functor_runtime_common::physics;
-use functor_runtime_common::ui::View;
-use functor_runtime_common::{Frame, FrameTime};
+use crate::physics;
+use crate::ui::View;
+use crate::{Frame, FrameTime};
 use mle::{Session, Value};
 
-use crate::game::Game;
+use crate::protocol::GameProducer;
 
 pub struct MleGame {
     path: String,
-    mtime: std::time::SystemTime,
+    /// The watched file's last-seen mtime — `None` for source-born producers
+    /// (`from_source`), which have no file and never file-reload.
+    watch_mtime: Option<std::time::SystemTime>,
     src: String,
     /// The lowered module the current session came from — kept so a reload
     /// can rebind model-stored closures (old module × new module).
@@ -204,9 +206,28 @@ impl MleGame {
             }
         };
         println!("[mle] loaded {path}");
+        Self::from_loaded(path.to_string(), Some(mtime), loaded)
+    }
+
+    /// Build a producer from source with no file behind it — the shell embeds
+    /// or receives the source (e.g. the Quest runtime's built-in demo game,
+    /// replaced over the network via `reload_source`). `label` stands in for
+    /// the path in error messages. No file, no mtime watching:
+    /// `check_hot_reload` is a no-op for these.
+    pub fn from_source(label: &str, source: &str) -> Result<MleGame, String> {
+        let loaded = load_source(label, source.to_string())?;
+        println!("[mle] loaded {label} (from source)");
+        Ok(Self::from_loaded(label.to_string(), None, loaded))
+    }
+
+    fn from_loaded(
+        path: String,
+        watch_mtime: Option<std::time::SystemTime>,
+        loaded: Loaded,
+    ) -> MleGame {
         MleGame {
-            path: path.to_string(),
-            mtime,
+            path,
+            watch_mtime,
             src: loaded.src,
             module: loaded.module,
             session: loaded.session,
@@ -361,7 +382,7 @@ impl MleGame {
     }
 }
 
-impl Game for MleGame {
+impl GameProducer for MleGame {
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {
         // Poll the file's mtime (a stat per frame is ~free) and swap in a new
         // session on change. THE MODEL IS KEPT: it is a plain value the host
@@ -372,11 +393,14 @@ impl Game for MleGame {
         // carried over; one that can't be matched keeps its old body with a
         // loud warning. A broken edit prints and keeps the old program
         // running.
+        let Some(watched) = self.watch_mtime else {
+            return; // source-born (from_source): nothing on disk to watch
+        };
         let mtime = file_mtime(&self.path);
-        if mtime == self.mtime {
+        if mtime == watched {
             return;
         }
-        self.mtime = mtime;
+        self.watch_mtime = Some(mtime);
         let started = Instant::now();
         match load_game(&self.path) {
             Ok(loaded) => {
@@ -418,8 +442,11 @@ impl Game for MleGame {
         // Absorb any disk mtime observed up to now: a save that landed
         // earlier this frame (after check_hot_reload ran, before this push
         // was serviced) is by definition older than the push and must not
-        // revert it next frame. Saves after this instant still win.
-        self.mtime = file_mtime(&self.path);
+        // revert it next frame. Saves after this instant still win. (Only
+        // meaningful when a file is being watched at all.)
+        if self.watch_mtime.is_some() {
+            self.watch_mtime = Some(file_mtime(&self.path));
+        }
         let status = format!(
             "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
             self.path,
@@ -458,7 +485,7 @@ impl Game for MleGame {
         if !self.has_input {
             return;
         }
-        let Some(key) = functor_runtime_common::Key::from_i32(code) else {
+        let Some(key) = crate::Key::from_i32(code) else {
             return;
         };
         let args = vec![
@@ -567,9 +594,9 @@ fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> 
 fn empty_frame() -> Frame {
     use cgmath::{Matrix4, SquareMatrix};
     Frame::new(
-        functor_runtime_common::Camera::default(),
-        functor_runtime_common::Scene3D {
-            obj: functor_runtime_common::SceneObject::Group(vec![]),
+        crate::Camera::default(),
+        crate::Scene3D {
+            obj: crate::SceneObject::Group(vec![]),
             xform: Matrix4::identity(),
         },
     )

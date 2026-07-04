@@ -45,6 +45,9 @@ uuid = { version = ">=1.8, <1.12", default-features = false, features = ["v4"] }
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
 tokio = { version = "1", features = ["full"] }
+# The shared debug server (`debug_server` module) — native shells only.
+tiny_http = "0.12"
+
 
 # Conditionally include dependencies for the WebAssembly target
 [target.'cfg(target_arch = "wasm32")'.dependencies]

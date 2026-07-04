@@ -18,7 +18,7 @@ use std::io::Read;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use functor_runtime_common::Key;
+use crate::Key;
 use serde::Deserialize;
 use tiny_http::{Header, Method, Response, Server};
 

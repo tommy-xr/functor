@@ -1,0 +1,39 @@
+// The Quest runtime's built-in demo game — what you see when the APK boots
+// before any game has been pushed. A head-height ring of gradient cubes
+// orbiting a pulsing sphere (mle-hello, resized for room scale: STAGE space
+// puts y = 0 at the floor and the viewer ~1.7m up).
+//
+// Replace it live from a dev machine:
+//   functor -d yourgame push <quest-ip>:8077
+//
+// NOTE: the camera below is part of the Frame contract but the headset
+// ignores it — your head is the camera.
+
+let count = 12.0
+let tau = 6.2831853
+
+let ringCube = (spin: Float, i: Float) =>
+  Scene.cube()
+    |> Scene.scale(0.18)
+    |> Scene.color(0.25 + 0.75 * (i / count), 0.35, 0.95 - 0.65 * (i / count))
+    |> Scene.rotateY(i * 0.7 + spin * 2.0)
+    |> Scene.translate(1.2, Math.sin(i + spin * 3.0) * 0.2, 0.0)
+    |> Scene.rotateY(i * tau / count + spin)
+
+let centerpiece = (spin: Float) =>
+  Scene.sphere()
+    |> Scene.color(1.0, 0.8, 0.2)
+    |> Scene.scale(0.3 + 0.08 * Math.sin(spin * 4.0))
+
+let init = { spin: 0.0 }
+
+let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt * 0.5 }
+
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 1.6, -2.5, 0.0, 1.4, 0.0),
+    Scene.group([
+      centerpiece(model.spin),
+      Scene.group(List.range(count) |> List.map((i) => ringCube(model.spin, i))),
+    ])
+      |> Scene.translate(0.0, 1.4, 0.0))
