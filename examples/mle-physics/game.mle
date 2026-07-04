@@ -66,27 +66,23 @@ let tick = (model, dt, tts) => model
 // Rising-edge detection: GLFW delivers key REPEATS as `isDown = true` too,
 // so holding SPACE would re-drop every repeat without the spaceHeld latch.
 // The kick fires on K's RELEASE instead — key-ups never repeat, so no latch
-// is needed. Every arm returns `(model, effect)` UNIFORMLY (with
-// Effect.none() where there is nothing to do): mixing bare-model and
-// tupled arms trips the B7 checker's occurs check ('a = 'a * Unknown) —
-// see the mle-language skill's "B7 gotcha"; the effect[...] header work
-// (docs/mle.md) is the planned fix.
+// is needed; arms mix plain-model and (model, effect) returns freely.
 let input = (model, key, isDown) =>
   match key with
   | "Space" =>
     (match isDown with
-     | false => ({ model with spaceHeld: false }, Effect.none())
+     | false => { model with spaceHeld: false }
      | true =>
        (match model.spaceHeld with
-        | true => (model, Effect.none())
-        | false => ({ model with drop: model.drop + 1.0, spaceHeld: true }, Effect.none())))
+        | true => model
+        | false => { model with drop: model.drop + 1.0, spaceHeld: true }))
   | "K" =>
     (match isDown with
-     | true => (model, Effect.none())
+     | true => model
      | false => (model, Physics.applyImpulse("ball", 0.0, 5.5, 0.0)))
   | "R" =>
     (match isDown with
-     | true => (model, Effect.none())
+     | true => model
      | false =>
        // Aim straight down over THIS generation's crate-0 spawn — effect
        // arguments are ordinary expressions of the model. The tagger is a
@@ -94,7 +90,7 @@ let input = (model, key, isDown) =>
        (model,
         Physics.raycast(scatterX(model.drop, 0.0), 8.0, scatterZ(model.drop, 0.0),
                         0.0, -1.0, 0.0, 20.0, (hit) => hit)))
-  | _ => (model, Effect.none())
+  | _ => model
 
 // Receives the raycast result after this frame's physics step (fresh —
 // "commands apply at the step; queries answer after it"): kick whatever the
@@ -102,10 +98,10 @@ let input = (model, key, isDown) =>
 // fixed body would just warn.
 let update = (model, msg) =>
   match msg.hit with
-  | false => (model, Effect.none())
+  | false => model
   | true =>
     (match msg.tag == "ground" with
-     | true => (model, Effect.none())
+     | true => model
      | false => (model, Physics.applyImpulse(msg.tag, 0.0, 6.0, 0.0)))
 
 let draw = (model, tts) =>

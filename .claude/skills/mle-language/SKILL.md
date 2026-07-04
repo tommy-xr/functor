@@ -257,11 +257,6 @@ another query answers immediately (the world already stepped). Under the
 fake/replay runners raycasts are canned/recorded — physics-query logic is
 testable with no world at all.
 
-**B7 gotcha — effect-returning entry points**: mixing bare-`model` arms
-with `(model, effect)` arms in one match trips the occurs check
-(`'a = 'a * Unknown`), and `mle check` (= `functor build`) fails. Until
-the `effect[...]` header work lands, return tuples UNIFORMLY, padding with
-`Effect.none()`: `| _ => (model, Effect.none())`.
 
 A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:
 

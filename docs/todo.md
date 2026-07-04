@@ -104,12 +104,6 @@ behind a `GameProducer` trait until MLE wins). Language design notes live in
 - [ ] Track C: MLE behind the seam — prelude, `MleProducer` + mle-hello golden,
       hot-reload payoff demo, MVU parity, wasm, perf gate (C1–C6).
 - [ ] Endgame: port examples, then delete the F#/Fable pipeline (E1–E3).
-- [ ] B7 regression: mixing bare-`model` and `(model, effect)` match arms in an
-      entry point trips the occurs check (`'a = 'a * Unknown`), rejecting the
-      documented B6 contract — a legal dynamic program fails `mle check` /
-      `functor build`. Workaround (uniform tuple arms + `Effect.none()`) is in
-      the mle-language skill and `examples/mle-physics`; the `effect[...]`
-      header work is the planned fix.
 
 ## Live variables / fast iteration
 
