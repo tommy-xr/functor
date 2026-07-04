@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>functor — a functional toolkit for 3D games</title>
+    <meta
+      name="description"
+      content="Write 3D games as pure functions. F# compiled via Fable to Rust, native + WebAssembly, with live hot-reload — and MLE, a tiny live-editable game language that runs in your browser."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="landing-page">
+    <!-- The hero background IS a functor program: site/examples/hero.mle,
+         interpreted live by the wasm runtime in this iframe. -->
+    <section class="hero">
+      <iframe
+        class="hero-scene"
+        src="player.html?game=examples%2Fhero.mle"
+        title="live synthwave scene rendered by functor"
+        tabindex="-1"
+      ></iframe>
+      <div class="hero-overlay">
+        <h1 class="hero-title">FUNCTOR</h1>
+        <p class="hero-tagline">A functional toolkit for 3D games.</p>
+        <p class="hero-sub">
+          Pure functions in, frames out. F# → Rust → native&nbsp;+&nbsp;WebAssembly, with
+          hot-reload that keeps your game state alive.
+        </p>
+        <div class="hero-actions">
+          <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
+          <a class="button-ghost" href="https://github.com/tommy-xr/functor">GitHub ↗</a>
+        </div>
+        <p class="hero-note">this backdrop is a live program — <a href="sandbox.html?example=hero">edit it</a></p>
+      </div>
+    </section>
+
+    <section class="features">
+      <div class="feature">
+        <h2>⚡ Live, state-preserving reload</h2>
+        <p>
+          A game is a pure function of its model. Edit the code and the runtime swaps the
+          program under the running model — the ball keeps bouncing, mid-arc, with your new
+          gravity.
+        </p>
+      </div>
+      <div class="feature">
+        <h2>λ MLE — a tiny game language</h2>
+        <p>
+          An F#-inspired language with records, variants, pattern matching, and pipelines —
+          interpreted by a zero-dependency engine that runs natively and in your browser.
+          No toolchain between you and the frame.
+        </p>
+      </div>
+      <div class="feature">
+        <h2>◢ One scene, every target</h2>
+        <p>
+          Desktop (OpenGL), browser (WebGL2), and Quest (OpenXR) share one renderer:
+          primitives, glTF, lighting and shadows, physics, render targets, spatial audio.
+        </p>
+      </div>
+    </section>
+
+    <section class="code-sample">
+      <h2>The whole game loop</h2>
+      <p>Model–View–Update, all the way down. This is real MLE — paste it into the sandbox.</p>
+      <pre><code><span class="tok-c">// a pulsing sphere with a beat counter</span>
+<span class="tok-k">type</span> <span class="tok-t">Msg</span> = | <span class="tok-t">Beat</span>
+
+<span class="tok-k">let</span> init = { spin: <span class="tok-n">0.0</span>, beat: <span class="tok-n">0.0</span> }
+
+<span class="tok-k">let</span> tick = (model, dt: <span class="tok-t">Float</span>, tts: <span class="tok-t">Float</span>) =>
+  { model <span class="tok-k">with</span> spin: model.spin + dt }
+
+<span class="tok-k">let</span> update = (model, msg) =>
+  <span class="tok-k">match</span> msg <span class="tok-k">with</span>
+  | <span class="tok-t">Beat</span> => { model <span class="tok-k">with</span> beat: model.beat + <span class="tok-n">1.0</span> }
+
+<span class="tok-k">let</span> subscriptions = (model) => <span class="tok-t">Sub</span>.every(<span class="tok-t">Time</span>.seconds(<span class="tok-n">1.0</span>), <span class="tok-t">Beat</span>)
+
+<span class="tok-k">let</span> draw = (model, tts: <span class="tok-t">Float</span>) =>
+  <span class="tok-t">Frame</span>.create(
+    <span class="tok-t">Camera</span>.lookAt(<span class="tok-n">0.0</span>, <span class="tok-n">2.0</span>, <span class="tok-n">-6.0</span>, <span class="tok-n">0.0</span>, <span class="tok-n">0.0</span>, <span class="tok-n">0.0</span>),
+    <span class="tok-t">Scene</span>.sphere()
+      |> <span class="tok-t">Scene</span>.emissive(<span class="tok-n">1.0</span>, <span class="tok-n">0.3</span>, <span class="tok-n">0.8</span>)
+      |> <span class="tok-t">Scene</span>.scale(<span class="tok-n">1.0</span> + <span class="tok-n">0.2</span> * <span class="tok-t">Math</span>.sin(model.spin * <span class="tok-n">4.0</span>)))</code></pre>
+    </section>
+
+    <section class="how-it-works">
+      <h2>How it works</h2>
+      <ol>
+        <li>
+          <strong>F# games</strong> are transpiled by <a href="https://fable.io">Fable</a> to
+          Rust, then compiled to a native dylib (hot-reloaded by the desktop runner) or a
+          WebAssembly bundle.
+        </li>
+        <li>
+          <strong>MLE games</strong> skip compilation entirely: the source ships as text and a
+          tree-walking interpreter inside the runtime evaluates it — which is what makes
+          browser-side live editing possible.
+        </li>
+        <li>
+          <strong>The runtime is the imperative shell</strong>: rendering, input, physics
+          stepping, audio, networking. Your game stays a pure
+          <code>model → Frame</code> function.
+        </li>
+      </ol>
+    </section>
+
+    <footer class="landing-footer">
+      <p>
+        <a href="https://github.com/tommy-xr/functor">github.com/tommy-xr/functor</a>
+        · built with functor — this page's sky is a <code>.mle</code> file
+      </p>
+    </footer>
+  </body>
+</html>
