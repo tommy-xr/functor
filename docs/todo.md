@@ -30,7 +30,8 @@ golden tests), see `CLAUDE.md` and `git log`.
       revisit `MAX_JOINTS 200` (800 uniform vec4s) vs the WebGL2 minimum guarantee.
 - [ ] Dynamic mesh (+ emissive texture material).
 - [ ] Lighting: ambient, point, directional, ambient/positional fog, spot →
-      shadow mapping.
+      shadow mapping. (Distance fog done 2026-07-04 — `Frame.withFog`,
+      linear + exp; volumetric/positional fog still open.)
 - [ ] Cubemap / skybox (emissive lighting + reflection).
 - [ ] Camera middleware: FPSCamera, OrbitCamera.
 - [ ] In-built hands models.
