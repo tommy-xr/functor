@@ -216,6 +216,28 @@ impl Session {
         };
         interp.call(callee, args, name.to_string(), Span::new(0, 0), None)
     }
+
+    /// Apply a function VALUE (a closure the host is holding — e.g. an
+    /// effect's tagger) with `args`. Same execution shape as [`Self::call`];
+    /// the label names it in traces/errors.
+    pub fn apply(
+        &self,
+        callee: Value,
+        args: Vec<Value>,
+        label: &str,
+        host: &mut dyn Host,
+    ) -> Result<Value, RunError> {
+        let mut interp = Interp {
+            globals: self.globals.clone(),
+            mut_slots: HashMap::new(),
+            trace: Vec::new(),
+            tracing: Tracing::Off,
+            depth: 0,
+            call_depth: 0,
+            host,
+        };
+        interp.call(callee, args, label.to_string(), Span::new(0, 0), None)
+    }
 }
 
 struct Interp<'h> {

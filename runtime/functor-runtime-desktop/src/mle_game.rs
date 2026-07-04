@@ -29,7 +29,8 @@
 use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
-    frame_value, physics_scene_value, sub_messages_for_frame, FunctorHost,
+    contains_effect, drain_effects, frame_value, physics_scene_value, split_model_effect,
+    sub_messages_for_frame, EffectLog, FunctorHost, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
@@ -58,6 +59,13 @@ pub struct MleGame {
     /// time-grid semantics of `Sub.every` do the rest.
     prev_tts: Option<f64>,
     has_physics: bool,
+    /// Performs `Effect.*` commands — the real world in the runner; the
+    /// drain logic itself is `mle_prelude::drain_effects` (tested there
+    /// with fake/replay runners).
+    effect_runner: RealEffects,
+    /// The structured effect log (last `EFFECT_LOG_CAP` performed effects) —
+    /// LLM-readable, and the input format for replay.
+    effect_log: EffectLog,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -128,6 +136,12 @@ fn load_source(path: &str, src: String) -> Result<Loaded, String> {
     ) {
         return Err(format!(
             "{path}: `init` must be a model value, not a function"
+        ));
+    }
+    if functor_runtime_common::mle_prelude::contains_effect(&init) {
+        return Err(format!(
+            "{path}: `init` contains an Effect value — Effects are commands, not data; \
+return them beside the model as `(model, effect)`"
         ));
     }
     require_function(path, &session, "tick", 3)?;
@@ -217,6 +231,8 @@ impl MleGame {
             has_subscriptions: loaded.has_subscriptions,
             prev_tts: None,
             has_physics: loaded.has_physics,
+            effect_runner: RealEffects::new(),
+            effect_log: EffectLog::new(),
             last_frame: empty_frame(),
             last_error: None,
             frames: 0,
@@ -272,6 +288,48 @@ impl MleGame {
         }
     }
 
+    /// Take an entry point's return: split off any `(model, effect)` pair,
+    /// adopt the model, and drain the effects to a fixed point through
+    /// `update` (docs/mle.md B6). Every producer path that runs game code
+    /// funnels through here, so effects work uniformly from tick, input,
+    /// mouse, and subscription messages.
+    fn absorb(&mut self, returned: Value) {
+        let (model, effects) = split_model_effect(returned);
+        self.model = model;
+        // Effects are commands, not data — one stored in the model would
+        // make the pair sniff ambiguous on a later return (see
+        // `split_model_effect`). Warn loud; the model is small (it is
+        // interpreted every frame anyway) so the scan is cheap.
+        if contains_effect(&self.model) {
+            self.report_once(
+                "[mle] the model contains an Effect value — Effects are commands, \
+not data; return them beside the model as `(model, effect)` instead of storing them"
+                    .to_string(),
+            );
+        }
+        let Some(effects) = effects else { return };
+        if self.session.global("update").is_none() {
+            self.report_once(
+                "[mle] effects returned but there is no `let update = (model, msg) => …` \
+to receive their messages; dropping them"
+                    .to_string(),
+            );
+            return;
+        }
+        let mut reports: Vec<String> = Vec::new();
+        drain_effects(
+            &self.session,
+            &mut self.model,
+            effects,
+            &mut self.effect_runner,
+            &mut self.effect_log,
+            &mut |message| reports.push(message),
+        );
+        for message in reports {
+            self.report_once(message);
+        }
+    }
+
     /// Fire subscription timers over `(prev_tts, tts]` and fold their
     /// messages through `update`, before this frame's `tick` — the message
     /// drain seam (docs/mle.md C4b-2; B6's effects will feed this same
@@ -306,7 +364,7 @@ impl MleGame {
                 .session
                 .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
             {
-                Ok(model) => self.model = model,
+                Ok(returned) => self.absorb(returned),
                 Err(err) => self.frame_error("update", &err),
             }
         }
@@ -440,7 +498,7 @@ impl Game for MleGame {
             Value::Number(frame_time.tts as f64),
         ];
         match self.session.call("tick", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("tick", &err),
         }
         self.tick_ns += started.elapsed().as_nanos() as u64;
@@ -467,7 +525,7 @@ impl Game for MleGame {
             Value::Bool(is_down),
         ];
         match self.session.call("input", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("input", &err),
         }
     }
@@ -481,7 +539,7 @@ impl Game for MleGame {
             Value::Number(y as f64),
         ];
         match self.session.call("mouseMove", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("mouseMove", &err),
         }
     }
@@ -492,7 +550,7 @@ impl Game for MleGame {
         }
         let args = vec![self.model.clone(), Value::Number(delta as f64)];
         match self.session.call("mouseWheel", args, &mut FunctorHost) {
-            Ok(model) => self.model = model,
+            Ok(returned) => self.absorb(returned),
             Err(err) => self.frame_error("mouseWheel", &err),
         }
     }
@@ -605,6 +663,23 @@ mod tests {
         );
         assert!(
             err.contains("no `let update = (model, msg) => …` to receive them"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Effects are commands, not data: an Effect inside `init` would make
+    /// the pair sniff ambiguous — rejected at load. [Codex H — B6 review]
+    #[test]
+    fn init_containing_an_effect_is_rejected() {
+        let err = load_err(
+            "init-effect",
+            "let init = (0.0, Effect.none())
+             let tick = (m, dt, tts) => m
+             let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+",
+        );
+        assert!(
+            err.contains("`init` contains an Effect value"),
             "unexpected error: {err}"
         );
     }

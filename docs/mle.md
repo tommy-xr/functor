@@ -214,9 +214,25 @@ snapshots — no GPU, fully agent-verifiable.
       non-match, structural equality, `(e)` stays grouping, 1-tuple and
       mut-destructure teaching errors, element types flow through
       patterns, closures inside tuples rebind); 205 mle tests green.
-- [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
-      handlers; `update`/`tick` return `(model, effects)` tuples. *Verify:* same
-      program under real vs fake vs replay; structured effect log.
+- [x] **B6. Minimal effect broker** (done 2026-07-03). `Effect.none/now/
+      random/batch` prelude values (taggers validated callable at
+      construction); any entry point may return a `(model, effect)` tuple —
+      `split_model_effect` sniffs the pair (an Effect value in model data is
+      meaningless, so the sniff is unambiguous) and both producers funnel
+      every return through one `absorb` path. `drain_effects` (shared,
+      prelude-level) performs each effect through an **EffectRunner** —
+      `RealEffects` (wasm-safe clock: `Date.now()` on wasm32, where
+      `SystemTime` panics), `FakeEffects`, `ReplayEffects` — applies the
+      tagger via the new `Session::apply`, folds the message through
+      `update`, and drains chained effects to a fixed point (1000/frame
+      cap). Every performed effect lands in the **structured EffectLog**
+      (`{kind, value}` — replay's input format). Taggers run same-frame, so
+      no closure outlives its session (no reload hazard). *Verify (done):*
+      the broker contract as exact arithmetic — same program under fake and
+      replay produces the same model, the fake run's log IS replay's input,
+      divergent replay fails loud with position; construction teaching
+      errors; runaway-chain cap; SDK e2e through the real runner (key →
+      Effect.random → chained Effect.now → both sentinels replaced).
 - [x] **Language: record updates + local mutability** (2026-07-02; design:
       `~/notes/ideas/mle-language/mutability.md`). `{ base with x: 1.0 }`
       pure record updates; expression-level `let [mut] x = e in body` with
