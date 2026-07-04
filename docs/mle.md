@@ -196,9 +196,23 @@ snapshots — no GPU, fully agent-verifiable.
       recursive captures, deleted-def / new-capture warnings, stale-id
       guard, data passthrough); pinned-clock SDK e2e — edit a stored
       `vel` closure's body live, `x' = x + newBody(oldK · dt)` exactly.
+- [ ] **Language: tuples.** Real F#-style tuples, landing BEFORE B6 (which
+      consumes them: `update`/`tick` return `(model, effects)` pairs, the
+      F# contract's shape). Scope: `(a, b)` literals (≥ 2 elements — `(e)`
+      stays grouping); tuple patterns in `match` (`| (x, y) =>`, shallow
+      like ctor sub-patterns) and a destructuring let
+      (`let (a, b) = e in …`) since multiple-returns is the point;
+      `Float * Float` product types in annotations; `Value::Tuple` with
+      structural equality and `(1, 2)` display; checker arity + element
+      types, exhaustiveness-compatible; hover/LSP display; rebind walk;
+      no positional field access (`t.0`) — destructure instead (named
+      records stay the LLM-native default for anything that outlives an
+      expression). Skill updated in the same PR. *Verify:* semantics +
+      error + checker tests, goldens, an example using a
+      multiple-return function.
 - [ ] **B6. Minimal effect broker.** `Clock.Now`, `Random` with real/fake/replay
-      handlers. *Verify:* same program under real vs fake vs replay; structured
-      effect log.
+      handlers; `update`/`tick` return `(model, effects)` tuples. *Verify:* same
+      program under real vs fake vs replay; structured effect log.
 - [x] **Language: record updates + local mutability** (2026-07-02; design:
       `~/notes/ideas/mle-language/mutability.md`). `{ base with x: 1.0 }`
       pure record updates; expression-level `let [mut] x = e in body` with
