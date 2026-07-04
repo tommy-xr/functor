@@ -4,7 +4,9 @@
 //   functor-runner --mle --game-path examples/mle-hello/game.mle
 //
 // The producer contract: `init` is the initial model value; `tick` steps it;
-// `draw` returns a Frame. Transforms apply outermost-last, so
+// `draw` returns a Frame; `subscriptions` declares timers whose messages
+// fold through `update` (the full MVU loop — here, a once-per-second Beat
+// cycles the centerpiece's color). Transforms apply outermost-last, so
 // `|> Scene.translate(radius…) |> Scene.rotateY(angle)` places a cube on the
 // ring at `angle`.
 
@@ -18,19 +20,28 @@ let ringCube = (spin: Float, i: Float) =>
     |> Scene.translate(4.0, Math.sin(i + spin * 3.0) * 0.6, 0.0)
     |> Scene.rotateY(Angle.radians(i * tau / count + spin))
 
-let centerpiece = (spin: Float) =>
+let centerpiece = (spin: Float, beat: Float) =>
   Scene.sphere()
-    |> Scene.color(1.0, 0.8, 0.2)
+    |> Scene.color(1.0, 0.5 + 0.5 * Math.cos(beat * 2.1), 0.5 + 0.5 * Math.sin(beat * 1.3))
     |> Scene.scale(1.1 + 0.25 * Math.sin(spin * 4.0))
 
-let init = { spin: 0.0 }
+type Msg =
+  | Beat
+
+let init = { spin: 0.0, beat: 0.0 }
 
 let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt * 0.5 }
+
+let update = (model, msg) =>
+  match msg with
+  | Beat => { model with beat: model.beat + 1.0 }
+
+let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
 
 let draw = (model, tts: Float) =>
   Frame.create(
     Camera.lookAt(0.0, 3.5, -9.0, 0.0, 0.0, 0.0),
     Scene.group([
-      centerpiece(model.spin),
+      centerpiece(model.spin, model.beat),
       Scene.group(List.range(count) |> List.map((i) => ringCube(model.spin, i))),
     ]))

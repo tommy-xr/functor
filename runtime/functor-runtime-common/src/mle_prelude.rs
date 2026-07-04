@@ -22,6 +22,12 @@
 //! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
+//! Time.seconds(n) / Time.millis(n)                          -> Duration
+//!   (like Angle: timing functions take Duration VALUES, never bare
+//!    numbers — seconds/milliseconds confusion is unrepresentable)
+//! Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) -> Sub
+//!   (the game's `subscriptions` returns one of these; fired messages are
+//!    folded through `update` — see the producers' drain seam)
 //!
 //! Physics.box(w, h, d) / sphere(r) / capsule(hh, r)         -> Shape
 //! Physics.dynamic/kinematic/fixed(tag, shape)               -> Body
@@ -81,11 +87,59 @@ pub struct MleFrame(pub Frame);
 /// A [`Light`] as an opaque MLE value.
 pub struct MleLight(pub Light);
 
+/// A duration as an opaque MLE value — `Time.seconds(…)`/`Time.millis(…)`.
+/// Timing functions accept ONLY this, never a bare number, making
+/// seconds/milliseconds confusion unrepresentable (the Angle rule, applied
+/// to time). Stored canonically in seconds.
+pub struct MleDuration(pub f64);
+
+/// A subscription tree as an opaque MLE value — what the game's
+/// `subscriptions(model)` returns. The declarative dual of effects: a
+/// standing "while the model looks like this, listen to these".
+///
+/// `Every` is deliberately stateless (mirroring the F# runtime's
+/// `Sub.crossedBoundary`): it fires when an integer multiple of its period
+/// lies in `(prevTts, tts]` — a pure function of the global clock. No
+/// per-timer identity, no frame-to-frame diffing, and it survives a hot
+/// reload for free. A non-positive period never fires.
+///
+/// Precision: `tts` is f32-sourced (the protocol's `FrameTime`), so with a
+/// period that has no exact binary representation a boundary can land one
+/// frame late — but the floor comparison is monotone and telescoping over
+/// adjacent frame windows, so a firing is never lost or doubled (and the F#
+/// executor computes on the same f32s: exact parity).
+#[derive(Clone)]
+pub enum SubTree {
+    None,
+    Every { period_seconds: f64, msg: Value },
+    Batch(Vec<SubTree>),
+}
+
+pub struct MleSub(pub SubTree);
+
 /// An [`Angle`] as an opaque MLE value — `Angle.degrees(…)`/`Angle.radians(…)`.
 /// Rotation/camera functions accept ONLY this, never a bare number, making
 /// degree/radian confusion unrepresentable (the F# side's `Math.Angle`
 /// discipline, carried across the boundary).
 pub struct MleAngle(pub Angle);
+
+impl HostData for MleDuration {
+    fn type_name(&self) -> &'static str {
+        "Duration"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HostData for MleSub {
+    fn type_name(&self) -> &'static str {
+        "Sub"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 impl HostData for MleAngle {
     fn type_name(&self) -> &'static str {
@@ -218,6 +272,11 @@ const PATHS: &[&str] = &[
     "Light.castShadows",
     "Frame.create",
     "Frame.createLit",
+    "Time.seconds",
+    "Time.millis",
+    "Sub.none",
+    "Sub.every",
+    "Sub.batch",
     "Physics.box",
     "Physics.sphere",
     "Physics.capsule",
@@ -603,9 +662,9 @@ impl Host for FunctorHost {
                         Some((pos, rot)) => {
                             // cgmath's Quaternion::new is scalar-FIRST (w, x, y, z).
                             let rotation = cgmath::Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
-                            let xform = Matrix4::from_translation(cgmath::vec3(
-                                pos[0], pos[1], pos[2],
-                            )) * Matrix4::from(rotation);
+                            let xform =
+                                Matrix4::from_translation(cgmath::vec3(pos[0], pos[1], pos[2]))
+                                    * Matrix4::from(rotation);
                             scene_value(group(vec![inner.clone()], xform))
                         }
                         None => err(no_body(tag)),
@@ -624,6 +683,45 @@ impl Host for FunctorHost {
                     Ok(host(MleFrame(Frame::new(camera.0.clone(), scene.clone()))))
                 }
                 _ => usage("Frame.create(camera, scene)"),
+            },
+            "Time.seconds" => match args.as_slice() {
+                [n] => Ok(host(MleDuration(num(n, span)?))),
+                _ => usage("Time.seconds(n)"),
+            },
+            "Time.millis" => match args.as_slice() {
+                [n] => Ok(host(MleDuration(num(n, span)? / 1000.0))),
+                _ => usage("Time.millis(n)"),
+            },
+            "Sub.none" => match args.as_slice() {
+                [] => Ok(host(MleSub(SubTree::None))),
+                _ => usage("Sub.none()"),
+            },
+            // The msg is any MLE value (typically an ADT variant), held by
+            // the host and handed back verbatim when the timer fires.
+            "Sub.every" => match args.as_slice() {
+                [duration, msg] => Ok(host(MleSub(SubTree::Every {
+                    period_seconds: duration_of(duration, "Sub.every", span)?,
+                    msg: msg.clone(),
+                }))),
+                _ => usage("Sub.every(duration, msg)"),
+            },
+            "Sub.batch" => match args.as_slice() {
+                [Value::List(items)] => {
+                    let mut subs = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        match sub_of(item) {
+                            Some(sub) => subs.push(sub.0.clone()),
+                            None => {
+                                return err(format!(
+                                    "Sub.batch items must be Subs, got {}",
+                                    item.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(host(MleSub(SubTree::Batch(subs))))
+                }
+                _ => usage("Sub.batch([sub, …])"),
             },
             _ => err(format!("internal: unregistered prelude path `{path}`")),
         }
@@ -670,6 +768,77 @@ Angle.degrees(…) or Angle.radians(…)"
             message: format!("{what}: expected an Angle, got {}", other.kind_name()),
             span,
         }),
+    }
+}
+
+/// Extract a duration in seconds — timing functions accept ONLY Duration
+/// values, so a bare number gets a teaching error instead of a silent unit
+/// guess (the [`angle_of`] rule, applied to time).
+fn duration_of(value: &Value, what: &str, span: Span) -> Result<f64, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MleDuration>()
+            .map(|d| d.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected a Duration, got {}", value.kind_name()),
+                span,
+            }),
+        Value::Number(_) => Err(RunError {
+            message: format!(
+                "{what}: expected a Duration, got a bare number — say which unit: \
+Time.seconds(…) or Time.millis(…)"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected a Duration, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
+fn sub_of(value: &Value) -> Option<&MleSub> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleSub>(),
+        _ => None,
+    }
+}
+
+/// The messages a subscription tree fires in the frame interval
+/// `(prev_tts, tts]`, in declaration order. `subs` is the raw value the
+/// game's `subscriptions(model)` returned — a non-Sub is an error string the
+/// producer reports like any other per-frame error.
+pub fn sub_messages_for_frame(subs: &Value, prev_tts: f64, tts: f64) -> Result<Vec<Value>, String> {
+    let Some(sub) = sub_of(subs) else {
+        return Err(format!(
+            "subscriptions must return a Sub (Sub.every / Sub.none / Sub.batch), got {}",
+            subs.kind_name()
+        ));
+    };
+    let mut msgs = Vec::new();
+    collect_fired(&sub.0, prev_tts, tts, &mut msgs);
+    Ok(msgs)
+}
+
+fn collect_fired(sub: &SubTree, prev_tts: f64, tts: f64, msgs: &mut Vec<Value>) {
+    match sub {
+        SubTree::None => {}
+        SubTree::Every {
+            period_seconds: p,
+            msg,
+        } => {
+            // An integer multiple of the period lies in (prev_tts, tts] —
+            // the F# runtime's `Sub.crossedBoundary`, verbatim.
+            if *p > 0.0 && (tts / p).floor() > (prev_tts / p).floor() {
+                msgs.push(msg.clone());
+            }
+        }
+        SubTree::Batch(items) => {
+            for item in items.iter() {
+                collect_fired(item, prev_tts, tts, msgs);
+            }
+        }
     }
 }
 
@@ -1030,7 +1199,9 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
             "let main = () => Physics.scene(0.0, -9.81, 0.0, [\n\
                Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(0.0, 5.0, 0.0)])",
         );
-        let scene = physics_scene_value(&declare).expect("a PhysicsScene").clone();
+        let scene = physics_scene_value(&declare)
+            .expect("a PhysicsScene")
+            .clone();
         crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
             w.reconcile(&scene);
             for _ in 0..30 {
@@ -1054,9 +1225,7 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         assert!(y < 5.0, "ball should have fallen, y = {y}");
 
         // …and Physics.transformed places a scene node at the live pose.
-        let drawn = eval(
-            "let main = () => Scene.sphere() |> Physics.transformed(\"ball\")",
-        );
+        let drawn = eval("let main = () => Scene.sphere() |> Physics.transformed(\"ball\")");
         let scene3d = scene_of(&drawn).expect("a Scene");
         assert!((scene3d.xform.w.y as f64 - y).abs() < 1e-6);
 
@@ -1068,8 +1237,14 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
     #[test]
     fn non_positive_dimensions_are_rejected() {
         for (src, needle) in [
-            ("Physics.sphere(-0.5)", "Physics.sphere radius must be positive"),
-            ("Physics.box(1.0, 0.0, 1.0)", "Physics.box height must be positive"),
+            (
+                "Physics.sphere(-0.5)",
+                "Physics.sphere radius must be positive",
+            ),
+            (
+                "Physics.box(1.0, 0.0, 1.0)",
+                "Physics.box height must be positive",
+            ),
             (
                 "Physics.dynamic(\"x\", Physics.sphere(0.5)) |> Physics.mass(0.0)",
                 "Physics.mass must be positive",
@@ -1079,10 +1254,8 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
                 "Physics.friction must not be negative",
             ),
         ] {
-            let module = mle::lower(
-                mle::parse(&format!("let main = () => {src}")).unwrap(),
-            )
-            .unwrap();
+            let module =
+                mle::lower(mle::parse(&format!("let main = () => {src}")).unwrap()).unwrap();
             let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
                 .err()
                 .unwrap_or_else(|| panic!("`{src}` should fail"));
@@ -1098,10 +1271,9 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
     #[test]
     fn physics_read_of_unknown_tag_is_a_spanned_error() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
-        let module = mle::lower(
-            mle::parse("let main = () => Physics.position(\"ghost\")").unwrap(),
-        )
-        .unwrap();
+        let module =
+            mle::lower(mle::parse("let main = () => Physics.position(\"ghost\")").unwrap())
+                .unwrap();
         let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
@@ -1138,5 +1310,119 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
             .err()
             .expect("should fail");
         assert_eq!(failure.error.message, "expected a finite number, got inf");
+    }
+
+    /// The messages fired by `main`'s sub tree over `(prev, tts]`, as display
+    /// strings ("Pulse", "Beat(2)").
+    fn fired(src: &str, prev: f64, tts: f64) -> Vec<String> {
+        sub_messages_for_frame(&eval(src), prev, tts)
+            .expect("a Sub tree")
+            .iter()
+            .map(|m| m.to_string())
+            .collect()
+    }
+
+    const PULSE: &str = "type Msg = | Pulse\n\
+         let main = () => Sub.every(Time.seconds(1.0), Pulse)";
+
+    /// `Every` fires exactly when an integer multiple of the period lies in
+    /// `(prev, tts]` — boundary inclusive on the right, and a long frame that
+    /// skips several boundaries still fires ONCE (floor comparison, exactly
+    /// the F# `Sub.crossedBoundary`).
+    #[test]
+    fn every_fires_on_the_global_time_grid() {
+        assert!(fired(PULSE, 0.5, 0.9).is_empty());
+        assert_eq!(fired(PULSE, 0.9, 1.0), ["Pulse"]);
+        assert!(fired(PULSE, 1.0, 1.5).is_empty());
+        assert_eq!(fired(PULSE, 2.9, 4.1), ["Pulse"]);
+    }
+
+    /// `Time.millis(500)` and `Time.seconds(0.5)` are the same duration.
+    #[test]
+    fn millis_and_seconds_agree() {
+        let millis = "type Msg = | Pulse\n\
+             let main = () => Sub.every(Time.millis(500.0), Pulse)";
+        assert_eq!(fired(millis, 0.9, 1.0), ["Pulse"]);
+        assert!(fired(millis, 1.0, 1.4).is_empty());
+    }
+
+    /// Batches fire in declaration order; `Sub.none` fires nothing; the msg
+    /// crosses back verbatim (here, a parameterful variant).
+    #[test]
+    fn batch_collects_in_declaration_order() {
+        let src = "type Msg = | Fast(n: Float) | Slow\n\
+             let main = () => Sub.batch([\n\
+               Sub.every(Time.seconds(2.0), Slow),\n\
+               Sub.none(),\n\
+               Sub.every(Time.millis(500.0), Fast(2.0)),\n\
+             ])";
+        assert_eq!(fired(src, 1.9, 2.0), ["Slow", "Fast(2)"]);
+        assert_eq!(fired(src, 2.0, 2.5), ["Fast(2)"]);
+    }
+
+    /// Walking a non-binary period over noisy f32-sourced frame times, the
+    /// firing count telescopes exactly: fires = boundary count of the whole
+    /// span, no message lost or doubled, no matter where the frame edges
+    /// land. (Timing may jitter by a frame; the COUNT is exact.)
+    #[test]
+    fn firing_count_telescopes_over_noisy_frames() {
+        let sub = eval(
+            "type Msg = | Pulse\n\
+             let main = () => Sub.every(Time.millis(300.0), Pulse)",
+        );
+        // f32-truncated, uneven frame edges (dt ~16.7ms), like the runner's.
+        let mut edges: Vec<f64> = Vec::new();
+        let mut t: f32 = 0.5;
+        for i in 0..600 {
+            t += 0.0167 + (i % 7) as f32 * 0.0011;
+            edges.push(t as f64);
+        }
+        let mut fires = 0;
+        for pair in edges.windows(2) {
+            fires += sub_messages_for_frame(&sub, pair[0], pair[1])
+                .expect("a Sub tree")
+                .len();
+        }
+        let (first, last) = (edges[0], edges[edges.len() - 1]);
+        let expected = ((last / 0.3).floor() - (first / 0.3).floor()) as usize;
+        assert_eq!(fires, expected, "over ({first}, {last}]");
+    }
+
+    /// Bare numbers are not durations — the Angle teaching error, for time.
+    #[test]
+    fn bare_numbers_are_not_durations() {
+        let module = mle::lower(
+            mle::parse("type Msg = | Pulse\nlet main = () => Sub.every(0.5, Pulse)").unwrap(),
+        )
+        .unwrap();
+        let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            failure.error.message,
+            "Sub.every: expected a Duration, got a bare number — say which unit: \
+Time.seconds(…) or Time.millis(…)"
+        );
+    }
+
+    /// A `subscriptions` that returns something else is a reportable error,
+    /// and non-Subs are rejected at `Sub.batch` construction.
+    #[test]
+    fn non_subs_are_rejected() {
+        let err = sub_messages_for_frame(&Value::Number(1.0), 0.0, 1.0)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            err,
+            "subscriptions must return a Sub (Sub.every / Sub.none / Sub.batch), got a number"
+        );
+        let module = mle::lower(mle::parse("let main = () => Sub.batch([1.0])").unwrap()).unwrap();
+        let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            failure.error.message,
+            "Sub.batch items must be Subs, got a number"
+        );
     }
 }

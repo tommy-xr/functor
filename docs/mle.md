@@ -294,8 +294,22 @@ Starts once A2 + B3 exist.
         ports the F# golden scene (shadow-casting sun, orbiting colored
         point lights, emissive markers) — **0.000% pixels over the golden
         tolerance vs the F# render** at the same fixed time.
-      - [ ] **C4b-2** (wants B5's ADTs for messages): `update`/messages,
-        subscriptions, effect-queue drain semantics.
+      - [x] **C4b-2. The MVU pair** (done 2026-07-03): optional
+        `update(model, msg)` + `subscriptions(model)` entry points
+        (messages are B5 ADT variants); prelude grows `Sub.every/none/
+        batch` and branded `Time.seconds/millis` Durations (the Angle
+        rule, applied to time). `Sub.every` is stateless — it fires when
+        the global time grid crosses in `(prevTts, tts]`, the F#
+        `crossedBoundary` rule verbatim — so timers need no identity and
+        tick right through a hot reload; fired messages fold through
+        `update` before `tick`, the drain seam B6's effects will feed.
+        `examples/mle-hello` gains a once-per-second Beat.
+        *Verify (done):* pinned-clock SDK e2e proves exact arithmetic —
+        one message per period step, millis/seconds parity, a long frame
+        collapses missed boundaries into ONE firing, and a reload that
+        ADDS subscriptions starts from the current frame edge (no
+        catch-up burst); prelude unit tests pin the grid math and the
+        teaching errors (15/15 e2e suite).
 - [ ] **C5. Wasm.** The interpreter crate compiles to wasm32; `.mle` source
       ships in the bundle. *Verify:* wasm build of mle-hello renders.
 - [ ] **C6. Perf gate.** Measure C4 at 60fps with headroom; bytecode VM
