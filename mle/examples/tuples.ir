@@ -3,6 +3,7 @@ Module {
         TypeDef {
             id: d0,
             name: "Msg",
+            params: [],
             body: Variants(
                 [
                     VariantDecl {

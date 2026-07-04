@@ -31,6 +31,10 @@ regenerates). VSCode gets live parse/lower/type diagnostics,
 // line comments only
 type Position = { x: Float, y: Float }        // record types; nominal in annotations
 
+type Box<v> =                                 // GENERIC declarations: lowercase params
+  | Full(value: v)                            //   Box<Float> and Box<String> coexist;
+  | Empty                                     //   params substitute through fields/patterns
+
 type Shape =                                  // variant types (ADTs); nominal like records
   | Circle(radius: Float)                     // leading | REQUIRED, first alternative too
   | Rect(w: Float, h: Float)                  // fields named in the decl…
@@ -305,7 +309,9 @@ lowercase annotation names are type variables (`(xs: List<a>, f: (a) =>
 b): List<b>`). Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized Uppercase type
-names) and absorbs anything. Record literals resolve nominally, F#-style:
+names) and absorbs anything. Generic declarations (`type Pair<x, y> = { first: x, second: y }`)
+instantiate fresh per use; an UNDECLARED lowercase name in a declaration is
+a teaching error. Record literals resolve nominally, F#-style:
 the unique declared type with exactly that field set (no match = anonymous
 data, still fine; two same-shaped declarations make a bare literal
 ambiguous — annotate). A `mut` slot's type fixes at its initializer. A

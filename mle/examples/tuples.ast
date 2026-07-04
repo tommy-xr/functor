@@ -3,6 +3,7 @@ Program {
         Type(
             TypeDecl {
                 name: "Msg",
+                params: [],
                 body: Variants(
                     [
                         VariantDecl {

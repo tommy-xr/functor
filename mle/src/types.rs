@@ -97,10 +97,12 @@ pub enum Type {
     /// A product type: `Float * Float` in annotations. Structural, like the
     /// runtime.
     Tuple(Vec<Type>),
-    /// A declared record type, nominal by name.
-    Record(String),
-    /// A declared variant type, nominal by name.
-    Variant(String),
+    /// A declared record type, nominal by name, with its type arguments
+    /// (`Pair<Float, String>`; empty for non-generic declarations).
+    Record(String, Vec<Type>),
+    /// A declared variant type, nominal by name, with its type arguments
+    /// (`Box<Float>`).
+    Variant(String, Vec<Type>),
     Fn(Vec<Type>, Box<Type>),
 }
 
@@ -124,7 +126,20 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
-            Type::Record(name) | Type::Variant(name) => write!(f, "{name}"),
+            Type::Record(name, args) | Type::Variant(name, args) => {
+                write!(f, "{name}")?;
+                if args.is_empty() {
+                    return Ok(());
+                }
+                write!(f, "<")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ">")
+            }
             Type::Fn(params, ret) => {
                 write!(f, "(")?;
                 for (i, param) in params.iter().enumerate() {
@@ -175,8 +190,10 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
         (Type::Tuple(xs), Type::Tuple(ys)) => {
             xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y))
         }
-        (Type::Record(x), Type::Record(y)) => x == y,
-        (Type::Variant(x), Type::Variant(y)) => x == y,
+        (Type::Record(x, xa), Type::Record(y, ya))
+        | (Type::Variant(x, xa), Type::Variant(y, ya)) => {
+            x == y && xa.len() == ya.len() && xa.iter().zip(ya).all(|(a, b)| compatible(a, b))
+        }
         (Type::Fn(p1, r1), Type::Fn(p2, r2)) => {
             p1.len() == p2.len()
                 && p1.iter().zip(p2).all(|(x, y)| compatible(x, y))
@@ -193,6 +210,10 @@ fn contains_fn(ty: &Type) -> bool {
     match ty {
         Type::Fn(..) => true,
         Type::Tuple(elems) => elems.iter().any(contains_fn),
+        // A generic nominal can carry a function in its ARGUMENTS
+        // (`Box<(Float) => Float>`) even when the declaration's own fields
+        // are just parameters — recurse. [Codex H — generics review]
+        Type::Record(_, args) | Type::Variant(_, args) => args.iter().any(contains_fn),
         _ => false,
     }
 }
@@ -214,6 +235,35 @@ fn pattern_var_bindings(pattern: &Pattern, f: &mut impl FnMut(u32)) {
     }
 }
 
+/// Substitute declaration parameter placeholders (`Var(i)`, i < args.len())
+/// with concrete type arguments — how generic record/variant field types
+/// meet their use sites. Non-generic declarations contain no placeholders,
+/// so this is the identity for them.
+fn subst_params(ty: &Type, args: &[Type]) -> Type {
+    if args.is_empty() {
+        return ty.clone();
+    }
+    match ty {
+        Type::Var(v) => args
+            .get(*v as usize)
+            .cloned()
+            .unwrap_or_else(|| Type::Var(*v)),
+        Type::List(e) => Type::List(Box::new(subst_params(e, args))),
+        Type::Tuple(es) => Type::Tuple(es.iter().map(|e| subst_params(e, args)).collect()),
+        Type::Fn(ps, r) => Type::Fn(
+            ps.iter().map(|p| subst_params(p, args)).collect(),
+            Box::new(subst_params(r, args)),
+        ),
+        Type::Record(n, a) => {
+            Type::Record(n.clone(), a.iter().map(|t| subst_params(t, args)).collect())
+        }
+        Type::Variant(n, a) => {
+            Type::Variant(n.clone(), a.iter().map(|t| subst_params(t, args)).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 /// Rewrite variables to their position in `order` (display normalization).
 fn renumber_with(ty: &Type, order: &[u32]) -> Type {
     match ty {
@@ -226,6 +276,14 @@ fn renumber_with(ty: &Type, order: &[u32]) -> Type {
         Type::Fn(ps, r) => Type::Fn(
             ps.iter().map(|p| renumber_with(p, order)).collect(),
             Box::new(renumber_with(r, order)),
+        ),
+        Type::Record(n, args) => Type::Record(
+            n.clone(),
+            args.iter().map(|a| renumber_with(a, order)).collect(),
+        ),
+        Type::Variant(n, args) => Type::Variant(
+            n.clone(),
+            args.iter().map(|a| renumber_with(a, order)).collect(),
         ),
         other => other.clone(),
     }
@@ -251,12 +309,12 @@ fn free_vars_of(ty: &Type, out: &mut Vec<u32>) {
             }
             free_vars_of(ret, out);
         }
-        Type::Unknown
-        | Type::Float
-        | Type::String
-        | Type::Bool
-        | Type::Record(_)
-        | Type::Variant(_) => {}
+        Type::Record(_, args) | Type::Variant(_, args) => {
+            for arg in args {
+                free_vars_of(arg, out);
+            }
+        }
+        Type::Unknown | Type::Float | Type::String | Type::Bool => {}
     }
 }
 
@@ -356,25 +414,41 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
     for decl in &module.types {
         match &decl.body {
             TypeBody::Record(_) => {
-                checker.records.insert(decl.name.clone(), Vec::new());
+                checker
+                    .records
+                    .insert(decl.name.clone(), (decl.params.len(), Vec::new()));
             }
             TypeBody::Variants(variants) => {
                 checker.variants.insert(
                     decl.name.clone(),
-                    variants.iter().map(|v| v.name.clone()).collect(),
+                    (
+                        decl.params.len(),
+                        variants.iter().map(|v| v.name.clone()).collect(),
+                    ),
                 );
             }
         }
     }
     checker.in_type_decl = true;
     for decl in &module.types {
+        // Declared params resolve to out-of-band placeholders Var(0..n); an
+        // UNDECLARED lowercase name in a declaration is still the teaching
+        // error (see resolve_type).
+        checker.annot_vars.clear();
+        for (i, param) in decl.params.iter().enumerate() {
+            checker
+                .annot_vars
+                .insert(param.clone(), Type::Var(i as u32));
+        }
         match &decl.body {
             TypeBody::Record(decl_fields) => {
                 let fields = decl_fields
                     .iter()
                     .map(|f| (f.name.clone(), checker.resolve_type(&f.ty, true)))
                     .collect();
-                checker.records.insert(decl.name.clone(), fields);
+                checker
+                    .records
+                    .insert(decl.name.clone(), (decl.params.len(), fields));
             }
             TypeBody::Variants(variants) => {
                 for variant in variants {
@@ -383,15 +457,17 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
                         .iter()
                         .map(|f| checker.resolve_type(&f.ty, true))
                         .collect();
-                    checker
-                        .ctors
-                        .insert(variant.name.clone(), (decl.name.clone(), fields));
+                    checker.ctors.insert(
+                        variant.name.clone(),
+                        (decl.name.clone(), decl.params.len(), fields),
+                    );
                 }
             }
         }
     }
 
     checker.in_type_decl = false;
+    checker.annot_vars.clear();
 
     // Placeholder signatures: annotation-derived, with FRESH inference
     // variables where nothing is annotated (B7 — this is what makes
@@ -577,13 +653,22 @@ struct Checker {
     /// them to their variable for the def's duration.
     annot_vars: HashMap<String, Type>,
     /// Declared record types: name → resolved fields, in declaration order.
-    records: HashMap<String, Vec<(String, Type)>>,
-    /// Declared variant types: name → constructor names, in declaration
-    /// order (the exhaustiveness universe).
-    variants: HashMap<String, Vec<String>>,
+    /// name → (type-parameter count, fields). Field types hold parameter
+    /// PLACEHOLDERS as `Type::Var(i)` with i < the param count — an
+    /// out-of-band namespace like the builtins': never unified raw, always
+    /// [`subst_params`]-substituted first.
+    records: HashMap<String, (usize, Vec<(String, Type)>)>,
+    /// Declared variant types: name → (type-parameter count, constructor
+    /// names in declaration order — the exhaustiveness universe). The param
+    /// count is pre-seeded before field resolution, so recursive and
+    /// forward generic references (`type L<a> = | Cons(h: a, t: L<a>)`)
+    /// resolve at the right arity. [Codex H — generics review]
+    variants: HashMap<String, (usize, Vec<String>)>,
     /// Declared constructors: name → (owning variant type, field types in
     /// declaration order). Names are module-unique (lowering enforces it).
-    ctors: HashMap<String, (String, Vec<Type>)>,
+    /// ctor name → (owning type, its param count, field types with the
+    /// same placeholder convention as `records`).
+    ctors: HashMap<String, (String, usize, Vec<Type>)>,
     globals: HashMap<String, Type>,
     /// Parameter types by binding ID (IDs are unique module-wide, so entries
     /// are never shadowed or popped).
@@ -619,6 +704,12 @@ impl Checker {
                 params.iter().map(|p| self.zonk(p)).collect(),
                 Box::new(self.zonk(ret)),
             ),
+            Type::Record(n, args) => {
+                Type::Record(n.clone(), args.iter().map(|a| self.zonk(a)).collect())
+            }
+            Type::Variant(n, args) => {
+                Type::Variant(n.clone(), args.iter().map(|a| self.zonk(a)).collect())
+            }
             other => other.clone(),
         }
     }
@@ -650,8 +741,17 @@ impl Checker {
             (Type::Float, Type::Float)
             | (Type::String, Type::String)
             | (Type::Bool, Type::Bool) => true,
-            (Type::Record(x), Type::Record(y)) if x == y => true,
-            (Type::Variant(x), Type::Variant(y)) if x == y => true,
+            (Type::Record(x, xa), Type::Record(y, ya))
+            | (Type::Variant(x, xa), Type::Variant(y, ya))
+                if x == y && xa.len() == ya.len() =>
+            {
+                let (xa, ya) = (xa.clone(), ya.clone());
+                let mut ok = true;
+                for (a, b) in xa.iter().zip(ya.iter()) {
+                    ok &= self.unify_rec(a, b, span, what);
+                }
+                ok
+            }
             (Type::List(x), Type::List(y)) => self.unify_rec(x, y, span, what),
             (Type::Tuple(xs), Type::Tuple(ys)) if xs.len() == ys.len() => {
                 let mut ok = true;
@@ -718,6 +818,12 @@ impl Checker {
                     ps.iter().map(|p| walk(p, mapping)).collect(),
                     Box::new(walk(r, mapping)),
                 ),
+                Type::Record(n, args) => {
+                    Type::Record(n.clone(), args.iter().map(|a| walk(a, mapping)).collect())
+                }
+                Type::Variant(n, args) => {
+                    Type::Variant(n.clone(), args.iter().map(|a| walk(a, mapping)).collect())
+                }
                 other => other.clone(),
             }
         }
@@ -740,15 +846,6 @@ impl Checker {
         let mut vars = Vec::new();
         free_vars_of(&ty, &mut vars);
         Scheme { vars, ty }
-    }
-
-    /// Zonk with display normalization: free variables renumber to 'a, 'b, …
-    /// in first-appearance order — hover and signatures read cleanly.
-    fn zonk_normalized(&self, ty: &Type) -> Type {
-        let ty = self.zonk(ty);
-        let mut order = Vec::new();
-        free_vars_of(&ty, &mut order);
-        renumber_with(&ty, &order)
     }
 
     /// Normalize TWO types with ONE shared variable order — a diagnostic
@@ -806,16 +903,28 @@ impl Checker {
                     .collect(),
             ),
             name if self.records.contains_key(name) => {
-                if !ty.args.is_empty() {
-                    return arity_error(self, 0);
+                let params = self.records.get(name).map(|(p, _)| *p).unwrap_or(0);
+                if ty.args.len() != params {
+                    return arity_error(self, params);
                 }
-                Type::Record(name.to_string())
+                let args = ty
+                    .args
+                    .iter()
+                    .map(|arg| self.resolve_type(arg, report))
+                    .collect();
+                Type::Record(name.to_string(), args)
             }
             name if self.variants.contains_key(name) => {
-                if !ty.args.is_empty() {
-                    return arity_error(self, 0);
+                let params = self.variants.get(name).map(|(p, _)| *p).unwrap_or(0);
+                if ty.args.len() != params {
+                    return arity_error(self, params);
                 }
-                Type::Variant(name.to_string())
+                let args = ty
+                    .args
+                    .iter()
+                    .map(|arg| self.resolve_type(arg, report))
+                    .collect();
+                Type::Variant(name.to_string(), args)
             }
             // A lowercase name is a TYPE VARIABLE, scoped to the enclosing
             // def's signature: `(xs: List<a>, f: (a) => b): List<b>`. The
@@ -828,19 +937,20 @@ impl Checker {
                 if !ty.args.is_empty() {
                     return arity_error(self, 0);
                 }
+                if let Some(var) = self.annot_vars.get(name) {
+                    return var.clone();
+                }
                 if self.in_type_decl {
                     if report {
                         self.diag(
                             ty.span,
                             format!(
-                                "type variables (`{name}`) are not supported in type declarations yet — generic type declarations are a roadmap item"
+                                "undeclared type parameter `{name}` — declare it on \
+the type: `type Name<{name}> = …`"
                             ),
                         );
                     }
                     return Type::Unknown;
-                }
-                if let Some(var) = self.annot_vars.get(name) {
-                    return var.clone();
                 }
                 let var = self.fresh();
                 self.annot_vars.insert(name.to_string(), var.clone());
@@ -886,8 +996,9 @@ impl Checker {
             return;
         }
         match (&expr.kind, expected) {
-            (ExprKind::Record(fields), Type::Record(name)) => {
-                self.check_record_literal(fields, name, expr.span);
+            (ExprKind::Record(fields), Type::Record(name, targs)) => {
+                let targs = targs.clone();
+                self.check_record_literal(fields, name, &targs, expr.span);
                 // Structural paths bypass `infer`, so record the checked
                 // type here or hover would honestly-but-wrongly say Unknown
                 // (and a stale quiet-pass entry could linger).
@@ -943,8 +1054,8 @@ impl Checker {
     /// Check a record literal against declared record type `name`: every
     /// literal field must exist in the declaration and match its type, and
     /// every declared field must be present.
-    fn check_record_literal(&mut self, fields: &[Field], name: &str, span: Span) {
-        let decl = self
+    fn check_record_literal(&mut self, fields: &[Field], name: &str, args: &[Type], span: Span) {
+        let (_, decl) = self
             .records
             .get(name)
             .cloned()
@@ -953,7 +1064,7 @@ impl Checker {
             match decl.iter().find(|(n, _)| n == &field.name) {
                 Some((_, field_ty)) => {
                     let what = format!("field `{}` of `{name}`", field.name);
-                    let field_ty = field_ty.clone();
+                    let field_ty = subst_params(field_ty, args);
                     self.expect(&field.value, &field_ty, &what);
                 }
                 None => {
@@ -1023,7 +1134,7 @@ impl Checker {
                 let matches: Vec<String> = self
                     .records
                     .iter()
-                    .filter(|(_, decl)| {
+                    .filter(|(_, (_, decl))| {
                         let mut declared: Vec<&str> =
                             decl.iter().map(|(n, _)| n.as_str()).collect();
                         declared.sort_unstable();
@@ -1034,8 +1145,13 @@ impl Checker {
                 match matches.as_slice() {
                     [name] => {
                         let name = name.clone();
-                        self.check_record_literal(fields, &name, expr.span);
-                        Type::Record(name)
+                        // Generic declarations get fresh arguments, solved
+                        // by the literal's field types (Pair<Float, String>
+                        // from { first: 1.0, second: "s" }).
+                        let params = self.records.get(&name).map(|(p, _)| *p).unwrap_or(0);
+                        let args: Vec<Type> = (0..params).map(|_| self.fresh()).collect();
+                        self.check_record_literal(fields, &name, &args, expr.span);
+                        Type::Record(name, args)
                     }
                     [] => {
                         for field in fields {
@@ -1074,14 +1190,15 @@ impl Checker {
                 let base_ty = self.infer(base);
                 let base_ty = self.zonk(&base_ty);
                 match &base_ty {
-                    Type::Record(name) => {
+                    Type::Record(name, targs) => {
                         let name = name.clone();
+                        let targs = targs.clone();
                         for field in fields {
                             let decl_ty = self
                                 .records
                                 .get(&name)
-                                .and_then(|decl| decl.iter().find(|(n, _)| n == &field.name))
-                                .map(|(_, ty)| ty.clone());
+                                .and_then(|(_, decl)| decl.iter().find(|(n, _)| n == &field.name))
+                                .map(|(_, ty)| subst_params(ty, &targs));
                             match decl_ty {
                                 Some(ty) => {
                                     let what = format!("field `{}` of `{name}`", field.name);
@@ -1149,12 +1266,12 @@ impl Checker {
                 let object_ty = self.infer(object);
                 let object_ty = self.zonk(&object_ty);
                 match &object_ty {
-                    Type::Record(name) => {
+                    Type::Record(name, targs) => {
                         let field_ty = self
                             .records
                             .get(name)
-                            .and_then(|decl| decl.iter().find(|(n, _)| n == field))
-                            .map(|(_, ty)| ty.clone());
+                            .and_then(|(_, decl)| decl.iter().find(|(n, _)| n == field))
+                            .map(|(_, ty)| subst_params(ty, targs));
                         match field_ty {
                             Some(ty) => ty,
                             None => {
@@ -1277,12 +1394,16 @@ impl Checker {
             }
             // A constructor reference: nullary is the variant value itself,
             // parameterful is a function from its declared field types.
-            ExprKind::Ctor { name, .. } => match self.ctors.get(name) {
-                Some((type_name, fields)) => {
+            ExprKind::Ctor { name, .. } => match self.ctors.get(name).cloned() {
+                Some((type_name, params, fields)) => {
+                    // Fresh arguments per USE — `Full(1.0)` and `Full("s")`
+                    // coexist as Box<Float> and Box<String>.
+                    let args: Vec<Type> = (0..params).map(|_| self.fresh()).collect();
                     if fields.is_empty() {
-                        Type::Variant(type_name.clone())
+                        Type::Variant(type_name, args)
                     } else {
-                        Type::Fn(fields.clone(), Box::new(Type::Variant(type_name.clone())))
+                        let fields = fields.iter().map(|f| subst_params(f, &args)).collect();
+                        Type::Fn(fields, Box::new(Type::Variant(type_name, args)))
                     }
                 }
                 // Unreachable (lowering rejects unknown constructors) —
@@ -1352,11 +1473,11 @@ impl Checker {
         let scrutinee_ty = self.zonk(&scrutinee_ty);
         if !has_catch_all {
             match &scrutinee_ty {
-                Type::Variant(name) => {
+                Type::Variant(name, _) => {
                     let missing: Vec<String> = self
                         .variants
                         .get(name)
-                        .map(|declared| {
+                        .map(|(_, declared)| {
                             declared
                                 .iter()
                                 .filter(|c| !covered_ctors.contains(&c.as_str()))
@@ -1440,11 +1561,15 @@ a catch-all arm (`_` or a name)"
                 });
                 return;
             }
+            let ctor_info = match &pattern.kind {
+                PatternKind::Ctor { name, .. } => self.ctors.get(name).cloned(),
+                _ => None,
+            };
             let constrained: Option<Type> = match &pattern.kind {
-                PatternKind::Ctor { name, .. } => self
-                    .ctors
-                    .get(name)
-                    .map(|(type_name, _)| Type::Variant(type_name.clone())),
+                PatternKind::Ctor { .. } => ctor_info.map(|(type_name, params, _)| {
+                    let targs = (0..params).map(|_| self.fresh()).collect();
+                    Type::Variant(type_name, targs)
+                }),
                 PatternKind::Tuple(args) => {
                     Some(Type::Tuple((0..args.len()).map(|_| self.fresh()).collect()))
                 }
@@ -1495,15 +1620,22 @@ value is {scrutinee} — it can never match",
                 }
             },
             PatternKind::Ctor { name, args } => match self.ctors.get(name).cloned() {
-                Some((type_name, field_tys)) => {
+                Some((type_name, _, field_tys)) => {
+                    let mut field_tys = field_tys;
                     match scrutinee {
-                        Type::Variant(s) if *s != type_name => {
+                        Type::Variant(s, _) if *s != type_name => {
                             self.diag(
                                 pattern.span,
                                 format!("`{name}` is not a constructor of `{s}`"),
                             );
                         }
-                        Type::Unknown | Type::Variant(_) => {}
+                        Type::Variant(_, targs) => {
+                            // The scrutinee's arguments give the pattern's
+                            // field types (Full(v) on Box<Float> binds
+                            // v: Float).
+                            field_tys = field_tys.iter().map(|f| subst_params(f, targs)).collect();
+                        }
+                        Type::Unknown => {}
                         other => {
                             self.diag(
                                 pattern.span,
@@ -1603,8 +1735,23 @@ is {other}"
                             "functions cannot be compared with `==`".to_string(),
                         );
                     }
-                    (Type::Record(x), Type::Record(y)) => {
-                        if x != y && !self.same_record_shape(x, y) {
+                    (Type::Record(x, xargs), Type::Record(y, yargs)) => {
+                        // Same declaration, incompatible arguments: the
+                        // substituted fields cannot be equal — certainly
+                        // false. [Codex H — generics review]
+                        if x == y
+                            && (xargs.len() != yargs.len()
+                                || xargs.iter().zip(yargs).any(|(a, b)| !compatible(a, b)))
+                        {
+                            self.diag(
+                                node_span,
+                                format!(
+                                    "`==` compares records with different shapes \
+                                     ({lhs} and {rhs}) — always false"
+                                ),
+                            );
+                        }
+                        if x != y && !self.same_record_shape(x, xargs, y, yargs) {
                             self.diag(
                                 node_span,
                                 format!(
@@ -1633,14 +1780,19 @@ is {other}"
     /// Whether two declared record types have the same field-name set with
     /// pairwise-compatible types — i.e. their values can be structurally
     /// equal at runtime.
-    fn same_record_shape(&self, x: &str, y: &str) -> bool {
-        let (Some(xf), Some(yf)) = (self.records.get(x), self.records.get(y)) else {
+    /// Compare two record types' SUBSTITUTED field shapes — raw declaration
+    /// fields hold parameter placeholders whose `compatible` is trivially
+    /// true, hiding concrete disagreements. [Codex H — generics review]
+    fn same_record_shape(&self, x: &str, xargs: &[Type], y: &str, yargs: &[Type]) -> bool {
+        let (Some((_, xf)), Some((_, yf))) = (self.records.get(x), self.records.get(y)) else {
             return true; // unknown decl: stay gradual
         };
         xf.len() == yf.len()
-            && xf
-                .iter()
-                .all(|(name, ty)| yf.iter().any(|(n, t)| n == name && compatible(ty, t)))
+            && xf.iter().all(|(name, ty)| {
+                yf.iter().any(|(n, t)| {
+                    n == name && compatible(&subst_params(ty, xargs), &subst_params(t, yargs))
+                })
+            })
     }
 
     fn require_float(&mut self, op: BinOp, ty: &Type, span: Span) {

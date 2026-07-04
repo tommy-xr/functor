@@ -3,6 +3,7 @@ Program {
         Type(
             TypeDecl {
                 name: "Player",
+                params: [],
                 body: Record(
                     [
                         FieldTy {

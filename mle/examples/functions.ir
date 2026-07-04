@@ -3,6 +3,7 @@ Module {
         TypeDef {
             id: d0,
             name: "Player",
+            params: [],
             body: Record(
                 [
                     FieldTy {

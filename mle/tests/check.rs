@@ -884,10 +884,10 @@ fn inferred_scrutinees_get_exhaustiveness() {
 /// a declaration-held variable would be module-global (first use pins it
 /// for everyone). [BOTH engines]
 #[test]
-fn type_decl_variables_are_refused() {
+fn undeclared_type_params_are_refused() {
     let (message, _, _) = single_diag("type Box = | Full(v: a) | Empty\nlet p = Full(1.0)");
     assert!(
-        message.contains("type variables (`a`) are not supported in type declarations yet"),
+        message.contains("undeclared type parameter `a` — declare it on the type"),
         "unexpected: {message}"
     );
 }
@@ -903,4 +903,119 @@ fn diagnostic_variables_share_one_order() {
         message,
         "argument 2 of `List.fold`: expected ('b, 'a) => 'b, got List<'a>"
     );
+}
+
+// --- Generic type declarations ---
+
+/// The whole point: one declaration, many instantiations — Box<Float> and
+/// Box<String> coexist, and element types flow through patterns.
+#[test]
+fn generic_adts_instantiate_per_use() {
+    assert_clean(
+        "type Box<v> = | Full(value: v) | Empty\n\
+         let unwrapOr = (b: Box<v>, fallback: v): v =>\n\
+           match b with\n\
+           | Full(value) => value\n\
+           | Empty => fallback\n\
+         let a = unwrapOr(Full(41.0), 0.0) + 1.0\n\
+         let b = Text.concat(unwrapOr(Full(\"hi\"), \"\"), \"!\")",
+    );
+    // …and the instantiation CONSTRAINS: a Float box can't take a String
+    // fallback.
+    let (message, _, _) = single_diag(
+        "type Box<v> = | Full(value: v) | Empty\n\
+         let unwrapOr = (b: Box<v>, fallback: v): v =>\n\
+           match b with\n\
+           | Full(value) => value\n\
+           | Empty => fallback\n\
+         let bad = unwrapOr(Full(1.0), \"s\")",
+    );
+    assert_eq!(
+        message,
+        "argument 2 of `unwrapOr`: expected Float, got String"
+    );
+}
+
+/// Generic records: literals solve the parameters, field access and `with`
+/// updates substitute them.
+#[test]
+fn generic_records_solve_from_literals() {
+    assert_clean(
+        "type Pair<x, y> = { first: x, second: y }\n\
+         let swap = (p: Pair<x, y>): Pair<y, x> => { first: p.second, second: p.first }\n\
+         let go = () => swap({ first: 1.0, second: \"s\" }).second + 1.0",
+    );
+    let (message, _, _) = single_diag(
+        "type Pair<x, y> = { first: x, second: y }\n\
+         let go = (): Float => { first: 1.0, second: \"s\" }.second",
+    );
+    assert_eq!(message, "return value: expected Float, got String");
+}
+
+/// Pattern fields get the scrutinee's arguments (Full(v) on Box<Float>
+/// binds v: Float — and arithmetic on it checks).
+#[test]
+fn pattern_fields_take_scrutinee_arguments() {
+    let (message, _, _) = single_diag(
+        "type Box<v> = | Full(value: v) | Empty\n\
+         let f = (b: Box<String>): Float =>\n\
+           match b with\n\
+           | Full(value) => value + 1.0\n\
+           | Empty => 0.0",
+    );
+    assert_eq!(message, "`+` needs Float operands, got String");
+}
+
+/// Type-argument arity is checked against the declaration.
+#[test]
+fn generic_arity_is_checked() {
+    let (message, _, _) = single_diag(
+        "type Box<v> = | Full(value: v) | Empty\n\
+         let f = (b: Box) => b",
+    );
+    assert_eq!(message, "`Box` takes 1 type argument(s), got 0");
+}
+
+// --- Generics review fixes (Codex) ---
+
+/// Recursive and forward generic references resolve at the declared arity
+/// (variant param counts are pre-seeded, like records). [Codex H]
+#[test]
+fn recursive_generic_declarations_resolve() {
+    assert_clean(
+        "type L<a> = | Cons(h: a, t: L<a>) | Nil\n\
+         let sum = (l: L<Float>): Float =>\n\
+           match l with\n\
+           | Cons(h, t) => h + sum(t)\n\
+           | Nil => 0.0\n\
+         let go = () => sum(Cons(1.0, Cons(2.0, Nil)))",
+    );
+}
+
+/// Same declaration with incompatible arguments is certainly-false `==`;
+/// cross-declaration shape comparison uses SUBSTITUTED fields. [Codex H]
+#[test]
+fn generic_record_equality_certainty() {
+    let (message, _, _) = single_diag(
+        "type R<a> = { x: a }\n\
+         let eq = (a: R<String>, b: R<Float>): Bool => a == b",
+    );
+    assert!(message.contains("always false"), "unexpected: {message}");
+    let (message, _, _) = single_diag(
+        "type R<a> = { x: a }\n\
+         type S = { x: Float }\n\
+         let eq = (r: R<String>, s: S): Bool => r == s",
+    );
+    assert!(message.contains("always false"), "unexpected: {message}");
+}
+
+/// A function smuggled through a generic ARGUMENT is still a certain `==`
+/// runtime error. [Codex H]
+#[test]
+fn functions_inside_generic_nominals_cannot_compare() {
+    let (message, _, _) = single_diag(
+        "type Box<a> = | Full(v: a)\n\
+         let main = (): Bool => Full((x) => x) == Full((x) => x)",
+    );
+    assert_eq!(message, "functions cannot be compared with `==`");
 }

@@ -79,6 +79,8 @@ pub struct Module {
 pub struct TypeDef {
     pub id: DefId,
     pub name: String,
+    /// Declared type parameters (`type Box<a>` → `["a"]`).
+    pub params: Vec<String>,
     pub body: TypeBody,
     pub span: Span,
 }

@@ -391,3 +391,25 @@ fn error_mut_cannot_destructure() {
         )
     );
 }
+
+// --- Generic type declarations ---
+
+#[test]
+fn error_duplicate_type_parameter() {
+    assert_eq!(
+        parse_err("type Pair<a, a> = { x: a }"),
+        ("duplicate type parameter `a`".to_string(), 1, 14)
+    );
+}
+
+#[test]
+fn error_uppercase_type_parameter() {
+    assert_eq!(
+        parse_err("type Box<T> = | Full(v: T)"),
+        (
+            "type parameters are lowercase (`t`), like annotation type variables".to_string(),
+            1,
+            10
+        )
+    );
+}
