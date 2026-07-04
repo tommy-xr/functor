@@ -85,4 +85,9 @@ export interface LaunchOptions {
   /** Run the runtime with no GL window (`--headless`): no display needed, but
    * `capture()` is unavailable. Ideal for CI / headless machines. */
   headless?: boolean;
+  /** Show the GL window. By default (and unless `headless`), the runner is
+   * launched with `--hidden`: the window is never shown and never steals focus
+   * or the cursor, but keeps its GL context so `capture()` works. Pass `true`
+   * to watch the game while a script drives it. */
+  visible?: boolean;
 }
