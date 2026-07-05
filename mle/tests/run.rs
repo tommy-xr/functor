@@ -446,6 +446,42 @@ fn new_builtins_evaluate() {
     assert_eq!(main_result("let main = () => Math.cos(0.0)"), "1");
 }
 
+/// `Text.fixed(n, decimals)` — the F# `sprintf "%.1f"` shape (HUD text):
+/// fixed decimals, rounding, and 0 decimals as the integer (`%d`) shape.
+#[test]
+fn text_fixed_formats_fixed_decimals() {
+    assert_eq!(
+        main_result("let main = () => Text.fixed(-5.0, 1.0)"),
+        "\"-5.0\""
+    );
+    assert_eq!(
+        main_result("let main = () => Text.fixed(3.14159, 2.0)"),
+        "\"3.14\""
+    );
+    assert_eq!(
+        main_result("let main = () => Text.fixed(42.0, 0.0)"),
+        "\"42\""
+    );
+    assert_eq!(
+        main_result("let main = () => Text.fixed(0.0, 0.0)"),
+        "\"0\""
+    );
+    // Decimals must be a whole number in a sane range — a fractional or
+    // negative count is a teaching error, not a silent truncation.
+    let (message, _, _) = run_err("let main = () => Text.fixed(1.0, 1.5)");
+    assert_eq!(
+        message,
+        "Text.fixed needs a whole number of decimals between 0 and 12, got 1.5"
+    );
+    let (message, _, _) = run_err("let main = () => Text.fixed(1.0, -1.0)");
+    assert_eq!(
+        message,
+        "Text.fixed needs a whole number of decimals between 0 and 12, got -1"
+    );
+    let (message, _, _) = run_err("let main = () => Text.fixed(\"x\", 1.0)");
+    assert_eq!(message, "Text.fixed(n, decimals) expects two numbers");
+}
+
 // --- Variants + match (B5 part 1) ---
 
 const SHAPE: &str = "type Shape = | Circle(r: Float) | Rect(w: Float, h: Float) | Point\n";
