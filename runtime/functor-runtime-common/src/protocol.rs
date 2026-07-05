@@ -97,6 +97,16 @@ pub trait GameProducer {
         Err("this producer does not support source reload (not an .mle game)".to_string())
     }
 
+    /// Rewind the whole scene — model AND physics world — to an earlier
+    /// RENDERED frame, restoring both to the state they had at the end of that
+    /// frame and branching the recorded future from there (docs/time-travel.md
+    /// T1, the coupled seek). `Ok` carries a short status line; the default is
+    /// the honest refusal for producers that don't record a model history.
+    /// Shell-driven (the time-travel scrubber), not a game hook.
+    fn rewind_scene_to(&mut self, _rendered_frame: u64) -> Result<String, String> {
+        Err("this producer does not support scene rewind".to_string())
+    }
+
     fn tick(&mut self, frame_time: crate::FrameTime);
 
     /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.

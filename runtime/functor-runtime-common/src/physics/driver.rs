@@ -206,6 +206,37 @@ impl SteppedPhysics {
         out
     }
 
+    /// Rewind the recorded world to a fixed frame directly (the coupled
+    /// scene-rewind path, docs/time-travel.md T1) — the same seek the
+    /// `RewindTo` control performs, but callable in-process by the shell
+    /// rather than only through the effect-queued control. Returns any
+    /// clamp/range warnings. The coupled caller checks [`Self::seekable_range`]
+    /// first so this only ever runs on an exactly-restorable frame.
+    pub fn rewind_to_frame(&mut self, frame: u64) -> Vec<String> {
+        let mut warnings = Vec::new();
+        self.rewind_to(frame, &mut warnings);
+        warnings
+    }
+
+    /// The fixed-frame range a rewind can restore EXACTLY: the practical floor
+    /// (frame 0's pre-step is the empty pre-reconcile world, so 1 is the real
+    /// floor) through the newest recorded frame. `None` until something has
+    /// stepped. The coupled scene rewind (docs/time-travel.md T1) uses this to
+    /// refuse rather than silently clamp — a clamp would land the world on a
+    /// different frame than the model, desyncing the two.
+    pub fn seekable_range(&self) -> Option<(u64, u64)> {
+        self.recorded_range()
+            .map(|(lo, hi)| (if lo == 0 { 1 } else { lo }, hi))
+    }
+
+    /// The world's current live fixed frame (== the next frame to record). A
+    /// rendered frame whose recorded fixed frame equals this had no physics
+    /// step after it, so its end-of-frame world IS the live world — the coupled
+    /// rewind needs no physics seek for it.
+    pub fn current_fixed_frame(&self) -> u64 {
+        self.current_frame()
+    }
+
     fn rewind_to(&mut self, frame: u64, warnings: &mut Vec<String>) {
         let (lo, hi) = match self.recorded_range() {
             Some(range) => range,
