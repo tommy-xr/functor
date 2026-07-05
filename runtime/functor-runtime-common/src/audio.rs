@@ -385,17 +385,20 @@ pub fn reconcile(live: &HashMap<String, AudioSource>, desired: &AudioScene) -> V
     updates
 }
 
+/// Serializes tests that touch the process-global [`OUTBOUND`] queue (here and
+/// in `mle_prelude`), so they don't drain each other's commands under CI's
+/// parallel scheduling. `unwrap_or_else(into_inner)` shrugs off a poisoned lock
+/// from an unrelated panicking test.
+#[cfg(test)]
+pub(crate) static OUTBOUND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // One test, not two: `push_command`/`drain_commands` share the process-global
-    // OUTBOUND queue, so two tests touching it run in parallel and can drain each
-    // other's command (a flaky failure that showed up under CI's scheduling).
-    // Keeping it to a single test makes the queue access sequential. (The
-    // completion tests below use thread-local state, so they stand alone.)
     #[test]
     fn push_drain_round_trips_and_serializes_to_json() {
+        let _guard = OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = drain_commands(); // clear anything a prior run left
 
         push_command(AudioCommand::play_one_shot("gunshot.wav".to_string()));

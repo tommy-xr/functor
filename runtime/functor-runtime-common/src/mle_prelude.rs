@@ -256,6 +256,26 @@ pub enum EffectTree {
         max_dist: f32,
         tagger: Value,
     },
+    /// A fire-and-forget audio one-shot (`Effect.play`/`playAt`). Tagger-less
+    /// like a physics command: performing it pushes an `AudioCommand::PlayOneShot`
+    /// on the shell's audio queue. `position` is `Some` for a spatialized
+    /// one-shot (`playAt`), `None` for a non-spatial bed (`play`).
+    PlayAudio {
+        sound: String,
+        position: Option<[f32; 3]>,
+    },
+    /// A one-shot whose completion is reported back frames later
+    /// (`Effect.playThen`). Like [`Http`], the request is fire-and-forget but
+    /// the RESULT needs `update`: performing it mints a token, registers
+    /// `message` by it ([`register_audio_completion`]), and queues a tokened
+    /// one-shot. When the shell reports the sound finished
+    /// (`audio_push_finished`), the producer delivers `message` VERBATIM
+    /// through `update` — unlike `Http`, there is no tagger to apply (F#'s
+    /// `playThen` takes a message value, not a function).
+    PlayAudioThen {
+        sound: String,
+        message: Value,
+    },
 }
 
 pub struct MleEffect(pub EffectTree);
@@ -677,6 +697,32 @@ impl HostData for MleLight {
     }
 }
 
+/// A continuous soundscape voice (`AudioSource.ambient`/`at`) as an opaque MLE
+/// value.
+pub struct MleAudioSource(pub crate::audio::AudioSource);
+
+/// The set of voices an MLE `soundScape` returns (`AudioScene.create`/`empty`)
+/// as an opaque MLE value.
+pub struct MleAudioScene(pub crate::audio::AudioScene);
+
+impl HostData for MleAudioSource {
+    fn type_name(&self) -> &'static str {
+        "AudioSource"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HostData for MleAudioScene {
+    fn type_name(&self) -> &'static str {
+        "AudioScene"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl HostData for MleScene {
     fn type_name(&self) -> &'static str {
         "Scene"
@@ -824,6 +870,14 @@ const PATHS: &[&str] = &[
     "Effect.send",
     "Effect.httpGet",
     "Effect.httpPost",
+    "Effect.play",
+    "Effect.playAt",
+    "Effect.playThen",
+    "AudioSource.ambient",
+    "AudioSource.at",
+    "AudioSource.gain",
+    "AudioScene.create",
+    "AudioScene.empty",
 ];
 
 impl Host for FunctorHost {
@@ -1559,6 +1613,88 @@ the Net.HttpResponse, got {}",
                 )),
                 _ => usage("Effect.httpPost(url, body, tagger)"),
             },
+            // Fire-and-forget audio one-shots (the dual of `soundScape`).
+            // `play` is non-spatial; `playAt` is positioned. Both queue an
+            // AudioCommand on drain — see EffectTree::PlayAudio.
+            "Effect.play" => match args.as_slice() {
+                [Value::String(sound)] => Ok(host(MleEffect(EffectTree::PlayAudio {
+                    sound: sound.to_string(),
+                    position: None,
+                }))),
+                _ => usage("Effect.play(sound)"),
+            },
+            "Effect.playAt" => match args.as_slice() {
+                [Value::String(sound), x, y, z] => Ok(host(MleEffect(EffectTree::PlayAudio {
+                    sound: sound.to_string(),
+                    position: Some([
+                        num(x, span)? as f32,
+                        num(y, span)? as f32,
+                        num(z, span)? as f32,
+                    ]),
+                }))),
+                _ => usage("Effect.playAt(sound, x, y, z)"),
+            },
+            // Play once and deliver `msg` (a message VALUE, not a tagger) when
+            // the sound finishes — see EffectTree::PlayAudioThen. Any value is a
+            // valid message, so there is nothing to validate here.
+            "Effect.playThen" => match args.as_slice() {
+                [Value::String(sound), msg] => Ok(host(MleEffect(EffectTree::PlayAudioThen {
+                    sound: sound.to_string(),
+                    message: msg.clone(),
+                }))),
+                _ => usage("Effect.playThen(sound, msg)"),
+            },
+            // Soundscape voices (the continuous, reconciled half of audio).
+            // `ambient` is a non-spatial bed; `at` is positioned. Keyed for
+            // cross-frame identity so the shell keeps a live voice playing.
+            "AudioSource.ambient" => match args.as_slice() {
+                [Value::String(key), Value::String(sound)] => Ok(host(MleAudioSource(
+                    crate::audio::AudioSource::ambient(key.to_string(), sound.to_string()),
+                ))),
+                _ => usage("AudioSource.ambient(key, sound)"),
+            },
+            "AudioSource.at" => match args.as_slice() {
+                [Value::String(key), Value::String(sound), x, y, z] => {
+                    Ok(host(MleAudioSource(crate::audio::AudioSource::at(
+                        key.to_string(),
+                        sound.to_string(),
+                        num(x, span)? as f32,
+                        num(y, span)? as f32,
+                        num(z, span)? as f32,
+                    ))))
+                }
+                _ => usage("AudioSource.at(key, sound, x, y, z)"),
+            },
+            // Source-first so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
+            "AudioSource.gain" => match args.as_slice() {
+                [source, g] => match audio_source_of(source) {
+                    Some(src) => Ok(host(MleAudioSource(src.clone().with_gain(num(g, span)? as f32)))),
+                    None => usage("AudioSource.gain(source, gain)"),
+                },
+                _ => usage("AudioSource.gain(source, gain)"),
+            },
+            "AudioScene.create" => match args.as_slice() {
+                [Value::List(items)] => {
+                    let mut sources = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        match audio_source_of(item) {
+                            Some(src) => sources.push(src.clone()),
+                            None => {
+                                return err(format!(
+                                    "AudioScene.create items must be AudioSources, got {}",
+                                    item.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(host(MleAudioScene(crate::audio::AudioScene::new(sources))))
+                }
+                _ => usage("AudioScene.create([source, …])"),
+            },
+            "AudioScene.empty" => match args.as_slice() {
+                [] => Ok(host(MleAudioScene(crate::audio::AudioScene::default()))),
+                _ => usage("AudioScene.empty()"),
+            },
             "Physics.transformed" => match args.as_slice() {
                 [scene, Value::String(tag)] => {
                     let Some(inner) = scene_of(scene) else {
@@ -2121,6 +2257,58 @@ pub fn clear_http_taggers() {
     PENDING_HTTP.with(|m| m.borrow_mut().clear());
 }
 
+thread_local! {
+    /// In-flight `Effect.playThen` completion MESSAGES, keyed by the one-shot's
+    /// token — the audio analogue of [`PENDING_HTTP`]. Populated when the effect
+    /// is performed (see `EffectTree::PlayAudioThen`); drained by the producer's
+    /// audio-finished hook when the sound ends (`audio_push_finished`). Unlike
+    /// the HTTP map this holds a plain message VALUE, delivered verbatim (F#'s
+    /// `playThen` takes a message, not a tagger). Bounded by the sounds in
+    /// flight, and cleared on hot reload (a stored message may close over the
+    /// OLD session — the same rule the producer applies to HTTP taggers).
+    static PENDING_AUDIO: std::cell::RefCell<std::collections::HashMap<u64, Value>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Cap on in-flight `playThen` completion messages. Unlike [`PENDING_HTTP`]
+/// — whose shell dispatch returns EXACTLY ONE completion per token, so the map
+/// self-drains — an audio finish is BEST-EFFORT: a sound that never starts (no
+/// device, decode failure, a headless run that drops the command), or a backend
+/// that does not report finishes (wasm today), leaves its message un-taken. This
+/// bound keeps a game that fires `playThen` in a loop from growing the map
+/// without limit; on overflow the OLDEST pending message (lowest token) is
+/// evicted — its completion, if it ever arrives, is then dropped like a
+/// hot-reloaded one.
+const PENDING_AUDIO_CAP: usize = 4096;
+
+/// Register a `playThen` completion message for `token` (see [`PENDING_AUDIO`]).
+pub fn register_audio_completion(token: u64, message: Value) {
+    PENDING_AUDIO.with(|m| {
+        let mut map = m.borrow_mut();
+        map.insert(token, message);
+        // Best-effort finishes mean this map is not self-draining; evict the
+        // oldest entry rather than grow unbounded (see PENDING_AUDIO_CAP).
+        while map.len() > PENDING_AUDIO_CAP {
+            if let Some(oldest) = map.keys().copied().min() {
+                map.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    });
+}
+
+/// Take the completion message for a finished one-shot's `token`, if any (a hot
+/// reload clears the map, so a late finish can arrive orphaned — dropped).
+pub fn take_audio_completion(token: u64) -> Option<Value> {
+    PENDING_AUDIO.with(|m| m.borrow_mut().remove(&token))
+}
+
+/// Drop all in-flight `playThen` completion messages (called on hot reload).
+pub fn clear_audio_completions() {
+    PENDING_AUDIO.with(|m| m.borrow_mut().clear());
+}
+
 #[derive(Clone, Copy)]
 pub enum NetEventKind {
     Connected,
@@ -2311,7 +2499,12 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         | EffectTree::Send { .. }
         // The request is fire-and-forget; its RESPONSE needs `update`, but
         // that arrives frames later through the producer's HTTP pump.
-        | EffectTree::Http { .. } => false,
+        | EffectTree::Http { .. }
+        // Audio one-shots are fire-and-forget too. `playThen`'s completion
+        // needs `update`, but arrives frames later via the audio-finished
+        // hook — the same shape as Http.
+        | EffectTree::PlayAudio { .. }
+        | EffectTree::PlayAudioThen { .. } => false,
         EffectTree::Now { .. } | EffectTree::Random { .. } | EffectTree::Raycast { .. } => true,
         EffectTree::Batch(items) => items.iter().any(needs_update),
     }
@@ -2463,6 +2656,45 @@ dropping the rest"
                 }
                 continue;
             }
+            EffectTree::PlayAudio { sound, position } => {
+                // Fire-and-forget one-shot: push an AudioCommand on the shell's
+                // audio queue (drained via audio_drain_commands). No token —
+                // nothing folds back through update.
+                crate::audio::push_command(crate::audio::AudioCommand::PlayOneShot {
+                    token: None,
+                    sound: sound.clone(),
+                    gain: 1.0,
+                    position,
+                });
+                log.push(EffectRecord {
+                    kind: "audio.play",
+                    value: EffectValue::Text(sound),
+                });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::PlayAudioThen { sound, message } => {
+                // Fire-and-forget request (like Http): mint a token, register
+                // the completion MESSAGE by it, and queue a tokened one-shot.
+                // The finish lands frames later; the producer's audio-finished
+                // hook delivers the message then. Logged for the effect record.
+                let token = crate::audio::next_token();
+                register_audio_completion(token, message);
+                crate::audio::push_command(crate::audio::AudioCommand::play_one_shot_token(
+                    token,
+                    sound.clone(),
+                ));
+                log.push(EffectRecord {
+                    kind: "audio.playThen",
+                    value: EffectValue::Text(sound),
+                });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
             EffectTree::Raycast {
                 origin,
                 dir,
@@ -2530,6 +2762,22 @@ fn light_of(value: &Value) -> Option<&Light> {
 fn scene_of(value: &Value) -> Option<&Scene3D> {
     match value {
         Value::HostData(data) => data.as_any().downcast_ref::<MleScene>().map(|s| &s.0),
+        _ => None,
+    }
+}
+
+fn audio_source_of(value: &Value) -> Option<&crate::audio::AudioSource> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleAudioSource>().map(|s| &s.0),
+        _ => None,
+    }
+}
+
+/// Extract the [`crate::audio::AudioScene`] from an MLE value (a
+/// `soundScape` return), for the shells' soundscape reconcile.
+pub fn audio_scene_of(value: &Value) -> Option<&crate::audio::AudioScene> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleAudioScene>().map(|s| &s.0),
         _ => None,
     }
 }
@@ -4340,6 +4588,181 @@ the game dir"
 
         // The token is consumed (a duplicate/late response finds no tagger).
         assert!(take_http_tagger(token).is_none());
+    }
+
+    // --- audio (roadmap E2): one-shots + soundScape ---
+
+    /// `Effect.play(sound)` queues a non-spatial `PlayOneShot` AudioCommand
+    /// (fire-and-forget, no token), and `Effect.playAt` sets `position`.
+    #[test]
+    fn play_and_play_at_queue_one_shot_commands() {
+        let _guard = crate::audio::OUTBOUND_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = crate::audio::drain_commands(); // clear the shared queue
+        let src = "\
+            let init = 0.0\n\
+            let shoot = Effect.play(\"gunshot.wav\")\n\
+            let blast = Effect.playAt(\"explosion.wav\", 5.0, 0.5, -2.0)\n";
+        let project = mle::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = mle::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").unwrap();
+        let mut log = EffectLog::new();
+
+        let shoot = effect_of(&session.global("shoot").unwrap()).unwrap().0.clone();
+        let _ = drain_effects(
+            &session,
+            &mut model,
+            shoot,
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+        );
+        assert_eq!(log.last().map(|r| r.kind), Some("audio.play"));
+
+        let blast = effect_of(&session.global("blast").unwrap()).unwrap().0.clone();
+        let _ = drain_effects(
+            &session,
+            &mut model,
+            blast,
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+        );
+
+        assert_eq!(
+            crate::audio::drain_commands(),
+            vec![
+                crate::audio::AudioCommand::PlayOneShot {
+                    token: None,
+                    sound: "gunshot.wav".to_string(),
+                    gain: 1.0,
+                    position: None,
+                },
+                crate::audio::AudioCommand::PlayOneShot {
+                    token: None,
+                    sound: "explosion.wav".to_string(),
+                    gain: 1.0,
+                    position: Some([5.0, 0.5, -2.0]),
+                },
+            ]
+        );
+    }
+
+    /// `Effect.playThen(sound, msg)` mints a token, queues a tokened one-shot,
+    /// and registers the completion MESSAGE by that token; when the sound
+    /// finishes, taking the message and folding it through `update` moves the
+    /// model — the message is delivered verbatim (no tagger to apply).
+    #[test]
+    fn play_then_registers_message_and_completes_through_update() {
+        let _guard = crate::audio::OUTBOUND_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = crate::audio::drain_commands(); // clear the shared queue
+        clear_audio_completions();
+        let src = "\
+            type Model = | Playing | Finished\n\
+            let init = Playing\n\
+            let ping = Effect.playThen(\"chime.wav\", Finished)\n\
+            let update = (m: Model, msg: Model) => msg\n";
+        let project = mle::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = mle::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").unwrap();
+        let mut log = EffectLog::new();
+
+        let ping = effect_of(&session.global("ping").unwrap()).unwrap().0.clone();
+        let _ = drain_effects(
+            &session,
+            &mut model,
+            ping,
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+        );
+        assert_eq!(log.last().map(|r| r.kind), Some("audio.playThen"));
+
+        // One tokened one-shot was queued.
+        let token = match crate::audio::drain_commands().as_slice() {
+            [crate::audio::AudioCommand::PlayOneShot { token: Some(t), sound, .. }] => {
+                assert_eq!(sound, "chime.wav");
+                *t
+            }
+            other => panic!("expected one tokened PlayOneShot, got: {other:?}"),
+        };
+
+        // The sound finishes: take the registered message and fold it through
+        // `update` (delivered verbatim — no tagger).
+        let message = take_audio_completion(token).expect("a message for the token");
+        let (model, _) = split_model_effect(
+            session
+                .call("update", vec![model, message], &mut FunctorHost)
+                .unwrap(),
+        );
+        assert_eq!(model.to_string(), "Finished");
+
+        // The token is consumed (a duplicate/late finish finds no message).
+        assert!(take_audio_completion(token).is_none());
+    }
+
+    /// `PENDING_AUDIO` is bounded: because audio finishes are best-effort (a
+    /// sound may never start or report), the completion map is NOT self-draining
+    /// like `PENDING_HTTP`. Registering past the cap evicts the oldest (lowest
+    /// token), so a game that fires `playThen` in a loop can't grow it without
+    /// limit.
+    #[test]
+    fn pending_audio_completions_are_bounded() {
+        clear_audio_completions();
+        // Fill past the cap; oldest tokens should be evicted.
+        for token in 1..=(PENDING_AUDIO_CAP as u64 + 10) {
+            register_audio_completion(token, Value::Number(token as f64));
+        }
+        // The 10 oldest are gone; the map holds exactly the cap.
+        assert!(take_audio_completion(1).is_none());
+        assert!(take_audio_completion(10).is_none());
+        // A recent token survives.
+        assert!(take_audio_completion(PENDING_AUDIO_CAP as u64 + 10).is_some());
+        clear_audio_completions();
+    }
+
+    /// A `soundScape` returning a two-voice `AudioScene` (an ambient bed with a
+    /// piped gain + a positioned emitter) serializes to JSON carrying both keys
+    /// and the gain — exactly what the shell reconciles.
+    #[test]
+    fn sound_scape_serializes_to_reconcilable_json() {
+        let src = "\
+            let init = 0.0\n\
+            let soundScape = (m) =>\n\
+              AudioScene.create([\n\
+                AudioSource.ambient(\"wind\", \"wind-loop.wav\") |> AudioSource.gain(0.35),\n\
+                AudioSource.at(\"fountain\", \"water.wav\", 5.0, 0.5, 0.0)\n\
+              ])\n";
+        let project = mle::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = mle::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let model = session.global("init").unwrap();
+
+        let value = session
+            .call("soundScape", vec![model], &mut FunctorHost)
+            .unwrap();
+        let scene = audio_scene_of(&value).expect("soundScape must return an AudioScene");
+        let json = crate::audio::scene_to_json(scene);
+
+        // Round-trips through the wire form the shell deserializes.
+        let back: crate::audio::AudioScene = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sources.len(), 2);
+        let wind = &back.sources[0];
+        assert_eq!(wind.key, "wind");
+        assert_eq!(wind.sound, "wind-loop.wav");
+        assert!((wind.gain - 0.35).abs() < 1e-6);
+        assert_eq!(wind.position, None);
+        let fountain = &back.sources[1];
+        assert_eq!(fountain.key, "fountain");
+        assert_eq!(fountain.position, Some([5.0, 0.5, 0.0]));
     }
 
     /// Headless server-lifecycle test for the `mle-mpserver` port (roadmap E2),
