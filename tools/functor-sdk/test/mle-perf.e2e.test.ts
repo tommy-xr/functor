@@ -100,7 +100,7 @@ const STATS_RE =
 
 test(
   "MLE eval holds 60fps with headroom at 100 entities (C6 perf gate)",
-  { skip: !e2eEnabled, timeout: 180_000 },
+  { skip: !e2eEnabled, timeout: 360_000 },
   async () => {
     const repoRoot = findRepoRoot(process.cwd());
     assert.ok(repoRoot, "must run from within the functor workspace");
@@ -119,12 +119,18 @@ test(
 
     // Free-run on the wall clock until at least two 300-frame stats windows
     // have been printed — the first window includes warm-up (lazy GL setup,
-    // allocator growth), so the gate reads the LAST one.
+    // allocator growth), so the gate reads the LAST one. The wait is generous
+    // because frame THROUGHPUT (not eval cost — that's what we measure) varies
+    // wildly by host: local Apple Silicon prints a window in seconds, shared
+    // CI runners took ~55s each for 300 frames, so two windows can approach
+    // ~2min. A tight wait spuriously TIMES OUT on slow CI (unrelated to the
+    // regression class the gate hunts); 4min clears the slowest observed
+    // runner with margin.
     const started = Date.now();
     const lines = await waitFor(
       async () => runner.logs().filter((l) => STATS_RE.test(l)),
       (stats) => stats.length >= 2,
-      { timeoutMs: 120_000, intervalMs: 500, description: "two [mle] stats windows" },
+      { timeoutMs: 240_000, intervalMs: 500, description: "two [mle] stats windows" },
     );
     const elapsedS = (Date.now() - started) / 1000;
 
