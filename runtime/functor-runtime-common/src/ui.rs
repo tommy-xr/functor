@@ -477,7 +477,7 @@ impl Scrubber {
 
         ScrubberOutput {
             action,
-            wants_pointer: self.ctx.wants_pointer_input(),
+            wants_pointer: self.ctx.egui_wants_pointer_input(),
         }
     }
 }
