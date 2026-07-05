@@ -371,6 +371,12 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::TextFixed => func(vec![Float, Float], String),
         // Text.toBullets : (List<String>) => String
         Builtin::TextToBullets => func(vec![List(Box::new(String))], String),
+        // Text.split : (String, String) => List<String>
+        Builtin::TextSplit => func(vec![String, String], List(Box::new(String))),
+        // Text.join : (List<String>, String) => String
+        Builtin::TextJoin => func(vec![List(Box::new(String)), String], String),
+        // Text.parseFloat : (String) => Float
+        Builtin::TextParseFloat => func(vec![String], Float),
         // Math.clamp01 / sin / cos : (Float) => Float
         Builtin::MathClamp01 | Builtin::MathSin | Builtin::MathCos => func(vec![Float], Float),
     }

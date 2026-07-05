@@ -73,6 +73,11 @@ fn golden_lists() {
     check_golden("lists");
 }
 
+#[test]
+fn golden_strings() {
+    check_golden("strings");
+}
+
 /// Parse a deliberately broken input; return the error's (message, line, col).
 fn parse_err(src: &str) -> (String, usize, usize) {
     let err = mle::parse(src).expect_err("input should fail to parse");

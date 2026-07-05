@@ -222,7 +222,11 @@ let grab = (s) =>
 `List.map(list, fn)` · `List.filter(list, fn)` · `List.fold(list, fn, init)`
 (callback is `(acc, x) => …`) · `List.range(n)` (`[0 … n-1]`) ·
 `List.maximum(list)` · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
-`Text.toBullets(list)` · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)`
+`Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
+`%d` shape) · `Text.toBullets(list)` · `Text.split(s, sep)` (→ `List<String>`;
+empty `sep` is an error; `Text.split("", sep)` = `[""]`) · `Text.join(list, sep)`
+(strings only) · `Text.parseFloat(s)` (trims; unparseable → `0.0`, the F#
+`unwrap_or(0)` shape) · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)`
 
 ## Functor prelude (only under the engine host — `FunctorHost`)
 

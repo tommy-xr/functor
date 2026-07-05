@@ -73,6 +73,11 @@ fn golden_lists() {
     check_golden("lists");
 }
 
+#[test]
+fn golden_strings() {
+    check_golden("strings");
+}
+
 /// Same source must always produce byte-identical IR (stable IDs are
 /// sequential, never random or time-based).
 #[test]

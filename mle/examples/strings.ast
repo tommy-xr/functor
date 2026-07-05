@@ -1,0 +1,685 @@
+Program {
+    items: [
+        Let(
+            LetDecl {
+                name: "encode",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "pid",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 301..306,
+                                    },
+                                ),
+                                span: 296..306,
+                            },
+                            Param {
+                                name: "x",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 311..316,
+                                    },
+                                ),
+                                span: 308..316,
+                            },
+                            Param {
+                                name: "z",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 321..326,
+                                    },
+                                ),
+                                span: 318..326,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "String",
+                                args: [],
+                                span: 329..335,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "Text",
+                                            "join",
+                                        ],
+                                    ),
+                                    span: 341..350,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: List(
+                                            [
+                                                Expr {
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "Text",
+                                                                    "fixed",
+                                                                ],
+                                                            ),
+                                                            span: 357..367,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                kind: Ident(
+                                                                    [
+                                                                        "pid",
+                                                                    ],
+                                                                ),
+                                                                span: 368..371,
+                                                            },
+                                                            Expr {
+                                                                kind: Number(
+                                                                    0.0,
+                                                                ),
+                                                                span: 373..376,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 357..377,
+                                                },
+                                                Expr {
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "Text",
+                                                                    "fixed",
+                                                                ],
+                                                            ),
+                                                            span: 379..389,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                kind: Binary {
+                                                                    op: Mul,
+                                                                    lhs: Expr {
+                                                                        kind: Ident(
+                                                                            [
+                                                                                "x",
+                                                                            ],
+                                                                        ),
+                                                                        span: 390..391,
+                                                                    },
+                                                                    rhs: Expr {
+                                                                        kind: Number(
+                                                                            100.0,
+                                                                        ),
+                                                                        span: 394..399,
+                                                                    },
+                                                                },
+                                                                span: 390..399,
+                                                            },
+                                                            Expr {
+                                                                kind: Number(
+                                                                    0.0,
+                                                                ),
+                                                                span: 401..404,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 379..405,
+                                                },
+                                                Expr {
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "Text",
+                                                                    "fixed",
+                                                                ],
+                                                            ),
+                                                            span: 407..417,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                kind: Binary {
+                                                                    op: Mul,
+                                                                    lhs: Expr {
+                                                                        kind: Ident(
+                                                                            [
+                                                                                "z",
+                                                                            ],
+                                                                        ),
+                                                                        span: 418..419,
+                                                                    },
+                                                                    rhs: Expr {
+                                                                        kind: Number(
+                                                                            100.0,
+                                                                        ),
+                                                                        span: 422..427,
+                                                                    },
+                                                                },
+                                                                span: 418..427,
+                                                            },
+                                                            Expr {
+                                                                kind: Number(
+                                                                    0.0,
+                                                                ),
+                                                                span: 429..432,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 407..433,
+                                                },
+                                            ],
+                                        ),
+                                        span: 356..434,
+                                    },
+                                    Expr {
+                                        kind: String(
+                                            ",",
+                                        ),
+                                        span: 440..443,
+                                    },
+                                ],
+                            },
+                            span: 341..444,
+                        },
+                    },
+                    span: 295..444,
+                },
+                span: 282..444,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "snapshot",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "rows",
+                                ty: Some(
+                                    TypeName {
+                                        name: "List",
+                                        args: [
+                                            TypeName {
+                                                name: "String",
+                                                args: [],
+                                                span: 520..526,
+                                            },
+                                        ],
+                                        span: 515..527,
+                                    },
+                                ),
+                                span: 509..527,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "String",
+                                args: [],
+                                span: 530..536,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "Text",
+                                            "join",
+                                        ],
+                                    ),
+                                    span: 540..549,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: Ident(
+                                            [
+                                                "rows",
+                                            ],
+                                        ),
+                                        span: 550..554,
+                                    },
+                                    Expr {
+                                        kind: String(
+                                            "|",
+                                        ),
+                                        span: 556..559,
+                                    },
+                                ],
+                            },
+                            span: 540..560,
+                        },
+                    },
+                    span: 508..560,
+                },
+                span: 493..560,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "parseRow",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "row",
+                                ty: Some(
+                                    TypeName {
+                                        name: "String",
+                                        args: [],
+                                        span: 652..658,
+                                    },
+                                ),
+                                span: 647..658,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "*",
+                                args: [
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 661..666,
+                                    },
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 669..674,
+                                    },
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 677..682,
+                                    },
+                                ],
+                                span: 661..682,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Call {
+                                        callee: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "Text",
+                                                    "split",
+                                                ],
+                                            ),
+                                            span: 694..704,
+                                        },
+                                        args: [
+                                            Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "row",
+                                                    ],
+                                                ),
+                                                span: 705..708,
+                                            },
+                                            Expr {
+                                                kind: String(
+                                                    ",",
+                                                ),
+                                                span: 710..713,
+                                            },
+                                        ],
+                                    },
+                                    span: 694..714,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: List {
+                                                items: [
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "p",
+                                                        ),
+                                                        span: 725..726,
+                                                    },
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "x",
+                                                        ),
+                                                        span: 728..729,
+                                                    },
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "z",
+                                                        ),
+                                                        span: 731..732,
+                                                    },
+                                                ],
+                                                tail: None,
+                                            },
+                                            span: 724..733,
+                                        },
+                                        body: Expr {
+                                            kind: Tuple(
+                                                [
+                                                    Expr {
+                                                        kind: Call {
+                                                            callee: Expr {
+                                                                kind: Ident(
+                                                                    [
+                                                                        "Text",
+                                                                        "parseFloat",
+                                                                    ],
+                                                                ),
+                                                                span: 738..753,
+                                                            },
+                                                            args: [
+                                                                Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "p",
+                                                                        ],
+                                                                    ),
+                                                                    span: 754..755,
+                                                                },
+                                                            ],
+                                                        },
+                                                        span: 738..756,
+                                                    },
+                                                    Expr {
+                                                        kind: Binary {
+                                                            op: Div,
+                                                            lhs: Expr {
+                                                                kind: Call {
+                                                                    callee: Expr {
+                                                                        kind: Ident(
+                                                                            [
+                                                                                "Text",
+                                                                                "parseFloat",
+                                                                            ],
+                                                                        ),
+                                                                        span: 758..773,
+                                                                    },
+                                                                    args: [
+                                                                        Expr {
+                                                                            kind: Ident(
+                                                                                [
+                                                                                    "x",
+                                                                                ],
+                                                                            ),
+                                                                            span: 774..775,
+                                                                        },
+                                                                    ],
+                                                                },
+                                                                span: 758..776,
+                                                            },
+                                                            rhs: Expr {
+                                                                kind: Number(
+                                                                    100.0,
+                                                                ),
+                                                                span: 779..784,
+                                                            },
+                                                        },
+                                                        span: 758..784,
+                                                    },
+                                                    Expr {
+                                                        kind: Binary {
+                                                            op: Div,
+                                                            lhs: Expr {
+                                                                kind: Call {
+                                                                    callee: Expr {
+                                                                        kind: Ident(
+                                                                            [
+                                                                                "Text",
+                                                                                "parseFloat",
+                                                                            ],
+                                                                        ),
+                                                                        span: 786..801,
+                                                                    },
+                                                                    args: [
+                                                                        Expr {
+                                                                            kind: Ident(
+                                                                                [
+                                                                                    "z",
+                                                                                ],
+                                                                            ),
+                                                                            span: 802..803,
+                                                                        },
+                                                                    ],
+                                                                },
+                                                                span: 786..804,
+                                                            },
+                                                            rhs: Expr {
+                                                                kind: Number(
+                                                                    100.0,
+                                                                ),
+                                                                span: 807..812,
+                                                            },
+                                                        },
+                                                        span: 786..812,
+                                                    },
+                                                ],
+                                            ),
+                                            span: 737..813,
+                                        },
+                                        span: 722..813,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Wildcard,
+                                            span: 818..819,
+                                        },
+                                        body: Expr {
+                                            kind: Tuple(
+                                                [
+                                                    Expr {
+                                                        kind: Number(
+                                                            0.0,
+                                                        ),
+                                                        span: 824..827,
+                                                    },
+                                                    Expr {
+                                                        kind: Number(
+                                                            0.0,
+                                                        ),
+                                                        span: 829..832,
+                                                    },
+                                                    Expr {
+                                                        kind: Number(
+                                                            0.0,
+                                                        ),
+                                                        span: 834..837,
+                                                    },
+                                                ],
+                                            ),
+                                            span: 823..838,
+                                        },
+                                        span: 816..838,
+                                    },
+                                ],
+                            },
+                            span: 688..838,
+                        },
+                    },
+                    span: 646..838,
+                },
+                span: 631..838,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "main",
+                value: Expr {
+                    kind: Lambda {
+                        params: [],
+                        ret: None,
+                        body: Expr {
+                            kind: Let {
+                                mutable: false,
+                                name: "wire",
+                                value: Expr {
+                                    kind: Call {
+                                        callee: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "snapshot",
+                                                ],
+                                            ),
+                                            span: 870..878,
+                                        },
+                                        args: [
+                                            Expr {
+                                                kind: List(
+                                                    [
+                                                        Expr {
+                                                            kind: Call {
+                                                                callee: Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "encode",
+                                                                        ],
+                                                                    ),
+                                                                    span: 880..886,
+                                                                },
+                                                                args: [
+                                                                    Expr {
+                                                                        kind: Number(
+                                                                            0.0,
+                                                                        ),
+                                                                        span: 887..890,
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Number(
+                                                                            2.5,
+                                                                        ),
+                                                                        span: 892..895,
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Neg(
+                                                                            Expr {
+                                                                                kind: Number(
+                                                                                    1.8,
+                                                                                ),
+                                                                                span: 898..901,
+                                                                            },
+                                                                        ),
+                                                                        span: 897..901,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: 880..902,
+                                                        },
+                                                        Expr {
+                                                            kind: Call {
+                                                                callee: Expr {
+                                                                    kind: Ident(
+                                                                        [
+                                                                            "encode",
+                                                                        ],
+                                                                    ),
+                                                                    span: 904..910,
+                                                                },
+                                                                args: [
+                                                                    Expr {
+                                                                        kind: Number(
+                                                                            1.0,
+                                                                        ),
+                                                                        span: 911..914,
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Number(
+                                                                            0.12,
+                                                                        ),
+                                                                        span: 916..920,
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Number(
+                                                                            0.44,
+                                                                        ),
+                                                                        span: 922..926,
+                                                                    },
+                                                                ],
+                                                            },
+                                                            span: 904..927,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: 879..928,
+                                            },
+                                        ],
+                                    },
+                                    span: 870..929,
+                                },
+                                body: Expr {
+                                    kind: Tuple(
+                                        [
+                                            Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "wire",
+                                                    ],
+                                                ),
+                                                span: 936..940,
+                                            },
+                                            Expr {
+                                                kind: Call {
+                                                    callee: Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "parseRow",
+                                                            ],
+                                                        ),
+                                                        span: 942..950,
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            kind: String(
+                                                                "0,250,-180",
+                                                            ),
+                                                            span: 951..963,
+                                                        },
+                                                    ],
+                                                },
+                                                span: 942..964,
+                                            },
+                                            Expr {
+                                                kind: Call {
+                                                    callee: Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "parseRow",
+                                                            ],
+                                                        ),
+                                                        span: 966..974,
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            kind: String(
+                                                                "bogus",
+                                                            ),
+                                                            span: 975..982,
+                                                        },
+                                                    ],
+                                                },
+                                                span: 966..983,
+                                            },
+                                        ],
+                                    ),
+                                    span: 935..984,
+                                },
+                            },
+                            span: 859..984,
+                        },
+                    },
+                    span: 851..984,
+                },
+                span: 840..984,
+            },
+        ),
+    ],
+}
