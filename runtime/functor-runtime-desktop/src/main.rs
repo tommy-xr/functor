@@ -666,6 +666,9 @@ pub async fn main() {
         // cursor for free-look).
         let mut mouse_primary_down = false;
         let mut scrubber_wants_pointer = false;
+        // The time-travel console (`~`): shown by default; `~` toggles it, and
+        // opening it frees the cursor so you can scrub right away.
+        let mut scrubber_visible = true;
 
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
@@ -778,6 +781,23 @@ Escape again to quit"
                             );
                         } else {
                             window.set_should_close(true)
+                        }
+                    }
+                    // `~` toggles the time-travel console. Opening it frees the
+                    // cursor (so you can scrub immediately); closing returns to
+                    // free-look. Before the `ignore_user_input` catch-all so it
+                    // works while the clock is pinned (paused). Never grabs the
+                    // pointer on a hidden window.
+                    glfw::WindowEvent::Key(Key::GraveAccent, _, Action::Press, _) => {
+                        scrubber_visible = !scrubber_visible;
+                        if !hidden {
+                            if scrubber_visible {
+                                window.set_cursor_mode(glfw::CursorMode::Normal);
+                                cursor_captured = false;
+                            } else {
+                                window.set_cursor_mode(glfw::CursorMode::Disabled);
+                                cursor_captured = true;
+                            }
                         }
                     }
                     // Left click while released: if it lands on a scrubber
@@ -1023,23 +1043,30 @@ Escape again to quit"
             } else {
                 1.0
             };
-            let scrubber_out = scrubber.draw(
-                fb_width as u32,
-                fb_height as u32,
-                1.0,
-                functor_runtime_common::ui::PointerState {
-                    pos: (!cursor_captured && !hidden).then_some((
-                        mouse_pos.0 as f32 * dpi_scale,
-                        mouse_pos.1 as f32 * dpi_scale,
-                    )),
-                    primary_down: mouse_primary_down,
-                },
-                functor_runtime_common::ui::ScrubberState {
-                    frame: game.current_scene_frame().unwrap_or(0),
-                    range: game.scene_frame_range(),
-                    paused: held_time.is_some(),
-                },
-            );
+            let scrubber_out = if scrubber_visible {
+                scrubber.draw(
+                    fb_width as u32,
+                    fb_height as u32,
+                    1.0,
+                    functor_runtime_common::ui::PointerState {
+                        pos: (!cursor_captured && !hidden).then_some((
+                            mouse_pos.0 as f32 * dpi_scale,
+                            mouse_pos.1 as f32 * dpi_scale,
+                        )),
+                        primary_down: mouse_primary_down,
+                    },
+                    functor_runtime_common::ui::ScrubberState {
+                        frame: game.current_scene_frame().unwrap_or(0),
+                        range: game.scene_frame_range(),
+                        paused: held_time.is_some(),
+                    },
+                )
+            } else {
+                functor_runtime_common::ui::ScrubberOutput {
+                    action: None,
+                    wants_pointer: false,
+                }
+            };
             scrubber_wants_pointer = scrubber_out.wants_pointer;
             match scrubber_out.action {
                 Some(functor_runtime_common::ui::ScrubberAction::TogglePause) => {
