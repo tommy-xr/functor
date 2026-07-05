@@ -81,6 +81,15 @@ pub enum TimeCommand {
     Resume,
 }
 
+/// A coupled scene rewind via `POST /rewind`: `{"frame": 42}` restores the
+/// whole scene — model AND physics world — to the end of that RENDERED frame
+/// (docs/time-travel.md T1). Pin the clock first (`POST /time {"type":"set"}`)
+/// so the scene stays at the rewound frame instead of simulating forward.
+#[derive(Debug, serde::Deserialize)]
+pub struct RewindCommand {
+    pub frame: u64,
+}
+
 /// Why a `POST /capture` couldn't return pixels. Maps to an HTTP status:
 /// `Unavailable` → 503 (no GL, e.g. `--headless`), `Failed` → 500 (a real
 /// readback/encode error).
@@ -108,6 +117,10 @@ pub enum DebugRequest {
     /// (body = the raw `.mle` text), preserving the model. Ok carries a status
     /// line; Err the load error (400) — a broken push keeps the old program.
     ReloadSource(String, Sender<Result<String, String>>),
+    /// `POST /rewind` — coupled scene rewind to a rendered frame. Ok carries a
+    /// status line; Err (400) if the producer can't rewind or the frame is
+    /// unrecorded/pruned.
+    Rewind(u64, Sender<Result<String, String>>),
 }
 
 /// Start the debug HTTP server on a background thread. Returns the receiving end
@@ -285,6 +298,45 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                         }
                     }
                 }
+                (Method::Post, "/rewind") => {
+                    let mut body = String::new();
+                    if request.as_reader().read_to_string(&mut body).is_err() {
+                        let _ = request
+                            .respond(Response::from_string("bad body").with_status_code(400));
+                        continue;
+                    }
+                    let cmd: RewindCommand = match serde_json::from_str(&body) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let _ = request.respond(
+                                Response::from_string(format!("bad rewind json: {e}"))
+                                    .with_status_code(400),
+                            );
+                            continue;
+                        }
+                    };
+                    let (resp_tx, resp_rx) = mpsc::channel();
+                    if tx.send(DebugRequest::Rewind(cmd.frame, resp_tx)).is_err() {
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
+                        continue;
+                    }
+                    match resp_rx.recv() {
+                        Ok(Ok(status)) => {
+                            let _ = request.respond(Response::from_string(status));
+                        }
+                        Ok(Err(message)) => {
+                            let _ = request.respond(
+                                Response::from_string(message).with_status_code(400),
+                            );
+                        }
+                        Err(_) => {
+                            let _ = request.respond(
+                                Response::from_string("rewind failed").with_status_code(500),
+                            );
+                        }
+                    }
+                }
                 (Method::Post, "/reload-source") => {
                     // This endpoint can be LAN-exposed (--debug-bind), so
                     // bound the body: game source is KBs, and an unbounded
@@ -351,7 +403,8 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                             "GET /scene": "current frame as JSON: camera + scene + lights",
                             "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1}",
                             "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}",
-                            "POST /reload-source": "swap game logic from the request body (raw .mle source), model preserved — 400 with the load error on a broken push"
+                            "POST /reload-source": "swap game logic from the request body (raw .mle source), model preserved — 400 with the load error on a broken push",
+                            "POST /rewind": "coupled scene rewind — {\"frame\":42} restores model + physics to that rendered frame (pin the clock first); 400 if unrecorded/pruned"
                         }
                     })
                     .to_string();

@@ -438,6 +438,9 @@ fn service_debug_request(
         debug_server::DebugRequest::ReloadSource(source, resp) => {
             let _ = resp.send(game.reload_source(&source));
         }
+        debug_server::DebugRequest::Rewind(frame, resp) => {
+            let _ = resp.send(game.rewind_scene_to(frame));
+        }
         debug_server::DebugRequest::Input(cmd, resp) => {
             let result = match cmd {
                 debug_server::InputCommand::Key { key, down } => match key_from_str(&key) {
