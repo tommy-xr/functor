@@ -359,6 +359,8 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::TextConcat => func(vec![String, String], String),
         // Text.fromFloat : (Float) => String
         Builtin::TextFromFloat => func(vec![Float], String),
+        // Text.fixed : (Float, Float) => String — n at a fixed decimal count
+        Builtin::TextFixed => func(vec![Float, Float], String),
         // Text.toBullets : (List<String>) => String
         Builtin::TextToBullets => func(vec![List(Box::new(String))], String),
         // Math.clamp01 / sin / cos : (Float) => Float

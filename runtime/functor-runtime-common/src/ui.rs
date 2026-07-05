@@ -84,7 +84,10 @@ pub enum View {
     Panel { anchor: Anchor, child: Box<View> },
 }
 
-fn rgb_u8(r: f32, g: f32, b: f32) -> [u8; 3] {
+/// 0..1 float components -> 8-bit color, clamped. Shared by the F#-facing
+/// `View` constructors and the MLE prelude's `Ui.textColor`, so the two
+/// hosts quantize colors identically.
+pub fn rgb_u8(r: f32, g: f32, b: f32) -> [u8; 3] {
     let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     [c(r), c(g), c(b)]
 }

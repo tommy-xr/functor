@@ -824,6 +824,23 @@ impl Interp<'_> {
                 [Value::Number(n)] => Ok(Value::String(Rc::from(n.to_string().as_str()))),
                 _ => err("Text.fromFloat(n) expects one number".to_string()),
             },
+            // Fixed-decimal formatting (the F# `sprintf "%.1f"` shape a HUD
+            // needs): `Text.fixed(3.14159, 1.0)` is `"3.1"`, and 0 decimals
+            // formats whole numbers with no point (`Text.fixed(42.0, 0.0)` is
+            // `"42"` — the `%d` shape too). Rust's `{:.prec}` rounding.
+            Builtin::TextFixed => match args.as_slice() {
+                [Value::Number(n), Value::Number(d)]
+                    if *d >= 0.0 && d.fract() == 0.0 && *d <= 12.0 =>
+                {
+                    Ok(Value::String(Rc::from(
+                        format!("{:.*}", *d as usize, n).as_str(),
+                    )))
+                }
+                [Value::Number(_), Value::Number(d)] => err(format!(
+                    "Text.fixed needs a whole number of decimals between 0 and 12, got {d}"
+                )),
+                _ => err("Text.fixed(n, decimals) expects two numbers".to_string()),
+            },
             Builtin::TextToBullets => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut lines = Vec::with_capacity(items.len());
@@ -1005,6 +1022,7 @@ pub enum Builtin {
     ListMaximum,
     TextConcat,
     TextFromFloat,
+    TextFixed,
     TextToBullets,
     MathClamp01,
 }
@@ -1020,6 +1038,7 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.maximum" => Builtin::ListMaximum,
         "Text.concat" => Builtin::TextConcat,
         "Text.fromFloat" => Builtin::TextFromFloat,
+        "Text.fixed" => Builtin::TextFixed,
         "Text.toBullets" => Builtin::TextToBullets,
         "Math.clamp01" => Builtin::MathClamp01,
         "Math.sin" => Builtin::MathSin,
@@ -1038,6 +1057,7 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListMaximum => "List.maximum",
         Builtin::TextConcat => "Text.concat",
         Builtin::TextFromFloat => "Text.fromFloat",
+        Builtin::TextFixed => "Text.fixed",
         Builtin::TextToBullets => "Text.toBullets",
         Builtin::MathClamp01 => "Math.clamp01",
         Builtin::MathSin => "Math.sin",

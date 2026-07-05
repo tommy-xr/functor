@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use functor_runtime_common::mle_prelude::{
     contains_effect, deliver_physics_events, drain_effects, frame_value, needs_update,
     perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
-    sub_messages_for_frame, EffectLog, EffectTree, FunctorHost, RealEffects,
+    sub_messages_for_frame, view_value, EffectLog, EffectTree, FunctorHost, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
@@ -52,6 +52,13 @@ pub struct MleWebGame {
     /// desktop producer).
     prev_tts: Option<f64>,
     has_physics: bool,
+    /// The game defines the optional `ui` entry point (`ui(model) -> View`,
+    /// the 2D HUD hook).
+    has_ui: bool,
+    /// The last successfully built HUD View, cached because `ui()` is a
+    /// `&self` accessor — evaluated beside `draw` each frame (the desktop
+    /// producer's rule: a bad `ui` keeps the last good view).
+    last_view: View,
     /// Performs `Effect.*` commands (B6). `RealEffects` is wasm-safe: its
     /// clock is `Date.now()` on this target.
     effect_runner: RealEffects,
@@ -85,6 +92,7 @@ struct Loaded {
     has_mouse_wheel: bool,
     has_subscriptions: bool,
     has_physics: bool,
+    has_ui: bool,
 }
 
 /// Load, check, and contract-validate game source — the web counterpart of
@@ -169,6 +177,12 @@ return them beside the model as `(model, effect)`"
     if has_physics {
         require_function(path, &session, "physics", 1)?;
     }
+    // Optional HUD: `ui(model)` returns a View (Ui.text / Ui.column /
+    // Ui.panel), lowered to the shared text overlay — the F# `ui` hook.
+    let has_ui = session.global("ui").is_some();
+    if has_ui {
+        require_function(path, &session, "ui", 1)?;
+    }
     Ok(Loaded {
         src,
         module,
@@ -179,6 +193,7 @@ return them beside the model as `(model, effect)`"
         has_mouse_wheel,
         has_subscriptions,
         has_physics,
+        has_ui,
     })
 }
 
@@ -205,6 +220,8 @@ impl MleWebGame {
             deferred_queries: Vec::new(),
             pending_events: Vec::new(),
             has_physics: loaded.has_physics,
+            has_ui: loaded.has_ui,
+            last_view: View::Empty,
             last_frame: empty_frame(),
             last_error: None,
         })
@@ -241,6 +258,11 @@ impl MleWebGame {
         // drop them rather than let them dangle.
         self.deferred_queries.clear();
         self.pending_events.clear();
+        self.has_ui = loaded.has_ui;
+        if !self.has_ui {
+            // Deleting the `ui` hook drops the HUD (the physics-world rule).
+            self.last_view = View::Empty;
+        }
         self.last_error = None;
         report.rebound
     }
@@ -548,13 +570,31 @@ impl GameProducer for MleWebGame {
             },
             Err(err) => self.frame_error("draw", &err),
         }
+        // The optional HUD, evaluated beside `draw` (same settled model) and
+        // cached — `ui()` is a `&self` accessor, and errors need `&mut`
+        // dedupe. A bad `ui` keeps the last good view (the last_frame rule).
+        if self.has_ui {
+            match self
+                .session
+                .call("ui", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(value) => match view_value(&value) {
+                    Some(view) => self.last_view = view.clone(),
+                    None => self.log_once(format!(
+                        "[mle] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                        value.kind_name()
+                    )),
+                },
+                Err(err) => self.frame_error("ui", &err),
+            }
+        }
         // On failure this is the last good frame — a bad draw must not blank
         // the canvas.
         self.last_frame.clone()
     }
 
     fn ui(&self) -> View {
-        View::empty()
+        self.last_view.clone()
     }
 
     fn state_debug(&self) -> String {
