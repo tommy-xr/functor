@@ -630,15 +630,16 @@ fn single_file_project_adds_only_the_builtin_net_module() {
     for ty in &plain.types {
         assert!(proj_types.contains(&ty.name.as_str()));
     }
-    // The ONLY additions are the Net module's (canonicalized `Net.NetEvent`).
+    // The ONLY additions are the Net module's (canonicalized `Net.NetEvent`
+    // and `Net.HttpResponse`).
     assert!(
-        proj_types.contains(&"Net.NetEvent"),
+        proj_types.contains(&"Net.NetEvent") && proj_types.contains(&"Net.HttpResponse"),
         "the built-in Net module must be injected: {proj_types:?}"
     );
     assert_eq!(
         proj_types.len(),
-        plain.types.len() + 1,
-        "no types beyond the entry's + Net.NetEvent"
+        plain.types.len() + 2,
+        "no types beyond the entry's + Net.NetEvent + Net.HttpResponse"
     );
 }
 
