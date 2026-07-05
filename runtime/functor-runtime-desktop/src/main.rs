@@ -1036,6 +1036,7 @@ Escape again to quit"
                 },
                 functor_runtime_common::ui::ScrubberState {
                     frame: game.current_scene_frame().unwrap_or(0),
+                    range: game.scene_frame_range(),
                     paused: held_time.is_some(),
                 },
             );
@@ -1045,15 +1046,15 @@ Escape again to quit"
                     held_time = if held_time.is_some() { None } else { Some(time.tts) };
                     pending_step = None;
                 }
-                Some(functor_runtime_common::ui::ScrubberAction::RewindBy(n)) => {
-                    if let Some(f) = game.current_scene_frame() {
-                        match game.rewind_scene_to(f.saturating_sub(n)) {
-                            Ok(status) => println!("[scrubber] {status}"),
-                            Err(e) => eprintln!("[scrubber] {e}"),
-                        }
-                        // Pin the clock so the rewound scene stays put.
-                        held_time = Some(time.tts);
+                Some(functor_runtime_common::ui::ScrubberAction::SeekTo(f)) => {
+                    // Dragging the timeline: non-destructive seek, and pin the
+                    // clock so the scene parks on the scrubbed frame (resuming
+                    // from there is what commits the branch).
+                    match game.seek_scene_to(f) {
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[scrubber] {e}"),
                     }
+                    held_time = Some(time.tts);
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::Step) => {
                     // Step implies pause: advance exactly one frame, then hold.

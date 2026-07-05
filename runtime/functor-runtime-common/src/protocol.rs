@@ -114,6 +114,21 @@ pub trait GameProducer {
         None
     }
 
+    /// The recorded rendered-frame window `(oldest, newest)` the scrubber can
+    /// seek within (docs/time-travel.md T3). `None` if nothing is recorded.
+    fn scene_frame_range(&self) -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Seek the whole scene to a rendered frame for DISPLAY, WITHOUT branching
+    /// (docs/time-travel.md T3, the draggable scrubber): restore model + world
+    /// so the user can scrub back and forth freely while paused. The future is
+    /// discarded only when play resumes from the scrubbed point (which commits
+    /// a `rewind_scene_to` branch). The default is the honest refusal.
+    fn seek_scene_to(&mut self, _rendered_frame: u64) -> Result<String, String> {
+        Err("this producer does not support scene seek".to_string())
+    }
+
     fn tick(&mut self, frame_time: crate::FrameTime);
 
     /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.

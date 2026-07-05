@@ -218,6 +218,36 @@ impl SteppedPhysics {
         warnings
     }
 
+    /// Seek the recorded world to a fixed frame WITHOUT truncating the future
+    /// (docs/time-travel.md T3, the draggable scrubber): unlike
+    /// [`Self::rewind_to_frame`], the recorded history is left intact, so the
+    /// caller can seek back and forth freely while paused. Branching (discarding
+    /// the future) only happens later, when play resumes from a scrubbed point
+    /// via `rewind_to_frame`. Returns clamp/range warnings.
+    pub fn seek_to_frame(&mut self, frame: u64) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let (lo, hi) = match self.recorded_range() {
+            Some(range) => range,
+            None => {
+                warnings.push("physics seek: nothing recorded yet".to_string());
+                return warnings;
+            }
+        };
+        if hi == 0 {
+            warnings.push("physics seek: no stepped frame recorded yet".to_string());
+            return warnings;
+        }
+        let floor = if lo == 0 { 1 } else { lo };
+        let target = frame.clamp(floor, hi);
+        with_world(self.world, |w| {
+            self.timeline.seek(target, w);
+            // The replayed steps re-emit events/warnings nobody should re-observe.
+            let _ = w.take_events();
+            let _ = w.take_command_warnings();
+        });
+        warnings
+    }
+
     /// The fixed-frame range a rewind can restore EXACTLY: the practical floor
     /// (frame 0's pre-step is the empty pre-reconcile world, so 1 is the real
     /// floor) through the newest recorded frame. `None` until something has

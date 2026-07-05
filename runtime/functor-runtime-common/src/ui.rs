@@ -349,7 +349,11 @@ pub struct PointerState {
 /// The time-travel state the shell hands the scrubber to render.
 #[derive(Clone, Copy)]
 pub struct ScrubberState {
+    /// The frame the handle sits on (the scrubbed-to frame, or the newest).
     pub frame: u64,
+    /// The seekable window `(oldest, newest)` — the draggable range. `None`
+    /// until something is recorded (the slider is then hidden).
+    pub range: Option<(u64, u64)>,
     pub paused: bool,
 }
 
@@ -357,7 +361,8 @@ pub struct ScrubberState {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ScrubberAction {
     TogglePause,
-    RewindBy(u64),
+    /// Non-destructive scrub to a rendered frame (dragging the timeline).
+    SeekTo(u64),
     Step,
 }
 
@@ -447,15 +452,34 @@ impl Scrubber {
                 .show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            let label = match state.range {
+                                Some((_, hi)) => format!("time-travel · {} / {hi}", state.frame),
+                                None => format!("time-travel · frame {}", state.frame),
+                            };
                             ui.label(
-                                egui::RichText::new(format!("time-travel · frame {}", state.frame))
-                                    .font(egui::FontId::monospace(UI_FONT_SIZE)),
+                                egui::RichText::new(label).font(egui::FontId::monospace(UI_FONT_SIZE)),
                             );
                             if ui.button(if state.paused { "Resume" } else { "Pause" }).clicked() {
                                 action = Some(ScrubberAction::TogglePause);
                             }
-                            if ui.button("<< 30").clicked() {
-                                action = Some(ScrubberAction::RewindBy(30));
+                            // The draggable timeline: drag anywhere in the
+                            // recorded window to scrub (non-destructive). Only
+                            // shown once there's a range to drag across.
+                            if let Some((lo, hi)) = state.range {
+                                if hi > lo {
+                                    let mut f = state.frame.clamp(lo, hi);
+                                    ui.spacing_mut().slider_width = 260.0;
+                                    let slider = ui.add(
+                                        egui::Slider::new(&mut f, lo..=hi)
+                                            .show_value(false)
+                                            .handle_shape(egui::style::HandleShape::Rect {
+                                                aspect_ratio: 0.5,
+                                            }),
+                                    );
+                                    if slider.changed() {
+                                        action = Some(ScrubberAction::SeekTo(f));
+                                    }
+                                }
                             }
                             if ui.button("Step >").clicked() {
                                 action = Some(ScrubberAction::Step);

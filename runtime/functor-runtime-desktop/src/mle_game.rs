@@ -135,6 +135,11 @@ pub struct MleGame {
     /// numerically equal today but free to be reset/repurposed for stats), the
     /// way the physics recorder owns its own fixed-frame clock.
     rendered_frame: u64,
+    /// While the draggable scrubber is dragging (docs/time-travel.md T3), the
+    /// rendered frame it has NON-destructively seeked to for display. `Some`
+    /// means "scrubbing": the recorded future is intact so the user can drag
+    /// back and forth; it's committed (branched) only when play resumes.
+    scrub_pos: Option<u64>,
     /// Endpoint keys of the connections currently declared by
     /// `subscriptions` (`Sub.connect`/`Sub.listen`) — diffed each frame to
     /// open newly-declared ones and close dropped ones. The shell's
@@ -363,6 +368,7 @@ impl MleGame {
             model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             world_frame_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             rendered_frame: 0,
+            scrub_pos: None,
             live_conn_keys: std::collections::HashSet::new(),
             last_frame: empty_frame(),
             last_error: None,
@@ -724,6 +730,7 @@ to receive their messages; dropping them"
         // world-frame map resets in lockstep.
         self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         self.world_frame_history = History::bounded(DEFAULT_HISTORY_FRAMES);
+        self.scrub_pos = None;
         report.rebound
     }
 
@@ -740,6 +747,36 @@ to receive their messages; dropping them"
             self.tick_ns = 0;
             self.physics_ns = 0;
             self.draw_ns = 0;
+        }
+    }
+
+    /// Resolve the physics fixed-frame to seek for rendered frame `frame`
+    /// WITHOUT mutating (shared by `rewind_scene_to` and `seek_scene_to`):
+    /// `Ok(None)` = no physics seek needed (no physics hook, or the frame's
+    /// end-state is already the live world), `Ok(Some(fixed))` = seek exactly
+    /// there, `Err` = that frame's physics has been pruned (refuse rather than
+    /// desync model and world). `frame` must be within the model history's
+    /// recorded range (its lockstep with `world_frame_history` guarantees the
+    /// seek below is in range).
+    fn physics_seek_target(&self, frame: u64) -> Result<Option<u64>, String> {
+        if !self.has_physics {
+            return Ok(None);
+        }
+        let want = *self.world_frame_history.seek(frame);
+        match self.physics_rt.seekable_range() {
+            None => Ok(None), // nothing stepped yet
+            // Compare against the newest RECORDED frame, not the live world
+            // frame: after a non-destructive scrub the world is parked mid-
+            // history, so `current_fixed_frame` isn't the timeline's end — using
+            // it would skip the truncate on the branch commit and panic on the
+            // next (non-consecutive) record.
+            Some((_, hi)) if want > hi => Ok(None), // end-state is the live append; no recorded frame to seek
+            Some((flo, hi)) if want >= flo && want <= hi => Ok(Some(want)),
+            _ => Err(format!(
+                "cannot seek to rendered frame {frame}: its physics frame {want} has \
+                 been pruned from the {}-frame world history",
+                DEFAULT_HISTORY_FRAMES
+            )),
         }
     }
 }
@@ -851,37 +888,14 @@ impl Game for MleGame {
             .recorded_range()
             .ok_or_else(|| "rewind: nothing recorded yet".to_string())?;
         let frame = target.clamp(lo, hi);
-
-        // Decide the physics seek WITHOUT mutating, so a refusal leaves the
-        // whole scene untouched (no half-rewound state).
-        enum PhysicsSeek {
-            None,          // no physics, or end-of-frame is already the live world
-            To(u64),       // exact seek to this fixed frame
-        }
-        let physics_seek = if self.has_physics {
-            let want = *self.world_frame_history.seek(frame);
-            match self.physics_rt.seekable_range() {
-                // `want` past the newest recorded frame == the current live
-                // world (no physics step happened after this rendered frame),
-                // so the world is already at end-of-frame — no seek needed.
-                _ if want >= self.physics_rt.current_fixed_frame() => PhysicsSeek::None,
-                Some((flo, hi)) if want >= flo && want <= hi => PhysicsSeek::To(want),
-                _ => {
-                    return Err(format!(
-                        "cannot rewind to rendered frame {frame}: its physics frame \
-                         {want} has been pruned from the {}-frame world history",
-                        DEFAULT_HISTORY_FRAMES
-                    ));
-                }
-            }
-        } else {
-            PhysicsSeek::None
-        };
+        // Resolve the physics seek WITHOUT mutating, so a refusal (pruned frame)
+        // leaves the whole scene untouched (no half-rewound state).
+        let physics_target = self.physics_seek_target(frame)?;
 
         // Feasible — commit. Model first, then the (already-validated) world.
         self.model = self.model_history.seek(frame).clone();
         let mut warnings = Vec::new();
-        if let PhysicsSeek::To(fixed) = physics_seek {
+        if let Some(fixed) = physics_target {
             warnings = self.physics_rt.rewind_to_frame(fixed);
             // Keep the cached status in step with the rewound world, so the next
             // frame records the branch's fixed frame (not the stale future one)
@@ -892,6 +906,7 @@ impl Game for MleGame {
         self.model_history.truncate_from(frame + 1);
         self.world_frame_history.truncate_from(frame + 1);
         self.rendered_frame = frame + 1;
+        self.scrub_pos = None;
         // No in-flight frame work should carry across the branch (matches the
         // reload discipline); between-frame callers have these empty already.
         self.deferred_queries.clear();
@@ -910,11 +925,50 @@ impl Game for MleGame {
     }
 
     fn current_scene_frame(&self) -> Option<u64> {
-        self.model_history.recorded_range().map(|(_, hi)| hi)
+        // While scrubbing, the "current" frame is where the handle sits, not the
+        // (untruncated) newest recorded frame.
+        self.scrub_pos
+            .or_else(|| self.model_history.recorded_range().map(|(_, hi)| hi))
+    }
+
+    fn scene_frame_range(&self) -> Option<(u64, u64)> {
+        self.model_history.recorded_range()
+    }
+
+    /// Non-destructive scrub (docs/time-travel.md T3): restore model + world to
+    /// `target` for DISPLAY without truncating, so the draggable bar can seek
+    /// back and forth. The branch is committed later, when play resumes from
+    /// `scrub_pos` (see `tick`). Exact-or-refused like `rewind_scene_to`.
+    fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let (lo, hi) = self
+            .model_history
+            .recorded_range()
+            .ok_or_else(|| "seek: nothing recorded yet".to_string())?;
+        let frame = target.clamp(lo, hi);
+        let physics_target = self.physics_seek_target(frame)?;
+        self.model = self.model_history.seek(frame).clone();
+        if let Some(fixed) = physics_target {
+            let warnings = self.physics_rt.seek_to_frame(fixed);
+            self.physics_status.0 = self.physics_rt.current_fixed_frame();
+            for warning in &warnings {
+                self.report_once(format!("[mle] {warning}"));
+            }
+        }
+        self.scrub_pos = Some(frame);
+        Ok(format!("scrubbed to rendered frame {frame}"))
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
         let started = Instant::now();
+        // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
+        // while the draggable bar is parked on an earlier frame, branch the
+        // timeline from there BEFORE this frame advances — so the discarded
+        // future is exactly everything after where the user let go.
+        if frame_time.dts > 0.0 {
+            if let Some(k) = self.scrub_pos.take() {
+                let _ = self.rewind_scene_to(k);
+            }
+        }
         // Subscriptions first, so `tick` sees a model that has absorbed this
         // frame's messages (the F# executor's ordering).
         self.pump_subscriptions(frame_time.tts as f64);
@@ -1673,6 +1727,65 @@ mod tests {
         // Both rings branched from the seek point; recording resumes at 4.
         assert_eq!(game.model_history.recorded_range(), Some((0, 3)));
         assert_eq!(game.rendered_frame, 4);
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The draggable scrubber (docs/time-travel.md T3): `seek_scene_to` is
+    /// NON-destructive — you can seek back and forth freely (the range stays
+    /// intact) — and the future is branched only when play RESUMES from the
+    /// scrubbed frame.
+    #[test]
+    fn scrub_is_non_destructive_then_branches_on_resume() {
+        fn n_of(v: &Value) -> f64 {
+            match v {
+                Value::Record(fields) => match &fields.iter().find(|(k, _)| k == "n").unwrap().1 {
+                    Value::Number(x) => *x,
+                    _ => panic!("n not a number"),
+                },
+                _ => panic!("not a record"),
+            }
+        }
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let dir = std::env::temp_dir().join(format!("mle-game-test-{}-scrub", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.mle"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
+             let physics = (m) => Physics.scene(0.0, -9.81, 0.0, [\n\
+             \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(0.0, 8.0, 0.0)])\n\
+             let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
+
+        let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
+        for _ in 0..10 {
+            game.tick(dt.clone());
+        }
+        assert_eq!(game.scene_frame_range(), Some((0, 9)));
+
+        // Scrub back, forward, back — the window never shrinks (non-destructive),
+        // and the model follows the handle.
+        game.seek_scene_to(3).expect("seek 3");
+        assert_eq!(n_of(&game.model), 4.0);
+        assert_eq!(game.current_scene_frame(), Some(3));
+        assert_eq!(game.scene_frame_range(), Some((0, 9)), "seek must not truncate");
+        game.seek_scene_to(7).expect("seek 7");
+        assert_eq!(n_of(&game.model), 8.0, "can scrub FORWARD again (non-destructive)");
+        assert_eq!(game.scene_frame_range(), Some((0, 9)));
+        game.seek_scene_to(2).expect("seek 2");
+        assert_eq!(n_of(&game.model), 3.0);
+
+        // Resume (dts > 0): the branch commits from frame 2 — the future after 2
+        // is discarded, and recording continues at frame 3.
+        game.tick(dt.clone());
+        assert_eq!(game.current_scene_frame(), Some(3), "no longer scrubbing");
+        assert_eq!(game.scene_frame_range(), Some((0, 3)), "future branched away");
+        assert_eq!(n_of(&game.model), 4.0, "model advanced from the scrubbed frame");
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);
