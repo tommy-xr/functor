@@ -199,6 +199,10 @@ pub enum EffectTree {
     /// The game observes the outcome through the physics reads, not a
     /// message.
     Physics(physics::PhysicsCommand),
+    /// A timeline control (docs/physics.md Phase 6): tagger-less, queued
+    /// for the recorder ([`physics::SteppedPhysics`]) like commands queue
+    /// for the world.
+    Timeline(physics::TimelineControl),
     /// A physics query (docs/physics.md Phase 4). Unlike `Now`/`Random`,
     /// queries are **deferred**: the pre-step drain holds them and the
     /// driver performs them right after the frame's physics step, so the
@@ -742,6 +746,11 @@ const PATHS: &[&str] = &[
     "Physics.teleport",
     "Physics.raycast",
     "Physics.events",
+    "Physics.pause",
+    "Physics.resume",
+    "Physics.stepOnce",
+    "Physics.rewindTo",
+    "Physics.timelineFrame",
 ];
 
 impl Host for FunctorHost {
@@ -1285,6 +1294,44 @@ the game dir",
                     other.kind_name()
                 )),
                 _ => usage("Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)"),
+            },
+            // Timeline-control EFFECTS (docs/physics.md Phase 6): pause /
+            // resume / stepOnce freeze and single-step the recorded physics
+            // drive; rewindTo(frame) seeks the timeline (resuming from there
+            // BRANCHES — the old future is discarded). Fire-and-forget.
+            "Physics.pause" | "Physics.resume" | "Physics.stepOnce" => match args.as_slice() {
+                [] => {
+                    let control = match path {
+                        "Physics.pause" => physics::TimelineControl::Pause,
+                        "Physics.resume" => physics::TimelineControl::Resume,
+                        _ => physics::TimelineControl::StepOnce,
+                    };
+                    Ok(host(MleEffect(EffectTree::Timeline(control))))
+                }
+                _ => usage(&format!("{path}()")),
+            },
+            "Physics.rewindTo" => match args.as_slice() {
+                [frame] => {
+                    // Clamping to the recorded range is the RECORDER's job, so
+                    // any finite frame is accepted here — in particular a
+                    // negative `timelineFrame() - 10.0` early on floors to 0,
+                    // rather than erroring before it reaches the clamp.
+                    let frame = num(frame, span)?.max(0.0) as u64;
+                    Ok(host(MleEffect(EffectTree::Timeline(
+                        physics::TimelineControl::RewindTo(frame),
+                    ))))
+                }
+                _ => usage("Physics.rewindTo(frame)"),
+            },
+            // The recorder's clock, for rewind math: the CURRENT fixed frame
+            // (reads like Physics.position — the live world, in-process).
+            "Physics.timelineFrame" => match args.as_slice() {
+                [] => {
+                    let frame = physics::with_world(physics::DEFAULT_WORLD, |w| w.frame())
+                        .unwrap_or(0);
+                    Ok(Value::Number(frame as f64))
+                }
+                _ => usage("Physics.timelineFrame()"),
             },
             // Collision-event SUB (docs/physics.md Phase 5): what
             // `subscriptions` returns (alone or in Sub.batch). The tagger
@@ -1897,7 +1944,7 @@ pub fn drain_effects(
 /// update-less games.)
 pub fn needs_update(tree: &EffectTree) -> bool {
     match tree {
-        EffectTree::None | EffectTree::Physics(_) => false,
+        EffectTree::None | EffectTree::Physics(_) | EffectTree::Timeline(_) => false,
         EffectTree::Now { .. } | EffectTree::Random { .. } | EffectTree::Raycast { .. } => true,
         EffectTree::Batch(items) => items.iter().any(needs_update),
     }
@@ -1981,6 +2028,24 @@ dropping the rest"
                     kind,
                     value: EffectValue::Text(tag),
                 });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::Timeline(control) => {
+                let kind = match control {
+                    physics::TimelineControl::Pause => "physics.pause",
+                    physics::TimelineControl::Resume => "physics.resume",
+                    physics::TimelineControl::StepOnce => "physics.stepOnce",
+                    physics::TimelineControl::RewindTo(_) => "physics.rewindTo",
+                };
+                let value = match control {
+                    physics::TimelineControl::RewindTo(f) => EffectValue::Number(f as f64),
+                    _ => EffectValue::Bool(true),
+                };
+                physics::queue_timeline_control(control);
+                log.push(EffectRecord { kind, value });
                 if log.len() > EFFECT_LOG_CAP {
                     log.remove(0);
                 }

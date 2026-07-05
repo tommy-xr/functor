@@ -174,6 +174,31 @@ where
         TimelineLog::keyframes(u64::MAX)
     }
 
+    /// Drop all recorded history at and after `frame` — the record-after-seek
+    /// truncation rewind-then-BRANCH needs (docs/physics.md, the culmination):
+    /// after `seek(f)`, `truncate_from(f)` makes `record(f, …)` legal again,
+    /// and the old future is gone. Keyframes at or after `frame` go too (a
+    /// re-recorded frame re-snapshots on its cadence).
+    pub fn truncate_from(&mut self, frame: Frame) {
+        let Some(next) = self.next_frame() else { return };
+        if frame >= next {
+            return;
+        }
+        assert!(
+            frame >= self.base,
+            "truncate_from({frame}) predates recorded history (base {})",
+            self.base
+        );
+        self.commands.truncate((frame - self.base) as usize);
+        self.keyframes.retain(|&k, _| k < frame);
+    }
+
+    /// The seekable range `(oldest, newest)` — `None` until something is
+    /// recorded. Prune moves the floor; truncate moves the ceiling.
+    pub fn recorded_range(&self) -> Option<(Frame, Frame)> {
+        self.next_frame().map(|next| (self.base, next - 1))
+    }
+
     fn next_frame(&self) -> Option<Frame> {
         (!self.commands.is_empty()).then(|| self.base + self.commands.len() as u64)
     }
