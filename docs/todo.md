@@ -90,6 +90,24 @@ shell spine (no F# surface).
 - [ ] Networked physics: grow `mpserver`/`mpclient` to client-owned balls +
       server-owned objects (state-sync, then prediction).
 
+## Time-travel tooling
+
+Design + phased roadmap: `docs/time-travel.md` (generalize #215's physics rewind
+into a generic, shell-owned whole-game scrubber — pause/scrub/rewind/replay/branch
+— plus the authoring experiences it unlocks). Builds on the physics
+`Simulatable`/`Timeline` seam; MLE-first. Overlaps the "Live variables / fast
+iteration" item below (T6, trajectory preview).
+
+- [ ] T1: model as a `Simulatable` (snapshot = `Value` clone, command = frame
+      inputs) + a unified frame clock seeking model and physics together; goldens.
+- [ ] T2: pointer/click input plumbing (real `RawInput` to egui; deliver mouse
+      buttons to the runtime) — unblocks the scrubber and interactive UI.
+- [ ] T3: shell-owned egui scrubber overlay; `~` toggle (native), default-on (web/VSCode).
+- [ ] T4: interactive MLE `View` (`Button { label, onClick }`, storable closure).
+- [ ] T5: forked timelines + ~50%-opacity render composite.
+- [ ] T6: trajectory preview (deterministic forward-sim + trail draw) — the
+      *Inventing on Principle* demo.
+
 ## Language (MLE)
 
 Design + phased roadmap: `docs/mle.md` (replace F#/Fable with a custom
