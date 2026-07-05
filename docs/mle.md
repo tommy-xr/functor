@@ -547,19 +547,22 @@ First-class `.mle` editor support, built on the `mle` crate's front-end
 
 Pull-based: port examples as MLE proves itself; no flag-day.
 
-- [ ] **E1.** Port `examples/hello` (glTF lineup, free-look camera) — the
-      real-world bar. *Verify:* golden parity.
-      *Progress (2026-07-04):* `Scene.model(path)` joined the prelude
-      (the protocol `Model` node, same game-dir-relative path as F#'s
-      `Model.file`), and `examples/mle-hello-gltf` ports the four-model
-      lineup, the lit-primitive row, the neon sphere, the lights, and
-      the exact WASD + mouse free-look math — **byte-identical
-      (0.0000%)** to the F# render over every portable pixel, both at
-      `--fixed-time 2.0` and after an identical debug-server input
-      drive. Full golden parity is still blocked on prelude gaps
-      (documented stand-ins in the game.mle header): heightmap
-      geometry, file-texture materials (lit/emissive), and the `ui`
-      overlay hook.
+- [x] **E1.** Port `examples/hello` (glTF lineup, free-look camera) — the
+      real-world bar. *Verify (done 2026-07-04):* `examples/mle-hello-gltf`
+      renders **full-frame parity** with F# hello at `--fixed-time 2.0`.
+      The prelude gained `Scene.model(path)` (E1a), then the three
+      remaining engine gaps (E1b): `Scene.heightmap([[h,…],…])` (the
+      ripple dunes), `Texture.file(path)` + `Scene.litTexture`/
+      `emissiveTexture` (the dirt ground + neon sign), and the optional
+      `ui(model)` entry point over `Ui.text`/`column`/`panel`/`topLeft`
+      (the HUD). At 1600×1200 the two renders differ by **0.09% of
+      pixels, ALL of them the HUD's frame-counter glyphs** (it counts
+      wall-clock ticks even under `--fixed-time`, so it differs between
+      any two runs — F#-vs-F# included); every scene pixel is identical
+      at tolerance 16, and the 0.44%-at-tol-0 is sub-visual f32/f64
+      heightmap-shading (documented in the game.mle header). Camera,
+      input math, model lineup, lit primitives, neon sphere, and lights
+      were already byte-identical from E1a.
 - [ ] **E2.** Port remaining examples, one PR each. *Verify:* per-example
       goldens + e2e.
 - [ ] **E3.** Delete the F# pipeline: Fable, dotnet tooling, `.fsproj`s,
