@@ -4102,6 +4102,133 @@ the game dir"
         );
     }
 
+    /// Headless client-lifecycle test for the `mle-mpclient` port (roadmap E2),
+    /// with no socket. Loads the SHIPPED `game.mle` and drives connect (auto-move
+    /// sent), a snapshot decoded into the world, WASD `input` producing sends,
+    /// and a disconnect. The snapshot fed in is the exact wire string the
+    /// `mle-mpserver` port broadcasts, so this doubles as a wire round-trip check
+    /// between the two ports.
+    #[test]
+    fn mpclient_decodes_snapshots_and_sends_input() {
+        let src = include_str!("../../../examples/mle-mpclient/game.mle");
+        let project = mle::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load mpclient: {}", e.render()));
+        let session = mle::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        fn call(session: &mle::Session, name: &str, args: Vec<Value>) -> Value {
+            let f = session.global(name).unwrap_or_else(|| panic!("no `{name}`"));
+            session
+                .apply(f, args, name, &mut FunctorHost)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.message))
+        }
+        fn field<'a>(v: &'a Value, name: &str) -> &'a Value {
+            match v {
+                Value::Record(fields) => fields
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v)
+                    .unwrap_or_else(|| panic!("no field `{name}`")),
+                other => panic!("not a record: {other}"),
+            }
+        }
+        fn num(v: &Value) -> f64 {
+            match v {
+                Value::Number(n) => *n,
+                other => panic!("not a number: {other}"),
+            }
+        }
+        // Drain whatever an entry point emitted into (conn, payload) Send pairs.
+        fn sends_of(session: &mle::Session, returned: Value) -> Vec<(u64, Vec<u8>)> {
+            crate::net::drain_conn_commands(); // clear
+            let (mut m, fx) = split_model_effect(returned);
+            if let Some(tree) = fx {
+                let mut log = EffectLog::new();
+                let _ = drain_effects(
+                    session,
+                    &mut m,
+                    tree,
+                    &mut FakeEffects::new(0.0, vec![]),
+                    &mut log,
+                    &mut |r| panic!("unexpected report: {r}"),
+                );
+            }
+            crate::net::drain_conn_commands()
+                .into_iter()
+                .filter_map(|c| match c {
+                    crate::net::ConnCommand::Send { conn, payload } => Some((conn, payload)),
+                    _ => None,
+                })
+                .collect()
+        }
+        let event = |kind, id: u64, text: &str| net_event_value(kind, id, text).to_mle();
+        let key = |k: &str| Value::String(std::rc::Rc::from(k));
+
+        // subscriptions declares an OUTBOUND connection (not a listener).
+        let subs = call(&session, "subscriptions", vec![session.global("init").unwrap()]);
+        let conns = net_conn_subs(&subs).expect("a Sub tree");
+        assert!(!conns[0].listen && conns[0].key == "ws://127.0.0.1:9001/play");
+
+        // The socket opens (id 5): store it and auto-move +x (Effect.send "1 0").
+        let connected = call(&session, "toMsg", vec![event(NetEventKind::Connected, 5, "")]);
+        let joined = call(&session, "update", vec![session.global("init").unwrap(), connected]);
+        let (model, _) = split_model_effect(joined.clone());
+        assert_eq!(field(&model, "conn").to_string(), "Online(5)");
+        assert_eq!(field(&model, "status").to_string(), "\"connected\"");
+        assert_eq!(sends_of(&session, joined), vec![(5, b"1 0".to_vec())]);
+
+        // WASD `input` (the trickiest hook: nested match, mixed bare/tuple arms)
+        // sends the mapped velocity on keydown, a stop on keyup, and NOTHING for
+        // a non-WASD key or before the socket opens.
+        assert_eq!(
+            sends_of(&session, call(&session, "input", vec![model.clone(), key("W"), Value::Bool(true)])),
+            vec![(5, b"0 1".to_vec())]
+        );
+        assert_eq!(
+            sends_of(&session, call(&session, "input", vec![model.clone(), key("A"), Value::Bool(true)])),
+            vec![(5, b"-1 0".to_vec())]
+        );
+        assert!(
+            sends_of(&session, call(&session, "input", vec![model.clone(), key("X"), Value::Bool(true)])).is_empty(),
+            "a non-WASD key sends nothing"
+        );
+        assert_eq!(
+            sends_of(&session, call(&session, "input", vec![model.clone(), key("W"), Value::Bool(false)])),
+            vec![(5, b"0 0".to_vec())],
+            "key release sends a stop"
+        );
+        assert!(
+            sends_of(&session, call(&session, "input", vec![session.global("init").unwrap(), key("W"), Value::Bool(true)])).is_empty(),
+            "input before connect sends nothing"
+        );
+
+        // A server snapshot (the exact wire string mle-mpserver broadcasts)
+        // decodes into the world, binding each pid to its own coordinates.
+        let msg = call(&session, "toMsg", vec![event(NetEventKind::Message, 5, "1,-200,100|0,-100,-180")]);
+        let (model, _) = split_model_effect(call(&session, "update", vec![model, msg]));
+        assert_eq!(field(&model, "status").to_string(), "\"in-world\"");
+        let world = match field(&model, "world") {
+            Value::List(items) => items.clone(),
+            other => panic!("world is not a list: {other}"),
+        };
+        assert_eq!(world.len(), 2, "two players decoded, got: {}", field(&model, "world"));
+        let at = |pid: f64| -> (f64, f64) {
+            let p = world
+                .iter()
+                .find(|p| num(field(p, "pid")) == pid)
+                .unwrap_or_else(|| panic!("no player pid {pid}"));
+            (num(field(p, "x")), num(field(p, "z")))
+        };
+        // *100 fixed-point undone, per-pid (a swapped decoder would fail here).
+        assert_eq!(at(0.0), (-1.0, -1.8));
+        assert_eq!(at(1.0), (-2.0, 1.0));
+
+        // Disconnect drops the connection and clears the id.
+        let dropped = call(&session, "toMsg", vec![event(NetEventKind::Disconnected, 5, "")]);
+        let (model, _) = split_model_effect(call(&session, "update", vec![model, dropped]));
+        assert_eq!(field(&model, "conn").to_string(), "Offline");
+        assert_eq!(field(&model, "status").to_string(), "\"disconnected\"");
+    }
+
     // Ui teaching errors: non-View children and unbranded anchors fail loud.
     #[test]
     fn ui_teaches_its_usage() {
