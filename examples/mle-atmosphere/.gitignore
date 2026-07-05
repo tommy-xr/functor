@@ -1,0 +1,2 @@
+# Skybox faces are fetched, not checked in (npm run fetch:assets).
+*.jpg

@@ -32,7 +32,9 @@ golden tests), see `CLAUDE.md` and `git log`.
 - [ ] Lighting: ambient, point, directional, ambient/positional fog, spot →
       shadow mapping. (Distance fog done 2026-07-04 — `Frame.withFog`,
       linear + exp; volumetric/positional fog still open.)
-- [ ] Cubemap / skybox (emissive lighting + reflection).
+- [ ] Cubemap / skybox (emissive lighting + reflection). (Skybox rendering
+      done 2026-07-04 — `Frame.withSkybox`, six-face cubemaps; cubemap
+      reflection/IBL still open.)
 - [ ] Camera middleware: FPSCamera, OrbitCamera.
 - [ ] In-built hands models.
 
