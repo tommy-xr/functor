@@ -810,6 +810,51 @@ impl Interp<'_> {
                 )),
                 _ => err("List.range(n) expects one number".to_string()),
             },
+            // Tabulate a rows×cols grid by calling `f(row, col)` for each cell
+            // (both 0-based) — `[[f(0,0), f(0,1), …], …]`. It is the engine's
+            // tight-loop form of a procedural heightmap
+            // (`Scene.heightmap(List.grid(rows, cols, height))`); vs a nested
+            // `List.map(List.range(…))` it skips allocating the two range lists
+            // and the outer-map closure each frame (both interpret `f` per cell,
+            // and both loop iteratively so eval depth never accumulates).
+            Builtin::ListGrid => match args.as_slice() {
+                [Value::Number(rows), Value::Number(cols), f]
+                    if is_function(f)
+                        && rows.is_finite()
+                        && cols.is_finite()
+                        && rows.fract() == 0.0
+                        && cols.fract() == 0.0
+                        && *rows >= 0.0
+                        && *cols >= 0.0
+                        // Bound TOTAL cells (not just each dim): a per-cell
+                        // closure call makes this the interpreter's heaviest
+                        // loop, so cap it like `List.range`.
+                        && *rows * *cols <= 1_000_000.0 =>
+                {
+                    let (rows, cols) = (*rows as usize, *cols as usize);
+                    let mut grid = Vec::with_capacity(rows);
+                    for r in 0..rows {
+                        let mut row = Vec::with_capacity(cols);
+                        for c in 0..cols {
+                            row.push(self.call(
+                                f.clone(),
+                                vec![Value::Number(r as f64), Value::Number(c as f64)],
+                                format!("{}[{r}][{c}]", builtin_name(b)),
+                                span,
+                                Some(builtin_name(b)),
+                            )?);
+                        }
+                        grid.push(Value::List(Rc::new(row)));
+                    }
+                    Ok(Value::List(Rc::new(grid)))
+                }
+                [Value::Number(_), Value::Number(_), f] if is_function(f) => err(
+                    "List.grid(rows, cols, fn) needs whole, non-negative counts with at \
+most 1000000 cells"
+                        .to_string(),
+                ),
+                _ => err("List.grid(rows, cols, fn) expects two numbers and a function".to_string()),
+            },
             Builtin::ListMaximum => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut best: Option<f64> = None;
@@ -1101,12 +1146,22 @@ fn element_label(b: Builtin, i: usize) -> String {
     format!("{}[{i}]", builtin_name(b))
 }
 
+/// Is `v` something `self.call` can apply? (Used to validate a callback
+/// argument up front, before a loop, rather than mid-iteration.)
+fn is_function(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. }
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Builtin {
     ListMap,
     ListFilter,
     ListFold,
     ListRange,
+    ListGrid,
     MathSin,
     MathCos,
     ListMaximum,
@@ -1128,6 +1183,7 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.filter" => Builtin::ListFilter,
         "List.fold" => Builtin::ListFold,
         "List.range" => Builtin::ListRange,
+        "List.grid" => Builtin::ListGrid,
         "List.maximum" => Builtin::ListMaximum,
         "Text.concat" => Builtin::TextConcat,
         "Text.fromFloat" => Builtin::TextFromFloat,
@@ -1150,6 +1206,7 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListFilter => "List.filter",
         Builtin::ListFold => "List.fold",
         Builtin::ListRange => "List.range",
+        Builtin::ListGrid => "List.grid",
         Builtin::ListMaximum => "List.maximum",
         Builtin::TextConcat => "Text.concat",
         Builtin::TextFromFloat => "Text.fromFloat",

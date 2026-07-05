@@ -361,6 +361,11 @@ pub fn builtin_signature(b: Builtin) -> Type {
         ),
         // List.range : (Float) => List<Float>
         Builtin::ListRange => func(vec![Float], List(Box::new(Float))),
+        // List.grid : (Float, Float, (Float, Float) => 'a) => List<List<'a>>
+        Builtin::ListGrid => func(
+            vec![Float, Float, func(vec![Float, Float], Var(0))],
+            List(Box::new(List(Box::new(Var(0))))),
+        ),
         // List.maximum : (List<Float>) => Float
         Builtin::ListMaximum => func(vec![List(Box::new(Float))], Float),
         // Text.concat : (String, String) => String

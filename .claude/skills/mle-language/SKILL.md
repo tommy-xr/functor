@@ -221,6 +221,9 @@ let grab = (s) =>
 
 `List.map(list, fn)` · `List.filter(list, fn)` · `List.fold(list, fn, init)`
 (callback is `(acc, x) => …`) · `List.range(n)` (`[0 … n-1]`) ·
+`List.grid(rows, cols, fn)` (→ `List<List<a>>`; calls `fn(row, col)`, both
+0-based, per cell — the engine-loop form of a procedural heightmap, e.g.
+`Scene.heightmap(List.grid(r, c, height))`) ·
 `List.maximum(list)` · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
 `Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
 `%d` shape) · `Text.toBullets(list)` · `Text.split(s, sep)` (→ `List<String>`;
@@ -245,7 +248,15 @@ scene |> Scene.emissive(r, g, b)                           // unlit glow
 scene |> Scene.translate(x, y, z)
 scene |> Scene.rotateX(angle) / rotateY / rotateZ          // Angle VALUES only:
 Angle.degrees(60.0) / Angle.radians(1.57)                  //   never bare numbers
-scene |> Scene.scale(k)
+scene |> Scene.scale(k)                                    // uniform
+scene |> Scene.scaleXYZ(x, y, z)                            // non-uniform (F#
+                                                           //   scaleX/Y/Z): a
+                                                           //   wide backdrop
+                                                           //   quad, or a
+                                                           //   heightmap sized
+                                                           //   in XZ with Y
+                                                           //   left at author
+                                                           //   scale
 Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
 Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)           // all three: Angles
 Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)

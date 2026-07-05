@@ -244,6 +244,34 @@ fn text_join_rejects_non_strings() {
 }
 
 #[test]
+fn list_grid_tabulates_a_2d_grid() {
+    // f(row, col) over a 2x3 grid, both 0-based (the procedural-heightmap form).
+    assert_eq!(
+        main_result("let main = () => List.grid(2.0, 3.0, (r, c) => r * 10.0 + c)"),
+        "[[0, 1, 2], [10, 11, 12]]"
+    );
+    // A zero dimension yields an empty structure (no closure calls).
+    assert_eq!(
+        main_result("let main = () => List.grid(0.0, 3.0, (r, c) => r)"),
+        "[]"
+    );
+}
+
+#[test]
+fn list_grid_rejects_non_integer_or_negative_dims() {
+    for src in [
+        "let main = () => List.grid(2.5, 3.0, (r, c) => r)",
+        "let main = () => List.grid(-1.0, 3.0, (r, c) => r)",
+    ] {
+        let (message, _, _) = run_err(src);
+        assert!(
+            message.contains("whole, non-negative counts"),
+            "got: {message}"
+        );
+    }
+}
+
+#[test]
 fn error_infinite_recursion_is_a_clean_error() {
     let (message, _, _) = run_err(
         "let spin = (n) => spin(n + 1.0)\n\
