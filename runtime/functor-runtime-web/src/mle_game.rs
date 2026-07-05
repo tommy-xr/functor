@@ -30,7 +30,7 @@ use functor_runtime_common::mle_prelude::{
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
-use functor_runtime_common::timetravel::{History, DEFAULT_HISTORY_FRAMES};
+use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 use mle::{Session, Value};
@@ -88,13 +88,10 @@ pub struct MleWebGame {
     physics_rt: physics::SteppedPhysics,
     /// Latest recorder status for the overlay: (fixed frame, paused, history).
     physics_status: (u64, bool, u64),
-    /// The model half of the time-travel recorder (docs/time-travel.md T1) —
-    /// one snapshot of the settled `model` per rendered frame into a bounded
-    /// ring, keyed by the RENDERED-frame clock (`rendered_frame`). The web
-    /// sibling of the desktop producer's field; recording only for now.
-    model_history: History<Value>,
-    /// The rendered-frame index the next `model_history` snapshot records at.
-    rendered_frame: u64,
+    /// The coupled time-travel recorder (docs/time-travel.md T1–T3), shared with
+    /// the desktop producer (one tested impl): records the settled `model` +
+    /// physics fixed-frame each rendered frame and seeks/rewinds them together.
+    recorder: SceneRecorder,
     /// Declared connection keys (`Sub.connect`/`Sub.listen`), reconciled each
     /// frame — see the desktop producer.
     live_conn_keys: std::collections::HashSet<String>,
@@ -261,8 +258,7 @@ impl MleWebGame {
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
-            model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
-            rendered_frame: 0,
+            recorder: SceneRecorder::new(),
             live_conn_keys: std::collections::HashSet::new(),
             has_physics: loaded.has_physics,
             has_soundscape: loaded.has_soundscape,
@@ -316,9 +312,9 @@ impl MleWebGame {
         clear_audio_completions();
         // Reload is a model-history BOUNDARY (see the desktop producer): the
         // retained snapshots can hold old-module closures, so they can't cross
-        // a reload; `rendered_frame` stays monotonic so recording resumes
-        // consecutively.
-        self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
+        // a reload; the recorder keeps its rendered-frame clock monotonic so
+        // recording resumes consecutively.
+        self.recorder.reset_on_reload();
         self.has_ui = loaded.has_ui;
         if !self.has_ui {
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
@@ -632,7 +628,53 @@ impl GameProducer for MleWebGame {
         Ok(status)
     }
 
+    /// Coupled scene rewind — delegated to the shared [`SceneRecorder`]
+    /// (docs/time-travel.md T1), identical to the desktop producer.
+    fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let result = self.recorder.rewind_scene_to(
+            target,
+            &mut self.model,
+            &mut self.physics_rt,
+            &mut self.physics_status,
+            self.has_physics,
+        );
+        if result.is_ok() {
+            self.deferred_queries.clear();
+            self.pending_events.clear();
+        }
+        result
+    }
+
+    fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
+        self.recorder.seek_scene_to(
+            target,
+            &mut self.model,
+            &mut self.physics_rt,
+            &mut self.physics_status,
+            self.has_physics,
+        )
+    }
+
+    fn current_scene_frame(&self) -> Option<u64> {
+        self.recorder.current_scene_frame()
+    }
+
+    fn scene_frame_range(&self) -> Option<(u64, u64)> {
+        self.recorder.scene_frame_range()
+    }
+
     fn tick(&mut self, frame_time: FrameTime) {
+        // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
+        // while the scrubber is parked on an earlier frame, branch the timeline
+        // from there BEFORE this frame advances (the desktop producer's rule).
+        if frame_time.dts > 0.0 {
+            self.recorder.commit_scrub_if_resuming(
+                &mut self.model,
+                &mut self.physics_rt,
+                &mut self.physics_status,
+                self.has_physics,
+            );
+        }
         // Subscriptions first, so `tick` sees a model that has absorbed this
         // frame's messages (the F# executor's ordering).
         self.pump_subscriptions(frame_time.tts as f64);
@@ -704,14 +746,12 @@ impl GameProducer for MleWebGame {
                 Err(err) => self.frame_error("subscriptions", &err),
             }
         }
-        // Record the settled model of this rendered frame (docs/time-travel.md
-        // T1), after all of this frame's effects have folded into `self.model`.
-        // Skip a paused frame (`dts == 0`) so it doesn't pile up frozen
-        // duplicates (the desktop producer's rule; web has no clock pin today,
-        // so this never fires, but keeps the two shells in step).
+        // Record the settled model + physics fixed-frame of this rendered frame
+        // (docs/time-travel.md T1), after all of this frame's effects have
+        // folded into `self.model`. Skip a paused frame (`dts == 0`) so it
+        // doesn't pile up frozen duplicates (the desktop producer's rule).
         if frame_time.dts > 0.0 {
-            self.model_history.record(self.rendered_frame, &self.model);
-            self.rendered_frame += 1;
+            self.recorder.record(&self.model, self.physics_status.0);
         }
     }
 

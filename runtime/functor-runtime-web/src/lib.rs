@@ -1049,18 +1049,69 @@ async fn run_async() -> Result<(), JsValue> {
         // a short warm-up so the page is static for screenshotting.
         let mut sized = false;
 
+        // The time-travel scrubber (docs/time-travel.md T3): ALWAYS VISIBLE in
+        // the web/vscode preview (it's the dev surface). Its own egui context.
+        let mut scrubber = functor_runtime_common::ui::Scrubber::new(gl.clone());
+        // Pause/step control (the web analogue of the desktop runner's
+        // held_time/pending_step): when `held_time` is `Some`, the clock is
+        // pinned (dts = 0) so a scrubbed frame stays put; a one-shot step
+        // carries dts > 0.
+        let mut held_time: Option<f32> = None;
+        let mut pending_step: Option<f32> = None;
+        // Pointer state written by the DOM mouse listeners below, read by the
+        // frame loop: (cursor x, y in CSS px, primary-button down).
+        let pointer = Rc::new(std::cell::RefCell::new((0.0f32, 0.0f32, false)));
+        {
+            use wasm_bindgen::JsCast;
+            let p = pointer.clone();
+            let mm = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MouseEvent| {
+                let mut p = p.borrow_mut();
+                p.0 = e.offset_x() as f32;
+                p.1 = e.offset_y() as f32;
+            });
+            let _ = canvas.add_event_listener_with_callback("mousemove", mm.as_ref().unchecked_ref());
+            mm.forget();
+            let p = pointer.clone();
+            let md = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MouseEvent| {
+                if e.button() == 0 {
+                    p.borrow_mut().2 = true;
+                }
+            });
+            let _ = canvas.add_event_listener_with_callback("mousedown", md.as_ref().unchecked_ref());
+            md.forget();
+            // Release on the window so a mouse-up outside the canvas still counts.
+            let p = pointer.clone();
+            let mu = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MouseEvent| {
+                if e.button() == 0 {
+                    p.borrow_mut().2 = false;
+                }
+            });
+            let _ = window.add_event_listener_with_callback("mouseup", mu.as_ref().unchecked_ref());
+            mu.forget();
+        }
+
         *g.borrow_mut() = Some(Closure::new(move || {
             // The frame's exclusive borrow of the shared producer. Cannot
             // collide with `mle_set_source`: JS is single-threaded, and
             // message handlers only run between rAF callbacks.
             let mut game = game.borrow_mut();
             let now = performance.now() as f32;
-            // Pin the frame time when `?fixed-time` is set (deterministic capture).
+            // Pin the frame time when `?fixed-time` is set (deterministic
+            // capture), or when the scrubber has paused the clock (`held_time`).
+            // A queued step advances exactly one frame, then re-pins.
             let frame_time = match fixed_time {
                 Some(t) => FrameTime { dts: 0.0, tts: t },
-                None => FrameTime {
-                    dts: (now - last_time) / 1000.0,
-                    tts: (now - initial_time) / 1000.0,
+                None => match (held_time, pending_step.take()) {
+                    (Some(t), Some(step)) => {
+                        let nt = t + step;
+                        held_time = Some(nt);
+                        FrameTime { dts: step, tts: nt }
+                    }
+                    (Some(t), None) => FrameTime { dts: 0.0, tts: t },
+                    (None, _) => FrameTime {
+                        dts: (now - last_time) / 1000.0,
+                        tts: (now - initial_time) / 1000.0,
+                    },
                 },
             };
 
@@ -1130,7 +1181,46 @@ async fn run_async() -> Result<(), JsValue> {
             // text overlay on top of the frame (HiDPI-aware via the device ratio).
             let view: functor_runtime_common::ui::View = game.ui();
             let dpr = web_sys::window().unwrap().device_pixel_ratio() as f32;
-            text_overlay.draw_view(canvas.width(), canvas.height(), dpr.max(1.0), &view);
+            let dpr = dpr.max(1.0);
+            text_overlay.draw_view(canvas.width(), canvas.height(), dpr, &view);
+
+            // The time-travel scrubber, always visible over the frame. egui
+            // lays out in points (canvas px / dpr = CSS px), so the CSS-pixel
+            // cursor is scaled to device px to line up (the desktop HiDPI fix).
+            let (px, py, down) = *pointer.borrow();
+            let scrubber_out = scrubber.draw(
+                canvas.width(),
+                canvas.height(),
+                dpr,
+                functor_runtime_common::ui::PointerState {
+                    pos: Some((px * dpr, py * dpr)),
+                    primary_down: down,
+                },
+                functor_runtime_common::ui::ScrubberState {
+                    frame: game.current_scene_frame().unwrap_or(0),
+                    range: game.scene_frame_range(),
+                    paused: held_time.is_some(),
+                },
+            );
+            match scrubber_out.action {
+                Some(functor_runtime_common::ui::ScrubberAction::TogglePause) => {
+                    held_time = if held_time.is_some() {
+                        None
+                    } else {
+                        Some(frame_time.tts)
+                    };
+                    pending_step = None;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SeekTo(f)) => {
+                    let _ = game.seek_scene_to(f);
+                    held_time = Some(frame_time.tts); // park on the scrubbed frame
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::Step) => {
+                    held_time = Some(frame_time.tts);
+                    pending_step = Some(1.0 / 60.0);
+                }
+                None => {}
+            }
 
             // Schedule the next frame. In deterministic mode (?fixed-time, the
             // golden) render a short warm-up (shader compile, first-frame
