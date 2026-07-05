@@ -1,0 +1,540 @@
+Program {
+    items: [
+        Let(
+            LetDecl {
+                name: "sum",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "xs",
+                                ty: Some(
+                                    TypeName {
+                                        name: "List",
+                                        args: [
+                                            TypeName {
+                                                name: "Float",
+                                                args: [],
+                                                span: 217..222,
+                                            },
+                                        ],
+                                        span: 212..223,
+                                    },
+                                ),
+                                span: 208..223,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 226..231,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "xs",
+                                        ],
+                                    ),
+                                    span: 243..245,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: List {
+                                                items: [],
+                                                tail: None,
+                                            },
+                                            span: 255..257,
+                                        },
+                                        body: Expr {
+                                            kind: Number(
+                                                0.0,
+                                            ),
+                                            span: 261..264,
+                                        },
+                                        span: 253..264,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: List {
+                                                items: [
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "head",
+                                                        ),
+                                                        span: 270..274,
+                                                    },
+                                                ],
+                                                tail: Some(
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "rest",
+                                                        ),
+                                                        span: 278..282,
+                                                    },
+                                                ),
+                                            },
+                                            span: 269..283,
+                                        },
+                                        body: Expr {
+                                            kind: Binary {
+                                                op: Add,
+                                                lhs: Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "head",
+                                                        ],
+                                                    ),
+                                                    span: 287..291,
+                                                },
+                                                rhs: Expr {
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "sum",
+                                                                ],
+                                                            ),
+                                                            span: 294..297,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                kind: Ident(
+                                                                    [
+                                                                        "rest",
+                                                                    ],
+                                                                ),
+                                                                span: 298..302,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 294..303,
+                                                },
+                                            },
+                                            span: 287..303,
+                                        },
+                                        span: 267..303,
+                                    },
+                                ],
+                            },
+                            span: 237..303,
+                        },
+                    },
+                    span: 207..303,
+                },
+                span: 197..303,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "firstOr",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "xs",
+                                ty: Some(
+                                    TypeName {
+                                        name: "List",
+                                        args: [
+                                            TypeName {
+                                                name: "Float",
+                                                args: [],
+                                                span: 329..334,
+                                            },
+                                        ],
+                                        span: 324..335,
+                                    },
+                                ),
+                                span: 320..335,
+                            },
+                            Param {
+                                name: "fallback",
+                                ty: Some(
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 347..352,
+                                    },
+                                ),
+                                span: 337..352,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "Float",
+                                args: [],
+                                span: 355..360,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "xs",
+                                        ],
+                                    ),
+                                    span: 372..374,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: List {
+                                                items: [
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "x",
+                                                        ),
+                                                        span: 385..386,
+                                                    },
+                                                ],
+                                                tail: Some(
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "rest",
+                                                        ),
+                                                        span: 390..394,
+                                                    },
+                                                ),
+                                            },
+                                            span: 384..395,
+                                        },
+                                        body: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "x",
+                                                ],
+                                            ),
+                                            span: 399..400,
+                                        },
+                                        span: 382..400,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: List {
+                                                items: [],
+                                                tail: None,
+                                            },
+                                            span: 405..407,
+                                        },
+                                        body: Expr {
+                                            kind: Ident(
+                                                [
+                                                    "fallback",
+                                                ],
+                                            ),
+                                            span: 411..419,
+                                        },
+                                        span: 403..419,
+                                    },
+                                ],
+                            },
+                            span: 366..419,
+                        },
+                    },
+                    span: 319..419,
+                },
+                span: 305..419,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "pair",
+                value: Expr {
+                    kind: Lambda {
+                        params: [
+                            Param {
+                                name: "xs",
+                                ty: Some(
+                                    TypeName {
+                                        name: "List",
+                                        args: [
+                                            TypeName {
+                                                name: "Float",
+                                                args: [],
+                                                span: 442..447,
+                                            },
+                                        ],
+                                        span: 437..448,
+                                    },
+                                ),
+                                span: 433..448,
+                            },
+                        ],
+                        ret: Some(
+                            TypeName {
+                                name: "*",
+                                args: [
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 451..456,
+                                    },
+                                    TypeName {
+                                        name: "Float",
+                                        args: [],
+                                        span: 459..464,
+                                    },
+                                ],
+                                span: 451..464,
+                            },
+                        ),
+                        body: Expr {
+                            kind: Match {
+                                scrutinee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "xs",
+                                        ],
+                                    ),
+                                    span: 476..478,
+                                },
+                                arms: [
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: List {
+                                                items: [
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "a",
+                                                        ),
+                                                        span: 489..490,
+                                                    },
+                                                    Pattern {
+                                                        kind: Var(
+                                                            "b",
+                                                        ),
+                                                        span: 492..493,
+                                                    },
+                                                ],
+                                                tail: None,
+                                            },
+                                            span: 488..494,
+                                        },
+                                        body: Expr {
+                                            kind: Tuple(
+                                                [
+                                                    Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "a",
+                                                            ],
+                                                        ),
+                                                        span: 499..500,
+                                                    },
+                                                    Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "b",
+                                                            ],
+                                                        ),
+                                                        span: 502..503,
+                                                    },
+                                                ],
+                                            ),
+                                            span: 498..504,
+                                        },
+                                        span: 486..504,
+                                    },
+                                    MatchArm {
+                                        pattern: Pattern {
+                                            kind: Wildcard,
+                                            span: 509..510,
+                                        },
+                                        body: Expr {
+                                            kind: Tuple(
+                                                [
+                                                    Expr {
+                                                        kind: Number(
+                                                            0.0,
+                                                        ),
+                                                        span: 515..518,
+                                                    },
+                                                    Expr {
+                                                        kind: Number(
+                                                            0.0,
+                                                        ),
+                                                        span: 520..523,
+                                                    },
+                                                ],
+                                            ),
+                                            span: 514..524,
+                                        },
+                                        span: 507..524,
+                                    },
+                                ],
+                            },
+                            span: 470..524,
+                        },
+                    },
+                    span: 432..524,
+                },
+                span: 421..524,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "main",
+                value: Expr {
+                    kind: Lambda {
+                        params: [],
+                        ret: None,
+                        body: Expr {
+                            kind: Let {
+                                mutable: false,
+                                name: "xs",
+                                value: Expr {
+                                    kind: List(
+                                        [
+                                            Expr {
+                                                kind: Number(
+                                                    1.0,
+                                                ),
+                                                span: 555..558,
+                                            },
+                                            Expr {
+                                                kind: Number(
+                                                    2.0,
+                                                ),
+                                                span: 560..563,
+                                            },
+                                            Expr {
+                                                kind: Number(
+                                                    3.0,
+                                                ),
+                                                span: 565..568,
+                                            },
+                                        ],
+                                    ),
+                                    span: 554..569,
+                                },
+                                body: Expr {
+                                    kind: Tuple(
+                                        [
+                                            Expr {
+                                                kind: Call {
+                                                    callee: Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "sum",
+                                                            ],
+                                                        ),
+                                                        span: 576..579,
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "xs",
+                                                                ],
+                                                            ),
+                                                            span: 580..582,
+                                                        },
+                                                    ],
+                                                },
+                                                span: 576..583,
+                                            },
+                                            Expr {
+                                                kind: Call {
+                                                    callee: Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "firstOr",
+                                                            ],
+                                                        ),
+                                                        span: 585..592,
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "xs",
+                                                                ],
+                                                            ),
+                                                            span: 593..595,
+                                                        },
+                                                        Expr {
+                                                            kind: Number(
+                                                                0.0,
+                                                            ),
+                                                            span: 597..600,
+                                                        },
+                                                    ],
+                                                },
+                                                span: 585..601,
+                                            },
+                                            Expr {
+                                                kind: Call {
+                                                    callee: Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "pair",
+                                                            ],
+                                                        ),
+                                                        span: 603..607,
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            kind: List(
+                                                                [
+                                                                    Expr {
+                                                                        kind: Number(
+                                                                            4.0,
+                                                                        ),
+                                                                        span: 609..612,
+                                                                    },
+                                                                    Expr {
+                                                                        kind: Number(
+                                                                            5.0,
+                                                                        ),
+                                                                        span: 614..617,
+                                                                    },
+                                                                ],
+                                                            ),
+                                                            span: 608..618,
+                                                        },
+                                                    ],
+                                                },
+                                                span: 603..619,
+                                            },
+                                            Expr {
+                                                kind: ListCons {
+                                                    items: [
+                                                        Expr {
+                                                            kind: Number(
+                                                                0.0,
+                                                            ),
+                                                            span: 622..625,
+                                                        },
+                                                    ],
+                                                    tail: Expr {
+                                                        kind: Ident(
+                                                            [
+                                                                "xs",
+                                                            ],
+                                                        ),
+                                                        span: 629..631,
+                                                    },
+                                                },
+                                                span: 621..632,
+                                            },
+                                        ],
+                                    ),
+                                    span: 575..633,
+                                },
+                            },
+                            span: 545..633,
+                        },
+                    },
+                    span: 537..633,
+                },
+                span: 526..633,
+            },
+        ),
+    ],
+}

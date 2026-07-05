@@ -68,6 +68,11 @@ fn golden_tuples() {
     check_golden("tuples");
 }
 
+#[test]
+fn golden_lists() {
+    check_golden("lists");
+}
+
 /// Same source must always produce byte-identical IR (stable IDs are
 /// sequential, never random or time-based).
 #[test]

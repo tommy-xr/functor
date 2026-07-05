@@ -127,6 +127,13 @@ pub enum ExprKind {
     },
     /// `[1.0, 2.0, 3.0]`
     List(Vec<Expr>),
+    /// `[a, b, ..tail]` — a list built by prepending `items` onto the list
+    /// `tail` (the cons/spread form; `..tail` must be last). Plain
+    /// `[a, b]` stays [`Self::List`].
+    ListCons {
+        items: Vec<Expr>,
+        tail: Box<Expr>,
+    },
     /// `(1.0, "a")` — at least two elements.
     Tuple(Vec<Expr>),
     /// Reference to an enclosing `let mut` slot (never crosses a lambda
@@ -224,6 +231,14 @@ pub enum PatternKind {
     },
     /// `(x, _)` — sub-patterns are bindings or `_`; arity must match.
     Tuple(Vec<Pattern>),
+    /// `[]` (empty), `[a, b]` (exact length), `[head, ..rest]` (at least
+    /// `items.len()`, `rest` binds the remainder as a list). Element and
+    /// tail sub-patterns are variable bindings or `_` only (like tuple/ctor
+    /// patterns). `tail: None` means an exact-length match.
+    List {
+        items: Vec<Pattern>,
+        tail: Option<Box<Pattern>>,
+    },
     Number(f64),
     Bool(bool),
     String(String),

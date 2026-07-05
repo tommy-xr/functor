@@ -325,6 +325,12 @@ fn collect(expr: &Expr, def: &str, path: &mut Vec<String>, index: &mut ModuleInd
                 seg(item, format!("[{i}]"), path, index);
             }
         }
+        ExprKind::ListCons { items, tail } => {
+            for (i, item) in items.iter().enumerate() {
+                seg(item, format!("[{i}]"), path, index);
+            }
+            seg(tail, "..tail".to_string(), path, index);
+        }
         ExprKind::Tuple(items) => {
             for (i, item) in items.iter().enumerate() {
                 seg(item, format!("({i})"), path, index);
@@ -416,6 +422,14 @@ fn pattern_binders(pattern: &Pattern, f: &mut impl FnMut(BindingId, &str)) {
                 pattern_binders(arg, f);
             }
         }
+        PatternKind::List { items, tail } => {
+            for arg in items {
+                pattern_binders(arg, f);
+            }
+            if let Some(tail) = tail {
+                pattern_binders(tail, f);
+            }
+        }
         PatternKind::Wildcard
         | PatternKind::Number(_)
         | PatternKind::Bool(_)
@@ -449,6 +463,12 @@ pub(crate) fn each_child<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             for item in items {
                 f(item);
             }
+        }
+        ExprKind::ListCons { items, tail } => {
+            for item in items {
+                f(item);
+            }
+            f(tail);
         }
         ExprKind::Tuple(items) => {
             for item in items {

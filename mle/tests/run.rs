@@ -110,6 +110,11 @@ fn golden_run_tuples() {
     check_golden("tuples", "run");
 }
 
+#[test]
+fn golden_run_lists() {
+    check_golden("lists", "run");
+}
+
 // One trace golden pins the full enter/exit format; the other examples'
 // traces exercise no additional formatting.
 #[test]
@@ -682,4 +687,46 @@ fn generic_adts_run_type_erased() {
         ),
         "(1, \"s\", 9)"
     );
+}
+
+// --- List patterns + cons ---
+
+/// Cons builds a list by prepending; list patterns destructure by length,
+/// and `[h, ..t]` binds the remainder.
+#[test]
+fn list_cons_and_patterns() {
+    assert_eq!(
+        main_result("let main = () => [0.0, ..[1.0, 2.0]]"),
+        "[0, 1, 2]"
+    );
+    assert_eq!(
+        main_result(
+            "let head = (xs) => match xs with | [] => 0.0 | [h, ..t] => h\n\
+             let main = () => (head([9.0, 8.0]), head([]))"
+        ),
+        "(9, 0)"
+    );
+    // Exact-length match: [a, b] matches only a 2-list.
+    assert_eq!(
+        main_result(
+            "let f = (xs) => match xs with | [a, b] => a + b | _ => 0.0\n\
+             let main = () => (f([3.0, 4.0]), f([3.0]), f([3.0, 4.0, 5.0]))"
+        ),
+        "(7, 0, 0)"
+    );
+    // The tail binds a list; `[..all]` matches anything.
+    assert_eq!(
+        main_result(
+            "let rest = (xs) => match xs with | [_, ..t] => t | [] => []\n\
+             let main = () => rest([1.0, 2.0, 3.0])"
+        ),
+        "[2, 3]"
+    );
+}
+
+/// `..` spreads a list; a non-list tail is a spanned runtime error.
+#[test]
+fn cons_tail_must_be_a_list() {
+    let (message, _, _) = run_err("let main = () => [1.0, ..2.0]");
+    assert_eq!(message, "`..` spreads a list, but the tail is a number");
 }

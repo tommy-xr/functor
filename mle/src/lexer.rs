@@ -29,6 +29,7 @@ pub enum TokenKind {
     ColonEq,
     Semi,
     Dot,
+    DotDot,
     Eq,
     EqEq,
     FatArrow,
@@ -75,6 +76,7 @@ pub fn describe(kind: &TokenKind) -> String {
         ColonEq => "`:=`".to_string(),
         Semi => "`;`".to_string(),
         Dot => "`.`".to_string(),
+        DotDot => "`..`".to_string(),
         Eq => "`=`".to_string(),
         EqEq => "`==`".to_string(),
         FatArrow => "`=>`".to_string(),
@@ -155,10 +157,16 @@ pub fn lex(src: &str, base: usize) -> Result<Vec<Token>, ParseError> {
                 i += 1;
                 TokenKind::Semi
             }
-            b'.' => {
-                i += 1;
-                TokenKind::Dot
-            }
+            b'.' => match bytes.get(i + 1) {
+                Some(b'.') => {
+                    i += 2;
+                    TokenKind::DotDot
+                }
+                _ => {
+                    i += 1;
+                    TokenKind::Dot
+                }
+            },
             b'+' => {
                 i += 1;
                 TokenKind::Plus

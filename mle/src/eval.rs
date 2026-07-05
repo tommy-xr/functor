@@ -359,6 +359,25 @@ impl Interp<'_> {
                 }
                 Ok(Value::List(Rc::new(out)))
             }
+            ExprKind::ListCons { items, tail } => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(self.eval(item, env)?);
+                }
+                match self.eval(tail, env)? {
+                    Value::List(rest) => {
+                        out.extend(rest.iter().cloned());
+                        Ok(Value::List(Rc::new(out)))
+                    }
+                    other => Err(RunError {
+                        message: format!(
+                            "`..` spreads a list, but the tail is {}",
+                            other.kind_name()
+                        ),
+                        span: tail.span,
+                    }),
+                }
+            }
             ExprKind::RecordUpdate { base, fields } => {
                 let base_value = self.eval(base, env)?;
                 let Value::Record(base_fields) = &base_value else {
@@ -910,6 +929,33 @@ fn match_pattern(pattern: &Pattern, value: &Value, vars: &mut Vec<(BindingId, Va
                         .iter()
                         .zip(vals.iter())
                         .all(|(p, v)| match_pattern(p, v, vars))
+            }
+            _ => false,
+        },
+        // `[a, b]` needs an exact-length list; `[h, ..t]` needs at least
+        // `items.len()` and binds `t` to the remainder.
+        PatternKind::List { items, tail } => match value {
+            Value::List(vals) => {
+                let long_enough = match tail {
+                    Some(_) => vals.len() >= items.len(),
+                    None => vals.len() == items.len(),
+                };
+                if !long_enough {
+                    return false;
+                }
+                if !items
+                    .iter()
+                    .zip(vals.iter())
+                    .all(|(p, v)| match_pattern(p, v, vars))
+                {
+                    return false;
+                }
+                if let Some(tail) = tail {
+                    let rest = Value::List(Rc::new(vals[items.len()..].to_vec()));
+                    match_pattern(tail, &rest, vars)
+                } else {
+                    true
+                }
             }
             _ => false,
         },

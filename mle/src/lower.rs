@@ -621,6 +621,16 @@ impl Lowerer<'_> {
                 }
                 ExprKind::List(lowered)
             }
+            ast::ExprKind::ListCons { items, tail } => {
+                let mut lowered = Vec::new();
+                for item in items {
+                    lowered.push(self.expr(item)?);
+                }
+                ExprKind::ListCons {
+                    items: lowered,
+                    tail: Box::new(self.expr(*tail)?),
+                }
+            }
             ast::ExprKind::Tuple(items) => {
                 let mut lowered = Vec::new();
                 for item in items {
@@ -884,6 +894,20 @@ impl Lowerer<'_> {
                     lowered.push(self.pattern(arg, vars)?);
                 }
                 PatternKind::Tuple(lowered)
+            }
+            ast::PatternKind::List { items, tail } => {
+                let mut lowered = Vec::new();
+                for item in items {
+                    lowered.push(self.pattern(item, vars)?);
+                }
+                let tail = match tail {
+                    Some(t) => Some(Box::new(self.pattern(*t, vars)?)),
+                    None => None,
+                };
+                PatternKind::List {
+                    items: lowered,
+                    tail,
+                }
             }
             ast::PatternKind::Number(n) => PatternKind::Number(n),
             ast::PatternKind::Bool(b) => PatternKind::Bool(b),

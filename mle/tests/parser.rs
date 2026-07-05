@@ -68,6 +68,11 @@ fn golden_tuples() {
     check_golden("tuples");
 }
 
+#[test]
+fn golden_lists() {
+    check_golden("lists");
+}
+
 /// Parse a deliberately broken input; return the error's (message, line, col).
 fn parse_err(src: &str) -> (String, usize, usize) {
     let err = mle::parse(src).expect_err("input should fail to parse");
@@ -408,6 +413,20 @@ fn error_uppercase_type_parameter() {
         parse_err("type Box<T> = | Full(v: T)"),
         (
             "type parameters are lowercase (`t`), like annotation type variables".to_string(),
+            1,
+            10
+        )
+    );
+}
+
+// --- List patterns + cons ---
+
+#[test]
+fn error_spread_needs_a_leading_element() {
+    assert_eq!(
+        parse_err("let a = [..xs]"),
+        (
+            "`..tail` needs at least one element before it (`[x, ..xs]`)".to_string(),
             1,
             10
         )

@@ -93,6 +93,11 @@ fn example_tuples_checks_clean() {
     example_checks_clean("tuples");
 }
 
+#[test]
+fn example_lists_checks_clean() {
+    example_checks_clean("lists");
+}
+
 fn example_checks_clean(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let src = fs::read_to_string(dir.join(format!("{name}.mle"))).unwrap();
@@ -1046,4 +1051,57 @@ fn effect_pair_arms_join_with_bare_model_arms() {
     // The lift keys on the HOST seam — a real tuple mismatch still errors.
     let diags = check_src("let f = (b, m) => match b with | true => (m, 1.0) | false => m");
     assert_eq!(diags.len(), 1, "{diags:?}");
+}
+
+// --- List patterns + cons ---
+
+/// Element types flow through cons and list patterns.
+#[test]
+fn list_patterns_flow_element_types() {
+    // A String element used as a Float via a list pattern errors (a
+    // catch-all keeps the ONLY diagnostic the type mismatch).
+    let (message, _, _) = single_diag(
+        "let f = (xs: List<String>): Float =>\n\
+         match xs with | [a, ..rest] => a + 1.0 | _ => 0.0",
+    );
+    assert!(message.contains("String"), "unexpected: {message}");
+    // Cons unifies the head with the tail's element type.
+    let (message, _, _) = single_diag("let f = (xs: List<Float>) => [\"s\", ..xs]");
+    assert!(
+        message.contains("`..` tail") || message.contains("String"),
+        "unexpected: {message}"
+    );
+}
+
+/// A list match needs a catch-all (fixed-length / `[h, ..t]` are refutable);
+/// `[..all]` counts as one.
+#[test]
+fn list_match_exhaustiveness() {
+    let (message, _, _) =
+        single_diag("let f = (xs: List<Float>): Float => match xs with | [a, b] => a + b");
+    assert!(
+        message.contains("not exhaustive: add"),
+        "unexpected: {message}"
+    );
+    // The canonical recursion [] + [h, ..t] IS exhaustive now.
+    assert_clean(
+        "let sum = (xs: List<Float>): Float =>
+         match xs with | [] => 0.0 | [h, ..t] => h + sum(t)",
+    );
+    assert_clean("let f = (xs: List<Float>): Float => match xs with | [..all] => 0.0");
+    assert_clean(
+        "let f = (xs: List<Float>): Float =>\n\
+         match xs with | [a] => a | _ => 0.0",
+    );
+}
+
+/// A list pattern against a known non-list scrutinee can never match.
+#[test]
+fn list_pattern_against_non_list() {
+    let (message, _, _) =
+        single_diag("let f = (n: Float): Float => match n with | [a, ..t] => a | _ => 0.0");
+    assert!(
+        message.contains("a list pattern cannot match Float"),
+        "unexpected: {message}"
+    );
 }
