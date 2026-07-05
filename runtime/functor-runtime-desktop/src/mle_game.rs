@@ -948,6 +948,10 @@ fn empty_frame() -> Frame {
 mod tests {
     use super::*;
 
+    // The net conn-command queue is process-global, so the two net tests
+    // below must not run concurrently — serialize them.
+    static NET_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// The whole networking path, headless — no socket, no GL. Drives a
     /// live `MleGame` for the wsdemo port: declaring `Sub.connect`
     /// reconciles into a `Connect` command; a `Connected` event routes
@@ -955,6 +959,7 @@ mod tests {
     /// `Effect.send`; a `Message` event lands in the model.
     #[test]
     fn websocket_connect_send_receive() {
+        let _guard = NET_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use functor_runtime_common::net::{drain_conn_commands, ConnCommand};
         const ENDPOINT: &str = "ws://127.0.0.1:9001/echo";
         let dir = std::env::temp_dir().join(format!("mle-net-ws-{}", std::process::id()));
@@ -1013,6 +1018,77 @@ mod tests {
             "model should hold the message: {}",
             game.state_debug()
         );
+    }
+
+    /// The server (Sub.listen) path with a CLOSURE tagger: listening queues
+    /// a Listen command, a client Connected event greets THAT client by id,
+    /// and a Message is echoed back to its sender.
+    #[test]
+    fn websocket_server_listen_greet_echo() {
+        let _guard = NET_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use functor_runtime_common::net::{drain_conn_commands, ConnCommand};
+        const BIND: &str = "127.0.0.1:9001";
+        let dir = std::env::temp_dir().join(format!("mle-net-server-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("game.mle"),
+            "type Model = { clients: Float, last: String }\n\
+             type Msg = | Joined(id: Float) | Got(id: Float, text: String) | Left(id: Float)\n\
+             let toMsg = (ev: Net.NetEvent): Msg =>\n\
+               match ev with\n\
+               | Net.Connected(id) => Joined(id)\n\
+               | Net.Message(id, text) => Got(id, text)\n\
+               | Net.Disconnected(id) => Left(id)\n\
+               | Net.Error(id, e) => Left(id)\n\
+             let init = { clients: 0.0, last: \"\" }\n\
+             let update = (m: Model, msg: Msg) =>\n\
+               match msg with\n\
+               | Joined(id) => ({ m with clients: m.clients + 1.0 }, Effect.send(id, \"welcome\"))\n\
+               | Got(id, text) => ({ m with last: text }, Effect.send(id, text))\n\
+               | Left(id) => { m with clients: m.clients - 1.0 }\n\
+             let subscriptions = (m: Model) => Sub.listen(\"127.0.0.1:9001\", toMsg)\n\
+             let tick = (m: Model, dt: Float, tts: Float) => m\n\
+             let draw = (m: Model, tts: Float) =>\n\
+               Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .unwrap();
+        let _ = drain_conn_commands();
+        let mut game = MleGame::create(dir.join("game.mle").to_str().unwrap());
+
+        game.tick(FrameTime {
+            tts: 0.0,
+            dts: 0.016,
+        });
+        let cmds = drain_conn_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, ConnCommand::Listen { key, .. } if key == BIND)),
+            "expected a Listen for {BIND}, got {cmds:?}"
+        );
+
+        // Two clients connect; each is greeted by its OWN id.
+        game.net_push_connected(BIND.to_string(), 11);
+        game.net_push_connected(BIND.to_string(), 22);
+        let cmds = drain_conn_commands();
+        assert!(cmds.iter().any(
+            |c| matches!(c, ConnCommand::Send { conn: 11, payload } if payload == b"welcome")
+        ));
+        assert!(cmds.iter().any(
+            |c| matches!(c, ConnCommand::Send { conn: 22, payload } if payload == b"welcome")
+        ));
+        assert!(
+            game.state_debug().contains("clients: 2"),
+            "{}",
+            game.state_debug()
+        );
+
+        // A message from client 22 is echoed back to 22.
+        game.net_push_conn_message(BIND.to_string(), 22, "ping".to_string());
+        let cmds = drain_conn_commands();
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, ConnCommand::Send { conn: 22, payload } if payload == b"ping")));
     }
 
     /// Write `src` as `game.mle` in its own temp directory (a directory is

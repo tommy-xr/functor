@@ -584,6 +584,23 @@ Pull-based: port examples as MLE proves itself; no flag-day.
       were already byte-identical from E1a.
 - [ ] **E2.** Port remaining examples, one PR each. *Verify:* per-example
       goldens + e2e.
+      *Progress — networking (2026-07-05):* the MLE **net surface** landed
+      so the multiplayer samples can port. A built-in **`Net` module**
+      (injected by the project loader, always in scope) provides the
+      `NetEvent` ADT — `type NetEvent = | Connected(id) | Message(id, text)
+      | Disconnected(id) | Error(id, text)` — so games `match ev with |
+      Net.Connected(id) => …` without declaring it (the prelude-provided
+      ADT the user chose over a record-with-`kind`; `EffectValue::Variant`
+      lets the host build the `Net.*` values). Prelude: `Sub.connect(url,
+      tagger)` / `Sub.listen(addr, tagger)` (a `SubTree` the producer
+      RECONCILES into Connect/Listen/CloseKey commands each frame, routing
+      inbound events to the matching key's fresh tagger through `update` —
+      the physics-events pattern) and `Effect.send(id, text)` (tagger-less,
+      queues a `ConnCommand::Send`). Both producers wired.
+      `examples/mle-wsdemo` (client, ctor tagger) + `examples/mle-wsserverdemo`
+      (server, closure tagger, per-client ids) port their F# originals;
+      headless unit tests drive the full lifecycle without a socket.
+      Remaining: `mpclient`/`mpserver`, then HTTP (`netdemo`).
 - [ ] **E3.** Delete the F# pipeline: Fable, dotnet tooling, `.fsproj`s,
       `fable_modules/`, the `.fs`/`.fsi`/`.rs` triplication, the dylib
       hot-reload path. *Verify:* full CI green with no dotnet installed;

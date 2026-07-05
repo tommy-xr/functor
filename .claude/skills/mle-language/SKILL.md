@@ -152,9 +152,14 @@ let grab = (s) =>
   (they evaluate first); siblings may reference the entry (`Game.foo`) if
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
-  builtin/prelude namespace (List, Text, Math, Scene, Camera, Frame,
+  builtin/prelude namespace (Net, List, Text, Math, Scene, Camera, Frame,
   Light, Angle, Time, Sub, Effect, Physics, RenderTarget) is a load error
   — rename the file.
+- **`Net` is a built-in module**, always in scope: `type NetEvent =
+  | Connected(id: Float) | Message(id: Float, text: String) |
+  Disconnected(id: Float) | Error(id: Float, text: String)`. A `Sub.connect`/
+  `Sub.listen` tagger receives these — `match ev with | Net.Connected(id)
+  => …` — with no declaration needed.
 - Constructor names must be unique per MODULE (not per project); values
   from a non-entry module display with their canonical tag
   (`Utils.Circle(2)` in run/trace/`/state` output). The entry's own names
@@ -279,6 +284,8 @@ frame |> Frame.withSkybox(sky)                             //   paths (+X..-Z). 
 Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
 Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
 Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (Float) => Msg
+Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connections; tagger: (Net.NetEvent) => Msg
+Effect.send(connId, text)                                  // send on an open connection
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
 
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
