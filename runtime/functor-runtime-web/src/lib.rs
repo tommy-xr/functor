@@ -311,13 +311,6 @@ fn dispatch_net_commands(game: &dyn GameProducer) {
     }
 }
 
-// NOTE: completions push through a fresh stateless `WasmGame` (the F# game
-// module holds the real state behind the wasm_bindgen externs). The MLE
-// producer (`mle_game::MleWebGame`) is NOT reachable from here — safe today
-// because MLE has no effects (its drains return "[]", so nothing ever needs
-// completing), but when MLE grows effects (Track B6/C4b-2) these sites need a
-// shared handle to the live producer or they'll throw `game is not defined`
-// on the MLE page.
 async fn perform_and_push(cmd: NetCommand) {
     let NetCommand::HttpRequest {
         token,
@@ -327,11 +320,24 @@ async fn perform_and_push(cmd: NetCommand) {
         body,
     } = cmd;
     let token = token as i32;
-    // WasmGame is stateless, so the async completion pushes through its own
-    // instance (see the WasmGame doc).
-    match perform_fetch(method, &url, &headers, &body).await {
-        Ok((status, text)) => WasmGame.net_push_http_response(token, status, text),
-        Err(message) => WasmGame.net_push_http_error(token, message),
+    let result = perform_fetch(method, &url, &headers, &body).await;
+    // Route the completion to the LIVE producer via the shared GAME handle —
+    // the F# page's WasmGame (backed by the wasm_bindgen externs) OR the MLE
+    // page's MleWebGame (which folds the response through `update`). Pushing
+    // through a fresh `WasmGame` instead would throw `game is not defined` on
+    // the MLE page (no JS game module). This runs as a fetch microtask, never
+    // mid-frame, so the borrow can't collide with the frame loop (as with
+    // `mle_set_source`).
+    let Some(game) = GAME.with(|g| g.borrow().clone()) else {
+        return;
+    };
+    let Ok(mut game) = game.try_borrow_mut() else {
+        web_sys::console::error_1(&"[net] http completion arrived mid-frame; dropped".into());
+        return;
+    };
+    match result {
+        Ok((status, text)) => game.net_push_http_response(token, status, text),
+        Err(message) => game.net_push_http_error(token, message),
     }
 }
 

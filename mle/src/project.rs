@@ -86,12 +86,17 @@ impl Project {
 /// space (see [`crate::lexer::lex`]).
 /// The built-in `Net` module (see the injection site in [`load_with_entry_source`]).
 /// Connection ids are `Float` (small integers); text carries messages and
-/// error strings. Mirrors F#'s `Functor.Net.NetEvent`.
+/// error strings. Mirrors F#'s `Functor.Net.NetEvent`. `HttpResponse` is the
+/// value handed to an `Effect.httpGet`/`httpPost` tagger: `Response` for a
+/// completed request (any HTTP status), `Failure` for a transport error.
 const NET_MODULE_SRC: &str = "type NetEvent =\n\
      | Connected(id: Float)\n\
      | Message(id: Float, text: String)\n\
      | Disconnected(id: Float)\n\
-     | Error(id: Float, text: String)\n";
+     | Error(id: Float, text: String)\n\
+     type HttpResponse =\n\
+     | Response(status: Float, body: String)\n\
+     | Failure(error: String)\n";
 
 pub struct SourceFile {
     pub path: PathBuf,

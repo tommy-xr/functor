@@ -22,10 +22,10 @@
 use std::cell::RefCell;
 
 use functor_runtime_common::mle_prelude::{
-    contains_effect, deliver_physics_events, drain_effects, frame_value, needs_update,
-    net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
-    physics_scene_value, split_model_effect, sub_messages_for_frame, view_value, EffectLog,
-    EffectTree, FunctorHost, NetEventKind, RealEffects,
+    clear_http_taggers, contains_effect, deliver_physics_events, drain_effects, frame_value,
+    http_response_value, needs_update, net_conn_subs, net_event_value, perform_deferred_queries,
+    physics_event_taggers, physics_scene_value, split_model_effect, sub_messages_for_frame,
+    take_http_tagger, view_value, EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
@@ -281,10 +281,11 @@ impl MleWebGame {
         if !self.has_physics {
             physics::remove_world(physics::DEFAULT_WORLD);
         }
-        // A deferred query holds a tagger — a closure into the OLD session;
-        // drop them rather than let them dangle.
+        // A deferred query or in-flight HTTP request holds a tagger — a closure
+        // into the OLD session; drop them rather than let them dangle.
         self.deferred_queries.clear();
         self.pending_events.clear();
+        clear_http_taggers();
         // Reload is a model-history BOUNDARY (see the desktop producer): the
         // retained snapshots can hold old-module closures, so they can't cross
         // a reload; `rendered_frame` stays monotonic so recording resumes
@@ -422,6 +423,30 @@ to receive their messages; dropping them"
         {
             Ok(msg) => msg,
             Err(err) => return self.frame_error("net event", &err),
+        };
+        match self
+            .session
+            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
+        {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.frame_error("update", &err),
+        }
+    }
+
+    /// Route a completed HTTP request to the tagger registered when the request
+    /// fired (frames ago), folding the resulting message through `update`. An
+    /// orphaned token — a reload dropped its tagger mid-flight — is ignored.
+    fn deliver_http_result(&mut self, result: functor_runtime_common::net::HttpResult) {
+        let Some(tagger) = take_http_tagger(result.token) else {
+            return;
+        };
+        let value = http_response_value(&result);
+        let msg = match self
+            .session
+            .apply(tagger, vec![value], "http response", &mut FunctorHost)
+        {
+            Ok(msg) => msg,
+            Err(err) => return self.frame_error("http response", &err),
         };
         match self
             .session
@@ -731,13 +756,27 @@ impl GameProducer for MleWebGame {
         self.model.to_string()
     }
 
-    // MLE has no effects yet (docs/mle.md Track B): nothing to drain, nothing
-    // pushed back.
     fn net_drain_commands(&self) -> String {
-        "[]".to_string()
+        // HttpRequest commands (Effect.httpGet/httpPost); the page's fetch host
+        // performs them and returns the response via net_push_http_*.
+        functor_runtime_common::net::drain_commands_json()
     }
-    fn net_push_http_response(&mut self, _token: i32, _status: i32, _body: String) {}
-    fn net_push_http_error(&mut self, _token: i32, _message: String) {}
+    fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
+        self.deliver_http_result(functor_runtime_common::net::HttpResult {
+            token: token as u64,
+            status: status as u16,
+            body: body.into_bytes(),
+            error: None,
+        });
+    }
+    fn net_push_http_error(&mut self, token: i32, message: String) {
+        self.deliver_http_result(functor_runtime_common::net::HttpResult {
+            token: token as u64,
+            status: 0,
+            body: Vec::new(),
+            error: Some(message),
+        });
+    }
     fn audio_drain_commands(&self) -> String {
         "[]".to_string()
     }

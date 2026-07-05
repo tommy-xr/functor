@@ -30,10 +30,10 @@
 use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
-    contains_effect, deliver_physics_events, drain_effects, frame_value, needs_update,
-    net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
-    physics_scene_value, split_model_effect, sub_messages_for_frame, view_value, EffectLog,
-    EffectTree, FunctorHost, NetEventKind, RealEffects,
+    clear_http_taggers, contains_effect, deliver_physics_events, drain_effects, frame_value,
+    http_response_value, needs_update, net_conn_subs, net_event_value, perform_deferred_queries,
+    physics_event_taggers, physics_scene_value, split_model_effect, sub_messages_for_frame,
+    take_http_tagger, view_value, EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::{History, DEFAULT_HISTORY_FRAMES};
@@ -557,6 +557,32 @@ to receive their messages; dropping them"
         }
     }
 
+    /// Route a completed HTTP request to the tagger registered when the request
+    /// fired (frames ago), folding the resulting message through `update`. The
+    /// arrival hook (the shell calls this when net_dispatch completes). An
+    /// orphaned token — a hot reload dropped its tagger while the request was
+    /// in flight — is silently ignored.
+    fn deliver_http_result(&mut self, result: functor_runtime_common::net::HttpResult) {
+        let Some(tagger) = take_http_tagger(result.token) else {
+            return;
+        };
+        let value = http_response_value(&result);
+        let msg = match self
+            .session
+            .apply(tagger, vec![value], "http response", &mut FunctorHost)
+        {
+            Ok(msg) => msg,
+            Err(err) => return self.frame_error("http response", &err),
+        };
+        match self
+            .session
+            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
+        {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.frame_error("update", &err),
+        }
+    }
+
     fn pump_subscriptions(&mut self, tts: f64) {
         // Advance the window even without subscriptions (or on frame one),
         // so a hot reload that ADDS subscriptions starts from a sane edge.
@@ -632,11 +658,12 @@ to receive their messages; dropping them"
             self.last_view = View::Empty;
         }
         self.last_error = None;
-        // A deferred query holds a tagger — a closure into the OLD session;
-        // drop them rather than let them dangle (the same rule the F#
-        // executor applies to in-flight HTTP taggers).
+        // A deferred query or in-flight HTTP request holds a tagger — a closure
+        // into the OLD session; drop them rather than let them dangle. A late
+        // HTTP response for a dropped token arrives orphaned and is ignored.
         self.deferred_queries.clear();
         self.pending_events.clear();
+        clear_http_taggers();
         // Reload is a model-history BOUNDARY: the retained snapshots can hold
         // closures bound to the old module, so — unlike the live model, which
         // `rebind_value` migrates above — they can't safely cross a reload.
@@ -819,6 +846,7 @@ impl Game for MleGame {
         // reload discipline); between-frame callers have these empty already.
         self.deferred_queries.clear();
         self.pending_events.clear();
+        clear_http_taggers();
         for warning in &warnings {
             self.report_once(format!("[mle] {warning}"));
         }
@@ -1028,10 +1056,26 @@ impl Game for MleGame {
     }
 
     fn net_drain_commands(&self) -> String {
-        "[]".to_string()
+        // HttpRequest commands (Effect.httpGet/httpPost), performed by the
+        // shell's net_dispatch; the response returns via net_push_http_*.
+        functor_runtime_common::net::drain_commands_json()
     }
-    fn net_push_http_response(&mut self, _token: i32, _status: i32, _body: String) {}
-    fn net_push_http_error(&mut self, _token: i32, _message: String) {}
+    fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
+        self.deliver_http_result(functor_runtime_common::net::HttpResult {
+            token: token as u64,
+            status: status as u16,
+            body: body.into_bytes(),
+            error: None,
+        });
+    }
+    fn net_push_http_error(&mut self, token: i32, message: String) {
+        self.deliver_http_result(functor_runtime_common::net::HttpResult {
+            token: token as u64,
+            status: 0,
+            body: Vec::new(),
+            error: Some(message),
+        });
+    }
     fn audio_drain_commands(&self) -> String {
         "[]".to_string()
     }

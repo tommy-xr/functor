@@ -232,6 +232,19 @@ pub enum EffectTree {
         conn: f64,
         text: String,
     },
+    /// An HTTP request (`Effect.httpGet`/`httpPost`). Unlike `Now`/`Random`
+    /// (same-frame) or `Raycast` (same-frame deferred), the response lands
+    /// FRAMES later: performing it mints a token, queues a
+    /// `NetCommand::HttpRequest`, and registers `tagger` by token
+    /// ([`register_http_tagger`]). When the shell pushes the response
+    /// back, the producer's per-frame pump applies the tagger to a
+    /// `Net.HttpResponse` and folds the message through `update`.
+    Http {
+        method: crate::net::HttpMethod,
+        url: String,
+        body: String,
+        tagger: Value,
+    },
     /// A physics query (docs/physics.md Phase 4). Unlike `Now`/`Random`,
     /// queries are **deferred**: the pre-step drain holds them and the
     /// driver performs them right after the frame's physics step, so the
@@ -806,6 +819,8 @@ const PATHS: &[&str] = &[
     "Sub.connect",
     "Sub.listen",
     "Effect.send",
+    "Effect.httpGet",
+    "Effect.httpPost",
 ];
 
 impl Host for FunctorHost {
@@ -1439,6 +1454,43 @@ Net.NetEvent, got {}",
                 }
                 _ => usage("Effect.send(connId, text)"),
             },
+            // httpGet(url, tagger) / httpPost(url, body, tagger). The tagger is
+            // a function of the Net.HttpResponse, validated callable here so a
+            // typo fails at construction, not frames later when the response
+            // lands. Performing it (drain) mints a token, queues the request,
+            // and registers the tagger by token — see EffectTree::Http.
+            "Effect.httpGet" => match args.as_slice() {
+                [Value::String(url), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
+                    Ok(host(MleEffect(EffectTree::Http {
+                        method: crate::net::HttpMethod::Get,
+                        url: url.to_string(),
+                        body: String::new(),
+                        tagger: tagger.clone(),
+                    })))
+                }
+                [Value::String(_), other] => err(format!(
+                    "Effect.httpGet(url, tagger): the tagger must be a function of the \
+Net.HttpResponse, got {}",
+                    other.kind_name()
+                )),
+                _ => usage("Effect.httpGet(url, tagger)"),
+            },
+            "Effect.httpPost" => match args.as_slice() {
+                [Value::String(url), Value::String(body), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
+                    Ok(host(MleEffect(EffectTree::Http {
+                        method: crate::net::HttpMethod::Post,
+                        url: url.to_string(),
+                        body: body.to_string(),
+                        tagger: tagger.clone(),
+                    })))
+                }
+                [Value::String(_), Value::String(_), other] => err(format!(
+                    "Effect.httpPost(url, body, tagger): the tagger must be a function of \
+the Net.HttpResponse, got {}",
+                    other.kind_name()
+                )),
+                _ => usage("Effect.httpPost(url, body, tagger)"),
+            },
             "Physics.transformed" => match args.as_slice() {
                 [scene, Value::String(tag)] => {
                     let Some(inner) = scene_of(scene) else {
@@ -1951,6 +2003,56 @@ pub fn net_event_value(kind: NetEventKind, conn: u64, text: &str) -> EffectValue
     }
 }
 
+/// Build the `Net.HttpResponse` value handed to an `Effect.httpGet`/`httpPost`
+/// tagger: `Response(status, body)` for a completed request (any HTTP status),
+/// `Failure(error)` for a transport error. Canonical ctor names from the
+/// built-in `Net` module (see `mle::project`).
+pub fn http_response_value(result: &crate::net::HttpResult) -> Value {
+    let variant = if result.is_ok() {
+        EffectValue::Variant(
+            "Net.Response".into(),
+            vec![
+                EffectValue::Number(result.status as f64),
+                EffectValue::Text(result.body_text()),
+            ],
+        )
+    } else {
+        EffectValue::Variant("Net.Failure".into(), vec![EffectValue::Text(result.error_text())])
+    };
+    variant.to_mle()
+}
+
+thread_local! {
+    /// In-flight `Effect.httpGet`/`httpPost` taggers, keyed by request token —
+    /// the MLE analogue of the F# `net::registry`. Populated when the effect is
+    /// performed (see `EffectTree::Http`); drained by the producer's HTTP
+    /// arrival hook when the response lands. The map is self-draining: the
+    /// shell's dispatch (`net_dispatch::perform_http`) returns EXACTLY ONE
+    /// completion per request — a `Response` for any HTTP status or an `Error`
+    /// for a transport failure — so every registered token is later taken. It
+    /// is bounded by concurrently in-flight requests, and cleared on hot reload
+    /// (an in-flight tagger closes over the OLD session and must not outlive
+    /// it — the same rule the producer applies to deferred queries).
+    static PENDING_HTTP: std::cell::RefCell<std::collections::HashMap<u64, Value>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Register an HTTP tagger for `token` (see [`PENDING_HTTP`]).
+pub fn register_http_tagger(token: u64, tagger: Value) {
+    PENDING_HTTP.with(|m| m.borrow_mut().insert(token, tagger));
+}
+
+/// Take the tagger registered for a completed request's `token`, if any (a hot
+/// reload clears the map, so a late response can arrive orphaned — dropped).
+pub fn take_http_tagger(token: u64) -> Option<Value> {
+    PENDING_HTTP.with(|m| m.borrow_mut().remove(&token))
+}
+
+/// Drop all in-flight HTTP taggers (called on hot reload).
+pub fn clear_http_taggers() {
+    PENDING_HTTP.with(|m| m.borrow_mut().clear());
+}
+
 #[derive(Clone, Copy)]
 pub enum NetEventKind {
     Connected,
@@ -2138,7 +2240,10 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         EffectTree::None
         | EffectTree::Physics(_)
         | EffectTree::Timeline(_)
-        | EffectTree::Send { .. } => false,
+        | EffectTree::Send { .. }
+        // The request is fire-and-forget; its RESPONSE needs `update`, but
+        // that arrives frames later through the producer's HTTP pump.
+        | EffectTree::Http { .. } => false,
         EffectTree::Now { .. } | EffectTree::Random { .. } | EffectTree::Raycast { .. } => true,
         EffectTree::Batch(items) => items.iter().any(needs_update),
     }
@@ -2256,6 +2361,34 @@ dropping the rest"
                 log.push(EffectRecord {
                     kind: "net.send",
                     value: EffectValue::Text(text),
+                });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::Http {
+                method,
+                url,
+                body,
+                tagger,
+            } => {
+                // Fire-and-forget request (like Send): mint a token, register
+                // the tagger by it, and queue the HttpRequest for the shell to
+                // perform. The response lands frames later; the producer's HTTP
+                // pump applies the tagger then. Logged for the effect record.
+                let token = crate::net::next_token();
+                register_http_tagger(token, tagger);
+                crate::net::push_command(crate::net::NetCommand::HttpRequest {
+                    token,
+                    method,
+                    url: url.clone(),
+                    headers: Vec::new(),
+                    body: body.into_bytes(),
+                });
+                log.push(EffectRecord {
+                    kind: "net.http",
+                    value: EffectValue::Text(url),
                 });
                 if log.len() > EFFECT_LOG_CAP {
                     log.remove(0);
@@ -3999,6 +4132,98 @@ the game dir"
                 "id {id}: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn http_get_rejects_a_non_function_tagger() {
+        assert!(run_fail("let main = () => Effect.httpGet(\"http://x\", 3.0)")
+            .contains("the tagger must be a function of the Net.HttpResponse"));
+    }
+
+    /// The `http_response_value` builder maps a transport error to `Net.Failure`
+    /// and any completed request (incl. a 404) to `Net.Response`.
+    #[test]
+    fn http_response_value_maps_ok_and_error() {
+        let ok = http_response_value(&crate::net::HttpResult {
+            token: 1,
+            status: 404,
+            body: b"nope".to_vec(),
+            error: None,
+        });
+        assert_eq!(ok.to_string(), "Net.Response(404, \"nope\")");
+        let failed = http_response_value(&crate::net::HttpResult {
+            token: 1,
+            status: 0,
+            body: vec![],
+            error: Some("dns".to_string()),
+        });
+        assert_eq!(failed.to_string(), "Net.Failure(\"dns\")");
+    }
+
+    /// Headless HTTP round trip (roadmap E2, the netdemo primitive), with no
+    /// network — the interpreter analogue of the F# `net_http.rs` test.
+    /// Firing `Effect.httpGet` queues a `NetCommand::HttpRequest` and registers
+    /// the tagger by token; when the response lands (frames later), routing it
+    /// through the tagger → `update` moves the model to `Done(status, body)`.
+    #[test]
+    fn http_request_response_round_trip() {
+        let _ = crate::net::drain_commands(); // clear the shared queue
+        clear_http_taggers();
+        let src = "\
+            type Phase = | Loading | Done(status: Float, body: String) | Failed(text: String)\n\
+            type Model = { phase: Phase }\n\
+            type Msg = | Got(resp: Net.HttpResponse)\n\
+            let init = { phase: Loading }\n\
+            let fetch = Effect.httpGet(\"http://127.0.0.1:9000/hello\", Got)\n\
+            let update = (m: Model, msg: Msg) =>\n\
+              match msg with\n\
+              | Got(resp) =>\n\
+                (match resp with\n\
+                 | Net.Response(status, body) => { m with phase: Done(status, body) }\n\
+                 | Net.Failure(err) => { m with phase: Failed(err) })\n";
+        let project = mle::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = mle::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+
+        // Perform the fetch effect: queues the request + registers the tagger.
+        let fetch = effect_of(&session.global("fetch").unwrap()).unwrap().0.clone();
+        let mut model = session.global("init").unwrap();
+        let mut log = EffectLog::new();
+        let _ = drain_effects(
+            &session,
+            &mut model,
+            fetch,
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+        );
+        // One HttpRequest command was queued, carrying the request's token.
+        let token = match crate::net::drain_commands().as_slice() {
+            [crate::net::NetCommand::HttpRequest { token, method, url, .. }] => {
+                assert_eq!(*method, crate::net::HttpMethod::Get);
+                assert_eq!(url, "http://127.0.0.1:9000/hello");
+                *token
+            }
+            other => panic!("expected one HttpRequest, got: {other:?}"),
+        };
+        assert_eq!(log.last().map(|r| r.kind), Some("net.http"));
+
+        // The response lands: route it through the registered tagger → update.
+        let tagger = take_http_tagger(token).expect("a tagger for the token");
+        let resp = http_response_value(&crate::net::HttpResult {
+            token,
+            status: 200,
+            body: b"hello!".to_vec(),
+            error: None,
+        });
+        let msg = session.apply(tagger, vec![resp], "http", &mut FunctorHost).unwrap();
+        let (model, _) =
+            split_model_effect(session.call("update", vec![model, msg], &mut FunctorHost).unwrap());
+        assert_eq!(model.to_string(), "{ phase: Done(200, \"hello!\") }");
+
+        // The token is consumed (a duplicate/late response finds no tagger).
+        assert!(take_http_tagger(token).is_none());
     }
 
     /// Headless server-lifecycle test for the `mle-mpserver` port (roadmap E2),
