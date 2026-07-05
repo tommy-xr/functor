@@ -666,14 +666,18 @@ impl GameProducer for MleWebGame {
     fn tick(&mut self, frame_time: FrameTime) {
         // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
         // while the scrubber is parked on an earlier frame, branch the timeline
-        // from there BEFORE this frame advances (the desktop producer's rule).
-        if frame_time.dts > 0.0 {
-            self.recorder.commit_scrub_if_resuming(
+        // from there BEFORE this frame advances, dropping in-flight frame work
+        // that must not cross the branch (the desktop producer's rule).
+        if frame_time.dts > 0.0
+            && self.recorder.commit_scrub_if_resuming(
                 &mut self.model,
                 &mut self.physics_rt,
                 &mut self.physics_status,
                 self.has_physics,
-            );
+            )
+        {
+            self.deferred_queries.clear();
+            self.pending_events.clear();
         }
         // Subscriptions first, so `tick` sees a model that has absorbed this
         // frame's messages (the F# executor's ordering).

@@ -1059,8 +1059,11 @@ async fn run_async() -> Result<(), JsValue> {
         let mut held_time: Option<f32> = None;
         let mut pending_step: Option<f32> = None;
         // Pointer state written by the DOM mouse listeners below, read by the
-        // frame loop: (cursor x, y in CSS px, primary-button down).
-        let pointer = Rc::new(std::cell::RefCell::new((0.0f32, 0.0f32, false)));
+        // frame loop: (cursor x, y in CSS px, primary-button down, press-latch).
+        // The latch holds a press for at least one frame so a full click that
+        // starts AND ends between two rAF callbacks still delivers its edge
+        // (the frame reads `down || latch`, then consumes the latch) [xreview].
+        let pointer = Rc::new(std::cell::RefCell::new((0.0f32, 0.0f32, false, false)));
         {
             use wasm_bindgen::JsCast;
             let p = pointer.clone();
@@ -1074,7 +1077,9 @@ async fn run_async() -> Result<(), JsValue> {
             let p = pointer.clone();
             let md = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MouseEvent| {
                 if e.button() == 0 {
-                    p.borrow_mut().2 = true;
+                    let mut p = p.borrow_mut();
+                    p.2 = true;
+                    p.3 = true;
                 }
             });
             let _ = canvas.add_event_listener_with_callback("mousedown", md.as_ref().unchecked_ref());
@@ -1187,7 +1192,14 @@ async fn run_async() -> Result<(), JsValue> {
             // The time-travel scrubber, always visible over the frame. egui
             // lays out in points (canvas px / dpr = CSS px), so the CSS-pixel
             // cursor is scaled to device px to line up (the desktop HiDPI fix).
-            let (px, py, down) = *pointer.borrow();
+            let (px, py, down) = {
+                let mut p = pointer.borrow_mut();
+                // `down || latch` so a same-frame click still shows a pressed
+                // frame; consume the latch so the next frame sees the release.
+                let effective = p.2 || p.3;
+                p.3 = false;
+                (p.0, p.1, effective)
+            };
             let scrubber_out = scrubber.draw(
                 canvas.width(),
                 canvas.height(),

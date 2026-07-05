@@ -242,15 +242,21 @@ impl SceneRecorder {
 
     /// If play resumes (`dts > 0`) while parked on an earlier frame, branch the
     /// timeline from there BEFORE the frame advances. Call at the top of `tick`.
+    /// Returns `true` if a branch was committed, so the producer can drop any
+    /// in-flight frame work that must not cross the branch (deferred queries /
+    /// pending events — the reload discipline).
     pub fn commit_scrub_if_resuming(
         &mut self,
         model: &mut Value,
         physics: &mut SteppedPhysics,
         physics_status: &mut (u64, bool, u64),
         has_physics: bool,
-    ) {
+    ) -> bool {
         if let Some(k) = self.scrub_pos.take() {
             let _ = self.rewind_scene_to(k, model, physics, physics_status, has_physics);
+            true
+        } else {
+            false
         }
     }
 
@@ -273,6 +279,8 @@ impl SceneRecorder {
         let physics_target = self.physics_seek_target(frame, physics, has_physics)?;
         *model = self.model_history.seek(frame).clone();
         if let Some(fixed) = physics_target {
+            // Warnings are empty on every reachable coupled seek: `physics_seek_
+            // target` already validated `fixed` against the seekable range.
             let _ = physics.seek_to_frame(fixed);
             physics_status.0 = physics.current_fixed_frame();
         }

@@ -855,14 +855,18 @@ impl Game for MleGame {
         let started = Instant::now();
         // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
         // while the draggable bar is parked on an earlier frame, branch the
-        // timeline from there BEFORE this frame advances.
-        if frame_time.dts > 0.0 {
-            self.recorder.commit_scrub_if_resuming(
+        // timeline from there BEFORE this frame advances — and drop any in-flight
+        // frame work so it doesn't cross the branch (the reload discipline).
+        if frame_time.dts > 0.0
+            && self.recorder.commit_scrub_if_resuming(
                 &mut self.model,
                 &mut self.physics_rt,
                 &mut self.physics_status,
                 self.has_physics,
-            );
+            )
+        {
+            self.deferred_queries.clear();
+            self.pending_events.clear();
         }
         // Subscriptions first, so `tick` sees a model that has absorbed this
         // frame's messages (the F# executor's ordering).
