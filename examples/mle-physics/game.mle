@@ -1,4 +1,4 @@
-// mle-physics — the reference physics example (docs/physics.md, Phase 2c+3+4).
+// mle-physics — the reference physics example (docs/physics.md, Phase 2c+3+4+5).
 // Crates and a ball tumble onto a slab, drawn at their live simulated poses
 // via Physics.transformed. Press SPACE to re-drop everything: the changed
 // declared spawn poses teleport the bodies (the divergence rule) and the
@@ -6,8 +6,9 @@
 // effect, returned beside the model, applied at the next physics step.
 // Press R to fire a RAY straight down over the pile: the raycast's result
 // record folds through `update`, which kicks whatever the ray hit — a query
-// chaining into a command, answered against this frame's stepped world. Run
-// with:
+// chaining into a command, answered against this frame's stepped world.
+// Collision events (Physics.events) flash whatever the ball touches: the
+// touched crate glows until the ball's next contact. Run with:
 //
 //   functor-runner --mle --game-path examples/mle-physics/game.mle
 //   functor -d examples/mle-physics run native
@@ -53,13 +54,23 @@ let physics = (model) =>
   Physics.scene(0.0, -9.81, 0.0,
     List.range(crateCount + 2.0) |> List.map((i) => bodyAt(model.drop, i)))
 
-// Tints stay in 0..1 for any crateCount thanks to clamp01.
-let crateVisual = (i) =>
-  Scene.cube()
-    |> Scene.lit(Math.clamp01(0.55 + 0.09 * i), Math.clamp01(0.42 - 0.04 * i), 0.28)
+// Tints stay in 0..1 for any crateCount thanks to clamp01; the ball's
+// latest touch glows (a Physics.events Contact set `hot`).
+let crateVisual = (model, i) =>
+  (match crateTag(i) == model.hot with
+   | true => Scene.cube() |> Scene.emissive(1.0, 0.45, 0.15)
+   | false =>
+     Scene.cube()
+       |> Scene.lit(Math.clamp01(0.55 + 0.09 * i), Math.clamp01(0.42 - 0.04 * i), 0.28))
     |> Physics.transformed(crateTag(i))
 
-let init = { drop: 0.0, spaceHeld: false }
+// The message ADT: ctor taggers wrap each async result in its own arm —
+// raycast answers and contact events share one `update` without ambiguity.
+type Msg<h, e> =
+  | GotHit(hit: h)
+  | Contact(ev: e)
+
+let init = { drop: 0.0, spaceHeld: false, hot: "" }
 
 let tick = (model, dt, tts) => model
 
@@ -79,30 +90,56 @@ let input = (model, key, isDown) =>
   | "K" =>
     (match isDown with
      | true => model
-     | false => (model, Physics.applyImpulse("ball", 0.0, 5.5, 0.0)))
+     | false => (model, Physics.applyImpulse("ball", -2.6, 5.0, -0.4)))
   | "R" =>
     (match isDown with
      | true => model
      | false =>
        // Aim straight down over THIS generation's crate-0 spawn — effect
-       // arguments are ordinary expressions of the model. The tagger is a
-       // plain closure, so the result record IS the message.
+       // arguments are ordinary expressions of the model. The tagger is the
+       // GotHit constructor: the result record arrives wrapped in Msg.
        (model,
         Physics.raycast(scatterX(model.drop, 0.0), 8.0, scatterZ(model.drop, 0.0),
-                        0.0, -1.0, 0.0, 20.0, (hit) => hit)))
+                        0.0, -1.0, 0.0, 20.0, GotHit)))
   | _ => model
 
-// Receives the raycast result after this frame's physics step (fresh —
-// "commands apply at the step; queries answer after it"): kick whatever the
-// ray hit. Misses leave the model alone, and so does the slab — kicking a
-// fixed body would just warn.
+// Contact events name both tags in rapier's pair order — find the ball's
+// partner (or "" when the ball isn't involved).
+let otherOf = (e) =>
+  match e.a == "ball" with
+  | true => e.b
+  | false =>
+    (match e.b == "ball" with
+     | true => e.a
+     | false => "")
+
+let subscriptions = (model) => Physics.events(Contact)
+
+// One update, two message kinds. GotHit: the raycast result, post-step
+// fresh ("commands apply at the step; queries answer after it") — kick
+// whatever the ray hit (the slab excluded: kicking a fixed body warns).
+// Contact: flash the ball's latest touch (crates glow via `hot`).
 let update = (model, msg) =>
-  match msg.hit with
-  | false => model
-  | true =>
-    (match msg.tag == "ground" with
-     | true => model
-     | false => (model, Physics.applyImpulse(msg.tag, 0.0, 6.0, 0.0)))
+  match msg with
+  | GotHit(hit) =>
+    (match hit.hit with
+     | false => model
+     | true =>
+       (match hit.tag == "ground" with
+        | true => model
+        | false => (model, Physics.applyImpulse(hit.tag, 0.0, 6.0, 0.0))))
+  | Contact(e) =>
+    (match e.started with
+     | false => model
+     | true =>
+       let other = otherOf(e) in
+       (match other == "" with
+        | true => model
+        | false =>
+          // Touching the slab isn't interesting — only crates glow.
+          (match other == "ground" with
+           | true => model
+           | false => { model with hot: other })))
 
 let draw = (model, tts) =>
   Frame.createLit(
@@ -110,7 +147,7 @@ let draw = (model, tts) =>
     Scene.group([
       Scene.plane() |> Scene.scale(24.0) |> Scene.lit(0.55, 0.58, 0.62),
       Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(0.95, 0.35, 0.25) |> Physics.transformed("ball"),
-      Scene.group(List.range(crateCount) |> List.map(crateVisual)),
+      Scene.group(List.range(crateCount) |> List.map((i) => crateVisual(model, i))),
     ]),
     [
       Light.ambient(0.12, 0.12, 0.15),

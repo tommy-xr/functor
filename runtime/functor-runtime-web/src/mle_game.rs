@@ -22,9 +22,9 @@
 use std::cell::RefCell;
 
 use functor_runtime_common::mle_prelude::{
-    contains_effect, drain_effects, frame_value, needs_update, perform_deferred_queries,
-    physics_scene_value, split_model_effect, sub_messages_for_frame, EffectLog, EffectTree,
-    FunctorHost, RealEffects,
+    contains_effect, deliver_physics_events, drain_effects, frame_value, needs_update,
+    perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
+    sub_messages_for_frame, EffectLog, EffectTree, FunctorHost, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
@@ -61,6 +61,9 @@ pub struct MleWebGame {
     /// right after the physics step so their taggers answer against the
     /// fresh world ("commands apply at the step; queries answer after it").
     deferred_queries: Vec<EffectTree>,
+    /// This frame's contact transitions, delivered post-step to the
+    /// `Physics.events` taggers of the current `subscriptions(model)`.
+    pending_events: Vec<functor_runtime_common::physics::PhysicsEvent>,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -200,6 +203,7 @@ impl MleWebGame {
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
             deferred_queries: Vec::new(),
+            pending_events: Vec::new(),
             has_physics: loaded.has_physics,
             last_frame: empty_frame(),
             last_error: None,
@@ -236,6 +240,7 @@ impl MleWebGame {
         // A deferred query holds a tagger — a closure into the OLD session;
         // drop them rather than let them dangle.
         self.deferred_queries.clear();
+        self.pending_events.clear();
         self.last_error = None;
         report.rebound
     }
@@ -337,12 +342,14 @@ to receive their messages; dropping them"
         match self.session.call("physics", args, &mut FunctorHost) {
             Ok(value) => match physics_scene_value(&value) {
                 Some(scene) => {
-                    let (steps, warnings) = physics::with_world(physics::DEFAULT_WORLD, |w| {
-                        w.reconcile(scene);
-                        let steps = w.step_frame(dts);
-                        (steps, w.take_command_warnings())
-                    })
-                    .unwrap_or((0, Vec::new()));
+                    let (steps, events, warnings) =
+                        physics::with_world(physics::DEFAULT_WORLD, |w| {
+                            w.reconcile(scene);
+                            let steps = w.step_frame(dts);
+                            (steps, w.take_events(), w.take_command_warnings())
+                        })
+                        .unwrap_or((0, Vec::new(), Vec::new()));
+                    self.pending_events = events;
                     // Command effects apply asynchronously (queued at perform
                     // time, applied at the step), so their problems — unknown
                     // tag, queue overflow — surface here, deduped.
@@ -444,6 +451,37 @@ impl GameProducer for MleWebGame {
             );
             for message in reports {
                 self.log_once(message);
+            }
+        }
+        // Collision events (docs/physics.md Phase 5): this frame's contact
+        // transitions, delivered to the `Physics.events` taggers of the
+        // CURRENT model's subscriptions — post-step, alongside query answers.
+        let events = std::mem::take(&mut self.pending_events);
+        if !events.is_empty() && self.has_subscriptions {
+            match self
+                .session
+                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(subs) => match physics_event_taggers(&subs) {
+                    Ok(taggers) if !taggers.is_empty() => {
+                        let mut reports: Vec<String> = Vec::new();
+                        deliver_physics_events(
+                            &self.session,
+                            &mut self.model,
+                            &taggers,
+                            &events,
+                            &mut self.effect_runner,
+                            &mut self.effect_log,
+                            &mut |message| reports.push(message),
+                        );
+                        for message in reports {
+                            self.log_once(message);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(message) => self.log_once(format!("[mle] {message}")),
+                },
+                Err(err) => self.frame_error("subscriptions", &err),
             }
         }
     }

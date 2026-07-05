@@ -290,6 +290,9 @@ Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)   // -> Effect (QUERY):
                                                            //   {hit, x, y, z, nx, ny, nz,
                                                            //    distance, tag} — hit: false
                                                            //   (zeroed) for a miss
+Physics.events(tagger)                                     // -> Sub (from `subscriptions`):
+                                                           //   tagger gets {started, a, b,
+                                                           //   sensor} per contact begin/end
 ```
 
 `Physics.position` / `Physics.transformed` read the live stepped world
@@ -325,6 +328,15 @@ handler chaining a command queues it for next frame's step; chaining
 another query answers immediately (the world already stepped). Under the
 fake/replay runners raycasts are canned/recorded — physics-query logic is
 testable with no world at all.
+
+`Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
+`Sub.batch`; it requires `update`). Every contact begin/end from this
+frame's physics step arrives post-step as `{started: Bool, a: Text,
+b: Text, sensor: Bool}` — `a`/`b` are the pair's tags in rapier's
+(deterministic) order, so check both; `sensor: true` marks an overlap with
+a `Physics.sensor` body (no contact forces). Events for a pair whose body
+was despawned this frame are dropped (there is nothing left to name), and
+a frame's undelivered events never carry over.
 
 
 A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:

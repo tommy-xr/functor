@@ -144,6 +144,11 @@ pub enum SubTree {
     None,
     Every { period_seconds: f64, msg: Value },
     Batch(Vec<SubTree>),
+    /// Collision events from the physics step (docs/physics.md Phase 5):
+    /// the tagger receives `{started, a, b, sensor}` for every contact that
+    /// began/ended this frame, delivered post-step through `update` (the
+    /// same point deferred queries answer).
+    PhysicsEvents { tagger: Value },
 }
 
 pub struct MleSub(pub SubTree);
@@ -653,6 +658,7 @@ const PATHS: &[&str] = &[
     "Physics.setVelocity",
     "Physics.teleport",
     "Physics.raycast",
+    "Physics.events",
 ];
 
 impl Host for FunctorHost {
@@ -1100,6 +1106,22 @@ the game dir",
                 )),
                 _ => usage("Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)"),
             },
+            // Collision-event SUB (docs/physics.md Phase 5): what
+            // `subscriptions` returns (alone or in Sub.batch). The tagger
+            // receives {started, a, b, sensor} per contact begin/end,
+            // post-step (like query answers).
+            "Physics.events" => match args.as_slice() {
+                [tagger @ (Value::Closure(_) | Value::Ctor { .. })] => Ok(host(MleSub(
+                    SubTree::PhysicsEvents {
+                        tagger: tagger.clone(),
+                    },
+                ))),
+                [other] => err(format!(
+                    "Physics.events(tagger): the tagger must be a function of the event record, got {}",
+                    other.kind_name()
+                )),
+                _ => usage("Physics.events(tagger)"),
+            },
             "Physics.transformed" => match args.as_slice() {
                 [scene, Value::String(tag)] => {
                     let Some(inner) = scene_of(scene) else {
@@ -1432,6 +1454,90 @@ fn collect_fired(sub: &SubTree, prev_tts: f64, tts: f64, msgs: &mut Vec<Value>) 
         SubTree::Batch(items) => {
             for item in items.iter() {
                 collect_fired(item, prev_tts, tts, msgs);
+            }
+        }
+        // Event subs fire from the physics step, not the time grid — the
+        // drivers collect their taggers via `physics_event_taggers`.
+        SubTree::PhysicsEvents { .. } => {}
+    }
+}
+
+/// The `Physics.events` taggers in a subscription tree, in declaration
+/// order — the drivers apply each to every event record from this frame's
+/// physics step and fold the messages through `update`, post-step. A
+/// non-Sub value yields the same error `sub_messages_for_frame` reports.
+pub fn physics_event_taggers(subs: &Value) -> Result<Vec<Value>, String> {
+    let Some(sub) = sub_of(subs) else {
+        return Err(format!(
+            "subscriptions must return a Sub (Sub.every / Sub.none / Sub.batch), got {}",
+            subs.kind_name()
+        ));
+    };
+    let mut taggers = Vec::new();
+    collect_event_taggers(&sub.0, &mut taggers);
+    Ok(taggers)
+}
+
+fn collect_event_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
+    match sub {
+        SubTree::None | SubTree::Every { .. } => {}
+        SubTree::Batch(items) => {
+            for item in items.iter() {
+                collect_event_taggers(item, taggers);
+            }
+        }
+        SubTree::PhysicsEvents { tagger } => taggers.push(tagger.clone()),
+    }
+}
+
+/// The tagger-facing record for one collision event.
+pub fn physics_event_value(event: &physics::PhysicsEvent) -> Value {
+    Value::Record(Rc::new(vec![
+        ("started".to_string(), Value::Bool(event.started)),
+        ("a".to_string(), Value::String(Rc::from(event.a.as_str()))),
+        ("b".to_string(), Value::String(Rc::from(event.b.as_str()))),
+        ("sensor".to_string(), Value::Bool(event.sensor)),
+    ]))
+}
+
+/// Deliver this frame's collision events to the game: every tagger from the
+/// current `subscriptions(model)` × every event, folded through `update` at
+/// the post-step point (chained effects drain post-step: further queries
+/// answer immediately, further commands queue for the next step).
+pub fn deliver_physics_events(
+    session: &mle::Session,
+    model: &mut Value,
+    taggers: &[Value],
+    events: &[physics::PhysicsEvent],
+    runner: &mut dyn EffectRunner,
+    log: &mut EffectLog,
+    report: &mut dyn FnMut(String),
+) {
+    // Events outer: the frame's causal contact sequence is the primary fold
+    // order (each event reaches every tagger before the next event).
+    for event in events {
+        for tagger in taggers {
+            let msg = match session.apply(
+                tagger.clone(),
+                vec![physics_event_value(event)],
+                "Physics.events tagger",
+                &mut FunctorHost,
+            ) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    report(format!("[mle] Physics.events tagger error: {}", e.message));
+                    continue;
+                }
+            };
+            match session.call("update", vec![model.clone(), msg], &mut FunctorHost) {
+                Ok(returned) => {
+                    let (next_model, more) = split_model_effect(returned);
+                    *model = next_model;
+                    if let Some(more) = more {
+                        drain_mode(session, model, vec![more], runner, log, report, None);
+                    }
+                }
+                Err(e) => report(format!("[mle] update error: {}", e.message)),
             }
         }
     }
@@ -2697,6 +2803,87 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
             panic!()
         };
         assert!(f.iter().any(|(k, v)| k == "hit" && *v == EffectValue::Bool(false)));
+    }
+
+    /// The Phase 5 event path end to end: a `Physics.events` sub's tagger
+    /// receives contact records, folding through `update` post-step.
+    #[test]
+    fn physics_events_flow_to_update() {
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let src = "let subscriptions = (m) => Physics.events((e) => e)\n\
+                   let update = (m, msg) =>\n\
+                     { contacts: m.contacts + 1.0, a: msg.a, b: msg.b, began: msg.started }";
+        let module = mle::lower(mle::parse(src).unwrap()).unwrap();
+        let session = mle::Session::load(&module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
+
+        // Taggers come from the game's subscriptions value.
+        let subs = session
+            .apply(
+                session.global("subscriptions").unwrap(),
+                vec![Value::Number(0.0)],
+                "subscriptions",
+                &mut FunctorHost,
+            )
+            .unwrap_or_else(|e| panic!("subs failed: {}", e.message));
+        let taggers = physics_event_taggers(&subs).expect("a Sub");
+        assert_eq!(taggers.len(), 1);
+
+        // Drive a real collision.
+        let event = crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&crate::physics::PhysicsScene::create(
+                [0.0, -9.81, 0.0],
+                vec![
+                    crate::physics::Body::fixed(
+                        "slab".to_string(),
+                        crate::physics::Shape::Cuboid {
+                            extents: [8.0, 0.4, 8.0],
+                        },
+                    ),
+                    crate::physics::Body::dynamic(
+                        "ball".to_string(),
+                        crate::physics::Shape::Sphere { radius: 0.5 },
+                    )
+                    .at([0.0, 2.0, 0.0]),
+                ],
+            ));
+            let mut found = None;
+            for _ in 0..180 {
+                w.step_frame(1.0 / 60.0);
+                if let Some(e) = w.take_events().into_iter().find(|e| e.started) {
+                    found = Some(e);
+                    break;
+                }
+            }
+            found
+        })
+        .flatten()
+        .expect("a contact");
+
+        let mut model = Value::Record(Rc::new(vec![(
+            "contacts".to_string(),
+            Value::Number(0.0),
+        )]));
+        let mut log = EffectLog::new();
+        let mut runner = FakeEffects::new(0.0, vec![]);
+        deliver_physics_events(
+            &session,
+            &mut model,
+            &taggers,
+            &[event],
+            &mut runner,
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+        );
+        let Value::Record(fields) = &model else {
+            panic!("update should have run");
+        };
+        let get = |k: &str| fields.iter().find(|(n, _)| n == k).unwrap().1.clone();
+        assert!(matches!(get("contacts"), Value::Number(n) if n == 1.0));
+        assert!(matches!(get("began"), Value::Bool(true)));
+        let (a, b) = (get("a").to_string(), get("b").to_string());
+        assert!(a.contains("slab") || b.contains("slab"), "{a} {b}");
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 
     /// Tagger-less trees (physics commands) don't require an `update` hook;

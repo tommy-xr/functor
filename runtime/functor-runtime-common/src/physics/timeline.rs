@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{PhysicsCommand, PhysicsScene, World};
+use super::{PhysicsCommand, PhysicsEvent, PhysicsScene, World};
 
 /// A fixed-step frame number.
 pub type Frame = u64;
@@ -41,10 +41,8 @@ pub enum Command {
     Apply(PhysicsCommand),
 }
 
-/// Events produced by a step. None yet — Phase 5 (collision events) populates
-/// this; the variant-less enum keeps the seam in place at zero cost.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {}
+/// Events produced by a step: contact transitions (docs/physics.md Phase 5).
+pub use super::PhysicsEvent as Event;
 
 /// Anything rewindable. Physics is the first impl; the whole game model
 /// (serializable + input-driven) could be a second later.
@@ -78,7 +76,10 @@ impl Simulatable for World {
         World::restore(self, s).expect("timeline snapshot failed to restore");
     }
 
-    fn step(&mut self, cmds: &[Command]) -> Vec<Event> {
+    fn step(&mut self, cmds: &[Command]) -> Vec<PhysicsEvent> {
+        // Per-frame event discipline mirrors `step_frame`: stale events from
+        // an undrained prior step must not leak into this one.
+        self.events_clear();
         for cmd in cmds {
             match cmd {
                 Command::DeclareScene(scene) => self.reconcile(scene),
@@ -96,7 +97,7 @@ impl Simulatable for World {
         self.apply_pending();
         self.step_fixed();
         self.clear_frame_forces();
-        Vec::new()
+        self.take_events()
     }
 }
 

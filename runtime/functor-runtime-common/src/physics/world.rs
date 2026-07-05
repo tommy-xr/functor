@@ -62,6 +62,19 @@ impl PhysicsCommand {
     }
 }
 
+/// One contact transition from the physics step (docs/physics.md Phase 5):
+/// plain data, in solver order (deterministic). `a`/`b` are the colliding
+/// bodies' tags in rapier's pair order — games should check both.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhysicsEvent {
+    /// `true` = the pair began touching this step; `false` = stopped.
+    pub started: bool,
+    pub a: String,
+    pub b: String,
+    /// At least one of the pair is a sensor (an overlap, not a contact).
+    pub sensor: bool,
+}
+
 /// Commands queued while no physics step consumes them (a game firing
 /// commands without a `physics` hook) are bounded — drop-with-warning beats
 /// unbounded growth.
@@ -147,6 +160,12 @@ pub struct World {
     /// empty at any snapshot point (hence not serialized).
     #[serde(skip, default)]
     forced: Vec<RigidBodyHandle>,
+    /// Contact transitions from this frame's substeps, drained by the driver
+    /// after `step_frame` (cleared at the next frame's start, so an
+    /// unsubscribed game cannot accumulate them). Not serialized: they are
+    /// per-frame data, consumed before any snapshot point.
+    #[serde(skip, default)]
+    events: Vec<PhysicsEvent>,
     /// Command problems (unknown tag, overflow) for the driver to report —
     /// commands are applied asynchronously, so there is no call site to error
     /// at. Drain with [`World::take_command_warnings`].
@@ -176,6 +195,7 @@ impl World {
             frame: 0,
             pending: Vec::new(),
             forced: Vec::new(),
+            events: Vec::new(),
             command_warnings: Vec::new(),
         }
     }
@@ -270,6 +290,9 @@ impl World {
     /// a frame that doesn't simulate (a frame-lasting force would otherwise be
     /// lost without ever integrating).
     pub fn step_frame(&mut self, real_dt: f32) -> u32 {
+        // Last frame's undrained events are stale — drop them so a game with
+        // no event subscription can't accumulate.
+        self.events.clear();
         self.accumulator += real_dt.max(0.0);
         if self.accumulator < FIXED_DT {
             return 0;
@@ -291,8 +314,35 @@ impl World {
         steps
     }
 
-    /// Advance exactly one fixed step.
+    /// Advance exactly one fixed step, collecting contact transitions into
+    /// the frame's event buffer.
     pub fn step_fixed(&mut self) {
+        // EventHandler must be Send + Sync; a Mutex'd Vec is the simplest
+        // sink (single-threaded here — the lock is uncontended).
+        #[derive(Default)]
+        struct Sink(std::sync::Mutex<Vec<CollisionEvent>>);
+        impl EventHandler for Sink {
+            fn handle_collision_event(
+                &self,
+                _bodies: &RigidBodySet,
+                _colliders: &ColliderSet,
+                event: CollisionEvent,
+                _contact_pair: Option<&ContactPair>,
+            ) {
+                self.0.lock().unwrap().push(event);
+            }
+            fn handle_contact_force_event(
+                &self,
+                _dt: Real,
+                _bodies: &RigidBodySet,
+                _colliders: &ColliderSet,
+                _contact_pair: &ContactPair,
+                _total_force_magnitude: Real,
+            ) {
+            }
+        }
+
+        let sink = Sink::default();
         self.pipeline.step(
             Vector::new(self.gravity[0], self.gravity[1], self.gravity[2]),
             &self.integration_parameters,
@@ -305,9 +355,44 @@ impl World {
             &mut self.multibody_joints,
             &mut self.ccd_solver,
             &(),
-            &(),
+            &sink,
         );
+        // Resolve handles to tags NOW, while both sides are still mapped. A
+        // pair involving a body despawned earlier this frame (rapier's
+        // REMOVED stop-events) has no tag left — those events are dropped:
+        // the game already unmade the body, there is nobody to notify about.
+        for event in sink.0.into_inner().unwrap() {
+            let (h1, h2, started, flags) = match event {
+                CollisionEvent::Started(h1, h2, flags) => (h1, h2, true, flags),
+                CollisionEvent::Stopped(h1, h2, flags) => (h1, h2, false, flags),
+            };
+            let tag_of = |handle| {
+                self.tags
+                    .iter()
+                    .find(|(_, &(_, col))| col == handle)
+                    .map(|(tag, _)| tag.clone())
+            };
+            if let (Some(a), Some(b)) = (tag_of(h1), tag_of(h2)) {
+                self.events.push(PhysicsEvent {
+                    started,
+                    a,
+                    b,
+                    sensor: flags.contains(CollisionEventFlags::SENSOR),
+                });
+            }
+        }
         self.frame += 1;
+    }
+
+    /// This frame's contact transitions (drained; see `step_frame`).
+    pub fn take_events(&mut self) -> Vec<PhysicsEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Drop stale events at a frame boundary (`Simulatable::step`'s twin of
+    /// the clear in `step_frame`).
+    pub(super) fn events_clear(&mut self) {
+        self.events.clear();
     }
 
     /// Serialize the full world. Byte-equality of two snapshots is the
@@ -544,7 +629,10 @@ impl World {
         let mut collider = collider_of(&body.shape)
             .friction(body.friction)
             .restitution(body.restitution)
-            .sensor(body.sensor);
+            .sensor(body.sensor)
+            // Every body reports contact begin/end (Physics.events); rapier
+            // only pays for this when a pair's state actually changes.
+            .active_events(ActiveEvents::COLLISION_EVENTS);
         if let Some(mass) = body.mass {
             collider = collider.mass(mass);
         }
@@ -1044,6 +1132,63 @@ mod tests {
         let warnings = w.take_command_warnings();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("non-dynamic"), "{warnings:?}");
+    }
+
+    #[test]
+    fn contact_events_report_tags_and_transitions() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        w.reconcile(&scene(vec![ground(), crate_at("a", [0.0, 2.0, 0.0])]));
+        // Fall until contact: a Started event naming both tags appears.
+        let mut started = None;
+        for _ in 0..120 {
+            w.step_frame(FIXED_DT);
+            let events = w.take_events();
+            if let Some(e) = events.iter().find(|e| e.started) {
+                started = Some(e.clone());
+                break;
+            }
+        }
+        let e = started.expect("the crate should land");
+        let pair = [e.a.as_str(), e.b.as_str()];
+        assert!(pair.contains(&"a") && pair.contains(&"ground"), "{e:?}");
+        assert!(!e.sensor);
+
+        // Undrained events are dropped at the next frame's start: launch the
+        // crate (a Stopped event fires), don't drain it, and step a further
+        // airborne frame — the stale Stopped must be gone, and a mid-air
+        // frame produces no fresh transitions.
+        w.queue_command(PhysicsCommand::ApplyImpulse {
+            tag: "a".to_string(),
+            impulse: [0.0, 8.0, 0.0],
+        });
+        w.step_frame(FIXED_DT); // launch (separation may register this frame…)
+        w.step_frame(FIXED_DT); // …or this one; both deliberately undrained
+        w.step_frame(FIXED_DT); // fully airborne: boundary cleared the stale ones,
+        assert!(w.take_events().is_empty(), "stale events survived the frame boundary");
+    }
+
+    #[test]
+    fn sensor_overlaps_are_flagged() {
+        let mut w = World::new([0.0, -9.81, 0.0]);
+        let zone = Body::fixed(
+            "zone".to_string(),
+            Shape::Cuboid {
+                extents: [4.0, 4.0, 4.0],
+            },
+        )
+        .at([0.0, 2.0, 0.0])
+        .as_sensor();
+        w.reconcile(&scene(vec![zone, crate_at("a", [0.0, 6.0, 0.0])]));
+        let mut hit = None;
+        for _ in 0..180 {
+            w.step_frame(FIXED_DT);
+            if let Some(e) = w.take_events().into_iter().find(|e| e.started) {
+                hit = Some(e);
+                break;
+            }
+        }
+        let e = hit.expect("the crate should enter the zone");
+        assert!(e.sensor, "{e:?}");
     }
 
     #[test]
