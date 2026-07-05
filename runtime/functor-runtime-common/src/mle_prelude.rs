@@ -4001,6 +4001,107 @@ the game dir"
         }
     }
 
+    /// Headless server-lifecycle test for the `mle-mpserver` port (roadmap E2),
+    /// with no socket. Loads the SHIPPED `game.mle` so this tracks the example,
+    /// and exercises the whole server spine — `toMsg` decoding, the
+    /// join/move/left `update` logic, `wrapAxis` integration, the `Text.*` wire
+    /// encoding, and the broadcast-the-whole-world-to-every-client `Effect.send`
+    /// (the naive server's defining behavior), plus a malformed packet ignored
+    /// and a disconnect dropping a player.
+    #[test]
+    fn mpserver_broadcasts_the_world_to_every_client() {
+        // load_single_source injects the built-in Net module, like the runner.
+        let src = include_str!("../../../examples/mle-mpserver/game.mle");
+        let project = mle::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load mpserver: {}", e.render()));
+        let session = mle::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+
+        // toMsg(event) folded through update; update returns a bare Model here.
+        fn call(session: &mle::Session, name: &str, args: Vec<Value>) -> Value {
+            let f = session.global(name).unwrap_or_else(|| panic!("no `{name}`"));
+            session
+                .apply(f, args, name, &mut FunctorHost)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.message))
+        }
+        fn feed(session: &mle::Session, model: Value, ev: Value) -> Value {
+            let msg = call(session, "toMsg", vec![ev]);
+            split_model_effect(call(session, "update", vec![model, msg])).0
+        }
+        // One tick's broadcast, drained into (conn, payload) Send pairs.
+        fn broadcast(session: &mle::Session, model: Value) -> (Value, Vec<(u64, Vec<u8>)>) {
+            crate::net::drain_conn_commands(); // clear
+            let (mut m, fx) = split_model_effect(call(
+                session,
+                "tick",
+                vec![model, Value::Number(0.5), Value::Number(0.5)],
+            ));
+            let mut log = EffectLog::new();
+            if let Some(tree) = fx {
+                let _ = drain_effects(
+                    session,
+                    &mut m,
+                    tree,
+                    &mut FakeEffects::new(0.0, vec![]),
+                    &mut log,
+                    &mut |r| panic!("unexpected report: {r}"),
+                );
+            }
+            let sends = crate::net::drain_conn_commands()
+                .into_iter()
+                .filter_map(|c| match c {
+                    crate::net::ConnCommand::Send { conn, payload } => Some((conn, payload)),
+                    _ => None,
+                })
+                .collect();
+            (m, sends)
+        }
+        let event =
+            |kind, id: u64, text: &str| net_event_value(kind, id, text).to_mle();
+
+        // The listener is declared on the arena address.
+        let subs = call(&session, "subscriptions", vec![session.global("init").unwrap()]);
+        let conns = net_conn_subs(&subs).expect("a Sub tree");
+        assert!(conns.len() == 1 && conns[0].listen && conns[0].key == "127.0.0.1:9001");
+
+        // Two clients join (pid 0 on cid 1, pid 1 on cid 2), each sends a
+        // velocity, and a single-token packet from cid 1 is IGNORED (its
+        // velocity is not reset — a 2-token "vx vz" is the only valid form).
+        let mut model = session.global("init").unwrap();
+        model = feed(&session, model, event(NetEventKind::Connected, 1, ""));
+        model = feed(&session, model, event(NetEventKind::Connected, 2, ""));
+        model = feed(&session, model, event(NetEventKind::Message, 1, "1 0")); // pid 0: +x
+        model = feed(&session, model, event(NetEventKind::Message, 2, "0 1")); // pid 1: +z
+        model = feed(&session, model, event(NetEventKind::Message, 1, "junk")); // ignored
+
+        // Tick (dt = 0.5). pid 0: x = -2 + 1·2·0.5 = -1.0, z = -1.8 -> "0,-100,-180".
+        // pid 1: x = -2.0, z = 0 + 1·2·0.5 = 1.0 -> "1,-200,100". pid 0 still
+        // moving proves the "junk" packet did NOT reset its velocity.
+        let (model, sends) = broadcast(&session, model);
+        // The WHOLE world goes to EVERY client — two identical full snapshots.
+        let snapshot = b"1,-200,100|0,-100,-180".to_vec();
+        assert_eq!(sends.len(), 2, "one Send per client, got: {sends:?}");
+        let mut recipients: Vec<u64> = sends.iter().map(|(c, _)| *c).collect();
+        recipients.sort();
+        assert_eq!(recipients, vec![1, 2], "broadcast reaches both clients");
+        assert!(
+            sends.iter().all(|(_, p)| *p == snapshot),
+            "every client receives the full world, got: {sends:?}"
+        );
+
+        // Client 1 disconnects -> Left drops pid 0. The next tick broadcasts
+        // only pid 1, and only to the client that is still connected (cid 2).
+        let model = feed(&session, model, event(NetEventKind::Disconnected, 1, ""));
+        let (_, sends) = broadcast(&session, model);
+        assert_eq!(sends.len(), 1, "only the remaining client is served: {sends:?}");
+        assert_eq!(sends[0].0, 2);
+        assert!(
+            sends[0].1.starts_with(b"1,"),
+            "snapshot no longer contains pid 0, got: {:?}",
+            String::from_utf8_lossy(&sends[0].1)
+        );
+    }
+
     // Ui teaching errors: non-View children and unbranded anchors fail loud.
     #[test]
     fn ui_teaches_its_usage() {
