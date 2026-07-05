@@ -36,6 +36,7 @@ use functor_runtime_common::mle_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::physics;
+use functor_runtime_common::timetravel::{History, DEFAULT_HISTORY_FRAMES};
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 use mle::project::SourceMap;
@@ -103,6 +104,20 @@ pub struct MleGame {
     physics_rt: physics::SteppedPhysics,
     /// Latest recorder status for the overlay: (fixed frame, paused, history).
     physics_status: (u64, bool, u64),
+    /// The model half of the time-travel recorder (docs/time-travel.md T1):
+    /// one snapshot of the settled `model` per rendered frame, into a bounded
+    /// ring. The master scrub clock is the RENDERED frame (every game has one,
+    /// even with no physics), counted by `rendered_frame`. Recording only for
+    /// now — a later increment wires the coupled seek that restores model +
+    /// world together. RESET on hot reload (see `swap_in`): snapshots can hold
+    /// old-module closures, so unlike the live model they can't cross a reload.
+    model_history: History<Value>,
+    /// The rendered-frame index the next `model_history` snapshot records at;
+    /// monotonic, one per `tick`. Deliberately its own counter — the
+    /// time-travel clock, kept independent of `frames` (a stats-only counter,
+    /// numerically equal today but free to be reset/repurposed for stats), the
+    /// way the physics recorder owns its own fixed-frame clock.
+    rendered_frame: u64,
     /// Endpoint keys of the connections currently declared by
     /// `subscriptions` (`Sub.connect`/`Sub.listen`) — diffed each frame to
     /// open newly-declared ones and close dropped ones. The shell's
@@ -317,6 +332,8 @@ impl MleGame {
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
+            model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            rendered_frame: 0,
             live_conn_keys: std::collections::HashSet::new(),
             last_frame: empty_frame(),
             last_error: None,
@@ -612,6 +629,14 @@ to receive their messages; dropping them"
         // executor applies to in-flight HTTP taggers).
         self.deferred_queries.clear();
         self.pending_events.clear();
+        // Reload is a model-history BOUNDARY: the retained snapshots can hold
+        // closures bound to the old module, so — unlike the live model, which
+        // `rebind_value` migrates above — they can't safely cross a reload.
+        // `rendered_frame` stays monotonic as the global clock, so post-reload
+        // recording resumes consecutively from the current frame. (Rebinding
+        // snapshots to preserve rewind ACROSS an edit is deferred to when that
+        // feature is actually built — docs/time-travel.md.)
+        self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         report.rebound
     }
 
@@ -793,6 +818,11 @@ impl Game for MleGame {
             }
         }
         self.physics_ns += physics_started.elapsed().as_nanos() as u64;
+        // Record the settled model of this rendered frame (docs/time-travel.md
+        // T1) — after all of this frame's input / subscriptions / tick / query
+        // / event effects have folded into `self.model`.
+        self.model_history.record(self.rendered_frame, &self.model);
+        self.rendered_frame += 1;
         self.frames += 1;
         self.report_stats();
     }
@@ -1244,5 +1274,91 @@ mod tests {
             err.contains("`update` must take 2 parameter(s), takes 1"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Recording wiring (docs/time-travel.md T1): each rendered frame's settled
+    /// model lands in `model_history`, keyed by the rendered-frame clock, with
+    /// the live model left untouched. Drives the real MVU loop headlessly.
+    #[test]
+    fn model_history_records_each_rendered_frame() {
+        fn n_of(v: &Value) -> f64 {
+            match v {
+                Value::Record(fields) => {
+                    match &fields.iter().find(|(k, _)| k == "n").expect("n field").1 {
+                        Value::Number(x) => *x,
+                        other => panic!("n is not a number: {other}"),
+                    }
+                }
+                other => panic!("model is not a record: {other}"),
+            }
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("mle-game-test-{}-history", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.mle"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
+             let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
+
+        // Nothing recorded until the first frame runs.
+        assert_eq!(game.model_history.recorded_range(), None);
+
+        for _ in 0..5 {
+            game.tick(FrameTime { tts: 0.0, dts: 0.016 });
+        }
+
+        // Five rendered frames, indexed 0..4; each holds that frame's settled
+        // model (n incremented once per tick), and seeking is exact.
+        assert_eq!(game.model_history.recorded_range(), Some((0, 4)));
+        assert_eq!(n_of(game.model_history.seek(0)), 1.0);
+        assert_eq!(n_of(game.model_history.seek(4)), 5.0);
+        // Recording left the live model untouched.
+        assert_eq!(n_of(&game.model), 5.0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Hot reload is a model-history boundary (xreview): the ring is reset so
+    /// it never retains old-module snapshots, while `rendered_frame` stays
+    /// monotonic so recording resumes CONSECUTIVELY after the reload (a stale
+    /// non-consecutive record would panic in `History::record`).
+    #[test]
+    fn hot_reload_resets_history_and_recording_resumes() {
+        let dir = std::env::temp_dir()
+            .join(format!("mle-game-test-{}-history-reload", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let src = "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
+             let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n";
+        std::fs::write(dir.join("game.mle"), src).expect("write game");
+        let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
+
+        for _ in 0..3 {
+            game.tick(FrameTime { tts: 0.0, dts: 0.016 });
+        }
+        assert_eq!(game.model_history.recorded_range(), Some((0, 2)));
+
+        // Push a fresh (compatible) source: the model is rebound and KEPT, but
+        // the history ring is reset.
+        game.reload_source(src).expect("reload should succeed");
+        assert_eq!(
+            game.model_history.recorded_range(),
+            None,
+            "reload must reset the model history"
+        );
+
+        // Recording resumes at the current (monotonic) rendered frame — the
+        // fresh ring re-bases there, so no non-consecutive panic.
+        game.tick(FrameTime { tts: 0.0, dts: 0.016 });
+        assert_eq!(game.model_history.recorded_range(), Some((3, 3)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -34,6 +34,11 @@ use std::collections::VecDeque;
 /// [`crate::physics::timeline::Frame`].
 pub type Frame = u64;
 
+/// Default rendered-frame retention (~15s at 60fps) — the window both game
+/// shells size their model `History` to, matching the physics recorder. Shared
+/// so the two shells can't silently diverge (docs/time-travel.md T1).
+pub const DEFAULT_HISTORY_FRAMES: usize = 900;
+
 /// A bounded per-frame snapshot ring of `T`. Records the settled state of each
 /// consecutive frame and restores any frame still in the retained window. See
 /// the module docs for why this is a plain ring, not a keyframe log.

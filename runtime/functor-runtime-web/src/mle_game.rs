@@ -29,6 +29,7 @@ use functor_runtime_common::mle_prelude::{
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
+use functor_runtime_common::timetravel::{History, DEFAULT_HISTORY_FRAMES};
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 use mle::{Session, Value};
@@ -78,6 +79,13 @@ pub struct MleWebGame {
     physics_rt: physics::SteppedPhysics,
     /// Latest recorder status for the overlay: (fixed frame, paused, history).
     physics_status: (u64, bool, u64),
+    /// The model half of the time-travel recorder (docs/time-travel.md T1) —
+    /// one snapshot of the settled `model` per rendered frame into a bounded
+    /// ring, keyed by the RENDERED-frame clock (`rendered_frame`). The web
+    /// sibling of the desktop producer's field; recording only for now.
+    model_history: History<Value>,
+    /// The rendered-frame index the next `model_history` snapshot records at.
+    rendered_frame: u64,
     /// Declared connection keys (`Sub.connect`/`Sub.listen`), reconciled each
     /// frame — see the desktop producer.
     live_conn_keys: std::collections::HashSet<String>,
@@ -235,6 +243,8 @@ impl MleWebGame {
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
+            model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            rendered_frame: 0,
             live_conn_keys: std::collections::HashSet::new(),
             has_physics: loaded.has_physics,
             has_ui: loaded.has_ui,
@@ -275,6 +285,11 @@ impl MleWebGame {
         // drop them rather than let them dangle.
         self.deferred_queries.clear();
         self.pending_events.clear();
+        // Reload is a model-history BOUNDARY (see the desktop producer): the
+        // retained snapshots can hold old-module closures, so they can't cross
+        // a reload; `rendered_frame` stays monotonic so recording resumes
+        // consecutively.
+        self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         self.has_ui = loaded.has_ui;
         if !self.has_ui {
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
@@ -617,6 +632,10 @@ impl GameProducer for MleWebGame {
                 Err(err) => self.frame_error("subscriptions", &err),
             }
         }
+        // Record the settled model of this rendered frame (docs/time-travel.md
+        // T1), after all of this frame's effects have folded into `self.model`.
+        self.model_history.record(self.rendered_frame, &self.model);
+        self.rendered_frame += 1;
     }
 
     fn key_event(&mut self, code: i32, is_down: bool) {
