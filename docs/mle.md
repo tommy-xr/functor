@@ -279,6 +279,14 @@ snapshots — no GPU, fully agent-verifiable.
       `mle types` dump, goldened); the B4 diagnostic suite still passes;
       probe battery re-run (no legal program rejected).
 
+- [x] **Language: list patterns + cons** (2026-07-05). `[a, b]` / `[]` /
+      `[head, ..rest]` patterns in `match` (element + tail sub-patterns are
+      names/`_`; exact-length unless `..`), and `[x, ..xs]` cons in
+      expressions. Element types flow through both (inference with teeth:
+      `["s", ..floats]` errors); proper exhaustiveness — `[] | [h, ..t]`
+      IS exhaustive, `[a, b]` alone needs a catch-all. Full stack: lexer
+      (`..`), parser, lower, eval, HM types, hover/goto/rebind. Verify:
+      `mle/examples/lists.mle` + goldens; run/parser/check pin tests.
 - [x] **Language: generic type declarations** (done 2026-07-04, the B7
       follow-up both review engines asked for). `type Box<v> = | Full(value:
       v) | Empty` / `type Pair<x, y> = { … }`: checker-only (the runtime

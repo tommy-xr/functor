@@ -130,6 +130,14 @@ fn pattern_binders(pattern: &Pattern, binders: &mut HashMap<u32, Span>) {
         PatternKind::Var { binding, .. } => {
             binders.insert(binding.0, pattern.span);
         }
+        PatternKind::List { items, tail } => {
+            for arg in items {
+                pattern_binders(arg, binders);
+            }
+            if let Some(tail) = tail {
+                pattern_binders(tail, binders);
+            }
+        }
         PatternKind::Ctor { args, .. } | PatternKind::Tuple(args) => {
             for arg in args {
                 pattern_binders(arg, binders);

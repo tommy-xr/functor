@@ -228,6 +228,14 @@ fn pattern_var_bindings(pattern: &Pattern, f: &mut impl FnMut(u32)) {
                 pattern_var_bindings(arg, f);
             }
         }
+        PatternKind::List { items, tail } => {
+            for arg in items {
+                pattern_var_bindings(arg, f);
+            }
+            if let Some(tail) = tail {
+                pattern_var_bindings(tail, f);
+            }
+        }
         PatternKind::Wildcard
         | PatternKind::Number(_)
         | PatternKind::Bool(_)
@@ -1246,6 +1254,21 @@ the type: `type Name<{name}> = …`"
                 }
                 Type::List(Box::new(elem))
             }
+            ExprKind::ListCons { items, tail } => {
+                let elem = self.fresh();
+                for item in items {
+                    let ty = self.infer(item);
+                    self.unify(&ty, &elem, item.span, "list element");
+                }
+                let tail_ty = self.infer(tail);
+                self.unify(
+                    &tail_ty,
+                    &Type::List(Box::new(elem.clone())),
+                    tail.span,
+                    "`..` tail",
+                );
+                Type::List(Box::new(elem))
+            }
             ExprKind::RecordUpdate { base, fields } => {
                 let base_ty = self.infer(base);
                 let base_ty = self.zonk(&base_ty);
@@ -1484,6 +1507,10 @@ the type: `type Name<{name}> = …`"
         let mut saw_true = false;
         let mut saw_false = false;
         let mut covered_ctors: Vec<&str> = Vec::new();
+        // List coverage: exact-length patterns (`[a, b]` → 2) and min-length
+        // tail patterns (`[h, ..t]` → 1, matches len >= 1).
+        let mut list_exact: Vec<usize> = Vec::new();
+        let mut list_tail_mins: Vec<usize> = Vec::new();
         let mut result: Option<Type> = None;
         for arm in arms {
             // Arms after a catch-all are unreachable at runtime — they are
@@ -1493,6 +1520,13 @@ the type: `type Name<{name}> = …`"
             self.check_pattern_constraining(&arm.pattern, &scrutinee_ty, !has_catch_all);
             match &arm.pattern.kind {
                 PatternKind::Wildcard | PatternKind::Var { .. } => has_catch_all = true,
+                PatternKind::List { items, tail } => {
+                    if tail.is_some() {
+                        list_tail_mins.push(items.len());
+                    } else {
+                        list_exact.push(items.len());
+                    }
+                }
                 // Sub-patterns are irrefutable (names/`_`), so a tuple arm
                 // catches every tuple of its arity — but only if that arity
                 // CAN match the scrutinee (the mismatch itself is diagnosed
@@ -1566,6 +1600,26 @@ the type: `type Name<{name}> = …`"
 a catch-all arm (`_` or a name)"
                         ),
                     );
+                }
+                // A list match is exhaustive iff SOME `[x1..xn, ..t]`
+                // pattern bounds the tail (covering len >= n) AND every
+                // shorter length 0..n is covered by an exact pattern (or a
+                // shorter tail pattern). `[]` + `[h, ..t]` is the canonical
+                // exhaustive recursion.
+                Type::List(_) => {
+                    let covered = list_tail_mins.iter().min().is_some_and(|&min| {
+                        (0..min).all(|len| {
+                            list_exact.contains(&len) || list_tail_mins.iter().any(|&m| m <= len)
+                        })
+                    });
+                    if !covered {
+                        self.diag(
+                            expr.span,
+                            format!(
+                                "match on {scrutinee_ty} is not exhaustive: add `[..rest]`, a catch-all (`_`), or arms covering the remaining lengths"
+                            ),
+                        );
+                    }
                 }
                 // A known product with no arity-matching arm can never be
                 // handled (the per-arm mismatch diags say why each arm
@@ -1655,6 +1709,7 @@ a catch-all arm (`_` or a name)"
                 PatternKind::Tuple(args) => {
                     Some(Type::Tuple((0..args.len()).map(|_| self.fresh()).collect()))
                 }
+                PatternKind::List { .. } => Some(Type::List(Box::new(self.fresh()))),
                 PatternKind::Number(_) => Some(Type::Float),
                 PatternKind::Bool(_) => Some(Type::Bool),
                 PatternKind::String(_) => Some(Type::String),
@@ -1701,6 +1756,27 @@ value is {scrutinee} — it can never match",
                     }
                 }
             },
+            PatternKind::List { items, tail } => {
+                // Element type from the scrutinee (List<elem>); each item and
+                // the tail check against it (tail binds List<elem>).
+                let elem = match scrutinee {
+                    Type::List(elem) => (**elem).clone(),
+                    Type::Unknown | Type::Var(_) => Type::Unknown,
+                    other => {
+                        self.diag(
+                            pattern.span,
+                            format!("a list pattern cannot match {other} — it can never match"),
+                        );
+                        Type::Unknown
+                    }
+                };
+                for item in items {
+                    self.check_pattern(item, &elem);
+                }
+                if let Some(tail) = tail {
+                    self.check_pattern(tail, &Type::List(Box::new(elem)));
+                }
+            }
             PatternKind::Ctor { name, args } => match self.ctors.get(name).cloned() {
                 Some((type_name, _, field_tys)) => {
                     let mut field_tys = field_tys;

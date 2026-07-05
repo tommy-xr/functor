@@ -61,7 +61,11 @@ let sizeOf = (s: Shape): String =>
 
 let threshold = 10                            // top-level let; ints/floats are all Float (f64)
 let origin = { x: 0.0, y: 0.0 }               // record literal
-let scores = [1.0, 2.0, 3.0]                  // list literal
+let scores = [1.0, 2.0, 3.0]                  // list literal; [x, ..xs] prepends
+let sumList = (xs: List<Float>): Float =>     // list PATTERNS: [] / [a,b] / [h, ..t]
+  match xs with
+  | [] => 0.0
+  | [head, ..rest] => head + sumList(rest)    // refutable; needs a catch-all or [..r]
 let s = "text\n"                              // strings: escapes \" \\ \n \t
 let flag = true                               // bools
 

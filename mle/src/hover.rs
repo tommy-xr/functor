@@ -126,6 +126,14 @@ fn pattern_vars(pattern: &Pattern, types: &ExprTypes, consider: &mut impl FnMut(
                 pattern_vars(arg, types, consider);
             }
         }
+        PatternKind::List { items, tail } => {
+            for arg in items {
+                pattern_vars(arg, types, consider);
+            }
+            if let Some(tail) = tail {
+                pattern_vars(tail, types, consider);
+            }
+        }
         PatternKind::Wildcard
         | PatternKind::Number(_)
         | PatternKind::Bool(_)
@@ -142,6 +150,9 @@ pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
             .chain(fields.iter().map(|f| &f.value))
             .collect(),
         ExprKind::List(items) => items.iter().collect(),
+        ExprKind::ListCons { items, tail } => {
+            items.iter().chain(std::iter::once(tail.as_ref())).collect()
+        }
         ExprKind::Tuple(items) => items.iter().collect(),
         ExprKind::FieldAccess { object, .. } => vec![object],
         ExprKind::Call { callee, args } => std::iter::once(callee.as_ref())

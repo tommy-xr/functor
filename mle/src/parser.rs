@@ -30,7 +30,7 @@
 //! tuple     := "(" expr ("," expr)+ ","? ")"
 //! record    := "{" (ident ":" expr),* "}"
 //!            | "{" expr "with" (ident ":" expr),+ "}"
-//! list      := "[" expr,* "]"
+//! list      := "[" (expr ("," expr)* ("," ".." expr)?)? "]"   (cons if ..)
 //! lambda    := "(" (ident (":" type)?),* ")" (":" type)? "=>" expr
 //! ```
 //!
@@ -587,9 +587,37 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             // Uppercase: always a constructor pattern, never a variable.
             TokenKind::Ident(_) => return self.ctor_pattern(),
             TokenKind::LParen => return self.tuple_pattern(),
+            TokenKind::LBracket => return self.list_pattern(),
             _ => return self.error("a pattern"),
         };
         Ok(Pattern { kind, span })
+    }
+
+    /// `[]` / `[a, b]` / `[head, ..rest]` — element and tail sub-patterns
+    /// are variable bindings or `_` only. `..rest` (last) binds the
+    /// remainder as a list; without it, the length must match exactly.
+    fn list_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let open = self.expect(TokenKind::LBracket, "`[`")?;
+        let mut items = Vec::new();
+        let mut tail = None;
+        while self.peek_kind() != &TokenKind::RBracket {
+            if self.peek_kind() == &TokenKind::DotDot {
+                self.bump();
+                tail = Some(Box::new(self.sub_pattern()?));
+                break;
+            }
+            items.push(self.sub_pattern()?);
+            if self.peek_kind() == &TokenKind::Comma {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RBracket, "`,`, `..`, or `]`")?;
+        Ok(Pattern {
+            kind: PatternKind::List { items, tail },
+            span: open.span.to(close.span),
+        })
     }
 
     /// `(x, _)` / `(a, b, c)` — sub-patterns are variable bindings or `_`
@@ -927,7 +955,21 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
     fn list(&mut self) -> Result<Expr, ParseError> {
         let open = self.bump();
         let mut items = Vec::new();
+        let mut tail = None;
         while self.peek_kind() != &TokenKind::RBracket {
+            // `[a, b, ..tail]` — the spread must be last, after >=1 element.
+            if self.peek_kind() == &TokenKind::DotDot {
+                let dd = self.bump();
+                if items.is_empty() {
+                    return Err(ParseError {
+                        message: "`..tail` needs at least one element before it (`[x, ..xs]`)"
+                            .to_string(),
+                        span: dd.span,
+                    });
+                }
+                tail = Some(Box::new(self.expr()?));
+                break;
+            }
             items.push(self.expr()?);
             if self.peek_kind() == &TokenKind::Comma {
                 self.bump();
@@ -935,11 +977,13 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 break;
             }
         }
-        let close = self.expect(TokenKind::RBracket, "`,` or `]`")?;
-        Ok(Expr {
-            kind: ExprKind::List(items),
-            span: open.span.to(close.span),
-        })
+        let close = self.expect(TokenKind::RBracket, "`,`, `..`, or `]`")?;
+        let span = open.span.to(close.span);
+        let kind = match tail {
+            Some(tail) => ExprKind::ListCons { items, tail },
+            None => ExprKind::List(items),
+        };
+        Ok(Expr { kind, span })
     }
 
     /// `(` begins either a lambda or a parenthesized expression. Scan to the
