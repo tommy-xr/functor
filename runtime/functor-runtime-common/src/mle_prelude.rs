@@ -752,6 +752,7 @@ const PATHS: &[&str] = &[
     "Scene.rotateY",
     "Scene.rotateZ",
     "Scene.scale",
+    "Scene.scaleXYZ",
     "Scene.lit",
     "Scene.emissive",
     "Scene.litTexture",
@@ -1059,6 +1060,20 @@ the game dir",
                     wrap_transform(scene, xform, "Scene.scale(scene, k)", span)
                 }
                 _ => usage("Scene.scale(scene, k)"),
+            },
+            // Non-uniform scale (the F# `Transform.scaleX/Y/Z`): stretch each
+            // axis independently — e.g. a wide, short backdrop quad, or a
+            // heightmap sized in XZ without inflating its Y heights.
+            "Scene.scaleXYZ" => match args.as_slice() {
+                [scene, x, y, z] => {
+                    let xform = Matrix4::from_nonuniform_scale(
+                        num(x, span)? as f32,
+                        num(y, span)? as f32,
+                        num(z, span)? as f32,
+                    );
+                    wrap_transform(scene, xform, "Scene.scaleXYZ(scene, x, y, z)", span)
+                }
+                _ => usage("Scene.scaleXYZ(scene, x, y, z)"),
             },
             "Camera.lookAt" => match args.as_slice() {
                 [ex, ey, ez, tx, ty, tz] => Ok(host(MleCamera(Camera::look_at(
@@ -2766,6 +2781,20 @@ mod tests {
         let composed = t * r;
         let origin = composed * cgmath::vec4(0.0f32, 0.0, 0.0, 1.0);
         assert!((origin.x - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn scale_xyz_is_non_uniform() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(\n\
+               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
+               Scene.cube() |> Scene.scaleXYZ(2.0, 3.0, 4.0))",
+        );
+        // The wrapper Group carries a non-uniform scale on its diagonal — the
+        // three axes stretch independently (unlike Scene.scale's uniform k).
+        let s = frame.scene.xform;
+        assert_eq!((s.x.x, s.y.y, s.z.z), (2.0, 3.0, 4.0));
     }
 
     // The mle-hello shape: a List.map-built group of colored cubes.
