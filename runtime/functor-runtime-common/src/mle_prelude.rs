@@ -171,6 +171,17 @@ pub enum EffectTree {
     /// The game observes the outcome through the physics reads, not a
     /// message.
     Physics(physics::PhysicsCommand),
+    /// A physics query (docs/physics.md Phase 4). Unlike `Now`/`Random`,
+    /// queries are **deferred**: the pre-step drain holds them and the
+    /// driver performs them right after the frame's physics step, so the
+    /// tagger's record answers against the FRESH world ("commands apply at
+    /// the step; queries answer after it").
+    Raycast {
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_dist: f32,
+        tagger: Value,
+    },
 }
 
 pub struct MleEffect(pub EffectTree);
@@ -181,6 +192,31 @@ pub struct MleEffect(pub EffectTree);
 pub trait EffectRunner {
     fn now(&mut self) -> f64;
     fn random(&mut self) -> f64;
+    /// The raycast result record (`{hit, x, y, z, nx, ny, nz, distance,
+    /// tag}` — `hit: false` with zeroed fields for a miss). `Real` asks the
+    /// singleton physics world; `Fake`/`Replay` return canned/recorded
+    /// records — physics queries are testable without a world at all.
+    fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue;
+}
+
+/// The tagger-facing record for a raycast result. Always the full shape —
+/// `hit: Bool` discriminates — so field access typechecks on both arms.
+pub fn ray_result_value(hit: Option<physics::RayHit>) -> EffectValue {
+    let (h, p, n, d, tag) = match hit {
+        Some(hit) => (true, hit.position, hit.normal, hit.distance, hit.tag),
+        None => (false, [0.0; 3], [0.0; 3], 0.0, String::new()),
+    };
+    EffectValue::Record(vec![
+        ("hit".to_string(), EffectValue::Bool(h)),
+        ("x".to_string(), EffectValue::Number(p[0] as f64)),
+        ("y".to_string(), EffectValue::Number(p[1] as f64)),
+        ("z".to_string(), EffectValue::Number(p[2] as f64)),
+        ("nx".to_string(), EffectValue::Number(n[0] as f64)),
+        ("ny".to_string(), EffectValue::Number(n[1] as f64)),
+        ("nz".to_string(), EffectValue::Number(n[2] as f64)),
+        ("distance".to_string(), EffectValue::Number(d as f64)),
+        ("tag".to_string(), EffectValue::Text(tag)),
+    ])
 }
 
 /// The structured effect log keeps this many most-recent records — enforced
@@ -274,6 +310,12 @@ impl EffectRunner for RealEffects {
     fn now(&mut self) -> f64 {
         epoch_seconds()
     }
+    fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
+        ray_result_value(
+            physics::with_world(physics::DEFAULT_WORLD, |w| w.raycast(origin, dir, max_dist))
+                .flatten(),
+        )
+    }
     fn random(&mut self) -> f64 {
         // xorshift64*; map the top 53 bits into [0, 1).
         let mut x = self.rng_state;
@@ -291,6 +333,10 @@ pub struct FakeEffects {
     pub now: f64,
     pub randoms: Vec<f64>,
     next: usize,
+    /// Canned raycast results, cycled like `randoms`; empty = every ray
+    /// misses. Test physics-query handling with no world at all.
+    pub ray_hits: Vec<EffectValue>,
+    next_ray: usize,
 }
 
 impl FakeEffects {
@@ -299,7 +345,14 @@ impl FakeEffects {
             now,
             randoms,
             next: 0,
+            ray_hits: Vec::new(),
+            next_ray: 0,
         }
+    }
+
+    pub fn with_ray_hits(mut self, ray_hits: Vec<EffectValue>) -> FakeEffects {
+        self.ray_hits = ray_hits;
+        self
     }
 }
 
@@ -310,6 +363,14 @@ impl EffectRunner for FakeEffects {
     fn random(&mut self) -> f64 {
         let v = self.randoms[self.next % self.randoms.len()];
         self.next += 1;
+        v
+    }
+    fn raycast(&mut self, _origin: [f32; 3], _dir: [f32; 3], _max_dist: f32) -> EffectValue {
+        if self.ray_hits.is_empty() {
+            return ray_result_value(None);
+        }
+        let v = self.ray_hits[self.next_ray % self.ray_hits.len()].clone();
+        self.next_ray += 1;
         v
     }
 }
@@ -356,6 +417,9 @@ impl EffectRunner for ReplayEffects {
     }
     fn random(&mut self) -> f64 {
         self.take_number("random")
+    }
+    fn raycast(&mut self, _origin: [f32; 3], _dir: [f32; 3], _max_dist: f32) -> EffectValue {
+        self.take("physics.raycast")
     }
 }
 
@@ -588,6 +652,7 @@ const PATHS: &[&str] = &[
     "Physics.applyForce",
     "Physics.setVelocity",
     "Physics.teleport",
+    "Physics.raycast",
 ];
 
 impl Host for FunctorHost {
@@ -998,6 +1063,42 @@ the game dir",
                     Ok(host(MleEffect(EffectTree::Physics(command))))
                 }
                 _ => usage(&format!("{path}(tag, x, y, z)")),
+            },
+            // Query EFFECT (docs/physics.md Phase 4): deferred until after
+            // the frame's physics step, then the tagger receives the result
+            // record `{hit, x, y, z, nx, ny, nz, distance, tag}` (hit: false
+            // with zeroed fields for a miss) — fresh, same-frame.
+            "Physics.raycast" => match args.as_slice() {
+                [ox, oy, oz, dx, dy, dz, max_dist, tagger @ (Value::Closure(_) | Value::Ctor { .. })] =>
+                {
+                    let origin = [
+                        num(ox, span)? as f32,
+                        num(oy, span)? as f32,
+                        num(oz, span)? as f32,
+                    ];
+                    let dir = [
+                        num(dx, span)? as f32,
+                        num(dy, span)? as f32,
+                        num(dz, span)? as f32,
+                    ];
+                    if dir == [0.0, 0.0, 0.0] {
+                        return err("Physics.raycast: the direction must not be zero".to_string());
+                    }
+                    let max_dist =
+                        positive_num(max_dist, span, "Physics.raycast maxDist")? as f32;
+                    Ok(host(MleEffect(EffectTree::Raycast {
+                        origin,
+                        dir,
+                        max_dist,
+                        tagger: tagger.clone(),
+                    })))
+                }
+                [_, _, _, _, _, _, _, other] => err(format!(
+                    "Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger): the tagger \
+                     must be a function of the result record, got {}",
+                    other.kind_name()
+                )),
+                _ => usage("Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)"),
             },
             "Physics.transformed" => match args.as_slice() {
                 [scene, Value::String(tag)] => {
@@ -1411,6 +1512,12 @@ pub fn contains_effect(value: &Value) -> bool {
 /// is appended to `log` (the structured effect log; replay's input).
 /// Errors report through `report` (deduped by the producer) and drop that
 /// effect — one bad tagger must not stall the rest.
+///
+/// Physics QUERIES are not performed here: they come back in the returned
+/// list for the driver to hold until after the frame's physics step, then
+/// hand to [`perform_deferred_queries`] — so their taggers answer against
+/// the fresh world ("commands apply at the step; queries answer after it").
+#[must_use = "deferred physics queries must be performed after the step"]
 pub fn drain_effects(
     session: &mle::Session,
     model: &mut Value,
@@ -1418,9 +1525,71 @@ pub fn drain_effects(
     runner: &mut dyn EffectRunner,
     log: &mut EffectLog,
     report: &mut dyn FnMut(String),
+) -> Vec<EffectTree> {
+    let mut deferred = Vec::new();
+    drain_mode(
+        session,
+        model,
+        vec![first],
+        runner,
+        log,
+        report,
+        Some(&mut deferred),
+    );
+    deferred
+}
+
+/// Does this effect tree produce MESSAGES (tagger results that must fold
+/// through `update`)? Tagger-less trees — physics commands, `Effect.none`,
+/// batches thereof — drain fine without an `update` hook; the producers'
+/// "effects returned but there is no update" guard must only fire for trees
+/// that actually need one. (The guard predates tagger-less effects; gating
+/// on it unconditionally silently dropped physics commands from
+/// update-less games.)
+pub fn needs_update(tree: &EffectTree) -> bool {
+    match tree {
+        EffectTree::None | EffectTree::Physics(_) => false,
+        EffectTree::Now { .. } | EffectTree::Random { .. } | EffectTree::Raycast { .. } => true,
+        EffectTree::Batch(items) => items.iter().any(needs_update),
+    }
+}
+
+/// The post-step half of the query story: perform queries deferred by
+/// [`drain_effects`], folding their tagger messages through `update`.
+/// Chained effects drain to the same fixed point — further queries answer
+/// immediately (the world already stepped this frame); further commands
+/// queue for the next frame's step, as always.
+pub fn perform_deferred_queries(
+    session: &mle::Session,
+    model: &mut Value,
+    deferred: Vec<EffectTree>,
+    runner: &mut dyn EffectRunner,
+    log: &mut EffectLog,
+    report: &mut dyn FnMut(String),
 ) {
+    if deferred.is_empty() {
+        return;
+    }
+    drain_mode(session, model, deferred, runner, log, report, None);
+}
+
+fn drain_mode(
+    session: &mle::Session,
+    model: &mut Value,
+    queue: Vec<EffectTree>,
+    runner: &mut dyn EffectRunner,
+    log: &mut EffectLog,
+    report: &mut dyn FnMut(String),
+    // `Some` = pre-step drain: hold queries here instead of performing.
+    // `None` = post-step drain: answer queries now.
+    mut defer_queries: Option<&mut Vec<EffectTree>>,
+) {
+    // Each drain invocation gets its own cap, so a frame that defers queries
+    // is bounded by 2×MAX (pre-step + post-step) — the cap's job is to bound
+    // runaway chains, not to meter exactly N.
     const MAX_EFFECTS_PER_FRAME: usize = 1000;
-    let mut queue: Vec<EffectTree> = vec![first];
+    let mut queue: Vec<EffectTree> = queue;
+    queue.reverse(); // treat the input list as front-of-queue, in order
     // Counts every DEQUEUED node (None and Batch structure included), and is
     // checked BEFORE the runner performs anything — so a runaway chain can't
     // consume unbounded frame time through structural nodes, and the capped
@@ -1468,6 +1637,29 @@ dropping the rest"
                 }
                 continue;
             }
+            EffectTree::Raycast {
+                origin,
+                dir,
+                max_dist,
+                tagger,
+            } => match defer_queries.as_deref_mut() {
+                Some(deferred) => {
+                    // Pre-step: hold the query for the post-step drain (not
+                    // performed, not logged — it hasn't happened yet).
+                    deferred.push(EffectTree::Raycast {
+                        origin,
+                        dir,
+                        max_dist,
+                        tagger,
+                    });
+                    continue;
+                }
+                None => (
+                    "physics.raycast",
+                    runner.raycast(origin, dir, max_dist),
+                    tagger,
+                ),
+            },
             EffectTree::Now { tagger } => ("now", runner.now().into(), tagger),
             EffectTree::Random { tagger } => ("random", runner.random().into(), tagger),
         };
@@ -2171,7 +2363,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
         let mut model = Value::Number(0.0);
         let mut log = EffectLog::new();
         let mut runner = FakeEffects::new(0.0, vec![]);
-        drain_effects(
+        let deferred = drain_effects(
             &session,
             &mut model,
             tree.clone(),
@@ -2179,6 +2371,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
         );
+        assert!(deferred.is_empty(), "nothing should defer here");
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].kind, "physics.applyImpulse");
         // The structured log records the TARGET, not a filler number.
@@ -2352,7 +2545,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
                 .expect("roll");
             let (m, fx) = split_model_effect(returned);
             model = m;
-            drain_effects(
+            let deferred = drain_effects(
                 &session,
                 &mut model,
                 fx.expect("an effect"),
@@ -2360,6 +2553,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
                 &mut log,
                 &mut |msg| panic!("unexpected report: {msg}"),
             );
+            assert!(deferred.is_empty(), "nothing should defer here");
             (model.to_string(), log)
         };
         // Fake world: random = 0.25, now = 99.5 — exact arithmetic.
@@ -2393,6 +2587,140 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
         assert!((0.0..1.0).contains(&r0));
         assert_eq!(real_log[1].kind, "now");
         assert!(real_model.starts_with("{ rolls: 0."));
+    }
+
+    /// The Phase 4 query path end to end: a raycast effect DEFERS through the
+    /// pre-step drain, then answers post-step against the live world, its
+    /// record folding through `update` — and the fake/replay runners answer
+    /// without a world at all.
+    #[test]
+    fn raycast_effects_defer_then_answer_post_step() {
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        // `update` swaps the model for the hit record (tagger = a closure, so
+        // the record itself is the message).
+        let src = "let update = (m, msg) => msg\n\
+                   let main = () => Physics.raycast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 100.0, (hit) => hit)";
+        let module = mle::lower(mle::parse(src).unwrap()).unwrap();
+        let session = mle::Session::load(&module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
+        let record = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("run failed: {}", f.error.message));
+        let effect = match record.outcome {
+            mle::RunOutcome::Main(value) => value,
+            _ => panic!("expected main"),
+        };
+        let Value::HostData(data) = &effect else {
+            panic!("expected an Effect")
+        };
+        let tree = data.as_any().downcast_ref::<MleEffect>().unwrap().0.clone();
+        let EffectTree::Raycast { tagger, .. } = &tree else {
+            panic!("expected a raycast effect");
+        };
+        let tagger = tagger.clone();
+
+        // A settled body for the ray to hit.
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&crate::physics::PhysicsScene::create(
+                [0.0, 0.0, 0.0],
+                vec![crate::physics::Body::fixed(
+                    "slab".to_string(),
+                    crate::physics::Shape::Cuboid {
+                        extents: [4.0, 1.0, 4.0],
+                    },
+                )],
+            ));
+            w.step_fixed();
+        });
+
+        let mut model = Value::Number(0.0);
+        let mut log = EffectLog::new();
+        let mut runner = RealEffects::new();
+        let mut fail = |m: String| panic!("unexpected report: {m}");
+
+        // Pre-step drain: DEFERRED — nothing performed, nothing logged.
+        let deferred = drain_effects(&session, &mut model, tree, &mut runner, &mut log, &mut fail);
+        assert_eq!(deferred.len(), 1);
+        assert!(log.is_empty());
+        assert!(matches!(model, Value::Number(_)), "model must be untouched");
+
+        // Post-step drain: performed against the live world.
+        perform_deferred_queries(&session, &mut model, deferred, &mut runner, &mut log, &mut fail);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].kind, "physics.raycast");
+        let Value::Record(fields) = &model else {
+            panic!("update should have received the hit record");
+        };
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert!(matches!(field("hit"), Value::Bool(true)));
+        assert!(matches!(field("tag"), Value::String(s) if &*s == "slab"));
+        assert!(matches!(field("y"), Value::Number(n) if (n - 0.5).abs() < 1e-4));
+
+        // Replay: the recorded log answers with no world consulted.
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let mut replay_model = Value::Number(0.0);
+        let mut replay_log = EffectLog::new();
+        let mut replay = ReplayEffects::new(log.clone());
+        let deferred = drain_effects(
+            &session,
+            &mut replay_model,
+            EffectTree::Raycast {
+                origin: [0.0, 5.0, 0.0],
+                dir: [0.0, -1.0, 0.0],
+                max_dist: 100.0,
+                tagger: tagger.clone(),
+            },
+            &mut replay,
+            &mut replay_log,
+            &mut fail,
+        );
+        perform_deferred_queries(
+            &session,
+            &mut replay_model,
+            deferred,
+            &mut replay,
+            &mut replay_log,
+            &mut fail,
+        );
+        assert_eq!(replay_log, log, "replay must reproduce the log");
+        assert_eq!(replay_model.to_string(), model.to_string());
+
+        // Fake: canned hits, no world.
+        let mut fake = FakeEffects::new(0.0, vec![]).with_ray_hits(vec![ray_result_value(None)]);
+        let miss = fake.raycast([0.0; 3], [0.0, -1.0, 0.0], 10.0);
+        let EffectValue::Record(f) = &miss else {
+            panic!()
+        };
+        assert!(f.iter().any(|(k, v)| k == "hit" && *v == EffectValue::Bool(false)));
+    }
+
+    /// Tagger-less trees (physics commands) don't require an `update` hook;
+    /// message-producing ones do — the drivers' drop-guard keys on this.
+    #[test]
+    fn needs_update_distinguishes_taggered_from_fire_and_forget() {
+        let cmd = EffectTree::Physics(crate::physics::PhysicsCommand::ApplyImpulse {
+            tag: "x".to_string(),
+            impulse: [0.0; 3],
+        });
+        assert!(!needs_update(&EffectTree::None));
+        assert!(!needs_update(&cmd));
+        assert!(!needs_update(&EffectTree::Batch(vec![
+            EffectTree::None,
+            cmd.clone()
+        ])));
+        let tagged = EffectTree::Raycast {
+            origin: [0.0; 3],
+            dir: [0.0, -1.0, 0.0],
+            max_dist: 1.0,
+            tagger: Value::Number(0.0), // shape only; construction validates real taggers
+        };
+        assert!(needs_update(&tagged));
+        assert!(needs_update(&EffectTree::Batch(vec![cmd, tagged])));
     }
 
     /// Structured effect values convert to the MLE values taggers receive,
@@ -2467,7 +2795,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
         let mut model = Value::Number(0.0);
         let mut log = EffectLog::new();
         let mut reports = Vec::new();
-        drain_effects(
+        let deferred = drain_effects(
             &session,
             &mut model,
             EffectTree::Random {
@@ -2477,6 +2805,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
             &mut log,
             &mut |msg| reports.push(msg),
         );
+        assert!(deferred.is_empty(), "nothing should defer here");
         // The log bound is enforced INSIDE the drain (not after), and the
         // cap fires before performing the over-limit effect.
         assert_eq!(log.len(), EFFECT_LOG_CAP, "log bounded mid-drain");
@@ -2496,7 +2825,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
         let mut model = Value::Number(0.0);
         let mut log = EffectLog::new();
         let mut reports = Vec::new();
-        drain_effects(
+        let deferred = drain_effects(
             &session,
             &mut model,
             EffectTree::Batch(vec![EffectTree::None; 1500]),
@@ -2504,6 +2833,7 @@ Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
             &mut log,
             &mut |msg| reports.push(msg),
         );
+        assert!(deferred.is_empty(), "nothing should defer here");
         assert!(log.is_empty(), "nothing performed");
         assert!(reports.iter().any(|r| r.contains("per-frame cap")));
     }

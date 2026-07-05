@@ -1,9 +1,12 @@
-// mle-physics — the reference physics example (docs/physics.md, Phase 2c+3).
+// mle-physics — the reference physics example (docs/physics.md, Phase 2c+3+4).
 // Crates and a ball tumble onto a slab, drawn at their live simulated poses
 // via Physics.transformed. Press SPACE to re-drop everything: the changed
 // declared spawn poses teleport the bodies (the divergence rule) and the
 // pile falls again. Press K to KICK the ball — a Physics.applyImpulse
-// effect, returned beside the model, applied at the next physics step. Run
+// effect, returned beside the model, applied at the next physics step.
+// Press R to fire a RAY straight down over the pile: the raycast's result
+// record folds through `update`, which kicks whatever the ray hit — a query
+// chaining into a command, answered against this frame's stepped world. Run
 // with:
 //
 //   functor-runner --mle --game-path examples/mle-physics/game.mle
@@ -63,7 +66,7 @@ let tick = (model, dt, tts) => model
 // Rising-edge detection: GLFW delivers key REPEATS as `isDown = true` too,
 // so holding SPACE would re-drop every repeat without the spaceHeld latch.
 // The kick fires on K's RELEASE instead — key-ups never repeat, so no latch
-// is needed; it returns `(model, effect)`, the B6 effect shape.
+// is needed; arms mix plain-model and (model, effect) returns freely.
 let input = (model, key, isDown) =>
   match key with
   | "Space" =>
@@ -77,7 +80,29 @@ let input = (model, key, isDown) =>
     (match isDown with
      | true => model
      | false => (model, Physics.applyImpulse("ball", 0.0, 5.5, 0.0)))
+  | "R" =>
+    (match isDown with
+     | true => model
+     | false =>
+       // Aim straight down over THIS generation's crate-0 spawn — effect
+       // arguments are ordinary expressions of the model. The tagger is a
+       // plain closure, so the result record IS the message.
+       (model,
+        Physics.raycast(scatterX(model.drop, 0.0), 8.0, scatterZ(model.drop, 0.0),
+                        0.0, -1.0, 0.0, 20.0, (hit) => hit)))
   | _ => model
+
+// Receives the raycast result after this frame's physics step (fresh —
+// "commands apply at the step; queries answer after it"): kick whatever the
+// ray hit. Misses leave the model alone, and so does the slab — kicking a
+// fixed body would just warn.
+let update = (model, msg) =>
+  match msg.hit with
+  | false => model
+  | true =>
+    (match msg.tag == "ground" with
+     | true => model
+     | false => (model, Physics.applyImpulse(msg.tag, 0.0, 6.0, 0.0)))
 
 let draw = (model, tts) =>
   Frame.createLit(

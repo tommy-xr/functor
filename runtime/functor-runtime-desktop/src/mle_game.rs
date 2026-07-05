@@ -29,8 +29,9 @@
 use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
-    contains_effect, drain_effects, frame_value, physics_scene_value, split_model_effect,
-    sub_messages_for_frame, EffectLog, FunctorHost, RealEffects,
+    contains_effect, drain_effects, frame_value, needs_update, perform_deferred_queries,
+    physics_scene_value, split_model_effect, sub_messages_for_frame, EffectLog, EffectTree,
+    FunctorHost, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
@@ -79,6 +80,10 @@ pub struct MleGame {
     /// The structured effect log (last `EFFECT_LOG_CAP` performed effects) —
     /// LLM-readable, and the input format for replay.
     effect_log: EffectLog,
+    /// Physics queries deferred by the frame's pre-step drains, performed
+    /// right after the physics step so their taggers answer against the
+    /// fresh world ("commands apply at the step; queries answer after it").
+    deferred_queries: Vec<EffectTree>,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -272,6 +277,7 @@ impl MleGame {
             has_physics: loaded.has_physics,
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
+            deferred_queries: Vec::new(),
             last_frame: empty_frame(),
             last_error: None,
             frames: 0,
@@ -306,25 +312,30 @@ impl MleGame {
     /// fixed substeps. Runs after `tick` so declarations come from the settled
     /// model, and before `render` so `Physics.position`/`Physics.transformed`
     /// in `draw` read the just-stepped world.
-    fn step_physics(&mut self, dts: f32) {
+    /// Returns the number of fixed substeps taken (0 when there is no
+    /// `physics` hook, the hook errored, or the accumulator hasn't reached a
+    /// full step yet).
+    fn step_physics(&mut self, dts: f32) -> u32 {
         if !self.has_physics {
-            return;
+            return 0;
         }
         let args = vec![self.model.clone()];
         match self.session.call("physics", args, &mut FunctorHost) {
             Ok(value) => match physics_scene_value(&value) {
                 Some(scene) => {
-                    let warnings = physics::with_world(physics::DEFAULT_WORLD, |w| {
+                    let (steps, warnings) = physics::with_world(physics::DEFAULT_WORLD, |w| {
                         w.reconcile(scene);
-                        w.step_frame(dts);
-                        w.take_command_warnings()
-                    });
+                        let steps = w.step_frame(dts);
+                        (steps, w.take_command_warnings())
+                    })
+                    .unwrap_or((0, Vec::new()));
                     // Command effects apply asynchronously (queued at perform
                     // time, applied at the step), so their problems — unknown
                     // tag, queue overflow — surface here, deduped.
-                    for warning in warnings.into_iter().flatten() {
+                    for warning in warnings {
                         self.report_once(format!("[mle] {warning}"));
                     }
+                    return steps;
                 }
                 None => self.report_once(format!(
                     "[mle] physics must return Physics.scene(gx, gy, gz, [body, …]), got {}",
@@ -333,6 +344,7 @@ impl MleGame {
             },
             Err(err) => self.frame_error("physics", &err),
         }
+        0
     }
 
     /// Take an entry point's return: split off any `(model, effect)` pair,
@@ -355,7 +367,11 @@ not data; return them beside the model as `(model, effect)` instead of storing t
             );
         }
         let Some(effects) = effects else { return };
-        if self.session.global("update").is_none() {
+        // Only MESSAGE-producing effects need an `update` to receive them —
+        // tagger-less physics commands must not be dropped over a missing
+        // hook (that guard silently ate them; caught by capture-verifying
+        // the mle-physics kick).
+        if needs_update(&effects) && self.session.global("update").is_none() {
             self.report_once(
                 "[mle] effects returned but there is no `let update = (model, msg) => …` \
 to receive their messages; dropping them"
@@ -364,7 +380,7 @@ to receive their messages; dropping them"
             return;
         }
         let mut reports: Vec<String> = Vec::new();
-        drain_effects(
+        let deferred = drain_effects(
             &self.session,
             &mut self.model,
             effects,
@@ -372,6 +388,9 @@ to receive their messages; dropping them"
             &mut self.effect_log,
             &mut |message| reports.push(message),
         );
+        // Physics queries wait for the post-step drain (end of `tick`), so
+        // their taggers answer against THIS frame's stepped world.
+        self.deferred_queries.extend(deferred);
         for message in reports {
             self.report_once(message);
         }
@@ -446,6 +465,10 @@ to receive their messages; dropping them"
             physics::remove_world(physics::DEFAULT_WORLD);
         }
         self.last_error = None;
+        // A deferred query holds a tagger — a closure into the OLD session;
+        // drop them rather than let them dangle (the same rule the F#
+        // executor applies to in-flight HTTP taggers).
+        self.deferred_queries.clear();
         report.rebound
     }
 
@@ -566,7 +589,31 @@ impl Game for MleGame {
         }
         self.tick_ns += started.elapsed().as_nanos() as u64;
         let physics_started = Instant::now();
-        self.step_physics(frame_time.dts);
+        let physics_steps = self.step_physics(frame_time.dts);
+        // Post-step query drain: deferred raycasts answer against the world
+        // just stepped; their messages fold through `update` before `draw`,
+        // so this frame's render already reflects them.
+        // On a ZERO-substep frame (the accumulator short of FIXED_DT — normal
+        // right after load and at >60fps) queries stay deferred, like pending
+        // commands, so they never answer against a world that hasn't
+        // simulated. Games without a physics hook answer immediately (the
+        // lazily-created empty world gives sane misses).
+        let world_ready = physics_steps > 0 || !self.has_physics;
+        if world_ready && !self.deferred_queries.is_empty() {
+            let deferred = std::mem::take(&mut self.deferred_queries);
+            let mut reports: Vec<String> = Vec::new();
+            perform_deferred_queries(
+                &self.session,
+                &mut self.model,
+                deferred,
+                &mut self.effect_runner,
+                &mut self.effect_log,
+                &mut |message| reports.push(message),
+            );
+            for message in reports {
+                self.report_once(message);
+            }
+        }
         self.physics_ns += physics_started.elapsed().as_nanos() as u64;
         self.frames += 1;
         self.report_stats();

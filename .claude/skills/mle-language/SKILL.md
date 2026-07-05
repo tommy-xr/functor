@@ -286,6 +286,10 @@ scene |> Physics.transformed("tag")                        // scene at the body'
 Physics.applyImpulse("tag", x, y, z)                       // -> Effect (fire-and-forget)
 Physics.applyForce("tag", x, y, z)                         //   force lasts ONE stepped frame
 Physics.setVelocity("tag", x, y, z) / Physics.teleport("tag", x, y, z)
+Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)   // -> Effect (QUERY): tagger gets
+                                                           //   {hit, x, y, z, nx, ny, nz,
+                                                           //    distance, tag} — hit: false
+                                                           //   (zeroed) for a miss
 ```
 
 `Physics.position` / `Physics.transformed` read the live stepped world
@@ -302,9 +306,26 @@ tagger: nothing folds back through `update`; observe outcomes via the
 physics reads. Commands queue at perform time and apply at the next
 stepped frame's first substep, **after reconcile** — so declaring a body
 and commanding it in the same frame works. A command naming an unknown tag
-is a deduped `[mle]` warning, not an error (the body may have despawned in
-flight). `teleport` moves the live body without touching its declaration
-(no snap-back next frame).
+(or a non-dynamic body) is a deduped `[mle]` warning, not an error (the
+body may have despawned in flight). `teleport` moves the live body without
+touching its declaration (no snap-back next frame). Command effects need
+no `update` hook (they produce no message).
+
+`Physics.raycast` is a **query effect**: DEFERRED through the frame's
+pre-step drains and performed right after the physics step — "commands
+apply at the step; queries answer after it" — so the tagger's record
+answers against THIS frame's fresh world, and any model change it causes
+is visible in this frame's `draw`. (On a frame where the fixed-step
+accumulator takes zero substeps — normal at >60fps — queries carry to the
+next simulated frame, like pending commands: they never answer against a
+world that hasn't stepped.) Rays see sensor colliders too — a trigger
+volume can occlude the solid body behind it. The tagger may be a plain closure
+(`(hit) => hit` makes the record itself the message) or a ctor. A `GotHit`
+handler chaining a command queues it for next frame's step; chaining
+another query answers immediately (the world already stepped). Under the
+fake/replay runners raycasts are canned/recorded — physics-query logic is
+testable with no world at all.
+
 
 A runner-hosted game (`functor-runner --mle --game-path game.mle`) defines:
 
