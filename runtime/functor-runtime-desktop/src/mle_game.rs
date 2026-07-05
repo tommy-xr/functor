@@ -995,10 +995,18 @@ impl Game for MleGame {
         // / event effects have folded into `self.model` — plus the physics
         // fixed-frame the world reached, in lockstep, so a coupled rewind can
         // restore both. `physics_status.0` is the world's current fixed frame.
-        self.model_history.record(self.rendered_frame, &self.model);
-        self.world_frame_history
-            .record(self.rendered_frame, &self.physics_status.0);
-        self.rendered_frame += 1;
+        //
+        // Skip a PAUSED frame (`dts == 0`, i.e. the clock pinned): the sim
+        // hasn't advanced, so recording would only pile up frozen duplicates —
+        // inflating the timeline and pushing a rewind target past the real
+        // history. `dts == 0` is exactly the pinned-and-not-stepping case
+        // (a one-shot step carries `dts > 0`). [xreview]
+        if frame_time.dts > 0.0 {
+            self.model_history.record(self.rendered_frame, &self.model);
+            self.world_frame_history
+                .record(self.rendered_frame, &self.physics_status.0);
+            self.rendered_frame += 1;
+        }
         self.frames += 1;
         self.report_stats();
     }

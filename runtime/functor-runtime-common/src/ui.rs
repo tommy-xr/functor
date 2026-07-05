@@ -214,6 +214,18 @@ fn anchor_id(anchor: Anchor) -> u8 {
 /// Construct once with the runtime's shared GL context, then call [`Self::draw`]
 /// each frame after the 3D pass. The painter holds an `Arc<glow::Context>`, so the
 /// shell must keep its context in an `Arc` and hand a clone here.
+/// Restore the GL state the shared 3D path expects after an egui pass.
+/// egui_glow enables BLEND + SCISSOR and leaves DEPTH_TEST as-is; the 3D path
+/// enables DEPTH_TEST once at startup and re-arms SCISSOR per frame, so reset
+/// to that slate. Shared by every egui pass ([`TextOverlay`], [`Scrubber`]).
+fn restore_gl_after_egui(gl: &glow::Context) {
+    unsafe {
+        gl.disable(glow::SCISSOR_TEST);
+        gl.disable(glow::BLEND);
+        gl.enable(glow::DEPTH_TEST);
+    }
+}
+
 pub struct TextOverlay {
     ctx: egui::Context,
     painter: egui_glow::Painter,
@@ -321,11 +333,7 @@ impl TextOverlay {
         // DEPTH_TEST as-is) and does not restore it. The shared 3D path enables
         // DEPTH_TEST only once at startup and re-arms SCISSOR per frame, so reset
         // to the slate the next 3D frame expects.
-        unsafe {
-            self.gl.disable(glow::SCISSOR_TEST);
-            self.gl.disable(glow::BLEND);
-            self.gl.enable(glow::DEPTH_TEST);
-        }
+        restore_gl_after_egui(&self.gl);
     }
 }
 
@@ -465,11 +473,7 @@ impl Scrubber {
             &output.textures_delta,
         );
         // Restore the GL slate the 3D path expects (see `TextOverlay::run_and_paint`).
-        unsafe {
-            self.gl.disable(glow::SCISSOR_TEST);
-            self.gl.disable(glow::BLEND);
-            self.gl.enable(glow::DEPTH_TEST);
-        }
+        restore_gl_after_egui(&self.gl);
 
         ScrubberOutput {
             action,

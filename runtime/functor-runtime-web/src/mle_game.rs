@@ -706,8 +706,13 @@ impl GameProducer for MleWebGame {
         }
         // Record the settled model of this rendered frame (docs/time-travel.md
         // T1), after all of this frame's effects have folded into `self.model`.
-        self.model_history.record(self.rendered_frame, &self.model);
-        self.rendered_frame += 1;
+        // Skip a paused frame (`dts == 0`) so it doesn't pile up frozen
+        // duplicates (the desktop producer's rule; web has no clock pin today,
+        // so this never fires, but keeps the two shells in step).
+        if frame_time.dts > 0.0 {
+            self.model_history.record(self.rendered_frame, &self.model);
+            self.rendered_frame += 1;
+        }
     }
 
     fn key_event(&mut self, code: i32, is_down: bool) {

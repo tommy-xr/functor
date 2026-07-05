@@ -836,6 +836,10 @@ Escape again to quit"
                         // (cmd-tab to the editor); a click recaptures.
                         window.set_cursor_mode(glfw::CursorMode::Normal);
                         cursor_captured = false;
+                        // A button held at focus-loss may never get its release
+                        // (alt-tab), which would leave egui holding a stuck
+                        // press — clear it so the scrubber stays live. [xreview]
+                        mouse_primary_down = false;
                     }
                     _ if ignore_user_input => {}
                     glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
@@ -1009,13 +1013,25 @@ Escape again to quit"
             // The shell-owned time-travel scrubber (docs/time-travel.md T3),
             // drawn over the frame (so it shows in captures) and interactive
             // when the cursor is released.
+            // The cursor (GLFW window/logical coords) must be scaled to
+            // framebuffer pixels to line up with egui's layout space (which we
+            // drive in physical pixels, ppp = 1.0) — otherwise the panel is
+            // unclickable on a HiDPI/retina display (fb = 2× window). [xreview]
+            let (win_w, _) = window.get_size();
+            let dpi_scale = if win_w > 0 {
+                fb_width as f32 / win_w as f32
+            } else {
+                1.0
+            };
             let scrubber_out = scrubber.draw(
                 fb_width as u32,
                 fb_height as u32,
                 1.0,
                 functor_runtime_common::ui::PointerState {
-                    pos: (!cursor_captured && !hidden)
-                        .then_some((mouse_pos.0 as f32, mouse_pos.1 as f32)),
+                    pos: (!cursor_captured && !hidden).then_some((
+                        mouse_pos.0 as f32 * dpi_scale,
+                        mouse_pos.1 as f32 * dpi_scale,
+                    )),
                     primary_down: mouse_primary_down,
                 },
                 functor_runtime_common::ui::ScrubberState {
@@ -1040,6 +1056,8 @@ Escape again to quit"
                     }
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::Step) => {
+                    // Step implies pause: advance exactly one frame, then hold.
+                    held_time = Some(time.tts);
                     pending_step = Some(1.0 / 60.0);
                 }
                 None => {}
