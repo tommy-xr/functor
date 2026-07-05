@@ -115,6 +115,11 @@ fn golden_run_lists() {
     check_golden("lists", "run");
 }
 
+#[test]
+fn golden_run_strings() {
+    check_golden("strings", "run");
+}
+
 // One trace golden pins the full enter/exit format; the other examples'
 // traces exercise no additional formatting.
 #[test]
@@ -193,6 +198,49 @@ fn equality_is_structural_but_not_for_functions() {
          let main = () => f == f",
     );
     assert_eq!(message, "functions cannot be compared with `==`");
+}
+
+#[test]
+fn text_split_join_round_trip() {
+    // split then join with the same separator is identity on the wire.
+    assert_eq!(
+        main_result("let main = () => Text.join(Text.split(\"a,b,c\", \",\"), \",\")"),
+        "\"a,b,c\""
+    );
+    // splitting an empty string yields one empty field (like F#'s String.Split).
+    assert_eq!(
+        main_result("let main = () => Text.split(\"\", \"|\")"),
+        "[\"\"]"
+    );
+    // multi-char separator (the reason sep is a String, not a char).
+    assert_eq!(
+        main_result("let main = () => Text.split(\"a::b::c\", \"::\")"),
+        "[\"a\", \"b\", \"c\"]"
+    );
+}
+
+#[test]
+fn text_split_rejects_empty_separator() {
+    let (message, _, _) = run_err("let main = () => Text.split(\"abc\", \"\")");
+    assert_eq!(message, "Text.split needs a non-empty separator");
+}
+
+#[test]
+fn text_parse_float_defaults_to_zero_on_garbage() {
+    // Mirrors the F# ports' `trim().parse().unwrap_or(0)`.
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"  -12  \")"), "-12");
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"bogus\")"), "0");
+    // "nan"/"inf" parse as f64 but are non-finite garbage — degrade to 0 too,
+    // so a corrupt field never injects NaN/inf into the model.
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"nan\")"), "0");
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"inf\")"), "0");
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"-inf\")"), "0");
+}
+
+#[test]
+fn text_join_rejects_non_strings() {
+    let (message, _, _) = run_err("let main = () => Text.join([1.0], \",\")");
+    assert_eq!(message, "Text.join expects strings, got a number");
 }
 
 #[test]

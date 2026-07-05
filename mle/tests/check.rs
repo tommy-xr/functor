@@ -98,6 +98,11 @@ fn example_lists_checks_clean() {
     example_checks_clean("lists");
 }
 
+#[test]
+fn example_strings_checks_clean() {
+    example_checks_clean("strings");
+}
+
 fn example_checks_clean(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let src = fs::read_to_string(dir.join(format!("{name}.mle"))).unwrap();

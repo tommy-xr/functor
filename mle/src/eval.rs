@@ -878,6 +878,50 @@ impl Interp<'_> {
                 }
                 _ => err("Text.toBullets(list) expects one list of strings".to_string()),
             },
+            // The wire-protocol string trio the multiplayer ports need (the
+            // F# `String.Split` / `String.concat` / `parseInt` shapes).
+            Builtin::TextSplit => match args.as_slice() {
+                [Value::String(s), Value::String(sep)] => {
+                    if sep.is_empty() {
+                        return err("Text.split needs a non-empty separator".to_string());
+                    }
+                    let parts: Vec<Value> =
+                        s.split(sep.as_ref()).map(|p| Value::String(Rc::from(p))).collect();
+                    Ok(Value::List(Rc::new(parts)))
+                }
+                _ => err("Text.split(s, sep) expects two strings".to_string()),
+            },
+            Builtin::TextJoin => match args.as_slice() {
+                [Value::List(items), Value::String(sep)] => {
+                    let mut parts = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        match item {
+                            Value::String(s) => parts.push(s.to_string()),
+                            other => {
+                                return err(format!(
+                                    "Text.join expects strings, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(Value::String(Rc::from(parts.join(sep.as_ref()).as_str())))
+                }
+                _ => err("Text.join(list, sep) expects a list of strings and a string".to_string()),
+            },
+            // Parse a number out of a (possibly space-padded) string,
+            // defaulting to 0.0 on failure — mirrors the F# ports'
+            // `trim().parse().unwrap_or(0)`, so a malformed wire field
+            // degrades to 0 rather than raising. `f64::from_str` also parses
+            // "nan"/"inf", but a non-finite result is exactly the "garbage"
+            // this neutralizes (and the engine boundary rejects non-finite
+            // numbers), so those degrade to 0 too.
+            Builtin::TextParseFloat => match args.as_slice() {
+                [Value::String(s)] => Ok(Value::Number(
+                    s.trim().parse::<f64>().ok().filter(|n| n.is_finite()).unwrap_or(0.0),
+                )),
+                _ => err("Text.parseFloat(s) expects one string".to_string()),
+            },
             Builtin::MathClamp01 => match args.as_slice() {
                 [Value::Number(n)] => Ok(Value::Number(n.clamp(0.0, 1.0))),
                 _ => err("Math.clamp01(n) expects one number".to_string()),
@@ -1070,6 +1114,9 @@ pub enum Builtin {
     TextFromFloat,
     TextFixed,
     TextToBullets,
+    TextSplit,
+    TextJoin,
+    TextParseFloat,
     MathClamp01,
 }
 
@@ -1086,6 +1133,9 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Text.fromFloat" => Builtin::TextFromFloat,
         "Text.fixed" => Builtin::TextFixed,
         "Text.toBullets" => Builtin::TextToBullets,
+        "Text.split" => Builtin::TextSplit,
+        "Text.join" => Builtin::TextJoin,
+        "Text.parseFloat" => Builtin::TextParseFloat,
         "Math.clamp01" => Builtin::MathClamp01,
         "Math.sin" => Builtin::MathSin,
         "Math.cos" => Builtin::MathCos,
@@ -1105,6 +1155,9 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::TextFromFloat => "Text.fromFloat",
         Builtin::TextFixed => "Text.fixed",
         Builtin::TextToBullets => "Text.toBullets",
+        Builtin::TextSplit => "Text.split",
+        Builtin::TextJoin => "Text.join",
+        Builtin::TextParseFloat => "Text.parseFloat",
         Builtin::MathClamp01 => "Math.clamp01",
         Builtin::MathSin => "Math.sin",
         Builtin::MathCos => "Math.cos",
