@@ -254,18 +254,26 @@ come from file names, capitalized",
         // next file's base.
         base += len + 1;
     }
+    link(files)
+}
+
+/// Parse, lower, and link a set of source files into one merged module,
+/// injecting the built-in `Net` module. Shared by the filesystem loader
+/// and the single-source (wasm) loader.
+fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     // The built-in `Net` module: a prelude-provided ADT always in scope, so
-    // any game can `match ev with | Net.Connected(id) => …` without
-    // declaring the type. It's an ordinary non-entry module (canonicalized
-    // to `Net.NetEvent` / `Net.Connected` / …), loaded through the same
-    // path — the host builds matching `Net.*` variant values (see
-    // `mle_prelude`). Injected LAST so the entry stays index 0.
+    // any game can `match ev with | Net.Connected(id) => …` without declaring
+    // the type. Canonicalized to `Net.NetEvent` / `Net.Connected` / …; the
+    // host builds matching `Net.*` values. Appended LAST so the entry stays
+    // index 0. Both the filesystem and single-source loaders reach it here.
+    let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
     files.push(SourceFile {
         path: PathBuf::from("<builtin>/Net.mle"),
         module: "Net".to_string(),
         src: NET_MODULE_SRC.to_string(),
         base,
     });
+
     let entry = files[0].module.clone();
 
     // Parse every file (spans land in the project-wide space).
@@ -351,7 +359,7 @@ come from file names, capitalized",
             .iter()
             .find(|f| &f.module == start)
             .map(|f| f.path.clone())
-            .unwrap_or_else(|| entry_path.to_path_buf());
+            .unwrap_or_else(|| files[0].path.clone());
         ProjectError {
             path,
             line: 1,
@@ -387,6 +395,19 @@ allowed (within one file, definitions may still be mutually recursive)",
         entry,
         scopes,
     })
+}
+
+/// Load a project from ONE in-memory entry source (no filesystem) — the
+/// wasm producer's path, where the game is fetched as a single text and
+/// there are no sibling files. The built-in `Net` module is still injected.
+pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectError> {
+    let files = vec![SourceFile {
+        path: PathBuf::from(format!("{module}.mle")),
+        module: module.to_string(),
+        src: src.to_string(),
+        base: 0,
+    }];
+    link(files)
 }
 
 /// The module name a file provides: its stem, first letter capitalized

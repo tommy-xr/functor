@@ -444,6 +444,16 @@ to receive their messages; dropping them"
     /// frame, so a model change can silence a timer. Errors report per
     /// message and processing continues — one bad message must not stall
     /// the rest, and dedupe keeps a persistent bug to one line.
+    /// Close every connection this producer still has open (a reload that
+    /// dropped `subscriptions`, or shutdown). CloseKey is queued for each;
+    /// the live set is cleared.
+    fn close_all_connections(&mut self) {
+        use functor_runtime_common::net::{push_conn_command, ConnCommand};
+        for key in std::mem::take(&mut self.live_conn_keys) {
+            push_conn_command(ConnCommand::CloseKey { key });
+        }
+    }
+
     /// Open connections newly declared this frame and close ones no longer
     /// declared (keyed by endpoint). Commands go to the shell's connection
     /// manager, drained via `net_drain_conn_commands`. The physics-events
@@ -454,9 +464,13 @@ to receive their messages; dropping them"
             Ok(conns) => conns,
             Err(message) => return self.report_once(format!("[mle] {message}")),
         };
-        let declared: std::collections::HashSet<String> =
-            conns.iter().map(|c| c.key.clone()).collect();
+        // Dedupe by key (first declaration wins its listen/connect role) so
+        // a key is opened at most once even if declared twice in one frame.
+        let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
         for conn in &conns {
+            if !declared.insert(conn.key.clone()) {
+                continue; // already handled this key this frame
+            }
             if !self.live_conn_keys.contains(&conn.key) {
                 push_conn_command(if conn.listen {
                     ConnCommand::Listen {
@@ -523,6 +537,11 @@ to receive their messages; dropping them"
         // so a hot reload that ADDS subscriptions starts from a sane edge.
         let prev = self.prev_tts.replace(tts);
         if !self.has_subscriptions {
+            // No subscriptions must not leave a previous program's
+            // connections open (a hot reload that dropped them).
+            if !self.live_conn_keys.is_empty() {
+                self.close_all_connections();
+            }
             return;
         }
         let subs =
@@ -913,7 +932,9 @@ impl Game for MleGame {
     }
     fn audio_push_finished(&mut self, _token: i32) {}
 
-    fn quit(&mut self) {}
+    fn quit(&mut self) {
+        self.close_all_connections();
+    }
 }
 
 /// `name` must be a function of `arity` params — a contract violation is
@@ -995,11 +1016,12 @@ mod tests {
             dts: 0.016,
         });
         let cmds = drain_conn_commands();
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, ConnCommand::Connect { key, .. } if key == ENDPOINT)),
-            "expected a Connect for {ENDPOINT}, got {cmds:?}"
-        );
+        // Exactly one Connect (declared once) — the dedupe guard. [Codex M]
+        let connects = cmds
+            .iter()
+            .filter(|c| matches!(c, ConnCommand::Connect { key, .. } if key == ENDPOINT))
+            .count();
+        assert_eq!(connects, 1, "expected exactly one Connect, got {cmds:?}");
 
         // 2. A Connected event → the game stores the id and replies with send.
         game.net_push_connected(ENDPOINT.to_string(), 5);

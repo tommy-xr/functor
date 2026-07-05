@@ -115,8 +115,12 @@ fn load_source(path: &str, src: String) -> Result<Loaded, String> {
         let (line, col) = mle::line_col(&src, span.start);
         format!("cannot {stage} {path}:{line}:{col}: {message}")
     };
-    let program = mle::parse(&src).map_err(|e| render("parse", e.span, &e.message))?;
-    let module = mle::lower(program).map_err(|e| render("load", e.span, &e.message))?;
+    // Load through the single-source project path so the built-in `Net`
+    // module is in scope (the web fetches ONE file — no siblings — but the
+    // Net ADT must still resolve). Spans render against the entry source.
+    let project = mle::project::load_single_source("Game", &src)
+        .map_err(|e| format!("cannot load {path}:{}:{}: {}", e.line, e.col, e.message))?;
+    let module = project.module;
     // Type diagnostics are advisory in the dev loop: warn, keep going
     // (the CLI's `build` is the strict gate).
     for diag in mle::check(&module) {
@@ -328,6 +332,16 @@ to receive their messages; dropping them"
         }
     }
 
+    /// Close every connection this producer still has open (a reload that
+    /// dropped `subscriptions`, or shutdown). CloseKey is queued for each;
+    /// the live set is cleared.
+    fn close_all_connections(&mut self) {
+        use functor_runtime_common::net::{push_conn_command, ConnCommand};
+        for key in std::mem::take(&mut self.live_conn_keys) {
+            push_conn_command(ConnCommand::CloseKey { key });
+        }
+    }
+
     /// Open connections newly declared this frame and close dropped ones —
     /// see the desktop producer's `reconcile_connections`.
     fn reconcile_connections(&mut self, subs: &Value) {
@@ -336,9 +350,13 @@ to receive their messages; dropping them"
             Ok(conns) => conns,
             Err(message) => return self.log_once(format!("[mle] {message}")),
         };
-        let declared: std::collections::HashSet<String> =
-            conns.iter().map(|c| c.key.clone()).collect();
+        // Dedupe by key (first declaration wins its listen/connect role) so
+        // a key is opened at most once even if declared twice in one frame.
+        let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
         for conn in &conns {
+            if !declared.insert(conn.key.clone()) {
+                continue; // already handled this key this frame
+            }
             if !self.live_conn_keys.contains(&conn.key) {
                 push_conn_command(if conn.listen {
                     ConnCommand::Listen {
@@ -404,6 +422,11 @@ to receive their messages; dropping them"
         // so the edge is always sane.
         let prev = self.prev_tts.replace(tts);
         if !self.has_subscriptions {
+            // No subscriptions must not leave a previous program's
+            // connections open (a hot reload that dropped them).
+            if !self.live_conn_keys.is_empty() {
+                self.close_all_connections();
+            }
             return;
         }
         let subs =
@@ -719,7 +742,9 @@ impl GameProducer for MleWebGame {
     }
     fn audio_push_finished(&mut self, _token: i32) {}
 
-    fn quit(&mut self) {}
+    fn quit(&mut self) {
+        self.close_all_connections();
+    }
 }
 
 /// `name` must be a function of `arity` params — a contract violation is

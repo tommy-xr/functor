@@ -1422,10 +1422,21 @@ Net.NetEvent, got {}",
                 _ => usage(&format!("{path}(endpoint, tagger)")),
             },
             "Effect.send" => match args.as_slice() {
-                [id, Value::String(text)] => Ok(host(MleEffect(EffectTree::Send {
-                    conn: num(id, span)?,
-                    text: text.to_string(),
-                }))),
+                [id, Value::String(text)] => {
+                    let n = num(id, span)?;
+                    // A connection id is a non-negative whole number the host
+                    // handed the game; reject garbage rather than truncate it
+                    // to some OTHER live client.
+                    if n < 0.0 || n.fract() != 0.0 || n > u64::MAX as f64 {
+                        return err(format!(
+                            "Effect.send: connId must be a non-negative whole number, got {n}"
+                        ));
+                    }
+                    Ok(host(MleEffect(EffectTree::Send {
+                        conn: n,
+                        text: text.to_string(),
+                    })))
+                }
                 _ => usage("Effect.send(connId, text)"),
             },
             "Physics.transformed" => match args.as_slice() {
@@ -3971,6 +3982,22 @@ the game dir"
                 assert_eq!(args[1].to_string(), "\"yo\"");
             }
             other => panic!("expected a variant, got {other}"),
+        }
+    }
+
+    /// Effect.send rejects a garbage connection id rather than truncating it
+    /// to some OTHER live client. [Codex M — net review]
+    #[test]
+    fn effect_send_rejects_bad_conn_ids() {
+        for (id, src) in [
+            ("-1.0", "let main = () => Effect.send(-1.0, \"x\")"),
+            ("1.5", "let main = () => Effect.send(1.5, \"x\")"),
+        ] {
+            let msg = run_fail(src);
+            assert!(
+                msg.contains("connId must be a non-negative whole number"),
+                "id {id}: {msg}"
+            );
         }
     }
 
