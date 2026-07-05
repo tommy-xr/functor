@@ -71,6 +71,12 @@ pub struct MleWebGame {
     /// This frame's contact transitions, delivered post-step to the
     /// `Physics.events` taggers of the current `subscriptions(model)`.
     pending_events: Vec<functor_runtime_common::physics::PhysicsEvent>,
+    /// The recorded physics drive (docs/physics.md Phase 6): the Timeline
+    /// recorder + pause flag + fixed-step accumulator. The World stays in
+    /// the registry; this owns the rewind machinery over it.
+    physics_rt: physics::SteppedPhysics,
+    /// Latest recorder status for the overlay: (fixed frame, paused, history).
+    physics_status: (u64, bool, u64),
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -219,6 +225,8 @@ impl MleWebGame {
             effect_log: EffectLog::new(),
             deferred_queries: Vec::new(),
             pending_events: Vec::new(),
+            physics_rt: physics::SteppedPhysics::new(),
+            physics_status: (0, false, 0),
             has_physics: loaded.has_physics,
             has_ui: loaded.has_ui,
             last_view: View::Empty,
@@ -364,14 +372,13 @@ to receive their messages; dropping them"
         match self.session.call("physics", args, &mut FunctorHost) {
             Ok(value) => match physics_scene_value(&value) {
                 Some(scene) => {
-                    let (steps, events, warnings) =
-                        physics::with_world(physics::DEFAULT_WORLD, |w| {
-                            w.reconcile(scene);
-                            let steps = w.step_frame(dts);
-                            (steps, w.take_events(), w.take_command_warnings())
-                        })
-                        .unwrap_or((0, Vec::new(), Vec::new()));
-                    self.pending_events = events;
+                    // The recorded drive (Phase 6): every fixed frame goes
+                    // through the Timeline, so pause/rewind/replay work.
+                    let advanced = self.physics_rt.advance(scene, dts);
+                    self.pending_events = advanced.events;
+                    self.physics_status = advanced.status;
+                    let steps = advanced.steps;
+                    let warnings = advanced.warnings;
                     // Command effects apply asynchronously (queued at perform
                     // time, applied at the step), so their problems — unknown
                     // tag, queue overflow — surface here, deduped.
@@ -459,7 +466,12 @@ impl GameProducer for MleWebGame {
         // commands, so they never answer against a world that hasn't
         // simulated. Games without a physics hook answer immediately (the
         // lazily-created empty world gives sane misses).
-        let world_ready = physics_steps > 0 || !self.has_physics;
+        // A query answers once the world has EVER stepped: normally this
+        // frame's steps, but also while PAUSED (frozen mid-flight, frame > 0)
+        // and on a short zero-substep frame — so a raycast fired while paused
+        // answers against the frozen world instead of deferring forever.
+        let world_ready =
+            physics_steps > 0 || !self.has_physics || self.physics_status.0 > 0;
         if world_ready && !self.deferred_queries.is_empty() {
             let deferred = std::mem::take(&mut self.deferred_queries);
             let mut reports: Vec<String> = Vec::new();

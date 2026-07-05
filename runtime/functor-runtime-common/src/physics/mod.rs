@@ -19,6 +19,7 @@
 //! No F# surface yet — that lands in Phase 2 (`physicsScape`). Everything here
 //! is exercised headlessly by the determinism goldens (`cargo test`, no GPU).
 
+mod driver;
 mod registry;
 mod scene;
 mod timeline;
@@ -27,6 +28,9 @@ mod world;
 #[cfg(test)]
 mod goldens;
 
+// `driver::SteppedPhysics` is the production drive: the recorded wrapper the
+// MLE shells call instead of `World::step_frame` directly (Phase 6).
+pub use driver::*;
 pub use registry::*;
 pub use scene::*;
 pub use timeline::*;

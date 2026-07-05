@@ -40,8 +40,9 @@ pub const MAX_SUBSTEPS_PER_FRAME: u32 = 8;
 pub enum PhysicsCommand {
     /// Instantaneous momentum change.
     ApplyImpulse { tag: String, impulse: [f32; 3] },
-    /// A force applied for this frame's substeps only (cleared at frame end —
-    /// no rapier force persistence to forget about).
+    /// A force applied for one fixed step (cleared after — no rapier force
+    /// persistence to forget about). Under the recorded drive each substep is
+    /// a recorded frame, so a force lasts exactly one fixed step.
     ApplyForce { tag: String, force: [f32; 3] },
     SetVelocity { tag: String, velocity: [f32; 3] },
     /// Move the live body without touching its declaration (the declared
@@ -213,6 +214,13 @@ impl World {
             return;
         }
         self.pending.push(command);
+    }
+
+    /// Drain the queued commands without applying them — the recorded drive
+    /// (Phase 6) folds them into the frame's Timeline command list instead,
+    /// so replay reproduces them.
+    pub fn take_pending_commands(&mut self) -> Vec<PhysicsCommand> {
+        std::mem::take(&mut self.pending)
     }
 
     /// Problems from asynchronously-applied commands (unknown tags, queue
