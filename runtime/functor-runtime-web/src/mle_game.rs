@@ -23,8 +23,9 @@ use std::cell::RefCell;
 
 use functor_runtime_common::mle_prelude::{
     contains_effect, deliver_physics_events, drain_effects, frame_value, needs_update,
-    perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
-    sub_messages_for_frame, view_value, EffectLog, EffectTree, FunctorHost, RealEffects,
+    net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
+    physics_scene_value, split_model_effect, sub_messages_for_frame, view_value, EffectLog,
+    EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
@@ -77,6 +78,9 @@ pub struct MleWebGame {
     physics_rt: physics::SteppedPhysics,
     /// Latest recorder status for the overlay: (fixed frame, paused, history).
     physics_status: (u64, bool, u64),
+    /// Declared connection keys (`Sub.connect`/`Sub.listen`), reconciled each
+    /// frame — see the desktop producer.
+    live_conn_keys: std::collections::HashSet<String>,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -227,6 +231,7 @@ impl MleWebGame {
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
+            live_conn_keys: std::collections::HashSet::new(),
             has_physics: loaded.has_physics,
             has_ui: loaded.has_ui,
             last_view: View::Empty,
@@ -323,16 +328,45 @@ to receive their messages; dropping them"
         }
     }
 
-    fn pump_subscriptions(&mut self, tts: f64) {
-        // Advance the window even without subscriptions (or on frame one),
-        // so the edge is always sane.
-        let prev = self.prev_tts.replace(tts);
+    /// Open connections newly declared this frame and close dropped ones —
+    /// see the desktop producer's `reconcile_connections`.
+    fn reconcile_connections(&mut self, subs: &Value) {
+        use functor_runtime_common::net::{push_conn_command, ConnCommand};
+        let conns = match net_conn_subs(subs) {
+            Ok(conns) => conns,
+            Err(message) => return self.log_once(format!("[mle] {message}")),
+        };
+        let declared: std::collections::HashSet<String> =
+            conns.iter().map(|c| c.key.clone()).collect();
+        for conn in &conns {
+            if !self.live_conn_keys.contains(&conn.key) {
+                push_conn_command(if conn.listen {
+                    ConnCommand::Listen {
+                        key: conn.key.clone(),
+                        addr: conn.key.clone(),
+                    }
+                } else {
+                    ConnCommand::Connect {
+                        key: conn.key.clone(),
+                        url: conn.key.clone(),
+                    }
+                });
+            }
+        }
+        for key in &self.live_conn_keys {
+            if !declared.contains(key) {
+                push_conn_command(ConnCommand::CloseKey { key: key.clone() });
+            }
+        }
+        self.live_conn_keys = declared;
+    }
+
+    /// Route one inbound connection event to the matching key's fresh
+    /// tagger and fold through `update` — see the desktop producer.
+    fn deliver_net_event(&mut self, key: String, kind: NetEventKind, conn: i32, text: String) {
         if !self.has_subscriptions {
             return;
         }
-        let Some(prev) = prev else {
-            return;
-        };
         let subs =
             match self
                 .session
@@ -341,6 +375,49 @@ to receive their messages; dropping them"
                 Ok(subs) => subs,
                 Err(err) => return self.frame_error("subscriptions", &err),
             };
+        let conns = match net_conn_subs(&subs) {
+            Ok(conns) => conns,
+            Err(message) => return self.log_once(format!("[mle] {message}")),
+        };
+        let Some(sub) = conns.into_iter().find(|c| c.key == key) else {
+            return;
+        };
+        let value = net_event_value(kind, conn as u64, &text).to_mle();
+        let msg = match self
+            .session
+            .apply(sub.tagger, vec![value], "net event", &mut FunctorHost)
+        {
+            Ok(msg) => msg,
+            Err(err) => return self.frame_error("net event", &err),
+        };
+        match self
+            .session
+            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
+        {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.frame_error("update", &err),
+        }
+    }
+
+    fn pump_subscriptions(&mut self, tts: f64) {
+        // Advance the window even without subscriptions (or on frame one),
+        // so the edge is always sane.
+        let prev = self.prev_tts.replace(tts);
+        if !self.has_subscriptions {
+            return;
+        }
+        let subs =
+            match self
+                .session
+                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(subs) => subs,
+                Err(err) => return self.frame_error("subscriptions", &err),
+            };
+        self.reconcile_connections(&subs);
+        let Some(prev) = prev else {
+            return;
+        };
         let msgs = match sub_messages_for_frame(&subs, prev, tts) {
             Ok(msgs) => msgs,
             Err(message) => return self.log_once(format!("[mle] {message}")),
@@ -470,8 +547,7 @@ impl GameProducer for MleWebGame {
         // frame's steps, but also while PAUSED (frozen mid-flight, frame > 0)
         // and on a short zero-substep frame — so a raycast fired while paused
         // answers against the frozen world instead of deferring forever.
-        let world_ready =
-            physics_steps > 0 || !self.has_physics || self.physics_status.0 > 0;
+        let world_ready = physics_steps > 0 || !self.has_physics || self.physics_status.0 > 0;
         if world_ready && !self.deferred_queries.is_empty() {
             let deferred = std::mem::take(&mut self.deferred_queries);
             let mut reports: Vec<String> = Vec::new();
@@ -627,12 +703,20 @@ impl GameProducer for MleWebGame {
         "{\"sources\":[]}".to_string()
     }
     fn net_drain_conn_commands(&self) -> String {
-        "[]".to_string()
+        functor_runtime_common::net::drain_conn_commands_json()
     }
-    fn net_push_connected(&mut self, _key: String, _conn: i32) {}
-    fn net_push_conn_message(&mut self, _key: String, _conn: i32, _text: String) {}
-    fn net_push_disconnected(&mut self, _key: String, _conn: i32) {}
-    fn net_push_conn_error(&mut self, _key: String, _conn: i32, _message: String) {}
+    fn net_push_connected(&mut self, key: String, conn: i32) {
+        self.deliver_net_event(key, NetEventKind::Connected, conn, String::new());
+    }
+    fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
+        self.deliver_net_event(key, NetEventKind::Message, conn, text);
+    }
+    fn net_push_disconnected(&mut self, key: String, conn: i32) {
+        self.deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
+    }
+    fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
+        self.deliver_net_event(key, NetEventKind::Error, conn, message);
+    }
     fn audio_push_finished(&mut self, _token: i32) {}
 
     fn quit(&mut self) {}
