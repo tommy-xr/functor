@@ -1049,51 +1049,14 @@ async fn run_async() -> Result<(), JsValue> {
         // a short warm-up so the page is static for screenshotting.
         let mut sized = false;
 
-        // The time-travel scrubber (docs/time-travel.md T3): ALWAYS VISIBLE in
-        // the web/vscode preview (it's the dev surface). Its own egui context.
-        let mut scrubber = functor_runtime_common::ui::Scrubber::new(gl.clone());
-        // Pause/step control (the web analogue of the desktop runner's
-        // held_time/pending_step): when `held_time` is `Some`, the clock is
-        // pinned (dts = 0) so a scrubbed frame stays put; a one-shot step
-        // carries dts > 0.
+        // Time-travel clock control (docs/time-travel.md T3). The scrubber UI is
+        // NATIVE DOM on web (index-mle.html) — outside the canvas, so no
+        // pointer-lock clash — driving the runtime through the `mle_scrub_*`
+        // exports (in mle_game.rs). This loop owns the clock: when `held_time`
+        // is `Some` it's pinned (dts = 0) so a scrubbed frame stays put; a
+        // one-shot step carries dts > 0.
         let mut held_time: Option<f32> = None;
         let mut pending_step: Option<f32> = None;
-        // Pointer state written by the DOM mouse listeners below, read by the
-        // frame loop: (cursor x, y in CSS px, primary-button down, press-latch).
-        // The latch holds a press for at least one frame so a full click that
-        // starts AND ends between two rAF callbacks still delivers its edge
-        // (the frame reads `down || latch`, then consumes the latch) [xreview].
-        let pointer = Rc::new(std::cell::RefCell::new((0.0f32, 0.0f32, false, false)));
-        {
-            use wasm_bindgen::JsCast;
-            let p = pointer.clone();
-            let mm = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MouseEvent| {
-                let mut p = p.borrow_mut();
-                p.0 = e.offset_x() as f32;
-                p.1 = e.offset_y() as f32;
-            });
-            let _ = canvas.add_event_listener_with_callback("mousemove", mm.as_ref().unchecked_ref());
-            mm.forget();
-            let p = pointer.clone();
-            let md = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MouseEvent| {
-                if e.button() == 0 {
-                    let mut p = p.borrow_mut();
-                    p.2 = true;
-                    p.3 = true;
-                }
-            });
-            let _ = canvas.add_event_listener_with_callback("mousedown", md.as_ref().unchecked_ref());
-            md.forget();
-            // Release on the window so a mouse-up outside the canvas still counts.
-            let p = pointer.clone();
-            let mu = Closure::<dyn FnMut(_)>::new(move |e: web_sys::MouseEvent| {
-                if e.button() == 0 {
-                    p.borrow_mut().2 = false;
-                }
-            });
-            let _ = window.add_event_listener_with_callback("mouseup", mu.as_ref().unchecked_ref());
-            mu.forget();
-        }
 
         *g.borrow_mut() = Some(Closure::new(move || {
             // The frame's exclusive borrow of the shared producer. Cannot
@@ -1101,6 +1064,27 @@ async fn run_async() -> Result<(), JsValue> {
             // message handlers only run between rAF callbacks.
             let mut game = game.borrow_mut();
             let now = performance.now() as f32;
+            let raw_tts = (now - initial_time) / 1000.0;
+
+            // Apply scrubber controls from the DOM (pause / step / seek). This
+            // loop owns the clock, so it fills the pin time and drives the seek.
+            for control in mle_game::take_scrub_controls() {
+                match control {
+                    mle_game::ScrubControl::TogglePause => {
+                        held_time = if held_time.is_some() { None } else { Some(raw_tts) };
+                        pending_step = None;
+                    }
+                    mle_game::ScrubControl::Step => {
+                        held_time = Some(held_time.unwrap_or(raw_tts));
+                        pending_step = Some(1.0 / 60.0);
+                    }
+                    mle_game::ScrubControl::SeekTo(f) => {
+                        let _ = game.seek_scene_to(f);
+                        held_time = Some(held_time.unwrap_or(raw_tts));
+                    }
+                }
+            }
+
             // Pin the frame time when `?fixed-time` is set (deterministic
             // capture), or when the scrubber has paused the clock (`held_time`).
             // A queued step advances exactly one frame, then re-pins.
@@ -1189,50 +1173,13 @@ async fn run_async() -> Result<(), JsValue> {
             let dpr = dpr.max(1.0);
             text_overlay.draw_view(canvas.width(), canvas.height(), dpr, &view);
 
-            // The time-travel scrubber, always visible over the frame. egui
-            // lays out in points (canvas px / dpr = CSS px), so the CSS-pixel
-            // cursor is scaled to device px to line up (the desktop HiDPI fix).
-            let (px, py, down) = {
-                let mut p = pointer.borrow_mut();
-                // `down || latch` so a same-frame click still shows a pressed
-                // frame; consume the latch so the next frame sees the release.
-                let effective = p.2 || p.3;
-                p.3 = false;
-                (p.0, p.1, effective)
-            };
-            let scrubber_out = scrubber.draw(
-                canvas.width(),
-                canvas.height(),
-                dpr,
-                functor_runtime_common::ui::PointerState {
-                    pos: Some((px * dpr, py * dpr)),
-                    primary_down: down,
-                },
-                functor_runtime_common::ui::ScrubberState {
-                    frame: game.current_scene_frame().unwrap_or(0),
-                    range: game.scene_frame_range(),
-                    paused: held_time.is_some(),
-                },
+            // Publish the scrubber state for the DOM slider to poll (the UI
+            // itself is native HTML in index-mle.html, outside the canvas).
+            mle_game::publish_scrub_view(
+                game.current_scene_frame(),
+                game.scene_frame_range(),
+                held_time.is_some(),
             );
-            match scrubber_out.action {
-                Some(functor_runtime_common::ui::ScrubberAction::TogglePause) => {
-                    held_time = if held_time.is_some() {
-                        None
-                    } else {
-                        Some(frame_time.tts)
-                    };
-                    pending_step = None;
-                }
-                Some(functor_runtime_common::ui::ScrubberAction::SeekTo(f)) => {
-                    let _ = game.seek_scene_to(f);
-                    held_time = Some(frame_time.tts); // park on the scrubbed frame
-                }
-                Some(functor_runtime_common::ui::ScrubberAction::Step) => {
-                    held_time = Some(frame_time.tts);
-                    pending_step = Some(1.0 / 60.0);
-                }
-                None => {}
-            }
 
             // Schedule the next frame. In deterministic mode (?fixed-time, the
             // golden) render a short warm-up (shader compile, first-frame

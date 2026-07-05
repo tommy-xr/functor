@@ -1028,3 +1028,97 @@ pub fn drain_input(game: &mut dyn GameProducer) {
         }
     }
 }
+
+// --- Time-travel scrubber ↔ DOM bridge (docs/time-travel.md T3) -------------
+//
+// On web the scrubber is NATIVE DOM (index-mle.html), not egui-in-canvas, so
+// its widgets sit OUTSIDE the game canvas — their clicks never reach the canvas
+// (no pointer-lock clash) and they render as accessible browser controls. The
+// page calls the `mle_scrub_*` write exports (queued here, applied by the frame
+// loop, which owns the clock) and polls the read exports each frame; the loop
+// publishes the current view state. The coupled-rewind LOGIC stays shared
+// (`SceneRecorder`); only the UI surface differs from desktop.
+
+/// A control from the DOM scrubber, applied by the frame loop.
+pub enum ScrubControl {
+    TogglePause,
+    Step,
+    SeekTo(u64),
+}
+
+thread_local! {
+    static SCRUB_CONTROLS: RefCell<Vec<ScrubControl>> = const { RefCell::new(Vec::new()) };
+    /// Published each frame for the page's slider: `(frame, lo, hi, paused)`.
+    /// `frame`/`lo`/`hi` are `-1.0` when nothing is recorded yet.
+    static SCRUB_VIEW: RefCell<(f64, f64, f64, bool)> =
+        const { RefCell::new((-1.0, -1.0, -1.0, false)) };
+}
+
+const SCRUB_CONTROLS_CAP: usize = 256;
+
+fn push_scrub(control: ScrubControl) {
+    SCRUB_CONTROLS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() < SCRUB_CONTROLS_CAP {
+            c.push(control);
+        }
+    });
+}
+
+/// Drain the queued scrubber controls; the frame loop applies them (it owns the
+/// clock pin and the game).
+pub fn take_scrub_controls() -> Vec<ScrubControl> {
+    SCRUB_CONTROLS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// Publish this frame's scrubber state for the page to poll.
+pub fn publish_scrub_view(frame: Option<u64>, range: Option<(u64, u64)>, paused: bool) {
+    let f = frame.map(|f| f as f64).unwrap_or(-1.0);
+    let (lo, hi) = range
+        .map(|(l, h)| (l as f64, h as f64))
+        .unwrap_or((-1.0, -1.0));
+    SCRUB_VIEW.with(|v| *v.borrow_mut() = (f, lo, hi, paused));
+}
+
+/// Page → runtime: toggle pause (pin/unpin the clock).
+#[wasm_bindgen]
+pub fn mle_scrub_toggle_pause() {
+    push_scrub(ScrubControl::TogglePause);
+}
+
+/// Page → runtime: advance exactly one frame, then hold.
+#[wasm_bindgen]
+pub fn mle_scrub_step() {
+    push_scrub(ScrubControl::Step);
+}
+
+/// Page → runtime: non-destructively scrub to a rendered frame (slider drag).
+#[wasm_bindgen]
+pub fn mle_seek_scene(frame: f64) {
+    if frame >= 0.0 {
+        push_scrub(ScrubControl::SeekTo(frame as u64));
+    }
+}
+
+/// Runtime → page: the current handle frame (`-1` if nothing recorded).
+#[wasm_bindgen]
+pub fn mle_scene_frame() -> f64 {
+    SCRUB_VIEW.with(|v| v.borrow().0)
+}
+
+/// Runtime → page: the seekable window as `[lo, hi]`, or `[]` if empty.
+#[wasm_bindgen]
+pub fn mle_scene_range() -> Vec<f64> {
+    let (_, lo, hi, _) = SCRUB_VIEW.with(|v| *v.borrow());
+    if lo < 0.0 {
+        vec![]
+    } else {
+        vec![lo, hi]
+    }
+}
+
+/// Runtime → page: whether the clock is currently pinned.
+#[wasm_bindgen]
+pub fn mle_scrub_paused() -> bool {
+    SCRUB_VIEW.with(|v| v.borrow().3)
+}
