@@ -273,6 +273,10 @@ pub enum EffectValue {
     List(Vec<EffectValue>),
     /// Field order is construction order (deterministic, like MLE records).
     Record(Vec<(String, EffectValue)>),
+    /// A variant value: a (canonical) constructor name and its positional
+    /// args — how the host hands a game a prelude-declared ADT like
+    /// `Net.Connected(id)` (see the built-in `Net` module).
+    Variant(String, Vec<EffectValue>),
 }
 
 impl EffectValue {
@@ -291,6 +295,10 @@ impl EffectValue {
                     .map(|(k, v)| (k.clone(), v.to_mle()))
                     .collect(),
             )),
+            EffectValue::Variant(ctor, args) => Value::Variant {
+                ctor: Rc::from(ctor.as_str()),
+                args: Rc::new(args.iter().map(EffectValue::to_mle).collect()),
+            },
         }
     }
 }

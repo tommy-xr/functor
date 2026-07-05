@@ -43,6 +43,7 @@ use crate::CheckError;
 /// Namespaces the language or the Functor prelude own; a module (file) name
 /// colliding with one is a load-time error.
 const PROTECTED_NAMESPACES: &[&str] = &[
+    "Net",
     "List",
     "Text",
     "Math",
@@ -83,6 +84,15 @@ impl Project {
 
 /// One file of a project, with its base offset in the project-wide span
 /// space (see [`crate::lexer::lex`]).
+/// The built-in `Net` module (see the injection site in [`load_with_entry_source`]).
+/// Connection ids are `Float` (small integers); text carries messages and
+/// error strings. Mirrors F#'s `Functor.Net.NetEvent`.
+const NET_MODULE_SRC: &str = "type NetEvent =\n\
+     | Connected(id: Float)\n\
+     | Message(id: Float, text: String)\n\
+     | Disconnected(id: Float)\n\
+     | Error(id: Float, text: String)\n";
+
 pub struct SourceFile {
     pub path: PathBuf,
     /// The module name derived from the file name.
@@ -244,6 +254,18 @@ come from file names, capitalized",
         // next file's base.
         base += len + 1;
     }
+    // The built-in `Net` module: a prelude-provided ADT always in scope, so
+    // any game can `match ev with | Net.Connected(id) => …` without
+    // declaring the type. It's an ordinary non-entry module (canonicalized
+    // to `Net.NetEvent` / `Net.Connected` / …), loaded through the same
+    // path — the host builds matching `Net.*` variant values (see
+    // `mle_prelude`). Injected LAST so the entry stays index 0.
+    files.push(SourceFile {
+        path: PathBuf::from("<builtin>/Net.mle"),
+        module: "Net".to_string(),
+        src: NET_MODULE_SRC.to_string(),
+        base,
+    });
     let entry = files[0].module.clone();
 
     // Parse every file (spans land in the project-wide space).
