@@ -95,6 +95,7 @@ pub mod shadow;
 pub mod skybox;
 mod shader_program;
 pub mod texture;
+pub mod timetravel;
 pub mod ui;
 mod viewport;
 
