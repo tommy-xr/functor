@@ -134,7 +134,7 @@ const playerFrame = (page) => {
   // Live edit → unmistakable green sphere.
   await page.evaluate((s) => window.__sandbox.setSource(s), GREEN);
   await page.waitForFunction(
-    () => window.__sandbox.status().text.includes("model preserved"),
+    () => window.__sandbox.status().message.includes("model preserved"),
     { timeout: 5000 }
   );
   await sleep(400);
