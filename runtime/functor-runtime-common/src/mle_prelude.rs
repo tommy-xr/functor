@@ -756,6 +756,7 @@ const PATHS: &[&str] = &[
     "Scene.lit",
     "Scene.emissive",
     "Scene.litTexture",
+    "Scene.litNormalMapped",
     "Scene.emissiveTexture",
     "Texture.file",
     "Angle.degrees",
@@ -765,6 +766,7 @@ const PATHS: &[&str] = &[
     "Light.ambient",
     "Light.directional",
     "Light.point",
+    "Light.spot",
     "Light.castShadows",
     "Frame.create",
     "Frame.createLit",
@@ -1006,6 +1008,32 @@ the game dir",
                 }
                 _ => usage(&format!("{path}(scene, texture)")),
             },
+            // Lit material with a tangent-space normal map perturbing the
+            // surface normal (F#'s `Material.litNormalMapped`), so the lights
+            // and specular play across the bumps. `(r, g, b)` is the albedo
+            // tint; the normal map is a Texture value (alpha fixed at 1.0).
+            "Scene.litNormalMapped" => match args.as_slice() {
+                [scene, r, g, b, normal] => {
+                    let Some(scene) = scene_of(scene) else {
+                        return usage("Scene.litNormalMapped(scene, r, g, b, normalMap)");
+                    };
+                    let normal = texture_of(normal, path, span)?;
+                    scene_value(Scene3D {
+                        obj: SceneObject::Material(
+                            MaterialDescription::lit_normal_mapped(
+                                num(r, span)? as f32,
+                                num(g, span)? as f32,
+                                num(b, span)? as f32,
+                                1.0,
+                                normal.clone(),
+                            ),
+                            vec![scene.clone()],
+                        ),
+                        xform: Matrix4::from_scale(1.0),
+                    })
+                }
+                _ => usage("Scene.litNormalMapped(scene, r, g, b, normalMap)"),
+            },
             // Scene first, so it pipes: `Scene.cube() |> Scene.color(r, g, b)`.
             "Scene.color" => match args.as_slice() {
                 [scene, r, g, b] => {
@@ -1140,6 +1168,31 @@ the game dir",
                     num(range, span)? as f32,
                 )))),
                 _ => usage("Light.point(px, py, pz, r, g, b, intensity, range)"),
+            },
+            // A cone of light from (px,py,pz) aimed along (dx,dy,dz), soft-edged
+            // at `coneAngle` (an Angle from the axis) with falloff to `range`.
+            // Shadow-casting when piped through `Light.castShadows`.
+            "Light.spot" => match args.as_slice() {
+                [px, py, pz, dx, dy, dz, r, g, b, intensity, range, cone] => {
+                    let cone: cgmath::Rad<f32> = angle_of(cone, path, span)?.into();
+                    Ok(host(MleLight(Light::spot(
+                        num(px, span)? as f32,
+                        num(py, span)? as f32,
+                        num(pz, span)? as f32,
+                        num(dx, span)? as f32,
+                        num(dy, span)? as f32,
+                        num(dz, span)? as f32,
+                        num(r, span)? as f32,
+                        num(g, span)? as f32,
+                        num(b, span)? as f32,
+                        num(intensity, span)? as f32,
+                        num(range, span)? as f32,
+                        cone.0,
+                    ))))
+                }
+                _ => usage(
+                    "Light.spot(px, py, pz, dx, dy, dz, r, g, b, intensity, range, coneAngle)",
+                ),
             },
             // Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
             "Light.castShadows" => match args.as_slice() {
@@ -2896,6 +2949,40 @@ the game dir"
         let json = serde_json::to_string(&frame).expect("serialize");
         assert!(json.contains("Lit"), "json: {json}");
         assert!(json.contains("Emissive"), "json: {json}");
+    }
+
+    #[test]
+    fn spot_light_and_normal_mapped_material() {
+        let frame = frame_of(
+            "let bumps = Texture.file(\"bumps-normal.png\")\n\
+             let main = () =>\n\
+             Frame.createLit(\n\
+               Camera.firstPerson(0.0, 3.0, -8.0, Angle.radians(0.0), Angle.radians(-0.25), Angle.degrees(60.0)),\n\
+               Scene.cube() |> Scene.litNormalMapped(0.9, 0.9, 0.92, bumps),\n\
+               [\n\
+                 Light.spot(0.0, 7.0, 5.0, 0.0, -1.0, -0.5, 1.0, 1.0, 0.95, 5.0, 18.0, Angle.radians(0.5))\n\
+                   |> Light.castShadows,\n\
+               ])",
+        );
+        // The spot light is present, casts shadows, and carries its Angle-branded
+        // cone angle (in radians) and range.
+        assert_eq!(frame.lights.len(), 1);
+        assert!(frame.lights[0].casts_shadows(), "spot casts shadows");
+        match &frame.lights[0] {
+            Light::Spot {
+                cone_angle, range, ..
+            } => {
+                assert!((cone_angle - 0.5).abs() < 1e-5, "cone angle in radians");
+                assert_eq!(*range, 18.0);
+            }
+            other => panic!("expected a Spot light, got {other:?}"),
+        }
+        // The material serializes as a Lit with a non-null normal map.
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(
+            json.contains("normal_map") && json.contains("bumps-normal.png"),
+            "expected a normal-mapped Lit material: {json}"
+        );
     }
 
     // Host errors are spanned MLE runtime errors, not panics.

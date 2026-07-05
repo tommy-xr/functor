@@ -244,6 +244,11 @@ Scene.model("shark.glb")                                   // glTF by path, rela
 Scene.group([scene, …])
 scene |> Scene.color(r, g, b)                              // scene-first: pipes
 scene |> Scene.lit(r, g, b)                                // diffuse+specular
+scene |> Scene.litNormalMapped(r, g, b, normalTex)         // + tangent-space
+                                                           //   normal map (a
+                                                           //   Texture value):
+                                                           //   bumps catch the
+                                                           //   lights/specular
 scene |> Scene.emissive(r, g, b)                           // unlit glow
 scene |> Scene.translate(x, y, z)
 scene |> Scene.rotateX(angle) / rotateY / rotateZ          // Angle VALUES only:
@@ -261,6 +266,12 @@ Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
 Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)           // all three: Angles
 Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)
 Light.directional(dx, dy, dz, r, g, b, intensity) |> Light.castShadows
+Light.spot(px, py, pz, dx, dy, dz, r, g, b, intensity, range, coneAngle)
+                                                           // cone from pos
+                                                           //   along dir;
+                                                           //   coneAngle is an
+                                                           //   Angle VALUE.
+                                                           //   |> Light.castShadows
 Frame.create(camera, scene)                                // what draw returns
 Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
 RenderTarget.named("id")                                   // offscreen texture, 512x512…
