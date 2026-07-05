@@ -128,11 +128,11 @@ use std::rc::Rc;
 
 use crate::fog::Fog;
 use crate::math::Angle;
-use crate::ui::{self, View};
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{MaterialDescription, ModelDescription, ModelHandle, TextureDescription};
 use crate::skybox::SkyboxDescription;
+use crate::ui::{self, View};
 use crate::{Camera, Frame, Light, Scene3D, SceneObject, Shape};
 
 /// A [`Scene3D`] as an opaque MLE value.
@@ -171,13 +171,29 @@ pub struct MleDuration(pub f64);
 #[derive(Clone)]
 pub enum SubTree {
     None,
-    Every { period_seconds: f64, msg: Value },
+    Every {
+        period_seconds: f64,
+        msg: Value,
+    },
     Batch(Vec<SubTree>),
     /// Collision events from the physics step (docs/physics.md Phase 5):
     /// the tagger receives `{started, a, b, sensor}` for every contact that
     /// began/ended this frame, delivered post-step through `update` (the
     /// same point deferred queries answer).
-    PhysicsEvents { tagger: Value },
+    PhysicsEvents {
+        tagger: Value,
+    },
+    /// A persistent client connection (`Sub.connect`) or server listener
+    /// (`Sub.listen`), keyed by its endpoint url/addr. NOT fired on the time
+    /// grid — the producer reconciles declared keys against the live set
+    /// each frame (open/close) and routes inbound `Net.NetEvent`s to the
+    /// matching key's tagger through `update` (the physics-events pattern,
+    /// but routed BY KEY). `listen` is the server side.
+    Connect {
+        key: String,
+        listen: bool,
+        tagger: Value,
+    },
 }
 
 pub struct MleSub(pub SubTree);
@@ -209,6 +225,13 @@ pub enum EffectTree {
     /// for the recorder ([`physics::SteppedPhysics`]) like commands queue
     /// for the world.
     Timeline(physics::TimelineControl),
+    /// Send text on an open connection (`Effect.send(id, text)`). Tagger-less
+    /// like a physics command: performing it queues a `ConnCommand::Send` for
+    /// the shell's connection manager.
+    Send {
+        conn: f64,
+        text: String,
+    },
     /// A physics query (docs/physics.md Phase 4). Unlike `Now`/`Random`,
     /// queries are **deferred**: the pre-step drain holds them and the
     /// driver performs them right after the frame's physics step, so the
@@ -273,6 +296,10 @@ pub enum EffectValue {
     List(Vec<EffectValue>),
     /// Field order is construction order (deterministic, like MLE records).
     Record(Vec<(String, EffectValue)>),
+    /// A variant value: a (canonical) constructor name and its positional
+    /// args — how the host hands a game a prelude-declared ADT like
+    /// `Net.Connected(id)` (see the built-in `Net` module).
+    Variant(String, Vec<EffectValue>),
 }
 
 impl EffectValue {
@@ -291,6 +318,10 @@ impl EffectValue {
                     .map(|(k, v)| (k.clone(), v.to_mle()))
                     .collect(),
             )),
+            EffectValue::Variant(ctor, args) => Value::Variant {
+                ctor: Rc::from(ctor.as_str()),
+                args: Rc::new(args.iter().map(EffectValue::to_mle).collect()),
+            },
         }
     }
 }
@@ -772,6 +803,9 @@ const PATHS: &[&str] = &[
     "Physics.stepOnce",
     "Physics.rewindTo",
     "Physics.timelineFrame",
+    "Sub.connect",
+    "Sub.listen",
+    "Effect.send",
 ];
 
 impl Host for FunctorHost {
@@ -1370,6 +1404,41 @@ the game dir",
                 )),
                 _ => usage("Physics.events(tagger)"),
             },
+            // A persistent connection (client) / listener (server): the key
+            // is the endpoint; the tagger receives `Net.NetEvent` values.
+            "Sub.connect" | "Sub.listen" => match args.as_slice() {
+                [Value::String(key), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
+                    Ok(host(MleSub(SubTree::Connect {
+                        key: key.to_string(),
+                        listen: path == "Sub.listen",
+                        tagger: tagger.clone(),
+                    })))
+                }
+                [_, other] => err(format!(
+                    "{path}(endpoint, tagger): the tagger must be a function of the \
+Net.NetEvent, got {}",
+                    other.kind_name()
+                )),
+                _ => usage(&format!("{path}(endpoint, tagger)")),
+            },
+            "Effect.send" => match args.as_slice() {
+                [id, Value::String(text)] => {
+                    let n = num(id, span)?;
+                    // A connection id is a non-negative whole number the host
+                    // handed the game; reject garbage rather than truncate it
+                    // to some OTHER live client.
+                    if n < 0.0 || n.fract() != 0.0 || n > u64::MAX as f64 {
+                        return err(format!(
+                            "Effect.send: connId must be a non-negative whole number, got {n}"
+                        ));
+                    }
+                    Ok(host(MleEffect(EffectTree::Send {
+                        conn: n,
+                        text: text.to_string(),
+                    })))
+                }
+                _ => usage("Effect.send(connId, text)"),
+            },
             "Physics.transformed" => match args.as_slice() {
                 [scene, Value::String(tag)] => {
                     let Some(inner) = scene_of(scene) else {
@@ -1799,6 +1868,8 @@ fn collect_fired(sub: &SubTree, prev_tts: f64, tts: f64, msgs: &mut Vec<Value>) 
         // Event subs fire from the physics step, not the time grid — the
         // drivers collect their taggers via `physics_event_taggers`.
         SubTree::PhysicsEvents { .. } => {}
+        // Connections are reconciled + routed by the producer, not fired.
+        SubTree::Connect { .. } => {}
     }
 }
 
@@ -1818,9 +1889,79 @@ pub fn physics_event_taggers(subs: &Value) -> Result<Vec<Value>, String> {
     Ok(taggers)
 }
 
+/// One declared connection from `subscriptions` — the producer reconciles
+/// these keys (open/close) and routes inbound events to their taggers.
+pub struct NetConnSub {
+    pub key: String,
+    pub listen: bool,
+    pub tagger: Value,
+}
+
+/// The `Sub.connect`/`Sub.listen` declarations in a sub tree, in declaration
+/// order. Same non-Sub error as `sub_messages_for_frame`.
+pub fn net_conn_subs(subs: &Value) -> Result<Vec<NetConnSub>, String> {
+    let Some(sub) = sub_of(subs) else {
+        return Err(format!(
+            "subscriptions must return a Sub (Sub.every / Sub.none / Sub.batch), got {}",
+            subs.kind_name()
+        ));
+    };
+    let mut out = Vec::new();
+    collect_conn_subs(&sub.0, &mut out);
+    Ok(out)
+}
+
+fn collect_conn_subs(sub: &SubTree, out: &mut Vec<NetConnSub>) {
+    match sub {
+        SubTree::Batch(items) => {
+            for item in items.iter() {
+                collect_conn_subs(item, out);
+            }
+        }
+        SubTree::Connect {
+            key,
+            listen,
+            tagger,
+        } => out.push(NetConnSub {
+            key: key.clone(),
+            listen: *listen,
+            tagger: tagger.clone(),
+        }),
+        SubTree::None | SubTree::Every { .. } | SubTree::PhysicsEvents { .. } => {}
+    }
+}
+
+/// Build the `Net.NetEvent` value the host hands a connection's tagger. The
+/// canonical ctor names come from the built-in `Net` module (see
+/// `mle::project`); `text` is the message/error payload (unused for
+/// Connected/Disconnected).
+pub fn net_event_value(kind: NetEventKind, conn: u64, text: &str) -> EffectValue {
+    let id = EffectValue::Number(conn as f64);
+    match kind {
+        NetEventKind::Connected => EffectValue::Variant("Net.Connected".into(), vec![id]),
+        NetEventKind::Disconnected => EffectValue::Variant("Net.Disconnected".into(), vec![id]),
+        NetEventKind::Message => EffectValue::Variant(
+            "Net.Message".into(),
+            vec![id, EffectValue::Text(text.to_string())],
+        ),
+        NetEventKind::Error => EffectValue::Variant(
+            "Net.Error".into(),
+            vec![id, EffectValue::Text(text.to_string())],
+        ),
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum NetEventKind {
+    Connected,
+    Message,
+    Disconnected,
+    Error,
+}
+
 fn collect_event_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
     match sub {
-        SubTree::None | SubTree::Every { .. } => {}
+        SubTree::None | SubTree::Every { .. } | SubTree::Connect { .. } => {}
         SubTree::Batch(items) => {
             for item in items.iter() {
                 collect_event_taggers(item, taggers);
@@ -1994,7 +2135,10 @@ pub fn drain_effects(
 /// update-less games.)
 pub fn needs_update(tree: &EffectTree) -> bool {
     match tree {
-        EffectTree::None | EffectTree::Physics(_) | EffectTree::Timeline(_) => false,
+        EffectTree::None
+        | EffectTree::Physics(_)
+        | EffectTree::Timeline(_)
+        | EffectTree::Send { .. } => false,
         EffectTree::Now { .. } | EffectTree::Random { .. } | EffectTree::Raycast { .. } => true,
         EffectTree::Batch(items) => items.iter().any(needs_update),
     }
@@ -2036,11 +2180,11 @@ fn drain_mode(
     const MAX_EFFECTS_PER_FRAME: usize = 1000;
     let mut queue: Vec<EffectTree> = queue;
     queue.reverse(); // treat the input list as front-of-queue, in order
-    // Counts every DEQUEUED node (None and Batch structure included), and is
-    // checked BEFORE the runner performs anything — so a runaway chain can't
-    // consume unbounded frame time through structural nodes, and the capped
-    // effect is never half-performed (no runner state advanced, nothing
-    // logged, no replay-log entry consumed).
+                     // Counts every DEQUEUED node (None and Batch structure included), and is
+                     // checked BEFORE the runner performs anything — so a runaway chain can't
+                     // consume unbounded frame time through structural nodes, and the capped
+                     // effect is never half-performed (no runner state advanced, nothing
+                     // logged, no replay-log entry consumed).
     let mut processed = 0usize;
     while let Some(tree) = queue.pop() {
         processed += 1;
@@ -2096,6 +2240,23 @@ dropping the rest"
                 };
                 physics::queue_timeline_control(control);
                 log.push(EffectRecord { kind, value });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::Send { conn, text } => {
+                // Fire-and-forget, like a physics command: queue a Send on the
+                // shell's connection manager (drained via
+                // net_drain_conn_commands). Logged for the effect record.
+                crate::net::push_conn_command(crate::net::ConnCommand::Send {
+                    conn: conn as crate::net::ConnectionId,
+                    payload: text.clone().into_bytes(),
+                });
+                log.push(EffectRecord {
+                    kind: "net.send",
+                    value: EffectValue::Text(text),
+                });
                 if log.len() > EFFECT_LOG_CAP {
                     log.remove(0);
                 }
@@ -2678,7 +2839,10 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         assert!(pass.frame.render_targets.is_empty());
         // The reader's wire shape: the screen material samples the target by id.
         let json = serde_json::to_string(&frame).expect("serialize");
-        assert!(json.contains(r#""RenderTarget":"security""#), "json: {json}");
+        assert!(
+            json.contains(r#""RenderTarget":"security""#),
+            "json: {json}"
+        );
         // And the whole frame round-trips through the protocol.
         let back: Frame = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
@@ -2696,7 +2860,9 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         );
         let json = serde_json::to_string(&frame.scene).expect("serialize");
         assert!(
-            json.contains(r#""Emissive":{"color":[1.0,1.0,1.0,1.0],"texture":{"RenderTarget":"feed"}}"#),
+            json.contains(
+                r#""Emissive":{"color":[1.0,1.0,1.0,1.0],"texture":{"RenderTarget":"feed"}}"#
+            ),
             "json: {json}"
         );
     }
@@ -2729,9 +2895,7 @@ Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube()))"
 it once with RenderTarget.named(\"…\") and pass that value at both sites"
         );
         assert_eq!(
-            fail(
-                "let main = () => RenderTarget.named(\"x\") |> RenderTarget.sized(-1.0, 4.0)"
-            ),
+            fail("let main = () => RenderTarget.named(\"x\") |> RenderTarget.sized(-1.0, 4.0)"),
             "RenderTarget.sized width must be positive, got -1"
         );
         assert_eq!(
@@ -2832,8 +2996,10 @@ Scene.cube()) |> Frame.withSkybox(\"sky.jpg\")"
 Skybox.files(px, nx, py, ny, pz, nz)"
         );
         assert_eq!(
-            fail("let main = () => Skybox.files(\"px.jpg\", \"\", \"py.jpg\", \"ny.jpg\", \
-\"pz.jpg\", \"nz.jpg\")"),
+            fail(
+                "let main = () => Skybox.files(\"px.jpg\", \"\", \"py.jpg\", \"ny.jpg\", \
+\"pz.jpg\", \"nz.jpg\")"
+            ),
             "usage: Skybox.files(px, nx, py, ny, pz, nz) — six non-empty face \
 paths (+X, -X, +Y, -Y, +Z, -Z)"
         );
@@ -2950,9 +3116,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
     #[test]
     fn physics_command_effects_queue_and_apply() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
-        let effect = eval(
-            "let main = () => Physics.applyImpulse(\"ball\", 2.0, 0.0, 0.0)",
-        );
+        let effect = eval("let main = () => Physics.applyImpulse(\"ball\", 2.0, 0.0, 0.0)");
         let Value::HostData(data) = &effect else {
             panic!("expected an Effect");
         };
@@ -3247,7 +3411,14 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         assert!(matches!(model, Value::Number(_)), "model must be untouched");
 
         // Post-step drain: performed against the live world.
-        perform_deferred_queries(&session, &mut model, deferred, &mut runner, &mut log, &mut fail);
+        perform_deferred_queries(
+            &session,
+            &mut model,
+            deferred,
+            &mut runner,
+            &mut log,
+            &mut fail,
+        );
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].kind, "physics.raycast");
         let Value::Record(fields) = &model else {
@@ -3299,7 +3470,9 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         let EffectValue::Record(f) = &miss else {
             panic!()
         };
-        assert!(f.iter().any(|(k, v)| k == "hit" && *v == EffectValue::Bool(false)));
+        assert!(f
+            .iter()
+            .any(|(k, v)| k == "hit" && *v == EffectValue::Bool(false)));
     }
 
     /// The Phase 5 event path end to end: a `Physics.events` sub's tagger
@@ -3357,10 +3530,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         .flatten()
         .expect("a contact");
 
-        let mut model = Value::Record(Rc::new(vec![(
-            "contacts".to_string(),
-            Value::Number(0.0),
-        )]));
+        let mut model = Value::Record(Rc::new(vec![("contacts".to_string(), Value::Number(0.0))]));
         let mut log = EffectLog::new();
         let mut runner = FakeEffects::new(0.0, vec![]);
         deliver_physics_events(
@@ -3694,7 +3864,9 @@ row 1 has 3"
             "json: {json}"
         );
         assert!(
-            json.contains(r#""Emissive":{"color":[1.0,1.0,1.0,1.0],"texture":{"File":"grid.png"}}"#),
+            json.contains(
+                r#""Emissive":{"color":[1.0,1.0,1.0,1.0],"texture":{"File":"grid.png"}}"#
+            ),
             "json: {json}"
         );
         // And the whole thing round-trips through the protocol.
@@ -3744,6 +3916,89 @@ the game dir"
         // And it round-trips (the wasm boundary ships Views as JSON).
         let back: View = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // --- Networking (Sub.connect/listen, Effect.send, NetEvent) ---
+
+    #[test]
+    fn net_conn_subs_extracts_declarations() {
+        let subs = eval(
+            "type Msg = | Ws(ev: Net.NetEvent)\n\
+             let main = () => Sub.batch([\n\
+               Sub.connect(\"ws://a/echo\", Ws),\n\
+               Sub.listen(\"127.0.0.1:9001\", Ws),\n\
+             ])",
+        );
+        let conns = net_conn_subs(&subs).expect("a Sub tree");
+        assert_eq!(conns.len(), 2);
+        assert_eq!(conns[0].key, "ws://a/echo");
+        assert!(!conns[0].listen);
+        assert_eq!(conns[1].key, "127.0.0.1:9001");
+        assert!(conns[1].listen);
+    }
+
+    #[test]
+    fn effect_send_queues_a_conn_command() {
+        crate::net::drain_conn_commands(); // clear
+        let module =
+            mle::lower(mle::parse("let main = () => Effect.send(7.0, \"hi\")").unwrap()).unwrap();
+        let session = match mle::Session::load(&module, &mut FunctorHost) {
+            Ok(s) => s,
+            Err(f) => panic!("load: {}", f.error.message),
+        };
+        let fx = session.global("main").unwrap();
+        let fx = session.apply(fx, vec![], "main", &mut FunctorHost).unwrap();
+        let (_, effect) =
+            split_model_effect(Value::Tuple(std::rc::Rc::new(vec![Value::Number(0.0), fx])));
+        let mut model = Value::Number(0.0);
+        let mut log = EffectLog::new();
+        drain_effects(
+            &session,
+            &mut model,
+            effect.expect("a Send effect"),
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+        );
+        let cmds = crate::net::drain_conn_commands();
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            crate::net::ConnCommand::Send { conn: 7, payload } if payload == b"hi"
+        ));
+    }
+
+    /// The NetEvent value the host hands a tagger matches the built-in `Net`
+    /// module's canonical ctors — a game's `match ev with | Net.Message(id, t)`
+    /// binds them.
+    #[test]
+    fn net_event_value_matches_the_net_module() {
+        let ev = net_event_value(NetEventKind::Message, 3, "yo").to_mle();
+        match ev {
+            Value::Variant { ctor, args } => {
+                assert_eq!(ctor.as_ref(), "Net.Message");
+                assert_eq!(args.len(), 2);
+                assert_eq!(args[0].to_string(), "3");
+                assert_eq!(args[1].to_string(), "\"yo\"");
+            }
+            other => panic!("expected a variant, got {other}"),
+        }
+    }
+
+    /// Effect.send rejects a garbage connection id rather than truncating it
+    /// to some OTHER live client. [Codex M — net review]
+    #[test]
+    fn effect_send_rejects_bad_conn_ids() {
+        for (id, src) in [
+            ("-1.0", "let main = () => Effect.send(-1.0, \"x\")"),
+            ("1.5", "let main = () => Effect.send(1.5, \"x\")"),
+        ] {
+            let msg = run_fail(src);
+            assert!(
+                msg.contains("connId must be a non-negative whole number"),
+                "id {id}: {msg}"
+            );
+        }
     }
 
     // Ui teaching errors: non-View children and unbranded anchors fail loud.

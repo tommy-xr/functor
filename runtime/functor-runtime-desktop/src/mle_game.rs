@@ -31,8 +31,9 @@ use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
     contains_effect, deliver_physics_events, drain_effects, frame_value, needs_update,
-    perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
-    sub_messages_for_frame, view_value, EffectLog, EffectTree, FunctorHost, RealEffects,
+    net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
+    physics_scene_value, split_model_effect, sub_messages_for_frame, view_value, EffectLog,
+    EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
@@ -102,6 +103,13 @@ pub struct MleGame {
     physics_rt: physics::SteppedPhysics,
     /// Latest recorder status for the overlay: (fixed frame, paused, history).
     physics_status: (u64, bool, u64),
+    /// Endpoint keys of the connections currently declared by
+    /// `subscriptions` (`Sub.connect`/`Sub.listen`) — diffed each frame to
+    /// open newly-declared ones and close dropped ones. The shell's
+    /// connection manager owns the live sockets; this is just the reconcile
+    /// key set (kept across hot reload, like the model — Connect is
+    /// idempotent).
+    live_conn_keys: std::collections::HashSet<String>,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -309,6 +317,7 @@ impl MleGame {
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
+            live_conn_keys: std::collections::HashSet::new(),
             last_frame: empty_frame(),
             last_error: None,
             frames: 0,
@@ -435,16 +444,62 @@ to receive their messages; dropping them"
     /// frame, so a model change can silence a timer. Errors report per
     /// message and processing continues — one bad message must not stall
     /// the rest, and dedupe keeps a persistent bug to one line.
-    fn pump_subscriptions(&mut self, tts: f64) {
-        // Advance the window even without subscriptions (or on frame one),
-        // so a hot reload that ADDS subscriptions starts from a sane edge.
-        let prev = self.prev_tts.replace(tts);
+    /// Close every connection this producer still has open (a reload that
+    /// dropped `subscriptions`, or shutdown). CloseKey is queued for each;
+    /// the live set is cleared.
+    fn close_all_connections(&mut self) {
+        use functor_runtime_common::net::{push_conn_command, ConnCommand};
+        for key in std::mem::take(&mut self.live_conn_keys) {
+            push_conn_command(ConnCommand::CloseKey { key });
+        }
+    }
+
+    /// Open connections newly declared this frame and close ones no longer
+    /// declared (keyed by endpoint). Commands go to the shell's connection
+    /// manager, drained via `net_drain_conn_commands`. The physics-events
+    /// pattern for connections.
+    fn reconcile_connections(&mut self, subs: &Value) {
+        use functor_runtime_common::net::{push_conn_command, ConnCommand};
+        let conns = match net_conn_subs(subs) {
+            Ok(conns) => conns,
+            Err(message) => return self.report_once(format!("[mle] {message}")),
+        };
+        // Dedupe by key (first declaration wins its listen/connect role) so
+        // a key is opened at most once even if declared twice in one frame.
+        let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for conn in &conns {
+            if !declared.insert(conn.key.clone()) {
+                continue; // already handled this key this frame
+            }
+            if !self.live_conn_keys.contains(&conn.key) {
+                push_conn_command(if conn.listen {
+                    ConnCommand::Listen {
+                        key: conn.key.clone(),
+                        addr: conn.key.clone(),
+                    }
+                } else {
+                    ConnCommand::Connect {
+                        key: conn.key.clone(),
+                        url: conn.key.clone(),
+                    }
+                });
+            }
+        }
+        for key in &self.live_conn_keys {
+            if !declared.contains(key) {
+                push_conn_command(ConnCommand::CloseKey { key: key.clone() });
+            }
+        }
+        self.live_conn_keys = declared;
+    }
+
+    /// Route one inbound connection event to the matching key's tagger and
+    /// fold the message through `update`. Taggers are read FRESH from the
+    /// current `subscriptions(model)` (never cached — a reload rebinds them).
+    fn deliver_net_event(&mut self, key: String, kind: NetEventKind, conn: i32, text: String) {
         if !self.has_subscriptions {
             return;
         }
-        let Some(prev) = prev else {
-            return;
-        };
         let subs =
             match self
                 .session
@@ -453,6 +508,56 @@ to receive their messages; dropping them"
                 Ok(subs) => subs,
                 Err(err) => return self.frame_error("subscriptions", &err),
             };
+        let conns = match net_conn_subs(&subs) {
+            Ok(conns) => conns,
+            Err(message) => return self.report_once(format!("[mle] {message}")),
+        };
+        let Some(sub) = conns.into_iter().find(|c| c.key == key) else {
+            return; // an event for a no-longer-declared connection: drop it
+        };
+        let value = net_event_value(kind, conn as u64, &text).to_mle();
+        let msg = match self
+            .session
+            .apply(sub.tagger, vec![value], "net event", &mut FunctorHost)
+        {
+            Ok(msg) => msg,
+            Err(err) => return self.frame_error("net event", &err),
+        };
+        match self
+            .session
+            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
+        {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.frame_error("update", &err),
+        }
+    }
+
+    fn pump_subscriptions(&mut self, tts: f64) {
+        // Advance the window even without subscriptions (or on frame one),
+        // so a hot reload that ADDS subscriptions starts from a sane edge.
+        let prev = self.prev_tts.replace(tts);
+        if !self.has_subscriptions {
+            // No subscriptions must not leave a previous program's
+            // connections open (a hot reload that dropped them).
+            if !self.live_conn_keys.is_empty() {
+                self.close_all_connections();
+            }
+            return;
+        }
+        let subs =
+            match self
+                .session
+                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(subs) => subs,
+                Err(err) => return self.frame_error("subscriptions", &err),
+            };
+        // Reconcile connections EVERY frame — including frame one (before the
+        // timer window exists), so a declared connection opens immediately.
+        self.reconcile_connections(&subs);
+        let Some(prev) = prev else {
+            return;
+        };
         let msgs = match sub_messages_for_frame(&subs, prev, tts) {
             Ok(msgs) => msgs,
             Err(message) => return self.report_once(format!("[mle] {message}")),
@@ -640,8 +745,7 @@ impl Game for MleGame {
         // frame's steps, but also while PAUSED (frozen mid-flight, frame > 0)
         // and on a short zero-substep frame — so a raycast fired while paused
         // answers against the frozen world instead of deferring forever.
-        let world_ready =
-            physics_steps > 0 || !self.has_physics || self.physics_status.0 > 0;
+        let world_ready = physics_steps > 0 || !self.has_physics || self.physics_status.0 > 0;
         if world_ready && !self.deferred_queries.is_empty() {
             let deferred = std::mem::take(&mut self.deferred_queries);
             let mut reports: Vec<String> = Vec::new();
@@ -788,8 +892,10 @@ impl Game for MleGame {
             return self.last_view.clone();
         }
         let status = View::text(
-            format!("physics ⏸ frame {frame} · {history} recorded · Left/Right scrub · Space resume")
-                .into(),
+            format!(
+                "physics ⏸ frame {frame} · {history} recorded · Left/Right scrub · Space resume"
+            )
+            .into(),
         );
         View::Column(vec![self.last_view.clone(), status])
     }
@@ -810,15 +916,25 @@ impl Game for MleGame {
         "{\"sources\":[]}".to_string()
     }
     fn net_drain_conn_commands(&self) -> String {
-        "[]".to_string()
+        functor_runtime_common::net::drain_conn_commands_json()
     }
-    fn net_push_connected(&mut self, _key: String, _conn: i32) {}
-    fn net_push_conn_message(&mut self, _key: String, _conn: i32, _text: String) {}
-    fn net_push_disconnected(&mut self, _key: String, _conn: i32) {}
-    fn net_push_conn_error(&mut self, _key: String, _conn: i32, _message: String) {}
+    fn net_push_connected(&mut self, key: String, conn: i32) {
+        self.deliver_net_event(key, NetEventKind::Connected, conn, String::new());
+    }
+    fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
+        self.deliver_net_event(key, NetEventKind::Message, conn, text);
+    }
+    fn net_push_disconnected(&mut self, key: String, conn: i32) {
+        self.deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
+    }
+    fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
+        self.deliver_net_event(key, NetEventKind::Error, conn, message);
+    }
     fn audio_push_finished(&mut self, _token: i32) {}
 
-    fn quit(&mut self) {}
+    fn quit(&mut self) {
+        self.close_all_connections();
+    }
 }
 
 /// `name` must be a function of `arity` params — a contract violation is
@@ -852,6 +968,150 @@ fn empty_frame() -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The net conn-command queue is process-global, so the two net tests
+    // below must not run concurrently — serialize them.
+    static NET_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The whole networking path, headless — no socket, no GL. Drives a
+    /// live `MleGame` for the wsdemo port: declaring `Sub.connect`
+    /// reconciles into a `Connect` command; a `Connected` event routes
+    /// through the tagger → `update`, storing the id and replying with
+    /// `Effect.send`; a `Message` event lands in the model.
+    #[test]
+    fn websocket_connect_send_receive() {
+        let _guard = NET_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use functor_runtime_common::net::{drain_conn_commands, ConnCommand};
+        const ENDPOINT: &str = "ws://127.0.0.1:9001/echo";
+        let dir = std::env::temp_dir().join(format!("mle-net-ws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("game.mle"),
+            "type Conn = | NoConn | Conn(id: Float)\n\
+             type Model = { conn: Conn, last: String }\n\
+             type Msg = | Ws(ev: Net.NetEvent)\n\
+             let init = { conn: NoConn, last: \"\" }\n\
+             let update = (m: Model, msg: Msg) =>\n\
+               match msg with\n\
+               | Ws(ev) =>\n\
+                 (match ev with\n\
+                  | Net.Connected(id) => ({ m with conn: Conn(id) }, Effect.send(id, \"hello\"))\n\
+                  | Net.Message(id, text) => { m with last: text }\n\
+                  | Net.Disconnected(id) => { m with conn: NoConn }\n\
+                  | Net.Error(id, e) => { m with last: e })\n\
+             let subscriptions = (m: Model) => Sub.connect(\"ws://127.0.0.1:9001/echo\", Ws)\n\
+             let tick = (m: Model, dt: Float, tts: Float) => m\n\
+             let draw = (m: Model, tts: Float) =>\n\
+               Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .unwrap();
+        let _ = drain_conn_commands(); // clear the shared queue
+
+        let mut game = MleGame::create(dir.join("game.mle").to_str().unwrap());
+
+        // 1. Declaring the connection queues a Connect on the first frame.
+        game.tick(FrameTime {
+            tts: 0.0,
+            dts: 0.016,
+        });
+        let cmds = drain_conn_commands();
+        // Exactly one Connect (declared once) — the dedupe guard. [Codex M]
+        let connects = cmds
+            .iter()
+            .filter(|c| matches!(c, ConnCommand::Connect { key, .. } if key == ENDPOINT))
+            .count();
+        assert_eq!(connects, 1, "expected exactly one Connect, got {cmds:?}");
+
+        // 2. A Connected event → the game stores the id and replies with send.
+        game.net_push_connected(ENDPOINT.to_string(), 5);
+        let cmds = drain_conn_commands();
+        assert!(
+            cmds.iter().any(
+                |c| matches!(c, ConnCommand::Send { conn, payload } if *conn == 5 && payload == b"hello")
+            ),
+            "expected Send(5, hello), got {cmds:?}"
+        );
+
+        // 3. A Message event lands in the model.
+        game.net_push_conn_message(ENDPOINT.to_string(), 5, "echo".to_string());
+        assert!(
+            game.state_debug().contains("echo"),
+            "model should hold the message: {}",
+            game.state_debug()
+        );
+    }
+
+    /// The server (Sub.listen) path with a CLOSURE tagger: listening queues
+    /// a Listen command, a client Connected event greets THAT client by id,
+    /// and a Message is echoed back to its sender.
+    #[test]
+    fn websocket_server_listen_greet_echo() {
+        let _guard = NET_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use functor_runtime_common::net::{drain_conn_commands, ConnCommand};
+        const BIND: &str = "127.0.0.1:9001";
+        let dir = std::env::temp_dir().join(format!("mle-net-server-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("game.mle"),
+            "type Model = { clients: Float, last: String }\n\
+             type Msg = | Joined(id: Float) | Got(id: Float, text: String) | Left(id: Float)\n\
+             let toMsg = (ev: Net.NetEvent): Msg =>\n\
+               match ev with\n\
+               | Net.Connected(id) => Joined(id)\n\
+               | Net.Message(id, text) => Got(id, text)\n\
+               | Net.Disconnected(id) => Left(id)\n\
+               | Net.Error(id, e) => Left(id)\n\
+             let init = { clients: 0.0, last: \"\" }\n\
+             let update = (m: Model, msg: Msg) =>\n\
+               match msg with\n\
+               | Joined(id) => ({ m with clients: m.clients + 1.0 }, Effect.send(id, \"welcome\"))\n\
+               | Got(id, text) => ({ m with last: text }, Effect.send(id, text))\n\
+               | Left(id) => { m with clients: m.clients - 1.0 }\n\
+             let subscriptions = (m: Model) => Sub.listen(\"127.0.0.1:9001\", toMsg)\n\
+             let tick = (m: Model, dt: Float, tts: Float) => m\n\
+             let draw = (m: Model, tts: Float) =>\n\
+               Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .unwrap();
+        let _ = drain_conn_commands();
+        let mut game = MleGame::create(dir.join("game.mle").to_str().unwrap());
+
+        game.tick(FrameTime {
+            tts: 0.0,
+            dts: 0.016,
+        });
+        let cmds = drain_conn_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, ConnCommand::Listen { key, .. } if key == BIND)),
+            "expected a Listen for {BIND}, got {cmds:?}"
+        );
+
+        // Two clients connect; each is greeted by its OWN id.
+        game.net_push_connected(BIND.to_string(), 11);
+        game.net_push_connected(BIND.to_string(), 22);
+        let cmds = drain_conn_commands();
+        assert!(cmds.iter().any(
+            |c| matches!(c, ConnCommand::Send { conn: 11, payload } if payload == b"welcome")
+        ));
+        assert!(cmds.iter().any(
+            |c| matches!(c, ConnCommand::Send { conn: 22, payload } if payload == b"welcome")
+        ));
+        assert!(
+            game.state_debug().contains("clients: 2"),
+            "{}",
+            game.state_debug()
+        );
+
+        // A message from client 22 is echoed back to 22.
+        game.net_push_conn_message(BIND.to_string(), 22, "ping".to_string());
+        let cmds = drain_conn_commands();
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, ConnCommand::Send { conn: 22, payload } if payload == b"ping")));
+    }
 
     /// Write `src` as `game.mle` in its own temp directory (a directory is
     /// a whole project since B8 — a shared temp dir would drag stray `.mle`
