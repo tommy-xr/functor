@@ -17,6 +17,7 @@
   --red: #ff5d7a;
   --font-display: "Orbitron", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-arcade: "Press Start 2P", "Orbitron", monospace;
 }
 
 * {
@@ -94,13 +95,14 @@ a:hover {
 }
 
 .hero-tagline {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: clamp(1rem, 2.6vw, 1.5rem);
-  letter-spacing: 0.12em;
+  font-family: var(--font-arcade);
+  font-size: clamp(0.7rem, 1.6vw, 1rem);
+  line-height: 1.8;
+  letter-spacing: 0.08em;
   color: var(--text);
-  margin: 12px 0 0;
+  margin: 18px 0 0;
   text-transform: uppercase;
+  text-shadow: 0 0 12px rgba(39, 232, 247, 0.5);
 }
 
 .hero-sub {
@@ -119,13 +121,13 @@ a:hover {
 
 .button-primary,
 .button-ghost {
-  font-family: var(--font-display);
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  padding: 12px 26px;
+  font-family: var(--font-arcade);
+  letter-spacing: 0.06em;
+  padding: 14px 26px;
   border-radius: 4px;
   text-transform: uppercase;
-  font-size: 0.9rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
 }
 
 .button-primary {
@@ -269,11 +271,10 @@ a:hover {
 }
 
 .wordmark {
-  font-family: var(--font-display);
-  font-weight: 800;
-  letter-spacing: 0.12em;
+  font-family: var(--font-arcade);
+  letter-spacing: 0.05em;
   color: var(--text);
-  font-size: 0.95rem;
+  font-size: 0.7rem;
 }
 
 .wordmark-accent {
@@ -316,8 +317,9 @@ a:hover {
 }
 
 .status-pill {
-  font-size: 0.8rem;
-  padding: 5px 12px;
+  font-family: var(--font-arcade);
+  font-size: 0.55rem;
+  padding: 7px 12px;
   border-radius: 999px;
   border: 1px solid var(--line);
   white-space: nowrap;

@@ -33,6 +33,9 @@ let pushTimer = null;
 const setStatus = (state, text, detail = "") => {
   statusPill.dataset.state = state;
   statusPill.textContent = text;
+  // Every transition clears the tooltip (the ok branch below re-sets it) so
+  // a stale "model preserved" can't contradict a later error or fresh load.
+  statusPill.title = "";
   statusLog.textContent = detail;
   statusLog.hidden = detail === "";
 };
@@ -88,8 +91,14 @@ window.addEventListener("message", (event) => {
     // A reply from the outgoing document (its WindowProxy survives the src
     // swap) must not overwrite the "loading…" status of the incoming one.
     if (!previewReady) return;
-    if (data.ok) setStatus("live", `● live — ${data.message}`);
-    else setStatus("error", "✖ error", data.message);
+    if (data.ok) {
+      setStatus("live", "● live");
+      // The runtime's status line ("reloaded … model preserved") stays
+      // reachable — hover the pill, or the e2e's status() seam below.
+      statusPill.title = data.message;
+    } else {
+      setStatus("error", "✖ error", data.message);
+    }
   }
 });
 
@@ -189,6 +198,7 @@ window.__sandbox = {
   status: () => ({
     state: statusPill.dataset.state,
     text: statusPill.textContent,
+    message: statusPill.title,
     detail: statusLog.textContent,
   }),
 };
