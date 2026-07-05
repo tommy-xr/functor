@@ -29,8 +29,18 @@ import { findRepoRoot, FunctorRunner, waitFor } from "../src/index.js";
 // scheduler noise. The measured numbers are printed so CI logs double as a
 // perf record.
 //
-// Opt-in like the other e2e suites: npm run test:e2e[:headless]
-const e2eEnabled = process.env.FUNCTOR_E2E === "1";
+// OPT-IN, and NOT part of the per-PR e2e suite (`FUNCTOR_PERF=1` gates it,
+// which `test:e2e[:headless]` does not set) — the golden-test precedent.
+// This measurement free-runs 600 real frames on the wall clock, so it
+// depends on frame THROUGHPUT, which shared CI runners cannot guarantee:
+// the same eval that finishes two windows in ~13s locally repeatedly blew
+// past even a 240s wait on GitHub's macOS runners (contention, not a
+// regression). A flaky REQUIRED check is worse than a reliable on-demand
+// one; run it deliberately (`FUNCTOR_E2E=1 FUNCTOR_PERF=1 npm run
+// test:e2e:headless`) or from a dedicated non-blocking perf job. The gate
+// still catches order-of-magnitude regressions when run — it just no
+// longer gates merges on hardware noise.
+const e2eEnabled = process.env.FUNCTOR_E2E === "1" && process.env.FUNCTOR_PERF === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
 const BUDGET_US = 16_666; // one 60fps frame
