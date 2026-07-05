@@ -328,3 +328,152 @@ impl TextOverlay {
         }
     }
 }
+
+/// Pointer state fed to an interactive overlay, in physical framebuffer pixels.
+/// `pos` is `None` while the cursor is captured for free-look (the overlay is
+/// not being pointed at), so the scrubber neither hovers nor clicks.
+#[derive(Clone, Copy, Default)]
+pub struct PointerState {
+    pub pos: Option<(f32, f32)>,
+    pub primary_down: bool,
+}
+
+/// The time-travel state the shell hands the scrubber to render.
+#[derive(Clone, Copy)]
+pub struct ScrubberState {
+    pub frame: u64,
+    pub paused: bool,
+}
+
+/// A control the user activated in the scrubber this frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScrubberAction {
+    TogglePause,
+    RewindBy(u64),
+    Step,
+}
+
+/// The scrubber's output for one frame.
+pub struct ScrubberOutput {
+    pub action: Option<ScrubberAction>,
+    /// egui is using the pointer (hovering/clicking a control), so the shell
+    /// must NOT treat the click as a free-look recapture.
+    pub wants_pointer: bool,
+}
+
+/// The shell-owned time-travel scrubber (docs/time-travel.md T3): an imperative
+/// egui panel — separate from the game's declarative [`View`] — that drives the
+/// coupled scene rewind. It keeps its OWN `egui::Context` so its pointer/click
+/// accounting never interleaves with the game HUD's [`TextOverlay`] frames.
+/// Runtime-owned, not a game hook.
+pub struct Scrubber {
+    ctx: egui::Context,
+    painter: egui_glow::Painter,
+    gl: Arc<glow::Context>,
+    last_primary_down: bool,
+}
+
+impl Scrubber {
+    pub fn new(gl: Arc<glow::Context>) -> Self {
+        let painter = egui_glow::Painter::new(gl.clone(), "", None, false)
+            .expect("failed to create egui_glow painter for the scrubber");
+        Self {
+            ctx: egui::Context::default(),
+            painter,
+            gl,
+            last_primary_down: false,
+        }
+    }
+
+    /// Draw the scrubber and return any control the user activated plus whether
+    /// egui wants the pointer this frame. `width`/`height` are physical pixels.
+    pub fn draw(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels_per_point: f32,
+        pointer: PointerState,
+        state: ScrubberState,
+    ) -> ScrubberOutput {
+        if width == 0 || height == 0 {
+            return ScrubberOutput {
+                action: None,
+                wants_pointer: false,
+            };
+        }
+        self.ctx.set_pixels_per_point(pixels_per_point);
+        let screen_points = egui::vec2(
+            width as f32 / pixels_per_point,
+            height as f32 / pixels_per_point,
+        );
+
+        // Synthesize egui pointer events from the shell's current pointer state:
+        // a move every frame, and a button event on the press/release EDGE (egui
+        // needs both to register a click).
+        let mut events = Vec::new();
+        if let Some((px, py)) = pointer.pos {
+            let pos = egui::pos2(px / pixels_per_point, py / pixels_per_point);
+            events.push(egui::Event::PointerMoved(pos));
+            if pointer.primary_down != self.last_primary_down {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: pointer.primary_down,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+        }
+        self.last_primary_down = pointer.primary_down;
+
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_points)),
+            events,
+            ..Default::default()
+        };
+
+        let mut action = None;
+        let output = self.ctx.run_ui(raw_input, |ui| {
+            let ctx = ui.ctx().clone();
+            egui::Area::new(egui::Id::new("functor_scrubber"))
+                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -MARGIN))
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("time-travel · frame {}", state.frame))
+                                    .font(egui::FontId::monospace(UI_FONT_SIZE)),
+                            );
+                            if ui.button(if state.paused { "Resume" } else { "Pause" }).clicked() {
+                                action = Some(ScrubberAction::TogglePause);
+                            }
+                            if ui.button("<< 30").clicked() {
+                                action = Some(ScrubberAction::RewindBy(30));
+                            }
+                            if ui.button("Step >").clicked() {
+                                action = Some(ScrubberAction::Step);
+                            }
+                        });
+                    });
+                });
+        });
+
+        let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        self.painter.paint_and_update_textures(
+            [width, height],
+            output.pixels_per_point,
+            &primitives,
+            &output.textures_delta,
+        );
+        // Restore the GL slate the 3D path expects (see `TextOverlay::run_and_paint`).
+        unsafe {
+            self.gl.disable(glow::SCISSOR_TEST);
+            self.gl.disable(glow::BLEND);
+            self.gl.enable(glow::DEPTH_TEST);
+        }
+
+        ScrubberOutput {
+            action,
+            wants_pointer: self.ctx.wants_pointer_input(),
+        }
+    }
+}

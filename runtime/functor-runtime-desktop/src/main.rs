@@ -658,6 +658,14 @@ pub async fn main() {
         // rest of the runtime keeps using `&gl`, which derefs through the Arc.
         let gl = std::sync::Arc::new(gl);
         let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
+        // The shell-owned time-travel scrubber (docs/time-travel.md T3), drawn
+        // over the frame; interactive when the cursor is released (Escape).
+        let mut scrubber = functor_runtime_common::ui::Scrubber::new(gl.clone());
+        // Primary mouse-button state for the scrubber, and whether egui wanted
+        // the pointer last frame (so a click on a control doesn't recapture the
+        // cursor for free-look).
+        let mut mouse_primary_down = false;
+        let mut scrubber_wants_pointer = false;
 
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
@@ -772,13 +780,33 @@ Escape again to quit"
                             window.set_should_close(true)
                         }
                     }
-                    // A click while released recaptures for free-look. Never
-                    // on a hidden window — it must not grab the pointer.
-                    glfw::WindowEvent::MouseButton(_, Action::Press, _)
+                    // Left click while released: if it lands on a scrubber
+                    // control (egui wanted the pointer last frame) it drives the
+                    // scrubber; otherwise it recaptures for free-look. Press/
+                    // release edges feed egui's click detection. Never on a
+                    // hidden window — it must not grab the pointer. These arms
+                    // sit BEFORE the `ignore_user_input` catch-all so the
+                    // scrubber stays usable while the clock is pinned (paused).
+                    glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, action, _)
                         if !cursor_captured && !hidden =>
                     {
-                        window.set_cursor_mode(glfw::CursorMode::Disabled);
-                        cursor_captured = true;
+                        match action {
+                            Action::Press => {
+                                if scrubber_wants_pointer {
+                                    mouse_primary_down = true;
+                                } else {
+                                    window.set_cursor_mode(glfw::CursorMode::Disabled);
+                                    cursor_captured = true;
+                                }
+                            }
+                            Action::Release => mouse_primary_down = false,
+                            Action::Repeat => {}
+                        }
+                    }
+                    // Track the cursor for the scrubber while released (but never
+                    // drive the camera — you're pointing at the overlay).
+                    glfw::WindowEvent::CursorPos(x, y) if !cursor_captured => {
+                        mouse_pos = (x as i32, y as i32);
                     }
                     // F1 recenters head tracking (runner-level, never reaches
                     // the game): current head pose becomes "straight ahead".
@@ -977,6 +1005,45 @@ Escape again to quit"
             // appears in --capture-frame PNGs.
             let ui_view = game.ui();
             text_overlay.draw_view(fb_width as u32, fb_height as u32, 1.0, &ui_view);
+
+            // The shell-owned time-travel scrubber (docs/time-travel.md T3),
+            // drawn over the frame (so it shows in captures) and interactive
+            // when the cursor is released.
+            let scrubber_out = scrubber.draw(
+                fb_width as u32,
+                fb_height as u32,
+                1.0,
+                functor_runtime_common::ui::PointerState {
+                    pos: (!cursor_captured && !hidden)
+                        .then_some((mouse_pos.0 as f32, mouse_pos.1 as f32)),
+                    primary_down: mouse_primary_down,
+                },
+                functor_runtime_common::ui::ScrubberState {
+                    frame: game.current_scene_frame().unwrap_or(0),
+                    paused: held_time.is_some(),
+                },
+            );
+            scrubber_wants_pointer = scrubber_out.wants_pointer;
+            match scrubber_out.action {
+                Some(functor_runtime_common::ui::ScrubberAction::TogglePause) => {
+                    held_time = if held_time.is_some() { None } else { Some(time.tts) };
+                    pending_step = None;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::RewindBy(n)) => {
+                    if let Some(f) = game.current_scene_frame() {
+                        match game.rewind_scene_to(f.saturating_sub(n)) {
+                            Ok(status) => println!("[scrubber] {status}"),
+                            Err(e) => eprintln!("[scrubber] {e}"),
+                        }
+                        // Pin the clock so the rewound scene stays put.
+                        held_time = Some(time.tts);
+                    }
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::Step) => {
+                    pending_step = Some(1.0 / 60.0);
+                }
+                None => {}
+            }
 
             if let Some(capture_path) = &args.capture_frame {
                 if elapsed_time >= args.capture_time {

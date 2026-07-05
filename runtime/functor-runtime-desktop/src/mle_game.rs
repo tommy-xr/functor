@@ -909,6 +909,10 @@ impl Game for MleGame {
         Ok(format!("rewound scene to rendered frame {frame}{clamped}"))
     }
 
+    fn current_scene_frame(&self) -> Option<u64> {
+        self.model_history.recorded_range().map(|(_, hi)| hi)
+    }
+
     fn tick(&mut self, frame_time: FrameTime) {
         let started = Instant::now();
         // Subscriptions first, so `tick` sees a model that has absorbed this

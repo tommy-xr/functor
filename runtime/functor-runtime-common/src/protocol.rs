@@ -107,6 +107,13 @@ pub trait GameProducer {
         Err("this producer does not support scene rewind".to_string())
     }
 
+    /// The newest recorded rendered frame — what the time-travel scrubber shows
+    /// and rewinds relative to (docs/time-travel.md T1). `None` for producers
+    /// that don't record a model history.
+    fn current_scene_frame(&self) -> Option<u64> {
+        None
+    }
+
     fn tick(&mut self, frame_time: crate::FrameTime);
 
     /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.
