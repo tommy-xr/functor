@@ -607,17 +607,38 @@ let bad = f() + 1.0
 /// lowering (the backward-compatibility pin: bare names, IDs from zero,
 /// spans from zero).
 #[test]
-fn single_file_project_is_identical_to_plain_lowering() {
+fn single_file_project_adds_only_the_builtin_net_module() {
+    // A project always includes the built-in `Net` prelude module (so any
+    // game can `match ev with | Net.Connected(id) => …`), so its merged IR
+    // is plain lowering's defs/types PLUS Net's — nothing else changes.
     let src = "type Shape = | Circle(radius: Float) | Point\n\
                let area = (s: Shape): Float =>\n\
                match s with | Circle(r) => 3.14 * r * r | Point => 0.0\n\
                let main = () => area(Circle(2.0))\n";
     let project = load("single-file", &[("game.mle", src)]);
     let plain = mle::lower(mle::parse(src).expect("parses")).expect("lowers");
+
+    let proj_defs: Vec<&str> = project.module.defs.iter().map(|d| d.name.as_str()).collect();
+    for def in &plain.defs {
+        assert!(
+            proj_defs.contains(&def.name.as_str()),
+            "entry def `{}` must survive into the project unchanged",
+            def.name
+        );
+    }
+    let proj_types: Vec<&str> = project.module.types.iter().map(|t| t.name.as_str()).collect();
+    for ty in &plain.types {
+        assert!(proj_types.contains(&ty.name.as_str()));
+    }
+    // The ONLY additions are the Net module's (canonicalized `Net.NetEvent`).
+    assert!(
+        proj_types.contains(&"Net.NetEvent"),
+        "the built-in Net module must be injected: {proj_types:?}"
+    );
     assert_eq!(
-        format!("{:#?}", project.module),
-        format!("{plain:#?}"),
-        "single-file project IR must match plain lowering exactly"
+        proj_types.len(),
+        plain.types.len() + 1,
+        "no types beyond the entry's + Net.NetEvent"
     );
 }
 
