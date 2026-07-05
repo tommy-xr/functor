@@ -15,6 +15,12 @@
 //!   (a glTF file loaded by the shells' asset pipeline; the path is
 //!    relative to the game dir, exactly as F#'s `Model.file` — a missing
 //!    file logs an error and renders as the empty fallback asset)
+//! Scene.heightmap([[height, …], …])                         -> Scene
+//!   (a subdivided XZ grid displaced by per-vertex heights — a list of ROWS,
+//!    each an equal-length list of numbers, at least 2x2; spans the unit
+//!    square, so size it with Scene.scale. Sample a height function with
+//!    List builtins: List.range(rows) |> List.map((r) => List.range(cols)
+//!    |> List.map((c) => f(r, c))) — F#'s `heightmapFn`, in user space)
 //! Scene.group([scene, …])                                   -> Scene
 //! Scene.color(scene, r, g, b)                               -> Scene
 //! Scene.translate(scene, x, y, z)                           -> Scene
@@ -23,6 +29,14 @@
 //!   (rotations and camera angles take Angle VALUES, never bare numbers —
 //!    degree/radian confusion is unrepresentable)
 //! Scene.scale(scene, k)                                     -> Scene
+//! Texture.file(path)                                        -> Texture
+//!   (an image loaded by the shells' asset pipeline, path relative to the
+//!    game dir — F#'s `Texture.file`; declared once and passed as a VALUE,
+//!    the Angle rule applied to assets)
+//! Scene.litTexture(scene, texture)                          -> Scene
+//!   (a diffuse-lit textured surface — F#'s `Material.litTexture`)
+//! Scene.emissiveTexture(scene, texture)                     -> Scene
+//!   (a self-lit textured surface, fullbright — F#'s `Material.emissiveTexture`)
 //! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
@@ -42,6 +56,14 @@
 //! Frame.withFog(frame, fog)                                  -> Frame
 //!   (frame-level distance fog on every forward material, emissive included —
 //!    fog occludes glow; the fog color is also the pass's clear color)
+//! Ui.text(s) / Ui.textColor(r, g, b, s)                     -> View
+//! Ui.column([view, …])                                      -> View
+//! Ui.panel(view, anchor)                                    -> View
+//! Ui.topLeft()                                              -> Anchor
+//!   (the optional `ui = (model) => …` hook's tree — hello's HUD shape:
+//!    text lines stacked in a column, pinned to a screen corner. Only the
+//!    corner the port needed exists; the rest arrive with a port that
+//!    needs them. `Ui.panel` takes the view FIRST, so it pipes.)
 //! Time.seconds(n) / Time.millis(n)                          -> Duration
 //!   (like Angle: timing functions take Duration VALUES, never bare
 //!    numbers — seconds/milliseconds confusion is unrepresentable)
@@ -101,10 +123,11 @@ use std::rc::Rc;
 
 use crate::fog::Fog;
 use crate::math::Angle;
+use crate::ui::{self, View};
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{MaterialDescription, ModelDescription, ModelHandle, TextureDescription};
-use crate::{Camera, Frame, Light, Scene3D, SceneObject};
+use crate::{Camera, Frame, Light, Scene3D, SceneObject, Shape};
 
 /// A [`Scene3D`] as an opaque MLE value.
 pub struct MleScene(pub Scene3D);
@@ -450,6 +473,48 @@ impl HostData for MleRenderTarget {
     }
 }
 
+/// A [`TextureDescription`] as an opaque MLE value — `Texture.file(…)`.
+/// Texture-material functions (`Scene.litTexture` / `Scene.emissiveTexture`)
+/// accept ONLY this, never a bare path string, so a texture is declared once
+/// and passed as a value (the Angle rule, applied to assets).
+pub struct MleTexture(pub TextureDescription);
+
+impl HostData for MleTexture {
+    fn type_name(&self) -> &'static str {
+        "Texture"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A [`View`] as an opaque MLE value — what the optional `ui(model)` entry
+/// point returns (`Ui.text` / `Ui.column` / `Ui.panel`). The shells lower it
+/// to the shared egui text overlay, exactly as the F# `ui` hook's tree.
+pub struct MleView(pub View);
+
+impl HostData for MleView {
+    fn type_name(&self) -> &'static str {
+        "View"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A [`ui::Anchor`] as an opaque MLE value — `Ui.topLeft()`. `Ui.panel`
+/// accepts ONLY this (the Angle rule, applied to screen corners).
+pub struct MleUiAnchor(pub ui::Anchor);
+
+impl HostData for MleUiAnchor {
+    fn type_name(&self) -> &'static str {
+        "Anchor"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// A [`Fog`] as an opaque MLE value — `Fog.linear(…)`/`Fog.exp(…)`.
 /// `Frame.withFog` accepts ONLY this (the Angle rule).
 pub struct MleFog(pub Fog);
@@ -581,6 +646,15 @@ pub fn frame_value(value: &Value) -> Option<&Frame> {
     }
 }
 
+/// Extract the [`View`] from an MLE value (a `Ui.*` result), for the shells'
+/// overlay pass — the `ui` hook's [`frame_value`].
+pub fn view_value(value: &Value) -> Option<&View> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<MleView>().map(|v| &v.0),
+        _ => None,
+    }
+}
+
 /// Extract the [`physics::PhysicsScene`] from an MLE value (a `Physics.scene`
 /// result), for the shells' physics drive.
 pub fn physics_scene_value(value: &Value) -> Option<&physics::PhysicsScene> {
@@ -603,6 +677,7 @@ const PATHS: &[&str] = &[
     "Scene.quad",
     "Scene.plane",
     "Scene.model",
+    "Scene.heightmap",
     "Scene.group",
     "Scene.color",
     "Scene.translate",
@@ -612,6 +687,9 @@ const PATHS: &[&str] = &[
     "Scene.scale",
     "Scene.lit",
     "Scene.emissive",
+    "Scene.litTexture",
+    "Scene.emissiveTexture",
+    "Texture.file",
     "Angle.degrees",
     "Angle.radians",
     "Camera.lookAt",
@@ -629,6 +707,11 @@ const PATHS: &[&str] = &[
     "RenderTarget.named",
     "RenderTarget.sized",
     "Scene.screen",
+    "Ui.text",
+    "Ui.textColor",
+    "Ui.column",
+    "Ui.panel",
+    "Ui.topLeft",
     "Time.seconds",
     "Time.millis",
     "Sub.none",
@@ -705,6 +788,67 @@ impl Host for FunctorHost {
 the game dir",
                 ),
             },
+            // A subdivided XZ grid displaced by per-vertex heights — the MLE
+            // face of F#'s `Scene3D.heightmap` (the protocol `Heightmap`
+            // shape). The surface is a list of ROWS (each an equal-length
+            // list of heights): MLE has no floor/mod to build F#'s flat
+            // row-major array, but nested `List.range |> List.map` builds
+            // rows naturally — and the host flattens row-major, so the wire
+            // data is exactly what the F# side emits. Heights are sampled in
+            // user space (F#'s `heightmapFn`, minus the host trampoline the
+            // prelude can't offer: it has no session handle to apply an MLE
+            // closure).
+            "Scene.heightmap" => match args.as_slice() {
+                [Value::List(rows)] => {
+                    let usage_msg = "Scene.heightmap([[height, …], …]) — a list of at \
+least 2 rows, each an equal-length list of at least 2 numbers";
+                    if rows.len() < 2 {
+                        return usage(usage_msg);
+                    }
+                    let mut cols: Option<usize> = None;
+                    let mut heights = Vec::new();
+                    for (r, row) in rows.iter().enumerate() {
+                        let Value::List(row) = row else {
+                            return err(format!(
+                                "Scene.heightmap rows must be lists of numbers, got {}",
+                                row.kind_name()
+                            ));
+                        };
+                        match cols {
+                            None => {
+                                if row.len() < 2 {
+                                    return usage(usage_msg);
+                                }
+                                cols = Some(row.len());
+                                heights.reserve(rows.len() * row.len());
+                            }
+                            Some(cols) if row.len() != cols => {
+                                return err(format!(
+                                    "Scene.heightmap rows must all have the same length: \
+row 0 has {cols} heights, row {r} has {}",
+                                    row.len()
+                                ))
+                            }
+                            Some(_) => {}
+                        }
+                        for h in row.iter() {
+                            heights.push(num(h, span)? as f32);
+                        }
+                    }
+                    scene_value(Scene3D {
+                        obj: SceneObject::Geometry(Shape::Heightmap {
+                            rows: rows.len() as u32,
+                            cols: cols.unwrap_or(0) as u32,
+                            heights,
+                        }),
+                        xform: Matrix4::from_scale(1.0),
+                    })
+                }
+                _ => usage(
+                    "Scene.heightmap([[height, …], …]) — a list of at \
+least 2 rows, each an equal-length list of at least 2 numbers",
+                ),
+            },
             "Scene.group" => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut scenes = Vec::with_capacity(items.len());
@@ -745,6 +889,42 @@ the game dir",
                     })
                 }
                 _ => usage(&format!("{path}(scene, r, g, b)")),
+            },
+            // An image texture by file path (relative to the game dir), the
+            // MLE face of F#'s `Texture.file`. Loading is the shells' asset
+            // pipeline; a missing file logs an error and renders as the
+            // fallback texture.
+            "Texture.file" => match args.as_slice() {
+                [Value::String(path)] if !path.is_empty() => Ok(host(MleTexture(
+                    TextureDescription::File(path.to_string()),
+                ))),
+                _ => usage(
+                    "Texture.file(\"file.png\") — a non-empty image path relative to \
+the game dir",
+                ),
+            },
+            // Scene first, so they pipe:
+            // `Scene.plane() |> Scene.litTexture(Texture.file("dirt.png"))`.
+            // The F# pair `Material.litTexture` / `Material.emissiveTexture`:
+            // lit is shaded by the frame's lights (white albedo tint),
+            // emissive renders fullbright (neon signage).
+            "Scene.litTexture" | "Scene.emissiveTexture" => match args.as_slice() {
+                [scene, texture] => {
+                    let Some(scene) = scene_of(scene) else {
+                        return usage(&format!("{path}(scene, texture)"));
+                    };
+                    let texture = texture_of(texture, path, span)?;
+                    let material = if path == "Scene.litTexture" {
+                        MaterialDescription::lit_texture(texture.clone())
+                    } else {
+                        MaterialDescription::emissive_texture(texture.clone())
+                    };
+                    scene_value(Scene3D {
+                        obj: SceneObject::Material(material, vec![scene.clone()]),
+                        xform: Matrix4::from_scale(1.0),
+                    })
+                }
+                _ => usage(&format!("{path}(scene, texture)")),
             },
             // Scene first, so it pipes: `Scene.cube() |> Scene.color(r, g, b)`.
             "Scene.color" => match args.as_slice() {
@@ -1256,6 +1436,69 @@ frame's main pass",
                     Ok(host(MleFrame(Frame::new(camera.0.clone(), scene.clone()))))
                 }
                 _ => usage("Frame.create(camera, scene)"),
+            },
+            // ── Ui (the optional `ui = (model) => …` hook) ─────────────────
+            // hello's HUD vocabulary: text lines (white or colored), stacked
+            // in a column, pinned to a screen corner. The shells lower the
+            // View through the same egui overlay as the F# `ui` hook.
+            "Ui.text" => match args.as_slice() {
+                [Value::String(s)] => Ok(host(MleView(View::Text {
+                    text: s.to_string(),
+                    color: [255, 255, 255],
+                    font: None,
+                }))),
+                _ => usage("Ui.text(\"…\")"),
+            },
+            "Ui.textColor" => match args.as_slice() {
+                [r, g, b, Value::String(s)] => Ok(host(MleView(View::Text {
+                    text: s.to_string(),
+                    color: ui::rgb_u8(
+                        num(r, span)? as f32,
+                        num(g, span)? as f32,
+                        num(b, span)? as f32,
+                    ),
+                    font: None,
+                }))),
+                _ => usage("Ui.textColor(r, g, b, \"…\")"),
+            },
+            "Ui.column" => match args.as_slice() {
+                [Value::List(items)] => {
+                    let mut views = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        match view_value(item) {
+                            Some(view) => views.push(view.clone()),
+                            None => {
+                                return err(format!(
+                                    "Ui.column items must be Views, got {}",
+                                    item.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(host(MleView(View::Column(views))))
+                }
+                _ => usage("Ui.column([view, …])"),
+            },
+            // View first, so it pipes:
+            // `Ui.column([…]) |> Ui.panel(Ui.topLeft())`. Only the corner
+            // hello's HUD needed exists; the other three arrive with a port
+            // that needs them.
+            "Ui.panel" => match args.as_slice() {
+                [view, anchor] => {
+                    let Some(view) = view_value(view) else {
+                        return usage("Ui.panel(view, anchor)");
+                    };
+                    let anchor = ui_anchor_of(anchor, span)?;
+                    Ok(host(MleView(View::Panel {
+                        anchor,
+                        child: Box::new(view.clone()),
+                    })))
+                }
+                _ => usage("Ui.panel(view, anchor)"),
+            },
+            "Ui.topLeft" => match args.as_slice() {
+                [] => Ok(host(MleUiAnchor(ui::Anchor::TopLeft))),
+                _ => usage("Ui.topLeft()"),
             },
             "Time.seconds" => match args.as_slice() {
                 [n] => Ok(host(MleDuration(num(n, span)?))),
@@ -1841,6 +2084,64 @@ with RenderTarget.named(\"…\") and pass that value at both sites"
         }),
         other => Err(RunError {
             message: format!("{what}: expected a RenderTarget, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
+/// Extract a [`ui::Anchor`] — `Ui.panel` accepts ONLY the branded value, so
+/// a guessed corner name (a bare string) gets a teaching error pointing at
+/// the anchor constructor (the [`angle_of`] rule, applied to corners).
+fn ui_anchor_of(value: &Value, span: Span) -> Result<ui::Anchor, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MleUiAnchor>()
+            .map(|a| a.0)
+            .ok_or_else(|| RunError {
+                message: format!("Ui.panel: expected an Anchor, got {}", value.kind_name()),
+                span,
+            }),
+        Value::String(_) => Err(RunError {
+            message: "Ui.panel: expected an Anchor, got a bare string — pin a corner \
+with Ui.topLeft()"
+                .to_string(),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("Ui.panel: expected an Anchor, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
+/// Extract a [`TextureDescription`] — texture materials accept ONLY the
+/// branded value, so the predictable mistake (a bare path string) gets a
+/// teaching error pointing at `Texture.file` (the [`angle_of`] rule, applied
+/// to assets).
+fn texture_of<'a>(
+    value: &'a Value,
+    what: &str,
+    span: Span,
+) -> Result<&'a TextureDescription, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<MleTexture>()
+            .map(|t| &t.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected a Texture, got {}", value.kind_name()),
+                span,
+            }),
+        Value::String(_) => Err(RunError {
+            message: format!(
+                "{what}: expected a Texture, got a bare string — build one with \
+Texture.file(\"…\") and pass that value"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected a Texture, got {}", other.kind_name()),
             span,
         }),
     }
@@ -3076,6 +3377,194 @@ Time.seconds(…) or Time.millis(…)"
         assert_eq!(
             failure.error.message,
             "Sub.batch items must be Subs, got a number"
+        );
+    }
+
+    fn run_fail(src: &str) -> String {
+        let module = mle::lower(mle::parse(src).unwrap()).unwrap();
+        mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail")
+            .error
+            .message
+    }
+
+    // The E1-gap heightmap: a list of rows flattens ROW-MAJOR into the
+    // protocol `Heightmap` shape — the exact wire data F#'s
+    // `Scene3D.heightmap rows cols heights` emits.
+    #[test]
+    fn heightmap_emits_the_protocol_shape() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(\n\
+               Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),\n\
+               Scene.heightmap([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]]))",
+        );
+        let SceneObject::Geometry(Shape::Heightmap {
+            rows,
+            cols,
+            heights,
+        }) = &frame.scene.obj
+        else {
+            panic!("expected a Heightmap node, got {:?}", frame.scene.obj);
+        };
+        assert_eq!((*rows, *cols), (3, 2));
+        assert_eq!(heights, &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        // And the whole thing speaks the protocol.
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(json.contains(r#""Heightmap""#), "json: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // The hello ripple shape: rows sampled with nested List builtins — F#'s
+    // `heightmapFn`, in user space.
+    #[test]
+    fn heightmap_rows_sample_with_list_builtins() {
+        let frame = frame_of(
+            "let ripple = (r, c) => 0.05 * (Math.sin(c * 0.5) + Math.cos(r * 0.5))\n\
+             let main = () =>\n\
+             Frame.create(\n\
+               Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),\n\
+               Scene.heightmap(\n\
+                 List.range(4.0) |> List.map((r) =>\n\
+                   List.range(4.0) |> List.map((c) => ripple(r, c)))))",
+        );
+        let SceneObject::Geometry(Shape::Heightmap {
+            rows,
+            cols,
+            heights,
+        }) = &frame.scene.obj
+        else {
+            panic!("expected a Heightmap node, got {:?}", frame.scene.obj);
+        };
+        assert_eq!((*rows, *cols), (4, 4));
+        // heights[r * cols + c] — row-major, r the outer index.
+        let expected = (0.05f64 * ((2.0f64 * 0.5).sin() + (1.0f64 * 0.5).cos())) as f32;
+        assert_eq!(heights[4 + 2], expected);
+    }
+
+    // Heightmap teaching errors: degenerate grids, ragged rows, and
+    // non-number heights fail loud at construction, not as broken meshes.
+    #[test]
+    fn heightmap_teaches_its_usage() {
+        let usage = "usage: Scene.heightmap([[height, …], …]) — a list of at \
+least 2 rows, each an equal-length list of at least 2 numbers";
+        assert_eq!(run_fail("let main = () => Scene.heightmap(3.0)"), usage);
+        assert_eq!(
+            run_fail("let main = () => Scene.heightmap([[0.0, 1.0]])"),
+            usage
+        );
+        assert_eq!(
+            run_fail("let main = () => Scene.heightmap([[0.0], [1.0]])"),
+            usage
+        );
+        assert_eq!(
+            run_fail("let main = () => Scene.heightmap([[0.0, 1.0], [2.0, 3.0, 4.0]])"),
+            "Scene.heightmap rows must all have the same length: row 0 has 2 heights, \
+row 1 has 3"
+        );
+        assert_eq!(
+            run_fail("let main = () => Scene.heightmap([[0.0, 1.0], 2.0])"),
+            "Scene.heightmap rows must be lists of numbers, got a number"
+        );
+        assert_eq!(
+            run_fail("let main = () => Scene.heightmap([[0.0, 1.0], [2.0, \"x\"]])"),
+            "expected a number, got a string"
+        );
+    }
+
+    // The E1-gap texture materials: Texture.file over the asset pipeline,
+    // lit (Lambert-shaded, white tint) and emissive (fullbright) — the
+    // protocol wire shapes of F#'s Material.litTexture/emissiveTexture.
+    #[test]
+    fn texture_materials_emit_protocol_materials() {
+        let frame = frame_of(
+            "let dirt = Texture.file(\"dirt.png\")\n\
+             let grid = Texture.file(\"grid.png\")\n\
+             let main = () =>\n\
+             Frame.create(\n\
+               Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),\n\
+               Scene.group([\n\
+                 Scene.plane() |> Scene.litTexture(dirt),\n\
+                 Scene.quad() |> Scene.emissiveTexture(grid),\n\
+               ]))",
+        );
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(
+            json.contains(
+                r#""Lit":{"color":[1.0,1.0,1.0,1.0],"texture":{"File":"dirt.png"},"normal_map":null}"#
+            ),
+            "json: {json}"
+        );
+        assert!(
+            json.contains(r#""Emissive":{"color":[1.0,1.0,1.0,1.0],"texture":{"File":"grid.png"}}"#),
+            "json: {json}"
+        );
+        // And the whole thing round-trips through the protocol.
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // [units, tier 1 — the Angle rule applied to assets] texture materials
+    // accept ONLY the branded Texture value; a bare path string is a
+    // teaching error pointing at Texture.file.
+    #[test]
+    fn bare_strings_are_not_textures() {
+        assert_eq!(
+            run_fail("let main = () => Scene.plane() |> Scene.litTexture(\"dirt.png\")"),
+            "Scene.litTexture: expected a Texture, got a bare string — build one with \
+Texture.file(\"…\") and pass that value"
+        );
+        assert_eq!(
+            run_fail("let main = () => Scene.quad() |> Scene.emissiveTexture(3.0)"),
+            "Scene.emissiveTexture: expected a Texture, got a number"
+        );
+        assert_eq!(
+            run_fail("let main = () => Texture.file(\"\")"),
+            "usage: Texture.file(\"file.png\") — a non-empty image path relative to \
+the game dir"
+        );
+    }
+
+    // The E1-gap ui hook vocabulary: hello's HUD shape — colored text lines
+    // in a column pinned to a corner — builds the same protocol View tree
+    // the F# Ui module emits (color quantization included).
+    #[test]
+    fn ui_snippet_builds_the_hud_view_tree() {
+        let value = eval(
+            "let main = () =>\n\
+             Ui.column([\n\
+               Ui.text(\"functor · hello\"),\n\
+               Ui.textColor(1.0, 0.85, 0.4, \"eye  0.0 0.0 -5.0\"),\n\
+             ]) |> Ui.panel(Ui.topLeft())",
+        );
+        let view = view_value(&value).expect("main should return a View");
+        let json = serde_json::to_string(view).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"Panel":{"anchor":"TopLeft","child":{"Column":[{"Text":{"text":"functor · hello","color":[255,255,255],"font":null}},{"Text":{"text":"eye  0.0 0.0 -5.0","color":[255,217,102],"font":null}}]}}}"#
+        );
+        // And it round-trips (the wasm boundary ships Views as JSON).
+        let back: View = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // Ui teaching errors: non-View children and unbranded anchors fail loud.
+    #[test]
+    fn ui_teaches_its_usage() {
+        assert_eq!(
+            run_fail("let main = () => Ui.column([Ui.text(\"a\"), 3.0])"),
+            "Ui.column items must be Views, got a number"
+        );
+        assert_eq!(
+            run_fail("let main = () => Ui.text(\"a\") |> Ui.panel(\"topLeft\")"),
+            "Ui.panel: expected an Anchor, got a bare string — pin a corner \
+with Ui.topLeft()"
+        );
+        assert_eq!(
+            run_fail("let main = () => Ui.textColor(1.0, \"x\", 0.0, \"a\")"),
+            "expected a number, got a string"
         );
     }
 }

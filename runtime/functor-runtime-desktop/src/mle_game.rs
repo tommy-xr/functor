@@ -14,6 +14,7 @@
 //! let update = (model, msg) => model'
 //! let subscriptions = (model) => Sub.every(Time.seconds(1.0), Msg)
 //! let physics = (model) => Physics.scene(gx, gy, gz, [body, …])  // OPTIONAL
+//! let ui = (model) => Ui.column([…]) |> Ui.panel(Ui.topLeft())   // OPTIONAL HUD
 //! ```
 //!
 //! Frame order with physics: tick → physics (reconcile + fixed-step the
@@ -31,7 +32,7 @@ use std::time::Instant;
 use functor_runtime_common::mle_prelude::{
     contains_effect, deliver_physics_events, drain_effects, frame_value, needs_update,
     perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
-    sub_messages_for_frame, EffectLog, EffectTree, FunctorHost, RealEffects,
+    sub_messages_for_frame, view_value, EffectLog, EffectTree, FunctorHost, RealEffects,
 };
 use functor_runtime_common::physics;
 use functor_runtime_common::ui::View;
@@ -73,6 +74,14 @@ pub struct MleGame {
     /// time-grid semantics of `Sub.every` do the rest.
     prev_tts: Option<f64>,
     has_physics: bool,
+    /// The game defines the optional `ui` entry point (`ui(model) -> View`,
+    /// the 2D HUD hook).
+    has_ui: bool,
+    /// The last successfully built HUD View, cached because `Game::ui` is a
+    /// `&self` accessor — evaluated beside `draw` each frame. A bad `ui`
+    /// keeps the last good view (the `last_frame` rule); a reload that drops
+    /// the hook clears it.
+    last_view: View,
     /// Performs `Effect.*` commands — the real world in the runner; the
     /// drain logic itself is `mle_prelude::drain_effects` (tested there
     /// with fake/replay runners).
@@ -118,6 +127,7 @@ struct Loaded {
     has_mouse_wheel: bool,
     has_subscriptions: bool,
     has_physics: bool,
+    has_ui: bool,
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -214,6 +224,12 @@ return them beside the model as `(model, effect)`"
     if has_physics {
         require_function(path, &session, "physics", 1)?;
     }
+    // Optional HUD: `ui(model)` returns a View (Ui.text / Ui.column /
+    // Ui.panel), lowered to the shared text overlay — the F# `ui` hook.
+    let has_ui = session.global("ui").is_some();
+    if has_ui {
+        require_function(path, &session, "ui", 1)?;
+    }
     Ok(Loaded {
         sources,
         module,
@@ -224,6 +240,7 @@ return them beside the model as `(model, effect)`"
         has_mouse_wheel,
         has_subscriptions,
         has_physics,
+        has_ui,
     })
 }
 
@@ -278,6 +295,8 @@ impl MleGame {
             has_subscriptions: loaded.has_subscriptions,
             prev_tts: None,
             has_physics: loaded.has_physics,
+            has_ui: loaded.has_ui,
+            last_view: View::Empty,
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
             deferred_queries: Vec::new(),
@@ -469,6 +488,11 @@ to receive their messages; dropping them"
         self.has_physics = loaded.has_physics;
         if !self.has_physics {
             physics::remove_world(physics::DEFAULT_WORLD);
+        }
+        self.has_ui = loaded.has_ui;
+        if !self.has_ui {
+            // Deleting the `ui` hook drops the HUD (the physics-world rule).
+            self.last_view = View::Empty;
         }
         self.last_error = None;
         // A deferred query holds a tagger — a closure into the OLD session;
@@ -716,6 +740,24 @@ impl Game for MleGame {
             },
             Err(err) => self.frame_error("draw", &err),
         }
+        // The optional HUD, evaluated beside `draw` (same settled model) and
+        // cached — `Game::ui` is a `&self` accessor, and errors need `&mut`
+        // dedupe. A bad `ui` keeps the last good view (the last_frame rule).
+        if self.has_ui {
+            match self
+                .session
+                .call("ui", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(value) => match view_value(&value) {
+                    Some(view) => self.last_view = view.clone(),
+                    None => self.report_once(format!(
+                        "[mle] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                        value.kind_name()
+                    )),
+                },
+                Err(err) => self.frame_error("ui", &err),
+            }
+        }
         self.draw_ns += started.elapsed().as_nanos() as u64;
         // On failure this is the last good frame — a bad draw must not blank
         // the screen.
@@ -723,7 +765,7 @@ impl Game for MleGame {
     }
 
     fn ui(&self) -> View {
-        View::empty()
+        self.last_view.clone()
     }
 
     fn state_debug(&self) -> String {
@@ -884,6 +926,25 @@ mod tests {
             "an on-disk entry edit wins over the stale push"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The optional `ui` HUD hook is arity-validated at load like every
+    /// other entry point: `ui(model)`, one parameter.
+    #[test]
+    fn ui_arity_is_validated() {
+        let err = load_err(
+            "ui-arity",
+            &format!("{BASE}let ui = (m, tts) => Ui.text(\"hud\")\n"),
+        );
+        assert!(
+            err.contains("`ui` must take 1 parameter(s), takes 2"),
+            "unexpected error: {err}"
+        );
+        let err = load_err("ui-not-fn", &format!("{BASE}let ui = 3.0\n"));
+        assert!(
+            err.contains("`ui` must be a function, got a number"),
+            "unexpected error: {err}"
+        );
     }
 
     /// The MVU pair is arity-validated at load like every other entry point.
