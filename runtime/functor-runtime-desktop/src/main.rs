@@ -666,9 +666,10 @@ pub async fn main() {
         // cursor for free-look).
         let mut mouse_primary_down = false;
         let mut scrubber_wants_pointer = false;
-        // The time-travel console (`~`): shown by default; `~` toggles it, and
-        // opening it frees the cursor so you can scrub right away.
-        let mut scrubber_visible = true;
+        // The time-travel console (`~`): HIDDEN by default in the native game
+        // (it's a dev tool you summon with `~`, which also frees the cursor so
+        // you can scrub right away). The wasm/vscode preview shows it always.
+        let mut scrubber_visible = false;
 
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
