@@ -68,6 +68,7 @@ pub mod animation;
 pub mod asset;
 pub mod audio;
 mod camera;
+pub mod composite;
 mod effect;
 mod effect_queue;
 pub mod fog;

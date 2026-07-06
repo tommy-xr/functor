@@ -14,6 +14,9 @@ use crate::{
         pipelines::{ModelPipeline, RawImagePipeline, TexturePipeline},
         AssetCache, AssetHandle, AssetPollState, BuiltAssetPipeline,
     },
+    composite::{
+        COMPOSITE_FRAGMENT_SHADER_SOURCE, COMPOSITE_VERTEX_SHADER_SOURCE, MAX_COMPOSITE,
+    },
     geometry::{self, Geometry},
     material::{
         BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
@@ -62,6 +65,9 @@ pub struct SceneContext {
     raw_image_pipeline: Arc<BuiltAssetPipeline<TextureData>>,
     skyboxes: RefCell<HashMap<String, SkyboxEntry>>,
     skybox_program: RefCell<Option<(ShaderProgram, SkyboxUniforms)>>,
+    // The screen-space compositor's fullscreen-average program, built lazily on
+    // first use and cached like the skybox program (docs/time-travel.md T5).
+    composite_program: RefCell<Option<(ShaderProgram, CompositeUniforms)>>,
 }
 
 enum SkyboxEntry {
@@ -76,6 +82,13 @@ struct SkyboxUniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     skybox_loc: UniformLocation,
+}
+
+struct CompositeUniforms {
+    /// `sampler2D uTex[MAX_COMPOSITE]` — one texture unit per input.
+    tex_loc: UniformLocation,
+    /// `float uWeight[MAX_COMPOSITE]` — the per-input blend weight.
+    weight_loc: UniformLocation,
 }
 
 impl SceneContext {
@@ -95,6 +108,7 @@ impl SceneContext {
             raw_image_pipeline: asset::build_pipeline(Box::new(RawImagePipeline)),
             skyboxes: RefCell::new(HashMap::new()),
             skybox_program: RefCell::new(None),
+            composite_program: RefCell::new(None),
         }
     }
 
@@ -370,6 +384,86 @@ skybox disabled for this set",
             gl.depth_mask(true);
             gl.depth_func(glow::LESS);
             gl.bind_texture(glow::TEXTURE_CUBE_MAP, None);
+        }
+    }
+
+    /// Composite `textures` onto the currently-bound framebuffer as a weighted
+    /// average — the screen-space compositor pass (docs/time-travel.md T5). Each
+    /// texture is a full offscreen render of one `Frame`; `weights[i]` scales
+    /// input `i` (caller normalizes to sum 1 for an average). Draws a fullscreen
+    /// quad with depth-testing off, over whatever the caller cleared, so it can
+    /// land in the default framebuffer before the UI overlay (and thus in
+    /// `--capture-frame` PNGs). Up to `MAX_COMPOSITE` inputs; extras are dropped
+    /// by the caller. The averaging is exact and in-shader — no GL blend state.
+    pub fn draw_composite(
+        &self,
+        gl: &glow::Context,
+        shader_version: &str,
+        textures: &[glow::Texture],
+        weights: &[f32],
+    ) {
+        if textures.is_empty() {
+            return;
+        }
+
+        {
+            let mut program = self.composite_program.borrow_mut();
+            if program.is_none() {
+                let vertex = Shader::build(
+                    gl,
+                    ShaderType::Vertex,
+                    COMPOSITE_VERTEX_SHADER_SOURCE,
+                    shader_version,
+                );
+                let fragment = Shader::build(
+                    gl,
+                    ShaderType::Fragment,
+                    COMPOSITE_FRAGMENT_SHADER_SOURCE,
+                    shader_version,
+                );
+                let shader = ShaderProgram::link(gl, &vertex, &fragment);
+                let uniforms = CompositeUniforms {
+                    tex_loc: shader.get_uniform_location(gl, "uTex"),
+                    weight_loc: shader.get_uniform_location(gl, "uWeight"),
+                };
+                *program = Some((shader, uniforms));
+            }
+        }
+
+        // Build the full fixed-size uniform arrays: real inputs for the first
+        // `k`, zero-weight padding for the rest (the shader unrolls to
+        // MAX_COMPOSITE). Every sampler unit is bound to a valid texture — the
+        // padding units reuse input 0, harmless since their weight is 0.
+        let k = textures.len().min(weights.len()).min(MAX_COMPOSITE);
+        let units: [i32; MAX_COMPOSITE] = std::array::from_fn(|i| i as i32);
+        let mut weight_array = [0.0f32; MAX_COMPOSITE];
+        weight_array[..k].copy_from_slice(&weights[..k]);
+
+        let program = self.composite_program.borrow();
+        let (shader, uniforms) = program
+            .as_ref()
+            .expect("composite program just initialized");
+        unsafe {
+            shader.use_program(gl);
+            shader.set_uniform_1iv(gl, &uniforms.tex_loc, &units);
+            shader.set_uniform_1fv(gl, &uniforms.weight_loc, &weight_array);
+            for (i, unit) in units.iter().enumerate() {
+                gl.active_texture(glow::TEXTURE0 + *unit as u32);
+                let texture = if i < k { textures[i] } else { textures[0] };
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            }
+            // Fullscreen pass: no depth read/write wanted.
+            gl.disable(glow::DEPTH_TEST);
+        }
+        self.quad.borrow_mut().draw(gl);
+        unsafe {
+            gl.enable(glow::DEPTH_TEST);
+            // Leave the units clean so later passes don't see stale bindings.
+            for unit in units.iter() {
+                gl.active_texture(glow::TEXTURE0 + *unit as u32);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+            }
+            gl.active_texture(glow::TEXTURE0);
         }
     }
 }

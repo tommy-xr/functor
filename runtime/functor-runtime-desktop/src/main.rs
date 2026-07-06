@@ -120,6 +120,22 @@ impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
     }
 }
 
+/// Screen-space compositor smoke test (docs/time-travel.md T5). A dev/verify
+/// hook that routes the frame through `render_composited_frames` instead of the
+/// normal single-frame path.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum CompositeDemoArg {
+    /// Normal single-frame render.
+    #[default]
+    Off,
+    /// Composite the frame with itself at 0.5/0.5 — must be pixel-identical to a
+    /// normal render (proves the pass is lossless).
+    Clone,
+    /// Overlay the frame with a world-space-offset copy of its scene at 0.5/0.5
+    /// — two "timelines" ghosted (the fork+overlay demo).
+    Fork,
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -204,6 +220,12 @@ struct Args {
     /// window, so it won't fuse in 3D — fine for dev, not for shipping.
     #[arg(long)]
     stereo_sbs: bool,
+
+    /// Route the frame through the screen-space compositor (docs/time-travel.md
+    /// T5) instead of the normal render — a headless verification hook. See
+    /// `CompositeDemoArg`.
+    #[arg(long, value_enum, default_value_t = CompositeDemoArg::Off)]
+    composite_demo: CompositeDemoArg,
 
     /// Eye separation for --stereo-sbs, in world units. The default assumes
     /// meter-scale worlds (human IPD ≈ 64mm); raise it for larger-unit worlds
@@ -1001,6 +1023,31 @@ Escape again to quit"
                         );
                     }
                 }
+            } else if args.composite_demo != CompositeDemoArg::Off {
+                // T5 compositor smoke test: render two frames and average them.
+                // `clone` overlays the frame with itself (lossless check);
+                // `fork` overlays it with a world-space-offset copy of its scene
+                // (the fork+overlay demo — two visibly-different inputs).
+                let mut frame_b = frame.clone();
+                if args.composite_demo == CompositeDemoArg::Fork {
+                    frame_b.scene = functor_runtime_common::Scene3D {
+                        obj: functor_runtime_common::SceneObject::Group(vec![frame.scene.clone()]),
+                        xform: cgmath::Matrix4::from_translation(cgmath::vec3(6.0, 0.0, 0.0)),
+                    };
+                }
+                let frames = [frame.clone(), frame_b];
+                functor_runtime_common::render_composited_frames(
+                    &gl,
+                    shader_version,
+                    asset_cache.clone(),
+                    &scene_context,
+                    &shadow_map,
+                    &frames,
+                    &[0.5, 0.5],
+                    time.clone(),
+                    viewport,
+                    args.debug_render.into(),
+                );
             } else {
                 functor_runtime_common::render_frame(
                     &gl,
