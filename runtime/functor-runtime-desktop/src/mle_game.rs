@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, view_value,
-    EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
+    EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::mle_producer::{FrameCtx, Reporter, SpanSource};
 use functor_runtime_common::physics;
@@ -359,7 +359,7 @@ impl MleGame {
             physics_rt: &mut self.physics_rt,
             physics_status: &mut self.physics_status,
             recorder: &mut self.recorder,
-            effect_runner: &mut self.effect_runner,
+            effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
             effect_log: &mut self.effect_log,
             deferred_queries: &mut self.deferred_queries,
             pending_events: &mut self.pending_events,
@@ -367,6 +367,7 @@ impl MleGame {
             prev_tts: &mut self.prev_tts,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
+            suppress_outbound: false,
             reporter: &mut self.reporter,
         }
     }
@@ -1431,6 +1432,113 @@ mod tests {
         // World untouched (no physics seek), model still current.
         assert!((ball_y() - y_before).abs() < 1e-6, "latest-frame rewind moved the world");
         assert_eq!(game.recorder.scene_frame_range(), Some((0, 7)));
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The deterministic headless forward-step (docs/time-travel.md T6b): from a
+    /// fork point, `forward_step_scene` steps the whole scene forward N frames
+    /// and produces EXACTLY the sequence a live run produces — model (`Value`
+    /// via `to_string`) and physics world (snapshot bytes) both byte-equal —
+    /// WITHOUT touching the live producer state. The game is pure (no `Now` /
+    /// unseeded `Random`): a ball falls onto a slab and a contact counter folds
+    /// through `update`, so both the model and the world genuinely evolve and
+    /// stay coupled. A game reading wall-clock `Now` / unseeded `Random` would
+    /// NOT match — the determinism boundary; a `tts`-driven / seeded game does,
+    /// since the forward-step supplies `tts`.
+    #[test]
+    fn forward_step_is_deterministic_and_non_destructive() {
+        // The physics registry is a per-thread thread-local shared by every
+        // physics test on this thread — start from an empty world.
+        physics::remove_world(physics::DEFAULT_WORLD);
+
+        let dir = std::env::temp_dir().join(format!("mle-fwd-step-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.mle"),
+            "type Msg = | Contact(ev: e)\n\
+             let init = { n: 0.0, hits: 0.0 }\n\
+             let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
+             let physics = (m) => Physics.scene(0.0, -9.81, 0.0, [\n\
+             \x20 Physics.fixed(\"ground\", Physics.box(10.0, 0.4, 10.0)) |> Physics.at(0.0, -0.2, 0.0),\n\
+             \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(0.0, 4.0, 0.0)])\n\
+             let subscriptions = (m) => Physics.events(Contact)\n\
+             let update = (m, msg) =>\n\
+               match msg with\n\
+               | Contact(e) => (match e.started with | true => { m with hits: m.hits + 1.0 } | false => m)\n\
+             let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
+
+        const DT: f32 = physics::FIXED_DT;
+        const K: usize = 45;
+        const N: usize = 25;
+
+        // Drive K frames to the fork point.
+        let mut tts = 0.0f32;
+        for _ in 0..K {
+            tts += DT;
+            game.tick(FrameTime { tts, dts: DT });
+        }
+
+        // Capture the fork state + a baseline of the live producer state.
+        let fork_model = game.model.clone();
+        let fork_prev_tts = game.prev_tts;
+        let fork_tts = tts;
+        let live_model_before = game.model.to_string();
+        let live_world_before = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
+        let live_frame_before = game.physics_status.0;
+
+        // Forward-step N frames from the fork — a dry run over throwaway state.
+        let forward = functor_runtime_common::mle_producer::forward_step_scene(
+            &game.session,
+            &fork_model,
+            game.has_physics,
+            game.has_subscriptions,
+            fork_prev_tts,
+            fork_tts,
+            DT,
+            N,
+        );
+
+        // The live producer state is UNCHANGED by the forward-step.
+        assert_eq!(game.model.to_string(), live_model_before, "model untouched");
+        assert_eq!(
+            physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()),
+            live_world_before,
+            "live world untouched"
+        );
+        assert_eq!(
+            game.physics_status.0, live_frame_before,
+            "live fixed frame untouched"
+        );
+
+        // The live continuation: the ground truth the forward-step must match.
+        let mut live: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(N);
+        for _ in 0..N {
+            tts += DT;
+            game.tick(FrameTime { tts, dts: DT });
+            let world = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
+            live.push((game.model.to_string(), world));
+        }
+
+        assert_eq!(forward.len(), live.len(), "division count");
+        // The scene genuinely evolves: the world moves across the window and the
+        // ball lands (a Contact folds `hits` up through `update`).
+        assert_ne!(live[0].1, live[N - 1].1, "world should move over the window");
+        assert!(
+            game.model.to_string().contains("hits: ")
+                && !game.model.to_string().contains("hits: 0"),
+            "the ball should have landed within the window: {}",
+            game.model.to_string()
+        );
+        for (i, ((fwd_m, fwd_w), (live_m, live_w))) in forward.iter().zip(live.iter()).enumerate() {
+            assert_eq!(fwd_m.to_string(), *live_m, "model diverged at division {i}");
+            assert_eq!(fwd_w, live_w, "world diverged at division {i}");
+        }
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);

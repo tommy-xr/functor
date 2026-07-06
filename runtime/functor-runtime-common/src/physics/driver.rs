@@ -96,6 +96,12 @@ pub struct SteppedPhysics {
     /// it byte-exact, so we can't reconcile eagerly for draw — we step once
     /// instead.)
     started: bool,
+    /// A throwaway dry-run driver ([`Self::for_world`], docs/time-travel.md
+    /// T6b): it must NOT touch the process-global timeline-control queue that
+    /// [`advance`](Self::advance) otherwise drains, or a forward-step would eat
+    /// a live-pending `pause`/`rewind` and the live driver would miss it. Live
+    /// drivers set this false and consume controls as usual.
+    dry_run: bool,
 }
 
 impl Default for SteppedPhysics {
@@ -112,7 +118,40 @@ impl SteppedPhysics {
             paused: false,
             accumulator: 0.0,
             started: false,
+            dry_run: false,
         }
+    }
+
+    /// Build a THROWAWAY dry-run recorder over an EXPLICIT world id, with a
+    /// fresh `TimelineLog` — the dry-run forward-step (docs/time-travel.md T6b)
+    /// points this at a throwaway world (a restored snapshot of
+    /// [`DEFAULT_WORLD`]) so it can step the scene forward WITHOUT touching the
+    /// live world/driver/timeline or the global control queue (`dry_run`).
+    ///
+    /// The live driver's sub-frame state is deliberately NOT forked: `started`
+    /// is false (so the first division floors to one fixed step — the `new`
+    /// bootstrap), `accumulator` is 0, and `paused` is false. So the projection
+    /// matches a live continuation exactly only for an UNPAUSED fork driven at a
+    /// full `FIXED_DT` with no accumulator residue (the coast case the T6b test
+    /// covers). Forking a paused scene, a sub-`FIXED_DT` accumulator phase, or
+    /// carrying timeline history for `rewindTo` is follow-up work (alongside the
+    /// input log).
+    pub fn for_world(world: WorldId) -> SteppedPhysics {
+        SteppedPhysics {
+            world,
+            timeline: TimelineLog::keyframes(KEYFRAME_INTERVAL),
+            paused: false,
+            accumulator: 0.0,
+            started: false,
+            dry_run: true,
+        }
+    }
+
+    /// Byte-exact snapshot of this recorder's world (the determinism oracle
+    /// the goldens assert) — the forward-step samples it after each stepped
+    /// division. `None` when the world does not exist.
+    pub fn snapshot_world(&self) -> Option<Vec<u8>> {
+        with_world(self.world, |w| w.snapshot())
     }
 
     /// One rendered frame's worth of recorded physics: apply queued controls,
@@ -129,9 +168,16 @@ impl SteppedPhysics {
         };
 
         // Controls first, so a pause/rewind issued last frame takes effect
-        // before this frame simulates.
+        // before this frame simulates. A dry-run driver must NOT drain the
+        // process-global queue (it would steal a live-pending control); the
+        // forward-step suppresses timeline effects anyway, so it has none.
         let mut step_once = false;
-        for control in take_timeline_controls() {
+        let controls = if self.dry_run {
+            Vec::new()
+        } else {
+            take_timeline_controls()
+        };
+        for control in controls {
             match control {
                 TimelineControl::Pause => self.paused = true,
                 TimelineControl::Resume => self.paused = false,
@@ -354,6 +400,37 @@ mod tests {
         remove_world(DEFAULT_WORLD);
         let _ = take_timeline_controls(); // hygiene: prior test leftovers
         SteppedPhysics::new()
+    }
+
+    /// A dry-run driver (docs/time-travel.md T6b, the forward-step) must NOT
+    /// drain the process-global timeline-control queue: a live-pending
+    /// `pause`/`rewind` has to survive the forward-step for the live driver to
+    /// apply it. Without the `dry_run` guard the dry `advance` would steal it.
+    #[test]
+    fn dry_run_advance_leaves_global_controls_for_the_live_driver() {
+        let mut live = fresh();
+        live.advance(&scene_at(0), FIXED_DT); // seed a world to snapshot
+        let bytes = snapshot();
+
+        // A live-pending control, queued before the forward-step runs.
+        queue_timeline_control(TimelineControl::Pause);
+
+        // A dry-run driver over a throwaway world restored from the snapshot.
+        let dry_id = crate::physics::create_world([0.0, -9.81, 0.0]);
+        with_world(dry_id, |w| {
+            let _ = w.restore(&bytes);
+        });
+        let mut dry = SteppedPhysics::for_world(dry_id);
+        dry.advance(&scene_at(1), FIXED_DT);
+
+        // The control is untouched — still pending for the live driver.
+        assert_eq!(
+            take_timeline_controls(),
+            vec![TimelineControl::Pause],
+            "dry-run advance stole a live-pending timeline control"
+        );
+        remove_world(dry_id);
+        remove_world(DEFAULT_WORLD);
     }
 
     #[test]

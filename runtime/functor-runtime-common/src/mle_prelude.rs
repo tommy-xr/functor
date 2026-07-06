@@ -2351,6 +2351,7 @@ pub fn deliver_physics_events(
     runner: &mut dyn EffectRunner,
     log: &mut EffectLog,
     report: &mut dyn FnMut(String),
+    suppress_outbound: bool,
 ) {
     // Events outer: the frame's causal contact sequence is the primary fold
     // order (each event reaches every tagger before the next event).
@@ -2373,7 +2374,16 @@ pub fn deliver_physics_events(
                     let (next_model, more) = split_model_effect(returned);
                     *model = next_model;
                     if let Some(more) = more {
-                        drain_mode(session, model, vec![more], runner, log, report, None);
+                        drain_mode(
+                            session,
+                            model,
+                            vec![more],
+                            runner,
+                            log,
+                            report,
+                            None,
+                            suppress_outbound,
+                        );
                     }
                 }
                 Err(e) => report(format!("[mle] update error: {}", e.message)),
@@ -2470,6 +2480,7 @@ pub fn drain_effects(
     runner: &mut dyn EffectRunner,
     log: &mut EffectLog,
     report: &mut dyn FnMut(String),
+    suppress_outbound: bool,
 ) -> Vec<EffectTree> {
     let mut deferred = Vec::new();
     drain_mode(
@@ -2480,6 +2491,7 @@ pub fn drain_effects(
         log,
         report,
         Some(&mut deferred),
+        suppress_outbound,
     );
     deferred
 }
@@ -2522,11 +2534,21 @@ pub fn perform_deferred_queries(
     runner: &mut dyn EffectRunner,
     log: &mut EffectLog,
     report: &mut dyn FnMut(String),
+    suppress_outbound: bool,
 ) {
     if deferred.is_empty() {
         return;
     }
-    drain_mode(session, model, deferred, runner, log, report, None);
+    drain_mode(
+        session,
+        model,
+        deferred,
+        runner,
+        log,
+        report,
+        None,
+        suppress_outbound,
+    );
 }
 
 fn drain_mode(
@@ -2539,6 +2561,13 @@ fn drain_mode(
     // `Some` = pre-step drain: hold queries here instead of performing.
     // `None` = post-step drain: answer queries now.
     mut defer_queries: Option<&mut Vec<EffectTree>>,
+    // When true (a dry-run forward-step, docs/time-travel.md T6b), the SIX
+    // outbound arms (physics command, timeline control, net send, http, audio,
+    // audioThen) still LOG and `continue` but skip their `push_*`/`queue_*`/
+    // `register_*` side effect — the model still evolves (runner reads proceed),
+    // but nothing escapes to the live world / global queues. Always `false` on
+    // the live path.
+    suppress_outbound: bool,
 ) {
     // Each drain invocation gets its own cap, so a frame that defers queries
     // is bounded by 2×MAX (pre-step + post-step) — the cap's job is to bound
@@ -2583,7 +2612,9 @@ dropping the rest"
                     physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
                 };
                 let tag = command.tag_and_kind().0.to_string();
-                physics::with_world(physics::DEFAULT_WORLD, |w| w.queue_command(command));
+                if !suppress_outbound {
+                    physics::with_world(physics::DEFAULT_WORLD, |w| w.queue_command(command));
+                }
                 log.push(EffectRecord {
                     kind,
                     value: EffectValue::Text(tag),
@@ -2604,7 +2635,9 @@ dropping the rest"
                     physics::TimelineControl::RewindTo(f) => EffectValue::Number(f as f64),
                     _ => EffectValue::Bool(true),
                 };
-                physics::queue_timeline_control(control);
+                if !suppress_outbound {
+                    physics::queue_timeline_control(control);
+                }
                 log.push(EffectRecord { kind, value });
                 if log.len() > EFFECT_LOG_CAP {
                     log.remove(0);
@@ -2615,10 +2648,12 @@ dropping the rest"
                 // Fire-and-forget, like a physics command: queue a Send on the
                 // shell's connection manager (drained via
                 // net_drain_conn_commands). Logged for the effect record.
-                crate::net::push_conn_command(crate::net::ConnCommand::Send {
-                    conn: conn as crate::net::ConnectionId,
-                    payload: text.clone().into_bytes(),
-                });
+                if !suppress_outbound {
+                    crate::net::push_conn_command(crate::net::ConnCommand::Send {
+                        conn: conn as crate::net::ConnectionId,
+                        payload: text.clone().into_bytes(),
+                    });
+                }
                 log.push(EffectRecord {
                     kind: "net.send",
                     value: EffectValue::Text(text),
@@ -2638,15 +2673,17 @@ dropping the rest"
                 // the tagger by it, and queue the HttpRequest for the shell to
                 // perform. The response lands frames later; the producer's HTTP
                 // pump applies the tagger then. Logged for the effect record.
-                let token = crate::net::next_token();
-                register_http_tagger(token, tagger);
-                crate::net::push_command(crate::net::NetCommand::HttpRequest {
-                    token,
-                    method,
-                    url: url.clone(),
-                    headers: Vec::new(),
-                    body: body.into_bytes(),
-                });
+                if !suppress_outbound {
+                    let token = crate::net::next_token();
+                    register_http_tagger(token, tagger);
+                    crate::net::push_command(crate::net::NetCommand::HttpRequest {
+                        token,
+                        method,
+                        url: url.clone(),
+                        headers: Vec::new(),
+                        body: body.into_bytes(),
+                    });
+                }
                 log.push(EffectRecord {
                     kind: "net.http",
                     value: EffectValue::Text(url),
@@ -2660,12 +2697,14 @@ dropping the rest"
                 // Fire-and-forget one-shot: push an AudioCommand on the shell's
                 // audio queue (drained via audio_drain_commands). No token —
                 // nothing folds back through update.
-                crate::audio::push_command(crate::audio::AudioCommand::PlayOneShot {
-                    token: None,
-                    sound: sound.clone(),
-                    gain: 1.0,
-                    position,
-                });
+                if !suppress_outbound {
+                    crate::audio::push_command(crate::audio::AudioCommand::PlayOneShot {
+                        token: None,
+                        sound: sound.clone(),
+                        gain: 1.0,
+                        position,
+                    });
+                }
                 log.push(EffectRecord {
                     kind: "audio.play",
                     value: EffectValue::Text(sound),
@@ -2680,12 +2719,14 @@ dropping the rest"
                 // the completion MESSAGE by it, and queue a tokened one-shot.
                 // The finish lands frames later; the producer's audio-finished
                 // hook delivers the message then. Logged for the effect record.
-                let token = crate::audio::next_token();
-                register_audio_completion(token, message);
-                crate::audio::push_command(crate::audio::AudioCommand::play_one_shot_token(
-                    token,
-                    sound.clone(),
-                ));
+                if !suppress_outbound {
+                    let token = crate::audio::next_token();
+                    register_audio_completion(token, message);
+                    crate::audio::push_command(crate::audio::AudioCommand::play_one_shot_token(
+                        token,
+                        sound.clone(),
+                    ));
+                }
                 log.push(EffectRecord {
                     kind: "audio.playThen",
                     value: EffectValue::Text(sound),
@@ -3634,6 +3675,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             &mut runner,
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
+            false,
         );
         assert!(deferred.is_empty(), "nothing should defer here");
         assert_eq!(log.len(), 1);
@@ -3816,6 +3858,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
                 runner,
                 &mut log,
                 &mut |msg| panic!("unexpected report: {msg}"),
+                false,
             );
             assert!(deferred.is_empty(), "nothing should defer here");
             (model.to_string(), log)
@@ -3902,7 +3945,8 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         let mut fail = |m: String| panic!("unexpected report: {m}");
 
         // Pre-step drain: DEFERRED — nothing performed, nothing logged.
-        let deferred = drain_effects(&session, &mut model, tree, &mut runner, &mut log, &mut fail);
+        let deferred =
+            drain_effects(&session, &mut model, tree, &mut runner, &mut log, &mut fail, false);
         assert_eq!(deferred.len(), 1);
         assert!(log.is_empty());
         assert!(matches!(model, Value::Number(_)), "model must be untouched");
@@ -3915,6 +3959,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             &mut runner,
             &mut log,
             &mut fail,
+            false,
         );
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].kind, "physics.raycast");
@@ -3949,6 +3994,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             &mut replay,
             &mut replay_log,
             &mut fail,
+            false,
         );
         perform_deferred_queries(
             &session,
@@ -3957,6 +4003,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             &mut replay,
             &mut replay_log,
             &mut fail,
+            false,
         );
         assert_eq!(replay_log, log, "replay must reproduce the log");
         assert_eq!(replay_model.to_string(), model.to_string());
@@ -4038,6 +4085,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             &mut runner,
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
+            false,
         );
         let Value::Record(fields) = &model else {
             panic!("update should have run");
@@ -4155,6 +4203,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             &mut FakeEffects::new(0.0, vec![0.5]),
             &mut log,
             &mut |msg| reports.push(msg),
+            false,
         );
         assert!(deferred.is_empty(), "nothing should defer here");
         // The log bound is enforced INSIDE the drain (not after), and the
@@ -4183,6 +4232,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             &mut FakeEffects::new(0.0, vec![0.5]),
             &mut log,
             &mut |msg| reports.push(msg),
+            false,
         );
         assert!(deferred.is_empty(), "nothing should defer here");
         assert!(log.is_empty(), "nothing performed");
@@ -4456,6 +4506,7 @@ the game dir"
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
+            false,
         );
         let cmds = crate::net::drain_conn_commands();
         assert_eq!(cmds.len(), 1);
@@ -4561,6 +4612,7 @@ the game dir"
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
+            false,
         );
         // One HttpRequest command was queued, carrying the request's token.
         let token = match crate::net::drain_commands().as_slice() {
@@ -4588,6 +4640,54 @@ the game dir"
 
         // The token is consumed (a duplicate/late response finds no tagger).
         assert!(take_http_tagger(token).is_none());
+    }
+
+    /// `suppress_outbound` (docs/time-travel.md T6b, the dry-run forward-step):
+    /// draining an Http and an Audio effect with suppression on pushes NOTHING
+    /// to the global queues (no request, no audio command, no registered
+    /// tagger) but STILL appends the structured effect record to the log — the
+    /// model evolves but nothing escapes to the live shell.
+    #[test]
+    fn suppress_outbound_logs_but_queues_nothing() {
+        let _guard = crate::audio::OUTBOUND_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = crate::net::drain_commands(); // clear the shared queues
+        let _ = crate::audio::drain_commands();
+        clear_http_taggers();
+        let src = "\
+            let init = 0.0\n\
+            let fetch = Effect.httpGet(\"http://127.0.0.1:9000/hello\", (r) => r)\n\
+            let shoot = Effect.play(\"gunshot.wav\")\n";
+        let project = mle::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = mle::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").unwrap();
+        let mut log = EffectLog::new();
+
+        let fetch = effect_of(&session.global("fetch").unwrap()).unwrap().0.clone();
+        let shoot = effect_of(&session.global("shoot").unwrap()).unwrap().0.clone();
+        for effect in [fetch, shoot] {
+            let _ = drain_effects(
+                &session,
+                &mut model,
+                effect,
+                &mut FakeEffects::new(0.0, vec![]),
+                &mut log,
+                &mut |m| panic!("unexpected report: {m}"),
+                true, // suppress_outbound
+            );
+        }
+
+        // Logged both — the model-facing record is unaffected by suppression.
+        assert_eq!(
+            log.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            vec!["net.http", "audio.play"]
+        );
+        // But nothing escaped: no net/http command, no audio command, no tagger.
+        assert!(crate::net::drain_commands().is_empty(), "no outbound net command");
+        assert!(crate::audio::drain_commands().is_empty(), "no outbound audio command");
     }
 
     // --- audio (roadmap E2): one-shots + soundScape ---
@@ -4619,6 +4719,7 @@ the game dir"
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
+            false,
         );
         assert_eq!(log.last().map(|r| r.kind), Some("audio.play"));
 
@@ -4630,6 +4731,7 @@ the game dir"
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
+            false,
         );
 
         assert_eq!(
@@ -4682,6 +4784,7 @@ the game dir"
             &mut FakeEffects::new(0.0, vec![]),
             &mut log,
             &mut |m| panic!("unexpected report: {m}"),
+            false,
         );
         assert_eq!(log.last().map(|r| r.kind), Some("audio.playThen"));
 
@@ -4809,6 +4912,7 @@ the game dir"
                     &mut FakeEffects::new(0.0, vec![]),
                     &mut log,
                     &mut |r| panic!("unexpected report: {r}"),
+                    false,
                 );
             }
             let sends = crate::net::drain_conn_commands()
@@ -4914,6 +5018,7 @@ the game dir"
                     &mut FakeEffects::new(0.0, vec![]),
                     &mut log,
                     &mut |r| panic!("unexpected report: {r}"),
+                    false,
                 );
             }
             crate::net::drain_conn_commands()

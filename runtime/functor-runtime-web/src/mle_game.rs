@@ -23,7 +23,7 @@ use std::cell::RefCell;
 
 use functor_runtime_common::mle_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, contains_effect, frame_value,
-    view_value, EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
+    view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::mle_producer::{FrameCtx, Reporter, SpanSource};
 use functor_runtime_common::physics;
@@ -340,7 +340,7 @@ impl MleWebGame {
             physics_rt: &mut self.physics_rt,
             physics_status: &mut self.physics_status,
             recorder: &mut self.recorder,
-            effect_runner: &mut self.effect_runner,
+            effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
             effect_log: &mut self.effect_log,
             deferred_queries: &mut self.deferred_queries,
             pending_events: &mut self.pending_events,
@@ -348,6 +348,7 @@ impl MleWebGame {
             prev_tts: &mut self.prev_tts,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
+            suppress_outbound: false,
             reporter: &mut self.reporter,
         }
     }

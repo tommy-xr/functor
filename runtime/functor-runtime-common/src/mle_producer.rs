@@ -33,10 +33,10 @@ use crate::mle_prelude::{
     contains_effect, deliver_physics_events, drain_effects, http_response_value, needs_update,
     net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
     physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
-    take_http_tagger, EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
+    take_http_tagger, EffectLog, EffectRunner, EffectTree, FakeEffects, FunctorHost, NetEventKind,
 };
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
-use crate::physics::{PhysicsEvent, SteppedPhysics};
+use crate::physics::{self, PhysicsEvent, SteppedPhysics};
 use crate::timetravel::SceneRecorder;
 use crate::FrameTime;
 
@@ -123,7 +123,7 @@ pub struct FrameCtx<'a> {
     pub physics_rt: &'a mut SteppedPhysics,
     pub physics_status: &'a mut (u64, bool, u64),
     pub recorder: &'a mut SceneRecorder,
-    pub effect_runner: &'a mut RealEffects,
+    pub effect_runner: &'a mut dyn EffectRunner,
     pub effect_log: &'a mut EffectLog,
     pub deferred_queries: &'a mut Vec<EffectTree>,
     pub pending_events: &'a mut Vec<PhysicsEvent>,
@@ -131,6 +131,11 @@ pub struct FrameCtx<'a> {
     pub prev_tts: &'a mut Option<f64>,
     pub has_physics: bool,
     pub has_subscriptions: bool,
+    /// Suppress OUTBOUND effects (physics command / timeline / send / http /
+    /// audio) during a dry-run forward-step (docs/time-travel.md T6b): they
+    /// still log and the model still evolves, but nothing escapes to the live
+    /// world or the global queues. Always `false` on the live frame body.
+    pub suppress_outbound: bool,
     pub reporter: &'a mut Reporter,
 }
 
@@ -163,8 +168,16 @@ impl FrameCtx<'_> {
             self.deferred_queries.clear();
             self.pending_events.clear();
         }
-        // Subscriptions first, so `tick` sees a model that has absorbed this
-        // frame's messages (the F# executor's ordering).
+        self.subscriptions_and_tick(frame_time);
+    }
+
+    /// Pump subscriptions then run `tick` and absorb its result — the pure body
+    /// of the pre-physics phase, shared by the live frame (`before_physics`,
+    /// after the scrub-commit) and the dry-run forward-step
+    /// ([`Self::step_scene_forward`], which must NOT scrub-commit). Subscriptions
+    /// run first, so `tick` sees a model that has absorbed this frame's messages
+    /// (the F# executor's ordering).
+    fn subscriptions_and_tick(&mut self, frame_time: FrameTime) {
         self.pump_subscriptions(frame_time.tts as f64);
         let args = vec![
             self.model.clone(),
@@ -205,6 +218,7 @@ impl FrameCtx<'_> {
                 self.effect_runner,
                 self.effect_log,
                 &mut |message| reports.push(message),
+                self.suppress_outbound,
             );
             for message in reports {
                 self.reporter.report_once(message);
@@ -230,6 +244,7 @@ impl FrameCtx<'_> {
                             self.effect_runner,
                             self.effect_log,
                             &mut |message| reports.push(message),
+                            self.suppress_outbound,
                         );
                         for message in reports {
                             self.reporter.report_once(message);
@@ -258,6 +273,63 @@ impl FrameCtx<'_> {
             self.recorder
                 .record(self.model, self.physics_status.0, frame_time.tts as f64);
         }
+    }
+
+    /// Deterministically step the whole scene forward `divisions` fixed frames
+    /// from the CURRENT ctx state, collecting the stepped `(model,
+    /// world-snapshot)` per division — the headless forward-step that feeds
+    /// forward-ghosting (docs/time-travel.md T6b). It runs the frame body MINUS
+    /// the scrub-commit (starts at `subscriptions_and_tick`, never
+    /// `before_physics`, so it can't branch the throwaway recorder) and MINUS
+    /// `record_frame` (nothing is committed to live history).
+    ///
+    /// This ctx MUST be a DRY-RUN one (see [`forward_step_scene`]): a cloned
+    /// model, `suppress_outbound = true` (no effect escapes to the live world /
+    /// global queues), a deterministic runner, and `physics_rt` pointed at a
+    /// throwaway world — so the live producer state stays untouched.
+    ///
+    /// The forward-step computes its OWN division time (it does NOT read the
+    /// shell `GameClock`): division `i` runs `FrameTime { dts, tts = start_tts +
+    /// (i+1)*dts }`.
+    ///
+    /// The determinism boundary — where the projected model diverges from a
+    /// live continuation (the physics WORLD snapshot is always exact):
+    /// - wall-clock `Now` / unseeded `Random` reads (the runner is deterministic
+    ///   here, so a game reading real time/entropy in the frame body won't
+    ///   match); a `tts`-driven / seeded game DOES match, since `tts` is
+    ///   supplied and the runner is deterministic.
+    /// - physics READBACK in the frame body (`Physics.position` /
+    ///   `Physics.transformed` / `Physics.raycast` / `Physics.timelineFrame`)
+    ///   resolves against the LIVE `DEFAULT_WORLD`, not this throwaway world, and
+    ///   physics COMMANDS (`applyImpulse` / `teleport` / …) are suppressed rather
+    ///   than applied to the throwaway world — so a game that reads physics state
+    ///   or issues physics commands from `tick` / `update` / `subscriptions`
+    ///   projects only approximately. Closing this needs a world-scoped host
+    ///   (follow-up, alongside the input log). The coast case the T6b test covers
+    ///   — a frame body that neither reads physics nor commands it — matches
+    ///   exactly, model AND world.
+    pub fn step_scene_forward(
+        &mut self,
+        divisions: usize,
+        dts: f32,
+        start_tts: f32,
+    ) -> Vec<(Value, Option<Vec<u8>>)> {
+        let mut out = Vec::with_capacity(divisions);
+        for i in 0..divisions {
+            let frame_time = FrameTime {
+                dts,
+                tts: start_tts + (i as f32 + 1.0) * dts,
+            };
+            self.subscriptions_and_tick(frame_time);
+            self.physics_phase(frame_time);
+            let world = if self.has_physics {
+                self.physics_rt.snapshot_world()
+            } else {
+                None
+            };
+            out.push((self.model.clone(), world));
+        }
+        out
     }
 
     /// Take an entry point's return: split off any `(model, effect)` pair,
@@ -295,6 +367,7 @@ to receive their messages; dropping them"
             self.effect_runner,
             self.effect_log,
             &mut |message| reports.push(message),
+            self.suppress_outbound,
         );
         // Physics queries wait for the post-step drain (end of the frame), so
         // their taggers answer against THIS frame's stepped world.
@@ -403,6 +476,13 @@ to receive their messages; dropping them"
     /// manager, drained via `net_drain_conn_commands`. The physics-events
     /// pattern for connections.
     fn reconcile_connections(&mut self, subs: &Value) {
+        // A dry-run forward-step (docs/time-travel.md T6b) must not open/close
+        // live sockets: connection reconcile is purely OUTBOUND (it feeds
+        // nothing back into the model), so suppress it wholesale — the same
+        // rule as the six drain arms, keeping the global queues untouched.
+        if self.suppress_outbound {
+            return;
+        }
         let conns = match net_conn_subs(subs) {
             Ok(conns) => conns,
             Err(message) => return self.reporter.report_once(format!("[mle] {message}")),
@@ -516,4 +596,116 @@ to receive their messages; dropping them"
             Err(err) => self.reporter.frame_error("update", &err),
         }
     }
+}
+
+/// A silencing error sink for the dry-run forward-step's [`Reporter`]: its
+/// per-frame errors are throwaway (the live frame already reports them), so
+/// they go nowhere.
+fn silent_emit(_: &str) {}
+
+/// RAII guard for a throwaway dry-run physics world: removes it from the global
+/// registry on drop, so a panic in the stepped game code (`session.call` runs the
+/// MLE interpreter) can't leak the world. `forward_step_scene` runs repeatedly
+/// (every ghost rebuild), and a future `catch_unwind` caller would otherwise
+/// accumulate leaked worlds.
+struct DryWorld(physics::WorldId);
+
+impl Drop for DryWorld {
+    fn drop(&mut self) {
+        physics::remove_world(self.0);
+    }
+}
+
+/// The producer entry the shell / T6d call to run a deterministic headless
+/// forward-step (docs/time-travel.md T6b, forward-ghosting). It assembles a
+/// DRY-RUN [`FrameCtx`] over entirely THROWAWAY state — a cloned model, a
+/// silencing reporter, fresh logs/queues, a deterministic [`FakeEffects`]
+/// runner, `suppress_outbound = true`, and (when the game has physics) a
+/// throwaway physics world seeded from a snapshot of the live
+/// [`physics::DEFAULT_WORLD`] driven by a fresh [`SteppedPhysics::for_world`]
+/// — then steps the scene forward `divisions` fixed frames, returning the
+/// stepped `(model, world-snapshot)` per division.
+///
+/// The live producer state (model, world, recorder, clock, and the global
+/// effect / net / audio queues) is COMPLETELY untouched: the throwaway world
+/// is removed before returning, and nothing outbound escapes the suppressed
+/// drain. `prev_tts` seeds the subscription-timer window so timers stay
+/// continuous through the step; `start_tts` is the fork point's scene time.
+#[allow(clippy::too_many_arguments)]
+pub fn forward_step_scene(
+    session: &Session,
+    model: &Value,
+    has_physics: bool,
+    has_subscriptions: bool,
+    prev_tts: Option<f64>,
+    start_tts: f32,
+    dts: f32,
+    divisions: usize,
+) -> Vec<(Value, Option<Vec<u8>>)> {
+    // Dry-run physics: snapshot the live world and restore it into a fresh
+    // throwaway world, so stepping forward never touches the live world,
+    // driver, or timeline. The `DryWorld` guard removes it on drop — including on
+    // an unwind from the stepped game code (panic-safe cleanup). `None` when the
+    // game has no physics — `step_physics` no-ops and no snapshot is taken.
+    // (Caveat: for a physics game whose live world hasn't stepped yet, the
+    // snapshot read lazily inserts an empty `DEFAULT_WORLD` — benign, and
+    // ghosting only runs during live play when the world already exists.)
+    let dry_world = if has_physics {
+        physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).map(|bytes| {
+            let id = physics::create_world([0.0, -9.81, 0.0]);
+            physics::with_world(id, |w| {
+                let _ = w.restore(&bytes);
+            });
+            DryWorld(id)
+        })
+    } else {
+        None
+    };
+    let mut physics_rt = match &dry_world {
+        Some(dry) => SteppedPhysics::for_world(dry.0),
+        None => SteppedPhysics::new(),
+    };
+
+    let mut model = model.clone();
+    let mut physics_status = (0u64, false, 0u64);
+    let mut recorder = SceneRecorder::new();
+    let mut effect_runner = FakeEffects::new(0.0, vec![0.0]);
+    let mut effect_log = EffectLog::new();
+    let mut deferred_queries: Vec<EffectTree> = Vec::new();
+    let mut pending_events: Vec<PhysicsEvent> = Vec::new();
+    let mut live_conn_keys: HashSet<String> = HashSet::new();
+    let mut prev_tts = prev_tts;
+    let mut reporter = Reporter::new(
+        SpanSource::Single {
+            src: String::new(),
+            path: String::new(),
+        },
+        silent_emit,
+    );
+
+    let result = {
+        let mut ctx = FrameCtx {
+            session,
+            model: &mut model,
+            physics_rt: &mut physics_rt,
+            physics_status: &mut physics_status,
+            recorder: &mut recorder,
+            effect_runner: &mut effect_runner as &mut dyn EffectRunner,
+            effect_log: &mut effect_log,
+            deferred_queries: &mut deferred_queries,
+            pending_events: &mut pending_events,
+            live_conn_keys: &mut live_conn_keys,
+            prev_tts: &mut prev_tts,
+            has_physics,
+            has_subscriptions,
+            suppress_outbound: true,
+            reporter: &mut reporter,
+        };
+        ctx.step_scene_forward(divisions, dts, start_tts)
+    };
+
+    // `dry_world`'s `Drop` removes the throwaway world here (and on any unwind
+    // from the step above), leaving the registry as found.
+    drop(dry_world);
+    result
 }
