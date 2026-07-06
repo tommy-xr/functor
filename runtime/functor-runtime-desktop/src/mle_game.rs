@@ -33,7 +33,7 @@ use functor_runtime_common::mle_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, view_value,
     EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
-use functor_runtime_common::mle_producer::{FrameCtx, Reporter, SpanSource};
+use functor_runtime_common::mle_producer::{forward_step_scene, FrameCtx, Reporter, SpanSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
@@ -568,6 +568,45 @@ impl Game for MleGame {
 
     fn current_scene_tts(&self) -> Option<f64> {
         self.recorder.current_scene_frame_tts()
+    }
+
+    /// Forward-ghosting (docs/time-travel.md T6d): step the scene forward
+    /// `divisions` fixed frames of `dt` from `start_tts` (a dry run over
+    /// throwaway state — the live producer is untouched), then `draw` each
+    /// stepped model at its division time and return the frames for the shell to
+    /// composite. Division `i` draws at `tts = start_tts + (i+1)*dt`, matching
+    /// the time `forward_step_scene` stepped the model to. Each frame's camera is
+    /// overridden to the paused view (`last_frame.camera`) so only world motion
+    /// smears. A draw that errors or doesn't return a Frame is skipped, so the
+    /// result may be shorter than `divisions`.
+    fn ghost_frames(&self, divisions: usize, dt: f32, start_tts: f64) -> Vec<Frame> {
+        let stepped = forward_step_scene(
+            &self.session,
+            &self.model,
+            self.has_physics,
+            self.has_subscriptions,
+            self.prev_tts,
+            start_tts as f32,
+            dt,
+            divisions,
+        );
+        let mut frames = Vec::with_capacity(stepped.len());
+        for (i, (model_i, _world)) in stepped.iter().enumerate() {
+            // Match forward_step_scene's f32 division-time arithmetic exactly, so
+            // each redrawn frame's tts equals the tts its model was stepped at.
+            let tts = (start_tts as f32 + (i as f32 + 1.0) * dt) as f64;
+            let args = vec![model_i.clone(), Value::Number(tts)];
+            // A draw error or non-Frame return for a division is skipped, not fatal.
+            if let Ok(value) = self.session.call("draw", args, &mut FunctorHost) {
+                if let Some(frame) = frame_value(&value) {
+                    let mut frame = frame.clone();
+                    // Freeze the view: composite only world motion, not the camera.
+                    frame.camera = self.last_frame.camera.clone();
+                    frames.push(frame);
+                }
+            }
+        }
+        frames
     }
 
     /// Non-destructive scrub — delegated to the shared [`SceneRecorder`]
