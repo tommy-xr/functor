@@ -80,13 +80,13 @@ impl<T> AssetState<T> {
             match Future::poll(Pin::new(&mut future), &mut cx) {
                 Poll::Ready(Ok(texture_data)) => AssetState::Loaded(texture_data),
                 Poll::Ready(Err(e)) => {
-                    eprintln!("Failed to load asset, using fallback: {}", e);
+                    crate::events::emit(crate::events::RuntimeEvent::AssetError {
+                        path: None,
+                        message: e,
+                    });
                     AssetState::Failed
                 }
-                Poll::Pending => {
-                    println!("Waiting for texture to load...");
-                    AssetState::Loading(future)
-                }
+                Poll::Pending => AssetState::Loading(future),
             }
         } else {
             self

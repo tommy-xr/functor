@@ -53,6 +53,7 @@ pub mod asset;
 pub mod audio;
 mod camera;
 pub mod composite;
+pub mod events;
 pub mod fog;
 mod frame;
 mod frame_time;

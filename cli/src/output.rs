@@ -66,6 +66,60 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         hint: Option<String>,
     },
+    /// The in-process runtime loaded and is about to render.
+    RuntimeReady,
+    /// A periodic frame-cost sample from the runtime's game loop. `frame_us` is
+    /// the total (tick + physics + draw); `budget_pct` is that against a 60 fps
+    /// budget.
+    FrameStats {
+        tick_us: f64,
+        draw_us: f64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frame_us: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget_pct: Option<f64>,
+        over_n_frames: u32,
+    },
+    /// A `--capture-frame` PNG was written.
+    CaptureWritten { path: String },
+    /// A hot-reload settled (`ok` false = the edit was rejected; the old program
+    /// keeps running).
+    HotReload { ok: bool, message: String },
+    /// An asset failed to load; the runtime serves the fallback asset.
+    AssetError {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        message: String,
+    },
+    /// The wasm dev-server told a connected page to reload (not emitted by the
+    /// native runtime; wired with the wasm serve path).
+    #[allow(dead_code)]
+    Reload,
+}
+
+impl From<functor_runtime_common::events::RuntimeEvent> for Event {
+    fn from(ev: functor_runtime_common::events::RuntimeEvent) -> Self {
+        use functor_runtime_common::events::RuntimeEvent as R;
+        match ev {
+            R::Ready => Event::RuntimeReady,
+            R::FrameStats {
+                tick_us,
+                draw_us,
+                frame_us,
+                budget_pct,
+                over_n_frames,
+            } => Event::FrameStats {
+                tick_us,
+                draw_us,
+                frame_us: Some(frame_us),
+                budget_pct: Some(budget_pct),
+                over_n_frames,
+            },
+            R::CaptureWritten { path } => Event::CaptureWritten { path },
+            R::HotReload { ok, message } => Event::HotReload { ok, message },
+            R::AssetError { path, message } => Event::AssetError { path, message },
+        }
+    }
 }
 
 impl Event {
@@ -73,7 +127,10 @@ impl Event {
     fn is_essential(&self) -> bool {
         matches!(
             self,
-            Event::Error { .. } | Event::Diagnostic { .. } | Event::CommandFinished { .. }
+            Event::Error { .. }
+                | Event::Diagnostic { .. }
+                | Event::CommandFinished { .. }
+                | Event::AssetError { .. }
         )
     }
 }
@@ -188,6 +245,49 @@ impl PlainRenderer {
                 }
                 out
             }
+            Event::RuntimeReady => vec![format!("{} running", "▸".cyan())],
+            Event::FrameStats {
+                tick_us,
+                draw_us,
+                frame_us,
+                budget_pct,
+                over_n_frames,
+            } => {
+                let mut s = format!("tick {tick_us:.1}µs, draw {draw_us:.1}µs");
+                if let Some(frame_us) = frame_us {
+                    s.push_str(&format!(", frame {frame_us:.1}µs"));
+                }
+                if let Some(budget_pct) = budget_pct {
+                    s.push_str(&format!(" ({budget_pct:.1}% of 60fps)"));
+                }
+                vec![format!(
+                    "{} {}",
+                    format!("stats/{over_n_frames}").dimmed(),
+                    s.dimmed()
+                )]
+            }
+            Event::CaptureWritten { path } => {
+                vec![format!("{} captured {}", "✓".green(), path)]
+            }
+            Event::HotReload { ok, message } => {
+                if *ok {
+                    vec![format!("{} {message}", "↻".cyan())]
+                } else {
+                    vec![format!("{}: {message}", "reload".yellow().bold())]
+                }
+            }
+            Event::AssetError { path, message } => {
+                let loc = match path {
+                    Some(p) => format!("{p}: "),
+                    None => String::new(),
+                };
+                vec![format!(
+                    "{}: {}{message}",
+                    "asset error".red().bold(),
+                    loc.dimmed()
+                )]
+            }
+            Event::Reload => vec![format!("{} reload", "↻".cyan())],
         }
     }
 }

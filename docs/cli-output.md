@@ -15,7 +15,7 @@ command logic ──emit(Event)──▶ ┌─ PlainRenderer  (human text; colo
 If you find yourself formatting the same fact in two places, the design is wrong: add or
 extend an `Event` and let the renderers present it.
 
-This is **PR-1 of a 3-PR pass**. See "What PR-1 does *not* do" at the bottom.
+This is a multi-PR pass. See **Phasing** at the bottom for what each PR adds.
 
 ## Where the stream goes
 
@@ -85,45 +85,89 @@ A build with a type error:
 {"type":"command_finished","ok":false,"duration_ms":4}
 ```
 
-### Reserved for PR-2 (runtime-side — not emitted yet)
+### Implemented in PR-2a (runtime-side — routed through the event sink)
 
-These come from the **in-process desktop runtime** (frame loop / hot-reload / asset load),
-which today still `println!`s directly. Routing them requires a runtime event-sink refactor
-(below) and lands in PR-2. Documented here so the schema is planned, not surprising:
+These come from the **in-process desktop runtime** (frame loop / hot-reload / asset load), which
+used to `println!` directly. PR-2a routes them through the runtime event sink (below), so under
+`--json` they are ndjson like everything else. Optional fields are omitted when absent.
 
-| `type`           | Fields                                                                 |
-| ---------------- | --------------------------------------------------------------------- |
-| `runtime_ready`  | —                                                                     |
-| `frame_stats`    | `tick_us`, `draw_us`, `frame_us`, `budget_pct`, `over_n_frames`       |
-| `capture_written`| `path` (string)                                                       |
-| `hot_reload`     | `ok` (bool), `message` (string)                                       |
-| `asset_error`    | `path` (string), `message` (string)                                   |
-| `reload`         | — (wasm page reload)                                                  |
+| `type`            | Fields                                                                           | Emitted when |
+| ----------------- | -------------------------------------------------------------------------------- | ------------ |
+| `runtime_ready`   | —                                                                                | the runtime loaded and is about to render |
+| `frame_stats`     | `tick_us`, `draw_us`, `frame_us`?, `budget_pct`?, `over_n_frames`                | every `over_n_frames` frames (300) |
+| `capture_written` | `path` (string)                                                                  | a `--capture-frame` PNG was written |
+| `hot_reload`      | `ok` (bool), `message` (string)                                                  | a hot-reload settled (`ok:false` = rejected edit; old program kept) |
+| `asset_error`     | `path` (string?), `message` (string)                                             | an asset failed to load (fallback served) |
+| `reload`          | —                                                                                | reserved for the wasm dev-server page reload (not emitted natively yet) |
 
-## Runtime-output routing — deferred to PR-2 (and why)
+`frame_stats` folds the runtime's per-frame `tick`/`physics`/`draw` cost into three numbers:
+`tick_us` and `draw_us` are the tick and draw averages; `frame_us` is the **total** (tick +
+physics + draw), and `budget_pct` is that total against a 60 fps (16.666 ms) budget. All are
+rounded to one decimal. `over_n_frames` is the averaging window (300). This is a per-window,
+**not** per-frame, emission — see the cadence note below.
 
-Post-#243 `functor run native` drives the desktop runtime **in the CLI's process**, and that
-runtime currently `println!`s its own lines (`[mle] avg over 300 frames…`, capture
-confirmations, asset-load errors, hot-reload notices) straight to stdout, **bypassing the
-renderer**. Under `--json` these raw lines would corrupt the ndjson stream.
+Example tail of `functor -d examples/lighting run native --json` (frame stats + capture):
 
-Fixing this is **explicitly out of scope for PR-1** because the clean fix is a runtime change,
-not a CLI change: give the runtime a structured event sink (a callback/channel the host passes
-in) so it *emits* `FrameStats`/`CaptureWritten`/`HotReload`/`AssetError` instead of printing,
-and the CLI renders them through the same stream. That keeps the functional-core / imperative-
-shell boundary honest and makes the runtime observable to the SDK too — but it touches
-`runtime/` crates and both producers, so it is its own reviewable PR.
+```json
+{"type":"runtime_ready"}
+{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300}
+{"type":"capture_written","path":"/tmp/frame.png"}
+```
 
-Until then: `run`/`develop native` still print runtime lines raw on stdout. `build`, `push`,
-`run wasm` (dev server), and all CLI-side status are fully routed.
+## Runtime-output routing — the event sink (PR-2a)
+
+Post-#243 `functor run native` drives the desktop runtime **in the CLI's process**. That runtime
+used to `println!` its own lines (`[mle] avg over 300 frames…`, capture confirmations, asset-load
+errors, hot-reload notices) straight to stdout, **bypassing the renderer** — corrupting the ndjson
+stream under `--json`. PR-2a routes them through a structured sink.
+
+**The key constraint is dependency direction: `cli` depends on the runtime crates; the runtime
+crates must never depend on `cli`.** So the event type and the sink live in the runtime, and the
+CLI installs an adapter:
+
+- `functor_runtime_common::events` defines a small `RuntimeEvent` enum (`Ready`, `FrameStats`,
+  `CaptureWritten`, `HotReload`, `AssetError`) and a process-wide sink — a
+  `OnceLock<Box<dyn Fn(RuntimeEvent) + Send + Sync>>` with `set_sink` / `emit`. It lives in the
+  *common* crate (not `-desktop`) because asset-load errors are emitted from the shared asset
+  pipeline, which both shells use.
+- The desktop runtime (`mle_game.rs`, `run.rs`) calls `events::emit(RuntimeEvent::…)` at each site
+  that used to print. The frame loop's hot path (per-frame `tick`/`draw`) does **not** emit.
+- The CLI installs the sink once, right before it calls `functor_runtime_desktop::run(…)`:
+  `events::set_sink(Box::new(|ev| output::emit(ev.into())))`. `impl From<RuntimeEvent> for
+  output::Event` (in `cli/src/output.rs`) is the whole mapping — the one place a runtime fact
+  becomes a CLI event.
+
+This keeps the functional-core / imperative-shell boundary honest and makes the runtime observable
+to the SDK too, while `cli → runtime` stays the only dependency edge.
+
+**Non-blocking / cadence.** `emit` is a cheap `OnceLock` load plus a call to the installed `Fn`;
+no lock is taken in the runtime. The renderer locks stdout, but nothing emits on the per-frame hot
+path: `frame_stats` fires once per **300-frame window** (the pre-existing averaging cadence, ~5 s
+at 60 fps — one stdout write every 300 frames, identical to the old `println!`), and the rest are
+one-shot (ready, capture) or event-driven (hot-reload, asset error). So frame time and hot-reload
+latency are unaffected.
+
+**No sink installed** (wasm, tests, a bare runtime): `emit` drops routine notices and sends
+`AssetError` to stderr, so a caller that never opted in is never corrupted and asset failures stay
+visible where they were.
+
+**Everything else stays off stdout.** A few flag-gated runtime notices have no natural event —
+`--headless` mode, the `--debug-port` "listening on…" line, `--replay` "loaded N frames" — so they
+go to **stderr**, not the event stream. That keeps stdout pure ndjson under `--json` even for the
+`--debug-port` / `--headless` combos an SDK/automation consumer uses. (Interactive, TTY-only notices
+— cursor-release hints, Xreal tracking status — remain plain stdout lines; they only fire on a
+focused window with a real user, never on a piped/`--json`/captured run.)
 
 ## Phasing
 
-- **PR-1 (this):** the `Event` enum + `Renderer` trait + selection; `JsonRenderer` (ndjson)
-  and a plain `PlainRenderer` (no animation); retire the raw debug prints; fix the `--help`
-  wording; global `--json`/`--quiet`/`--no-color`.
-- **PR-2:** the ink-style human renderer (spinners, a live region above scrollback, grouped
-  styled sections) **and** the runtime event-sink routing above.
+- **PR-1:** the `Event` enum + `Renderer` trait + selection; `JsonRenderer` (ndjson) and a plain
+  `PlainRenderer` (no animation); retire the raw debug prints; fix the `--help` wording; global
+  `--json`/`--quiet`/`--no-color`.
+- **PR-2a (this):** route the in-process runtime output (frame stats, capture, hot-reload, asset
+  errors, ready) through the event sink above, so `run/develop native --json` is clean ndjson.
+  `PlainRenderer` prints the new events as plain lines; `JsonRenderer` serializes them. No TUI.
+- **PR-2b:** the ink-style human renderer (spinners, a live region above scrollback, a sticky
+  telemetry panel that consumes `frame_stats`, grouped styled sections). Builds on PR-2a's events.
 - **PR-3:** rich MLE diagnostics (source line + caret), actionable error hints, polish.
 </content>
 </invoke>

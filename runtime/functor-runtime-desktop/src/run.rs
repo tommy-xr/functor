@@ -8,7 +8,6 @@
 //! via `tokio::spawn`, so `run` must be invoked from within a tokio runtime
 //! context.
 
-use std::env;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -390,7 +389,11 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
     let result = encode_framebuffer_png(gl, width, height)
         .and_then(|bytes| std::fs::write(path, bytes).map_err(|e| e.to_string()));
     match result {
-        Ok(()) => println!("Captured frame to {}", path),
+        Ok(()) => functor_runtime_common::events::emit(
+            functor_runtime_common::events::RuntimeEvent::CaptureWritten {
+                path: path.to_string(),
+            },
+        ),
         Err(e) => {
             eprintln!("Failed to capture frame to {}: {}", path, e);
             std::process::exit(1);
@@ -576,7 +579,9 @@ fn run_headless(
     debug_requests: Option<std::sync::mpsc::Receiver<debug_server::DebugRequest>>,
     fixed_time: Option<f32>,
 ) {
-    println!("[functor-runner] headless mode — no GL window; /capture unavailable");
+    // Stderr, not stdout: keep the CLI's `--json` ndjson stream (stdout) clean
+    // even under `--headless`. This is an out-of-band notice, not an event.
+    eprintln!("[runtime] headless mode — no GL window; /capture unavailable");
 
     let start_time = Instant::now();
     let mut last_time: f32 = 0.0;
@@ -651,8 +656,6 @@ pub fn run(args: Args) {
     // Load game
 
     let game_path = args.game_path.clone();
-    println!("Using game path: {}", game_path);
-    println!("Working directory: {:?}", env::current_dir());
 
     let mut game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
@@ -690,6 +693,11 @@ pub fn run(args: Args) {
         eprintln!("error: --capture-at-frame requires --input-script (its frame index is only deterministic under scripted fixed-dt playback)");
         std::process::exit(1);
     }
+
+    // The game loaded and validated (incl. any scripted-input parse); the runtime
+    // is up. One-shot lifecycle notice for the shell (replaces the old
+    // game-path/working-dir debug prints).
+    functor_runtime_common::events::emit(functor_runtime_common::events::RuntimeEvent::Ready);
 
     // Optional debug control server. Runs on its own thread; the GL loop drains
     // its request channel once per frame (see below). None when --debug-port is

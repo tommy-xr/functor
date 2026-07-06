@@ -164,6 +164,16 @@ impl MleProject {
         ];
         argv.extend(runner_args.iter().cloned());
         let runtime_args = functor_runtime_desktop::Args::parse_from(argv);
+
+        // Route the in-process runtime's output through the CLI's event stream
+        // instead of letting it `println!` raw lines (which would corrupt
+        // `--json` ndjson and bypass the renderer). The runtime emits typed
+        // `RuntimeEvent`s; we map each onto an `output::Event` and render it.
+        // Dependency direction stays clean: the CLI knows the runtime, never
+        // the reverse (see docs/cli-output.md).
+        functor_runtime_common::events::set_sink(Box::new(|ev| {
+            crate::output::emit(ev.into());
+        }));
         functor_runtime_desktop::run(runtime_args);
         Ok(())
     }

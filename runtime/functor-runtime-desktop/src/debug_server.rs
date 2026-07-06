@@ -140,7 +140,9 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
             std::process::exit(1);
         }
     };
-    println!("[debug-server] listening on http://{}", addr);
+    // Stderr, not stdout: `--debug-port` is a common `--json` automation combo,
+    // so this notice must not land in the CLI's ndjson stream.
+    eprintln!("[debug-server] listening on http://{}", addr);
 
     thread::spawn(move || {
         for mut request in server.incoming_requests() {
