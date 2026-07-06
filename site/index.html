@@ -6,7 +6,7 @@
     <title>functor — a functional toolkit for 3D games</title>
     <meta
       name="description"
-      content="Write 3D games as pure functions. F# compiled via Fable to Rust, native + WebAssembly, with live hot-reload — and MLE, a tiny live-editable game language that runs in your browser."
+      content="Write 3D games as pure functions in MLE — a tiny, interpreted, F#-inspired game language that the Rust runtime runs live on native + WebAssembly, with state-preserving hot-reload and no compile step."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -30,8 +30,9 @@
         <h1 class="hero-title">FUNCTOR</h1>
         <p class="hero-tagline">A functional toolkit for 3D games.</p>
         <p class="hero-sub">
-          Pure functions in, frames out. F# → Rust → native&nbsp;+&nbsp;WebAssembly, with
-          hot-reload that keeps your game state alive.
+          Pure functions in, frames out. Write MLE — a tiny interpreted language — and the
+          Rust runtime runs it live on native&nbsp;+&nbsp;WebAssembly, with hot-reload that
+          keeps your game state alive.
         </p>
         <div class="hero-actions">
           <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
@@ -97,14 +98,14 @@
       <h2>How it works</h2>
       <ol>
         <li>
-          <strong>F# games</strong> are transpiled by <a href="https://fable.io">Fable</a> to
-          Rust, then compiled to a native dylib (hot-reloaded by the desktop runner) or a
-          WebAssembly bundle.
+          <strong>Games are written in MLE</strong> — a small, interpreted, F#-inspired functional
+          language. There is no compile step: the source ships as text and a tree-walking
+          interpreter inside the runtime evaluates it, natively and in the browser.
         </li>
         <li>
-          <strong>MLE games</strong> skip compilation entirely: the source ships as text and a
-          tree-walking interpreter inside the runtime evaluates it — which is what makes
-          browser-side live editing possible.
+          <strong>Because there is no build, the same source runs live in the browser</strong> —
+          that is the in-page <a href="sandbox.html">sandbox</a>: edit the code and the runtime
+          swaps the program under the running model, no rebuild.
         </li>
         <li>
           <strong>The runtime is the imperative shell</strong>: rendering, input, physics
