@@ -565,6 +565,10 @@ impl Game for MleGame {
         self.recorder.scene_frame_range()
     }
 
+    fn current_scene_tts(&self) -> Option<f64> {
+        self.recorder.current_scene_frame_tts()
+    }
+
     /// Non-destructive scrub — delegated to the shared [`SceneRecorder`]
     /// (docs/time-travel.md T3): restore model + world for display without
     /// truncating, so the draggable bar can seek back and forth.
@@ -641,7 +645,14 @@ impl Game for MleGame {
 
     fn render(&mut self, frame_time: FrameTime) -> Frame {
         let started = Instant::now();
-        let args = vec![self.model.clone(), Value::Number(frame_time.tts as f64)];
+        // While scrubbing, draw at the scrubbed frame's recorded `tts` so
+        // `tts`-driven visuals (orbiting lights, `sin(tts)` motion) rewind with
+        // the model; live play uses the real clock (docs/time-travel.md).
+        let tts = self
+            .recorder
+            .scrub_render_tts()
+            .unwrap_or(frame_time.tts as f64);
+        let args = vec![self.model.clone(), Value::Number(tts)];
         match self.session.call("draw", args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => self.last_frame = frame.clone(),
@@ -1263,6 +1274,56 @@ mod tests {
         // Both rings branched from the seek point (range truncated to 0..3;
         // recording resumes at 4).
         assert_eq!(game.recorder.scene_frame_range(), Some((0, 3)));
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end tts rewind (docs/time-travel.md): a game whose `draw` is
+    /// driven by the render clock `tts` (like `examples/mle-lighting`'s orbiting
+    /// lights) must, WHILE SCRUBBING, render at the scrubbed frame's RECORDED
+    /// tts — not the live "now" clock. Here the camera eye tracks tts, so the
+    /// returned `Frame` exposes which tts `draw` actually ran at. Exercises the
+    /// real production render path (`render` → `current_scene_tts` override).
+    #[test]
+    fn scrubbed_frame_renders_at_its_recorded_tts() {
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let dir =
+            std::env::temp_dir().join(format!("mle-game-test-{}-tts", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        // eye.x == tts, so the drawn Frame reveals the tts `draw` ran at.
+        std::fs::write(
+            dir.join("game.mle"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
+             let draw = (m, tts) => Frame.create(Camera.lookAt(tts, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
+
+        // Five frames with an advancing render clock: frame i records tts = i+1.
+        for i in 0..5u64 {
+            game.tick(FrameTime {
+                tts: (i + 1) as f32,
+                dts: 1.0,
+            });
+        }
+        assert_eq!(game.scene_frame_range(), Some((0, 4)));
+
+        // Live (not scrubbing): render draws at the real clock — eye.x == 42.0.
+        let live = game.render(FrameTime { tts: 42.0, dts: 1.0 });
+        assert_eq!(live.camera.eye[0], 42.0, "live render uses the real clock");
+
+        // Scrub back to frame 1 (recorded tts = 2.0). Even though render is
+        // handed a bogus live tts, `draw` must run at the RECORDED tts, so the
+        // tts-driven camera rewinds to eye.x == 2.0 — the bug this fixes.
+        game.seek_scene_to(1).expect("seek 1");
+        let scrubbed = game.render(FrameTime { tts: 99.0, dts: 0.0 });
+        assert_eq!(
+            scrubbed.camera.eye[0], 2.0,
+            "scrubbed frame must render at its recorded tts, not the live clock"
+        );
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);

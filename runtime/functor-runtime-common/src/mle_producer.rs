@@ -255,7 +255,8 @@ impl FrameCtx<'_> {
     /// carries `dts > 0`).
     pub fn record_frame(&mut self, frame_time: FrameTime) {
         if frame_time.dts > 0.0 {
-            self.recorder.record(self.model, self.physics_status.0);
+            self.recorder
+                .record(self.model, self.physics_status.0, frame_time.tts as f64);
         }
     }
 

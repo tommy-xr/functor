@@ -119,6 +119,17 @@ pub trait GameProducer {
         None
     }
 
+    /// The recorded `tts` of the frame the scene currently sits on (the scrubbed
+    /// frame while dragging, else the newest recorded frame). Shells read this to
+    /// REBASE their [`crate::GameClock`] when a time-travel branch resumes — on a
+    /// resume-from-scrub, after a seek, or after a `POST /rewind` — so play
+    /// continues from the scrubbed scene time instead of snapping to wall-clock
+    /// "now" (docs/time-travel.md). `None` for producers that don't record a
+    /// model history.
+    fn current_scene_tts(&self) -> Option<f64> {
+        None
+    }
+
     /// Seek the whole scene to a rendered frame for DISPLAY, WITHOUT branching
     /// (docs/time-travel.md T3, the draggable scrubber): restore model + world
     /// so the user can scrub back and forth freely while paused. The future is

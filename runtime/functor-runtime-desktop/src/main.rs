@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::{Frame, FrameTime, SceneContext};
+use functor_runtime_common::{Frame, GameClock, SceneContext};
 use std::collections::BTreeSet;
 
 use functor_runtime_common::Key as InputKey;
@@ -314,33 +314,6 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
 // rendering, and supplies a real framebuffer-capture closure to
 // `service_debug_request` (headless supplies an "unavailable" one). ---
 
-/// This frame's `FrameTime`, honoring the debug clock controls (`--fixed-time` /
-/// POST /time): `pending_step` advances once then holds; otherwise a pinned
-/// `held_time` freezes the clock, else it follows wall-clock.
-fn next_frame_time(
-    held_time: &mut Option<f32>,
-    pending_step: &mut Option<f32>,
-    last_time: f32,
-    elapsed: f32,
-) -> FrameTime {
-    if let Some(step) = pending_step.take() {
-        let new_tts = held_time.unwrap_or(last_time) + step;
-        *held_time = Some(new_tts);
-        FrameTime {
-            dts: step,
-            tts: new_tts,
-        }
-    } else {
-        match *held_time {
-            Some(tts) => FrameTime { dts: 0.0, tts },
-            None => FrameTime {
-                dts: elapsed - last_time,
-                tts: elapsed,
-            },
-        }
-    }
-}
-
 /// Deliver async HTTP + WebSocket results into the game's inbox *before* tick, so
 /// this frame's executor drain sees them.
 fn deliver_net_ws(
@@ -427,8 +400,7 @@ fn service_debug_request(
     height: u32,
     held_keys: &mut BTreeSet<InputKey>,
     mouse_pos: &mut (i32, i32),
-    held_time: &mut Option<f32>,
-    pending_step: &mut Option<f32>,
+    clock: &mut GameClock,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) {
     match req {
@@ -455,7 +427,17 @@ fn service_debug_request(
             let _ = resp.send(game.reload_source(&source));
         }
         debug_server::DebugRequest::Rewind(frame, resp) => {
-            let _ = resp.send(game.rewind_scene_to(frame));
+            let result = game.rewind_scene_to(frame);
+            // Rebase the game clock to the rewound frame's recorded `tts` so play
+            // continues FROM the scrubbed scene time, not wall-clock "now" (the
+            // resume seam — docs/time-travel.md). After the rewind branched the
+            // future, `current_scene_tts` reports the newest (target) frame.
+            if result.is_ok() {
+                if let Some(tts) = game.current_scene_tts() {
+                    clock.rebase(tts as f32);
+                }
+            }
+            let _ = resp.send(result);
         }
         debug_server::DebugRequest::Input(cmd, resp) => {
             let result = match cmd {
@@ -485,17 +467,9 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::Time(cmd, resp) => {
             match cmd {
-                debug_server::TimeCommand::Set { tts } => {
-                    *held_time = Some(tts);
-                    *pending_step = None;
-                }
-                debug_server::TimeCommand::Advance { dts } => {
-                    *pending_step = Some(dts);
-                }
-                debug_server::TimeCommand::Resume => {
-                    *held_time = None;
-                    *pending_step = None;
-                }
+                debug_server::TimeCommand::Set { tts } => clock.set(tts),
+                debug_server::TimeCommand::Advance { dts } => clock.advance(dts),
+                debug_server::TimeCommand::Resume => clock.resume(),
             }
             let _ = resp.send(());
         }
@@ -518,8 +492,7 @@ fn run_headless(
     let start_time = Instant::now();
     let mut last_time: f32 = 0.0;
     let mut frame_count: u64 = 0;
-    let mut held_time: Option<f32> = fixed_time;
-    let mut pending_step: Option<f32> = None;
+    let mut clock = GameClock::new(fixed_time);
     let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
     let mut mouse_pos: (i32, i32) = (0, 0);
 
@@ -533,7 +506,7 @@ fn run_headless(
 
     loop {
         let elapsed = start_time.elapsed().as_secs_f32();
-        let time = next_frame_time(&mut held_time, &mut pending_step, last_time, elapsed);
+        let time = clock.frame(elapsed - last_time);
         last_time = elapsed;
 
         // Same per-frame ordering as the windowed loop (the source of truth),
@@ -560,8 +533,7 @@ fn run_headless(
                     0,
                     &mut held_keys,
                     &mut mouse_pos,
-                    &mut held_time,
-                    &mut pending_step,
+                    &mut clock,
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -699,11 +671,11 @@ pub async fn main() {
         let start_time = Instant::now();
         let mut last_time: f32 = 0.0;
         let mut frame_count: u64 = 0;
-        // Debug-server clock control (POST /time). `held_time` pins the frame
-        // time to a constant (None = follow wall clock); `pending_step` applies a
-        // one-shot dt advance on the next frame. Seeded from --fixed-time.
-        let mut held_time: Option<f32> = args.fixed_time;
-        let mut pending_step: Option<f32> = None;
+        // The shared game clock (docs/time-travel.md): `tts` accumulates the real
+        // frame delta while live, freezes on pause (scrubber / debug POST /time),
+        // and rebases on a time-travel branch. `--fixed-time` seeds an
+        // unconditional pin for deterministic captures / goldens.
+        let mut clock = GameClock::new(args.fixed_time);
         // Runtime-owned input snapshot for GET /state, maintained from both the
         // GLFW event stream and the debug server's POST /input. Generic and
         // serializable, unlike the game model (which is Debug text only).
@@ -775,7 +747,7 @@ pub async fn main() {
             // for reproducible captures / golden images. The capture trigger
             // below still keys off wall-clock elapsed, so the loop runs long
             // enough for assets to load before a shot is taken.
-            let time = next_frame_time(&mut held_time, &mut pending_step, last_time, elapsed_time);
+            let time = clock.frame(elapsed_time - last_time);
             last_time = elapsed_time;
 
             game.check_hot_reload(time.clone());
@@ -786,7 +758,7 @@ pub async fn main() {
             // the pose stays reproducible (e.g. a stray mouse-over during a golden
             // capture can't turn the camera). Window close/escape and the debug
             // server's /input still work.
-            let ignore_user_input = held_time.is_some();
+            let ignore_user_input = clock.is_pinned();
             for (_, event) in glfw::flush_messages(&events) {
                 match event {
                     glfw::WindowEvent::Close => window.set_should_close(true),
@@ -1105,7 +1077,7 @@ Escape again to quit"
                     functor_runtime_common::ui::ScrubberState {
                         frame: game.current_scene_frame().unwrap_or(0),
                         range: game.scene_frame_range(),
-                        paused: held_time.is_some(),
+                        paused: clock.is_paused(),
                     },
                 )
             } else {
@@ -1117,23 +1089,35 @@ Escape again to quit"
             scrubber_wants_pointer = scrubber_out.wants_pointer;
             match scrubber_out.action {
                 Some(functor_runtime_common::ui::ScrubberAction::TogglePause) => {
-                    held_time = if held_time.is_some() { None } else { Some(time.tts) };
-                    pending_step = None;
+                    // Resuming: rebase to the scene's current time so play
+                    // continues from there, not wall-clock. When scrubbed this is
+                    // the scrubbed frame's recorded `tts`; on a plain pause/resume
+                    // it's the newest recorded frame's `tts`, which already equals
+                    // the frozen `game_time` — a harmless no-op.
+                    if clock.is_paused() {
+                        if let Some(tts) = game.current_scene_tts() {
+                            clock.rebase(tts as f32);
+                        }
+                    }
+                    clock.toggle_pause();
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SeekTo(f)) => {
-                    // Dragging the timeline: non-destructive seek, and pin the
-                    // clock so the scene parks on the scrubbed frame (resuming
-                    // from there is what commits the branch).
+                    // Dragging the timeline: non-destructive seek, and park the
+                    // clock on the scrubbed frame (resuming from there is what
+                    // commits the branch). Keep the clock's time aligned to the
+                    // scrubbed frame so a resume continues from it.
                     match game.seek_scene_to(f) {
                         Ok(_) => {}
                         Err(e) => eprintln!("[scrubber] {e}"),
                     }
-                    held_time = Some(time.tts);
+                    if let Some(tts) = game.current_scene_tts() {
+                        clock.rebase(tts as f32);
+                    }
+                    clock.pause();
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::Step) => {
                     // Step implies pause: advance exactly one frame, then hold.
-                    held_time = Some(time.tts);
-                    pending_step = Some(1.0 / 60.0);
+                    clock.step(1.0 / 60.0);
                 }
                 None => {}
             }
@@ -1165,8 +1149,7 @@ Escape again to quit"
                         fb_height as u32,
                         &mut held_keys,
                         &mut mouse_pos,
-                        &mut held_time,
-                        &mut pending_step,
+                        &mut clock,
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             encode_framebuffer_png(&gl, fb_width as u32, fb_height as u32)
