@@ -37,7 +37,7 @@ use functor_runtime_common::mle_prelude::{
     take_http_tagger, view_value, EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::physics;
-use functor_runtime_common::timetravel::{History, DEFAULT_HISTORY_FRAMES};
+use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 use mle::project::SourceMap;
@@ -114,27 +114,10 @@ pub struct MleGame {
     physics_rt: physics::SteppedPhysics,
     /// Latest recorder status for the overlay: (fixed frame, paused, history).
     physics_status: (u64, bool, u64),
-    /// The model half of the time-travel recorder (docs/time-travel.md T1):
-    /// one snapshot of the settled `model` per rendered frame, into a bounded
-    /// ring. The master scrub clock is the RENDERED frame (every game has one,
-    /// even with no physics), counted by `rendered_frame`. `rewind_scene_to`
-    /// seeks it to restore the model; `world_frame_history` couples the physics
-    /// world to the same rendered-frame index. RESET on hot reload (see
-    /// `swap_in`): snapshots can hold old-module closures, so unlike the live
-    /// model they can't cross a reload.
-    model_history: History<Value>,
-    /// The physics fixed-frame the world had reached at the END of each
-    /// rendered frame — recorded in LOCKSTEP with `model_history` (same index,
-    /// same reset/truncate), so a coupled `rewind_scene_to(R)` can restore the
-    /// world to the fixed frame that rendered-frame R ended at. Empty of
-    /// meaning (all zero) for games with no `physics` hook.
-    world_frame_history: History<u64>,
-    /// The rendered-frame index the next `model_history` snapshot records at;
-    /// monotonic, one per `tick`. Deliberately its own counter — the
-    /// time-travel clock, kept independent of `frames` (a stats-only counter,
-    /// numerically equal today but free to be reset/repurposed for stats), the
-    /// way the physics recorder owns its own fixed-frame clock.
-    rendered_frame: u64,
+    /// The coupled time-travel recorder (docs/time-travel.md T1–T3): records the
+    /// settled `model` + physics fixed-frame each rendered frame and seeks/
+    /// rewinds them together. Shared with the web producer (one tested impl).
+    recorder: SceneRecorder,
     /// Endpoint keys of the connections currently declared by
     /// `subscriptions` (`Sub.connect`/`Sub.listen`) — diffed each frame to
     /// open newly-declared ones and close dropped ones. The shell's
@@ -360,9 +343,7 @@ impl MleGame {
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
-            model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
-            world_frame_history: History::bounded(DEFAULT_HISTORY_FRAMES),
-            rendered_frame: 0,
+            recorder: SceneRecorder::new(),
             live_conn_keys: std::collections::HashSet::new(),
             last_frame: empty_frame(),
             last_error: None,
@@ -716,14 +697,11 @@ to receive their messages; dropping them"
         clear_audio_completions();
         // Reload is a model-history BOUNDARY: the retained snapshots can hold
         // closures bound to the old module, so — unlike the live model, which
-        // `rebind_value` migrates above — they can't safely cross a reload.
-        // `rendered_frame` stays monotonic as the global clock, so post-reload
-        // recording resumes consecutively from the current frame. (Rebinding
-        // snapshots to preserve rewind ACROSS an edit is deferred to when that
-        // feature is actually built — docs/time-travel.md.) The coupled
-        // world-frame map resets in lockstep.
-        self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
-        self.world_frame_history = History::bounded(DEFAULT_HISTORY_FRAMES);
+        // `rebind_value` migrates above — they can't safely cross a reload. The
+        // recorder keeps its rendered-frame clock monotonic so recording resumes
+        // consecutively. (Rebinding snapshots to preserve rewind ACROSS an edit
+        // is deferred to when that feature is built — docs/time-travel.md.)
+        self.recorder.reset_on_reload();
         report.rebound
     }
 
@@ -742,6 +720,7 @@ to receive their messages; dropping them"
             self.draw_ns = 0;
         }
     }
+
 }
 
 impl Game for MleGame {
@@ -828,89 +807,67 @@ impl Game for MleGame {
         Ok(status)
     }
 
-    /// Coupled scene rewind (docs/time-travel.md T1): restore the model AND the
-    /// physics world to the end of rendered frame `target`, then branch the
-    /// recorded future from there. The model comes from `model_history`; the
-    /// world is rewound to the fixed frame that frame recorded in
-    /// `world_frame_history` (the two rings are lockstep). `rendered_frame`
-    /// resets to `frame + 1` so recording resumes consecutively on the branch.
-    /// Shell-driven — the caller (debug server / scrubber overlay) is expected
-    /// to have the clock pinned so the scene stays put after the seek.
-    ///
-    /// The coupled seek is **exact or refused**, never silently desynced: the
-    /// two rings run on different clocks and windows (the model keeps N rendered
-    /// frames; physics keeps N *fixed* frames), so a rendered frame can outlive
-    /// the physics frame it needs (sustained sub-60fps prunes fixed frames
-    /// faster). Rather than let the physics seek clamp to a different time than
-    /// the model — committing a branch where model and world disagree — this
-    /// verifies the physics frame is exactly restorable BEFORE mutating
-    /// anything, and returns `Err` (touching nothing) otherwise.
+    /// Coupled scene rewind — delegated to the shared [`SceneRecorder`]
+    /// (docs/time-travel.md T1). Restores model + world to `target` and branches
+    /// the future; exact-or-refused. After a successful branch, drop any
+    /// in-flight frame work so it doesn't carry across (the reload discipline).
     fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
-        let (lo, hi) = self
-            .model_history
-            .recorded_range()
-            .ok_or_else(|| "rewind: nothing recorded yet".to_string())?;
-        let frame = target.clamp(lo, hi);
+        let result = self.recorder.rewind_scene_to(
+            target,
+            &mut self.model,
+            &mut self.physics_rt,
+            &mut self.physics_status,
+            self.has_physics,
+        );
+        if result.is_ok() {
+            // No in-flight frame work should carry across the branch (matches
+            // the reload discipline); between-frame callers have these empty.
+            self.deferred_queries.clear();
+            self.pending_events.clear();
+            clear_http_taggers();
+            clear_audio_completions();
+        }
+        result
+    }
 
-        // Decide the physics seek WITHOUT mutating, so a refusal leaves the
-        // whole scene untouched (no half-rewound state).
-        enum PhysicsSeek {
-            None,          // no physics, or end-of-frame is already the live world
-            To(u64),       // exact seek to this fixed frame
-        }
-        let physics_seek = if self.has_physics {
-            let want = *self.world_frame_history.seek(frame);
-            match self.physics_rt.seekable_range() {
-                // `want` past the newest recorded frame == the current live
-                // world (no physics step happened after this rendered frame),
-                // so the world is already at end-of-frame — no seek needed.
-                _ if want >= self.physics_rt.current_fixed_frame() => PhysicsSeek::None,
-                Some((flo, hi)) if want >= flo && want <= hi => PhysicsSeek::To(want),
-                _ => {
-                    return Err(format!(
-                        "cannot rewind to rendered frame {frame}: its physics frame \
-                         {want} has been pruned from the {}-frame world history",
-                        DEFAULT_HISTORY_FRAMES
-                    ));
-                }
-            }
-        } else {
-            PhysicsSeek::None
-        };
+    fn current_scene_frame(&self) -> Option<u64> {
+        self.recorder.current_scene_frame()
+    }
 
-        // Feasible — commit. Model first, then the (already-validated) world.
-        self.model = self.model_history.seek(frame).clone();
-        let mut warnings = Vec::new();
-        if let PhysicsSeek::To(fixed) = physics_seek {
-            warnings = self.physics_rt.rewind_to_frame(fixed);
-            // Keep the cached status in step with the rewound world, so the next
-            // frame records the branch's fixed frame (not the stale future one)
-            // even if that frame's physics hook errors, and the overlay is right.
-            self.physics_status.0 = self.physics_rt.current_fixed_frame();
-        }
-        // Branch both rings from the seek point, and resume recording there.
-        self.model_history.truncate_from(frame + 1);
-        self.world_frame_history.truncate_from(frame + 1);
-        self.rendered_frame = frame + 1;
-        // No in-flight frame work should carry across the branch (matches the
-        // reload discipline); between-frame callers have these empty already.
-        self.deferred_queries.clear();
-        self.pending_events.clear();
-        clear_http_taggers();
-        clear_audio_completions();
-        for warning in &warnings {
-            self.report_once(format!("[mle] {warning}"));
-        }
-        let clamped = if frame == target {
-            String::new()
-        } else {
-            format!(" (requested {target}, clamped to the recorded window)")
-        };
-        Ok(format!("rewound scene to rendered frame {frame}{clamped}"))
+    fn scene_frame_range(&self) -> Option<(u64, u64)> {
+        self.recorder.scene_frame_range()
+    }
+
+    /// Non-destructive scrub — delegated to the shared [`SceneRecorder`]
+    /// (docs/time-travel.md T3): restore model + world for display without
+    /// truncating, so the draggable bar can seek back and forth.
+    fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
+        self.recorder.seek_scene_to(
+            target,
+            &mut self.model,
+            &mut self.physics_rt,
+            &mut self.physics_status,
+            self.has_physics,
+        )
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
         let started = Instant::now();
+        // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
+        // while the draggable bar is parked on an earlier frame, branch the
+        // timeline from there BEFORE this frame advances — and drop any in-flight
+        // frame work so it doesn't cross the branch (the reload discipline).
+        if frame_time.dts > 0.0
+            && self.recorder.commit_scrub_if_resuming(
+                &mut self.model,
+                &mut self.physics_rt,
+                &mut self.physics_status,
+                self.has_physics,
+            )
+        {
+            self.deferred_queries.clear();
+            self.pending_events.clear();
+        }
         // Subscriptions first, so `tick` sees a model that has absorbed this
         // frame's messages (the F# executor's ordering).
         self.pump_subscriptions(frame_time.tts as f64);
@@ -991,10 +948,15 @@ impl Game for MleGame {
         // / event effects have folded into `self.model` — plus the physics
         // fixed-frame the world reached, in lockstep, so a coupled rewind can
         // restore both. `physics_status.0` is the world's current fixed frame.
-        self.model_history.record(self.rendered_frame, &self.model);
-        self.world_frame_history
-            .record(self.rendered_frame, &self.physics_status.0);
-        self.rendered_frame += 1;
+        //
+        // Skip a PAUSED frame (`dts == 0`, i.e. the clock pinned): the sim
+        // hasn't advanced, so recording would only pile up frozen duplicates —
+        // inflating the timeline and pushing a rewind target past the real
+        // history. `dts == 0` is exactly the pinned-and-not-stepping case
+        // (a one-shot step carries `dts > 0`). [xreview]
+        if frame_time.dts > 0.0 {
+            self.recorder.record(&self.model, self.physics_status.0);
+        }
         self.frames += 1;
         self.report_stats();
     }
@@ -1531,18 +1493,20 @@ mod tests {
         let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
 
         // Nothing recorded until the first frame runs.
-        assert_eq!(game.model_history.recorded_range(), None);
+        assert_eq!(game.recorder.scene_frame_range(), None);
 
         for _ in 0..5 {
             game.tick(FrameTime { tts: 0.0, dts: 0.016 });
         }
 
-        // Five rendered frames, indexed 0..4; each holds that frame's settled
-        // model (n incremented once per tick), and seeking is exact.
-        assert_eq!(game.model_history.recorded_range(), Some((0, 4)));
-        assert_eq!(n_of(game.model_history.seek(0)), 1.0);
-        assert_eq!(n_of(game.model_history.seek(4)), 5.0);
-        // Recording left the live model untouched.
+        // Five rendered frames, indexed 0..4; recording left the live model
+        // untouched (n incremented once per tick).
+        assert_eq!(game.recorder.scene_frame_range(), Some((0, 4)));
+        assert_eq!(n_of(&game.model), 5.0);
+        // Each frame holds that frame's settled model — seeking is exact.
+        game.seek_scene_to(0).expect("seek 0");
+        assert_eq!(n_of(&game.model), 1.0);
+        game.seek_scene_to(4).expect("seek 4");
         assert_eq!(n_of(&game.model), 5.0);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1567,13 +1531,13 @@ mod tests {
         for _ in 0..3 {
             game.tick(FrameTime { tts: 0.0, dts: 0.016 });
         }
-        assert_eq!(game.model_history.recorded_range(), Some((0, 2)));
+        assert_eq!(game.recorder.scene_frame_range(), Some((0, 2)));
 
         // Push a fresh (compatible) source: the model is rebound and KEPT, but
         // the history ring is reset.
         game.reload_source(src).expect("reload should succeed");
         assert_eq!(
-            game.model_history.recorded_range(),
+            game.recorder.scene_frame_range(),
             None,
             "reload must reset the model history"
         );
@@ -1581,7 +1545,7 @@ mod tests {
         // Recording resumes at the current (monotonic) rendered frame — the
         // fresh ring re-bases there, so no non-consecutive panic.
         game.tick(FrameTime { tts: 0.0, dts: 0.016 });
-        assert_eq!(game.model_history.recorded_range(), Some((3, 3)));
+        assert_eq!(game.recorder.scene_frame_range(), Some((3, 3)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1658,9 +1622,68 @@ mod tests {
             (y_after - y_at_9).abs() > 1e-4,
             "physics still at frame 9 after rewind"
         );
-        // Both rings branched from the seek point; recording resumes at 4.
-        assert_eq!(game.model_history.recorded_range(), Some((0, 3)));
-        assert_eq!(game.rendered_frame, 4);
+        // Both rings branched from the seek point (range truncated to 0..3;
+        // recording resumes at 4).
+        assert_eq!(game.recorder.scene_frame_range(), Some((0, 3)));
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The draggable scrubber (docs/time-travel.md T3): `seek_scene_to` is
+    /// NON-destructive — you can seek back and forth freely (the range stays
+    /// intact) — and the future is branched only when play RESUMES from the
+    /// scrubbed frame.
+    #[test]
+    fn scrub_is_non_destructive_then_branches_on_resume() {
+        fn n_of(v: &Value) -> f64 {
+            match v {
+                Value::Record(fields) => match &fields.iter().find(|(k, _)| k == "n").unwrap().1 {
+                    Value::Number(x) => *x,
+                    _ => panic!("n not a number"),
+                },
+                _ => panic!("not a record"),
+            }
+        }
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let dir = std::env::temp_dir().join(format!("mle-game-test-{}-scrub", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.mle"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
+             let physics = (m) => Physics.scene(0.0, -9.81, 0.0, [\n\
+             \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(0.0, 8.0, 0.0)])\n\
+             let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
+
+        let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
+        for _ in 0..10 {
+            game.tick(dt.clone());
+        }
+        assert_eq!(game.scene_frame_range(), Some((0, 9)));
+
+        // Scrub back, forward, back — the window never shrinks (non-destructive),
+        // and the model follows the handle.
+        game.seek_scene_to(3).expect("seek 3");
+        assert_eq!(n_of(&game.model), 4.0);
+        assert_eq!(game.current_scene_frame(), Some(3));
+        assert_eq!(game.scene_frame_range(), Some((0, 9)), "seek must not truncate");
+        game.seek_scene_to(7).expect("seek 7");
+        assert_eq!(n_of(&game.model), 8.0, "can scrub FORWARD again (non-destructive)");
+        assert_eq!(game.scene_frame_range(), Some((0, 9)));
+        game.seek_scene_to(2).expect("seek 2");
+        assert_eq!(n_of(&game.model), 3.0);
+
+        // Resume (dts > 0): the branch commits from frame 2 — the future after 2
+        // is discarded, and recording continues at frame 3.
+        game.tick(dt.clone());
+        assert_eq!(game.current_scene_frame(), Some(3), "no longer scrubbing");
+        assert_eq!(game.scene_frame_range(), Some((0, 3)), "future branched away");
+        assert_eq!(n_of(&game.model), 4.0, "model advanced from the scrubbed frame");
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1708,7 +1731,7 @@ mod tests {
         assert!(status.contains("frame 7"), "unexpected status: {status}");
         // World untouched (no physics seek), model still current.
         assert!((ball_y() - y_before).abs() < 1e-6, "latest-frame rewind moved the world");
-        assert_eq!(game.model_history.recorded_range(), Some((0, 7)));
+        assert_eq!(game.recorder.scene_frame_range(), Some((0, 7)));
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);

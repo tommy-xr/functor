@@ -11,10 +11,45 @@
       /* Fill the window; the runtime sizes the drawable buffer (and GL
          viewport) to match this displayed size each frame, scaled for HiDPI. */
       #canvas { display: block; width: 100%; height: 100%; }
+      /* Explicit mouse-look toggle. The cursor stays FREE by default so the
+         time-travel scrubber is usable without the pointer being grabbed on
+         every click; press this (or Esc to release) to control the camera. */
+      #mouselook {
+        position: fixed; top: 10px; left: 10px; z-index: 10;
+        font: 12px/1 monospace; padding: 6px 10px; cursor: pointer;
+        color: #ddd; background: rgba(20,20,24,0.72);
+        border: 1px solid rgba(255,255,255,0.15); border-radius: 6px;
+      }
+      #mouselook:hover { background: rgba(40,40,48,0.85); }
+      /* The time-travel scrubber — native DOM OUTSIDE the canvas, so its
+         controls never fight the game's pointer handling (docs/time-travel.md
+         T3). Hidden until the runtime has recorded some history. */
+      #scrubber {
+        position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+        z-index: 10; display: none; align-items: center; gap: 10px;
+        font: 12px/1 monospace; color: #eee; padding: 8px 12px;
+        background: rgba(20,20,24,0.82); border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.14);
+      }
+      #scrubber button {
+        font: 12px/1 monospace; color: #eee; cursor: pointer;
+        background: rgba(80,80,90,0.6); border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 5px; padding: 5px 9px;
+      }
+      #scrubber button:hover { background: rgba(110,110,125,0.7); }
+      #scrub-slider { width: 320px; accent-color: #e0803a; }
+      #scrub-label { min-width: 150px; }
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
+    <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
+    <div id="scrubber">
+      <span id="scrub-label">time-travel</span>
+      <button id="scrub-pause">Pause</button>
+      <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
+      <button id="scrub-step">Step ▸</button>
+    </div>
     <script type="module">
 
       import init, {
@@ -23,6 +58,12 @@
         mle_mouse_wheel,
         mle_is_running,
         mle_set_source,
+        mle_scene_frame,
+        mle_scene_range,
+        mle_seek_scene,
+        mle_scrub_toggle_pause,
+        mle_scrub_step,
+        mle_scrub_paused,
       } from "./pkg/functor_runtime_web.js";
 
       // The MLE entry file, substituted in by the CLI's dev server (see
@@ -72,14 +113,21 @@
         });
 
         // Mouse free-look. Pointer Lock is the browser equivalent of the
-        // desktop runtime's GLFW cursor capture: click the canvas to lock, then
-        // movementX/Y give relative motion. We accumulate it into a running
-        // position so the game's "delta = current - lastMouse" logic works the
-        // same as on native. Esc releases the lock (browser default).
-        canvas.addEventListener("click", () => canvas.requestPointerLock());
+        // desktop runtime's GLFW cursor capture, giving movementX/Y relative
+        // motion. Entered EXPLICITLY via the "mouse look" button (not on every
+        // canvas click) so the cursor stays free for the time-travel scrubber;
+        // Esc releases the lock (browser default). We accumulate movement into a
+        // running position so the game's "delta = current - lastMouse" works the
+        // same as on native.
+        document
+          .getElementById("mouselook")
+          .addEventListener("click", () => canvas.requestPointerLock());
         let ax = 0;
         let ay = 0;
         document.addEventListener("mousemove", (e) => {
+          // Only drive the camera while in look mode (pointer locked); otherwise
+          // moving the cursor to the scrubber must not rotate the view.
+          if (document.pointerLockElement !== canvas) return;
           ax += e.movementX;
           ay += e.movementY;
           mle_mouse_move(ax, ay);
@@ -89,6 +137,49 @@
           e.preventDefault();
           mle_mouse_wheel(Math.sign(e.deltaY));
         });
+      };
+
+      // The time-travel scrubber (docs/time-travel.md T3). Native DOM controls
+      // drive the runtime through the `mle_scrub_*` exports and poll the
+      // published view state each frame to track the handle. Coalesce drags to
+      // one seek per frame, and don't fight the user's drag by writing the
+      // slider value while they hold it.
+      const setupScrubber = () => {
+        const el = document.getElementById("scrubber");
+        const label = document.getElementById("scrub-label");
+        const pause = document.getElementById("scrub-pause");
+        const slider = document.getElementById("scrub-slider");
+        const step = document.getElementById("scrub-step");
+
+        let scrubbing = false;
+        let pendingSeek = null;
+        slider.addEventListener("pointerdown", () => (scrubbing = true));
+        window.addEventListener("pointerup", () => (scrubbing = false));
+        slider.addEventListener("input", () => (pendingSeek = Number(slider.value)));
+        pause.addEventListener("click", () => mle_scrub_toggle_pause());
+        step.addEventListener("click", () => mle_scrub_step());
+
+        const update = () => {
+          if (pendingSeek !== null) {
+            mle_seek_scene(pendingSeek);
+            pendingSeek = null;
+          }
+          const range = mle_scene_range(); // [] or [lo, hi]
+          if (range.length === 2) {
+            el.style.display = "flex";
+            const lo = range[0], hi = range[1];
+            slider.min = lo;
+            slider.max = hi;
+            const frame = mle_scene_frame();
+            if (!scrubbing) slider.value = frame; // don't tug the handle mid-drag
+            label.textContent = `time-travel · ${frame | 0} / ${hi | 0}`;
+            pause.textContent = mle_scrub_paused() ? "Resume" : "Pause";
+          } else {
+            el.style.display = "none"; // nothing recorded yet
+          }
+          requestAnimationFrame(update);
+        };
+        requestAnimationFrame(update);
       };
 
       // Editor live-preview bridge (docs/mle.md D4): a hosting page (the
@@ -143,7 +234,10 @@
         // In a deterministic capture (?fixed-time), don't wire up input — a
         // stray mouse move would turn the camera, like on native.
         const deterministic = new URLSearchParams(window.location.search).has("fixed-time");
-        if (!deterministic) setupInput();
+        if (!deterministic) {
+          setupInput();
+          setupScrubber();
+        }
         setupSetSource();
       });
     </script>

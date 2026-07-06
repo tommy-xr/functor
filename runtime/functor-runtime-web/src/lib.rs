@@ -1049,18 +1049,58 @@ async fn run_async() -> Result<(), JsValue> {
         // a short warm-up so the page is static for screenshotting.
         let mut sized = false;
 
+        // Time-travel clock control (docs/time-travel.md T3). The scrubber UI is
+        // NATIVE DOM on web (index-mle.html) — outside the canvas, so no
+        // pointer-lock clash — driving the runtime through the `mle_scrub_*`
+        // exports (in mle_game.rs). This loop owns the clock: when `held_time`
+        // is `Some` it's pinned (dts = 0) so a scrubbed frame stays put; a
+        // one-shot step carries dts > 0.
+        let mut held_time: Option<f32> = None;
+        let mut pending_step: Option<f32> = None;
+
         *g.borrow_mut() = Some(Closure::new(move || {
             // The frame's exclusive borrow of the shared producer. Cannot
             // collide with `mle_set_source`: JS is single-threaded, and
             // message handlers only run between rAF callbacks.
             let mut game = game.borrow_mut();
             let now = performance.now() as f32;
-            // Pin the frame time when `?fixed-time` is set (deterministic capture).
+            let raw_tts = (now - initial_time) / 1000.0;
+
+            // Apply scrubber controls from the DOM (pause / step / seek). This
+            // loop owns the clock, so it fills the pin time and drives the seek.
+            for control in mle_game::take_scrub_controls() {
+                match control {
+                    mle_game::ScrubControl::TogglePause => {
+                        held_time = if held_time.is_some() { None } else { Some(raw_tts) };
+                        pending_step = None;
+                    }
+                    mle_game::ScrubControl::Step => {
+                        held_time = Some(held_time.unwrap_or(raw_tts));
+                        pending_step = Some(1.0 / 60.0);
+                    }
+                    mle_game::ScrubControl::SeekTo(f) => {
+                        let _ = game.seek_scene_to(f);
+                        held_time = Some(held_time.unwrap_or(raw_tts));
+                    }
+                }
+            }
+
+            // Pin the frame time when `?fixed-time` is set (deterministic
+            // capture), or when the scrubber has paused the clock (`held_time`).
+            // A queued step advances exactly one frame, then re-pins.
             let frame_time = match fixed_time {
                 Some(t) => FrameTime { dts: 0.0, tts: t },
-                None => FrameTime {
-                    dts: (now - last_time) / 1000.0,
-                    tts: (now - initial_time) / 1000.0,
+                None => match (held_time, pending_step.take()) {
+                    (Some(t), Some(step)) => {
+                        let nt = t + step;
+                        held_time = Some(nt);
+                        FrameTime { dts: step, tts: nt }
+                    }
+                    (Some(t), None) => FrameTime { dts: 0.0, tts: t },
+                    (None, _) => FrameTime {
+                        dts: (now - last_time) / 1000.0,
+                        tts: (now - initial_time) / 1000.0,
+                    },
                 },
             };
 
@@ -1130,7 +1170,16 @@ async fn run_async() -> Result<(), JsValue> {
             // text overlay on top of the frame (HiDPI-aware via the device ratio).
             let view: functor_runtime_common::ui::View = game.ui();
             let dpr = web_sys::window().unwrap().device_pixel_ratio() as f32;
-            text_overlay.draw_view(canvas.width(), canvas.height(), dpr.max(1.0), &view);
+            let dpr = dpr.max(1.0);
+            text_overlay.draw_view(canvas.width(), canvas.height(), dpr, &view);
+
+            // Publish the scrubber state for the DOM slider to poll (the UI
+            // itself is native HTML in index-mle.html, outside the canvas).
+            mle_game::publish_scrub_view(
+                game.current_scene_frame(),
+                game.scene_frame_range(),
+                held_time.is_some(),
+            );
 
             // Schedule the next frame. In deterministic mode (?fixed-time, the
             // golden) render a short warm-up (shader compile, first-frame

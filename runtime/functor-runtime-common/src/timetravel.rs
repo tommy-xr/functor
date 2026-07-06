@@ -30,6 +30,10 @@
 
 use std::collections::VecDeque;
 
+use mle::Value;
+
+use crate::physics::SteppedPhysics;
+
 /// A fixed-step frame number — the same index space as
 /// [`crate::physics::timeline::Frame`].
 pub type Frame = u64;
@@ -163,10 +167,195 @@ impl<T: Clone> History<T> {
     }
 }
 
+/// The coupled time-travel recorder shared by both MLE shells (docs/time-travel.md
+/// T1–T3): records the MVU `model` and the physics fixed-frame in lockstep each
+/// rendered frame, and seeks/rewinds them together. It owns the recording rings
+/// and the scrub state; the producer keeps ownership of the `model` and the
+/// [`SteppedPhysics`] and hands them in, so this one implementation drives the
+/// desktop and web producers identically (no drift).
+///
+/// The master clock is the RENDERED frame; the physics world couples via
+/// `world_frame_history` (the fixed frame each rendered frame ended at). A
+/// **scrub** ([`Self::seek_scene_to`]) is non-destructive so the draggable bar
+/// can drag back and forth; the future is discarded only when play resumes from
+/// the scrubbed point ([`Self::commit_scrub_if_resuming`], which branches via
+/// [`Self::rewind_scene_to`]). Every coupled seek is **exact-or-refused** — it
+/// never lands the model and world on different times.
+pub struct SceneRecorder {
+    model_history: History<Value>,
+    /// The physics fixed-frame reached at the end of each rendered frame,
+    /// recorded in LOCKSTEP with `model_history`.
+    world_frame_history: History<u64>,
+    /// The rendered-frame index the next snapshot records at; monotonic.
+    rendered_frame: u64,
+    /// While dragging: the frame the scrubber has non-destructively seeked to.
+    /// `Some` = "scrubbing" (future intact); committed on resume.
+    scrub_pos: Option<u64>,
+}
+
+impl Default for SceneRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SceneRecorder {
+    pub fn new() -> SceneRecorder {
+        SceneRecorder {
+            model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            world_frame_history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            rendered_frame: 0,
+            scrub_pos: None,
+        }
+    }
+
+    /// Hot-reload boundary: drop the rings (their snapshots can hold old-module
+    /// closures) but keep `rendered_frame` monotonic so recording resumes
+    /// consecutively, and clear any scrub.
+    pub fn reset_on_reload(&mut self) {
+        self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
+        self.world_frame_history = History::bounded(DEFAULT_HISTORY_FRAMES);
+        self.scrub_pos = None;
+    }
+
+    /// Record the settled `model` and the world's current fixed frame for this
+    /// rendered frame. Call at the end of `tick` only when the sim advanced
+    /// (`dts > 0`) — a paused frame would pile up frozen duplicates.
+    pub fn record(&mut self, model: &Value, physics_fixed_frame: u64) {
+        self.model_history.record(self.rendered_frame, model);
+        self.world_frame_history
+            .record(self.rendered_frame, &physics_fixed_frame);
+        self.rendered_frame += 1;
+    }
+
+    /// The frame the handle sits on (the scrubbed-to frame while dragging, else
+    /// the newest recorded frame).
+    pub fn current_scene_frame(&self) -> Option<u64> {
+        self.scrub_pos
+            .or_else(|| self.model_history.recorded_range().map(|(_, hi)| hi))
+    }
+
+    /// The seekable window `(oldest, newest)` — the draggable range.
+    pub fn scene_frame_range(&self) -> Option<(u64, u64)> {
+        self.model_history.recorded_range()
+    }
+
+    /// If play resumes (`dts > 0`) while parked on an earlier frame, branch the
+    /// timeline from there BEFORE the frame advances. Call at the top of `tick`.
+    /// Returns `true` if a branch was committed, so the producer can drop any
+    /// in-flight frame work that must not cross the branch (deferred queries /
+    /// pending events — the reload discipline).
+    pub fn commit_scrub_if_resuming(
+        &mut self,
+        model: &mut Value,
+        physics: &mut SteppedPhysics,
+        physics_status: &mut (u64, bool, u64),
+        has_physics: bool,
+    ) -> bool {
+        if let Some(k) = self.scrub_pos.take() {
+            let _ = self.rewind_scene_to(k, model, physics, physics_status, has_physics);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Non-destructive scrub for the draggable bar: restore `model` + world to
+    /// `target` for DISPLAY without truncating, so the caller can seek back and
+    /// forth. Exact-or-refused.
+    pub fn seek_scene_to(
+        &mut self,
+        target: u64,
+        model: &mut Value,
+        physics: &mut SteppedPhysics,
+        physics_status: &mut (u64, bool, u64),
+        has_physics: bool,
+    ) -> Result<String, String> {
+        let (lo, hi) = self
+            .model_history
+            .recorded_range()
+            .ok_or_else(|| "seek: nothing recorded yet".to_string())?;
+        let frame = target.clamp(lo, hi);
+        let physics_target = self.physics_seek_target(frame, physics, has_physics)?;
+        *model = self.model_history.seek(frame).clone();
+        if let Some(fixed) = physics_target {
+            // Warnings are empty on every reachable coupled seek: `physics_seek_
+            // target` already validated `fixed` against the seekable range.
+            let _ = physics.seek_to_frame(fixed);
+            physics_status.0 = physics.current_fixed_frame();
+        }
+        self.scrub_pos = Some(frame);
+        Ok(format!("scrubbed to rendered frame {frame}"))
+    }
+
+    /// Coupled rewind: restore `model` + world to `target` and BRANCH the
+    /// recorded future from there (`rendered_frame` resets to `target + 1`).
+    /// Exact-or-refused: verifies the physics frame is restorable BEFORE
+    /// mutating, returning `Err` (touching nothing) if it was pruned.
+    pub fn rewind_scene_to(
+        &mut self,
+        target: u64,
+        model: &mut Value,
+        physics: &mut SteppedPhysics,
+        physics_status: &mut (u64, bool, u64),
+        has_physics: bool,
+    ) -> Result<String, String> {
+        let (lo, hi) = self
+            .model_history
+            .recorded_range()
+            .ok_or_else(|| "rewind: nothing recorded yet".to_string())?;
+        let frame = target.clamp(lo, hi);
+        let physics_target = self.physics_seek_target(frame, physics, has_physics)?;
+        *model = self.model_history.seek(frame).clone();
+        if let Some(fixed) = physics_target {
+            let _ = physics.rewind_to_frame(fixed);
+            physics_status.0 = physics.current_fixed_frame();
+        }
+        self.model_history.truncate_from(frame + 1);
+        self.world_frame_history.truncate_from(frame + 1);
+        self.rendered_frame = frame + 1;
+        self.scrub_pos = None;
+        let clamped = if frame == target {
+            String::new()
+        } else {
+            format!(" (requested {target}, clamped to the recorded window)")
+        };
+        Ok(format!("rewound scene to rendered frame {frame}{clamped}"))
+    }
+
+    /// Resolve the physics fixed-frame to seek for rendered `frame` WITHOUT
+    /// mutating: `Ok(None)` = no seek needed (no physics, or the frame's end-
+    /// state is already the live append), `Ok(Some(fixed))` = exact seek,
+    /// `Err` = pruned (refuse rather than desync). Compares against the newest
+    /// RECORDED frame, not the live world frame — after a non-destructive scrub
+    /// the world is parked mid-history, and using the live frame would skip the
+    /// truncate on the branch commit and panic on the next (non-consecutive)
+    /// record.
+    fn physics_seek_target(
+        &self,
+        frame: u64,
+        physics: &SteppedPhysics,
+        has_physics: bool,
+    ) -> Result<Option<u64>, String> {
+        if !has_physics {
+            return Ok(None);
+        }
+        let want = *self.world_frame_history.seek(frame);
+        match physics.seekable_range() {
+            None => Ok(None),
+            Some((_, hi)) if want > hi => Ok(None),
+            Some((flo, hi)) if want >= flo && want <= hi => Ok(Some(want)),
+            _ => Err(format!(
+                "cannot seek to rendered frame {frame}: its physics frame {want} has \
+                 been pruned from the {DEFAULT_HISTORY_FRAMES}-frame world history"
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mle::Value;
     use std::rc::Rc;
 
     // --- the generic ring, exercised over a trivial Clone state ---
