@@ -4,31 +4,36 @@ import { test } from "node:test";
 
 import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 
-// End-to-end network simulation: one mpserver + two mpclient runners, each its
-// own process on its own debug port, networked over a real WebSocket. Requires
-// the mpserver/mpclient dylibs and the runner binary to be built, plus a display:
+// End-to-end network simulation: one mle-mpserver + two mle-mpclient runners,
+// each its own process on its own debug port, networked over a real WebSocket.
+// These are the MLE ports of examples/mpserver + examples/mpclient — same wire
+// protocol and same auto-move-on-connect, so convergence is identical. The
+// `.mle` ships as text (no dylib build), so this only needs the runner binary
+// and a display:
 //
 //   cargo build --bin functor-runner
-//   ./target/debug/functor -d examples/mpserver build native
-//   ./target/debug/functor -d examples/mpclient build native
 //   FUNCTOR_E2E=1 node --test dist/test/
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
-// The example models are exposed only as Rust Debug text (the game model isn't
-// Serialize yet), so these read the `model` string. An F# list renders as a
-// Fable linked list — `List { root: Some(Node_1 { head: <elem>, tail: ... }) }`
-// — not a Rust `[..]`, so we count elements by their `head:` markers. These get
-// simpler once a structured model snapshot lands.
+// The example models are exposed only as MLE Debug text (the game model isn't
+// Serialize yet), so these read the `model` string. An MLE record renders as
+// `{ field: value, ... }` and a list as `[elem, ...]` — no Fable linked list.
+//
+// The server model is `{ players: [<Player>, ...], nextPid: N }`; each Player
+// record carries a unique `cid:` field, so counting `cid:` markers counts the
+// tracked players (equivalently, nextPid reaches 2 once both have joined).
 const serverPlayerCount = (model: string): number =>
-  (model.match(/head:\s*Player\s*\{/g) ?? []).length;
+  (model.match(/cid:/g) ?? []).length;
 
 const clientStatus = (model: string): string =>
   model.match(/status:\s*"([^"]*)"/)?.[1] ?? "";
 
-// Each world element is a `(pid, x, z)` tuple, i.e. `head: (`.
+// The client model is `{ conn: Online(id), world: [<Player>, ...], status: ... }`;
+// each world Player renders as `{ pid: p, x: .., z: .. }`, and `pid:` appears
+// nowhere else in the client model, so `pid:` markers count the world entries.
 const clientWorldCount = (model: string): number =>
-  (model.match(/head:\s*\(/g) ?? []).length;
+  (model.match(/pid:/g) ?? []).length;
 
 test(
   "two clients connect to a server and converge on a shared world",
@@ -40,27 +45,30 @@ test(
     // All three debug ports derive from one base so the test is self-consistent
     // when relocated. (The ws port is fixed at 9001 by the example games.)
     const base = Number(process.env.FUNCTOR_E2E_PORT ?? 8095);
-    const launch = (game: string, port: number) =>
-      FunctorRunner.launch({
-        gameDir: join(repoRoot, "examples", game),
+    const launch = (game: string, port: number) => {
+      const gameDir = join(repoRoot, "examples", game);
+      return FunctorRunner.launch({
+        gameDir,
         repoRoot,
+        mlePath: join(gameDir, "game.mle"),
         port,
         launchTimeoutMs: 30_000,
         headless,
       });
+    };
 
     // Server first, and wait for its Sub.listen socket to actually bind before
     // launching clients — mpclient connects once with no retry, so a client that
     // races ahead of the listener would land in "error" and never converge.
-    await using server = await launch("mpserver", base);
+    await using server = await launch("mle-mpserver", base);
     await waitForPort("127.0.0.1", 9001, {
       timeoutMs: 15_000,
-      description: "mpserver ws listener",
+      description: "mle-mpserver ws listener",
     });
 
-    // mpclient auto-moves on connect, so no input injection is needed.
-    await using clientA = await launch("mpclient", base + 1);
-    await using clientB = await launch("mpclient", base + 2);
+    // mle-mpclient auto-moves on connect, so no input injection is needed.
+    await using clientA = await launch("mle-mpclient", base + 1);
+    await using clientB = await launch("mle-mpclient", base + 2);
 
     const waitOpts = { timeoutMs: 20_000, intervalMs: 200 };
 

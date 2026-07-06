@@ -4,24 +4,29 @@ import { test } from "node:test";
 
 import { findRepoRoot, FunctorRunner } from "../src/index.js";
 
-// End-to-end against a real functor-runner. Requires the runner binary and the
-// `hello` game dylib to be built, and a display to open the GL window, so it's
-// opt-in:
+// End-to-end against a real functor-runner, driving the MLE port of the `hello`
+// game (examples/mle-hello-gltf — the WASD/arrow free-look lineup). Requires the
+// runner binary built and a display to open the GL window, so it's opt-in:
 //
 //   npm run test:e2e        (or FUNCTOR_E2E=1 node --test dist/test/)
+//
+// No dylib build is needed — the `.mle` ships as text and the runner reads it
+// via --mle.
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 // Headless (no GL window) is the CI path; capture is unavailable there.
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-/** Whether the hello game's model shows `held.up` set. This reads the (stringly-
+/** Whether the mle-hello-gltf model shows `held.up` set. This reads the (stringly-
  * typed) Debug model on purpose — as an independent check that the injected key
  * reaches the *game*, not just the runtime's own input snapshot (which is mutated
- * in the same handler as the game key event). */
+ * in the same handler as the game key event). The MLE model renders as a plain
+ * record (`{ held: { up: false, down: false, ... }, ... }`), so `up:` names the
+ * held-up flag uniquely. */
 function gameSawUp(model: string): boolean {
-  const m = model.match(/HeldKeys\s*\{\s*up:\s*(true|false)/);
-  assert.ok(m, `could not find HeldKeys.up in model: ${model.slice(0, 200)}`);
+  const m = model.match(/\bup:\s*(true|false)/);
+  assert.ok(m, `could not find held.up in model: ${model.slice(0, 200)}`);
   return m[1] === "true";
 }
 
@@ -32,9 +37,11 @@ test(
     const repoRoot = findRepoRoot(process.cwd());
     assert.ok(repoRoot, "must run from within the functor workspace");
 
+    const gameDir = join(repoRoot, "examples", "mle-hello-gltf");
     await using game = await FunctorRunner.launch({
-      gameDir: join(repoRoot, "examples", "hello"),
+      gameDir,
       repoRoot,
+      mlePath: join(gameDir, "game.mle"),
       port: Number(process.env.FUNCTOR_E2E_PORT ?? 8090),
       headless,
     });
