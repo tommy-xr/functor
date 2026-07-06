@@ -471,7 +471,14 @@ impl GameProducer for MleWebGame {
     }
 
     fn render(&mut self, frame_time: FrameTime) -> Frame {
-        let args = vec![self.model.clone(), Value::Number(frame_time.tts as f64)];
+        // While scrubbing, draw at the scrubbed frame's recorded `tts` so
+        // `tts`-driven visuals (orbiting lights, `sin(tts)` motion) rewind with
+        // the model; live play uses the real clock (docs/time-travel.md).
+        let tts = self
+            .recorder
+            .current_scene_tts()
+            .unwrap_or(frame_time.tts as f64);
+        let args = vec![self.model.clone(), Value::Number(tts)];
         match self.session.call("draw", args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => self.last_frame = frame.clone(),

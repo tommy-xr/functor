@@ -186,6 +186,11 @@ pub struct SceneRecorder {
     /// The physics fixed-frame reached at the end of each rendered frame,
     /// recorded in LOCKSTEP with `model_history`.
     world_frame_history: History<u64>,
+    /// The render clock `tts` (total time) of each rendered frame, recorded in
+    /// LOCKSTEP with `model_history`. A scrubbed frame draws at its recorded
+    /// `tts` so `tts`-driven visuals (orbiting lights, `sin(tts)` bobbing)
+    /// rewind too, not just model/world state (docs/time-travel.md).
+    tts_history: History<f64>,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
     /// While dragging: the frame the scrubber has non-destructively seeked to.
@@ -204,6 +209,7 @@ impl SceneRecorder {
         SceneRecorder {
             model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             world_frame_history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            tts_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             rendered_frame: 0,
             scrub_pos: None,
         }
@@ -215,17 +221,28 @@ impl SceneRecorder {
     pub fn reset_on_reload(&mut self) {
         self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         self.world_frame_history = History::bounded(DEFAULT_HISTORY_FRAMES);
+        self.tts_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         self.scrub_pos = None;
     }
 
-    /// Record the settled `model` and the world's current fixed frame for this
-    /// rendered frame. Call at the end of `tick` only when the sim advanced
-    /// (`dts > 0`) — a paused frame would pile up frozen duplicates.
-    pub fn record(&mut self, model: &Value, physics_fixed_frame: u64) {
+    /// Record the settled `model`, the world's current fixed frame, and the
+    /// render clock `tts` for this rendered frame. Call at the end of `tick`
+    /// only when the sim advanced (`dts > 0`) — a paused frame would pile up
+    /// frozen duplicates.
+    pub fn record(&mut self, model: &Value, physics_fixed_frame: u64, tts: f64) {
         self.model_history.record(self.rendered_frame, model);
         self.world_frame_history
             .record(self.rendered_frame, &physics_fixed_frame);
+        self.tts_history.record(self.rendered_frame, &tts);
         self.rendered_frame += 1;
+    }
+
+    /// The render clock `tts` to draw at WHILE SCRUBBING — the recorded `tts` of
+    /// the scrubbed-to frame, so `tts`-driven visuals rewind with the model.
+    /// `None` during live play: the producer then uses the real clock (no
+    /// override). See docs/time-travel.md.
+    pub fn current_scene_tts(&self) -> Option<f64> {
+        self.scrub_pos.map(|k| *self.tts_history.seek(k))
     }
 
     /// The frame the handle sits on (the scrubbed-to frame while dragging, else
@@ -313,6 +330,7 @@ impl SceneRecorder {
         }
         self.model_history.truncate_from(frame + 1);
         self.world_frame_history.truncate_from(frame + 1);
+        self.tts_history.truncate_from(frame + 1);
         self.rendered_frame = frame + 1;
         self.scrub_pos = None;
         let clamped = if frame == target {
@@ -494,6 +512,36 @@ mod tests {
         // via the canonical Display form — Value has no PartialEq).
         assert_eq!(h.seek(3).to_string(), model(&shared, 3.0).to_string());
         assert_eq!(h.seek(0).to_string(), model(&shared, 0.0).to_string());
+    }
+
+    // --- the coupled recorder: tts rewinds with the model ---
+
+    #[test]
+    fn current_scene_tts_returns_the_scrubbed_frames_recorded_time() {
+        // Record frames with distinct render clocks; a physics-less scene means
+        // the seek touches only the model + scrub position.
+        let mut rec = SceneRecorder::new();
+        for f in 0..5u64 {
+            rec.record(&Value::Number(f as f64), 0, f as f64 * 10.0);
+        }
+        // Live play (not scrubbing): no override, the producer uses the real clock.
+        assert_eq!(rec.current_scene_tts(), None);
+
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut status = (0u64, false, 0u64);
+        // Non-destructively scrub back to frame 2 (has_physics = false).
+        rec.seek_scene_to(2, &mut model, &mut physics, &mut status, false)
+            .expect("seek");
+        // A scrubbed frame draws at its recorded tts (2 * 10.0), and the model
+        // restored in lockstep.
+        assert_eq!(rec.current_scene_tts(), Some(20.0));
+        assert_eq!(model.to_string(), Value::Number(2.0).to_string());
+
+        // Scrub forward to frame 4: the override tracks the handle.
+        rec.seek_scene_to(4, &mut model, &mut physics, &mut status, false)
+            .expect("seek");
+        assert_eq!(rec.current_scene_tts(), Some(40.0));
     }
 
     #[test]
