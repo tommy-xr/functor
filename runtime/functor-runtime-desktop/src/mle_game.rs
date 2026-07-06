@@ -30,12 +30,10 @@
 use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
-    audio_scene_of, clear_audio_completions, clear_http_taggers, contains_effect,
-    deliver_physics_events, drain_effects, frame_value, http_response_value, needs_update,
-    net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
-    physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
-    take_http_tagger, view_value, EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
+    audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, view_value,
+    EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
+use functor_runtime_common::mle_producer::{FrameCtx, Reporter, SpanSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
@@ -59,8 +57,6 @@ pub struct MleGame {
     /// changes on disk (last-write-wins, from either side — the existing
     /// push contract, now per file).
     pushed_entry: Option<String>,
-    /// Renders the merged module's project-wide spans back to file:line:col.
-    sources: SourceMap,
     /// The lowered (merged) module the current session came from — kept so
     /// a reload can rebind model-stored closures (old module × new module).
     module: mle::ir::Module,
@@ -128,10 +124,9 @@ pub struct MleGame {
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
-    /// The last per-frame error printed, to avoid flooding stderr at 60fps
-    /// with the same message (a persistent error prints once until it
-    /// changes).
-    last_error: Option<String>,
+    /// Per-frame error reporting (dedupe + stderr sink + project-span
+    /// rendering) — shared with the web producer (`mle_producer::Reporter`).
+    reporter: Reporter,
     // rolling per-frame eval cost, printed every STATS_EVERY frames (the C6
     // perf gate watches these). Physics is engine cost, not MLE eval cost, so
     // it gets its own counter — a heavy scene must not read as an interpreter
@@ -323,7 +318,6 @@ impl MleGame {
             path: path.to_string(),
             stamp,
             pushed_entry: None,
-            sources: loaded.sources,
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
@@ -346,7 +340,7 @@ impl MleGame {
             recorder: SceneRecorder::new(),
             live_conn_keys: std::collections::HashSet::new(),
             last_frame: empty_frame(),
-            last_error: None,
+            reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_stderr),
             frames: 0,
             tick_ns: 0,
             physics_ns: 0,
@@ -354,293 +348,26 @@ impl MleGame {
         }
     }
 
-    /// Print a per-frame problem once per distinct message — a 60fps loop must
-    /// not flood stderr with one persistent bug.
-    fn report_once(&mut self, rendered: String) {
-        if self.last_error.as_deref() != Some(rendered.as_str()) {
-            eprintln!("{rendered}");
-            self.last_error = Some(rendered);
-        }
-    }
-
-    /// Report a per-frame error with its source position (deduped). The
-    /// span identifies the file too (project-wide spans), so an error inside
-    /// a sibling module names that module's file.
-    fn frame_error(&mut self, stage: &str, err: &mle::RunError) {
-        let rendered = format!(
-            "[mle] {stage} error at {}",
-            self.sources.render(err.span.start, &err.message)
-        );
-        self.report_once(rendered);
-    }
-
-    /// The frame's physics phase (docs/physics.md): ask the game what bodies
-    /// should exist, reconcile the singleton world to match, and advance it in
-    /// fixed substeps. Runs after `tick` so declarations come from the settled
-    /// model, and before `render` so `Physics.position`/`Physics.transformed`
-    /// in `draw` read the just-stepped world.
-    /// Returns the number of fixed substeps taken (0 when there is no
-    /// `physics` hook, the hook errored, or the accumulator hasn't reached a
-    /// full step yet).
-    fn step_physics(&mut self, dts: f32) -> u32 {
-        if !self.has_physics {
-            return 0;
-        }
-        let args = vec![self.model.clone()];
-        match self.session.call("physics", args, &mut FunctorHost) {
-            Ok(value) => match physics_scene_value(&value) {
-                Some(scene) => {
-                    // The recorded drive (Phase 6): every fixed frame goes
-                    // through the Timeline, so pause/rewind/replay work.
-                    let advanced = self.physics_rt.advance(scene, dts);
-                    self.pending_events = advanced.events;
-                    self.physics_status = advanced.status;
-                    let steps = advanced.steps;
-                    let warnings = advanced.warnings;
-                    // Command effects apply asynchronously (queued at perform
-                    // time, applied at the step), so their problems — unknown
-                    // tag, queue overflow — surface here, deduped.
-                    for warning in warnings {
-                        self.report_once(format!("[mle] {warning}"));
-                    }
-                    return steps;
-                }
-                None => self.report_once(format!(
-                    "[mle] physics must return Physics.scene(gx, gy, gz, [body, …]), got {}",
-                    value.kind_name()
-                )),
-            },
-            Err(err) => self.frame_error("physics", &err),
-        }
-        0
-    }
-
-    /// Take an entry point's return: split off any `(model, effect)` pair,
-    /// adopt the model, and drain the effects to a fixed point through
-    /// `update` (docs/mle.md B6). Every producer path that runs game code
-    /// funnels through here, so effects work uniformly from tick, input,
-    /// mouse, and subscription messages.
-    fn absorb(&mut self, returned: Value) {
-        let (model, effects) = split_model_effect(returned);
-        self.model = model;
-        // Effects are commands, not data — one stored in the model would
-        // make the pair sniff ambiguous on a later return (see
-        // `split_model_effect`). Warn loud; the model is small (it is
-        // interpreted every frame anyway) so the scan is cheap.
-        if contains_effect(&self.model) {
-            self.report_once(
-                "[mle] the model contains an Effect value — Effects are commands, \
-not data; return them beside the model as `(model, effect)` instead of storing them"
-                    .to_string(),
-            );
-        }
-        let Some(effects) = effects else { return };
-        // Only MESSAGE-producing effects need an `update` to receive them —
-        // tagger-less physics commands must not be dropped over a missing
-        // hook (that guard silently ate them; caught by capture-verifying
-        // the mle-physics kick).
-        if needs_update(&effects) && self.session.global("update").is_none() {
-            self.report_once(
-                "[mle] effects returned but there is no `let update = (model, msg) => …` \
-to receive their messages; dropping them"
-                    .to_string(),
-            );
-            return;
-        }
-        let mut reports: Vec<String> = Vec::new();
-        let deferred = drain_effects(
-            &self.session,
-            &mut self.model,
-            effects,
-            &mut self.effect_runner,
-            &mut self.effect_log,
-            &mut |message| reports.push(message),
-        );
-        // Physics queries wait for the post-step drain (end of `tick`), so
-        // their taggers answer against THIS frame's stepped world.
-        self.deferred_queries.extend(deferred);
-        for message in reports {
-            self.report_once(message);
-        }
-    }
-
-    /// Fire subscription timers over `(prev_tts, tts]` and fold their
-    /// messages through `update`, before this frame's `tick` — the message
-    /// drain seam (docs/mle.md C4b-2; B6's effects will feed this same
-    /// path). Subscriptions are recomputed from the current model each
-    /// frame, so a model change can silence a timer. Errors report per
-    /// message and processing continues — one bad message must not stall
-    /// the rest, and dedupe keeps a persistent bug to one line.
-    /// Close every connection this producer still has open (a reload that
-    /// dropped `subscriptions`, or shutdown). CloseKey is queued for each;
-    /// the live set is cleared.
-    fn close_all_connections(&mut self) {
-        use functor_runtime_common::net::{push_conn_command, ConnCommand};
-        for key in std::mem::take(&mut self.live_conn_keys) {
-            push_conn_command(ConnCommand::CloseKey { key });
-        }
-    }
-
-    /// Open connections newly declared this frame and close ones no longer
-    /// declared (keyed by endpoint). Commands go to the shell's connection
-    /// manager, drained via `net_drain_conn_commands`. The physics-events
-    /// pattern for connections.
-    fn reconcile_connections(&mut self, subs: &Value) {
-        use functor_runtime_common::net::{push_conn_command, ConnCommand};
-        let conns = match net_conn_subs(subs) {
-            Ok(conns) => conns,
-            Err(message) => return self.report_once(format!("[mle] {message}")),
-        };
-        // Dedupe by key (first declaration wins its listen/connect role) so
-        // a key is opened at most once even if declared twice in one frame.
-        let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for conn in &conns {
-            if !declared.insert(conn.key.clone()) {
-                continue; // already handled this key this frame
-            }
-            if !self.live_conn_keys.contains(&conn.key) {
-                push_conn_command(if conn.listen {
-                    ConnCommand::Listen {
-                        key: conn.key.clone(),
-                        addr: conn.key.clone(),
-                    }
-                } else {
-                    ConnCommand::Connect {
-                        key: conn.key.clone(),
-                        url: conn.key.clone(),
-                    }
-                });
-            }
-        }
-        for key in &self.live_conn_keys {
-            if !declared.contains(key) {
-                push_conn_command(ConnCommand::CloseKey { key: key.clone() });
-            }
-        }
-        self.live_conn_keys = declared;
-    }
-
-    /// Route one inbound connection event to the matching key's tagger and
-    /// fold the message through `update`. Taggers are read FRESH from the
-    /// current `subscriptions(model)` (never cached — a reload rebinds them).
-    fn deliver_net_event(&mut self, key: String, kind: NetEventKind, conn: i32, text: String) {
-        if !self.has_subscriptions {
-            return;
-        }
-        let subs =
-            match self
-                .session
-                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-            {
-                Ok(subs) => subs,
-                Err(err) => return self.frame_error("subscriptions", &err),
-            };
-        let conns = match net_conn_subs(&subs) {
-            Ok(conns) => conns,
-            Err(message) => return self.report_once(format!("[mle] {message}")),
-        };
-        let Some(sub) = conns.into_iter().find(|c| c.key == key) else {
-            return; // an event for a no-longer-declared connection: drop it
-        };
-        let value = net_event_value(kind, conn as u64, &text).to_mle();
-        let msg = match self
-            .session
-            .apply(sub.tagger, vec![value], "net event", &mut FunctorHost)
-        {
-            Ok(msg) => msg,
-            Err(err) => return self.frame_error("net event", &err),
-        };
-        match self
-            .session
-            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
-        {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.frame_error("update", &err),
-        }
-    }
-
-    /// Route a completed HTTP request to the tagger registered when the request
-    /// fired (frames ago), folding the resulting message through `update`. The
-    /// arrival hook (the shell calls this when net_dispatch completes). An
-    /// orphaned token — a hot reload dropped its tagger while the request was
-    /// in flight — is silently ignored.
-    fn deliver_http_result(&mut self, result: functor_runtime_common::net::HttpResult) {
-        let Some(tagger) = take_http_tagger(result.token) else {
-            return;
-        };
-        let value = http_response_value(&result);
-        let msg = match self
-            .session
-            .apply(tagger, vec![value], "http response", &mut FunctorHost)
-        {
-            Ok(msg) => msg,
-            Err(err) => return self.frame_error("http response", &err),
-        };
-        match self
-            .session
-            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
-        {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.frame_error("update", &err),
-        }
-    }
-
-    /// Route a finished `playThen` one-shot to the completion MESSAGE registered
-    /// when it fired (frames ago), folding it through `update`. Unlike
-    /// `deliver_http_result` there is no tagger: the message is delivered
-    /// verbatim. An orphaned token — a reload dropped its message mid-flight —
-    /// is silently ignored.
-    fn deliver_audio_completion(&mut self, token: u64) {
-        let Some(message) = take_audio_completion(token) else {
-            return;
-        };
-        match self
-            .session
-            .call("update", vec![self.model.clone(), message], &mut FunctorHost)
-        {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.frame_error("update", &err),
-        }
-    }
-
-    fn pump_subscriptions(&mut self, tts: f64) {
-        // Advance the window even without subscriptions (or on frame one),
-        // so a hot reload that ADDS subscriptions starts from a sane edge.
-        let prev = self.prev_tts.replace(tts);
-        if !self.has_subscriptions {
-            // No subscriptions must not leave a previous program's
-            // connections open (a hot reload that dropped them).
-            if !self.live_conn_keys.is_empty() {
-                self.close_all_connections();
-            }
-            return;
-        }
-        let subs =
-            match self
-                .session
-                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-            {
-                Ok(subs) => subs,
-                Err(err) => return self.frame_error("subscriptions", &err),
-            };
-        // Reconcile connections EVERY frame — including frame one (before the
-        // timer window exists), so a declared connection opens immediately.
-        self.reconcile_connections(&subs);
-        let Some(prev) = prev else {
-            return;
-        };
-        let msgs = match sub_messages_for_frame(&subs, prev, tts) {
-            Ok(msgs) => msgs,
-            Err(message) => return self.report_once(format!("[mle] {message}")),
-        };
-        for msg in msgs {
-            match self
-                .session
-                .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
-            {
-                Ok(returned) => self.absorb(returned),
-                Err(err) => self.frame_error("update", &err),
-            }
+    /// Bundle this producer's per-frame state into the shared [`FrameCtx`]
+    /// (docs/time-travel.md T6a) — the frame body and its helpers (`absorb`,
+    /// `pump_subscriptions`, `step_physics`, `deliver_*`) live there, one copy
+    /// for both shells. A cheap borrow-only view, rebuilt per call.
+    fn ctx(&mut self) -> FrameCtx<'_> {
+        FrameCtx {
+            session: &self.session,
+            model: &mut self.model,
+            physics_rt: &mut self.physics_rt,
+            physics_status: &mut self.physics_status,
+            recorder: &mut self.recorder,
+            effect_runner: &mut self.effect_runner,
+            effect_log: &mut self.effect_log,
+            deferred_queries: &mut self.deferred_queries,
+            pending_events: &mut self.pending_events,
+            live_conn_keys: &mut self.live_conn_keys,
+            prev_tts: &mut self.prev_tts,
+            has_physics: self.has_physics,
+            has_subscriptions: self.has_subscriptions,
+            reporter: &mut self.reporter,
         }
     }
 
@@ -661,7 +388,7 @@ to receive their messages; dropping them"
         for warning in &report.warnings {
             eprintln!("[mle] reload: {warning}");
         }
-        self.sources = loaded.sources;
+        self.reporter.set_source(SpanSource::Project(loaded.sources));
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
@@ -684,7 +411,7 @@ to receive their messages; dropping them"
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
             self.last_view = View::Empty;
         }
-        self.last_error = None;
+        self.reporter.reset();
         // A deferred query or in-flight HTTP request holds a tagger — a closure
         // into the OLD session; drop them rather than let them dangle. A late
         // HTTP response for a dropped token arrives orphaned and is ignored.
@@ -768,7 +495,7 @@ impl Game for MleGame {
                 );
             }
             Err(message) => {
-                self.report_once(format!(
+                self.reporter.report_once(format!(
                     "[mle] reload failed, keeping old program: {message}"
                 ));
             }
@@ -852,111 +579,16 @@ impl Game for MleGame {
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
+        // The frame body lives in the shared `FrameCtx` (docs/time-travel.md
+        // T6a); native splits it at the physics boundary to keep the separate
+        // `tick_ns` / `physics_ns` perf counters the C6 gate watches.
         let started = Instant::now();
-        // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
-        // while the draggable bar is parked on an earlier frame, branch the
-        // timeline from there BEFORE this frame advances — and drop any in-flight
-        // frame work so it doesn't cross the branch (the reload discipline).
-        if frame_time.dts > 0.0
-            && self.recorder.commit_scrub_if_resuming(
-                &mut self.model,
-                &mut self.physics_rt,
-                &mut self.physics_status,
-                self.has_physics,
-            )
-        {
-            self.deferred_queries.clear();
-            self.pending_events.clear();
-        }
-        // Subscriptions first, so `tick` sees a model that has absorbed this
-        // frame's messages (the F# executor's ordering).
-        self.pump_subscriptions(frame_time.tts as f64);
-        let args = vec![
-            self.model.clone(),
-            Value::Number(frame_time.dts as f64),
-            Value::Number(frame_time.tts as f64),
-        ];
-        match self.session.call("tick", args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.frame_error("tick", &err),
-        }
+        self.ctx().before_physics(frame_time);
         self.tick_ns += started.elapsed().as_nanos() as u64;
         let physics_started = Instant::now();
-        let physics_steps = self.step_physics(frame_time.dts);
-        // Post-step query drain: deferred raycasts answer against the world
-        // just stepped; their messages fold through `update` before `draw`,
-        // so this frame's render already reflects them.
-        // On a ZERO-substep frame (the accumulator short of FIXED_DT — normal
-        // right after load and at >60fps) queries stay deferred, like pending
-        // commands, so they never answer against a world that hasn't
-        // simulated. Games without a physics hook answer immediately (the
-        // lazily-created empty world gives sane misses).
-        // A query answers once the world has EVER stepped: normally this
-        // frame's steps, but also while PAUSED (frozen mid-flight, frame > 0)
-        // and on a short zero-substep frame — so a raycast fired while paused
-        // answers against the frozen world instead of deferring forever.
-        let world_ready = physics_steps > 0 || !self.has_physics || self.physics_status.0 > 0;
-        if world_ready && !self.deferred_queries.is_empty() {
-            let deferred = std::mem::take(&mut self.deferred_queries);
-            let mut reports: Vec<String> = Vec::new();
-            perform_deferred_queries(
-                &self.session,
-                &mut self.model,
-                deferred,
-                &mut self.effect_runner,
-                &mut self.effect_log,
-                &mut |message| reports.push(message),
-            );
-            for message in reports {
-                self.report_once(message);
-            }
-        }
-        // Collision events (docs/physics.md Phase 5): this frame's contact
-        // transitions, delivered to the `Physics.events` taggers of the
-        // CURRENT model's subscriptions — post-step, alongside query answers.
-        let events = std::mem::take(&mut self.pending_events);
-        if !events.is_empty() && self.has_subscriptions {
-            match self
-                .session
-                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-            {
-                Ok(subs) => match physics_event_taggers(&subs) {
-                    Ok(taggers) if !taggers.is_empty() => {
-                        let mut reports: Vec<String> = Vec::new();
-                        deliver_physics_events(
-                            &self.session,
-                            &mut self.model,
-                            &taggers,
-                            &events,
-                            &mut self.effect_runner,
-                            &mut self.effect_log,
-                            &mut |message| reports.push(message),
-                        );
-                        for message in reports {
-                            self.report_once(message);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(message) => self.report_once(format!("[mle] {message}")),
-                },
-                Err(err) => self.frame_error("subscriptions", &err),
-            }
-        }
+        self.ctx().physics_phase(frame_time);
         self.physics_ns += physics_started.elapsed().as_nanos() as u64;
-        // Record the settled model of this rendered frame (docs/time-travel.md
-        // T1) — after all of this frame's input / subscriptions / tick / query
-        // / event effects have folded into `self.model` — plus the physics
-        // fixed-frame the world reached, in lockstep, so a coupled rewind can
-        // restore both. `physics_status.0` is the world's current fixed frame.
-        //
-        // Skip a PAUSED frame (`dts == 0`, i.e. the clock pinned): the sim
-        // hasn't advanced, so recording would only pile up frozen duplicates —
-        // inflating the timeline and pushing a rewind target past the real
-        // history. `dts == 0` is exactly the pinned-and-not-stepping case
-        // (a one-shot step carries `dts > 0`). [xreview]
-        if frame_time.dts > 0.0 {
-            self.recorder.record(&self.model, self.physics_status.0);
-        }
+        self.ctx().record_frame(frame_time);
         self.frames += 1;
         self.report_stats();
     }
@@ -977,8 +609,8 @@ impl Game for MleGame {
             Value::Bool(is_down),
         ];
         match self.session.call("input", args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.frame_error("input", &err),
+            Ok(returned) => self.ctx().absorb(returned),
+            Err(err) => self.reporter.frame_error("input", &err),
         }
     }
     fn mouse_move(&mut self, x: i32, y: i32) {
@@ -991,8 +623,8 @@ impl Game for MleGame {
             Value::Number(y as f64),
         ];
         match self.session.call("mouseMove", args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.frame_error("mouseMove", &err),
+            Ok(returned) => self.ctx().absorb(returned),
+            Err(err) => self.reporter.frame_error("mouseMove", &err),
         }
     }
 
@@ -1002,8 +634,8 @@ impl Game for MleGame {
         }
         let args = vec![self.model.clone(), Value::Number(delta as f64)];
         match self.session.call("mouseWheel", args, &mut FunctorHost) {
-            Ok(returned) => self.absorb(returned),
-            Err(err) => self.frame_error("mouseWheel", &err),
+            Ok(returned) => self.ctx().absorb(returned),
+            Err(err) => self.reporter.frame_error("mouseWheel", &err),
         }
     }
 
@@ -1013,12 +645,12 @@ impl Game for MleGame {
         match self.session.call("draw", args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => self.last_frame = frame.clone(),
-                None => self.report_once(format!(
+                None => self.reporter.report_once(format!(
                     "[mle] draw must return Frame.create(camera, scene), got {}",
                     value.kind_name()
                 )),
             },
-            Err(err) => self.frame_error("draw", &err),
+            Err(err) => self.reporter.frame_error("draw", &err),
         }
         // The optional HUD, evaluated beside `draw` (same settled model) and
         // cached — `Game::ui` is a `&self` accessor, and errors need `&mut`
@@ -1030,12 +662,12 @@ impl Game for MleGame {
             {
                 Ok(value) => match view_value(&value) {
                     Some(view) => self.last_view = view.clone(),
-                    None => self.report_once(format!(
+                    None => self.reporter.report_once(format!(
                         "[mle] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
                         value.kind_name()
                     )),
                 },
-                Err(err) => self.frame_error("ui", &err),
+                Err(err) => self.reporter.frame_error("ui", &err),
             }
         }
         // The optional soundscape, evaluated beside `draw` (same settled model)
@@ -1052,13 +684,13 @@ impl Game for MleGame {
                         self.last_soundscape_json =
                             functor_runtime_common::audio::scene_to_json(scene)
                     }
-                    None => self.report_once(format!(
+                    None => self.reporter.report_once(format!(
                         "[mle] soundScape must return an AudioScene (AudioScene.create / \
 AudioScene.empty), got {}",
                         value.kind_name()
                     )),
                 },
-                Err(err) => self.frame_error("soundScape", &err),
+                Err(err) => self.reporter.frame_error("soundScape", &err),
             }
         }
         self.draw_ns += started.elapsed().as_nanos() as u64;
@@ -1097,7 +729,7 @@ AudioScene.empty), got {}",
         functor_runtime_common::net::drain_commands_json()
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
-        self.deliver_http_result(functor_runtime_common::net::HttpResult {
+        self.ctx().deliver_http_result(functor_runtime_common::net::HttpResult {
             token: token as u64,
             status: status as u16,
             body: body.into_bytes(),
@@ -1105,7 +737,7 @@ AudioScene.empty), got {}",
         });
     }
     fn net_push_http_error(&mut self, token: i32, message: String) {
-        self.deliver_http_result(functor_runtime_common::net::HttpResult {
+        self.ctx().deliver_http_result(functor_runtime_common::net::HttpResult {
             token: token as u64,
             status: 0,
             body: Vec::new(),
@@ -1127,23 +759,23 @@ AudioScene.empty), got {}",
         functor_runtime_common::net::drain_conn_commands_json()
     }
     fn net_push_connected(&mut self, key: String, conn: i32) {
-        self.deliver_net_event(key, NetEventKind::Connected, conn, String::new());
+        self.ctx().deliver_net_event(key, NetEventKind::Connected, conn, String::new());
     }
     fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
-        self.deliver_net_event(key, NetEventKind::Message, conn, text);
+        self.ctx().deliver_net_event(key, NetEventKind::Message, conn, text);
     }
     fn net_push_disconnected(&mut self, key: String, conn: i32) {
-        self.deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
+        self.ctx().deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
     }
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
-        self.deliver_net_event(key, NetEventKind::Error, conn, message);
+        self.ctx().deliver_net_event(key, NetEventKind::Error, conn, message);
     }
     fn audio_push_finished(&mut self, token: i32) {
-        self.deliver_audio_completion(token as u64);
+        self.ctx().deliver_audio_completion(token as u64);
     }
 
     fn quit(&mut self) {
-        self.close_all_connections();
+        self.ctx().close_all_connections();
     }
 }
 
@@ -1162,6 +794,11 @@ fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> 
         )),
         None => Err(format!("{path} has no top-level `let {name} = …`")),
     }
+}
+
+/// The desktop `Reporter` sink: per-frame problems go to stderr.
+fn report_to_stderr(message: &str) {
+    eprintln!("{message}");
 }
 
 /// The silent soundscape's wire form — the default before/without a
