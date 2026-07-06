@@ -25,7 +25,7 @@ use std::collections::HashMap;
 
 use crate::ast::{TypeBody, TypeName, VariantDecl};
 use crate::hover::children;
-use crate::ir::{BindingId, Expr, ExprKind, Module, Pattern, PatternKind};
+use crate::ir::{Expr, ExprKind, Module, Pattern, PatternKind};
 use crate::span::Span;
 
 /// The definition site for the reference at `offset`, if any. Among

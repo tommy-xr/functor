@@ -64,18 +64,6 @@ export function findRepoRoot(startDir: string): string | undefined {
   }
 }
 
-/** The platform-specific default game dylib filename produced by build-native. */
-export function defaultDylibName(): string {
-  switch (process.platform) {
-    case "darwin":
-      return "libgame_native.dylib";
-    case "win32":
-      return "game_native.dll";
-    default:
-      return "libgame_native.so";
-  }
-}
-
 const MAX_LOG_LINES = 2000;
 const MAX_ERROR_LOG_LINES = 120;
 
@@ -94,7 +82,10 @@ export function formatCrashOutput(logLines: string[]): string {
  * Supports `await using` for automatic shutdown:
  *
  * ```ts
- * await using game = await FunctorRunner.launch({ gameDir: "examples/hello" });
+ * await using game = await FunctorRunner.launch({
+ *   gameDir: "examples/mle-hello-gltf",
+ *   mlePath: "examples/mle-hello-gltf/game.mle",
+ * });
  * ```
  */
 export class FunctorRunner extends FunctorClient implements AsyncDisposable {
@@ -121,14 +112,13 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     return runner;
   }
 
-  /** Spawn `functor-runner --debug-port` against a built game dylib and wait
-   * until the render loop is serving requests. Requires the runner binary and
-   * the game dylib to already be built. */
+  /** Spawn `functor-runner --mle --debug-port` against an `.mle` game source
+   * and wait until the render loop is serving requests. Requires the runner
+   * binary to already be built (`cargo build --bin functor-runner`). */
   static async launch(options: LaunchOptions): Promise<FunctorRunner> {
     const port = options.port ?? 8077;
-    // Resolve the game dir to an absolute path up front, so the dylib path, the
-    // spawn cwd, and repo-root discovery are all consistent regardless of the
-    // caller's process cwd.
+    // Resolve the game dir to an absolute path up front, so the spawn cwd and
+    // repo-root discovery are consistent regardless of the caller's process cwd.
     const gameDir = isAbsolute(options.gameDir)
       ? options.gameDir
       : resolve(options.gameDir);
@@ -141,37 +131,33 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
 
     const runnerBin =
       options.runnerBin ?? join(repoRoot, "target", "debug", runnerExe());
-    if (options.mlePath && options.dylibPath) {
-      throw new Error("mlePath and dylibPath are mutually exclusive");
-    }
     if (options.headless && options.visible) {
       throw new Error("headless and visible are mutually exclusive");
     }
-    // An .mle source runs through the interpreter; otherwise a built dylib.
-    const gamePath = options.mlePath
-      ? isAbsolute(options.mlePath)
-        ? options.mlePath
-        : resolve(options.mlePath)
-      : (options.dylibPath ??
-        join(gameDir, "build-native", "target", "debug", defaultDylibName()));
+    // The game is an `.mle` source, run through the interpreter (`--mle`).
+    const gamePath = isAbsolute(options.mlePath)
+      ? options.mlePath
+      : resolve(options.mlePath);
 
     for (const [label, path] of [
       ["functor-runner", runnerBin],
-      [options.mlePath ? "mle game source" : "game dylib", gamePath],
+      ["mle game source", gamePath],
     ] as const) {
       if (!existsSync(path)) {
         throw new Error(
           `${label} not found at ${path}. Build it first ` +
-            `(e.g. \`functor -d ${options.gameDir} build native\` and ` +
-            `\`cargo build --bin functor-runner\`).`,
+            `(e.g. \`cargo build --bin functor-runner\`).`,
         );
       }
     }
 
-    const runnerArgs = ["--game-path", gamePath, "--debug-port", String(port)];
-    if (options.mlePath) {
-      runnerArgs.push("--mle");
-    }
+    const runnerArgs = [
+      "--mle",
+      "--game-path",
+      gamePath,
+      "--debug-port",
+      String(port),
+    ];
     if (options.headless) {
       runnerArgs.push("--headless");
     } else if (!options.visible) {

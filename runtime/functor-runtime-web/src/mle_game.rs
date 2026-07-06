@@ -966,10 +966,9 @@ fn empty_frame() -> Frame {
 
 // --- Page → producer input bridge. ------------------------------------------
 //
-// The F# path feeds input straight into the game wasm module (index.html calls
-// `key_event_wasm` etc. on it); the MLE game lives *inside* this runtime, so
-// the MLE index page calls the `mle_*` exports below instead. Events queue
-// here and the frame loop drains them into the producer before each tick.
+// The MLE game lives *inside* this runtime, so the MLE index page
+// (index-mle.html) calls the `mle_*` exports below. Events queue here and the
+// frame loop drains them into the producer before each tick.
 
 enum InputEvent {
     Key { code: i32, is_down: bool },
@@ -995,8 +994,7 @@ fn push_input(event: InputEvent) {
     });
 }
 
-/// Deliver a keyboard event (`code` = `functor_runtime_common::Key` as i32,
-/// the same wire mapping index.html uses for the F# path).
+/// Deliver a keyboard event (`code` = `functor_runtime_common::Key` as i32).
 #[wasm_bindgen]
 pub fn mle_key_event(code: i32, is_down: bool) {
     push_input(InputEvent::Key { code, is_down });

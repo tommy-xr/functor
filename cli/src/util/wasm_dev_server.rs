@@ -4,7 +4,6 @@ use warp::{http::Response, Filter};
 
 pub struct WasmDevServer;
 
-const INDEX_HTML: &[u8] = include_bytes!("../../../runtime/functor-runtime-web/index.html");
 const INDEX_MLE_HTML: &str = include_str!("../../../runtime/functor-runtime-web/index-mle.html");
 const WASM_FILE: &[u8] =
     include_bytes!("../../../runtime/functor-runtime-web/pkg/functor_runtime_web_bg.wasm");
@@ -27,10 +26,6 @@ fn render_mle_index(entry: &str) -> String {
 }
 
 impl WasmDevServer {
-    pub async fn start(working_directory: &str) -> Result<(), io::Error> {
-        Self::serve(working_directory, INDEX_HTML.to_vec()).await
-    }
-
     /// Serve an MLE project (docs/mle.md Track C5): same embedded runtime
     /// bundle + filesystem routes, but the index page is the MLE one — there
     /// is no game wasm module; the runtime fetches the entry file, which the

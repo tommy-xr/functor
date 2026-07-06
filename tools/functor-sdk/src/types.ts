@@ -63,19 +63,16 @@ export interface WaitForOptions {
 
 /** Options for launching a `functor-runner` process. */
 export interface LaunchOptions {
-  /** Game directory containing `build-native/` (the runner's cwd, for assets).
-   * e.g. an absolute path to `examples/hello`. */
+  /** Game directory (the runner's cwd, for resolving assets).
+   * e.g. an absolute path to `examples/mle-hello-gltf`. */
   gameDir: string;
   /** Debug-runtime HTTP port (default 8077). */
   port?: number;
   /** Path to the `functor-runner` binary (default `<repoRoot>/target/debug/functor-runner`). */
   runnerBin?: string;
-  /** Path to the game dylib (default `<gameDir>/build-native/target/debug/<libgame_native>`). */
-  dylibPath?: string;
-  /** Path to an `.mle` game source instead of a dylib: launches the runner
-   * with `--mle` (the MLE interpreter — docs/mle.md Track C2/C3). Mutually
-   * exclusive with `dylibPath`; `gameDir` stays the runner's cwd. */
-  mlePath?: string;
+  /** Path to the `.mle` game source: launches the runner with `--mle` (the MLE
+   * interpreter — docs/mle.md Track C2/C3). `gameDir` stays the runner's cwd. */
+  mlePath: string;
   /** Cargo workspace root (default: walk up from `gameDir`). */
   repoRoot?: string;
   /** Max time to wait for the runtime to be ready, ms (default 60_000). */

@@ -2,8 +2,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::{env, io, process};
 
-use tokio::macros::*;
-
 mod commands;
 
 pub mod util;
@@ -132,7 +130,9 @@ async fn main() -> tokio::io::Result<()> {
     }
 
     let working_directory = get_working_directory(&args);
-    let functor_json_path = validate_metadata_path(&working_directory);
+    // Validates functor.json exists (exits the process if not); the path itself
+    // is unused by the MLE-only dispatch below.
+    validate_metadata_path(&working_directory);
 
     let working_directory_os_str = working_directory.into_os_string();
     let working_directory_str = working_directory_os_str.into_string().unwrap();

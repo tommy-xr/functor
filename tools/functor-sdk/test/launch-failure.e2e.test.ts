@@ -8,7 +8,7 @@ import { findRepoRoot, FunctorRunner } from "../src/index.js";
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 
 test(
-  "launching against a missing dylib rejects with an actionable error",
+  "launching against a missing game source rejects with an actionable error",
   { skip: !e2eEnabled, timeout: 30_000 },
   async () => {
     const repoRoot = findRepoRoot(process.cwd());
@@ -18,11 +18,11 @@ test(
       FunctorRunner.launch({
         gameDir: join(repoRoot, "examples", "mle-hello-gltf"),
         repoRoot,
-        dylibPath: join(repoRoot, "does", "not", "exist.dylib"),
+        mlePath: join(repoRoot, "does", "not", "exist.mle"),
         port: Number(process.env.FUNCTOR_E2E_PORT ?? 8091),
       }),
       (error: Error) => {
-        assert.match(error.message, /game dylib not found/);
+        assert.match(error.message, /mle game source not found/);
         assert.match(error.message, /Build it first/);
         return true;
       },
