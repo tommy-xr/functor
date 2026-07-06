@@ -1,9 +1,17 @@
 # MLE: replacing F#/Fable with our own language
 
-> Design + phased roadmap. Each step is independently verifiable and lands as its
-> own small PR. The endgame is a complete replacement of the F#/Fable pipeline,
-> but nothing here requires a flag-day — F# and MLE coexist behind one seam until
-> MLE wins on every axis.
+> **STATUS: COMPLETE (2026-07-05).** The endgame landed — MLE is now the *only*
+> game-logic language, and the F#/Fable pipeline (Fable, dotnet tooling,
+> `.fsproj`s, `fable_modules/`, the `.fs`/`.fsi`/`.rs` triplication, the dylib
+> hot-reload path) has been deleted (roadmap **E3**, below). `npm run build:cli`
+> needs only Rust + Node. This document is retained as the design record and the
+> history of how MLE was built; the `mle-language` skill is the live source of
+> truth for the language as it exists today.
+
+> Design + phased roadmap. Each step was independently verifiable and landed as
+> its own small PR. The endgame was a complete replacement of the F#/Fable
+> pipeline, reached pull-based (no flag-day): F# and MLE coexisted behind one
+> seam until MLE won on every axis.
 
 ## Problem
 
@@ -590,7 +598,8 @@ Pull-based: port examples as MLE proves itself; no flag-day.
       heightmap-shading (documented in the game.mle header). Camera,
       input math, model lineup, lit primitives, neon sphere, and lights
       were already byte-identical from E1a.
-- [ ] **E2.** Port remaining examples, one PR each. *Verify:* per-example
+- [x] **E2.** Port remaining examples, one PR each (done 2026-07-05 — every
+      sample is now an `examples/mle-*` project). *Verify:* per-example
       goldens + e2e.
       *Progress — networking (2026-07-05):* the MLE **net surface** landed
       so the multiplayer samples can port. A built-in **`Net` module**
@@ -609,10 +618,10 @@ Pull-based: port examples as MLE proves itself; no flag-day.
       (server, closure tagger, per-client ids) port their F# originals;
       headless unit tests drive the full lifecycle without a socket.
       Remaining: `mpclient`/`mpserver`, then HTTP (`netdemo`).
-- [ ] **E3.** Delete the F# pipeline: Fable, dotnet tooling, `.fsproj`s,
+- [x] **E3.** Delete the F# pipeline: Fable, dotnet tooling, `.fsproj`s,
       `fable_modules/`, the `.fs`/`.fsi`/`.rs` triplication, the dylib
-      hot-reload path. *Verify:* full CI green with no dotnet installed;
-      `npm run build:cli` needs only Rust + Node.
+      hot-reload path (done — the atomic cut). *Verify (done):* CI green with
+      no dotnet installed; `npm run build:cli` needs only Rust + Node.
 
 ## Sequencing & risks
 

@@ -57,8 +57,8 @@ It builds directly on three existing threads and should be read alongside them:
 `docs/physics.md` (the `Simulatable`/`Timeline` seam this generalizes),
 `docs/llm-native-editor.md` (which already frames rewind as an *authoring*
 primitive, not just a debugging one), and `docs/debug-runtime.md` (the
-frame-clock control that already exists). The surface is **MLE-first** — F# is
-no longer a target (`docs/language-direction.md`).
+frame-clock control that already exists). The surface is **MLE-only** — the
+F#/Fable pipeline has been removed (`docs/mle.md`).
 
 Inspiration: the [Tomorrow Corporation tech
 demo](https://www.youtube.com/watch?v=72y2EC5fkcE) (whole-program time travel as
@@ -96,7 +96,7 @@ Any>` (`OpaqueState`) bound to one dylib generation, opaque to the runtime and
 not clonable-as-data from the shell. The in-process interpreter is the enabling
 fact — the shell *owns* the model value and can version it directly. Whole-game
 rewind is one of the concrete payoffs of the MLE pivot
-(`docs/language-direction.md`).
+(`docs/mle.md`).
 
 ### One frame, one clock
 
@@ -261,7 +261,7 @@ frame snapshot is `(model, world)`, a fork is just *keeping* the old future
 instead of `truncate_from`-ing it, holding two model+world states, and calling
 the pure `draw` on each. The only new **engine** capability is a render pass that
 composites a second scene at reduced opacity (~50%). Everything else is already
-there: two models, one pure `draw3d`, one blend.
+there: two models, one pure `draw`, one blend.
 
 ### Trajectory preview — forward-ghosting (Inventing on Principle)
 
@@ -270,7 +270,7 @@ this is **chronophotography**: from the paused snapshot, step the whole scene
 forward over a window (start with ~2s / 10 divisions) and composite the divisions
 into one image, each at `1/divisions` weight. Static geometry averages to itself
 (solid); anything moving smears into a faint strobe of its own future positions.
-It needs **no new scene-description API** — you call the existing `draw3d` on each
+It needs **no new scene-description API** — you call the existing `draw` on each
 stepped state — and it captures *all* motion, not one hand-picked entity, so it
 works for any scene under a fixed camera.
 

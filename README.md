@@ -2,39 +2,54 @@
 
 # functor
 
-Functor: A functional toolkit for building 3D games in F#.
+Functor: A functional toolkit for building 3D games in **MLE**, Functor's own
+interpreted, F#-inspired game-logic language.
 
-You write your game in **F#** against the `Functor.Game` library. [Fable](https://fable.io/)
-transpiles that F# to **Rust**, which is then compiled to one of two targets:
+You write your game as a `.mle` file. There is **no transpile or compile step for
+game logic** — the Rust runtime *interprets* the `.mle` directly:
 
-- **native** — a dynamic library loaded by the `functor-runner` desktop runtime (GLFW + OpenGL),
-  with hot-reloading for fast iteration.
-- **wasm** — a WebAssembly bundle (built with `wasm-pack`) served to the browser (WebGL2).
+- **native** — the `functor-runner` desktop runtime (GLFW + OpenGL) loads and runs
+  your `.mle`, with hot-reloading on save for fast iteration.
+- **wasm** — the web runtime (WebGL2) ships the `.mle` source as text and
+  interprets it in the browser.
+
+The same interpreter runs everywhere Rust runs. The heavy per-frame work
+(rendering, skinning, physics) stays in the Rust shell; only the game logic is
+MLE.
 
 ## Writing a game
 
-Games follow an Elm-style MVU loop: your model is immutable, and `input`/`tick`/`update` are pure
-functions that return a new model plus an `effect` (which can produce messages handled by
-`update`). `draw3d` describes a frame — a camera plus a scene — from the model. A game is built
-fluently with `GameBuilder`:
+Games follow an Elm-style MVU loop: your model is an immutable value, and
+`input`/`tick`/`update` are pure functions that return a new model (optionally
+paired with an `effect`, whose result is folded back through `update`). `draw`
+describes a frame — a camera plus a scene — from the model. A runner-hosted game
+defines these top-level MLE bindings:
 
-```fsharp
-GameBuilder.local initialModel
-|> GameBuilder.init (Effect.wrapped Start)  // startup effect, run once before the first frame
-|> GameBuilder.input input                  // 'model -> Input.t      -> 'model * effect<'msg>
-|> GameBuilder.tick tick                    // 'model -> FrameTime    -> 'model * effect<'msg>
-|> GameBuilder.update update                // 'model -> 'msg         -> 'model * effect<'msg>
-|> GameBuilder.subscriptions subscriptions  // 'model -> Sub<'msg>    (timers, e.g. Sub.every)
-|> GameBuilder.draw3d draw3d                // 'model -> FrameTime    -> Graphics.Frame
-|> Runtime.runGame
+```mle
+let init = { … }                        // the initial model (a value)
+let tick = (model, dt, tts) => model'   // per-frame step
+let draw = (model, tts) => Frame.create(camera, scene)
+let input = (model, key, isDown) => model'         // OPTIONAL; key = "W"/"Up"/"Space"
+let update = (model, msg) => model'                // OPTIONAL; msgs are ADT variants
+let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)  // OPTIONAL timers
+let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …]) // OPTIONAL
+let soundScape = (model) => AudioScene.create([source, …])         // OPTIONAL looping audio
 ```
 
-See `examples/hello/hello.fs` for a complete game using all of these.
+The model-updating entry points (`tick`, `input`, `mouseMove`, `mouseWheel`,
+`update`) may return a `(model', effect)` tuple instead of a bare model; the
+effect's result folds back through `update`. (`init` is a plain value — no
+effect; `draw`/`physics`/`soundScape`/`ui`/`subscriptions` return their own
+specific values.) The full language and prelude
+(`Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*` / …)
+are documented in the `mle-language` skill (`.claude/skills/mle-language/`) and
+`docs/mle.md`. See `examples/mle-hello-gltf/game.mle` or
+`examples/mle-primitives/game.mle` for complete games.
 
 ## Design principles
 
 - **Functional-core, imperative shell.** As much functionality as possible lives in the pure
-  functional core; side effects are pushed to a thin imperative shell.
+  functional core (the MLE game logic); side effects are pushed to a thin imperative shell.
 - **LLM-native.** Functor functionality is introspectable by LLMs at runtime — favoring live
   evaluation, a text-only runtime, and inspectable state.
 - **Simplicity and incrementality.** Prefer small, incremental PRs, leveraging stacked PRs where
@@ -45,37 +60,33 @@ See `examples/hello/hello.fs` for a complete game using all of these.
 
 | Path | What it is |
 | --- | --- |
-| `src/Functor.Game/` | The F# game framework (`Game`, `Scene3D`, `Camera`, `Input`, `Effect`, `Sub`, `Math`, …) |
-| `src/` | `functor-lib` — the Rust crate produced by Fable from `Functor.Game` |
-| `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials |
-| `runtime/functor-runtime-desktop/` | Desktop runtime; builds the `functor-runner` binary (native/GLFW) |
-| `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle |
+| `mle/` | The MLE language crate — parser, IR, interpreter, typechecker (`mle parse`/`ir`/`run`/`trace`/`check`) |
+| `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the MLE prelude (`FunctorHost`) |
+| `runtime/functor-runtime-desktop/` | Desktop runtime; builds the `functor-runner` binary (native/GLFW), including the MLE producer |
+| `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.mle` in the browser |
 | `cli/` | The `functor` CLI (`build` / `run` / `develop`; `init` is not yet implemented) |
-| `examples/hello/` | Sample game (`hello.fs`) — a lineup of glTF sample models with a WASD + mouse free-look camera |
+| `tools/` | Editor tooling: `mle-vscode` (extension), `mle-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
+| `examples/mle-*/` | Sample games — e.g. `mle-hello-gltf` (a lineup of glTF sample models with a WASD + mouse free-look camera), `mle-primitives`, `mle-lighting` |
 
 ## Prerequisites
 
 Install the following (the versions in parentheses are known-good):
 
-- [.NET SDK 8](https://dotnet.microsoft.com/download) (`8.0.x`) — runs Fable
 - [Rust](https://rustup.rs/) stable (`1.91`) with the wasm target:
   `rustup target add wasm32-unknown-unknown`
 - [Node.js + npm](https://nodejs.org/) (`node 22`, `npm 10`)
 - [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) (`0.12+`) — `npm install -g wasm-pack`
-- [`watchexec`](https://github.com/watchexec/watchexec) — only needed for `functor develop`
+
+`watchexec` is no longer needed — MLE hot-reload is built into the runtime, so
+`functor develop` needs no external file watcher. There is also **no .NET / Fable
+dependency**: the toolchain is Rust + Node only.
 
 On Linux you also need the native GL/X11 dev packages (see
 `.github/workflows/build-native.yml` for the exact `apt` list).
 
 ## Building the CLI
 
-One-time, install the Fable local tool:
-
-```sh
-dotnet tool restore
-```
-
-Then build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compile
+Build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compile
 time (via `include_bytes!`), so the wasm bundle must exist before the `functor` binary is built.
 
 ```sh
@@ -94,24 +105,28 @@ This produces two binaries in `target/debug/`: `functor` (the CLI) and `functor-
 (the desktop runtime). The CLI looks for `functor-runner` next to itself, so keep them
 together.
 
-## Running the sample (`examples/hello`)
+## Running a sample (`examples/mle-hello-gltf`)
 
-First, fetch the sample's model assets (they aren't checked in; they download from
-[BabylonJS Assets](https://github.com/BabylonJS/Assets/)):
+Some samples reference glTF model assets that aren't checked in (they download from
+[BabylonJS Assets](https://github.com/BabylonJS/Assets/)); fetch them first:
 
 ```sh
 npm run fetch:assets
 ```
 
-The CLI operates on a directory containing a `functor.json`. Point it at the example with
-`-d`. The `run` command transpiles the F#, compiles the game, and launches it:
+The CLI operates on a directory containing a `functor.json`
+(`{"language": "mle", "entry": "game.mle"}`). Point it at the example with `-d`.
+The `run` command interprets the game's `.mle` and launches it — no build step:
 
 ```sh
 # Native — opens a window
-./target/debug/functor -d examples/hello run native
+./target/debug/functor -d examples/mle-hello-gltf run native
 
-# Web — builds the wasm bundle, serves it, and opens http://127.0.0.1:8080
-./target/debug/functor -d examples/hello run wasm
+# A primitives-only sample (no assets needed)
+./target/debug/functor -d examples/mle-primitives run native
+
+# Web — serves the .mle + wasm bundle at http://127.0.0.1:8080
+./target/debug/functor -d examples/mle-primitives run wasm
 ```
 
 `native` is the default environment, so `... run` is equivalent to `... run native`.
@@ -120,18 +135,20 @@ The CLI operates on a directory containing a `functor.json`. Point it at the exa
 
 | Command | Description |
 | --- | --- |
-| `functor -d <dir> build [native\|wasm]` | Transpile F# → Rust and compile the game |
-| `functor -d <dir> run [native\|wasm]` | Build, then run (native window / browser) |
-| `functor -d <dir> develop [native\|wasm]` | Hot-reload dev loop (requires `watchexec`) |
+| `functor -d <dir> build [native\|wasm]` | Typecheck the `.mle` project (diagnostics are errors) |
+| `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
+| `functor -d <dir> develop [native\|wasm]` | Same as `run` — MLE hot-reload is built into the runtime |
 
 ### What `build`/`run` do under the hood
 
-1. `npm run build:examples:hello:rust` — Fable transpiles `examples/hello/hello.fs` to
-   Rust (`examples/hello/hello.rs`) and generates `fable_modules/`.
-2. `cargo build` in `examples/hello/build-native` (native) or
-   `wasm-pack build` in `examples/hello/build-wasm` (wasm) — compiles the game.
-3. (native) `functor-runner` loads the resulting `libgame_native` dylib;
-   (wasm) a dev server serves the bundle to the browser.
+1. `build` loads the project (the entry `.mle` plus every sibling `.mle` — file = module)
+   and typechecks the whole program; diagnostics are errors here.
+2. (native) `run` spawns `functor-runner --mle --game-path <entry>` from the game
+   directory; the runner **interprets** the `.mle` each frame and hot-reloads it on
+   save, preserving the model.
+3. (wasm) `run` serves the project directory — the `.mle` ships as text; the embedded
+   web runtime fetches and interprets it. (File-watch hot-reload is native-only;
+   reload the page to pick up saved edits.)
 
 ## Credits
 

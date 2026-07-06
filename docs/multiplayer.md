@@ -21,16 +21,15 @@ not part of it.
 
 The MVU loop's hot-reload behavior shapes the API:
 
-- **The effect queue is no longer persisted across hot reload** (changed during
-  the HTTP work — see `effects-plain-data-invariant`). `getState`/`setState`
-  persist **only the model**; the queue is reset to empty on reload. This *lifts*
-  the old "effects must be plain data" rule, so an `Effect` may now carry a
-  closure — which is what lets HTTP use the Elm `expect` shape (the request `Cmd`
-  carries a `tagger : Result -> Msg`).
-- **A closure cannot cross a dylib swap.** So the request→response tagger is held
-  in a thread-local, dylib-bound registry, not in `OpaqueState`. On hot reload an
-  in-flight request loses its tagger; the response is dropped with a warning
-  (a deliberate, dev-only trade).
+- **The effect queue is not persisted across hot reload.** MLE reload preserves
+  **only the model** (a plain value the host holds); the queue is reset to empty.
+  An `Effect` may carry a closure — which is what lets HTTP use the Elm `expect`
+  shape (the request carries a `tagger : Result -> Msg`).
+- **An in-flight request's tagger cannot survive a reload.** The request→response
+  tagger is held in a token-keyed registry, not in the model. On hot reload the
+  model is preserved (and closures stored *inside* it rebind), but a pending
+  request loses its tagger and the response is dropped with a warning (a
+  deliberate, dev-only trade).
 - **Subs are recomputed every frame and not persisted.** For *persistent
   connections* (WebSocket/TCP/UDP, Phase 2+), a `Sub` still carries the inbound
   decoder and the connection identity, so a live socket is matched across
@@ -43,11 +42,11 @@ Elm-style; persistent connections are a `Sub` (inbound/identity) + `Effect`
 ## Architecture
 
 ```
-        ┌──────────────────────── F# functional core ────────────────────────┐
+        ┌──────────────────────── MLE functional core ───────────────────────┐
         │  subscriptions: model -> Sub   (inbound + connection lifecycle)     │
         │  update/tick   -> effect       (outbound, PLAIN DATA only)          │
         └─────────────────────────────────┬───────────────────────────────────┘
-                                           │  (thin Emit shims)
+                                           │  (the MLE producer + prelude)
         ┌──────────────────────────────────▼──────────────── imperative shell ─┐
         │  ConnectionManager  — owns live connections, keyed by sub identity     │
         │  AsyncInbox         — thread-safe queue; drained ONCE per frame        │
@@ -70,41 +69,40 @@ Elm-style; persistent connections are a `Sub` (inbound/identity) + `Effect`
   each frame: open newly-declared connections, tear down removed ones, keyed by a
   stable identity (endpoint / user key), not the generic msg.
 
-## API (F#)
+## API (MLE)
 
-**HTTP — Elm `Http.get { expect = ... }` style (shipped, Phase 1).** A single
-`Effect` carries the tagger; the response comes back as a message through
-`update`. No subscription.
+**HTTP — Elm `Http.get { expect = ... }` style (shipped).** A single `Effect`
+carries the tagger; the response comes back as a message through `update`. No
+subscription.
 
-```fsharp
-Effect.httpGet  (url: string) (tagger: Net.HttpResponse -> 'msg) : effect<'msg>
-Effect.httpPost (url: string) (body: string) (tagger: Net.HttpResponse -> 'msg) : effect<'msg>
-// Net.HttpResponse: .ok .status .body .error   (the result handed to the tagger)
+```mle
+Effect.httpGet(url, tagger)        // tagger: (HttpResponse) => Msg
+Effect.httpPost(url, body, tagger) // the response record is handed to the tagger
 ```
 
 Under the hood: the request gets an auto token; running the effect registers the
-tagger (keyed by token) in a thread-local registry and queues a plain-data
-command for the host to perform; when the response lands, the executor applies the
-tagger and delivers the message.
+tagger (keyed by token) and queues a plain-data command for the host to perform;
+when the response lands, the broker applies the tagger and delivers the message.
+`examples/mle-netdemo` is the port.
 
 **Persistent connections — `Sub` (inbound/identity) + `Effect` (send)**
-(WebSocket/TCP/UDP, Phase 2+):
+(WebSockets shipped):
 
-```fsharp
+```mle
 // client: declares a desired connection; runtime keeps it open + reconnects
-Sub.connect (endpoint: Endpoint) (decode: NetEvent -> 'msg)
+Sub.connect(url, tagger)   // tagger: (Net.NetEvent) => Msg
 // server: accepts many; yields per-client events (native only for TCP/UDP/WS)
-Sub.listen  (bind: Endpoint)     (decode: NetEvent -> 'msg)
+Sub.listen(addr, tagger)   // tagger: (Net.NetEvent) => Msg
 
-Effect.send      (id: ConnectionId) (payload: byte[]) : effect<'msg>
-Effect.broadcast (ids)              (payload: byte[]) : effect<'msg>
-Effect.close     (id: ConnectionId)                   : effect<'msg>
+Effect.send(connId, text)  // send on an open connection
 ```
 
-`NetEvent = Connected of ConnectionId | Message of ConnectionId * byte[]
-          | Disconnected of ConnectionId | Error of ConnectionId * string`.
-`ConnectionId` is assigned by the runtime and reported via the `Connected` event;
-the game stores it in its model and names it in send effects.
+`Net` is a built-in module, always in scope:
+`type NetEvent = | Connected(id: Float) | Message(id: Float, text: String) |
+Disconnected(id: Float) | Error(id: Float, text: String)`. The connection id is
+assigned by the runtime and reported via `Connected`; the game stores it in its
+model and names it in `Effect.send`. `examples/mle-wsdemo` (client) and
+`examples/mle-wsserverdemo` (server) are the ports.
 
 ## Test harness / SDK
 
@@ -125,11 +123,10 @@ sim.kill(clientB); ...; sim.restart(clientB)
 assert_eq!(sim.state(clientA).entities, sim.state(server).entities)
 ```
 
-Enabling refactor: today there's a single global `currentRunner` per dylib
-(`Runtime.fs`), so one process can't host a server + many clients. Generalize the
-`no_mangle` / `wasm_bindgen` exports to a **handle-based API** (`create_runner()
--> Handle`, `tick(h)`, `inject_net(h, ...)`, `get_state(h)`). This also subsumes
-today's single-instance hot-reload case.
+This shipped as the `functor-netsim` crate: many `mle::Session`-backed game
+instances share a `VirtualTransport` bus in one process, stepped in lockstep. (An
+`mle::Session` is a plain owned value, so hosting a server + many clients in one
+process is natural — there is no per-process global runner to work around.)
 
 **B. Multi-process integration harness.** Real `functor-runner` processes driven
 over an extended debug-server API (add `/net` inject + `/tick` step to the
