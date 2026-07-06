@@ -291,10 +291,15 @@ impl FrameCtx<'_> {
         }
     }
 
-    /// Deterministically step the whole scene forward `divisions` fixed frames
-    /// from the CURRENT ctx state, collecting the stepped `(model,
-    /// world-snapshot)` per division — the headless forward-step that feeds
-    /// forward-ghosting (docs/time-travel.md T6b). It runs the frame body MINUS
+    /// Deterministically step the whole scene forward from the CURRENT ctx
+    /// state, snapshotting the stepped `(model, world-snapshot)` at each of
+    /// `divisions` division boundaries — the headless forward-step that feeds
+    /// forward-ghosting (docs/time-travel.md T6b). To keep velocity-integrated
+    /// motion (e.g. `examples/mario`'s Euler-integrated jump) FAITHFUL, the sim
+    /// is advanced at a FINE `sub_dt` (`steps_per_division` sub-ticks per
+    /// snapshot) but sampled only at the boundaries: `divisions` snapshots,
+    /// `divisions * steps_per_division` fine ticks total, over a window of
+    /// `divisions * steps_per_division * sub_dt`. It runs the frame body MINUS
     /// the scrub-commit (starts at `subscriptions_and_tick`, never
     /// `before_physics`, so it can't branch the throwaway recorder) and MINUS
     /// `record_frame` (nothing is committed to live history).
@@ -304,9 +309,12 @@ impl FrameCtx<'_> {
     /// global queues), a deterministic runner, and `physics_rt` pointed at a
     /// throwaway world — so the live producer state stays untouched.
     ///
-    /// The forward-step computes its OWN division time (it does NOT read the
-    /// shell `GameClock`): division `i` runs `FrameTime { dts, tts = start_tts +
-    /// (i+1)*dts }`.
+    /// The forward-step computes its OWN fine-step time (it does NOT read the
+    /// shell `GameClock`): fine step `s` (the running counter across all
+    /// divisions) runs `FrameTime { dts: sub_dt, tts = start_tts +
+    /// (s+1)*sub_dt }`. A division boundary lands after `steps_per_division`
+    /// such steps, so division `div`'s snapshot has `tts = start_tts +
+    /// (div+1)*steps_per_division*sub_dt`.
     ///
     /// The determinism boundary — where the projected model diverges from a
     /// live continuation (the physics WORLD snapshot is always exact):
@@ -325,34 +333,44 @@ impl FrameCtx<'_> {
     ///   — a frame body that neither reads physics nor commands it — matches
     ///   exactly, model AND world.
     ///
-    /// `inputs` is the recorded input log for the divisions being stepped
-    /// (index `i` = division `i`'s events, i.e. fork frame `K + 1 + i`). At the
-    /// TOP of each division its recorded events are REPLAYED (mirroring the live
-    /// order — input arrives before `tick`) so a recorded jump replays. Beyond
-    /// the recorded window (`inputs` runs out) the step COASTS on held state.
+    /// `inputs` is the recorded input log, now indexed per FINE step (not per
+    /// division): index `s` = fine step `s`'s events, i.e. fork frame
+    /// `K + 1 + s` (each rendered frame is one fine step at `sub_dt = 1/60`). At
+    /// the TOP of each fine step its recorded events are REPLAYED (mirroring the
+    /// live order — input arrives before `tick`) so a recorded jump replays.
+    /// Beyond the recorded window (`inputs` runs out) the step COASTS on held
+    /// state.
     pub fn step_scene_forward(
         &mut self,
         divisions: usize,
-        dts: f32,
+        steps_per_division: usize,
+        sub_dt: f32,
         start_tts: f32,
         inputs: &[Vec<RecordedInput>],
     ) -> Vec<(Value, Option<Vec<u8>>)> {
         let mut out = Vec::with_capacity(divisions);
-        for i in 0..divisions {
-            // Replay this division's recorded inputs before the frame body, so
-            // the model absorbs them exactly as the live frame did (coast when
-            // the log has no entry for this division).
-            if let Some(events) = inputs.get(i) {
-                for event in events {
-                    self.replay_input(*event);
+        let mut step = 0usize;
+        for _div in 0..divisions {
+            for _ in 0..steps_per_division {
+                // Replay this fine step's recorded inputs before the frame body,
+                // so the model absorbs them exactly as the live frame did (coast
+                // when the log has no entry for this step).
+                if let Some(events) = inputs.get(step) {
+                    for event in events {
+                        self.replay_input(*event);
+                    }
                 }
+                let frame_time = FrameTime {
+                    dts: sub_dt,
+                    tts: start_tts + (step as f32 + 1.0) * sub_dt,
+                };
+                self.subscriptions_and_tick(frame_time);
+                self.physics_phase(frame_time);
+                step += 1;
             }
-            let frame_time = FrameTime {
-                dts,
-                tts: start_tts + (i as f32 + 1.0) * dts,
-            };
-            self.subscriptions_and_tick(frame_time);
-            self.physics_phase(frame_time);
+            // Snapshot only at the division boundary — the strobe still has
+            // `divisions` frames, but each is the result of accurate fine
+            // integration over `steps_per_division` sub-ticks.
             let world = if self.has_physics {
                 self.physics_rt.snapshot_world()
             } else {
@@ -695,8 +713,9 @@ impl Drop for DryWorld {
 /// runner, `suppress_outbound = true`, and (when the game has physics) a
 /// throwaway physics world seeded from a snapshot of the live
 /// [`physics::DEFAULT_WORLD`] driven by a fresh [`SteppedPhysics::for_world`]
-/// — then steps the scene forward `divisions` fixed frames, returning the
-/// stepped `(model, world-snapshot)` per division.
+/// — then steps the scene forward at the fine `sub_dt` (`steps_per_division`
+/// sub-ticks per snapshot), returning the stepped `(model, world-snapshot)` at
+/// each of the `divisions` division boundaries.
 ///
 /// The live producer state (model, world, recorder, clock, and the global
 /// effect / net / audio queues) is COMPLETELY untouched: the throwaway world
@@ -711,8 +730,9 @@ pub fn forward_step_scene(
     has_subscriptions: bool,
     prev_tts: Option<f64>,
     start_tts: f32,
-    dts: f32,
+    sub_dt: f32,
     divisions: usize,
+    steps_per_division: usize,
     inputs: &[Vec<RecordedInput>],
 ) -> Vec<(Value, Option<Vec<u8>>)> {
     // Dry-run physics: snapshot the live world and restore it into a fresh
@@ -778,7 +798,7 @@ pub fn forward_step_scene(
             suppress_outbound: true,
             reporter: &mut reporter,
         };
-        ctx.step_scene_forward(divisions, dts, start_tts, inputs)
+        ctx.step_scene_forward(divisions, steps_per_division, sub_dt, start_tts, inputs)
     };
 
     // `dry_world`'s `Drop` removes the throwaway world here (and on any unwind

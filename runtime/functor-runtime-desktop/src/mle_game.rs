@@ -593,23 +593,34 @@ impl Game for MleGame {
         self.recorder.current_scene_frame_tts()
     }
 
-    /// Forward-ghosting (docs/time-travel.md T6d): step the scene forward
-    /// `divisions` fixed frames of `dt` from `start_tts` (a dry run over
-    /// throwaway state — the live producer is untouched), then `draw` each
-    /// stepped model at its division time and return the frames for the shell to
-    /// composite. Division `i` draws at `tts = start_tts + (i+1)*dt`, matching
-    /// the time `forward_step_scene` stepped the model to. Each frame's camera is
-    /// overridden to the paused view (`last_frame.camera`) so only world motion
-    /// smears. A draw that errors or doesn't return a Frame is skipped, so the
-    /// result may be shorter than `divisions`.
+    /// Forward-ghosting (docs/time-travel.md T6d): step the scene forward over a
+    /// window of `divisions` divisions, each `dt` wide, from `start_tts` (a dry
+    /// run over throwaway state — the live producer is untouched), then `draw`
+    /// each stepped model at its division-boundary time and return the frames for
+    /// the shell to composite. To keep velocity-integrated motion (mario's jump)
+    /// faithful, each division is advanced in FINE `sub_dt = 1/60` sub-steps
+    /// (`steps_per_division ≈ dt / sub_dt`) and sampled only at the boundary, so
+    /// the strobe still has `divisions` frames but each is accurate integration.
+    /// Division `div` draws at `tts = start_tts + (div+1)*steps_per_division*sub_dt`,
+    /// matching the time `forward_step_scene` stepped the model to (the same f32
+    /// arithmetic). Each frame's camera is overridden to the paused view
+    /// (`last_frame.camera`) so only world motion smears. A draw that errors or
+    /// doesn't return a Frame is skipped, so the result may be shorter than
+    /// `divisions`.
     fn ghost_frames(&self, divisions: usize, dt: f32, start_tts: f64) -> Vec<Frame> {
         // Replay the recorded inputs for the frames AFTER the fork point K, so a
-        // recorded jump/run ghosts (docs/time-travel.md T6b). Beyond the recorded
-        // window the forward-step coasts on held state.
+        // recorded jump/run ghosts (docs/time-travel.md T6b). The input log is
+        // per-rendered-frame = per-fine-step (both 1/60), so it feeds the fine
+        // step index directly. Beyond the recorded window the step coasts.
         let inputs = match self.recorder.current_scene_frame() {
             Some(k) => self.recorder.inputs_from(k + 1),
             None => Vec::new(),
         };
+        // Fine sub-step at 1/60; round the division width to a whole number of
+        // sub-steps (≥1). At the default 8 divisions over a ~2s window that's
+        // dt = 0.25 → ~15 fine steps per division.
+        let sub_dt = 1.0f32 / 60.0;
+        let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
         let stepped = forward_step_scene(
             &self.session,
             &self.model,
@@ -617,15 +628,17 @@ impl Game for MleGame {
             self.has_subscriptions,
             self.prev_tts,
             start_tts as f32,
-            dt,
+            sub_dt,
             divisions,
+            steps_per_division,
             &inputs,
         );
         let mut frames = Vec::with_capacity(stepped.len());
         for (i, (model_i, _world)) in stepped.iter().enumerate() {
-            // Match forward_step_scene's f32 division-time arithmetic exactly, so
+            // Match forward_step_scene's f32 division-boundary tts exactly, so
             // each redrawn frame's tts equals the tts its model was stepped at.
-            let tts = (start_tts as f32 + (i as f32 + 1.0) * dt) as f64;
+            let tts =
+                (start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt) as f64;
             let args = vec![model_i.clone(), Value::Number(tts)];
             // A draw error or non-Frame return for a division is skipped, not fatal.
             if let Ok(value) = self.session.call("draw", args, &mut FunctorHost) {
@@ -1515,16 +1528,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The deterministic headless forward-step (docs/time-travel.md T6b): from a
-    /// fork point, `forward_step_scene` steps the whole scene forward N frames
-    /// and produces EXACTLY the sequence a live run produces — model (`Value`
-    /// via `to_string`) and physics world (snapshot bytes) both byte-equal —
-    /// WITHOUT touching the live producer state. The game is pure (no `Now` /
-    /// unseeded `Random`): a ball falls onto a slab and a contact counter folds
-    /// through `update`, so both the model and the world genuinely evolve and
-    /// stay coupled. A game reading wall-clock `Now` / unseeded `Random` would
-    /// NOT match — the determinism boundary; a `tts`-driven / seeded game does,
-    /// since the forward-step supplies `tts`.
+    /// The deterministic SUB-STEPPED headless forward-step (docs/time-travel.md
+    /// T6b / F1): from a fork point, `forward_step_scene` steps the whole scene
+    /// forward at a fine `sub_dt = 1/60` (`STEPS_PER_DIV` sub-ticks per division)
+    /// and its DIVISION-BOUNDARY snapshots reproduce EXACTLY the sequence a fresh
+    /// 1/60 live continuation produces — model (`Value` via `to_string`) and
+    /// physics world (snapshot bytes) both byte-equal — WITHOUT touching the live
+    /// producer state. The game is pure (no `Now` / unseeded `Random`): a ball
+    /// falls onto a slab and a contact counter folds through `update`, so both
+    /// the model and the world genuinely evolve and stay coupled. A game reading
+    /// wall-clock `Now` / unseeded `Random` would NOT match — the determinism
+    /// boundary; a `tts`-driven / seeded game does, since the forward-step
+    /// supplies `tts`.
     #[test]
     fn forward_step_is_deterministic_and_non_destructive() {
         // The physics registry is a per-thread thread-local shared by every
@@ -1551,15 +1566,19 @@ mod tests {
         .expect("write game");
         let mut game = MleGame::create(dir.join("game.mle").to_str().expect("utf-8 path"));
 
-        const DT: f32 = physics::FIXED_DT;
+        // Fine sub-step at 1/60 (= FIXED_DT, so each fine tick is one physics
+        // step); the forward-step snapshots every STEPS_PER_DIV fine ticks.
+        const SUB_DT: f32 = physics::FIXED_DT;
         const K: usize = 45;
-        const N: usize = 25;
+        const DIVISIONS: usize = 5;
+        const STEPS_PER_DIV: usize = 5;
+        const N: usize = DIVISIONS * STEPS_PER_DIV; // total fine ticks in the window
 
         // Drive K frames to the fork point.
         let mut tts = 0.0f32;
         for _ in 0..K {
-            tts += DT;
-            game.tick(FrameTime { tts, dts: DT });
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
         }
 
         // Capture the fork state + a baseline of the live producer state.
@@ -1570,7 +1589,8 @@ mod tests {
         let live_world_before = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
         let live_frame_before = game.physics_status.0;
 
-        // Forward-step N frames from the fork — a dry run over throwaway state.
+        // Forward-step DIVISIONS divisions (STEPS_PER_DIV fine ticks each) from
+        // the fork — a dry run over throwaway state.
         let forward = functor_runtime_common::mle_producer::forward_step_scene(
             &game.session,
             &fork_model,
@@ -1578,8 +1598,9 @@ mod tests {
             game.has_subscriptions,
             fork_prev_tts,
             fork_tts,
-            DT,
-            N,
+            SUB_DT,
+            DIVISIONS,
+            STEPS_PER_DIV,
             &[],
         );
 
@@ -1595,16 +1616,17 @@ mod tests {
             "live fixed frame untouched"
         );
 
-        // The live continuation: the ground truth the forward-step must match.
+        // The live continuation at 1/60: the ground truth the sub-stepped
+        // forward-step must match at its division boundaries.
         let mut live: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(N);
         for _ in 0..N {
-            tts += DT;
-            game.tick(FrameTime { tts, dts: DT });
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
             let world = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
             live.push((game.model.to_string(), world));
         }
 
-        assert_eq!(forward.len(), live.len(), "division count");
+        assert_eq!(forward.len(), DIVISIONS, "division count");
         // The scene genuinely evolves: the world moves across the window and the
         // ball lands (a Contact folds `hits` up through `update`).
         assert_ne!(live[0].1, live[N - 1].1, "world should move over the window");
@@ -1614,9 +1636,13 @@ mod tests {
             "the ball should have landed within the window: {}",
             game.model.to_string()
         );
-        for (i, ((fwd_m, fwd_w), (live_m, live_w))) in forward.iter().zip(live.iter()).enumerate() {
-            assert_eq!(fwd_m.to_string(), *live_m, "model diverged at division {i}");
-            assert_eq!(fwd_w, live_w, "world diverged at division {i}");
+        // Each forward DIVISION-BOUNDARY snapshot matches the live 1/60 frame at
+        // fine step (div+1)*STEPS_PER_DIV — proving the ARC is accurate at fine dt.
+        for (div, (fwd_m, fwd_w)) in forward.iter().enumerate() {
+            let live_idx = (div + 1) * STEPS_PER_DIV - 1;
+            let (live_m, live_w) = &live[live_idx];
+            assert_eq!(fwd_m.to_string(), *live_m, "model diverged at division {div}");
+            assert_eq!(fwd_w, live_w, "world diverged at division {div}");
         }
 
         physics::remove_world(physics::DEFAULT_WORLD);
@@ -1655,9 +1681,11 @@ mod tests {
         let mut game = MleGame::create(mario);
         assert!(!game.has_physics, "mario must have no physics hook");
 
-        const DT: f32 = 1.0 / 60.0;
+        const SUB_DT: f32 = 1.0 / 60.0; // fine sub-step (one rendered frame)
         const K: usize = 10; // pre-jump fork point (still running left of the edge)
-        const N: usize = 75; // continuation window: run to the edge, jump, land, run
+        const DIVISIONS: usize = 15;
+        const STEPS_PER_DIV: usize = 5;
+        const N: usize = DIVISIONS * STEPS_PER_DIV; // 75 fine frames: run to the edge, jump, land, run
 
         // Hold Right from the very first frame (a single key-down, then held).
         game.key_event(Key::Right as i32, true);
@@ -1665,8 +1693,8 @@ mod tests {
         // Phase 1: drive K frames of running to the fork point (pre-jump).
         let mut tts = 0.0f32;
         for _ in 0..K {
-            tts += DT;
-            game.tick(FrameTime { tts, dts: DT });
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
         }
         let fork_model = game.model.clone();
         let fork_prev_tts = game.prev_tts;
@@ -1685,13 +1713,13 @@ mod tests {
             // timing the jump at the edge). One press, gated on grounded.
             if !jumped
                 && field(&game.model, "grounded") == 1.0
-                && field(&game.model, "x") + (8.0 * DT as f64) >= -3.0
+                && field(&game.model, "x") + (8.0 * SUB_DT as f64) >= -3.0
             {
                 game.key_event(Key::Up as i32, true);
                 jumped = true;
             }
-            tts += DT;
-            game.tick(FrameTime { tts, dts: DT });
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
             live.push((field(&game.model, "x"), field(&game.model, "y")));
         }
         assert!(jumped, "the scripted jump must have fired");
@@ -1710,7 +1738,8 @@ mod tests {
             .count();
         assert_eq!(up_events, 1, "exactly one recorded jump");
 
-        // Forward-step from the PRE-JUMP fork, replaying the recorded inputs.
+        // Forward-step from the PRE-JUMP fork, replaying the recorded inputs,
+        // SUB-STEPPED at 1/60 (STEPS_PER_DIV fine ticks per division snapshot).
         let forward = functor_runtime_common::mle_producer::forward_step_scene(
             &game.session,
             &fork_model,
@@ -1718,23 +1747,28 @@ mod tests {
             game.has_subscriptions,
             fork_prev_tts,
             fork_tts,
-            DT,
-            N,
+            SUB_DT,
+            DIVISIONS,
+            STEPS_PER_DIV,
             &inputs,
         );
-        assert_eq!(forward.len(), live.len(), "division count");
+        assert_eq!(forward.len(), DIVISIONS, "division count");
 
-        // (a) The projected trajectory matches the live continuation division for
-        // division — the replayed jump reproduces the recorded arc exactly.
-        for (i, ((fwd_m, _w), (lx, ly))) in forward.iter().zip(live.iter()).enumerate() {
+        // (a) Each forward DIVISION-BOUNDARY snapshot matches the live 1/60 frame
+        // at fine step (div+1)*STEPS_PER_DIV — the replayed jump reproduces the
+        // recorded arc EXACTLY at fine dt (velocity-integrated jump projected
+        // faithfully, not coarsely).
+        for (div, (fwd_m, _w)) in forward.iter().enumerate() {
+            let live_idx = (div + 1) * STEPS_PER_DIV - 1;
+            let (lx, ly) = live[live_idx];
             assert!(
                 (field(fwd_m, "x") - lx).abs() < 1e-9,
-                "x diverged at division {i}: {} vs {lx}",
+                "x diverged at division {div}: {} vs {lx}",
                 field(fwd_m, "x")
             );
             assert!(
                 (field(fwd_m, "y") - ly).abs() < 1e-9,
-                "y diverged at division {i}: {} vs {ly}",
+                "y diverged at division {div}: {} vs {ly}",
                 field(fwd_m, "y")
             );
         }
