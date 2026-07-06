@@ -114,6 +114,11 @@ pub struct MleGame {
     /// settled `model` + physics fixed-frame each rendered frame and seeks/
     /// rewinds them together. Shared with the web producer (one tested impl).
     recorder: SceneRecorder,
+    /// This frame's buffered input events (docs/time-travel.md T6b): appended in
+    /// `key_event`/`mouse_move`/`mouse_wheel` beside the live `session.call`, and
+    /// flushed into `recorder`'s input log by `record_frame` (plain data, so the
+    /// log survives a hot reload).
+    input_buf: Vec<functor_runtime_common::RecordedInput>,
     /// Endpoint keys of the connections currently declared by
     /// `subscriptions` (`Sub.connect`/`Sub.listen`) — diffed each frame to
     /// open newly-declared ones and close dropped ones. The shell's
@@ -338,6 +343,7 @@ impl MleGame {
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
             recorder: SceneRecorder::new(),
+            input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
             last_frame: empty_frame(),
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_stderr),
@@ -365,6 +371,7 @@ impl MleGame {
             pending_events: &mut self.pending_events,
             live_conn_keys: &mut self.live_conn_keys,
             prev_tts: &mut self.prev_tts,
+            input_buf: &mut self.input_buf,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
             suppress_outbound: false,
@@ -580,6 +587,13 @@ impl Game for MleGame {
     /// smears. A draw that errors or doesn't return a Frame is skipped, so the
     /// result may be shorter than `divisions`.
     fn ghost_frames(&self, divisions: usize, dt: f32, start_tts: f64) -> Vec<Frame> {
+        // Replay the recorded inputs for the frames AFTER the fork point K, so a
+        // recorded jump/run ghosts (docs/time-travel.md T6b). Beyond the recorded
+        // window the forward-step coasts on held state.
+        let inputs = match self.recorder.current_scene_frame() {
+            Some(k) => self.recorder.inputs_from(k + 1),
+            None => Vec::new(),
+        };
         let stepped = forward_step_scene(
             &self.session,
             &self.model,
@@ -589,6 +603,7 @@ impl Game for MleGame {
             start_tts as f32,
             dt,
             divisions,
+            &inputs,
         );
         let mut frames = Vec::with_capacity(stepped.len());
         for (i, (model_i, _world)) in stepped.iter().enumerate() {
@@ -656,6 +671,10 @@ impl Game for MleGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("input", &err),
         }
+        // Buffer the raw event for the frame-indexed input log (T6b): flushed
+        // into the recorder by `record_frame`, replayed by the forward-step.
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::Key { code, is_down });
     }
     fn mouse_move(&mut self, x: i32, y: i32) {
         if !self.has_mouse_move {
@@ -670,6 +689,8 @@ impl Game for MleGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseMove", &err),
         }
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::MouseMove { x, y });
     }
 
     fn mouse_wheel(&mut self, delta: i32) {
@@ -681,6 +702,8 @@ impl Game for MleGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseWheel", &err),
         }
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::MouseWheel { delta });
     }
 
     fn render(&mut self, frame_time: FrameTime) -> Frame {
@@ -1541,6 +1564,7 @@ mod tests {
             fork_tts,
             DT,
             N,
+            &[],
         );
 
         // The live producer state is UNCHANGED by the forward-step.
@@ -1581,5 +1605,136 @@ mod tests {
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The frame-indexed input log payoff (docs/time-travel.md T6b): forward-
+    /// stepping the REAL `examples/mario` game while REPLAYING its recorded input
+    /// log reproduces a scripted jump exactly, and the projected character clears
+    /// the chasm. Mario has no `physics` hook (`has_physics = false`), so the
+    /// projection is exact — the whole state forward-steps in `tick`, driven only
+    /// by the replayed inputs. This is the "record a jump, replay it forward"
+    /// demo, runtime-verified headlessly.
+    #[test]
+    fn mario_forward_step_replays_recorded_jump_and_clears_chasm() {
+        use functor_runtime_common::Key;
+
+        fn field(v: &Value, name: &str) -> f64 {
+            match v {
+                Value::Record(fields) => match &fields.iter().find(|(k, _)| k == name).unwrap().1 {
+                    Value::Number(x) => *x,
+                    Value::Bool(b) => {
+                        if *b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    other => panic!("{name} is not a number/bool: {other}"),
+                },
+                _ => panic!("model is not a record"),
+            }
+        }
+
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.mle");
+        let mut game = MleGame::create(mario);
+        assert!(!game.has_physics, "mario must have no physics hook");
+
+        const DT: f32 = 1.0 / 60.0;
+        const K: usize = 10; // pre-jump fork point (still running left of the edge)
+        const N: usize = 75; // continuation window: run to the edge, jump, land, run
+
+        // Hold Right from the very first frame (a single key-down, then held).
+        game.key_event(Key::Right as i32, true);
+
+        // Phase 1: drive K frames of running to the fork point (pre-jump).
+        let mut tts = 0.0f32;
+        for _ in 0..K {
+            tts += DT;
+            game.tick(FrameTime { tts, dts: DT });
+        }
+        let fork_model = game.model.clone();
+        let fork_prev_tts = game.prev_tts;
+        let fork_tts = tts;
+        // The fork is pre-jump: grounded, running, still well left of the chasm.
+        assert_eq!(field(&fork_model, "grounded"), 1.0, "fork must be grounded");
+        assert!(field(&fork_model, "x") < -3.0, "fork must be left of the edge");
+
+        // Phase 2: the live continuation — run to the edge and JUMP at the last
+        // grounded frame before walking off (the optimal launch), then land. This
+        // fills the recorder's input log for frames K.. and is the ground truth.
+        let mut live: Vec<(f64, f64)> = Vec::with_capacity(N);
+        let mut jumped = false;
+        for _ in 0..N {
+            // Jump just before walking off the left platform (mirrors a player
+            // timing the jump at the edge). One press, gated on grounded.
+            if !jumped
+                && field(&game.model, "grounded") == 1.0
+                && field(&game.model, "x") + (8.0 * DT as f64) >= -3.0
+            {
+                game.key_event(Key::Up as i32, true);
+                jumped = true;
+            }
+            tts += DT;
+            game.tick(FrameTime { tts, dts: DT });
+            live.push((field(&game.model, "x"), field(&game.model, "y")));
+        }
+        assert!(jumped, "the scripted jump must have fired");
+
+        // The recorded input log for the continuation frames (K..), replayed by
+        // the forward-step. `current_scene_frame` is the newest recorded frame
+        // (K + N - 1); ghosting resolves K from it, so replay frames K.. .
+        let inputs = game.recorder.inputs_from(K as u64);
+        assert_eq!(inputs.len(), N, "one input entry per continuation frame");
+        // The jump was recorded as a single Up key-down somewhere in the window.
+        let up_events: usize = inputs
+            .iter()
+            .flatten()
+            .filter(|e| matches!(e, functor_runtime_common::RecordedInput::Key { code, is_down }
+                if *code == Key::Up as i32 && *is_down))
+            .count();
+        assert_eq!(up_events, 1, "exactly one recorded jump");
+
+        // Forward-step from the PRE-JUMP fork, replaying the recorded inputs.
+        let forward = functor_runtime_common::mle_producer::forward_step_scene(
+            &game.session,
+            &fork_model,
+            game.has_physics,
+            game.has_subscriptions,
+            fork_prev_tts,
+            fork_tts,
+            DT,
+            N,
+            &inputs,
+        );
+        assert_eq!(forward.len(), live.len(), "division count");
+
+        // (a) The projected trajectory matches the live continuation division for
+        // division — the replayed jump reproduces the recorded arc exactly.
+        for (i, ((fwd_m, _w), (lx, ly))) in forward.iter().zip(live.iter()).enumerate() {
+            assert!(
+                (field(fwd_m, "x") - lx).abs() < 1e-9,
+                "x diverged at division {i}: {} vs {lx}",
+                field(fwd_m, "x")
+            );
+            assert!(
+                (field(fwd_m, "y") - ly).abs() < 1e-9,
+                "y diverged at division {i}: {} vs {ly}",
+                field(fwd_m, "y")
+            );
+        }
+
+        // (b) The character CLEARS the chasm: it lands on the RIGHT platform
+        // (x past chasmHalf 3.0 and inside rightEdge 11.0), grounded — not fallen
+        // into the gap and respawned.
+        let (final_x, _final_y) = *live.last().unwrap();
+        assert!(
+            final_x > 3.0 && final_x < 11.0,
+            "character should have cleared the chasm and landed on the right platform, final x = {final_x}"
+        );
+        assert_eq!(
+            field(&game.model, "grounded"),
+            1.0,
+            "character should be grounded on the right platform"
+        );
     }
 }

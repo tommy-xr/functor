@@ -852,19 +852,27 @@ Escape again to quit"
                             println!("[xreal] recentered");
                         }
                     }
-                    // Always honor key releases and focus-loss, even while other
-                    // input is ignored (pinned clock) — otherwise a key held at
-                    // the pin transition, or released after alt-tab, would stick
-                    // in held_keys forever. Releases can only *clear* input, so
-                    // they don't perturb a pinned/deterministic pose.
+                    // Always honor the SHELL bookkeeping for key releases and
+                    // focus-loss, even while other input is ignored (pinned clock)
+                    // — otherwise a key held at the pin transition, or released
+                    // after alt-tab, would stick in held_keys forever. But while
+                    // pinned we must NOT deliver the release to the game: the
+                    // input log only records/replays what reaches the model, and a
+                    // paused frame drops its input buffer, so an unlogged release
+                    // would diverge forward-step replay. Gate the game delivery on
+                    // !ignore_user_input while keeping held_keys/cursor bookkeeping.
                     glfw::WindowEvent::Key(key, _, Action::Release, _) => {
                         let k = map_key(key);
-                        game.key_event(k as i32, false);
+                        if !ignore_user_input {
+                            game.key_event(k as i32, false);
+                        }
                         held_keys.remove(&k);
                     }
                     glfw::WindowEvent::Focus(false) => {
                         for k in std::mem::take(&mut held_keys) {
-                            game.key_event(k as i32, false);
+                            if !ignore_user_input {
+                                game.key_event(k as i32, false);
+                            }
                         }
                         // Hand the pointer back when the window loses focus
                         // (cmd-tab to the editor); a click recaptures.

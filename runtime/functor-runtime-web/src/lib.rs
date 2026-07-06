@@ -971,8 +971,10 @@ async fn run_async() -> Result<(), JsValue> {
             last_time = now;
 
             // Deliver page input queued since the last frame (the MLE path's
-            // `mle_*` exports).
-            mle_game::drain_input(&mut **game);
+            // `mle_*` exports). While paused, drain-and-discard: no input may
+            // reach the model on a paused frame (the input log would otherwise
+            // diverge replay), and draining stops the queue bursting on resume.
+            mle_game::drain_input(&mut **game, !clock.is_paused());
 
             game.tick(frame_time.clone());
 
