@@ -18,7 +18,8 @@ npm run build     # tsc -> dist/
 ```ts
 import { FunctorRunner, stepAll } from "@functor/sdk";
 
-// Launch a game and drive it deterministically.
+// Launch a game and drive it deterministically. MLE games are run via `mlePath`
+// (the runner interprets the .mle — nothing to build).
 await using game = await FunctorRunner.launch({
   gameDir: "examples/mle-hello-gltf",
   mlePath: "examples/mle-hello-gltf/game.mle",
@@ -86,13 +87,18 @@ npm test          # unit tests only (no runtime needed)
 npm run test:e2e  # FUNCTOR_E2E=1 — launches a real functor-runner
 ```
 
-The e2e tests require the runner binary to be built, and a display to open the
-GL window. The games are MLE sources (`examples/mle-*`) interpreted in place, so
-there is no per-game build step:
+The e2e tests require the runner binary and a display to open the GL window. MLE
+games need no build step — the runner interprets the `.mle` directly — so only
+`functor-runner` has to be built:
 
 ```sh
 cargo build --bin functor-runner
 ```
+
+(The games driven by the tests are `examples/mle-hello-gltf` — the held-input
+test — and `examples/mle-mpserver` / `examples/mle-mpclient` — the multiplayer
+test. A `build` step is optional: `functor -d <dir> build native` just
+typechecks the `.mle`.)
 
 The headline e2e (`held-input.e2e.test.ts`) is the durable guard for the
 input→state→step loop: inject `up`, step a frame, assert the model's `held.up`

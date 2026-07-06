@@ -9,13 +9,13 @@ localhost socket.
 Start it by passing `--debug-port <PORT>`:
 
 ```sh
-# via the CLI (rebuilds + runs the game)
-./target/debug/functor -d examples/hello run native --debug-port 8077
+# via the CLI (runs the game — the runner interprets the .mle)
+./target/debug/functor -d examples/mle-hello-gltf run native --debug-port 8077
 
-# or the runner directly, against an already-built dylib
+# or the runner directly, against the .mle entry
 #   (cwd must be the game dir so assets resolve)
-cd examples/hello
-functor-runner --game-path build-native/target/debug/libgame_native.dylib --debug-port 8077
+cd examples/mle-hello-gltf
+functor-runner --mle --game-path game.mle --debug-port 8077
 ```
 
 The server binds **localhost by default** (`127.0.0.1:<PORT>`); `--debug-bind 0.0.0.0`
@@ -31,10 +31,10 @@ without GLFW/OpenGL, so no display (or GPU) is needed. Ideal for CI, scripted ru
 and LLM-driven control:
 
 ```sh
-functor-runner --game-path <dylib> --debug-port 8077 --headless
+functor-runner --mle --game-path game.mle --debug-port 8077 --headless
 ```
 
-`/`, `/state`, `/scene`, `/input`, and `/time` all work (the game's `draw3d`
+`/`, `/state`, `/scene`, `/input`, and `/time` all work (the game's `draw`
 produces a pure `Frame`, so `/scene` is real data with no rendering). This is the
 runtime expression of the LLM-native principle: drive and observe a game with no
 GPU window. Limitations vs. windowed:
@@ -54,7 +54,7 @@ work unchanged (audio too). `--capture-frame` implies `--hidden` — a scripted
 screenshot run has no reason to grab your mouse.
 
 ```sh
-functor-runner --game-path <dylib> --debug-port 8077 --hidden
+functor-runner --mle --game-path game.mle --debug-port 8077 --hidden
 ```
 
 ## Endpoints
@@ -97,7 +97,7 @@ injected `/input` still applies — so an external driver has deterministic cont
 The body is the raw `.mle` source. The runner validates it and swaps the session with
 **the model preserved** — the same semantics as the file-watch reload. A broken push
 returns **400** with the rendered load error and keeps the old program running; producers
-whose logic isn't source-shaped (compiled dylibs, replays) also return 400. This is the
+whose logic isn't source-shaped (e.g. the `--replay` producer) also return 400. This is the
 remote develop path: run the game on another machine or device
 (`--debug-port <P> --debug-bind 0.0.0.0`), then push from the project dir:
 

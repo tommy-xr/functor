@@ -65,7 +65,7 @@ The networking design + phased roadmap that drives these items lives in
       — most likely `tick : model -> FrameTime -> Input.State -> ...` — so games
       ask `Input.State.isKeyDown state Key.W` instead of rebuilding held-key state
       from up/down events. Keep events too (press/release edges matter). Held-set
-      is derived state: rebuild from events, don't persist in `OpaqueState`.
+      is derived state: rebuild from events, don't persist it across a reload.
 - [ ] Game-controller and VR-controller events (`Input` has TODO placeholders).
 
 ## CLI
@@ -80,7 +80,7 @@ The networking design + phased roadmap that drives these items lives in
 Design + phased roadmap: `docs/physics.md` (Rapier-backed, functional
 `physicsScape` reconcile, deterministic fixed-step, `Simulatable`/`Timeline`
 rewind seam, server-authoritative prediction). First step = Phase 1, the Rust-only
-shell spine (no F# surface).
+shell spine (no game-language surface).
 
 - [ ] Phase 1: Rapier dep + `physics` module + fixed-step + `Timeline` traits +
       determinism goldens.
@@ -110,27 +110,20 @@ iteration" item below (T6, trajectory preview).
 
 ## Language (MLE)
 
-Design + phased roadmap: `docs/mle.md` (replace F#/Fable with a custom
-Rust-hosted interpreted language; data-protocol seam first, F# and MLE coexist
-behind a `GameProducer` trait until MLE wins). Language design notes live in
-`~/notes/ideas/mle-language/`.
-
-- [ ] Milestone 0: throwaway perf spike — interpreted tick/draw at 60fps +
-      hot-reload latency numbers, embedded in `functor-runner` behind a flag.
-- [ ] Track A: data seam — versioned serde protocol (A1), `GameProducer` trait
-      (A2), proof producer (A3). No MLE required; valuable standalone.
-- [ ] Track B: MLE vertical slice — parser → IR → interpreter → types →
-      ADTs/closures → effect broker (B1–B6), in-repo `mle/` crates.
-- [ ] Track C: MLE behind the seam — prelude, `MleProducer` + mle-hello golden,
-      hot-reload payoff demo, MVU parity, wasm, perf gate (C1–C6).
-- [ ] Endgame: port examples, then delete the F#/Fable pipeline (E1–E3).
+**SHIPPED** — MLE is now Functor's only game-logic language; the F#/Fable
+pipeline was deleted (roadmap E3). The full history and design record is in
+`docs/mle.md` (all tracks/checkboxes done); the live language reference is the
+`mle-language` skill. Remaining language follow-ups tracked there: `.mlei`
+interface files (B8 part 2), LSP cross-file support, and wasm/live-preview
+multi-file.
 
 ## Live variables / fast iteration
 
 - [ ] Live-variable debugging: a `Constant`-style function (name + value) editable
       at runtime, backed by a string→value map. See
-      [const-tweaker](https://github.com/tversteeg/const-tweaker); may need a
-      custom Fable build for token reloading.
+      [const-tweaker](https://github.com/tversteeg/const-tweaker). (MLE hot-reload
+      already rebinds edited top-level values live; this is the finer-grained,
+      no-reload knob.)
 
 ## Audio
 

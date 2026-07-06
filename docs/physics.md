@@ -64,7 +64,7 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
 ## Design constraints (from the architecture)
 
 - **Physics-as-shell, model-as-truth.** A Rapier world is a large mutable bag of
-  solver state; it is *not* stored in the F# model. It lives runtime-side in
+  solver state; it is *not* stored in the MLE model. It lives runtime-side in
   `functor-runtime-common` as a cache/accelerator — exactly like the renderer and
   the audio voice registry. The model holds plain, serializable data; the live
   world is reconstructible from a snapshot or an input replay.
@@ -117,8 +117,7 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
 ## Surface: MLE-first
 
 **The game-facing surface lands in MLE, not F#** (decided 2026-07-03; see
-`docs/language-direction.md` — Functor is investing in MLE as the game-logic
-layer). The design below is unchanged — declarative scene, divergence rule,
+`docs/mle.md` — MLE is now Functor's only game-logic layer). The design below is unchanged — declarative scene, divergence rule,
 commands, subs — but the shipping vocabulary is the MLE prelude
 (`functor_runtime_common::mle_prelude`, documented in the `mle-language`
 skill):
@@ -404,8 +403,8 @@ are just the two common collections; a model can carry as many as its netcode ne
   **instanced rendering** (`Scene3D.instances mesh transforms` → one draw call),
   **reconcile bail-out + tag interning** (steady-state diff is near-free), and the
   **`Physics.events` sub** (despawn-on-collision).
-- **`Entities` is a recommended pattern, not a mandate.** It ships in
-  `Functor.Game` as the default, but a game can swap in its own entity model
+- **`Entities` is a recommended pattern, not a mandate.** It would ship as a
+  default MLE module, but a game can swap in its own entity model
   (ECS-ish, hierarchical) on the same primitives — Functor doesn't impose one.
 
 ## Determinism
