@@ -2,7 +2,7 @@
 // postMessage seam — the exact path the VSCode live-preview panel uses
 // (extension → webview → iframe is just plumbing on top of this).
 //
-// Serves examples/mle-hello with the built CLI, then drives headless
+// Serves examples/hello-cubes with the built CLI, then drives headless
 // Chromium through the full story:
 //
 //   1. the original game renders (red-dominant pulsing centerpiece);
@@ -30,7 +30,7 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // --- The pushed sources. -----------------------------------------------------
 
-// The model shape mle-hello's init establishes: { spin, beat }. Every push
+// The model shape hello-cubes's init establishes: { spin, beat }. Every push
 // keeps `tick` accumulating spin at 0.5/s so the survival probes have a
 // value that only time-across-reloads can produce.
 const TICK = `let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt * 0.5 }`;
@@ -70,7 +70,7 @@ const check = (name, ok, detail = "") => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const server = spawn("./target/debug/functor", ["-d", "examples/mle-hello", "run", "wasm", "--no-open"], {
+const server = spawn("./target/debug/functor", ["-d", "examples/hello-cubes", "run", "wasm", "--no-open"], {
   cwd: ROOT,
   stdio: "ignore",
 });
@@ -136,7 +136,7 @@ const centerPixel = () =>
   );
 
 // 1. Let the game run so spin accumulates past the probe threshold
-//    (0.5/s × ~1.6s ≈ 0.8), then pin down the original look: mle-hello's
+//    (0.5/s × ~1.6s ≈ 0.8), then pin down the original look: hello-cubes's
 //    centerpiece color has red = 1.0 always.
 await sleep(1600);
 const before = await centerPixel();

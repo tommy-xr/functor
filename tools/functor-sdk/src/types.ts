@@ -64,7 +64,7 @@ export interface WaitForOptions {
 /** Options for launching a `functor` process (`functor run native`). */
 export interface LaunchOptions {
   /** Game directory (the runner's cwd, for resolving assets).
-   * e.g. an absolute path to `examples/mle-hello-gltf`. */
+   * e.g. an absolute path to `examples/hello`. */
   gameDir: string;
   /** Debug-runtime HTTP port (default 8077). */
   port?: number;

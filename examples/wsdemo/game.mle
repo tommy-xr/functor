@@ -1,10 +1,10 @@
-// mle-wsdemo — the MLE port of examples/wsdemo (docs/mle.md Track E).
+// wsdemo — the MLE port of examples/wsdemo (docs/mle.md Track E).
 // A minimal WebSocket client: `Sub.connect` keeps a connection open; when it
 // opens, the runtime hands us a connection id via `Net.Connected`, which we
 // store and use with `Effect.send`. Inbound messages flow to the same tagger.
 // Driven headlessly in tests (events injected without a real socket).
 //
-//   functor -d examples/mle-wsdemo run native
+//   functor -d examples/wsdemo run native
 
 type Conn =
   | NoConn

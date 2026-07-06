@@ -1,4 +1,4 @@
-// mle-netdemo — the MLE port of examples/netdemo (roadmap E2, docs/mle.md).
+// netdemo — the MLE port of examples/netdemo (roadmap E2, docs/mle.md).
 //
 // A minimal HTTP sample in the Elm `Http.get { expect = ... }` style: it fires
 // an HTTP GET whose result is tagged into a message and reflected into the
@@ -7,7 +7,7 @@
 // (see runtime/functor-runtime-common http tests). `draw` is deliberately tiny;
 // the interesting state is the textual phase.
 //
-//   functor -d examples/mle-netdemo run native
+//   functor -d examples/netdemo run native
 //
 // Port note: MLE's `init` is a plain value (no F# `GameBuilder.init` effect
 // seed), so the request is fired ONCE on the first frame from `tick` — a bare

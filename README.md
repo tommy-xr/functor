@@ -43,8 +43,8 @@ effect; `draw`/`physics`/`soundScape`/`ui`/`subscriptions` return their own
 specific values.) The full language and prelude
 (`Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*` / …)
 are documented in the `mle-language` skill (`.claude/skills/mle-language/`) and
-`docs/mle.md`. See `examples/mle-hello-gltf/game.mle` or
-`examples/mle-primitives/game.mle` for complete games.
+`docs/mle.md`. See `examples/hello/game.mle` or
+`examples/primitives/game.mle` for complete games.
 
 ## Design principles
 
@@ -66,7 +66,7 @@ are documented in the `mle-language` skill (`.claude/skills/mle-language/`) and
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.mle` in the browser |
 | `cli/` | The `functor` CLI (`build` / `run` / `develop`; `init` is not yet implemented) |
 | `tools/` | Editor tooling: `mle-vscode` (extension), `mle-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
-| `examples/mle-*/` | Sample games — e.g. `mle-hello-gltf` (a lineup of glTF sample models with a WASD + mouse free-look camera), `mle-primitives`, `mle-lighting` |
+| `examples/*/` | Sample games — e.g. `hello` (a lineup of glTF sample models with a WASD + mouse free-look camera), `primitives`, `lighting` |
 
 ## Prerequisites
 
@@ -105,7 +105,7 @@ This produces two binaries in `target/debug/`: `functor` (the CLI) and `functor-
 (the desktop runtime). The CLI looks for `functor-runner` next to itself, so keep them
 together.
 
-## Running a sample (`examples/mle-hello-gltf`)
+## Running a sample (`examples/hello`)
 
 Some samples reference glTF model assets that aren't checked in (they download from
 [BabylonJS Assets](https://github.com/BabylonJS/Assets/)); fetch them first:
@@ -120,13 +120,13 @@ The `run` command interprets the game's `.mle` and launches it — no build step
 
 ```sh
 # Native — opens a window
-./target/debug/functor -d examples/mle-hello-gltf run native
+./target/debug/functor -d examples/hello run native
 
 # A primitives-only sample (no assets needed)
-./target/debug/functor -d examples/mle-primitives run native
+./target/debug/functor -d examples/primitives run native
 
 # Web — serves the .mle + wasm bundle at http://127.0.0.1:8080
-./target/debug/functor -d examples/mle-primitives run wasm
+./target/debug/functor -d examples/primitives run wasm
 ```
 
 `native` is the default environment, so `... run` is equivalent to `... run native`.

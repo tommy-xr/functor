@@ -15,17 +15,17 @@ const SKYBOX_BASE =
 // Which assets each sample needs (a sample loads them relative to its own dir).
 const TARGETS = [
   {
-    dir: "examples/mle-hello-gltf",
+    dir: "examples/hello",
     baseUrl: MESHES_BASE,
     assets: ["shark.glb", "ExplodingBarrel.glb", "fish.glb", "Xbot.glb"],
   },
   {
-    dir: "examples/mle-lighting",
+    dir: "examples/lighting",
     baseUrl: MESHES_BASE,
     assets: ["shark.glb"],
   },
   {
-    dir: "examples/mle-atmosphere",
+    dir: "examples/atmosphere",
     baseUrl: SKYBOX_BASE,
     assets: [
       "TropicalSunnyDay_px.jpg",

@@ -1,11 +1,11 @@
-// mle-synthwave — the MLE port of examples/synthwave (roadmap E2, docs/mle.md).
+// synthwave — the MLE port of examples/synthwave (roadmap E2, docs/mle.md).
 //
 // A retro-synthwave scene: a neon grid terrain of rolling hills receding toward
 // the horizon and rolling toward the camera over time, a glowing sun low on the
 // horizon, and a dark gradient sky. The whole scene is a pure function of time
 // (tts) — there is no per-frame model state.
 //
-//   functor -d examples/mle-synthwave run native
+//   functor -d examples/synthwave run native
 //
 // Port notes: F#'s procedural `heightmapFn rows cols fn` becomes
 // `Scene.heightmap(List.grid(rows, cols, fn))` — `List.grid` tabulates the grid

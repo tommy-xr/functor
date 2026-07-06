@@ -3139,7 +3139,7 @@ mod tests {
         assert_eq!((s.x.x, s.y.y, s.z.z), (2.0, 3.0, 4.0));
     }
 
-    // The mle-hello shape: a List.map-built group of colored cubes.
+    // The hello-cubes shape: a List.map-built group of colored cubes.
     #[test]
     fn mapped_group_builds_n_children() {
         let frame = frame_of(
@@ -4868,7 +4868,7 @@ the game dir"
         assert_eq!(fountain.position, Some([5.0, 0.5, 0.0]));
     }
 
-    /// Headless server-lifecycle test for the `mle-mpserver` port (roadmap E2),
+    /// Headless server-lifecycle test for the `mpserver` port (roadmap E2),
     /// with no socket. Loads the SHIPPED `game.mle` so this tracks the example,
     /// and exercises the whole server spine — `toMsg` decoding, the
     /// join/move/left `update` logic, `wrapAxis` integration, the `Text.*` wire
@@ -4878,7 +4878,7 @@ the game dir"
     #[test]
     fn mpserver_broadcasts_the_world_to_every_client() {
         // load_single_source injects the built-in Net module, like the runner.
-        let src = include_str!("../../../examples/mle-mpserver/game.mle");
+        let src = include_str!("../../../examples/mpserver/game.mle");
         let project = mle::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load mpserver: {}", e.render()));
         let session = mle::Session::load(&project.module, &mut FunctorHost)
@@ -4970,15 +4970,15 @@ the game dir"
         );
     }
 
-    /// Headless client-lifecycle test for the `mle-mpclient` port (roadmap E2),
+    /// Headless client-lifecycle test for the `mpclient` port (roadmap E2),
     /// with no socket. Loads the SHIPPED `game.mle` and drives connect (auto-move
     /// sent), a snapshot decoded into the world, WASD `input` producing sends,
     /// and a disconnect. The snapshot fed in is the exact wire string the
-    /// `mle-mpserver` port broadcasts, so this doubles as a wire round-trip check
+    /// `mpserver` port broadcasts, so this doubles as a wire round-trip check
     /// between the two ports.
     #[test]
     fn mpclient_decodes_snapshots_and_sends_input() {
-        let src = include_str!("../../../examples/mle-mpclient/game.mle");
+        let src = include_str!("../../../examples/mpclient/game.mle");
         let project = mle::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load mpclient: {}", e.render()));
         let session = mle::Session::load(&project.module, &mut FunctorHost)
@@ -5070,7 +5070,7 @@ the game dir"
             "input before connect sends nothing"
         );
 
-        // A server snapshot (the exact wire string mle-mpserver broadcasts)
+        // A server snapshot (the exact wire string mpserver broadcasts)
         // decodes into the world, binding each pid to its own coordinates.
         let msg = call(&session, "toMsg", vec![event(NetEventKind::Message, 5, "1,-200,100|0,-100,-180")]);
         let (model, _) = split_model_effect(call(&session, "update", vec![model, msg]));

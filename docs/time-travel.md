@@ -12,7 +12,7 @@ Rapier world to the entire MVU model.
 You can pause a running MLE game and **drag a timeline scrubber to any recorded
 frame** — the whole scene (MVU `model` *and* physics world) restores together —
 on both the desktop runner and the web/VSCode preview. Exercised by
-`examples/mle-physics`.
+`examples/physics`.
 
 - **The coupled recorder** (`functor_runtime_common::timetravel`): a bounded
   per-frame snapshot ring `History<T>` and a `SceneRecorder` over it. Each
@@ -84,7 +84,7 @@ a first-class part of the runtime) and Bret Victor's *Inventing on Principle*
 recorder records and replays only the Rapier `World` through a
 `TimelineLog<World>`. The MVU `model` — which in a Functor game *is* the game
 state (score, AI, spawn generation, animation timers, UI state, everything
-non-physics) — is never snapshotted. Scrub back in `examples/mle-physics` today
+non-physics) — is never snapshotted. Scrub back in `examples/physics` today
 and the crate *poses* move, but any model-resident state stays pinned at "now."
 That is correct for a physics demo and insufficient for a whole-game scrubber.
 

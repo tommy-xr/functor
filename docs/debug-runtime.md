@@ -10,11 +10,11 @@ Start it by passing `--debug-port <PORT>`:
 
 ```sh
 # via the CLI (runs the game — the runner interprets the .mle)
-./target/debug/functor -d examples/mle-hello-gltf run native --debug-port 8077
+./target/debug/functor -d examples/hello run native --debug-port 8077
 
 # or the runner directly, against the .mle entry
 #   (cwd must be the game dir so assets resolve)
-cd examples/mle-hello-gltf
+cd examples/hello
 functor-runner --mle --game-path game.mle --debug-port 8077
 ```
 

@@ -1,10 +1,10 @@
-// mle-wsserverdemo — the MLE port of examples/wsserverdemo (docs/mle.md E).
+// wsserverdemo — the MLE port of examples/wsserverdemo (docs/mle.md E).
 // A minimal WebSocket SERVER (native-only): `Sub.listen` binds an address;
 // each accepted client surfaces through the tagger carrying its own
 // connection id, which we use to reply with `Effect.send`. A closure tagger
 // (`toMsg`) decodes Net.NetEvent into game-specific messages.
 //
-//   functor -d examples/mle-wsserverdemo run native
+//   functor -d examples/wsserverdemo run native
 
 type Model = { clients: Float, status: String, lastMsg: String }
 

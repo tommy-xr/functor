@@ -18,6 +18,6 @@ npm run test:site      # headless e2e (e2e/site-sandbox.mjs)
   mapping and set-source seam in sync with that page.
 - `src/sandbox.js` / `src/mle.js` — the editor page and the MLE
   CodeMirror language + synthwave theme.
-- `build.mjs` copies the sandbox's repo examples (`examples/mle-*/game.mle`)
+- `build.mjs` copies selected repo examples' `game.mle` sources (see the map in `build.mjs`)
   at build time, so the dropdown always matches what ships in the repo.
 - Deploy: publish `site/dist` to any static host.

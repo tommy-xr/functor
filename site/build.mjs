@@ -24,9 +24,9 @@ const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
 // dist/examples/<name>.mle — site-local plus the repo's MLE examples.
 const EXAMPLES = {
   hero: `${site}examples/hero.mle`,
-  orbit: `${root}examples/mle-hello/game.mle`,
-  physics: `${root}examples/mle-physics/game.mle`,
-  monitor: `${root}examples/mle-monitor/game.mle`,
+  orbit: `${root}examples/hello-cubes/game.mle`,
+  physics: `${root}examples/physics/game.mle`,
+  monitor: `${root}examples/monitor/game.mle`,
 };
 
 try {

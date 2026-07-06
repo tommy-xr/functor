@@ -364,7 +364,7 @@ Starts once A2 + B3 exist.
       Material-drops-its-xform quirk AND apply outermost-last (the order the
       source reads) — both pinned by test.
       *Verify (done):* unit tests assert the protocol data `.mle` snippets
-      emit, incl. wire round-trip and the mle-hello mapped-group shape;
+      emit, incl. wire round-trip and the hello-cubes mapped-group shape;
       prelude + mle crate build for wasm32 (ready for C5). (done)
 - [x] **C2. `MleGame` — the real producer.** `mle_game.rs` runs `.mle` logic
       through `mle::Session` + the C1 prelude behind the existing `--mle`
@@ -372,7 +372,7 @@ Starts once A2 + B3 exist.
       `tick(model, dt, tts)`, `draw(model, tts) -> Frame`; the model is a
       plain MLE value held by the host (the C3 reload seam). Type
       diagnostics print as warnings at load; per-frame errors keep the last
-      good model/frame. First game: `examples/mle-hello` (ring of cubes +
+      good model/frame. First game: `examples/hello-cubes` (ring of cubes +
       pulsing sphere; exercises `with`-updates, `let`, pipelines,
       `List.range`/`Math.sin` — both added here). Release perf: tick 5.2µs +
       draw 47.7µs = 0.3% of budget at 13 entities.
@@ -413,7 +413,7 @@ Starts once A2 + B3 exist.
         Optional `mouseMove(model, x, y)` / `mouseWheel(model, delta)`
         entry points; prelude grows the lit pipeline — `Scene.lit`/
         `Scene.emissive`, all three `Light.*` kinds + `castShadows`,
-        `Camera.firstPerson`, `Frame.createLit`. `examples/mle-primitives`
+        `Camera.firstPerson`, `Frame.createLit`. `examples/primitives`
         ports the F# golden scene (shadow-casting sun, orbiting colored
         point lights, emissive markers) — **0.000% pixels over the golden
         tolerance vs the F# render** at the same fixed time.
@@ -426,7 +426,7 @@ Starts once A2 + B3 exist.
         `crossedBoundary` rule verbatim — so timers need no identity and
         tick right through a hot reload; fired messages fold through
         `update` before `tick`, the drain seam B6's effects will feed.
-        `examples/mle-hello` gains a once-per-second Beat.
+        `examples/hello-cubes` gains a once-per-second Beat.
         *Verify (done):* pinned-clock SDK e2e proves exact arithmetic —
         one message per period step, millis/seconds parity, a long frame
         collapses missed boundaries into ONE firing, and a reload that
@@ -444,12 +444,12 @@ Starts once A2 + B3 exist.
         gives a lit, shadowed feed), and `Scene.screen(scene, target)`
         (the reader: an emissive surface showing the target's texture;
         an undeclared id renders magenta + warns once).
-        `examples/mle-monitor` demos it: a panning security camera
+        `examples/monitor` demos it: a panning security camera
         filming the courtyard, shown live on an in-world monitor.
         *Verify (done):* prelude unit tests pin the frame's target
         passes, the Scene.screen wire shape, and the branded-value
         teaching errors; deterministic `--fixed-time` captures of
-        mle-monitor show the second camera's view on the screen.
+        monitor show the second camera's view on the screen.
       - [x] **C4b-4. Fog** (done 2026-07-04): prelude grows the
         distance-fog surface over the engine feature — branded
         `Fog.linear(near, far, r, g, b)` / `Fog.exp(density, r, g, b)`
@@ -458,7 +458,7 @@ Starts once A2 + B3 exist.
         `Frame.withFog(frame, fog)`. Fog applies to every forward
         material including emissive (fog occludes glow) and drives the
         pass's clear color, so geometry dissolves into the horizon.
-        `examples/mle-atmosphere` demos it: an identical-pillar
+        `examples/atmosphere` demos it: an identical-pillar
         colonnade receding into fog, with an emissive drifter.
         *Verify (done):* prelude unit tests pin the frame's fog wire
         shape and the teaching errors; a fog-less frame renders
@@ -471,7 +471,7 @@ Starts once A2 + B3 exist.
         draws behind everything after the pass's clear; while the six
         faces load the clear color shows, and a failed face disables
         the sky with one warning. Fog does not apply to the sky.
-        `examples/mle-atmosphere` gains the TropicalSunnyDay sky
+        `examples/atmosphere` gains the TropicalSunnyDay sky
         (fetched via `npm run fetch:assets`, gitignored), with the fog
         color tuned to the sky's horizon band so the colonnade
         dissolves INTO the sky.
@@ -491,7 +491,7 @@ Starts once A2 + B3 exist.
       native-only — on web, reload the page (the server reads the file per
       fetch, so edits are one refresh away).
       *Verify (done):* mle + web runtime build clean for wasm32; CLI
-      build/run wasm probes on `examples/mle-hello` — the served index page,
+      build/run wasm probes on `examples/hello-cubes` — the served index page,
       wasm bundle, and `.mle` source all curl back correctly; entry
       substitution unit-tested; headless-Chromium probe renders the game
       (ring + sphere) AND proves the Beat subscription folded through
@@ -570,20 +570,20 @@ First-class `.mle` editor support, built on the `mle` crate's front-end
       `functor run wasm` + iframe; a bundled self-contained runtime can
       come later. *Verify (done):* headless-Chromium e2e
       (`node e2e/mle-preview-reload.mjs`, self-serving) drives the page's
-      postMessage seam on `mle-hello`: a green push reloads with "model
+      postMessage seam on `hello-cubes`: a green push reloads with "model
       preserved" and the center pixel turns green; a probe whose tick
       errors iff `spin <= 0.5` runs clean while its inversion errors —
       spin only exceeds 0.5 by accumulating ACROSS reloads, so the model
       demonstrably survived; a broken push is rejected with the parse
       error and the old program keeps rendering; a push after the broken
-      one lands (12/12); manual: edit `mle-hello` live in the panel.
+      one lands (12/12); manual: edit `hello-cubes` live in the panel.
 
 ## Endgame — replace F#
 
 Pull-based: port examples as MLE proves itself; no flag-day.
 
 - [x] **E1.** Port `examples/hello` (glTF lineup, free-look camera) — the
-      real-world bar. *Verify (done 2026-07-04):* `examples/mle-hello-gltf`
+      real-world bar. *Verify (done 2026-07-04):* `examples/hello`
       renders **full-frame parity** with F# hello at `--fixed-time 2.0`.
       The prelude gained `Scene.model(path)` (E1a), then the three
       remaining engine gaps (E1b): `Scene.heightmap([[h,…],…])` (the
@@ -599,7 +599,7 @@ Pull-based: port examples as MLE proves itself; no flag-day.
       input math, model lineup, lit primitives, neon sphere, and lights
       were already byte-identical from E1a.
 - [x] **E2.** Port remaining examples, one PR each (done 2026-07-05 — every
-      sample is now an `examples/mle-*` project). *Verify:* per-example
+      sample is now an `examples/*` project). *Verify:* per-example
       goldens + e2e.
       *Progress — networking (2026-07-05):* the MLE **net surface** landed
       so the multiplayer samples can port. A built-in **`Net` module**
@@ -614,7 +614,7 @@ Pull-based: port examples as MLE proves itself; no flag-day.
       inbound events to the matching key's fresh tagger through `update` —
       the physics-events pattern) and `Effect.send(id, text)` (tagger-less,
       queues a `ConnCommand::Send`). Both producers wired.
-      `examples/mle-wsdemo` (client, ctor tagger) + `examples/mle-wsserverdemo`
+      `examples/wsdemo` (client, ctor tagger) + `examples/wsserverdemo`
       (server, closure tagger, per-client ids) port their F# originals;
       headless unit tests drive the full lifecycle without a socket.
       Remaining: `mpclient`/`mpserver`, then HTTP (`netdemo`).
