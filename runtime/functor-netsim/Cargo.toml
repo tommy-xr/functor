@@ -8,3 +8,11 @@ functor_runtime_common = { path = "./../functor-runtime-common" }
 fable_library_rust = { path = "./../../fable_modules/fable-library-rust" }
 libloading = "0.8.3"
 serde_json = "1.0"
+
+# The desktop runtime provides the `MleGame` producer the mp/sim tests drive as
+# their instances (E3 phase 0b). It is a DEV-dependency only: the library itself
+# dispatches over `Box<dyn GameProducer>` and never names an MLE game, so this
+# dev-only edge — the desktop lib normal-depends on this crate for its
+# `functor-netsim-viz` bin — is an allowed dev-dependency cycle, not a real one.
+[dev-dependencies]
+functor-runtime-desktop = { path = "./../functor-runtime-desktop" }
