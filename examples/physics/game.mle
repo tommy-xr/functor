@@ -15,7 +15,6 @@
 // — a live replay; kick differently this time and the timeline branches.
 // Run with:
 //
-//   functor-runner --mle --game-path examples/physics/game.mle
 //   functor -d examples/physics run native
 //
 // The physics world lives host-side: edit this file while it runs and (as

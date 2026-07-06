@@ -1,6 +1,7 @@
 # Debug runtime
 
-An optional HTTP control server on the desktop runtime (`functor-runner`) that lets
+An optional HTTP control server on the desktop runtime (run in-process by the `functor`
+CLI) that lets
 an external client — a script, a test, or an LLM — **observe** and **drive** a running
 game without a GPU window of its own. It is the runtime arm of Functor's LLM-native
 goal: capture frames, query state, control the frame clock, and inject input over a
@@ -9,13 +10,8 @@ localhost socket.
 Start it by passing `--debug-port <PORT>`:
 
 ```sh
-# via the CLI (runs the game — the runner interprets the .mle)
+# the CLI runs the game in-process and interprets the .mle
 ./target/debug/functor -d examples/hello run native --debug-port 8077
-
-# or the runner directly, against the .mle entry
-#   (cwd must be the game dir so assets resolve)
-cd examples/hello
-functor-runner --mle --game-path game.mle --debug-port 8077
 ```
 
 The server binds **localhost by default** (`127.0.0.1:<PORT>`); `--debug-bind 0.0.0.0`
@@ -31,7 +27,7 @@ without GLFW/OpenGL, so no display (or GPU) is needed. Ideal for CI, scripted ru
 and LLM-driven control:
 
 ```sh
-functor-runner --mle --game-path game.mle --debug-port 8077 --headless
+./target/debug/functor -d examples/hello run native --debug-port 8077 --headless
 ```
 
 `/`, `/state`, `/scene`, `/input`, and `/time` all work (the game's `draw`
@@ -54,7 +50,7 @@ work unchanged (audio too). `--capture-frame` implies `--hidden` — a scripted
 screenshot run has no reason to grab your mouse.
 
 ```sh
-functor-runner --mle --game-path game.mle --debug-port 8077 --hidden
+./target/debug/functor -d examples/hello run native --debug-port 8077 --hidden
 ```
 
 ## Endpoints

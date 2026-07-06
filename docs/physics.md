@@ -102,7 +102,7 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
         │  Timeline (trait)   — TimelineLog: keyframes(n) | snapshot_ring | replay_only │
         │  Simulatable (trait)— snapshot / restore / step  (Rapier serde)        │
         └───────────────────────────────────────────────────────────────────────┘
-            native: functor-runner            │   wasm: web-runtime bundle
+            native: functor (in-process)      │   wasm: web-runtime bundle
 ```
 
 - **`physicsScape` → `reconcile`** is `audio::reconcile` with a feedback edge:

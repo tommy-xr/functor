@@ -58,7 +58,7 @@ The one real bet: **can a tree-walking interpreter run per-frame game logic at
 
 - Hand-rolled AST + minimal evaluator (no parser polish, no types, no effects)
   computing a `Scene3D`-shaped value each frame from a model + `FrameTime`,
-  embedded in `functor-runner` behind a flag.
+  embedded in the desktop runtime behind a flag.
 - Measure interpreted tick+draw cost for `hello`-scale logic (tens of entities).
 - Hot-reload: re-parse on file change, keep the model value, rebind functions;
   measure edit→visible latency.

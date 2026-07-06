@@ -195,7 +195,7 @@ the overlay defaults to visible.
         │  egui scrubber overlay  ── drives ──►  TimelineControl      │
         │   (shell-owned; `~` toggle; default-on web/VSCode)          │
         └─────────────────────────────────────────────────────────────┘
-            native: functor-runner        │   wasm: web-runtime (= VSCode preview)
+            native: functor (in-process)  │   wasm: web-runtime (= VSCode preview)
 ```
 
 ## The determinism boundary
