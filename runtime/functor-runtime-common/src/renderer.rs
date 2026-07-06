@@ -192,6 +192,123 @@ target frame are ignored (depth 1 only)",
     );
 }
 
+/// Render K `Frame`s into K offscreen targets and composite them onto the bound
+/// framebuffer as a weighted average — the screen-space compositor (T5, the
+/// shared foundation for fork+overlay and forward-ghosting, docs/time-travel.md).
+///
+/// Each frame renders through the same shadow + forward path as a normal frame,
+/// into its own full-viewport-sized RGBA8 target (keyed `__composite_{i}`, reused
+/// across frames), then `SceneContext::draw_composite` sums them in-shader. The
+/// composite lands in the default framebuffer *after* the forward work and before
+/// any UI overlay, so it shows up in `--capture-frame` PNGs.
+///
+/// Inputs beyond `MAX_COMPOSITE` are dropped; `weights` is truncated/normalized
+/// to the retained count (so equal weights average). Nested render targets inside
+/// an input frame are ignored — the compositor renders each frame's main scene
+/// only (fork/ghost frames are plain scenes).
+pub fn render_composited_frames(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    scene_context: &SceneContext,
+    shadow_map: &ShadowMap,
+    frames: &[Frame],
+    weights: &[f32],
+    frame_time: FrameTime,
+    viewport: Viewport,
+    debug_render_mode: DebugRenderMode,
+) {
+    use crate::composite::{normalize_weights, MAX_COMPOSITE};
+    use crate::render_target::RenderTargetDescriptor;
+
+    let n = frames.len().min(weights.len()).min(MAX_COMPOSITE);
+    if n == 0 {
+        return;
+    }
+    let weights = normalize_weights(&weights[..n]);
+
+    // 1. Render each input frame into its own full-viewport offscreen target.
+    let mut textures: Vec<glow::Texture> = Vec::with_capacity(n);
+    for (i, frame) in frames[..n].iter().enumerate() {
+        let id = format!("__composite_{i}");
+        let clear = crate::fog::clear_color(frame.fog.as_ref());
+        let desc = RenderTargetDescriptor {
+            id: id.clone(),
+            width: viewport.width,
+            height: viewport.height,
+        };
+        scene_context.ensure_render_target(gl, &desc, clear);
+
+        let shadow = shadow_pass(
+            gl,
+            shader_version,
+            asset_cache.clone(),
+            frame_time.clone(),
+            &frame.lights,
+            &frame.scene,
+            scene_context,
+            shadow_map,
+        );
+
+        let (fbo, width, height) = scene_context
+            .render_target_write(&id)
+            .expect("composite render target was just ensured");
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            gl.viewport(0, 0, width as i32, height as i32);
+            gl.disable(glow::SCISSOR_TEST);
+            let [r, g, b] = clear;
+            gl.clear_color(r, g, b, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+        }
+        forward_pass(
+            gl,
+            shader_version,
+            asset_cache.clone(),
+            scene_context,
+            &frame.scene,
+            &frame.lights,
+            &frame.camera,
+            frame_time.clone(),
+            debug_render_mode,
+            shadow,
+            frame.fog.as_ref(),
+            frame.skybox.as_ref(),
+            width as f32 / height as f32,
+        );
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        }
+        scene_context.finish_render_target_write(&id);
+        textures.push(
+            scene_context
+                .render_target_read_texture(&id)
+                .expect("composite render target just written"),
+        );
+    }
+
+    // 2. Composite the targets onto the bound (default) framebuffer, clipped to
+    //    the viewport pane (so it composes with any surrounding shell chrome).
+    unsafe {
+        gl.viewport(
+            viewport.x as i32,
+            viewport.y as i32,
+            viewport.width as i32,
+            viewport.height as i32,
+        );
+        gl.scissor(
+            viewport.x as i32,
+            viewport.y as i32,
+            viewport.width as i32,
+            viewport.height as i32,
+        );
+        gl.enable(glow::SCISSOR_TEST);
+        gl.clear_color(0.0, 0.0, 0.0, 1.0);
+        gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+    }
+    scene_context.draw_composite(gl, shader_version, &textures, &weights);
+}
+
 /// Shadow pass: render `scene` into `shadow_map` from the first shadow-casting
 /// light (directional or spot), before a forward pass. Skinned casters come for
 /// free via the shared depth pass in `Scene3D::render`. Ends with the default

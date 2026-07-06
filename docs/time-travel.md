@@ -1,10 +1,57 @@
 # Time-travel tooling
 
-Status: **design / vision** — the enabling machinery is shipped (the physics
-`Timeline`, `docs/physics.md` Phase 6 / #215), but the generic whole-scene tool
-is not yet built. This is the design doc and the stacked-PR plan for turning
-that machinery into **generic time-travel tooling across the whole game**: pause,
-scrub, rewind, replay, branch — and the authoring experiences those unlock.
+Status: **the whole-game scrubber is shipped** (T1–T3); the authoring
+experiences (T4–T6) are not yet built. This is the design doc *and* the record
+of what landed: **generic time-travel tooling across the whole game** — pause,
+scrub, rewind, replay, branch — plus the authoring experiences those unlock. It
+generalizes the physics `Timeline` (`docs/physics.md` Phase 6 / #215) from the
+Rapier world to the entire MVU model.
+
+## What shipped (as of 2026-07-05)
+
+You can pause a running MLE game and **drag a timeline scrubber to any recorded
+frame** — the whole scene (MVU `model` *and* physics world) restores together —
+on both the desktop runner and the web/VSCode preview. Exercised by
+`examples/mle-physics`.
+
+- **The coupled recorder** (`functor_runtime_common::timetravel`): a bounded
+  per-frame snapshot ring `History<T>` and a `SceneRecorder` over it. Each
+  rendered frame it records the settled `model` (an `Rc`-cheap `mle::Value`
+  clone) and, in lockstep, the physics fixed-frame the world reached. **Shared
+  by both shells** — one tested impl; the producer hands in its `model` /
+  `SteppedPhysics` / status.
+- **Coupled seek, exact-or-refused** (`rewind_scene_to` / `seek_scene_to` on the
+  `GameProducer` trait): restores model + world to a rendered frame, refusing
+  (touching nothing) rather than landing them on different times when the two
+  retention windows disagree. Non-destructive scrubbing (`seek_scene_to`) lets
+  you drag back *and* forth; the future is branched only when play resumes.
+- **Live triggers.** Desktop debug server `POST /rewind {"frame":N}` (#225); an
+  egui scrubber overlay on desktop (`~` console toggle, hidden by default); a
+  **native DOM** scrubber on web (index-mle.html, outside the canvas — see the
+  design note below).
+- **PRs:** `History` primitive #218, per-frame model recording #219, coupled
+  seek #222, `POST /rewind` #225, the scrubber + web parity #226.
+
+### Design decisions that emerged (diverged from the original plan)
+
+- **Two rings, one clock — not a single frame-level `Simulatable`.** The model
+  is `Rc`-cheap, so it uses a plain **snapshot-ring** (`History<Value>`, snapshot
+  every frame, no replay → **scrubbing backward needs no determinism**). The
+  physics world is expensive, so it keeps its existing keyframe+replay
+  `TimelineLog`. They're coupled by a **shared rendered-frame clock**:
+  `world_frame_history` maps each rendered frame to the fixed frame the world
+  ended at. The master clock is the **rendered frame** (every game has one, even
+  with no physics hook).
+- **Reload is a history boundary.** Snapshots can hold closures bound to the old
+  module, so the rings reset on hot-reload (the live model is rebound; snapshots
+  are not). "Rewind shows the earlier *code* version" (the hard frontier from the
+  prior-art notes) is deferred — the interpreter *could* do it by keeping old
+  modules alive, but that's future work.
+- **Shared logic, platform-native UI.** The `SceneRecorder` (the hard part) is
+  shared; the *UI surface* is per-platform: egui-in-canvas on desktop (no DOM
+  there), **native DOM on web** (`mle_scrub_*` wasm exports drive it). The web
+  DOM scrubber sits *outside* the game canvas, so its widgets never fight the
+  canvas's pointer-lock — a cleaner fit than mirroring desktop's egui onto web.
 
 It builds directly on three existing threads and should be read alongside them:
 `docs/physics.md` (the `Simulatable`/`Timeline` seam this generalizes),
@@ -162,6 +209,46 @@ discipline:
   and already flagged in `docs/debug-runtime.md` and `protocol.rs`) is a separate,
   larger effort and explicitly **not** required for anything here.
 
+## The event log: one spine, two directions
+
+The pieces above keep collapsing into each other because they are one structure:
+a **frame-indexed event log** where expensive state is sampled as **keyframes**
+and everything cheap is an **event stream**. Snapshots are just a keyframe
+optimization on top of an event-sourced timeline — the physics `TimelineLog` is
+*already* keyframe + command-log, and the model's snapshot ring (T1) is about to
+grow an input log (T6); those aren't two subsystems that rhyme, they're the same
+pattern on two payloads. The "unified frame clock" is really "one event log, two
+keyframe tracks."
+
+What goes on the log follows a single rule — **record only the non-reproducible
+inbound; recompute everything reproducible; suppress everything outbound**:
+
+| Class | Examples | Timeline treatment |
+| --- | --- | --- |
+| Reproducible inbound | timers / `Sub.every` (from the frame clock), **seeded** RNG | recompute — don't record |
+| Non-reproducible inbound | user input, http/ws **responses**, wall clock, unseeded RNG | **record + replay** |
+| Outbound | the effects a frame issued (http / ws / audio) | **suppress + log** (never re-fire) |
+
+Seeding RNG is what moves it from the record column to the recompute column (the
+seed becomes one more plain-data timeline entry). **Direction is the whole rule:**
+inputs and effect *responses* are inbound and get replayed; effects are outbound
+and get suppressed. Because the log is plain data it **survives a hot reload**,
+even though the model snapshots (old-module closures) do not — which is exactly
+what lets "tweak a constant, replay my recorded inputs, see if the jump now
+clears the chasm" work.
+
+Two fidelity tiers follow, and they are why coeffect replay (T8) is a separate
+phase from the input log (T6):
+
+- **Pure replay** (same code) reissues the identical effect stream, so recorded
+  responses replay **positionally** — exact and cheap.
+- **Replay under a tweak** (the point of T6) can diverge: the changed model may
+  issue a different request, so a recorded response must be **matched by identity**
+  (method+URL+body / channel+payload) and a miss is marked **diverged** on the
+  timeline, not fired live — firing live would break replay purity and can
+  double-charge / duplicate-send. Divergence-as-a-visible-marker is the right
+  LLM-native behavior, not a cop-out.
+
 ## The authoring experiences it unlocks
 
 These are the reason to build it — and both reduce to the same primitive: *you
@@ -176,18 +263,45 @@ the pure `draw` on each. The only new **engine** capability is a render pass tha
 composites a second scene at reduced opacity (~50%). Everything else is already
 there: two models, one pure `draw3d`, one blend.
 
-### Trajectory preview (Inventing on Principle)
+### Trajectory preview — forward-ghosting (Inventing on Principle)
 
-Tweak a constant, see the ball's whole path over time. This is "run the future
-headlessly and plot it": from the current snapshot, step the model+world forward
-N frames deterministically, sample a position each frame, and draw the path as a
-polyline trail. It needs **(a)** deterministic forward simulation — the replay
-machinery from Phase 1 — and **(b)** a polyline/trail draw primitive (the physics
-`debug_lines` pass is already most of it). The "tweak a constant" half rides
-existing hot-reload: `POST /reload-source` swaps the `.mle` with the model
-preserved, the future is re-run, the trail redraws. Once interactive UI exists, a
-slider makes it continuous — the full Bret Victor loop. This is the single most
-compelling demo in the set and it is within reach.
+Tweak a constant, see the whole future at once. Rather than a per-object trail,
+this is **chronophotography**: from the paused snapshot, step the whole scene
+forward over a window (start with ~2s / 10 divisions) and composite the divisions
+into one image, each at `1/divisions` weight. Static geometry averages to itself
+(solid); anything moving smears into a faint strobe of its own future positions.
+It needs **no new scene-description API** — you call the existing `draw3d` on each
+stepped state — and it captures *all* motion, not one hand-picked entity, so it
+works for any scene under a fixed camera.
+
+Two implementation points decide whether it looks right:
+
+- **Composite in screen space, not the depth buffer.** Render each division to its
+  own offscreen target (normal depth-testing *within* a division), then **average**
+  the targets. Averaging is what makes static=solid / moving=faint fall out of the
+  math — no per-object opacity logic, and it sidesteps the order-dependent garbage
+  of alpha-blending N depth-tested scenes into one buffer. A **progressive
+  running-average** (step one division per real frame, blend into an accumulator at
+  `1/(k+1)`) keeps per-frame cost at ~1 extra render, needs only two targets, and
+  *builds up* over the window — then holds until something changes. (The engine's
+  double-buffered `RenderTargetBuffers` + a fullscreen composite quad, modelled on
+  `draw_skybox`, is nearly all the machinery.)
+- **Replay recorded inputs, freeze the camera.** Forward-stepping replays the
+  frame-indexed input log (see "The event log") for frames it has, then coasts;
+  all divisions render with the *paused* camera so only world motion smears, not
+  the view.
+
+The "tweak a constant" half rides existing hot-reload: swap the `.mle` with the
+model preserved, re-run the window, the ghost redraws — so you can tweak a jump
+impulse until the arc clears a chasm and *see* it clear before you resume. This is
+the single most compelling demo in the set and it is within reach.
+
+**Fork+overlay and forward-ghosting are the same engine primitive** — a
+screen-space compositor that renders K scenes to K offscreen targets and averages
+them with weights. Fork+overlay is K=2 at (0.5, 0.5) from two branches; ghosting
+is K=N at `1/N` from one branch stepped forward. Build the compositor once and
+both land; the old polyline/trail primitive becomes an optional later "precise
+single-path read," not a prerequisite.
 
 ## LLM-native angle
 
@@ -197,22 +311,31 @@ rewind to frame K, change game logic, replay, and diff the outcome is
 *time-travel authoring / what-if iteration*; the golden-image tests are the
 regression half of the same loop. Every phase below is buildable and verifiable
 headlessly (pure Rust + MLE, no GPU window) up to the point where pixels are
-actually required (the overlay render and the opacity/trail passes) — matching
+actually required (the overlay render and the screen-space compositor pass) — matching
 the project's "design for agent verifiability" rule.
 
 ## Roadmap (small, stacked PRs)
 
-| Phase | Scope | Targets |
+| Phase | Scope | Status |
 | --- | --- | --- |
-| **T1. Model `Simulatable` + unified clock** | A frame-level `Simulatable` (snapshot = `Value` clone + world snapshot; command = frame inputs) and one frame index that seeks model and world together. Goldens: scrub-back restores the model value-exact; replay-forward is identical (mirrors the physics goldens). No UI. | native+wasm (Rust+MLE) |
-| **T2. Pointer/click input plumbing** | Deliver mouse-button events to the runtime, feed real `RawInput` to egui, drop `.interactable(false)`. Unblocks both the scrubber and interactive game UI. | native+wasm |
-| **T3. Shell-owned scrubber overlay** | egui timeline bar + transport (play/pause/step) + scrub handle driving the generic `Timeline`; `~` toggle (native), default-on (web/VSCode). This is the Tomorrow-Corporation whole-game scrubber. | native+wasm |
-| **T4. Interactive MLE `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable MLE closure); egui hit-tests and dispatches back into `update`. Separable, independently useful; the scrubber can be re-skinned in it later as a dogfood. | native+wasm (MLE) |
-| **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; renderer composite pass drawing a second `draw` output at ~50% opacity. | both |
-| **T6. Trajectory preview** | Deterministic forward-sim of N frames + a polyline/trail draw primitive; wire to hot-reload for the tweak-a-constant loop; slider once T4 lands. The *Inventing on Principle* demo. | both |
+| **T1. Coupled model+world recorder** | `History<T>` snapshot ring + `SceneRecorder`; per-frame model + physics-fixed-frame recording; `rewind_scene_to`/`seek_scene_to` exact-or-refused; live `POST /rewind`. Landed as a snapshot-ring + shared rendered-frame clock rather than a single frame `Simulatable` (see the design note). Headless integration tests. | **Shipped** (#218/#219/#222/#225) |
+| **T2. Pointer/click input plumbing** | Feed real pointer `RawInput` to egui (desktop); DOM mouse for the web scrubber. `.interactable(false)` dropped for the scrubber panel. | **Shipped** (#226) |
+| **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** native DOM outside the canvas + "🖱 mouse look" button. | **Shipped** (#226) |
+| **T4. Interactive MLE `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable MLE closure); egui hit-tests and dispatches back into `update`. Independent of the scrubber (which is shell-owned) — a general game-UI capability. | Not started |
+| **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; a **screen-space compositor** (new fullscreen average pass at the tail of `render_frame`, reusing the double-buffered `RenderTargetBuffers`) renders each scene to its own target and averages them (K=2, weights 0.5/0.5). Shares its whole implementation with T6. | Not started |
+| **T6. Forward-ghosting (trajectory preview)** | A frame-indexed **input log** in the recorder (plain data, survives reload) + a headless deterministic forward-step (replay inputs, suppress effects) + the T5 compositor at K=N, `1/N` weights; wire to hot-reload for the tweak-a-constant loop; slider once T4 lands. The *Inventing on Principle* demo — no trail primitive needed. | Not started |
+| **T7. Event timeline** | Record inputs *and* effects as one plain-data event log keyed by frame (inputs in / effects out); render them as markers on the scrubber; use the log to suppress-on-replay. The event-sourcing spine the earlier phases already imply. | Not started |
+| **T8. Coeffect record/replay** | Record & replay effect *responses* (http/ws) so a recorded window re-runs faithfully. Pure replay is positional/exact; replay-under-a-tweak needs identity-matching + a visible **divergence marker** when a changed model asks for an un-recorded response (never fire live). | Later |
 
-T1–T3 deliver the whole-game scrubber. T5–T6 are the showstopper authoring
-experiences.
+T1–T3 (the whole-game scrubber) are shipped. T5–T6 are the showstopper authoring
+experiences — both now reachable because `SceneRecorder` can snapshot and
+deterministically step the whole scene, and the renderer already has the FBO
+machinery a compositor needs. T7–T8 generalize the timeline into an event log
+(and make cross-tweak outcome-diffing — the LLM-native regression loop —
+possible). The other recurring dependency, behind schema-migration across a
+reload and richer `/state`, is a **structured / serializable / versioned model
+state** (today the model isn't `Serialize`; `/state` is `Debug` text) — the
+highest-leverage non-visual foundation.
 
 ## Prior art
 
