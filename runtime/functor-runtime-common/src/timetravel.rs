@@ -32,6 +32,7 @@ use std::collections::VecDeque;
 
 use mle::Value;
 
+use crate::input::RecordedInput;
 use crate::physics::SteppedPhysics;
 
 /// A fixed-step frame number — the same index space as
@@ -191,6 +192,13 @@ pub struct SceneRecorder {
     /// `tts` so `tts`-driven visuals (orbiting lights, `sin(tts)` bobbing)
     /// rewind too, not just model/world state (docs/time-travel.md).
     tts_history: History<f64>,
+    /// The frame-indexed input log (docs/time-travel.md T6, "The event log"):
+    /// each rendered frame's recorded input events, keyed in LOCKSTEP with
+    /// `model_history`. Unlike the other three rings this is PLAIN DATA
+    /// (`RecordedInput`), so it deliberately SURVIVES a hot reload — the log is
+    /// what lets "tweak a constant, replay my recorded inputs" work. Alignment
+    /// with the (reset) model ring holds because both key off `rendered_frame`.
+    input_history: History<Vec<RecordedInput>>,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
     /// While dragging: the frame the scrubber has non-destructively seeked to.
@@ -210,14 +218,19 @@ impl SceneRecorder {
             model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             world_frame_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             tts_history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            input_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             rendered_frame: 0,
             scrub_pos: None,
         }
     }
 
-    /// Hot-reload boundary: drop the rings (their snapshots can hold old-module
+    /// Hot-reload boundary: drop the snapshot rings (they can hold old-module
     /// closures) but keep `rendered_frame` monotonic so recording resumes
-    /// consecutively, and clear any scrub.
+    /// consecutively, and clear any scrub. The `input_history` is deliberately
+    /// NOT dropped: it is plain data (`RecordedInput`), so the input log SURVIVES
+    /// a reload (docs/time-travel.md, "The event log") — the one difference from
+    /// the closure-holding model/world/tts rings. It stays aligned because it too
+    /// keys off the single monotonic `rendered_frame`.
     pub fn reset_on_reload(&mut self) {
         self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         self.world_frame_history = History::bounded(DEFAULT_HISTORY_FRAMES);
@@ -235,6 +248,38 @@ impl SceneRecorder {
             .record(self.rendered_frame, &physics_fixed_frame);
         self.tts_history.record(self.rendered_frame, &tts);
         self.rendered_frame += 1;
+    }
+
+    /// Record this rendered frame's input events, keyed by the CURRENT
+    /// `rendered_frame` — so it lands on the same frame as the matching
+    /// [`Self::record`]. It does NOT advance the clock; call it JUST BEFORE
+    /// `record` (which does), so both key off the same frame. An empty `Vec` is
+    /// recorded for input-free frames, keeping the ring consecutive with the
+    /// model ring.
+    pub fn record_inputs(&mut self, inputs: Vec<RecordedInput>) {
+        self.input_history.record(self.rendered_frame, &inputs);
+    }
+
+    /// The recorded input events of `frame` — empty if that frame is outside the
+    /// retained input window (never recorded, or pruned).
+    pub fn inputs_at(&self, frame: u64) -> &[RecordedInput] {
+        match self.input_history.recorded_range() {
+            Some((lo, hi)) if frame >= lo && frame <= hi => self.input_history.seek(frame),
+            _ => &[],
+        }
+    }
+
+    /// The recorded inputs for frames `start..=newest`, contiguous, so the
+    /// forward-step can replay them in order (division `i` gets index `i`). Empty
+    /// if nothing at/after `start` is retained. Frames before the retained floor
+    /// are skipped; `start` is clamped up to the floor.
+    pub fn inputs_from(&self, start: u64) -> Vec<Vec<RecordedInput>> {
+        match self.input_history.recorded_range() {
+            Some((lo, hi)) => (start.max(lo)..=hi)
+                .map(|f| self.input_history.seek(f).clone())
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     /// The render clock `tts` to draw at WHILE SCRUBBING — the recorded `tts` of
@@ -343,6 +388,9 @@ impl SceneRecorder {
         self.model_history.truncate_from(frame + 1);
         self.world_frame_history.truncate_from(frame + 1);
         self.tts_history.truncate_from(frame + 1);
+        // Truncate the input log too: a destructive branch discards the old
+        // future consistently across all four rings (docs/time-travel.md T6b).
+        self.input_history.truncate_from(frame + 1);
         self.rendered_frame = frame + 1;
         self.scrub_pos = None;
         let clamped = if frame == target {
@@ -554,6 +602,45 @@ mod tests {
         rec.seek_scene_to(4, &mut model, &mut physics, &mut status, false)
             .expect("seek");
         assert_eq!(rec.scrub_render_tts(), Some(40.0));
+    }
+
+    // --- the input log: record → read back, and survive a reload (T6b) ---
+
+    #[test]
+    fn input_log_records_reads_back_and_survives_reload() {
+        let mut rec = SceneRecorder::new();
+        // Record three frames, keying inputs in lockstep with the model (the
+        // order the producer's `record_frame` uses: inputs first, then model).
+        let f0 = vec![RecordedInput::Key { code: 30, is_down: true }];
+        let f1: Vec<RecordedInput> = vec![];
+        let f2 = vec![
+            RecordedInput::MouseMove { x: 5, y: 7 },
+            RecordedInput::MouseWheel { delta: -1 },
+        ];
+        for inputs in [&f0, &f1, &f2] {
+            rec.record_inputs(inputs.clone());
+            rec.record(&Value::Number(0.0), 0, 0.0);
+        }
+
+        // Round-trip: each frame reads back exactly what was recorded.
+        assert_eq!(rec.inputs_at(0).len(), 1);
+        assert!(matches!(
+            rec.inputs_at(0)[0],
+            RecordedInput::Key { code: 30, is_down: true }
+        ));
+        assert!(rec.inputs_at(1).is_empty());
+        assert_eq!(rec.inputs_at(2).len(), 2);
+        // A frame outside the recorded window reads back empty, not a panic.
+        assert!(rec.inputs_at(99).is_empty());
+        // `inputs_from` is contiguous from the start frame.
+        assert_eq!(rec.inputs_from(1).len(), 2); // frames 1 and 2
+
+        // A hot reload drops the model ring but KEEPS the input log (plain data
+        // survives reload, docs/time-travel.md).
+        rec.reset_on_reload();
+        assert_eq!(rec.scene_frame_range(), None, "model ring reset on reload");
+        assert_eq!(rec.inputs_at(0).len(), 1, "input log survives the reload");
+        assert_eq!(rec.inputs_at(2).len(), 2, "input log survives the reload");
     }
 
     #[test]

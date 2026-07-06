@@ -35,6 +35,7 @@ use crate::mle_prelude::{
     physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
     take_http_tagger, EffectLog, EffectRunner, EffectTree, FakeEffects, FunctorHost, NetEventKind,
 };
+use crate::input::{Key, RecordedInput};
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
 use crate::timetravel::SceneRecorder;
@@ -129,6 +130,12 @@ pub struct FrameCtx<'a> {
     pub pending_events: &'a mut Vec<PhysicsEvent>,
     pub live_conn_keys: &'a mut HashSet<String>,
     pub prev_tts: &'a mut Option<f64>,
+    /// This frame's buffered input events (docs/time-travel.md T6b): each shell
+    /// appends to it in `key_event`/`mouse_move`/`mouse_wheel`, and
+    /// [`Self::record_frame`] flushes a played frame's worth into the recorder's
+    /// input log (or drains-and-drops it on a paused frame). The dry-run
+    /// forward-step points this at a throwaway buffer.
+    pub input_buf: &'a mut Vec<RecordedInput>,
     pub has_physics: bool,
     pub has_subscriptions: bool,
     /// Suppress OUTBOUND effects (physics command / timeline / send / http /
@@ -270,8 +277,17 @@ impl FrameCtx<'_> {
     /// carries `dts > 0`).
     pub fn record_frame(&mut self, frame_time: FrameTime) {
         if frame_time.dts > 0.0 {
+            // Record this frame's inputs FIRST (keyed at the recorder's current
+            // `rendered_frame`), then the model — `record` advances the clock, so
+            // both must land on the same frame (docs/time-travel.md T6b).
+            self.recorder.record_inputs(std::mem::take(self.input_buf));
             self.recorder
                 .record(self.model, self.physics_status.0, frame_time.tts as f64);
+        } else {
+            // Paused frame (`dts == 0`): drain-and-drop the buffer. Paused frames
+            // aren't part of the played timeline, so their buffered inputs must
+            // NOT leak into the next stepped frame's recorded events.
+            self.input_buf.clear();
         }
     }
 
@@ -308,14 +324,29 @@ impl FrameCtx<'_> {
     ///   (follow-up, alongside the input log). The coast case the T6b test covers
     ///   — a frame body that neither reads physics nor commands it — matches
     ///   exactly, model AND world.
+    ///
+    /// `inputs` is the recorded input log for the divisions being stepped
+    /// (index `i` = division `i`'s events, i.e. fork frame `K + 1 + i`). At the
+    /// TOP of each division its recorded events are REPLAYED (mirroring the live
+    /// order — input arrives before `tick`) so a recorded jump replays. Beyond
+    /// the recorded window (`inputs` runs out) the step COASTS on held state.
     pub fn step_scene_forward(
         &mut self,
         divisions: usize,
         dts: f32,
         start_tts: f32,
+        inputs: &[Vec<RecordedInput>],
     ) -> Vec<(Value, Option<Vec<u8>>)> {
         let mut out = Vec::with_capacity(divisions);
         for i in 0..divisions {
+            // Replay this division's recorded inputs before the frame body, so
+            // the model absorbs them exactly as the live frame did (coast when
+            // the log has no entry for this division).
+            if let Some(events) = inputs.get(i) {
+                for event in events {
+                    self.replay_input(*event);
+                }
+            }
             let frame_time = FrameTime {
                 dts,
                 tts: start_tts + (i as f32 + 1.0) * dts,
@@ -330,6 +361,47 @@ impl FrameCtx<'_> {
             out.push((self.model.clone(), world));
         }
         out
+    }
+
+    /// Replay one recorded input event during the forward-step, mirroring the
+    /// LIVE path (`key_event`/`mouse_move`/`mouse_wheel`): call the game's
+    /// `input`/`mouseMove`/`mouseWheel` entry point with the SAME reconstructed
+    /// args, then [`Self::absorb`] the result (which honors `suppress_outbound`,
+    /// so nothing escapes). A `Key` re-runs `Key::from_i32` on the raw code just
+    /// as the live path does; an unknown code is dropped, like live. An entry
+    /// point the game doesn't define resolves to an interpreter error, reported
+    /// (and silenced) through the dry-run reporter.
+    fn replay_input(&mut self, event: RecordedInput) {
+        let (entry, args) = match event {
+            RecordedInput::Key { code, is_down } => {
+                let Some(key) = Key::from_i32(code) else {
+                    return;
+                };
+                (
+                    "input",
+                    vec![
+                        self.model.clone(),
+                        Value::String(std::rc::Rc::from(format!("{key:?}").as_str())),
+                        Value::Bool(is_down),
+                    ],
+                )
+            }
+            RecordedInput::MouseMove { x, y } => (
+                "mouseMove",
+                vec![
+                    self.model.clone(),
+                    Value::Number(x as f64),
+                    Value::Number(y as f64),
+                ],
+            ),
+            RecordedInput::MouseWheel { delta } => {
+                ("mouseWheel", vec![self.model.clone(), Value::Number(delta as f64)])
+            }
+        };
+        match self.session.call(entry, args, &mut FunctorHost) {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.reporter.frame_error(entry, &err),
+        }
     }
 
     /// Take an entry point's return: split off any `(model, effect)` pair,
@@ -641,6 +713,7 @@ pub fn forward_step_scene(
     start_tts: f32,
     dts: f32,
     divisions: usize,
+    inputs: &[Vec<RecordedInput>],
 ) -> Vec<(Value, Option<Vec<u8>>)> {
     // Dry-run physics: snapshot the live world and restore it into a fresh
     // throwaway world, so stepping forward never touches the live world,
@@ -675,6 +748,9 @@ pub fn forward_step_scene(
     let mut pending_events: Vec<PhysicsEvent> = Vec::new();
     let mut live_conn_keys: HashSet<String> = HashSet::new();
     let mut prev_tts = prev_tts;
+    // Throwaway input buffer: the forward-step replays `inputs` directly and
+    // never records, so this stays empty — it just satisfies the borrow.
+    let mut input_buf: Vec<RecordedInput> = Vec::new();
     let mut reporter = Reporter::new(
         SpanSource::Single {
             src: String::new(),
@@ -696,12 +772,13 @@ pub fn forward_step_scene(
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
             prev_tts: &mut prev_tts,
+            input_buf: &mut input_buf,
             has_physics,
             has_subscriptions,
             suppress_outbound: true,
             reporter: &mut reporter,
         };
-        ctx.step_scene_forward(divisions, dts, start_tts)
+        ctx.step_scene_forward(divisions, dts, start_tts, inputs)
     };
 
     // `dry_world`'s `Drop` removes the throwaway world here (and on any unwind

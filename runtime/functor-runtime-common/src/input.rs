@@ -45,6 +45,26 @@ pub enum Key {
     Escape,
 }
 
+/// One recorded input event at the raw boundary scalars — pre-`Key::from_i32`,
+/// pre-name-formatting — so a replay re-runs the *identical* path the live
+/// frame took (docs/time-travel.md, "The event log"). It is PLAIN DATA — `Copy`
+/// scalars holding no `Rc`/closure into the old module — which is exactly why
+/// the frame-indexed input log survives a hot reload even though the
+/// closure-holding model snapshots do not. Both shells buffer these in
+/// `key_event`/`mouse_move`/`mouse_wheel` and flush a frame's worth into the
+/// recorder; the forward-step replays them. (`Serialize`/`Deserialize` are for
+/// the future on-disk/wire event log, T7 — unused by the in-session replay.)
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum RecordedInput {
+    /// A keyboard event carrying the raw `Key as i32` code (not the resolved
+    /// `Key`), so replay re-runs `Key::from_i32` exactly as the live path does.
+    Key { code: i32, is_down: bool },
+    /// A pointer position in window pixels.
+    MouseMove { x: i32, y: i32 },
+    /// A wheel notch (±1 per notch).
+    MouseWheel { delta: i32 },
+}
+
 impl Key {
     /// All key variants in discriminant order. Keep in sync with the enum above
     /// (guarded by `from_i32_round_trips`).

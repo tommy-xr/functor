@@ -89,6 +89,11 @@ pub struct MleWebGame {
     /// the desktop producer (one tested impl): records the settled `model` +
     /// physics fixed-frame each rendered frame and seeks/rewinds them together.
     recorder: SceneRecorder,
+    /// This frame's buffered input events (docs/time-travel.md T6b): appended in
+    /// `key_event`/`mouse_move`/`mouse_wheel` beside the live `session.call`, and
+    /// flushed into `recorder`'s input log by `record_frame` (plain data, so the
+    /// log survives a reload). Shared shape with the desktop producer.
+    input_buf: Vec<functor_runtime_common::RecordedInput>,
     /// Declared connection keys (`Sub.connect`/`Sub.listen`), reconciled each
     /// frame — see the desktop producer.
     live_conn_keys: std::collections::HashSet<String>,
@@ -262,6 +267,7 @@ impl MleWebGame {
             physics_rt: physics::SteppedPhysics::new(),
             physics_status: (0, false, 0),
             recorder: SceneRecorder::new(),
+            input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
             has_physics: loaded.has_physics,
             has_soundscape: loaded.has_soundscape,
@@ -346,6 +352,7 @@ impl MleWebGame {
             pending_events: &mut self.pending_events,
             live_conn_keys: &mut self.live_conn_keys,
             prev_tts: &mut self.prev_tts,
+            input_buf: &mut self.input_buf,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
             suppress_outbound: false,
@@ -447,6 +454,10 @@ impl GameProducer for MleWebGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("input", &err),
         }
+        // Buffer the raw event for the frame-indexed input log (T6b): flushed
+        // into the recorder by `record_frame`, replayed by the forward-step.
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::Key { code, is_down });
     }
 
     fn mouse_move(&mut self, x: i32, y: i32) {
@@ -462,6 +473,8 @@ impl GameProducer for MleWebGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseMove", &err),
         }
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::MouseMove { x, y });
     }
 
     fn mouse_wheel(&mut self, delta: i32) {
@@ -473,6 +486,8 @@ impl GameProducer for MleWebGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseWheel", &err),
         }
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::MouseWheel { delta });
     }
 
     fn render(&mut self, frame_time: FrameTime) -> Frame {
@@ -651,11 +666,10 @@ fn empty_frame() -> Frame {
 // (index-mle.html) calls the `mle_*` exports below. Events queue here and the
 // frame loop drains them into the producer before each tick.
 
-enum InputEvent {
-    Key { code: i32, is_down: bool },
-    MouseMove { x: i32, y: i32 },
-    MouseWheel { delta: i32 },
-}
+// The page-input queue carries the SAME plain-data shape the recorder logs, so
+// reuse the shared `RecordedInput` (T6b) rather than a parallel private enum —
+// `drain_input` dispatches its variants unchanged.
+use functor_runtime_common::RecordedInput as InputEvent;
 
 thread_local! {
     static INPUT_QUEUE: RefCell<Vec<InputEvent>> = const { RefCell::new(Vec::new()) };
@@ -697,8 +711,17 @@ pub fn mle_mouse_wheel(delta: i32) {
 /// Drain the queued page input into the producer, in arrival order. Called by
 /// the frame loop before `tick`. Empty (and free) on the F# path — its page
 /// never calls the `mle_*` exports.
-pub fn drain_input(game: &mut dyn GameProducer) {
+///
+/// When `deliver` is false (the clock is paused), the queue is still drained but
+/// its events are DISCARDED — never dispatched to the game. This mirrors the
+/// desktop pinned-clock gate: while paused, NO input may reach the model, so the
+/// frame-indexed input log has nothing unlogged to diverge forward-step replay.
+/// Draining (rather than leaving the queue) also stops it bursting on resume.
+pub fn drain_input(game: &mut dyn GameProducer, deliver: bool) {
     let events = INPUT_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if !deliver {
+        return;
+    }
     for event in events {
         match event {
             InputEvent::Key { code, is_down } => game.key_event(code, is_down),
