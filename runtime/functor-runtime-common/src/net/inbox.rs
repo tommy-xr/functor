@@ -20,7 +20,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use fable_library_rust::NativeArray_;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
@@ -198,13 +197,6 @@ pub fn drain_commands_json() -> String {
 /// Executor: take every inbound result queued since the last frame.
 pub fn drain_inbound() -> Vec<NetInbound> {
     INBOX.drain()
-}
-
-/// Executor (F#-facing): drain the inbox as an array of [`HttpResult`], ready for
-/// a `Sub` decoder. Returns a Fable `NativeArray` so it crosses to F# as `array`.
-pub fn drain_http_results() -> NativeArray_::Array<HttpResult> {
-    let results: Vec<HttpResult> = INBOX.drain().into_iter().map(HttpResult::from).collect();
-    NativeArray_::array_from(results)
 }
 
 #[cfg(test)]

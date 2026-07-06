@@ -11,8 +11,6 @@ use std::collections::BTreeSet;
 use functor_runtime_common::Key as InputKey;
 use glfw::{Action, Key};
 use glow::*;
-use hot_reload_game::HotReloadGame;
-use static_game::StaticGame;
 
 use crate::game::Game;
 
@@ -22,11 +20,9 @@ const SCR_HEIGHT: u32 = 600;
 mod audio;
 mod debug_server;
 mod game;
-mod hot_reload_game;
 mod mle_game;
 mod net_dispatch;
 mod replay_game;
-mod static_game;
 mod ws_host;
 mod xreal;
 
@@ -143,12 +139,10 @@ struct Args {
     #[arg(short, long)]
     game_path: String,
 
-    #[arg(long)]
-    hot: bool,
-
     /// Treat --game-path as an `.mle` source file and run it through the MLE
-    /// interpreter with the Functor prelude instead of loading a game dylib
-    /// (docs/mle.md Track C2). Prints per-frame eval cost every 300 frames.
+    /// interpreter with the Functor prelude (docs/mle.md Track C2). This is the
+    /// only game producer; the flag is retained because the CLI/SDK pass it.
+    /// Prints per-frame eval cost every 300 frames.
     #[arg(long)]
     mle: bool,
 
@@ -158,7 +152,7 @@ struct Args {
     /// producer-agnostic seam (docs/mle.md Track A3). Each producer mode
     /// reinterprets --game-path, so combining them is an error, not a silent
     /// precedence pick.
-    #[arg(long, conflicts_with_all = ["mle", "hot"])]
+    #[arg(long, conflicts_with_all = ["mle"])]
     replay: bool,
 
     /// Run without a GL window: drive the game loop + debug server headlessly
@@ -593,14 +587,19 @@ pub async fn main() {
     println!("Using game path: {}", game_path);
     println!("Working directory: {:?}", env::current_dir());
 
-    let mut game: Box<dyn Game> = if args.mle {
-        Box::new(mle_game::MleGame::create(game_path.as_str()))
-    } else if args.replay {
+    let mut game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
-    } else if args.hot {
-        Box::new(HotReloadGame::create(game_path.as_str()))
+    } else if args.mle {
+        Box::new(mle_game::MleGame::create(game_path.as_str()))
     } else {
-        Box::new(StaticGame::create(game_path.as_str()))
+        // MLE is the only game producer now (the F#/dylib path was removed in
+        // E3). The CLI and SDK always pass --mle; a bare invocation has no
+        // producer to load.
+        eprintln!(
+            "error: no game producer selected — pass --mle --game-path <file.mle> \
+(the F#/dylib producer was removed in E3)"
+        );
+        std::process::exit(1);
     };
 
     // Optional debug control server. Runs on its own thread; the GL loop drains

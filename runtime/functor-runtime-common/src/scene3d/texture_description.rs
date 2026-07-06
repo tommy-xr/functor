@@ -1,4 +1,3 @@
-use fable_library_rust::String_::LrcStr;
 use serde::{Deserialize, Serialize};
 
 use crate::render_target::RenderTargetDescriptor;
@@ -17,10 +16,6 @@ pub enum TextureDescription {
 }
 
 impl TextureDescription {
-    pub fn file(s: LrcStr) -> TextureDescription {
-        TextureDescription::File(s.to_string())
-    }
-
     pub fn render_target(rt: RenderTargetDescriptor) -> TextureDescription {
         TextureDescription::RenderTarget(rt.id)
     }

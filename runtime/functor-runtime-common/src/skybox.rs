@@ -1,4 +1,3 @@
-use fable_library_rust::String_::LrcStr;
 use serde::{Deserialize, Serialize};
 
 /// The six faces of a cubemap skybox, by asset path (+X, -X, +Y, -Y, +Z, -Z —
@@ -34,25 +33,6 @@ impl SkyboxDescription {
             pz: pz.into(),
             nz: nz.into(),
         }
-    }
-
-    /// F# boundary constructor (the `TextureDescription::file` shim style).
-    pub fn files(
-        px: LrcStr,
-        nx: LrcStr,
-        py: LrcStr,
-        ny: LrcStr,
-        pz: LrcStr,
-        nz: LrcStr,
-    ) -> SkyboxDescription {
-        SkyboxDescription::new(
-            px.to_string(),
-            nx.to_string(),
-            py.to_string(),
-            ny.to_string(),
-            pz.to_string(),
-            nz.to_string(),
-        )
     }
 
     /// The faces in GL upload order (`TEXTURE_CUBE_MAP_POSITIVE_X + i`).

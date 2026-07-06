@@ -11,12 +11,10 @@
 //! One-shots here are fire-and-forget. A completion message (the audio twin of
 //! the HTTP `tagger`) is a later addition that mirrors the `net` async inbox.
 
-use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
-use fable_library_rust::NativeArray_;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
@@ -90,22 +88,15 @@ pub fn drain_commands_json() -> String {
     serde_json::to_string(&drain_commands()).unwrap_or_else(|_| "[]".to_string())
 }
 
-// --- Completion: the `Audio.playThen` half (mirrors the `net` registry/inbox) ---
+// --- Completion: token minting for `Effect.playThen` ---
 //
-// A `playThen` one-shot carries a completion message; we hold it here keyed by
-// the command's token across the play→finish gap, and the host reports the end
-// via `audio_push_finished(token)` into the FINISHED queue. The executor drains
-// that queue each tick, matches each token back to its message, and feeds it
-// through `update`. Like `net`, these live on the dylib side and are dropped on
-// hot reload (an in-flight sound then just loses its completion message).
+// A `playThen` one-shot correlates its completion with the play via a token.
+// The MLE producer holds the pending completion MESSAGE keyed by that token in
+// its own per-session registry (`mle_prelude::register_audio_completion`); this
+// module just mints the tokens.
 
 thread_local! {
-    // Box<dyn Any> erases the Msg type so one table serves any game; the executor
-    // (which knows Msg) downcasts on the way out.
-    static COMPLETIONS: RefCell<HashMap<u64, Box<dyn Any>>> = RefCell::new(HashMap::new());
-    static NEXT_TOKEN: Cell<u64> = Cell::new(1);
-    // Tokens of sounds the host has reported finished, awaiting the executor.
-    static FINISHED: RefCell<VecDeque<u64>> = RefCell::new(VecDeque::new());
+    static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
 }
 
 /// A fresh correlation token for a `playThen` one-shot.
@@ -115,36 +106,6 @@ pub fn next_token() -> u64 {
         c.set(token + 1);
         token
     })
-}
-
-/// Hold the completion message for `token` until the sound finishes.
-pub fn register_completion<M: 'static>(token: u64, message: M) {
-    COMPLETIONS.with(|c| {
-        c.borrow_mut().insert(token, Box::new(message));
-    });
-}
-
-/// Take the completion message for `token`. `None` for an unknown token or one
-/// whose message was dropped by a hot reload while the sound was playing.
-pub fn take_completion<M: 'static>(token: u64) -> Option<M> {
-    let boxed = COMPLETIONS.with(|c| c.borrow_mut().remove(&token))?;
-    boxed.downcast::<M>().ok().map(|m| *m)
-}
-
-/// Host: report that the sound for `token` has finished (via the runtime export).
-pub fn push_finished(token: u64) {
-    FINISHED.with(|f| f.borrow_mut().push_back(token));
-}
-
-/// The executor drains finished tokens each tick to deliver completion messages.
-pub fn drain_finished() -> Vec<u64> {
-    FINISHED.with(|f| f.borrow_mut().drain(..).collect())
-}
-
-/// Executor (F#-facing): the finished tokens as a Fable array, so they cross to
-/// F# as `array` (mirrors `net::drain_http_results`).
-pub fn drain_finished_array() -> NativeArray_::Array<u64> {
-    NativeArray_::array_from(drain_finished())
 }
 
 /// Where the player hears from — the render camera. The host sets it from the
@@ -317,14 +278,6 @@ impl AudioScene {
     pub fn new(sources: Vec<AudioSource>) -> AudioScene {
         AudioScene { sources }
     }
-
-    /// Build from the Fable array F# `soundScape` returns (mirrors
-    /// `Scene3D::group`), so the F# `AudioScene.create` shim stays a thin call.
-    pub fn from_sources(sources: NativeArray_::Array<AudioSource>) -> AudioScene {
-        AudioScene {
-            sources: sources.to_vec(),
-        }
-    }
 }
 
 /// Serialize a scene for the dylib→host hop (behind the `audio_scene_json`
@@ -423,19 +376,10 @@ mod tests {
     }
 
     #[test]
-    fn completion_round_trips_by_token() {
-        let token = next_token();
-        register_completion(token, 42i32);
-        push_finished(token);
-        assert_eq!(drain_finished(), vec![token]);
-        assert_eq!(take_completion::<i32>(token), Some(42));
-        // Taken once: gone the second time.
-        assert_eq!(take_completion::<i32>(token), None);
-    }
-
-    #[test]
-    fn take_completion_unknown_token_is_none() {
-        assert_eq!(take_completion::<i32>(999_999), None);
+    fn tokens_are_monotonic() {
+        let a = next_token();
+        let b = next_token();
+        assert!(b > a);
     }
 
     // --- spatialization (shared distance gain + pan) ---

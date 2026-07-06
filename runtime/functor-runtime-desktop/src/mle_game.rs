@@ -1078,12 +1078,13 @@ AudioScene.empty), got {}",
         if !paused {
             return self.last_view.clone();
         }
-        let status = View::text(
-            format!(
+        let status = View::Text {
+            text: format!(
                 "physics ⏸ frame {frame} · {history} recorded · Left/Right scrub · Space resume"
-            )
-            .into(),
-        );
+            ),
+            color: [255, 255, 255],
+            font: None,
+        };
         View::Column(vec![self.last_view.clone(), status])
     }
 

@@ -8,7 +8,6 @@ members = [
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
-    "src",
     "tools/mle-lsp",
 ]
 

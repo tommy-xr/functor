@@ -1,4 +1,3 @@
-use fable_library_rust::String_::LrcStr;
 use glow::HasContext;
 use serde::{Deserialize, Serialize};
 
@@ -24,10 +23,6 @@ impl RenderTargetDescriptor {
             width: DEFAULT_RENDER_TARGET_SIZE,
             height: DEFAULT_RENDER_TARGET_SIZE,
         }
-    }
-
-    pub fn named(id: LrcStr) -> RenderTargetDescriptor {
-        RenderTargetDescriptor::new(id.to_string())
     }
 
     /// Subject-first so it pipes (`rt |> RenderTarget.sized(w, h)`); sizes are

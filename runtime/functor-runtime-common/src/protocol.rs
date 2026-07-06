@@ -53,10 +53,10 @@
 //!   `src/Functor.Game/Runtime.fs`). A data-native state representation is
 //!   what makes state durable/inspectable across producers (`docs/mle.md`,
 //!   Track C).
-//! - [`crate::Effect`] / [`crate::EffectQueue`] — effect *commands* cross as
-//!   data (above), but message payloads and `Http` taggers are closures, so
-//!   the queue itself cannot cross the boundary.
-//! - Control signals with no payload: the dylib `init` entry point and `quit`.
+//! - Effect *commands* cross as data (above); the producer holds any per-effect
+//!   tagger/closure on its own side (the MLE producer keeps them per session),
+//!   so nothing closure-shaped crosses the boundary.
+//! - Control signals with no payload: `init` and `quit`.
 
 /// Version of the serialized logic↔runtime contract. Bump when the wire shape
 /// of any type enumerated in this module changes incompatibly. Informational
@@ -69,16 +69,15 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// this module's boundary doc (drains return JSON arrays, pushes take the
 /// inbox scalars, `render` returns the [`crate::Frame`]).
 ///
-/// Impls: the desktop runner's dylib producers (`StaticGame`,
-/// `HotReloadGame`), the web runtime's `WasmGame` bridge over the
-/// `wasm_bindgen` game exports, and (Track C) the MLE interpreter. The seam
-/// exists so a producer can be swapped without the shells knowing what
-/// language or pipeline produced the logic — see `docs/mle.md`, Track A2.
+/// Impls: the MLE interpreter producers `MleGame` / `ReplayGame` (desktop)
+/// and `MleWebGame` (web). The seam exists so a producer can be swapped
+/// without the shells knowing what language or pipeline produced the logic —
+/// see `docs/mle.md`, Track A2.
 ///
 /// Some capabilities are shell-specific; producers for shells that lack them
-/// implement the honest no-op (e.g. the web bridge's `check_hot_reload` — the
-/// browser reloads the whole page — and `audio_push_finished` — web one-shots
-/// are fire-and-forget).
+/// implement the honest no-op (e.g. the web producer's `check_hot_reload` —
+/// the browser reloads the whole page — and `audio_push_finished` — web
+/// one-shots are fire-and-forget).
 pub trait GameProducer {
     /// Poll for and apply a logic update (native dylib hot-reload). Shells
     /// with a reload path call this once per frame before anything else;
@@ -229,11 +228,10 @@ mod tests {
         use crate::math::Angle;
         use crate::render_target::RenderTargetDescriptor;
         use crate::{
-            MaterialDescription, ModelDescription, ModelHandle, RenderTargetPass,
+            MaterialDescription, ModelDescription, ModelHandle, RenderTargetPass, Shape,
             TextureDescription,
         };
         use cgmath::{Matrix4, SquareMatrix};
-        use fable_library_rust::NativeArray_;
 
         let scene = Scene3D {
             obj: SceneObject::Group(vec![
@@ -250,7 +248,14 @@ mod tests {
                 Scene3D::cylinder(),
                 Scene3D::quad(),
                 Scene3D::plane(),
-                Scene3D::heightmap(2, 2, NativeArray_::array_from(vec![0.0, 0.5, 1.0, 0.25])),
+                Scene3D {
+                    obj: SceneObject::Geometry(Shape::Heightmap {
+                        rows: 2,
+                        cols: 2,
+                        heights: vec![0.0, 0.5, 1.0, 0.25],
+                    }),
+                    xform: Matrix4::identity(),
+                },
                 Scene3D::model(ModelDescription {
                     handle: ModelHandle::File("barrel.glb".to_string()),
                     overrides: vec![],

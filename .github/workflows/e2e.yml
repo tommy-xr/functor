@@ -26,27 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: "8.0.x"
-
-      - name: Restore tools
-        run: dotnet tool restore
-
       - name: Setup Node.js environment
         uses: actions/setup-node@v6
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      # Transpile the F# framework purely to materialize fable_modules/ (the
-      # fable_library_rust workspace dep the functor-runner build resolves). The
-      # e2e tests themselves drive the MLE ports (mle-mpserver / mle-mpclient /
-      # mle-hello-gltf), which the runner interprets in place — no per-game dylib
-      # build is needed.
-      - name: Materialize fable_modules (F# framework)
-        run: npm run build:framework:rust -- --verbose
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2

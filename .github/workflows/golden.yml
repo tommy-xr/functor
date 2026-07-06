@@ -39,19 +39,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # The golden RENDER is the MLE `mle-primitives` sample (no Fable), but the
-      # runtime crates the CLI/web-bundle build still declare a path dependency on
-      # `fable_library_rust` (fable_modules/), so we must run Fable once to
-      # materialize it. This whole Fable/.NET setup drops out in E3 phase 3-4,
-      # once that dependency is removed from functor-runtime-common.
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: "8.0.x"
-
-      - name: Restore tools
-        run: dotnet tool restore
-
       - name: Setup Node.js environment
         uses: actions/setup-node@v6
 
@@ -60,12 +47,6 @@ jobs:
 
       - name: Install wasm-pack
         run: npm install -g wasm-pack
-
-      # Transpile the F# framework purely to materialize fable_modules/ (the
-      # fable_library_rust workspace dep the wasm-pack/CLI build resolves). The
-      # golden itself renders mle-primitives.
-      - name: Materialize fable_modules (F# framework)
-        run: npm run build:framework:rust -- --verbose
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
