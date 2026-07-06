@@ -130,6 +130,17 @@ pub trait GameProducer {
         None
     }
 
+    /// Forward-step the scene `divisions` fixed frames of `dt` seconds from
+    /// `start_tts` and return the drawn [`crate::Frame`] for each — the
+    /// forward-ghosting trajectory preview (docs/time-travel.md T6d). The shell
+    /// composites the returned frames into one image (chronophotography), so
+    /// moving elements smear into a strobe of their future positions. Each frame
+    /// carries the *paused* camera so only world motion smears, not the view.
+    /// The default is empty (no ghosting) for producers without a model history.
+    fn ghost_frames(&self, _divisions: usize, _dt: f32, _start_tts: f64) -> Vec<crate::Frame> {
+        Vec::new()
+    }
+
     /// Seek the whole scene to a rendered frame for DISPLAY, WITHOUT branching
     /// (docs/time-travel.md T3, the draggable scrubber): restore model + world
     /// so the user can scrub back and forth freely while paused. The future is

@@ -221,6 +221,20 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = CompositeDemoArg::Off)]
     composite_demo: CompositeDemoArg,
 
+    /// Forward-ghosting trajectory preview (docs/time-travel.md T6d): composite
+    /// N forward-stepped frames into one image (chronophotography), so moving
+    /// elements smear into a strobe of their ~2s future positions while static
+    /// geometry stays solid. Off by default; when on it composites every frame
+    /// (no pause gating), so it's deterministically capturable under
+    /// --fixed-time. The window is fixed at ~2s (`dt = 2.0 / --ghost-divisions`).
+    #[arg(long)]
+    ghost: bool,
+
+    /// Number of forward divisions composited by --ghost (clamped to 8, the
+    /// compositor max). More divisions = a finer strobe over the same ~2s window.
+    #[arg(long, default_value_t = 8)]
+    ghost_divisions: usize,
+
     /// Eye separation for --stereo-sbs, in world units. The default assumes
     /// meter-scale worlds (human IPD ≈ 64mm); raise it for larger-unit worlds
     /// to deepen the 3D effect.
@@ -908,6 +922,28 @@ Escape again to quit"
             // The game supplies the camera/scene/lights as part of its frame.
             let frame = game.render(time.clone());
 
+            // Forward-ghosting (docs/time-travel.md T6d): when --ghost is on, step
+            // the scene forward over a ~2s window and collect a Frame per division
+            // (a dry run — the live producer is untouched), for the compositor arm
+            // in the render ladder below. Empty when --ghost is off (or the
+            // producer has no model history, e.g. web's trait default). `start_tts
+            // = time.tts` (under --fixed-time T, that's T, so the ghost projects
+            // T+dt … T+N·dt). Always composites when on — no pause gating — so it's
+            // deterministically capturable under --fixed-time.
+            // Gate on the full ladder condition so we don't pay the dry-run + N
+            // draws only to have stereo / composite-demo outrank the ghost arm.
+            let ghost_frames = if args.ghost
+                && !args.stereo_sbs
+                && args.composite_demo == CompositeDemoArg::Off
+            {
+                const MAX_GHOST: usize = 8;
+                let divisions = args.ghost_divisions.clamp(1, MAX_GHOST);
+                let dt = 2.0 / divisions as f32;
+                game.ghost_frames(divisions, dt, time.tts as f64)
+            } else {
+                Vec::new()
+            };
+
             // The camera actually viewed/heard: the game's camera, rotated by
             // the head orientation when Xreal tracking is on.
             let view_camera = match &xreal_tracker {
@@ -1021,6 +1057,25 @@ Escape again to quit"
                     &shadow_map,
                     &frames,
                     &[0.5, 0.5],
+                    time.clone(),
+                    viewport,
+                    args.debug_render.into(),
+                );
+            } else if !ghost_frames.is_empty() {
+                // Forward-ghosting (docs/time-travel.md T6d): composite the ~2s
+                // forward-stepped frames (computed above) at equal weight so moving
+                // elements strobe across their future and static geometry stays
+                // solid. Empty (→ this arm skipped) when --ghost is off or the
+                // producer yields no frames, so live rendering is unchanged.
+                let weights = vec![1.0f32; ghost_frames.len()];
+                functor_runtime_common::render_composited_frames(
+                    &gl,
+                    shader_version,
+                    asset_cache.clone(),
+                    &scene_context,
+                    &shadow_map,
+                    &ghost_frames,
+                    &weights,
                     time.clone(),
                     viewport,
                     args.debug_render.into(),
