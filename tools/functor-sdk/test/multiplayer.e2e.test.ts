@@ -11,7 +11,7 @@ import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 // `.mle` ships as text (no dylib build), so this only needs the runner binary
 // and a display:
 //
-//   cargo build --bin functor-runner
+//   cargo build --bin functor
 //   FUNCTOR_E2E=1 node --test dist/test/
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";

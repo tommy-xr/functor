@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import { HttpClient } from "./client.js";
@@ -77,7 +77,7 @@ export function formatCrashOutput(logLines: string[]): string {
   return logLines.slice(start).slice(0, MAX_ERROR_LOG_LINES).join("\n");
 }
 
-/** A {@link FunctorClient} whose `functor-runner` process is owned by the SDK.
+/** A {@link FunctorClient} whose `functor` process is owned by the SDK.
  *
  * Supports `await using` for automatic shutdown:
  *
@@ -112,9 +112,11 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     return runner;
   }
 
-  /** Spawn `functor-runner --mle --debug-port` against an `.mle` game source
-   * and wait until the render loop is serving requests. Requires the runner
-   * binary to already be built (`cargo build --bin functor-runner`). */
+  /** Spawn `functor -d <gameDir> run native` (which drives the desktop runtime's
+   * `--mle --debug-port` loop in-process) and wait until the render loop is
+   * serving requests. Requires the CLI binary to already be built
+   * (`cargo build --bin functor`). Post-E3 there is a single `functor` binary;
+   * the game source is the project's `functor.json` entry. */
   static async launch(options: LaunchOptions): Promise<FunctorRunner> {
     const port = options.port ?? 8077;
     // Resolve the game dir to an absolute path up front, so the spawn cwd and
@@ -134,27 +136,58 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     if (options.headless && options.visible) {
       throw new Error("headless and visible are mutually exclusive");
     }
-    // The game is an `.mle` source, run through the interpreter (`--mle`).
+    // The game is an `.mle` source; `functor run native` reads the entry from
+    // the project's functor.json (which the sample games set to game.mle).
     const gamePath = isAbsolute(options.mlePath)
       ? options.mlePath
       : resolve(options.mlePath);
 
     for (const [label, path] of [
-      ["functor-runner", runnerBin],
+      ["functor CLI", runnerBin],
       ["mle game source", gamePath],
     ] as const) {
       if (!existsSync(path)) {
         throw new Error(
           `${label} not found at ${path}. Build it first ` +
-            `(e.g. \`cargo build --bin functor-runner\`).`,
+            `(e.g. \`cargo build --bin functor\`).`,
         );
       }
     }
 
+    // `functor run native` is project-oriented: it reads the entry (and detects
+    // the MLE language) from a `functor.json` in the game dir, NOT from an
+    // explicit game-path — so the launched source is the functor.json entry.
+    // Real games ship one; synthetic/temp game dirs (tests that just write a
+    // bare `.mle`) may not — write a minimal config pointing at the entry so the
+    // single `functor` binary can run them, matching what `functor-runner --mle`
+    // did directly pre-consolidation.
+    const functorJson = join(gameDir, "functor.json");
+    const wantEntry = relative(gameDir, gamePath) || "game.mle";
+    if (existsSync(functorJson)) {
+      // Don't clobber a real project's config — but since the CLI launches its
+      // entry (not `mlePath`), verify they agree, or the SDK would silently run
+      // a DIFFERENT game than the caller asked for.
+      const cfg = JSON.parse(readFileSync(functorJson, "utf8"));
+      const cfgEntry: string = cfg.entry ?? "game.mle";
+      if (resolve(gameDir, cfgEntry) !== gamePath) {
+        throw new Error(
+          `functor.json in ${gameDir} points at entry "${cfgEntry}", but launch ` +
+            `requested mlePath ${gamePath}. They must match — \`functor run native\` ` +
+            `launches the functor.json entry.`,
+        );
+      }
+    } else {
+      writeFileSync(functorJson, JSON.stringify({ language: "mle", entry: wantEntry }));
+    }
+
+    // Forward the runtime flags after `--`; the CLI prepends `--mle
+    // --game-path <entry>` and runs the desktop loop in-process.
     const runnerArgs = [
-      "--mle",
-      "--game-path",
-      gamePath,
+      "-d",
+      gameDir,
+      "run",
+      "native",
+      "--",
       "--debug-port",
       String(port),
     ];
@@ -188,7 +221,7 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
       for (const line of lines) {
         logLines.push(line);
         if (logLines.length > MAX_LOG_LINES) logLines.shift();
-        if (options.echoLogs) process.stderr.write(`[functor-runner] ${line}\n`);
+        if (options.echoLogs) process.stderr.write(`[functor] ${line}\n`);
       }
     };
     child.stdout?.on("data", capture);
@@ -213,7 +246,7 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     } catch (error) {
       await runner.shutdown();
       throw new Error(
-        `functor-runner failed to start: ${error}\nRecent output:\n${formatCrashOutput(logLines)}`,
+        `functor failed to start: ${error}\nRecent output:\n${formatCrashOutput(logLines)}`,
       );
     }
 
@@ -279,7 +312,7 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
 }
 
 function runnerExe(): string {
-  return process.platform === "win32" ? "functor-runner.exe" : "functor-runner";
+  return process.platform === "win32" ? "functor.exe" : "functor";
 }
 
 /** A child has exited if it has either an exit code or a terminating signal

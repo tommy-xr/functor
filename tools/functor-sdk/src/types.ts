@@ -61,14 +61,14 @@ export interface WaitForOptions {
   description?: string;
 }
 
-/** Options for launching a `functor-runner` process. */
+/** Options for launching a `functor` process (`functor run native`). */
 export interface LaunchOptions {
   /** Game directory (the runner's cwd, for resolving assets).
    * e.g. an absolute path to `examples/mle-hello-gltf`. */
   gameDir: string;
   /** Debug-runtime HTTP port (default 8077). */
   port?: number;
-  /** Path to the `functor-runner` binary (default `<repoRoot>/target/debug/functor-runner`). */
+  /** Path to the `functor` CLI binary (default `<repoRoot>/target/debug/functor`). */
   runnerBin?: string;
   /** Path to the `.mle` game source: launches the runner with `--mle` (the MLE
    * interpreter — docs/mle.md Track C2/C3). `gameDir` stays the runner's cwd. */

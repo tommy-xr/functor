@@ -17,3 +17,6 @@ serde_json = "1.0.117"
 tokio = { version = "1", features = ["full"] }
 warp = "0.3.7"
 functor_runtime_common = { path = "../runtime/functor-runtime-common" }
+# The desktop runtime (GLFW/OpenGL). `functor run native` drives its run loop
+# in-process — post-E3 there is a single `functor` binary, always with GL.
+functor-runtime-desktop = { path = "../runtime/functor-runtime-desktop" }

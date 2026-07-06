@@ -1,11 +1,37 @@
-//! Library facade for the desktop runtime's game producers, so in-process
+#![cfg_attr(feature = "strict", deny(warnings))]
+
+//! The desktop runtime, as a library.
+//!
+//! Post-E3 there is a single `functor` binary: the CLI (`cli/`) drives this
+//! crate's [`run`] IN-PROCESS for `functor run/develop native`, instead of
+//! spawning a separate `functor-runner` process. [`run`] owns the GLFW/OpenGL
+//! window + the game loop and must be called on the main thread (see its docs).
+//!
+//! The game **producers** (`game`/`mle_game`) are also exposed so in-process
 //! drivers in OTHER crates can construct them (the `functor-netsim` harness
 //! drives an [`mle_game::MleGame`] as one of its instances — E3 phase 0b).
-//!
-//! The binaries (`functor-runner` via `main.rs`, `functor-netsim-viz`) keep
-//! their own module tree; this exposes only the producers an external driver
-//! needs. Keep it minimal — it exists for the test/harness seam, not as the
-//! runner's public API.
 
 pub mod game;
 pub mod mle_game;
+
+// The run loop and its supporting modules pull native-only deps (glfw, tokio,
+// reqwest, rodio, tiny_http, …) declared under this crate's
+// `cfg(not(wasm32))` target section, so they are gated to native builds. The
+// wasm-visible surface stays exactly `game` + `mle_game` (the producers).
+#[cfg(not(target_arch = "wasm32"))]
+mod audio;
+#[cfg(not(target_arch = "wasm32"))]
+mod debug_server;
+#[cfg(not(target_arch = "wasm32"))]
+mod net_dispatch;
+#[cfg(not(target_arch = "wasm32"))]
+mod replay_game;
+#[cfg(not(target_arch = "wasm32"))]
+mod run;
+#[cfg(not(target_arch = "wasm32"))]
+mod ws_host;
+#[cfg(not(target_arch = "wasm32"))]
+mod xreal;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use run::{run, Args};

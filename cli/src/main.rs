@@ -103,6 +103,12 @@ enum InspectTarget {
     },
 }
 
+// Must stay the default MULTI-THREAD runtime: `run native` drives the desktop
+// runtime's GLFW loop in-process by BLOCKING this (main-thread) `block_on`
+// future, while the debug server / HTTP / WebSocket work runs on `tokio::spawn`
+// worker threads. A `current_thread` flavor would starve those tasks while the
+// GL loop blocks (headless `--debug-port` would hang). See
+// `functor_runtime_desktop::run`.
 #[tokio::main]
 async fn main() -> tokio::io::Result<()> {
     let args = Args::parse();

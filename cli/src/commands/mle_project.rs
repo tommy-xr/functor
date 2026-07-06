@@ -5,8 +5,9 @@
 //! - `build` is the strict gate: parse + lower + typecheck, with `mle check`
 //!   diagnostics as **errors** (the runner treats them as warnings so the
 //!   dev loop stays permissive; the build command is where they block).
-//! - `run` spawns `functor-runner --mle` on the entry file (cwd = the game
-//!   dir, so asset paths resolve as usual).
+//! - `run` drives the desktop runtime's run loop IN-PROCESS on the entry file
+//!   (cwd = the game dir, so asset paths resolve as usual) — post-E3 there is a
+//!   single `functor` binary, no separate `functor-runner` child.
 //! - `develop` is `run`: the MLE producer hot-reloads on save by itself — no
 //!   watchexec loop, no rebuild. State is preserved across edits.
 //! - `run wasm` serves the project with the MLE index page (docs/mle.md C5):
@@ -17,7 +18,9 @@
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
-use crate::util::{self, get_nearby_bin, ShellCommand, WasmDevServer};
+use clap::Parser;
+
+use crate::util::{self, ShellCommand, WasmDevServer};
 use crate::Environment;
 
 /// The MLE project settings read from `functor.json`.
@@ -96,28 +99,42 @@ impl MleProject {
         if matches!(environment, Environment::Wasm) {
             return self.run_wasm(working_directory, runner_args, develop).await;
         }
-        let entry = self.entry_path(working_directory)?;
-        let functor_runner_exe =
-            get_nearby_bin(&"functor-runner").expect("functor-runner should be available");
+        self.entry_path(working_directory)?; // existence validated up front
         if develop {
             println!(
                 "[mle] develop: hot reload is built in — edit {} and save",
                 self.entry
             );
         }
-        // The runner's cwd is the project dir, so the entry passes through
-        // as-is — `src/game.mle` keeps its subdirectory.
-        let _ = entry; // existence validated above
-        let mut args = vec!["--mle", "--game-path", self.entry.as_str()];
-        args.extend(runner_args.iter().map(|s| s.as_str()));
-        let commands = vec![ShellCommand {
-            prefix: "[Functor Runner]",
-            cmd: functor_runner_exe.to_str().unwrap(),
-            cwd: working_directory,
-            env: vec![],
-            args,
-        }];
-        util::ShellCommand::run_sequential(commands).await
+
+        // Post-E3 there is one binary: drive the desktop runtime's run loop
+        // IN-PROCESS instead of spawning a `functor-runner` child. GLFW/Cocoa
+        // needs the main thread, and `run` blocks on the game loop; the CLI's
+        // `#[tokio::main]` drives this future on the main thread (block_on), so
+        // the call lands on the main thread and inside a tokio runtime context
+        // (net dispatch uses `tokio::spawn`).
+        //
+        // The former child ran with cwd = the project dir so the relative
+        // `--game-path` and asset paths resolve; replicate that by chdir-ing
+        // here (this is the terminal action, and `run` never returns for a
+        // long-lived game, so the process cwd change is safe).
+        std::env::set_current_dir(working_directory)?;
+
+        // Build the runner argv (identical to what was passed to the child) and
+        // parse it with the runtime's own clap `Args`, preserving the exact
+        // arg-forwarding contract (`--capture-frame`, `--fixed-time`,
+        // `--debug-port`, `--headless`, `--hidden`, …). argv[0] is a
+        // placeholder program name for clap.
+        let mut argv: Vec<String> = vec![
+            "functor".to_string(),
+            "--mle".to_string(),
+            "--game-path".to_string(),
+            self.entry.clone(),
+        ];
+        argv.extend(runner_args.iter().cloned());
+        let runtime_args = functor_runtime_desktop::Args::parse_from(argv);
+        functor_runtime_desktop::run(runtime_args);
+        Ok(())
     }
 
     /// Push the entry source to a running runner's `POST /reload-source`

@@ -1,7 +1,7 @@
 # @functor/sdk
 
 A Playwright-style TypeScript SDK for driving the functor **debug runtime** — the
-`--debug-port` HTTP control server on `functor-runner` (see
+`--debug-port` HTTP control server on the `functor` runtime (see
 [`docs/debug-runtime.md`](../../docs/debug-runtime.md)). It lets a script, test, or
 LLM **observe** and **drive** a running game headlessly.
 
@@ -84,15 +84,15 @@ for (let frame = 0; frame < 600; frame++) {
 
 ```sh
 npm test          # unit tests only (no runtime needed)
-npm run test:e2e  # FUNCTOR_E2E=1 — launches a real functor-runner
+npm run test:e2e  # FUNCTOR_E2E=1 — launches a real functor runtime
 ```
 
-The e2e tests require the runner binary and a display to open the GL window. MLE
-games need no build step — the runner interprets the `.mle` directly — so only
-`functor-runner` has to be built:
+The e2e tests require the `functor` binary to be built, and a display to open
+the GL window. The games are MLE sources (`examples/mle-*`) interpreted in place, so
+there is no per-game build step:
 
 ```sh
-cargo build --bin functor-runner
+cargo build --bin functor
 ```
 
 (The games driven by the tests are `examples/mle-hello-gltf` — the held-input
