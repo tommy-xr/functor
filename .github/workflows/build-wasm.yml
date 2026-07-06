@@ -17,19 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: "8.0.x"
-
-      - name: Restore tools
-        run: dotnet tool restore
-
-      - name: .NET SDK info
-        run: |
-          dotnet --info
-          dotnet --list-sdks
-
       - name: Setup Node.js environment
         uses: actions/setup-node@v6
 
@@ -39,15 +26,6 @@ jobs:
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
-      - name: Build F#
-        run: npm run build:framework:rust -- --verbose
-
-      # Cache AFTER Build F#: that step generates fable_modules/, which contains
-      # the fable_library_rust workspace dependency. If caching runs first,
-      # rust-cache's `cargo metadata` fails to resolve the workspace, falls back
-      # to an empty lockfile hash (sha1("") = da39a3ee), and produces a static
-      # key that always "full matches" and never re-saves - silently freezing
-      # the cache. Caching here still precedes the heavy wasm builds below.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:

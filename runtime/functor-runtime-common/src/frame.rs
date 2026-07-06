@@ -1,4 +1,3 @@
-use fable_library_rust::NativeArray_::Array;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -38,23 +37,12 @@ pub struct Frame {
 
 impl Frame {
     /// Unlit frame (no lights): lit surfaces get only their ambient term until
-    /// lights are supplied via `new_lit`.
+    /// lights are supplied on the `lights` field.
     pub fn new(camera: Camera, scene: Scene3D) -> Frame {
         Frame {
             camera,
             scene,
             lights: vec![],
-            render_targets: vec![],
-            fog: None,
-            skybox: None,
-        }
-    }
-
-    pub fn new_lit(camera: Camera, scene: Scene3D, lights: Array<Light>) -> Frame {
-        Frame {
-            camera,
-            scene,
-            lights: lights.to_vec(),
             render_targets: vec![],
             fog: None,
             skybox: None,

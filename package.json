@@ -9,7 +9,6 @@
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "generate:audio": "node scripts/generate-audio.mjs",
     "test:golden": "npm run fetch:assets && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
-    "build:framework:rust": "dotnet fable src/Functor.Game/Functor.Game.fsproj --lang rust --outDir .",
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",
     "site:build": "node site/build.mjs",

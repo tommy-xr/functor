@@ -5,16 +5,11 @@
 //! clients can thus be driven and asserted deterministically — no real sockets,
 //! no GL, byte-for-byte reproducible from a seed.
 //!
-//! An instance is one of two [`Backend`]s:
-//!
-//! * **`Dylib`** — an F# game dylib loaded as a *private copy*, so its
-//!   `currentRunner` / net queues are its own (module statics don't collide
-//!   between instances).
-//! * **`Producer`** — an in-process [`GameProducer`] (e.g. an MLE game),
-//!   driven through the shared runtime. All producers share this process's
-//!   *process-global* net-command queue (`net::CONN_OUT`), so the harness must
-//!   drain each instance's outbound commands ATOMICALLY right after running its
-//!   game code (see [`NetSim::step`]) to keep them isolated per instance.
+//! Each instance is an in-process [`GameProducer`] (an MLE game), driven through
+//! the shared runtime. All producers share this process's *process-global*
+//! net-command queue (`net::CONN_OUT`), so the harness must drain each instance's
+//! outbound commands ATOMICALLY right after running its game code (see
+//! [`NetSim::step`]) to keep them isolated per instance.
 //!
 //! Routing reuses the games' own `Sub.connect` / `Sub.listen`: a client's connect
 //! url is matched to a server's listen bind by *authority* (host:port). The
@@ -22,16 +17,12 @@
 //! so a send from either side routes to the other.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use fable_library_rust::String_::{fromString, LrcStr};
 use functor_runtime_common::net::{
     ConnCommand, ConnectionId, LinkProfile, NetEvent, NodeId, VirtualNet,
 };
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::FrameTime;
-use libloading::{Library, Symbol};
 
 pub use functor_runtime_common::net::LinkProfile as Link;
 
@@ -72,67 +63,28 @@ fn authority(endpoint: &str) -> &str {
     after_scheme.split('/').next().unwrap_or(after_scheme)
 }
 
-/// How one instance's game logic is hosted.
-enum Backend {
-    /// An F# game dylib, loaded as a private copy so its module statics
-    /// (`currentRunner`, net queues) don't collide with other instances. The
-    /// copy lives at `temp` and is removed on drop.
-    Dylib { lib: Library, temp: PathBuf },
-    /// An in-process [`GameProducer`] (e.g. an MLE game). Its net-command
-    /// queue is PROCESS-GLOBAL and shared with every other producer instance,
-    /// so the harness drains it atomically per instance — see [`NetSim::step`].
-    Producer(Box<dyn GameProducer>),
-}
-
-/// One game instance driven by the sim, over either backend.
+/// One game instance driven by the sim — an in-process [`GameProducer`] (an MLE
+/// game). Its net-command queue is PROCESS-GLOBAL and shared with every other
+/// producer instance, so the harness drains it atomically per instance (see
+/// [`NetSim::step`]).
 struct Instance {
-    backend: Backend,
+    producer: Box<dyn GameProducer>,
     node: NodeId,
     /// This instance's routing key (the url/bind its game used) per connection.
     keys: HashMap<ConnectionId, String>,
     /// Outbound conn commands this instance's game code has produced but not
     /// yet routed. Captured right after each game-code call (tick, event
-    /// delivery) so a shared producer queue stays attributed to the right
-    /// instance; routed on the NEXT frame — matching the dylib path, where an
-    /// event reply sits in the private queue until the next post-tick drain.
+    /// delivery) so the shared producer queue stays attributed to the right
+    /// instance; routed on the NEXT frame.
     outbox: Vec<ConnCommand>,
 }
 
 impl Instance {
-    fn load_dylib(src: &str, node: NodeId) -> Instance {
-        // Each dylib instance loads a private copy so its module statics
-        // (currentRunner, net queues) are independent. The temp name is unique
-        // process-wide so concurrent sims / tests never clobber each other's
-        // copies.
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let uid = NEXT.fetch_add(1, Ordering::Relaxed);
-        let suffix = std::path::Path::new(src)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("game.dylib");
-        let temp = std::env::temp_dir().join(format!(
-            "functor-netsim-{}-{uid}-{suffix}",
-            std::process::id()
-        ));
-        std::fs::copy(src, &temp).unwrap_or_else(|e| panic!("copy {src}: {e}"));
-        let lib = unsafe { Library::new(&temp).unwrap_or_else(|e| panic!("load {temp:?}: {e}")) };
-        unsafe {
-            let init: Symbol<fn()> = lib.get(b"init").unwrap();
-            init();
-        }
-        Instance {
-            backend: Backend::Dylib { lib, temp },
-            node,
-            keys: HashMap::new(),
-            outbox: Vec::new(),
-        }
-    }
-
     fn from_producer(producer: Box<dyn GameProducer>, node: NodeId) -> Instance {
         // The producer is already constructed (e.g. `MleGame::create` has
-        // evaluated `init`), mirroring the dylib path's `init()` call above.
+        // evaluated `init`).
         Instance {
-            backend: Backend::Producer(producer),
+            producer,
             node,
             keys: HashMap::new(),
             outbox: Vec::new(),
@@ -140,101 +92,41 @@ impl Instance {
     }
 
     fn tick(&mut self, time: FrameTime) {
-        match &mut self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn(FrameTime)> = lib.get(b"tick").unwrap();
-                f(time);
-            },
-            Backend::Producer(p) => p.tick(time),
-        }
+        self.producer.tick(time);
     }
 
     fn drain_conn_commands(&self) -> Vec<ConnCommand> {
-        let json = match &self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn() -> LrcStr> = lib.get(b"net_drain_conn_commands_json").unwrap();
-                f().to_string()
-            },
-            Backend::Producer(p) => p.net_drain_conn_commands(),
-        };
+        let json = self.producer.net_drain_conn_commands();
         serde_json::from_str(&json).unwrap_or_default()
     }
 
     fn push_connected(&mut self, key: &str, id: i32) {
-        match &mut self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn(LrcStr, i32)> = lib.get(b"net_push_connected").unwrap();
-                f(fromString(key.to_string()), id);
-            },
-            Backend::Producer(p) => p.net_push_connected(key.to_string(), id),
-        }
+        self.producer.net_push_connected(key.to_string(), id);
     }
 
     fn push_message(&mut self, key: &str, id: i32, text: &str) {
-        match &mut self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn(LrcStr, i32, LrcStr)> = lib.get(b"net_push_conn_message").unwrap();
-                f(fromString(key.to_string()), id, fromString(text.to_string()));
-            },
-            Backend::Producer(p) => p.net_push_conn_message(key.to_string(), id, text.to_string()),
-        }
+        self.producer
+            .net_push_conn_message(key.to_string(), id, text.to_string());
     }
 
     fn push_disconnected(&mut self, key: &str, id: i32) {
-        match &mut self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn(LrcStr, i32)> = lib.get(b"net_push_disconnected").unwrap();
-                f(fromString(key.to_string()), id);
-            },
-            Backend::Producer(p) => p.net_push_disconnected(key.to_string(), id),
-        }
+        self.producer.net_push_disconnected(key.to_string(), id);
     }
 
     fn push_error(&mut self, key: &str, id: i32, message: &str) {
-        match &mut self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn(LrcStr, i32, LrcStr)> = lib.get(b"net_push_conn_error").unwrap();
-                f(
-                    fromString(key.to_string()),
-                    id,
-                    fromString(message.to_string()),
-                );
-            },
-            Backend::Producer(p) => p.net_push_conn_error(key.to_string(), id, message.to_string()),
-        }
+        self.producer
+            .net_push_conn_error(key.to_string(), id, message.to_string());
     }
 
-    /// The game model, `Debug`-formatted (dylib) / pretty-printed (producer),
-    /// for assertions. Free-form text — consumers must not parse it (see
-    /// `protocol::GameProducer::state_debug`).
+    /// The game model, pretty-printed, for assertions. Free-form text —
+    /// consumers must not parse it (see `protocol::GameProducer::state_debug`).
     fn state(&self) -> String {
-        match &self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn() -> LrcStr> = lib.get(b"emit_state_debug").unwrap();
-                f().to_string()
-            },
-            Backend::Producer(p) => p.state_debug(),
-        }
+        self.producer.state_debug()
     }
 
     /// The instance's frame (camera + scene) at this time, for a visualizer.
     fn render(&mut self, time: FrameTime) -> functor_runtime_common::Frame {
-        match &mut self.backend {
-            Backend::Dylib { lib, .. } => unsafe {
-                let f: Symbol<fn(FrameTime) -> functor_runtime_common::Frame> =
-                    lib.get(b"test_render").unwrap();
-                f(time)
-            },
-            Backend::Producer(p) => p.render(time),
-        }
-    }
-}
-
-impl Drop for Instance {
-    fn drop(&mut self) {
-        if let Backend::Dylib { temp, .. } = &self.backend {
-            let _ = std::fs::remove_file(temp);
-        }
+        self.producer.render(time)
     }
 }
 
@@ -259,20 +151,12 @@ impl NetSim {
         }
     }
 
-    /// Load a game dylib as a new instance (independent copy). Returns its id.
-    pub fn add(&mut self, dylib_path: &str) -> InstanceId {
-        let node = self.vnet.add_node();
-        let id = self.instances.len();
-        self.instances.push(Instance::load_dylib(dylib_path, node));
-        id
-    }
-
     /// Add an already-constructed in-process [`GameProducer`] (e.g. an
     /// `MleGame`) as a new instance. Returns its id.
     ///
-    /// Unlike a dylib, producers share this process's runtime — including the
-    /// process-global net-command queue — so [`step`](Self::step) drains each
-    /// one's outbound commands atomically to keep them isolated.
+    /// Producers share this process's runtime — including the process-global
+    /// net-command queue — so [`step`](Self::step) drains each one's outbound
+    /// commands atomically to keep them isolated.
     pub fn add_producer(&mut self, producer: Box<dyn GameProducer>) -> InstanceId {
         let node = self.vnet.add_node();
         let id = self.instances.len();
@@ -356,9 +240,7 @@ impl NetSim {
         };
         // Tick each instance and drain the commands IT produced ATOMICALLY —
         // so a producer sharing the process-global conn queue (MLE) stays
-        // isolated: each drain reads only the instance that just ticked. The
-        // dylib path has a private queue, so the sequencing is a harmless
-        // no-op there.
+        // isolated: each drain reads only the instance that just ticked.
         for inst in &mut self.instances {
             inst.tick(time.clone());
             let cmds = inst.drain_conn_commands();
@@ -462,10 +344,9 @@ impl NetSim {
             }
             // Capture any outbound commands the delivered events produced (e.g.
             // an MLE `update` replying with `Effect.send`) BEFORE moving to the
-            // next instance — again atomic, so a shared producer queue stays
+            // next instance — again atomic, so the shared producer queue stays
             // attributed here. Held in this instance's outbox and routed next
-            // frame, matching the dylib path where such a reply waits in the
-            // private queue until the next post-tick drain.
+            // frame.
             let cmds = self.instances[id].drain_conn_commands();
             self.instances[id].outbox.extend(cmds);
         }

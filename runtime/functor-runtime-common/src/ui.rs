@@ -12,8 +12,6 @@
 
 use std::sync::Arc;
 
-use fable_library_rust::NativeArray_::Array;
-use fable_library_rust::String_::LrcStr;
 use glow::HasContext;
 use serde::{Deserialize, Serialize};
 
@@ -92,57 +90,12 @@ pub fn rgb_u8(r: f32, g: f32, b: f32) -> [u8; 3] {
     [c(r), c(g), c(b)]
 }
 
-// F#-facing constructors. Each takes Fable's string/array types (`LrcStr`,
-// `Array`) and mirrors the `Scene3D`/`TextureDescription` Emit-shim pattern.
 impl View {
+    /// The empty view — renders nothing. The other variants (`Text`, `Column`,
+    /// `Row`, `Panel`) are constructed directly by the MLE `Ui.*` prelude.
     pub fn empty() -> View {
         View::Empty
     }
-
-    pub fn text(s: LrcStr) -> View {
-        View::Text {
-            text: s.to_string(),
-            color: [255, 255, 255],
-            font: None,
-        }
-    }
-
-    pub fn text_color(r: f32, g: f32, b: f32, s: LrcStr) -> View {
-        View::Text {
-            text: s.to_string(),
-            color: rgb_u8(r, g, b),
-            font: None,
-        }
-    }
-
-    /// Text in a named font at `size` points. Only the default font renders today;
-    /// the family is recorded for when the font registry lands.
-    pub fn text_font(family: LrcStr, size: f32, s: LrcStr) -> View {
-        View::Text {
-            text: s.to_string(),
-            color: [255, 255, 255],
-            font: Some(FontRef {
-                family: family.to_string(),
-                size,
-            }),
-        }
-    }
-
-    pub fn column(items: Array<View>) -> View {
-        View::Column(items.to_vec())
-    }
-
-    pub fn row(items: Array<View>) -> View {
-        View::Row(items.to_vec())
-    }
-
-    pub fn panel(anchor: Anchor, child: View) -> View {
-        View::Panel {
-            anchor,
-            child: Box::new(child),
-        }
-    }
-
 }
 
 /// Point size of the overlay's monospace text.

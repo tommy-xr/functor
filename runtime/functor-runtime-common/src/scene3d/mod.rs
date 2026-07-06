@@ -6,8 +6,6 @@ use glow::HasContext;
 use cgmath::{vec3, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
-use fable_library_rust::NativeArray_::Array;
-
 use crate::{
     asset::{
         self,
@@ -538,34 +536,9 @@ impl Scene3D {
         }
     }
 
-    pub fn heightmap(rows: i32, cols: i32, heights: Array<f32>) -> Self {
-        Scene3D {
-            obj: SceneObject::Geometry(Shape::Heightmap {
-                rows: rows.max(0) as u32,
-                cols: cols.max(0) as u32,
-                heights: heights.to_vec(),
-            }),
-            xform: Matrix4::identity(),
-        }
-    }
-
-    pub fn material(material: MaterialDescription, items: Array<Scene3D>) -> Self {
-        Scene3D {
-            obj: SceneObject::Material(material, items.to_vec()),
-            xform: Matrix4::identity(),
-        }
-    }
-
     pub fn model(model: ModelDescription) -> Self {
         Scene3D {
             obj: SceneObject::Model(model),
-            xform: Matrix4::identity(),
-        }
-    }
-
-    pub fn group(items: Array<Scene3D>) -> Self {
-        Scene3D {
-            obj: SceneObject::Group(items.to_vec()),
             xform: Matrix4::identity(),
         }
     }

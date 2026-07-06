@@ -16,7 +16,6 @@
 //! still-live connection. Hosts therefore treat `Connect`/`Listen` as idempotent
 //! by key.
 
-use fable_library_rust::NativeArray_;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
@@ -112,11 +111,6 @@ pub fn push_conn_event(key: String, event: NetEvent) {
 /// Executor: take the inbound connection events queued since the last frame.
 pub fn drain_conn_events() -> Vec<KeyedEvent> {
     CONN_IN.drain()
-}
-
-/// Executor (F#-facing): drain the inbound events as a Fable array.
-pub fn take_conn_events() -> NativeArray_::Array<KeyedEvent> {
-    NativeArray_::array_from(drain_conn_events())
 }
 
 // Host (primitive ABI): one helper per event kind so the dylib's exported shim

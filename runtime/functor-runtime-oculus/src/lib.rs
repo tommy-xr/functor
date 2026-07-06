@@ -257,14 +257,15 @@ fn placeholder_frame() -> Frame {
         intensity: 1.0,
         casts_shadows: true,
     };
-    Frame::new_lit(
+    let mut frame = Frame::new(
         Camera::default(),
         functor_runtime_common::Scene3D {
             obj: functor_runtime_common::SceneObject::Group(vec![]),
             xform: cgmath::Matrix4::identity(),
         },
-        vec![light].into(),
-    )
+    );
+    frame.lights = vec![light];
+    frame
 }
 
 #[no_mangle]

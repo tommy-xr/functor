@@ -80,8 +80,8 @@ fn fixed_time_from_url() -> Option<f32> {
 /// sets `window.__mleGamePath` to the entry file before initializing this
 /// module (the CLI's MLE index page substitutes the project's `functor.json`
 /// entry — see `index-mle.html` / the CLI's `wasm_dev_server.rs`), and the
-/// runtime fetches + interprets that source instead of bridging to a game
-/// wasm module. Absent (the F# path) this returns `None`.
+/// runtime fetches + interprets that source. Absent (the entry was not set)
+/// this returns `None` and `run_async` fails loud.
 fn mle_game_path() -> Option<String> {
     js_sys::Reflect::get(&window(), &JsValue::from_str("__mleGamePath"))
         .ok()
@@ -121,8 +121,7 @@ pub fn mle_is_running() -> bool {
 /// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md
 /// D4). Same semantics: the model is preserved (`mle::rebind_value`), a
 /// broken push keeps the old program running. `Ok` carries a short status
-/// line; `Err` (a JS throw) the rendered load error. On the F# page the
-/// producer's default `reload_source` refuses honestly.
+/// line; `Err` (a JS throw) the rendered load error.
 #[wasm_bindgen]
 pub fn mle_set_source(source: String) -> Result<String, String> {
     let game = GAME.with(|g| g.borrow().clone());
@@ -138,143 +137,19 @@ pub fn mle_set_source(source: String) -> Result<String, String> {
     game.reload_source(&source)
 }
 
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = game, js_name = render)]
-    fn game_render(frameTimeJs: JsValue) -> JsValue;
-
-    #[wasm_bindgen(js_namespace = game, js_name = ui)]
-    fn game_ui() -> JsValue;
-
-    #[wasm_bindgen(js_namespace = game, js_name = tick)]
-    fn game_tick(frameTimeJs: JsValue);
-
-    // Networking bridge into the game module (see Runtime.Wasm). The game queues
-    // commands as a JSON string; results are pushed back as JS strings.
-    #[wasm_bindgen(js_namespace = game, js_name = net_drain_commands_json)]
-    fn game_net_drain_commands() -> JsValue;
-
-    #[wasm_bindgen(js_namespace = game, js_name = net_push_http_response)]
-    fn game_net_push_http_response(token: i32, status: i32, body: JsValue);
-
-    #[wasm_bindgen(js_namespace = game, js_name = net_push_http_error)]
-    fn game_net_push_http_error(token: i32, message: JsValue);
-
-    // Audio bridge into the game module (see Runtime.Wasm): the game queues
-    // play commands as a JSON string, which the host plays via Web Audio.
-    #[wasm_bindgen(js_namespace = game, js_name = audio_drain_commands_json_wasm)]
-    fn game_audio_drain_commands() -> JsValue;
-
-    // The desired soundscape (`soundScape model`) as a JSON string, reconciled
-    // against the live looping voices each frame.
-    #[wasm_bindgen(js_namespace = game, js_name = audio_scene_json_wasm)]
-    fn game_audio_scene_json() -> JsValue;
-
-    // Persistent connections (WebSocket).
-    #[wasm_bindgen(js_namespace = game, js_name = net_drain_conn_commands_json)]
-    fn game_net_drain_conn_commands() -> JsValue;
-
-    #[wasm_bindgen(js_namespace = game, js_name = net_push_connected)]
-    fn game_net_push_connected(key: JsValue, id: i32);
-
-    #[wasm_bindgen(js_namespace = game, js_name = net_push_conn_message)]
-    fn game_net_push_conn_message(key: JsValue, id: i32, text: JsValue);
-
-    #[wasm_bindgen(js_namespace = game, js_name = net_push_disconnected)]
-    fn game_net_push_disconnected(key: JsValue, id: i32);
-
-    #[wasm_bindgen(js_namespace = game, js_name = net_push_conn_error)]
-    fn game_net_push_conn_error(key: JsValue, id: i32, message: JsValue);
-}
-
-/// The web producer: `GameProducer` bridged over the `wasm_bindgen` exports of
-/// the game module (the `js_namespace = game` externs above), marshalling
-/// through `JsValue`. Zero-sized and stateless — all state lives in the game
-/// module — so async callbacks (fetch results, WebSocket events) construct
-/// their own instance to push into the inbox; JS is single-threaded, so a push
-/// always completes before the next frame's tick.
-///
-/// Shell-specific no-ops: `check_hot_reload` (the browser reloads the page),
-/// input events (the page feeds the game module directly), `state_debug` (no
-/// debug server on web), `audio_push_finished` (web one-shots are
-/// fire-and-forget — see `play_one_shot`), and `quit` (page lifetime).
-struct WasmGame;
-
-impl GameProducer for WasmGame {
-    fn check_hot_reload(&mut self, _frame_time: FrameTime) {}
-
-    fn tick(&mut self, frame_time: FrameTime) {
-        game_tick(functor_runtime_common::to_js_value(&frame_time));
-    }
-
-    fn key_event(&mut self, _code: i32, _is_down: bool) {}
-    fn mouse_move(&mut self, _x: i32, _y: i32) {}
-    fn mouse_wheel(&mut self, _delta: i32) {}
-
-    fn render(&mut self, frame_time: FrameTime) -> Frame {
-        let val = game_render(functor_runtime_common::to_js_value(&frame_time));
-        functor_runtime_common::from_js_value(val)
-    }
-
-    fn ui(&self) -> functor_runtime_common::ui::View {
-        functor_runtime_common::from_js_value(game_ui())
-    }
-
-    fn state_debug(&self) -> String {
-        "<state_debug is unavailable on wasm>".to_string()
-    }
-
-    fn net_drain_commands(&self) -> String {
-        game_net_drain_commands()
-            .as_string()
-            .unwrap_or_else(|| "[]".to_string())
-    }
-
-    fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
-        game_net_push_http_response(token, status, JsValue::from_str(&body));
-    }
-
-    fn net_push_http_error(&mut self, token: i32, message: String) {
-        game_net_push_http_error(token, JsValue::from_str(&message));
-    }
-
-    fn audio_drain_commands(&self) -> String {
-        game_audio_drain_commands()
-            .as_string()
-            .unwrap_or_else(|| "[]".to_string())
-    }
-
-    fn audio_scene_json(&self) -> String {
-        game_audio_scene_json()
-            .as_string()
-            .unwrap_or_else(|| "{\"sources\":[]}".to_string())
-    }
-
-    fn net_drain_conn_commands(&self) -> String {
-        game_net_drain_conn_commands()
-            .as_string()
-            .unwrap_or_else(|| "[]".to_string())
-    }
-
-    fn net_push_connected(&mut self, key: String, conn: i32) {
-        game_net_push_connected(to_js(&key), conn);
-    }
-
-    fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
-        game_net_push_conn_message(to_js(&key), conn, to_js(&text));
-    }
-
-    fn net_push_disconnected(&mut self, key: String, conn: i32) {
-        game_net_push_disconnected(to_js(&key), conn);
-    }
-
-    fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
-        game_net_push_conn_error(to_js(&key), conn, to_js(&message));
-    }
-
-    fn audio_push_finished(&mut self, _token: i32) {}
-
-    fn quit(&mut self) {}
+/// Route a socket event to the LIVE producer via the shared `GAME` handle (the
+/// MLE page's `MleWebGame`) — the WebSocket twin of [`perform_and_push`]. Runs
+/// in a socket-event microtask, never mid-frame, so the borrow can't collide
+/// with the frame loop.
+fn with_live_game(f: impl FnOnce(&mut dyn GameProducer)) {
+    let Some(game) = GAME.with(|g| g.borrow().clone()) else {
+        return;
+    };
+    let Ok(mut game) = game.try_borrow_mut() else {
+        web_sys::console::error_1(&"[net] socket event arrived mid-frame; dropped".into());
+        return;
+    };
+    f(&mut **game);
 }
 
 fn http_method_str(method: HttpMethod) -> &'static str {
@@ -322,12 +197,9 @@ async fn perform_and_push(cmd: NetCommand) {
     let token = token as i32;
     let result = perform_fetch(method, &url, &headers, &body).await;
     // Route the completion to the LIVE producer via the shared GAME handle —
-    // the F# page's WasmGame (backed by the wasm_bindgen externs) OR the MLE
-    // page's MleWebGame (which folds the response through `update`). Pushing
-    // through a fresh `WasmGame` instead would throw `game is not defined` on
-    // the MLE page (no JS game module). This runs as a fetch microtask, never
-    // mid-frame, so the borrow can't collide with the frame loop (as with
-    // `mle_set_source`).
+    // the MLE page's MleWebGame, which folds the response through `update`.
+    // This runs as a fetch microtask, never mid-frame, so the borrow can't
+    // collide with the frame loop (as with `mle_set_source`).
     let Some(game) = GAME.with(|g| g.borrow().clone()) else {
         return;
     };
@@ -762,10 +634,6 @@ struct WsClient {
     next_id: u64,
 }
 
-fn to_js(s: &str) -> JsValue {
-    functor_runtime_common::to_js_value(&s.to_string())
-}
-
 /// Drain the game's queued connection commands and perform them with browser
 /// WebSockets; socket events are pushed back into the game from the handlers.
 fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>) {
@@ -812,17 +680,15 @@ fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>
 
 fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     // Idempotent by key (matches the native host); a re-declared connection
-    // reattaches rather than opening a second socket.
-    // NOTE: like perform_and_push, event callbacks push through `WasmGame`
-    // (the F# externs) — unreachable on the MLE page until MLE grows effects;
-    // see the note on perform_and_push.
+    // reattaches rather than opening a second socket. Event callbacks push into
+    // the live producer (the MLE page's MleWebGame) via `with_live_game`.
     if state.borrow().by_key.contains_key(&key) {
         return;
     }
     let ws = match web_sys::WebSocket::new(&url) {
         Ok(ws) => ws,
         Err(_) => {
-            WasmGame.net_push_conn_error(key, 0, "failed to open WebSocket".to_string());
+            with_live_game(|g| g.net_push_conn_error(key, 0, "failed to open WebSocket".to_string()));
             return;
         }
     };
@@ -838,7 +704,9 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
 
     let on_open = {
         let key = key.clone();
-        Closure::<dyn FnMut()>::new(move || WasmGame.net_push_connected(key.clone(), iid))
+        Closure::<dyn FnMut()>::new(move || {
+            with_live_game(|g| g.net_push_connected(key.clone(), iid))
+        })
     };
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
     on_open.forget();
@@ -847,7 +715,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
         let key = key.clone();
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
             if let Some(text) = e.data().as_string() {
-                WasmGame.net_push_conn_message(key.clone(), iid, text);
+                with_live_game(|g| g.net_push_conn_message(key.clone(), iid, text));
             }
         })
     };
@@ -858,7 +726,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
         let key = key.clone();
         let state = state.clone();
         Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_e: web_sys::CloseEvent| {
-            WasmGame.net_push_disconnected(key.clone(), iid);
+            with_live_game(|g| g.net_push_disconnected(key.clone(), iid));
             // Drop our handle so a still-declared Sub.connect reconnects next frame.
             let mut s = state.borrow_mut();
             s.conns.remove(&id);
@@ -871,7 +739,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     let on_error = {
         let key = key.clone();
         Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |e: web_sys::ErrorEvent| {
-            WasmGame.net_push_conn_error(key.clone(), iid, e.message());
+            with_live_game(|g| g.net_push_conn_error(key.clone(), iid, e.message()));
         })
     };
     ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
@@ -894,23 +762,22 @@ impl AssetLoader for WasmAssetLoader {
 }
 
 async fn run_async() -> Result<(), JsValue> {
-    // Choose the producer for this page (docs/mle.md Track A2/C5): an MLE
-    // entry declared by the page runs through the in-runtime interpreter;
-    // otherwise the wasm_bindgen bridge to the F# game module. The concrete
-    // WasmGame stays the completion target for async pushes (fetch results,
-    // WebSocket events — see its doc): the MLE producer has no effects yet
-    // (its drains return "[]"), so no completion ever needs to reach it.
-    // Revisit when MLE grows effects (Track C4b-2).
-    let game: Box<dyn GameProducer> = match mle_game_path() {
-        Some(path) => match create_mle_game(&path).await {
-            Ok(game) => Box::new(game),
-            Err(message) => {
-                let rendered = format!("[mle] error: {message}");
-                web_sys::console::error_1(&rendered.as_str().into());
-                return Err(JsValue::from_str(&rendered));
-            }
-        },
-        None => Box::new(WasmGame),
+    // The page's MLE entry (docs/mle.md Track C5) runs through the in-runtime
+    // interpreter — the sole producer since the F#/wasm-bindgen bridge was
+    // removed in E3. Async pushes (fetch results, WebSocket events) reach it
+    // through the shared `GAME` handle (`perform_and_push` / `with_live_game`).
+    let Some(path) = mle_game_path() else {
+        let rendered = "[mle] error: no game entry — window.__mleGamePath is not set".to_string();
+        web_sys::console::error_1(&rendered.as_str().into());
+        return Err(JsValue::from_str(&rendered));
+    };
+    let game: Box<dyn GameProducer> = match create_mle_game(&path).await {
+        Ok(game) => Box::new(game),
+        Err(message) => {
+            let rendered = format!("[mle] error: {message}");
+            web_sys::console::error_1(&rendered.as_str().into());
+            return Err(JsValue::from_str(&rendered));
+        }
     };
     // Share the producer with the `mle_set_source` export (docs/mle.md D4):
     // the frame loop below and the editor push path borrow the same instance.
@@ -1107,8 +974,7 @@ async fn run_async() -> Result<(), JsValue> {
             last_time = now;
 
             // Deliver page input queued since the last frame (the MLE path's
-            // `mle_*` exports; empty and free on the F# path, whose page feeds
-            // the game module directly).
+            // `mle_*` exports).
             mle_game::drain_input(&mut **game);
 
             game.tick(frame_time.clone());

@@ -203,39 +203,17 @@ async fn main() -> tokio::io::Result<()> {
             );
             Ok(())
         }
-        Command::Build { environment } => {
-            commands::build::execute(&working_directory_str, &Environment::default(environment))
-                .await
-        }
-        Command::Run {
-            environment,
-            runner_args,
-        } => {
-            commands::build::execute(&working_directory_str, &Environment::default(environment))
-                .await?;
-            commands::run::execute(
-                &working_directory_str,
-                &Environment::default(environment),
-                runner_args,
-            )
-            .await
-        }
-        Command::Develop {
-            environment,
-            runner_args,
-        } => {
-            commands::build::execute(&working_directory_str, &Environment::default(environment))
-                .await?;
-            commands::develop::execute(
-                &working_directory_str,
-                &Environment::default(environment),
-                runner_args,
-            )
-            .await
+        // The F#/Fable pipeline was removed in E3: every Functor project is now
+        // MLE (functor.json `"language": "mle"`), routed above. A project that
+        // isn't MLE has no build/run/develop/push path.
+        Command::Build { .. } | Command::Run { .. } | Command::Develop { .. } => {
+            Err(io::Error::other(
+                "not an MLE project: functor.json needs \"language\": \"mle\" \
+(the F#/Fable pipeline was removed in E3)",
+            ))
         }
         Command::Push { .. } => Err(io::Error::other(
-            "push requires an MLE project (functor.json with \"language\": \"mle\") — \
-compiled games reload from their rebuilt dylib, not pushed source",
+            "push requires an MLE project (functor.json with \"language\": \"mle\")",
         )),
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
