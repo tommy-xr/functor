@@ -50,6 +50,11 @@ let init = {
   lastMouse: NoMouse,
   // Which side the next 'B' gunshot fires to (alternates each press).
   bangRight: false,
+  // Rising-edge latches: GLFW key-repeats arrive as isDown=true, so these
+  // hold whether Space/B are already down, to fire ONCE per physical press
+  // (F#'s KeyDown is edge-triggered; MLE input is level, see mle-physics).
+  spaceHeld: false,
+  bHeld: false,
 }
 
 // Map WASD and the arrow keys onto the held-key flags. Both key-downs and
@@ -66,28 +71,36 @@ let setHeld = (held, key, isDown) =>
   | "Right" => { held with right: isDown }
   | _ => held
 
-// Spacebar fires a one-shot sound, with a message delivered when it ends.
+// Spacebar fires a one-shot sound, with a message delivered when it ends. Only
+// on the rising edge (spaceHeld latch), so a held key doesn't machine-gun it.
 let fireGun = (model, isDown) =>
   match isDown with
-  | true => (model, Effect.playThen("gunshot.wav", GunshotDone))
-  | false => model
+  | false => { model with spaceHeld: false }
+  | true =>
+    (match model.spaceHeld with
+     | true => model
+     | false => ({ model with spaceHeld: true }, Effect.playThen("gunshot.wav", GunshotDone)))
 
 // 'B' fires a spatialized gunshot a few units directly to your left/right
 // (relative to facing), alternating each press — a clear hard-pan L/R test of
 // Effect.playAt. The point is along the camera's right axis, so it pans fully.
+// Rising-edge only (bHeld latch), like fireGun.
 let fireBang = (model, isDown) =>
   match isDown with
-  | false => model
+  | false => { model with bHeld: false }
   | true =>
-    // right = (-cos yaw, 0, sin yaw)
-    let rx = 0.0 - Math.cos(model.yaw) in
-    let rz = Math.sin(model.yaw) in
-    let side = (match model.bangRight with | true => 4.0 | false => 0.0 - 4.0) in
-    let px = model.eye.x + side * rx in
-    let py = model.eye.y in
-    let pz = model.eye.z + side * rz in
-    let flipped = (match model.bangRight with | true => false | false => true) in
-    ({ model with bangRight: flipped }, Effect.playAt("gunshot.wav", px, py, pz))
+    (match model.bHeld with
+     | true => model
+     | false =>
+       // right = (-cos yaw, 0, sin yaw)
+       let rx = 0.0 - Math.cos(model.yaw) in
+       let rz = Math.sin(model.yaw) in
+       let side = (match model.bangRight with | true => 4.0 | false => 0.0 - 4.0) in
+       let px = model.eye.x + side * rx in
+       let py = model.eye.y in
+       let pz = model.eye.z + side * rz in
+       let flipped = (match model.bangRight with | true => false | false => true) in
+       ({ model with bangRight: flipped, bHeld: true }, Effect.playAt("gunshot.wav", px, py, pz)))
 
 let input = (model, key, isDown) =>
   match key with
