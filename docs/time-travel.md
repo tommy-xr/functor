@@ -1,10 +1,57 @@
 # Time-travel tooling
 
-Status: **design / vision** — the enabling machinery is shipped (the physics
-`Timeline`, `docs/physics.md` Phase 6 / #215), but the generic whole-scene tool
-is not yet built. This is the design doc and the stacked-PR plan for turning
-that machinery into **generic time-travel tooling across the whole game**: pause,
-scrub, rewind, replay, branch — and the authoring experiences those unlock.
+Status: **the whole-game scrubber is shipped** (T1–T3); the authoring
+experiences (T4–T6) are not yet built. This is the design doc *and* the record
+of what landed: **generic time-travel tooling across the whole game** — pause,
+scrub, rewind, replay, branch — plus the authoring experiences those unlock. It
+generalizes the physics `Timeline` (`docs/physics.md` Phase 6 / #215) from the
+Rapier world to the entire MVU model.
+
+## What shipped (as of 2026-07-05)
+
+You can pause a running MLE game and **drag a timeline scrubber to any recorded
+frame** — the whole scene (MVU `model` *and* physics world) restores together —
+on both the desktop runner and the web/VSCode preview. Exercised by
+`examples/mle-physics`.
+
+- **The coupled recorder** (`functor_runtime_common::timetravel`): a bounded
+  per-frame snapshot ring `History<T>` and a `SceneRecorder` over it. Each
+  rendered frame it records the settled `model` (an `Rc`-cheap `mle::Value`
+  clone) and, in lockstep, the physics fixed-frame the world reached. **Shared
+  by both shells** — one tested impl; the producer hands in its `model` /
+  `SteppedPhysics` / status.
+- **Coupled seek, exact-or-refused** (`rewind_scene_to` / `seek_scene_to` on the
+  `GameProducer` trait): restores model + world to a rendered frame, refusing
+  (touching nothing) rather than landing them on different times when the two
+  retention windows disagree. Non-destructive scrubbing (`seek_scene_to`) lets
+  you drag back *and* forth; the future is branched only when play resumes.
+- **Live triggers.** Desktop debug server `POST /rewind {"frame":N}` (#225); an
+  egui scrubber overlay on desktop (`~` console toggle, hidden by default); a
+  **native DOM** scrubber on web (index-mle.html, outside the canvas — see the
+  design note below).
+- **PRs:** `History` primitive #218, per-frame model recording #219, coupled
+  seek #222, `POST /rewind` #225, the scrubber + web parity #226.
+
+### Design decisions that emerged (diverged from the original plan)
+
+- **Two rings, one clock — not a single frame-level `Simulatable`.** The model
+  is `Rc`-cheap, so it uses a plain **snapshot-ring** (`History<Value>`, snapshot
+  every frame, no replay → **scrubbing backward needs no determinism**). The
+  physics world is expensive, so it keeps its existing keyframe+replay
+  `TimelineLog`. They're coupled by a **shared rendered-frame clock**:
+  `world_frame_history` maps each rendered frame to the fixed frame the world
+  ended at. The master clock is the **rendered frame** (every game has one, even
+  with no physics hook).
+- **Reload is a history boundary.** Snapshots can hold closures bound to the old
+  module, so the rings reset on hot-reload (the live model is rebound; snapshots
+  are not). "Rewind shows the earlier *code* version" (the hard frontier from the
+  prior-art notes) is deferred — the interpreter *could* do it by keeping old
+  modules alive, but that's future work.
+- **Shared logic, platform-native UI.** The `SceneRecorder` (the hard part) is
+  shared; the *UI surface* is per-platform: egui-in-canvas on desktop (no DOM
+  there), **native DOM on web** (`mle_scrub_*` wasm exports drive it). The web
+  DOM scrubber sits *outside* the game canvas, so its widgets never fight the
+  canvas's pointer-lock — a cleaner fit than mirroring desktop's egui onto web.
 
 It builds directly on three existing threads and should be read alongside them:
 `docs/physics.md` (the `Simulatable`/`Timeline` seam this generalizes),
@@ -202,17 +249,21 @@ the project's "design for agent verifiability" rule.
 
 ## Roadmap (small, stacked PRs)
 
-| Phase | Scope | Targets |
+| Phase | Scope | Status |
 | --- | --- | --- |
-| **T1. Model `Simulatable` + unified clock** | A frame-level `Simulatable` (snapshot = `Value` clone + world snapshot; command = frame inputs) and one frame index that seeks model and world together. Goldens: scrub-back restores the model value-exact; replay-forward is identical (mirrors the physics goldens). No UI. | native+wasm (Rust+MLE) |
-| **T2. Pointer/click input plumbing** | Deliver mouse-button events to the runtime, feed real `RawInput` to egui, drop `.interactable(false)`. Unblocks both the scrubber and interactive game UI. | native+wasm |
-| **T3. Shell-owned scrubber overlay** | egui timeline bar + transport (play/pause/step) + scrub handle driving the generic `Timeline`; `~` toggle (native), default-on (web/VSCode). This is the Tomorrow-Corporation whole-game scrubber. | native+wasm |
-| **T4. Interactive MLE `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable MLE closure); egui hit-tests and dispatches back into `update`. Separable, independently useful; the scrubber can be re-skinned in it later as a dogfood. | native+wasm (MLE) |
-| **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; renderer composite pass drawing a second `draw` output at ~50% opacity. | both |
-| **T6. Trajectory preview** | Deterministic forward-sim of N frames + a polyline/trail draw primitive; wire to hot-reload for the tweak-a-constant loop; slider once T4 lands. The *Inventing on Principle* demo. | both |
+| **T1. Coupled model+world recorder** | `History<T>` snapshot ring + `SceneRecorder`; per-frame model + physics-fixed-frame recording; `rewind_scene_to`/`seek_scene_to` exact-or-refused; live `POST /rewind`. Landed as a snapshot-ring + shared rendered-frame clock rather than a single frame `Simulatable` (see the design note). Headless integration tests. | **Shipped** (#218/#219/#222/#225) |
+| **T2. Pointer/click input plumbing** | Feed real pointer `RawInput` to egui (desktop); DOM mouse for the web scrubber. `.interactable(false)` dropped for the scrubber panel. | **Shipped** (#226) |
+| **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** native DOM outside the canvas + "🖱 mouse look" button. | **Shipped** (#226) |
+| **T4. Interactive MLE `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable MLE closure); egui hit-tests and dispatches back into `update`. Independent of the scrubber (which is shell-owned) — a general game-UI capability. | Not started |
+| **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; renderer composite pass drawing a second `draw` output at ~50% opacity. | Not started |
+| **T6. Trajectory preview** | Deterministic forward-sim of N frames + a polyline/trail draw primitive; wire to hot-reload for the tweak-a-constant loop. The *Inventing on Principle* demo. | Not started |
 
-T1–T3 deliver the whole-game scrubber. T5–T6 are the showstopper authoring
-experiences.
+T1–T3 (the whole-game scrubber) are shipped. T5–T6 are the showstopper
+authoring experiences; both are now reachable because `SceneRecorder` can
+snapshot and deterministically step the whole scene. The recurring dependency
+behind T5/T6, schema-migration across a reload, and richer `/state` is a
+**structured / serializable / versioned model state** (today the model isn't
+`Serialize`; `/state` is `Debug` text) — the highest-leverage next foundation.
 
 ## Prior art
 
