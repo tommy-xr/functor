@@ -64,6 +64,7 @@ mod light;
 pub mod material;
 pub mod math;
 pub mod mle_prelude;
+pub mod mle_producer;
 pub mod model;
 pub mod net;
 pub mod physics;
