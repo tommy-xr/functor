@@ -40,16 +40,13 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Transpile each sample the e2e launches. `--noCache` per sample: Fable's
-      # incremental cache otherwise skips re-writing a sample's .rs once another
-      # sample has been transpiled in the same run (see golden.yml), so a
-      # multi-sample run needs --noCache to land every .rs reliably. This also
-      # materializes fable_modules/ (the fable_library_rust workspace dep).
-      - name: Transpile F# samples (hello, mpserver, mpclient)
-        run: |
-          dotnet fable examples/hello/hello.fsproj --lang rust --outDir . --noCache
-          dotnet fable examples/mpserver/mpserver.fsproj --lang rust --outDir . --noCache
-          dotnet fable examples/mpclient/mpclient.fsproj --lang rust --outDir . --noCache
+      # Transpile the F# framework purely to materialize fable_modules/ (the
+      # fable_library_rust workspace dep the functor-runner build resolves). The
+      # e2e tests themselves drive the MLE ports (mle-mpserver / mle-mpclient /
+      # mle-hello-gltf), which the runner interprets in place — no per-game dylib
+      # build is needed.
+      - name: Materialize fable_modules (F# framework)
+        run: npm run build:framework:rust -- --verbose
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -58,12 +55,6 @@ jobs:
 
       - name: Build functor-runner
         run: cargo build --bin functor-runner
-
-      - name: Build sample dylibs
-        run: |
-          cargo build --manifest-path examples/hello/build-native/Cargo.toml
-          cargo build --manifest-path examples/mpserver/build-native/Cargo.toml
-          cargo build --manifest-path examples/mpclient/build-native/Cargo.toml
 
       - name: Install SDK dependencies
         run: npm install

@@ -1,7 +1,0 @@
-*.glb
-*.jpg
-*.png
-
-# Golden reference images for the render regression test are checked in.
-!golden/
-!golden/*.png

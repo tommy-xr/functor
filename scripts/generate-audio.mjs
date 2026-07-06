@@ -1,15 +1,15 @@
 // Generate the sample audio the examples use. Everything here is synthesized
 // from scratch (no external samples), so the output is original/CC0 and needs no
 // third-party attribution — see README "Credits". The files are small and
-// committed (like examples/lighting/bumps-normal.png), so the demos run without
+// committed (like examples/mle-lighting/bumps-normal.png), so the demos run without
 // a generate step; this script is how to reproduce/tweak them.
 //
 // Usage: npm run generate:audio
 //
 // What it writes (16-bit PCM mono WAV):
-//   examples/lighting/gunshot.wav   a short noise-burst one-shot (Audio.play/playAt)
-//   examples/lighting/wind-loop.wav a seamless ambient wind bed (non-spatial)
-//   examples/lighting/water-loop.wav a seamless fountain/water loop (positioned)
+//   examples/mle-lighting/gunshot.wav   a short noise-burst one-shot (Audio.play/playAt)
+//   examples/mle-lighting/wind-loop.wav a seamless ambient wind bed (non-spatial)
+//   examples/mle-lighting/water-loop.wav a seamless fountain/water loop (positioned)
 //
 // The looping beds use additive synthesis at integer multiples of the loop
 // fundamental (1/duration), so the waveform is exactly periodic over the buffer
@@ -128,11 +128,11 @@ function ambientLoop({
 
 const TARGETS = [
   {
-    dest: "examples/lighting/gunshot.wav",
+    dest: "examples/mle-lighting/gunshot.wav",
     make: () => ({ samples: gunshot(44100, 0.45), sampleRate: 44100 }),
   },
   {
-    dest: "examples/lighting/wind-loop.wav",
+    dest: "examples/mle-lighting/wind-loop.wav",
     make: () => ({
       samples: ambientLoop({
         sampleRate: 22050,
@@ -148,7 +148,7 @@ const TARGETS = [
     }),
   },
   {
-    dest: "examples/lighting/water-loop.wav",
+    dest: "examples/mle-lighting/water-loop.wav",
     make: () => ({
       samples: ambientLoop({
         sampleRate: 22050,
