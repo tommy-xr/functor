@@ -30,9 +30,10 @@
 use std::time::Instant;
 
 use functor_runtime_common::mle_prelude::{
-    clear_http_taggers, contains_effect, deliver_physics_events, drain_effects, frame_value,
-    http_response_value, needs_update, net_conn_subs, net_event_value, perform_deferred_queries,
-    physics_event_taggers, physics_scene_value, split_model_effect, sub_messages_for_frame,
+    audio_scene_of, clear_audio_completions, clear_http_taggers, contains_effect,
+    deliver_physics_events, drain_effects, frame_value, http_response_value, needs_update,
+    net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
+    physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
     take_http_tagger, view_value, EffectLog, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::physics;
@@ -76,6 +77,10 @@ pub struct MleGame {
     /// time-grid semantics of `Sub.every` do the rest.
     prev_tts: Option<f64>,
     has_physics: bool,
+    /// The game defines the optional `soundScape` entry point
+    /// (`soundScape(model) -> AudioScene`, the continuous-audio hook). Absent =
+    /// silence; unlike `subscriptions` it needs no `update`.
+    has_soundscape: bool,
     /// The game defines the optional `ui` entry point (`ui(model) -> View`,
     /// the 2D HUD hook).
     has_ui: bool,
@@ -84,6 +89,11 @@ pub struct MleGame {
     /// keeps the last good view (the `last_frame` rule); a reload that drops
     /// the hook clears it.
     last_view: View,
+    /// The last serialized soundscape (`soundScape model` → JSON), cached
+    /// because `audio_scene_json` is a `&self` accessor — evaluated beside
+    /// `draw` each frame so errors can `&mut`-dedupe. A bad frame keeps the
+    /// last good scene; a reload that drops the hook resets it to silence.
+    last_soundscape_json: String,
     /// Performs `Effect.*` commands — the real world in the runner; the
     /// drain logic itself is `mle_prelude::drain_effects` (tested there
     /// with fake/replay runners).
@@ -163,6 +173,7 @@ struct Loaded {
     has_mouse_wheel: bool,
     has_subscriptions: bool,
     has_physics: bool,
+    has_soundscape: bool,
     has_ui: bool,
 }
 
@@ -260,6 +271,13 @@ return them beside the model as `(model, effect)`"
     if has_physics {
         require_function(path, &session, "physics", 1)?;
     }
+    // Optional soundscape: `soundScape(model)` returns an AudioScene (the
+    // continuous, reconciled half of audio). No `update` requirement — the
+    // scene is reconciled by the shell, not folded back as a message.
+    let has_soundscape = session.global("soundScape").is_some();
+    if has_soundscape {
+        require_function(path, &session, "soundScape", 1)?;
+    }
     // Optional HUD: `ui(model)` returns a View (Ui.text / Ui.column /
     // Ui.panel), lowered to the shared text overlay — the F# `ui` hook.
     let has_ui = session.global("ui").is_some();
@@ -276,6 +294,7 @@ return them beside the model as `(model, effect)`"
         has_mouse_wheel,
         has_subscriptions,
         has_physics,
+        has_soundscape,
         has_ui,
     })
 }
@@ -331,8 +350,10 @@ impl MleGame {
             has_subscriptions: loaded.has_subscriptions,
             prev_tts: None,
             has_physics: loaded.has_physics,
+            has_soundscape: loaded.has_soundscape,
             has_ui: loaded.has_ui,
             last_view: View::Empty,
+            last_soundscape_json: empty_soundscape_json(),
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
             deferred_queries: Vec::new(),
@@ -583,6 +604,24 @@ to receive their messages; dropping them"
         }
     }
 
+    /// Route a finished `playThen` one-shot to the completion MESSAGE registered
+    /// when it fired (frames ago), folding it through `update`. Unlike
+    /// `deliver_http_result` there is no tagger: the message is delivered
+    /// verbatim. An orphaned token — a reload dropped its message mid-flight —
+    /// is silently ignored.
+    fn deliver_audio_completion(&mut self, token: u64) {
+        let Some(message) = take_audio_completion(token) else {
+            return;
+        };
+        match self
+            .session
+            .call("update", vec![self.model.clone(), message], &mut FunctorHost)
+        {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.frame_error("update", &err),
+        }
+    }
+
     fn pump_subscriptions(&mut self, tts: f64) {
         // Advance the window even without subscriptions (or on frame one),
         // so a hot reload that ADDS subscriptions starts from a sane edge.
@@ -652,6 +691,13 @@ to receive their messages; dropping them"
         if !self.has_physics {
             physics::remove_world(physics::DEFAULT_WORLD);
         }
+        self.has_soundscape = loaded.has_soundscape;
+        if !self.has_soundscape {
+            // Deleting the `soundScape` hook drops the soundscape to silence
+            // (the physics-world / `ui` rule); the shell reconciles the empty
+            // scene next frame, stopping every live voice.
+            self.last_soundscape_json = empty_soundscape_json();
+        }
         self.has_ui = loaded.has_ui;
         if !self.has_ui {
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
@@ -664,6 +710,10 @@ to receive their messages; dropping them"
         self.deferred_queries.clear();
         self.pending_events.clear();
         clear_http_taggers();
+        // In-flight `playThen` completion messages close over the OLD session
+        // too — drop them alongside the HTTP taggers (a late finish for a
+        // dropped token arrives orphaned and is ignored).
+        clear_audio_completions();
         // Reload is a model-history BOUNDARY: the retained snapshots can hold
         // closures bound to the old module, so — unlike the live model, which
         // `rebind_value` migrates above — they can't safely cross a reload.
@@ -847,6 +897,7 @@ impl Game for MleGame {
         self.deferred_queries.clear();
         self.pending_events.clear();
         clear_http_taggers();
+        clear_audio_completions();
         for warning in &warnings {
             self.report_once(format!("[mle] {warning}"));
         }
@@ -1025,6 +1076,29 @@ impl Game for MleGame {
                 Err(err) => self.frame_error("ui", &err),
             }
         }
+        // The optional soundscape, evaluated beside `draw` (same settled model)
+        // and cached — `audio_scene_json` is a `&self` accessor, and errors
+        // need `&mut` dedupe. A bad frame keeps the last good scene (the
+        // last_frame rule).
+        if self.has_soundscape {
+            match self
+                .session
+                .call("soundScape", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(value) => match audio_scene_of(&value) {
+                    Some(scene) => {
+                        self.last_soundscape_json =
+                            functor_runtime_common::audio::scene_to_json(scene)
+                    }
+                    None => self.report_once(format!(
+                        "[mle] soundScape must return an AudioScene (AudioScene.create / \
+AudioScene.empty), got {}",
+                        value.kind_name()
+                    )),
+                },
+                Err(err) => self.frame_error("soundScape", &err),
+            }
+        }
         self.draw_ns += started.elapsed().as_nanos() as u64;
         // On failure this is the last good frame — a bad draw must not blank
         // the screen.
@@ -1077,10 +1151,15 @@ impl Game for MleGame {
         });
     }
     fn audio_drain_commands(&self) -> String {
-        "[]".to_string()
+        // One-shot commands (Effect.play/playAt/playThen), performed by the
+        // shell's audio device; a playThen finish returns via audio_push_finished.
+        functor_runtime_common::audio::drain_commands_json()
     }
     fn audio_scene_json(&self) -> String {
-        "{\"sources\":[]}".to_string()
+        // The continuous soundscape (`soundScape model`), reconciled by the
+        // shell against its live voices. Evaluated + cached in `render` (the
+        // `ui` pattern) so this stays a cheap `&self` read.
+        self.last_soundscape_json.clone()
     }
     fn net_drain_conn_commands(&self) -> String {
         functor_runtime_common::net::drain_conn_commands_json()
@@ -1097,7 +1176,9 @@ impl Game for MleGame {
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
         self.deliver_net_event(key, NetEventKind::Error, conn, message);
     }
-    fn audio_push_finished(&mut self, _token: i32) {}
+    fn audio_push_finished(&mut self, token: i32) {
+        self.deliver_audio_completion(token as u64);
+    }
 
     fn quit(&mut self) {
         self.close_all_connections();
@@ -1119,6 +1200,12 @@ fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> 
         )),
         None => Err(format!("{path} has no top-level `let {name} = …`")),
     }
+}
+
+/// The silent soundscape's wire form — the default before/without a
+/// `soundScape` hook (matches `AudioScene::default()` serialized).
+fn empty_soundscape_json() -> String {
+    "{\"sources\":[]}".to_string()
 }
 
 fn empty_frame() -> Frame {

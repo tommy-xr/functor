@@ -318,6 +318,17 @@ Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connect
 Effect.send(connId, text)                                  // send on an open connection
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
 
+Effect.play(sound)                                         // one-shot: fire-and-forget,
+Effect.playAt(sound, x, y, z)                              //   non-spatial / positioned
+Effect.playThen(sound, msg)                                // one-shot; delivers msg (a VALUE,
+                                                           //   not a tagger) through `update`
+                                                           //   when the sound FINISHES
+AudioSource.ambient(key, sound)                            // soundScape voice: non-spatial bed
+AudioSource.at(key, sound, x, y, z)                        //   / positioned emitter (key =
+                                                           //   cross-frame identity)
+source |> AudioSource.gain(g)                              // source-first: linear gain (1.0=full)
+AudioScene.create([source, …]) / AudioScene.empty()       // what `soundScape` returns
+
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body
 Physics.kinematic("tag", shape) / Physics.fixed("tag", shape)
@@ -413,6 +424,9 @@ let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
                                             // OPTIONAL, but requires update
 let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …])  // OPTIONAL
+let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; continuous
+                                            // looping voices, reconciled by key each
+                                            // frame (needs no `update`)
 ```
 
 Subscription timers are **stateless**: `Sub.every` fires when an integer
