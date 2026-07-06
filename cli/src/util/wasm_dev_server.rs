@@ -37,8 +37,6 @@ impl WasmDevServer {
     async fn serve(working_directory: &str, index_html: Vec<u8>) -> Result<(), io::Error> {
         let wd = working_directory.to_owned();
 
-        println!("Starting dev server in: {}", wd);
-
         // Define routes for each file
         let route_index = warp::path::end()
             .map(move || {
@@ -70,6 +68,9 @@ impl WasmDevServer {
         let static_routes = route_index.or(route_js1).or(route_wasm);
         let routes = static_routes.or(route_filesystem);
 
+        crate::output::emit(crate::output::Event::ServerListening {
+            url: "http://127.0.0.1:8080".to_string(),
+        });
         warp::serve(routes).run(([127, 0, 0, 1], 8080)).await;
         Ok(())
     }
