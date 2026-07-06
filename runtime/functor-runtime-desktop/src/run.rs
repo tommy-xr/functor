@@ -872,7 +872,11 @@ pub fn run(args: Args) {
             // wall-clock, so frame N is always the same sim state. Queued as a
             // one-shot step (which the clock consumes in `frame()` below), making
             // every rendered frame a single fixed dt regardless of real timing.
-            if input_script.is_some() {
+            // Under --ghost the script drives the GHOST, not the live game (F2,
+            // docs/time-travel.md): the live game stays at its init anchor, so
+            // don't fixed-step its clock — the ghost forward-step supplies the
+            // deterministic sub-dt itself.
+            if input_script.is_some() && !args.ghost {
                 clock.step(args.script_dt);
             }
             // The frame time handed to the game. Pinning it (--fixed-time, or the
@@ -1031,8 +1035,10 @@ Escape again to quit"
 
             // Scripted input (docs/time-travel.md T6b): feed this frame's events
             // through the SAME `key_event` path the live GLFW handlers use, before
-            // tick, so this frame's tick sees the scripted key state.
-            if let Some(script) = &input_script {
+            // tick, so this frame's tick sees the scripted key state. Under --ghost
+            // the script drives the GHOST instead (F2): leave the live game at its
+            // init anchor so the strobed arc reads against a clean, static pose.
+            if let Some(script) = input_script.as_ref().filter(|_| !args.ghost) {
                 if let Some(events) = script.get(&frame_count) {
                     for ev in events {
                         if let RecordedInput::Key { code, is_down } = ev {
@@ -1073,7 +1079,24 @@ Escape again to quit"
                 const MAX_GHOST: usize = 8;
                 let divisions = args.ghost_divisions.clamp(1, MAX_GHOST);
                 let dt = 2.0 / divisions as f32;
-                game.ghost_frames(divisions, dt, time.tts as f64)
+                // F2 (docs/time-travel.md): when an --input-script is loaded, the
+                // ghost previews the SCRIPT's trajectory from the live anchor
+                // (mario at init) rather than the recorder's own input log. Build a
+                // per-fine-step slice covering the ghost window (frame f → the
+                // script's events at f, empty when it has none). The fine step is
+                // 1/60 and script frames advance by 1/60, so the frame index maps
+                // straight to the fine-step index. `None` keeps the T6d behavior
+                // (e.g. the lighting ghost, which has no script).
+                let script_slice: Option<Vec<Vec<RecordedInput>>> =
+                    input_script.as_ref().map(|script| {
+                        let sub_dt = 1.0f32 / 60.0;
+                        let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
+                        let total = (divisions * steps_per_division) as u64;
+                        (0..total)
+                            .map(|f| script.get(&f).cloned().unwrap_or_default())
+                            .collect()
+                    });
+                game.ghost_frames(divisions, dt, time.tts as f64, script_slice.as_deref())
             } else {
                 Vec::new()
             };
