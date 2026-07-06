@@ -7,10 +7,13 @@
 //! the schema and the renderer-selection rule.
 
 use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use colored::Colorize;
 use serde::Serialize;
+
+mod live;
 
 /// Diagnostic severity (an MLE check error is `Error`; `Warning` is reserved
 /// for the runtime's permissive dev-loop diagnostics routed later).
@@ -138,6 +141,11 @@ impl Event {
 /// One source of truth, two presentations.
 pub trait Renderer: Send + Sync {
     fn render(&self, event: &Event);
+
+    /// Restore the terminal (wipe any live region, show the cursor). A no-op for
+    /// the plain/json renderers; the live renderer overrides it. Invoked from
+    /// the panic hook and the Ctrl-C handler (see [`cleanup`]).
+    fn cleanup(&self) {}
 }
 
 /// ndjson: one compact JSON object per line, flushed. No color, ever.
@@ -301,6 +309,7 @@ fn format_duration(ms: u64) -> String {
 }
 
 static RENDERER: OnceLock<Box<dyn Renderer>> = OnceLock::new();
+static LIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Select and install the process-wide renderer from the global flags +
 /// environment. Called once at startup, before any command logic runs. See
@@ -315,12 +324,47 @@ pub fn init(json: bool, quiet: bool, no_color: bool) {
         && !no_color;
     colored::control::set_override(color);
 
+    // The live (ink-style) renderer activates ONLY on an interactive, color-
+    // allowed TTY, and never under --quiet (which keeps its exact minimal plain
+    // output). Every machine-facing path — --json, --quiet, non-TTY, CI,
+    // NO_COLOR, --no-color — keeps the plain/json renderer, byte-for-byte.
     let renderer: Box<dyn Renderer> = if json {
         Box::new(JsonRenderer)
+    } else if quiet {
+        Box::new(PlainRenderer { quiet })
+    } else if color {
+        LIVE_ACTIVE.store(true, Ordering::Relaxed);
+        install_terminal_guard();
+        Box::new(live::LiveRenderer::new())
     } else {
         Box::new(PlainRenderer { quiet })
     };
     let _ = RENDERER.set(renderer);
+}
+
+/// True when the live renderer is installed. `main` uses this to arm a Ctrl-C
+/// handler that restores the terminal, without changing the (unchanged) signal
+/// behavior of the plain/json paths.
+pub fn live_active() -> bool {
+    LIVE_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Wipe the live region and restore the cursor. Idempotent and safe to call
+/// from a panic hook or a signal handler; a no-op for the plain/json renderers.
+pub fn cleanup() {
+    if let Some(renderer) = RENDERER.get() {
+        renderer.cleanup();
+    }
+}
+
+/// Chain a panic hook that restores the terminal before the default hook runs,
+/// so a panic mid-render never leaves a stuck live region / hidden cursor.
+fn install_terminal_guard() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        cleanup();
+        previous(info);
+    }));
 }
 
 /// Emit an event to the installed renderer. A no-op if [`init`] was never
