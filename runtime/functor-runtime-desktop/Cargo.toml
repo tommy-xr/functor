@@ -7,10 +7,6 @@ edition = "2021"
 # Treat warnings as a buld error
 strict = ["functor_runtime_common/strict"]
 
-[[bin]]
-name = "functor-runner"
-path = "src/main.rs"
-
 # A live multi-pane viewer for the netsim: renders each game instance's view in
 # its own pane while stepping the simulation. Native-only (needs GL + dylib load).
 [[bin]]

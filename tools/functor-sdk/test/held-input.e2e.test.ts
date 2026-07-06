@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { findRepoRoot, FunctorRunner } from "../src/index.js";
 
-// End-to-end against a real functor-runner, driving the MLE port of the `hello`
+// End-to-end against a real functor runtime, driving the MLE port of the `hello`
 // game (examples/mle-hello-gltf — the WASD/arrow free-look lineup). Requires the
 // runner binary built and a display to open the GL window, so it's opt-in:
 //

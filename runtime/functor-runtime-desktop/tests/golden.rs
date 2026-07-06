@@ -4,8 +4,8 @@
 //! and **shared** with the wasm Playwright test (`e2e/golden-wasm.spec.mjs`), so
 //! a scenario added there is validated on both targets. Each scenario renders a
 //! sample at a fixed frame time (so the pose is deterministic) via
-//! `functor-runner --fixed-time`, optionally with a `--debug-render` mode,
-//! captures the framebuffer to a PNG, and compares it to a committed reference
+//! `functor ... run native --fixed-time`, optionally with a `--debug-render`
+//! mode, captures the framebuffer to a PNG, and compares it to a reference
 //! with a small tolerance. This test runs every scenario whose `targets`
 //! includes `"native"`.
 //!
@@ -75,18 +75,25 @@ fn load_scenarios() -> Vec<Scenario> {
     manifest.scenarios
 }
 
-/// The MLE entry file for `sample_dir` (`functor.json`'s `"entry"`, default
-/// `game.mle`). Every golden sample is an MLE project, which the runner
-/// interprets in place via `--mle` — no build step.
-fn mle_entry(sample_dir: &Path) -> String {
-    let content = std::fs::read_to_string(sample_dir.join("functor.json"))
-        .unwrap_or_else(|e| panic!("read {}: {e}", sample_dir.join("functor.json").display()));
-    let json: serde_json::Value =
-        serde_json::from_str(&content).expect("parse functor.json");
-    json.get("entry")
-        .and_then(|v| v.as_str())
-        .unwrap_or("game.mle")
-        .to_string()
+/// Path to the `functor` CLI binary, next to this test binary
+/// (`target/<profile>/functor`, alongside `target/<profile>/deps/golden-*`).
+/// Post-E3 there is a single binary: the golden captures drive it via
+/// `functor ... run native`, so the CLI must be built first
+/// (`cargo build --bin functor`; `npm run test:golden` does this).
+fn functor_bin() -> PathBuf {
+    let exe = std::env::current_exe().expect("locate test binary");
+    let target_dir = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("target/<profile> dir");
+    let name = if cfg!(windows) { "functor.exe" } else { "functor" };
+    let bin = target_dir.join(name);
+    assert!(
+        bin.exists(),
+        "functor CLI not found at {} — build it first (`cargo build --bin functor`)",
+        bin.display()
+    );
+    bin
 }
 
 /// Render `scenario`'s sample at its fixed time (plus any debug-render mode),
@@ -95,18 +102,19 @@ fn mle_entry(sample_dir: &Path) -> String {
 fn assert_scenario_matches(scenario: &Scenario) {
     let sample_dir = repo_root().join("examples").join(&scenario.sample);
 
-    // Every golden sample is an MLE project: point the runner at its entry with
-    // `--mle --game-path <entry>` (interpreted in place, no build step).
-    let game_path = mle_entry(&sample_dir);
-
     let out = std::env::temp_dir().join(format!("functor-golden-{}.png", scenario.name));
     let _ = std::fs::remove_file(&out);
 
+    // `functor -d <sample_dir> run native` interprets the sample's MLE entry
+    // (from its functor.json) in place — no build step — and forwards the
+    // capture flags after `--` to the in-process desktop run loop.
     let fixed_time = scenario.fixed_time.to_string();
     let mut args = vec![
-        "--mle",
-        "--game-path",
-        &game_path,
+        "-d",
+        sample_dir.to_str().unwrap(),
+        "run",
+        "native",
+        "--",
         "--fixed-time",
         &fixed_time,
         "--capture-frame",
@@ -118,14 +126,13 @@ fn assert_scenario_matches(scenario: &Scenario) {
         args.extend_from_slice(&["--debug-render", mode]);
     }
 
-    let status = Command::new(env!("CARGO_BIN_EXE_functor-runner"))
-        .current_dir(&sample_dir)
+    let status = Command::new(functor_bin())
         .args(&args)
         .status()
-        .expect("spawn functor-runner");
+        .expect("spawn functor");
     assert!(
         status.success(),
-        "functor-runner exited with {status} for scenario '{}'",
+        "functor exited with {status} for scenario '{}'",
         scenario.name
     );
 

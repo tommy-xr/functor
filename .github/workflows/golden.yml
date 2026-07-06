@@ -53,16 +53,32 @@ jobs:
         with:
           workspaces: "."
 
+      # Post-E3 the single `functor` binary always includes the native
+      # GLFW/OpenGL runtime (in-process `functor run native`), so building the
+      # CLI now links X11/GL — install the same system libs as build-native.yml.
+      - name: Install GL/X11 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libglfw3 \
+            libglfw3-dev \
+            libasound2-dev
+
       - name: Install npm dependencies
         run: npm install
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
-      # The wasm golden only needs the `functor` CLI (to serve the wasm bundle)
-      # and the web runtime bundle it embeds — not `functor-runner` (the native
-      # GLFW/OpenGL runtime), which would drag in X11/GL system libs. The CLI
-      # depends only on functor_runtime_common, so this avoids them entirely.
+      # The wasm golden serves the wasm bundle via the `functor` CLI (which now
+      # also embeds the native runtime — see the GL libs installed above).
       - name: Build web runtime bundle
         run: wasm-pack build --target=web
         working-directory: runtime/functor-runtime-web

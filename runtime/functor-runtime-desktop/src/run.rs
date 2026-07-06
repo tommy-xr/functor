@@ -1,4 +1,12 @@
-#![cfg_attr(feature = "strict", deny(warnings))]
+//! The desktop runtime's run loop, extracted from the former `functor-runner`
+//! binary so the `functor` CLI can drive it IN-PROCESS ([`run`]).
+//!
+//! [`run`] MUST be called on the process's main thread: it creates the GLFW
+//! window and pumps its event loop, which macOS/Cocoa requires on the main
+//! thread. The CLI's `#[tokio::main]` drives its async `main` future (and thus
+//! this call) on the main thread; HTTP/net work stays on tokio worker threads
+//! via `tokio::spawn`, so `run` must be invoked from within a tokio runtime
+//! context.
 
 use std::env;
 use std::sync::Arc;
@@ -13,18 +21,10 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
+use crate::{audio, debug_server, mle_game, net_dispatch, replay_game, ws_host, xreal};
 
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
-
-mod audio;
-mod debug_server;
-mod game;
-mod mle_game;
-mod net_dispatch;
-mod replay_game;
-mod ws_host;
-mod xreal;
 
 /// Translate a GLFW key into the canonical engine key code passed across the
 /// game boundary. Unmapped keys become InputKey::Unknown.
@@ -134,7 +134,7 @@ enum CompositeDemoArg {
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+pub struct Args {
     /// Directory to override the current working directory
     #[arg(short, long)]
     game_path: String,
@@ -549,13 +549,19 @@ fn run_headless(
     }
 }
 
-#[tokio::main]
-pub async fn main() {
+/// Run the desktop runtime to completion (windowed loop until the window
+/// closes / a `--capture-frame` shot is taken, or the headless loop until the
+/// process is killed).
+///
+/// MUST be called on the main thread (GLFW/Cocoa) and from within a tokio
+/// runtime context (net dispatch uses `tokio::spawn`). The former
+/// `functor-runner` binary satisfied both via `#[tokio::main]` on `main`; the
+/// `functor` CLI satisfies both by calling this from its own `#[tokio::main]`
+/// main future (which `block_on` drives on the main thread).
+pub fn run(args: Args) {
     // Load game
 
-    let args = Args::parse();
-
-    let game_path = args.game_path;
+    let game_path = args.game_path.clone();
     println!("Using game path: {}", game_path);
     println!("Working directory: {:?}", env::current_dir());
 
