@@ -1,8 +1,7 @@
 use colored::*;
-use std::env;
-use std::io::{self, BufRead, Error};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::io::{self, Error};
+use std::path::Path;
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 

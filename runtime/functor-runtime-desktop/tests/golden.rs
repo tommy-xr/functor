@@ -9,14 +9,11 @@
 //! with a small tolerance. This test runs every scenario whose `targets`
 //! includes `"native"`.
 //!
-//! The runner is producer-agnostic: an MLE sample (`functor.json` with
-//! `"language": "mle"`) renders via `--mle --game-path <entry>`; an F# sample
-//! renders from its game dylib (`--game-path <dylib>`). MLE samples need no
-//! build step (the runner interprets the `.mle` in place); F# samples need
-//! their dylib built first.
+//! Each sample is an MLE project (`functor.json` with `"language": "mle"`) and
+//! renders via `--mle --game-path <entry>`; MLE needs no build step (the runner
+//! interprets the `.mle` in place).
 //!
-//! Ignored by default: it needs a GL display (and, for any F# scenario, its
-//! game dylib). Run it with:
+//! Ignored by default: it needs a GL display. Run it with:
 //!
 //! ```sh
 //! cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture
@@ -78,23 +75,18 @@ fn load_scenarios() -> Vec<Scenario> {
     manifest.scenarios
 }
 
-/// If `sample_dir` is an MLE project (`functor.json` has `"language": "mle"`),
-/// return its entry file (default `game.mle`); otherwise `None` (an F# sample
-/// rendered from its game dylib). The runner is producer-agnostic — MLE and F#
-/// render the same protocol `Frame` through the same shell — so a scenario just
-/// needs to point the runner at the right producer.
-fn mle_entry(sample_dir: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(sample_dir.join("functor.json")).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    if json.get("language").and_then(|v| v.as_str()) != Some("mle") {
-        return None;
-    }
-    Some(
-        json.get("entry")
-            .and_then(|v| v.as_str())
-            .unwrap_or("game.mle")
-            .to_string(),
-    )
+/// The MLE entry file for `sample_dir` (`functor.json`'s `"entry"`, default
+/// `game.mle`). Every golden sample is an MLE project, which the runner
+/// interprets in place via `--mle` — no build step.
+fn mle_entry(sample_dir: &Path) -> String {
+    let content = std::fs::read_to_string(sample_dir.join("functor.json"))
+        .unwrap_or_else(|e| panic!("read {}: {e}", sample_dir.join("functor.json").display()));
+    let json: serde_json::Value =
+        serde_json::from_str(&content).expect("parse functor.json");
+    json.get("entry")
+        .and_then(|v| v.as_str())
+        .unwrap_or("game.mle")
+        .to_string()
 }
 
 /// Render `scenario`'s sample at its fixed time (plus any debug-render mode),
@@ -103,33 +95,16 @@ fn mle_entry(sample_dir: &Path) -> Option<String> {
 fn assert_scenario_matches(scenario: &Scenario) {
     let sample_dir = repo_root().join("examples").join(&scenario.sample);
 
-    // Point the runner at the sample's producer: `--mle --game-path <entry>`
-    // for an MLE project, or `--game-path <dylib>` for an F# game dylib.
-    let (producer_args, game_path): (Vec<&str>, String) = match mle_entry(&sample_dir) {
-        Some(entry) => (vec!["--mle"], entry),
-        None => {
-            let dylib = format!(
-                "{}game_native{}",
-                std::env::consts::DLL_PREFIX,
-                std::env::consts::DLL_SUFFIX
-            );
-            let dylib_rel = format!("build-native/target/debug/{}", dylib);
-            assert!(
-                sample_dir.join(&dylib_rel).exists(),
-                "game dylib not found at {} — run `functor -d examples/{} build native` first",
-                sample_dir.join(&dylib_rel).display(),
-                scenario.sample
-            );
-            (vec![], dylib_rel)
-        }
-    };
+    // Every golden sample is an MLE project: point the runner at its entry with
+    // `--mle --game-path <entry>` (interpreted in place, no build step).
+    let game_path = mle_entry(&sample_dir);
 
     let out = std::env::temp_dir().join(format!("functor-golden-{}.png", scenario.name));
     let _ = std::fs::remove_file(&out);
 
     let fixed_time = scenario.fixed_time.to_string();
-    let mut args = producer_args;
-    args.extend_from_slice(&[
+    let mut args = vec![
+        "--mle",
         "--game-path",
         &game_path,
         "--fixed-time",
@@ -138,7 +113,7 @@ fn assert_scenario_matches(scenario: &Scenario) {
         out.to_str().unwrap(),
         "--capture-time",
         "1.0",
-    ]);
+    ];
     if let Some(mode) = &scenario.debug_render {
         args.extend_from_slice(&["--debug-render", mode]);
     }
@@ -205,7 +180,7 @@ fn assert_images_match(actual_path: &Path, golden_path: &Path) {
 }
 
 #[test]
-#[ignore = "needs a GL display and built game dylibs; run after `functor build native` with --ignored"]
+#[ignore = "needs a GL display; run with --ignored"]
 fn native_scenarios_match_golden() {
     let scenarios: Vec<_> = load_scenarios()
         .into_iter()
