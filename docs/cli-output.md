@@ -46,7 +46,9 @@ not passed and `CI` is unset. `--json` never colors. This is enforced globally v
 **Confirmed defaults:** non-TTY (piped/redirected) → **plain text**, *not* ndjson. `--json`
 is the explicit opt-in to ndjson. TTY detection uses `std::io::IsTerminal` (std, no dep).
 
-Flags are **global** (accepted before the subcommand): `--json`, `--quiet`, `--no-color`.
+Flags are **global** (accepted before or after the subcommand): `--json`, `--quiet`,
+`--no-color`. `--json` takes precedence: under `--json`, `--quiet` is a no-op (the full
+event stream is emitted — machine consumers filter it themselves).
 
 ## The `Event` schema (stable API)
 

@@ -68,10 +68,18 @@ impl WasmDevServer {
         let static_routes = route_index.or(route_js1).or(route_wasm);
         let routes = static_routes.or(route_filesystem);
 
+        // Bind first, then announce — so `ServerListening` never claims a port
+        // that isn't actually accepting connections, and a bind failure (port
+        // in use) surfaces as an error event instead of a panic.
+        let (addr, server) = warp::serve(routes)
+            .try_bind_ephemeral(([127, 0, 0, 1], 8080))
+            .map_err(|e| {
+                io::Error::other(format!("cannot bind dev server to 127.0.0.1:8080: {e}"))
+            })?;
         crate::output::emit(crate::output::Event::ServerListening {
-            url: "http://127.0.0.1:8080".to_string(),
+            url: format!("http://{addr}"),
         });
-        warp::serve(routes).run(([127, 0, 0, 1], 8080)).await;
+        server.await;
         Ok(())
     }
 }

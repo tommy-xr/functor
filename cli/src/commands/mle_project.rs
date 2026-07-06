@@ -66,7 +66,22 @@ impl MleProject {
     pub fn build(&self, working_directory: &str) -> Result<(), Error> {
         let path = self.entry_path(working_directory)?;
         let display = path.display().to_string();
-        let project = mle::project::load(&path).map_err(|e| Error::other(e.render()))?;
+        // A load failure (parse error, bad module name, cycle) is a positioned
+        // diagnostic too — surface its file:line:col structurally, like a check
+        // error, rather than flattening it into the final text-only error.
+        let project = match mle::project::load(&path) {
+            Ok(project) => project,
+            Err(e) => {
+                emit(Event::Diagnostic {
+                    severity: Severity::Error,
+                    file: Some(e.path.display().to_string()),
+                    line: Some(e.line),
+                    col: Some(e.col),
+                    message: e.message.clone(),
+                });
+                return Err(Error::other(format!("cannot load the {display} project")));
+            }
+        };
         let diags = project.check();
         for diag in &diags {
             let (file, line, col) = project.sources.resolve(diag.span.start);
