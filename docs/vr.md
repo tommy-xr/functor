@@ -22,7 +22,7 @@ games deploy over the network.
 ## Working today on the Xreal One
 
 ```sh
-functor-runner --mle --game-path examples/hello-cubes/game.mle --stereo-sbs --xreal-tracking
+functor -d examples/hello-cubes run native --stereo-sbs --xreal-tracking
 ```
 
 Glasses in 3D mode (OSD → Spatial Screen → 3D Mode → Full SBS), window

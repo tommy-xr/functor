@@ -8,8 +8,8 @@ interpreted, F#-inspired game-logic language.
 You write your game as a `.mle` file. There is **no transpile or compile step for
 game logic** — the Rust runtime *interprets* the `.mle` directly:
 
-- **native** — the `functor-runner` desktop runtime (GLFW + OpenGL) loads and runs
-  your `.mle`, with hot-reloading on save for fast iteration.
+- **native** — the `functor` desktop runtime (GLFW + OpenGL), run in-process by the
+  `functor` CLI, loads and runs your `.mle`, with hot-reloading on save for fast iteration.
 - **wasm** — the web runtime (WebGL2) ships the `.mle` source as text and
   interprets it in the browser.
 
@@ -62,7 +62,7 @@ are documented in the `mle-language` skill (`.claude/skills/mle-language/`) and
 | --- | --- |
 | `mle/` | The MLE language crate — parser, IR, interpreter, typechecker (`mle parse`/`ir`/`run`/`trace`/`check`) |
 | `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the MLE prelude (`FunctorHost`) |
-| `runtime/functor-runtime-desktop/` | Desktop runtime; builds the `functor-runner` binary (native/GLFW), including the MLE producer |
+| `runtime/functor-runtime-desktop/` | Desktop runtime (native/GLFW), including the MLE producer — a library the `functor` CLI links in and runs in-process |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.mle` in the browser |
 | `cli/` | The `functor` CLI (`build` / `run` / `develop`; `init` is not yet implemented) |
 | `tools/` | Editor tooling: `mle-vscode` (extension), `mle-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
@@ -90,20 +90,18 @@ Build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compi
 time (via `include_bytes!`), so the wasm bundle must exist before the `functor` binary is built.
 
 ```sh
-cargo build --bin functor-runner                            # desktop runtime
 wasm-pack build runtime/functor-runtime-web --target=web     # web bundle (embedded into the CLI)
-cargo build --bin functor                                   # the CLI itself
+cargo build --bin functor                                    # the CLI (embeds the desktop runtime)
 ```
 
-Or use the bundled convenience script, which runs all three in order:
+Or use the bundled convenience script, which runs both in order:
 
 ```sh
 npm run build:cli
 ```
 
-This produces two binaries in `target/debug/`: `functor` (the CLI) and `functor-runner`
-(the desktop runtime). The CLI looks for `functor-runner` next to itself, so keep them
-together.
+This produces a single binary in `target/debug/`: `functor` (the CLI, with the desktop
+runtime linked in as a library and run in-process — there is no separate `functor-runner`).
 
 ## Running a sample (`examples/hello`)
 
@@ -143,9 +141,9 @@ The `run` command interprets the game's `.mle` and launches it — no build step
 
 1. `build` loads the project (the entry `.mle` plus every sibling `.mle` — file = module)
    and typechecks the whole program; diagnostics are errors here.
-2. (native) `run` spawns `functor-runner --mle --game-path <entry>` from the game
-   directory; the runner **interprets** the `.mle` each frame and hot-reloads it on
-   save, preserving the model.
+2. (native) `run` runs the desktop runtime in-process on the entry `.mle` (no separate
+   process); it **interprets** the `.mle` each frame and hot-reloads it on save,
+   preserving the model.
 3. (wasm) `run` serves the project directory — the `.mle` ships as text; the embedded
    web runtime fetches and interprets it. (File-watch hot-reload is native-only;
    reload the page to pick up saved edits.)

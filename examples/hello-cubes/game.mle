@@ -1,7 +1,7 @@
 // hello-cubes — the first real-language Functor game (docs/mle.md Track C2).
 // A ring of gradient cubes orbits a pulsing sphere. Run with:
 //
-//   functor-runner --mle --game-path examples/hello-cubes/game.mle
+//   functor -d examples/hello-cubes run native
 //
 // The producer contract: `init` is the initial model value; `tick` steps it;
 // `draw` returns a Frame; `subscriptions` declares timers whose messages

@@ -128,7 +128,7 @@ instances share a `VirtualTransport` bus in one process, stepped in lockstep. (A
 `mle::Session` is a plain owned value, so hosting a server + many clients in one
 process is natural — there is no per-process global runner to work around.)
 
-**B. Multi-process integration harness.** Real `functor-runner` processes driven
+**B. Multi-process integration harness.** Real `functor` game processes driven
 over an extended debug-server API (add `/net` inject + `/tick` step to the
 existing `/input`, `/time`, `/state`, `/scene`). Slower, less deterministic;
 validates the real I/O + serialization path. Smoke/integration only.
