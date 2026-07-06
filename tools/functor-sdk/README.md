@@ -21,8 +21,8 @@ import { FunctorRunner, stepAll } from "@functor/sdk";
 // Launch a game and drive it deterministically. MLE games are run via `mlePath`
 // (the runner interprets the .mle — nothing to build).
 await using game = await FunctorRunner.launch({
-  gameDir: "examples/mle-hello-gltf",
-  mlePath: "examples/mle-hello-gltf/game.mle",
+  gameDir: "examples/hello",
+  mlePath: "examples/hello/game.mle",
 });
 
 await game.pause();              // pin the clock
@@ -61,7 +61,7 @@ holds, e.g. network convergence; `stepAll(clients, dt)` advances every client by
 one lockstep frame.
 
 `test/multiplayer.e2e.test.ts` does exactly this end-to-end: it launches one
-`mle-mpserver` + two `mle-mpclient` runners and waits until the server tracks 2
+`mpserver` + two `mpclient` runners and waits until the server tracks 2
 players and each client converges on a 2-player world.
 
 ```ts
@@ -71,8 +71,8 @@ const launch = (game: string, port: number) =>
     mlePath: `examples/${game}/game.mle`,
     port,
   });
-await using a = await launch("mle-mpserver", 8077);
-await using b = await launch("mle-mpclient", 8078);
+await using a = await launch("mpserver", 8077);
+await using b = await launch("mpclient", 8078);
 await Promise.all([a.pause(), b.pause()]);
 for (let frame = 0; frame < 600; frame++) {
   await a.keyDown("up");        // per-client input
@@ -88,15 +88,15 @@ npm run test:e2e  # FUNCTOR_E2E=1 — launches a real functor runtime
 ```
 
 The e2e tests require the `functor` binary to be built, and a display to open
-the GL window. The games are MLE sources (`examples/mle-*`) interpreted in place, so
+the GL window. The games are MLE sources (`examples/*`) interpreted in place, so
 there is no per-game build step:
 
 ```sh
 cargo build --bin functor
 ```
 
-(The games driven by the tests are `examples/mle-hello-gltf` — the held-input
-test — and `examples/mle-mpserver` / `examples/mle-mpclient` — the multiplayer
+(The games driven by the tests are `examples/hello` — the held-input
+test — and `examples/mpserver` / `examples/mpclient` — the multiplayer
 test. A `build` step is optional: `functor -d <dir> build native` just
 typechecks the `.mle`.)
 

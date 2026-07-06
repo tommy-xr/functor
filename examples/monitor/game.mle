@@ -1,4 +1,4 @@
-// examples/mle-monitor — render targets (the security-camera demo).
+// examples/monitor — render targets (the security-camera demo).
 //
 // A panning camera gadget films the courtyard; its view renders into the
 // "security" render target each frame (Frame.withRenderTarget), and the

@@ -2,12 +2,12 @@
 //! independent in-process MLE producers, wired through the virtual network and
 //! stepped deterministically — no GL, no sockets.
 //!
-//! Uses the `mle-wsserverdemo` (greet + echo) and `mle-wsdemo` (connect + send)
+//! Uses the `wsserverdemo` (greet + echo) and `wsdemo` (connect + send)
 //! samples. Their authorities match (127.0.0.1:9001) so the harness routes the
 //! client to the server.
 //!
 //! The instances are `.mle` games (E3 phase 0b): no dylib build is needed, only
-//! the committed `examples/mle-*/game.mle` sources. Still `#[ignore]`d by
+//! the committed `examples/*/game.mle` sources. Still `#[ignore]`d by
 //! default (they pull in the full desktop runtime as a dev-dependency); run
 //! with:
 //!
@@ -48,8 +48,8 @@ fn server_and_client_exchange_messages() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_mle(&mut sim, "mle-wsserverdemo");
-    let client = add_mle(&mut sim, "mle-wsdemo");
+    let server = add_mle(&mut sim, "wsserverdemo");
+    let client = add_mle(&mut sim, "wsdemo");
 
     // Default (perfect) link: the exchange settles in a handful of frames.
     sim.step_n(10);
@@ -73,8 +73,8 @@ fn latency_delays_delivery_deterministically() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_mle(&mut sim, "mle-wsserverdemo");
-    let client = add_mle(&mut sim, "mle-wsdemo");
+    let server = add_mle(&mut sim, "wsserverdemo");
+    let client = add_mle(&mut sim, "wsdemo");
     // 8-tick one-way latency on the client<->server link.
     sim.set_link(
         client,

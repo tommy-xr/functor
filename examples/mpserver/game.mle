@@ -1,11 +1,11 @@
-// mle-mpserver — the MLE port of examples/mpserver (roadmap E2, docs/mle.md).
+// mpserver — the MLE port of examples/mpserver (roadmap E2, docs/mle.md).
 //
 // Authoritative multiplayer server: tracks a player per connection, integrates
 // their movement, and broadcasts the whole world to every client each tick.
 // Naive (full-state, no delta, no prediction) — enough to prove the loop and to
-// drive deterministically through the netsim. Pairs with mle-mpclient.
+// drive deterministically through the netsim. Pairs with mpclient.
 //
-//   functor -d examples/mle-mpserver run native
+//   functor -d examples/mpserver run native
 //
 // Notes on the port from F#:
 //   - `Sub.listen(bind, toMsg)` binds the address; each accepted client

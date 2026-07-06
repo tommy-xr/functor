@@ -10,10 +10,10 @@ import { test, expect } from "@playwright/test";
 // and compares a screenshot of the WebGL2 canvas to a committed golden.
 //
 // The dev server (playwright.config.mjs) serves a single sample, chosen by the
-// FUNCTOR_SAMPLE env var (default "mle-lighting"). We run the manifest scenarios
+// FUNCTOR_SAMPLE env var (default "lighting"). We run the manifest scenarios
 // that target wasm AND belong to that served sample; cover another sample by
 // running with FUNCTOR_SAMPLE=<sample> (and tagging its scenarios `"wasm"`).
-const SAMPLE = process.env.FUNCTOR_SAMPLE || "mle-lighting";
+const SAMPLE = process.env.FUNCTOR_SAMPLE || "lighting";
 
 const manifest = JSON.parse(
   readFileSync(new URL("../golden-scenarios.json", import.meta.url)),

@@ -1,13 +1,13 @@
-// examples/mle-lighting — the MLE port of examples/lighting (F#), the
+// examples/lighting — the MLE port of examples/lighting (F#), the
 // culminating E2 port (docs/mle.md). It exercises the full lit pipeline in
 // one scene: a shadow-casting spot searchlight, a normal-mapped cube, three
 // orbiting colored point lights, a skinned/animated glTF shark casting a
 // deforming shadow, non-uniform scale (Scene.scaleXYZ) on the fountain, and
 // the whole audio surface (soundScape + Effect.playThen / Effect.playAt).
 //
-//   functor -d examples/mle-lighting run native
+//   functor -d examples/lighting run native
 //
-// Transform-order note (the mle-primitives rule): F#'s
+// Transform-order note (the primitives rule): F#'s
 // `x |> translateX a |> scale s` right-multiplies (scale hits the vertex
 // first); MLE transforms apply OUTERMOST-LAST, so the pipe order REVERSES —
 // the same composition reads `x |> Scene.scale(s) |> Scene.translate(a, …)`.
@@ -52,7 +52,7 @@ let init = {
   bangRight: false,
   // Rising-edge latches: GLFW key-repeats arrive as isDown=true, so these
   // hold whether Space/B are already down, to fire ONCE per physical press
-  // (F#'s KeyDown is edge-triggered; MLE input is level, see mle-physics).
+  // (F#'s KeyDown is edge-triggered; MLE input is level, see physics).
   spaceHeld: false,
   bHeld: false,
 }

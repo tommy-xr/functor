@@ -4,7 +4,7 @@
 //! `functor_runtime_common::mle_prelude`). This replaces the Milestone-0
 //! throwaway spike (`mle_spike.rs`, deleted with this producer's arrival).
 //!
-//! Game contract (see the `mle-language` skill and `examples/mle-hello`):
+//! Game contract (see the `mle-language` skill and `examples/hello-cubes`):
 //!
 //! ```text
 //! let init = { … }                       // the initial model (a value)
@@ -755,7 +755,7 @@ AudioScene.empty), got {}",
         // while paused (docs/physics.md, the culmination) — shown only when
         // paused so live play stays clean. All physics CONTROL is via the
         // game's keyboard bindings (egui input isn't wired). Composing via a
-        // column keeps both: an `Empty` game view (e.g. mle-physics has no
+        // column keeps both: an `Empty` game view (e.g. physics has no
         // `ui` hook) renders nothing, leaving just the status.
         let (frame, paused, history) = self.physics_status;
         if !paused {
@@ -1320,7 +1320,7 @@ mod tests {
     }
 
     /// End-to-end tts rewind (docs/time-travel.md): a game whose `draw` is
-    /// driven by the render clock `tts` (like `examples/mle-lighting`'s orbiting
+    /// driven by the render clock `tts` (like `examples/lighting`'s orbiting
     /// lights) must, WHILE SCRUBBING, render at the scrubbed frame's RECORDED
     /// tts — not the live "now" clock. Here the camera eye tracks tts, so the
     /// returned `Frame` exposes which tts `draw` actually ran at. Exercises the

@@ -83,8 +83,8 @@ export function formatCrashOutput(logLines: string[]): string {
  *
  * ```ts
  * await using game = await FunctorRunner.launch({
- *   gameDir: "examples/mle-hello-gltf",
- *   mlePath: "examples/mle-hello-gltf/game.mle",
+ *   gameDir: "examples/hello",
+ *   mlePath: "examples/hello/game.mle",
  * });
  * ```
  */

@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 
-// End-to-end network simulation: one mle-mpserver + two mle-mpclient runners,
+// End-to-end network simulation: one mpserver + two mpclient runners,
 // each its own process on its own debug port, networked over a real WebSocket.
 // These are the MLE ports of examples/mpserver + examples/mpclient — same wire
 // protocol and same auto-move-on-connect, so convergence is identical. The
@@ -60,15 +60,15 @@ test(
     // Server first, and wait for its Sub.listen socket to actually bind before
     // launching clients — mpclient connects once with no retry, so a client that
     // races ahead of the listener would land in "error" and never converge.
-    await using server = await launch("mle-mpserver", base);
+    await using server = await launch("mpserver", base);
     await waitForPort("127.0.0.1", 9001, {
       timeoutMs: 15_000,
-      description: "mle-mpserver ws listener",
+      description: "mpserver ws listener",
     });
 
-    // mle-mpclient auto-moves on connect, so no input injection is needed.
-    await using clientA = await launch("mle-mpclient", base + 1);
-    await using clientB = await launch("mle-mpclient", base + 2);
+    // mpclient auto-moves on connect, so no input injection is needed.
+    await using clientA = await launch("mpclient", base + 1);
+    await using clientB = await launch("mpclient", base + 2);
 
     const waitOpts = { timeoutMs: 20_000, intervalMs: 200 };
 

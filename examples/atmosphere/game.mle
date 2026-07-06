@@ -1,4 +1,4 @@
-// examples/mle-atmosphere — distance fog + a cubemap skybox.
+// examples/atmosphere — distance fog + a cubemap skybox.
 //
 // A colonnade of identical pillars recedes into linear fog: every pillar has
 // the same size and albedo, so any visible difference between near and far

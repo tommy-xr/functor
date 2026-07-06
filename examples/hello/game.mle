@@ -1,13 +1,13 @@
-// examples/mle-hello-gltf — the MLE port of examples/hello (F#), the glTF
+// examples/hello — the MLE port of examples/hello (F#), the glTF
 // lineup with a WASD + mouse free-look camera (docs/mle.md E1). Assets are
 // the BabylonJS/Assets samples (npm run fetch:assets); paths resolve
 // relative to this dir, exactly as the F# game's Model.file paths. Run with:
 //
-//   functor -d examples/mle-hello-gltf run native
+//   functor -d examples/hello run native
 //
 // Reproduce the F#-parity capture (same pose, deterministic):
 //
-//   functor -d examples/mle-hello-gltf run native \
+//   functor -d examples/hello run native \
 //     --capture-frame /tmp/mle.png --fixed-time 2.0 --capture-time 0.8
 //   functor -d examples/hello run native \
 //     --capture-frame /tmp/fs.png --fixed-time 2.0 --capture-time 0.8
@@ -16,7 +16,7 @@
 // under --fixed-time — so that one line's digits differ between ANY two
 // runs, F#-vs-F# included. Every other pixel is directly comparable.)
 //
-// Transform-order note (the mle-primitives rule): F#'s
+// Transform-order note (the primitives rule): F#'s
 // `x |> translateX a |> rotateY r |> scale s` right-multiplies (scale hits
 // the vertex first); MLE transforms apply OUTERMOST-LAST, so the same
 // composition reads `x |> Scene.scale(s) |> Scene.rotateY(r)

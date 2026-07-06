@@ -21,7 +21,7 @@ roadmap table; the highlights:
   native + wasm.
 - **Determinism goldens**, the `Simulatable`/`Timeline` rewind seam, and a
   `--debug-render physics` collider-wireframe overlay (native).
-- `examples/mle-physics` exercises the whole surface (K kick, R raycast, P/Left/
+- `examples/physics` exercises the whole surface (K kick, R raycast, P/Left/
   Right/G timeline scrub, contact-flash).
 
 **Not yet built:** the model-layer `Entities`/`Archetype` abstraction (5b),
@@ -578,7 +578,7 @@ live and replayed frames are byte-identical by construction (the recorder
 tests assert this). Controls arrive as tagger-less effects queued for the
 recorder (the world's command-queue pattern, one level up).
 
-The `examples/mle-physics` bindings:
+The `examples/physics` bindings:
 
 - **P** -> `Physics.pause()` / `Physics.resume()` (toggle). Paused, real time
   doesn't accumulate — resuming never fast-forwards.
@@ -681,13 +681,13 @@ It's worth building in two steps, because they exercise different machinery:
 | **1a. World spine** | Rapier dep (`serde-serialize`, default features), `physics` module (`PhysicsScene`/`Body`/`reconcile`/`WorldId` registry), fixed-step accumulator, snapshot + text/JSON dump. Determinism + restore-replay goldens. No game surface. **Shipped.** | native+wasm (Rust) |
 | **1b. Timeline seam** | `Simulatable` + `Timeline` traits, `TimelineLog` with the three cadences (`keyframes(n)` default / `snapshot_ring` / `replay_only`), strategy-equivalence + replay goldens. **Shipped.** | native+wasm (Rust) |
 | **2. MLE surface + read-back** | `Physics.*` prelude (shape/body/scene builders, `position`/`transformed` live reads), optional `physics` hook in the MLE driver (tick → reconcile+fixed-step → draw), prelude tests. **Shipped (MLE).** | native+wasm (MLE) |
-| **2c. `examples/mle-physics`** | Crates settling on a ground slab, hot-reload demo, PR GIF/PNG. **Shipped (MLE).** | native (MLE) |
+| **2c. `examples/physics`** | Crates settling on a ground slab, hot-reload demo, PR GIF/PNG. **Shipped (MLE).** | native (MLE) |
 | **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, depth-tested line pass, `--debug-render physics` mode. **Shipped.** | native |
 | **3. Commands** | `Physics.applyImpulse`/`applyForce`/`setVelocity`/`teleport` as B6 effect variants: queued at perform time, applied after the frame's reconcile before its first substep; forces last one stepped frame; recorded as `timeline::Command::Apply` in the goldens. **Shipped (MLE).** | native+wasm (MLE) |
 | **4. Queries** | `Physics.raycast` as a deferred tagger effect over the B6.5 structured-payload broker (`EffectValue`); performed post-step for same-frame freshness; fake/replay runners can raycasts. `shapeCast` deferred until a game needs it. **Shipped (MLE).** | native+wasm (MLE) |
 | **5. Collision events** | `Physics.events(tagger)` sub: contact begin/end as `{started, a, b, sensor}` records, collected per fixed substep (rapier `ActiveEvents::COLLISION_EVENTS` on every collider), delivered post-step through `update`; `Simulatable::step` now returns the frame's events (the doc's original seam). **Shipped (MLE).** | native+wasm (MLE) |
-| **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `mle-physics` grows a bullet/debris archetype. | both |
-| **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: `Physics.pause`/`resume`/`stepOnce`/`rewindTo` control effects, `timelineFrame` read, per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history, read-only status overlay + keyboard scrub in `mle-physics`. **Shipped (MLE).** | native+wasm (MLE) |
+| **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `physics` grows a bullet/debris archetype. | both |
+| **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: `Physics.pause`/`resume`/`stepOnce`/`rewindTo` control effects, `timelineFrame` read, per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history, read-only status overlay + keyboard scrub in `physics`. **Shipped (MLE).** | native+wasm (MLE) |
 | **7a. Networked physics (state-sync)** | `Authority`, `mpserver`/`mpclient` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
 | **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
 

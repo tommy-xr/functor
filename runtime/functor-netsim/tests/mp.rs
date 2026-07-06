@@ -1,12 +1,12 @@
-//! Netsim test of the multiplayer prototype: one authoritative `mle-mpserver`
-//! and two `mle-mpclient`s, run as independent in-process MLE producers through
+//! Netsim test of the multiplayer prototype: one authoritative `mpserver`
+//! and two `mpclient`s, run as independent in-process MLE producers through
 //! the virtual network and stepped deterministically. Proves the full loop --
 //! clients connect, the server spawns + simulates them, broadcasts world
 //! snapshots, and both clients converge on the same world -- with no GL and no
 //! sockets.
 //!
 //! The instances are `.mle` games (E3 phase 0b): no dylib build is needed, only
-//! the committed `examples/mle-*/game.mle` sources. Still `#[ignore]`d by
+//! the committed `examples/*/game.mle` sources. Still `#[ignore]`d by
 //! default (they pull in the full desktop runtime as a dev-dependency); run
 //! with:
 //!
@@ -47,9 +47,9 @@ fn server_broadcasts_world_and_clients_converge() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_mle(&mut sim, "mle-mpserver");
-    let c1 = add_mle(&mut sim, "mle-mpclient");
-    let c2 = add_mle(&mut sim, "mle-mpclient");
+    let server = add_mle(&mut sim, "mpserver");
+    let c1 = add_mle(&mut sim, "mpclient");
+    let c2 = add_mle(&mut sim, "mpclient");
 
     // Let everyone connect and a few snapshots flow.
     sim.step_n(20);
@@ -97,8 +97,8 @@ fn latency_delays_what_the_client_sees() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_mle(&mut sim, "mle-mpserver");
-    let client = add_mle(&mut sim, "mle-mpclient");
+    let server = add_mle(&mut sim, "mpserver");
+    let client = add_mle(&mut sim, "mpclient");
     // A laggy link: the client's view trails the server.
     sim.set_link(
         client,

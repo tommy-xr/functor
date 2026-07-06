@@ -1,4 +1,4 @@
-// mle-physics — the reference physics example (docs/physics.md, Phase 2c+3+4+5).
+// physics — the reference physics example (docs/physics.md, Phase 2c+3+4+5).
 // Crates and a ball tumble onto a slab, drawn at their live simulated poses
 // via Physics.transformed. Press SPACE to re-drop everything: the changed
 // declared spawn poses teleport the bodies (the divergence rule) and the
@@ -15,8 +15,8 @@
 // — a live replay; kick differently this time and the timeline branches.
 // Run with:
 //
-//   functor-runner --mle --game-path examples/mle-physics/game.mle
-//   functor -d examples/mle-physics run native
+//   functor-runner --mle --game-path examples/physics/game.mle
+//   functor -d examples/physics run native
 //
 // The physics world lives host-side: edit this file while it runs and (as
 // long as tags and declarations are unchanged) the bodies stay exactly

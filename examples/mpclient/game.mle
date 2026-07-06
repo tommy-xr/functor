@@ -1,16 +1,16 @@
-// mle-mpclient — the MLE port of examples/mpclient (roadmap E2, docs/mle.md).
+// mpclient — the MLE port of examples/mpclient (roadmap E2, docs/mle.md).
 //
-// Multiplayer client: connects to mle-mpserver, sends its movement input, and
+// Multiplayer client: connects to mpserver, sends its movement input, and
 // renders the world snapshots the server broadcasts. It holds NO authoritative
 // state — it just draws what the server last sent (naive, so movement lags by
 // the round trip). WASD drives it live; on connect it auto-moves +x so a
 // headless test produces motion with no input injection.
 //
-//   functor -d examples/mle-mpclient run native
+//   functor -d examples/mpclient run native
 //
-// Port notes (same as mle-mpserver): MLE has no `%` (mod4 recursion picks the
+// Port notes (same as mpserver): MLE has no `%` (mod4 recursion picks the
 // shared color palette) and no Option (a ConnState ADT holds the connection id
-// once the socket opens; `Text.fixed` rounding matches mle-mpserver's wire).
+// once the socket opens; `Text.fixed` rounding matches mpserver's wire).
 
 type Player = { pid: Float, x: Float, z: Float }
 
@@ -86,7 +86,7 @@ let input = (m: Model, key: String, isDown: Bool) =>
         | v => (m, Effect.send(id, v)))
      | false => (m, Effect.send(id, "0 0")))
 
-// Same palette as mle-mpserver, keyed by player id, so a player is the same
+// Same palette as mpserver, keyed by player id, so a player is the same
 // color in every pane. MLE has no `%`, so mod4 wraps by recursion.
 let mod4 = (n: Float): Float =>
   match n < 4.0 with
@@ -102,7 +102,7 @@ let colorFor = (pid: Float): Float * Float * Float =>
 
 let draw = (m: Model, tts: Float) =>
   // One colored cube per player in the last snapshot the server sent (same
-  // framing + palette as mle-mpserver, so panes line up in the netsim viewer).
+  // framing + palette as mpserver, so panes line up in the netsim viewer).
   let playerNodes =
     List.map(m.world, (p) =>
       let (r, g, b) = colorFor(p.pid) in

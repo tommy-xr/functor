@@ -10,7 +10,8 @@ truth: the **`mle-language` skill**, `.claude/skills/mle-language/`). You write 
 file. There is **no transpile or compile step for game logic**: the Rust runtime *interprets* the
 `.mle` directly, on one of two targets:
 
-- **native** — the `functor-runner` desktop runtime (GLFW + OpenGL) loads and runs your `.mle`,
+- **native** — the desktop runtime (GLFW + OpenGL), now built into the single `functor` binary
+  (the desktop crate is a library the CLI drives in-process), loads and runs your `.mle`,
   with hot-reloading on save.
 - **wasm** — the web runtime (WebGL2) ships the `.mle` source as text and interprets it in the
   browser.
@@ -38,7 +39,7 @@ These shape how features should be built. Weigh changes against them.
 ## Architecture
 
 **The MVU loop (Elm-style).** A game is a set of top-level MLE bindings the runner looks up by
-name (contract in the `mle-language` skill; reference: `examples/mle-hello-gltf/game.mle`):
+name (contract in the `mle-language` skill; reference: `examples/hello/game.mle`):
 
 - `init` — the initial model, a plain MLE value
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as canonical names
@@ -96,11 +97,11 @@ effects are reset on reload (an in-flight HTTP tagger would dangle). Native watc
 | --- | --- |
 | `mle/` | The MLE language crate — parser, IR, interpreter (`Session`), typechecker; `mle parse/ir/run/trace/check` |
 | `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the effect broker, and the MLE prelude (`mle_prelude::FunctorHost`) |
-| `runtime/functor-runtime-desktop/` | Desktop runtime → the `functor-runner` binary (GLFW/OpenGL); the native MLE producer (`mle_game.rs`) |
+| `runtime/functor-runtime-desktop/` | Desktop runtime (GLFW/OpenGL) — a library the `functor` CLI drives in-process (no separate binary); the native MLE producer (`mle_game.rs`) |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle; the wasm MLE producer (`mle_game.rs`) |
 | `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`); MLE projects route through `cli/src/commands/mle_project.rs` |
 | `tools/` | Editor tooling: `mle-vscode` (extension), `mle-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
-| `examples/mle-*/` | Sample games (each a dir with `functor.json` + `game.mle`) — e.g. `mle-hello-gltf`, `mle-primitives`, `mle-lighting`, `mle-physics` |
+| `examples/*/` | Sample games (each a dir with `functor.json` + `game.mle`) — e.g. `hello`, `primitives`, `lighting`, `physics` |
 | `docs/todo.md` | The backlog — incomplete work only |
 
 MLE files use `file = module`: every sibling `.mle` in the entry's directory loads with it. The
@@ -117,24 +118,23 @@ MLE hot-reload is built into the runtime, so `develop` does not need it.)
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
 
 ```sh
-npm run build:cli   # functor-runner, then the wasm bundle, then the functor CLI
+npm run build:cli   # the wasm bundle, then the functor CLI
 ```
 
-Produces `target/debug/functor` (CLI) and `target/debug/functor-runner` (desktop runtime). The CLI
-looks for `functor-runner` next to itself — keep them together.
+Produces `target/debug/functor` — a single binary with the desktop runtime built in.
 
 **Run / build a game.** The CLI operates on a directory with a `functor.json`
 (`{"language": "mle", "entry": "game.mle"}`); `-d` points to it:
 
 ```sh
-./target/debug/functor -d examples/mle-primitives run native   # opens a window (native is the default env)
-./target/debug/functor -d examples/mle-primitives run wasm      # serves the .mle + wasm at http://127.0.0.1:8080
-./target/debug/functor -d examples/mle-primitives build [native|wasm]
-./target/debug/functor -d examples/mle-primitives develop [native|wasm]   # = run; MLE hot-reload is built in
+./target/debug/functor -d examples/primitives run native   # opens a window (native is the default env)
+./target/debug/functor -d examples/primitives run wasm      # serves the .mle + wasm at http://127.0.0.1:8080
+./target/debug/functor -d examples/primitives build [native|wasm]
+./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; MLE hot-reload is built in
 ```
 
 Under the hood: `build` typechecks the whole `.mle` project (diagnostics are errors). `run native`
-spawns `functor-runner --mle --game-path <entry>` from the game dir; the runner **interprets** the
+drives the built-in desktop runtime in-process from the game dir; it **interprets** the
 `.mle` each frame — nothing compiles. `run wasm` serves the project directory: the `.mle` ships as
 text and is interpreted by the embedded web runtime. `develop` is `run` (hot-reload is built in; on
 wasm, reload the page).
@@ -145,10 +145,10 @@ drives the interpreter/typechecker headlessly (the plain-`mle` prelude, no engin
 
 **Capture a frame to PNG** (no OS screen-recording permission needed — the runner reads back its
 own framebuffer; ideal for verifying rendering changes). The CLI forwards extra args to
-`functor-runner` (a leading `--` is optional):
+the built-in desktop runtime (a leading `--` is optional):
 
 ```sh
-./target/debug/functor -d examples/mle-primitives run native \
+./target/debug/functor -d examples/primitives run native \
   --capture-frame /tmp/frame.png --capture-time 3        # capture after 3s of wall-clock, then exit
 ```
 
@@ -160,8 +160,8 @@ or captures the cursor, so capture runs don't steal input from the user. For deb
 sessions (`--debug-port`) prefer passing `--hidden` explicitly — or `--headless` when no pixels
 are needed at all (see `docs/debug-runtime.md`).
 
-**Golden-image test:** `npm run test:golden` renders the MLE samples (`mle-hello-gltf`,
-`mle-lighting`, `mle-primitives`, `mle-synthwave` — the scenarios in `golden-scenarios.json`) at a
+**Golden-image test:** `npm run test:golden` renders the MLE samples (`hello`,
+`lighting`, `primitives`, `synthwave` — the scenarios in `golden-scenarios.json`) at a
 fixed time and compares each capture to a committed reference
 (`runtime/functor-runtime-desktop/tests/golden.rs`). It's `#[ignore]`d (needs a GL display), so it
 runs locally/manually, not in CI. Goldens are renderer/display-specific — the regeneration command
@@ -201,13 +201,13 @@ main context.
 - `cli/src/main.rs`'s `Init` command is currently a TODO stub.
 - **`functor run` does not rebuild the runtimes.** It only (re)loads the *game* `.mle`, which the
   runner interprets. The asset pipeline and rendering execute in the shells, which are prebuilt:
-  natively in the `functor-runner` binary, and on wasm in the web-runtime bundle that is
-  `include_bytes!`-embedded into the `functor` CLI. After changing `runtime/` crates (including the
+  natively in the desktop runtime built into the `functor` binary, and on wasm in the web-runtime
+  bundle that is `include_bytes!`-embedded into the `functor` CLI. After changing `runtime/` crates (including the
   MLE prelude), run `npm run build:cli` first or the running shell silently won't have your change.
 - **Sample glTF assets vary wildly in units.** The demo assets come from
   [BabylonJS/Assets](https://github.com/BabylonJS/Assets/) (`meshes/*.glb`): `ExplodingBarrel.glb`
   is ~72 units tall, Mixamo-style humanoids (`Xbot.glb`) are centimeter scale, and `fish.glb` is an
-  entire multi-fish scene — hence the per-model `Scene.scale` values in `examples/mle-hello-gltf`.
+  entire multi-fish scene — hence the per-model `Scene.scale` values in `examples/hello`.
   No models are checked in (`*.glb` is gitignored there); fetch them with `npm run fetch:assets`. A
   missing asset logs an error and renders as the fallback (empty) asset.
 - `AGENTS.md` is a symlink to this file — edit `CLAUDE.md` only.

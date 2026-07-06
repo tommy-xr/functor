@@ -83,7 +83,7 @@ Effect.httpPost(url, body, tagger) // the response record is handed to the tagge
 Under the hood: the request gets an auto token; running the effect registers the
 tagger (keyed by token) and queues a plain-data command for the host to perform;
 when the response lands, the broker applies the tagger and delivers the message.
-`examples/mle-netdemo` is the port.
+`examples/netdemo` is the port.
 
 **Persistent connections — `Sub` (inbound/identity) + `Effect` (send)**
 (WebSockets shipped):
@@ -101,8 +101,8 @@ Effect.send(connId, text)  // send on an open connection
 `type NetEvent = | Connected(id: Float) | Message(id: Float, text: String) |
 Disconnected(id: Float) | Error(id: Float, text: String)`. The connection id is
 assigned by the runtime and reported via `Connected`; the game stores it in its
-model and names it in `Effect.send`. `examples/mle-wsdemo` (client) and
-`examples/mle-wsserverdemo` (server) are the ports.
+model and names it in `Effect.send`. `examples/wsdemo` (client) and
+`examples/wsserverdemo` (server) are the ports.
 
 ## Test harness / SDK
 

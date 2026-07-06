@@ -49,7 +49,7 @@ const GATE_US = BUDGET_US * 0.6;
 // The heaviest deterministic load we can express today: 100 entities with
 // per-entity model updates in `tick` and per-entity transforms in `draw`,
 // through the lit pipeline (shadow-casting sun + two orbiting point lights)
-// — heavier than any shipped example (examples/mle-primitives has ~5 nodes).
+// — heavier than any shipped example (examples/primitives has ~5 nodes).
 const ENTITIES = 100;
 const heavyGame = `let tau = 6.2831853
 

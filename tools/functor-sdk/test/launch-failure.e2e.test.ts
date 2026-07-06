@@ -16,7 +16,7 @@ test(
 
     await assert.rejects(
       FunctorRunner.launch({
-        gameDir: join(repoRoot, "examples", "mle-hello-gltf"),
+        gameDir: join(repoRoot, "examples", "hello"),
         repoRoot,
         mlePath: join(repoRoot, "does", "not", "exist.mle"),
         port: Number(process.env.FUNCTOR_E2E_PORT ?? 8091),

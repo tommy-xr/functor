@@ -1,4 +1,4 @@
-// examples/mle-primitives — the MLE port of examples/primitives (F#), the
+// examples/primitives — the MLE port of examples/primitives (F#), the
 // asset-free lit-pipeline scene: ground + three primitives under a shadow-
 // casting sun, with two colored point lights orbiting (emissive markers at
 // their positions). All animation derives from tts, so it renders
