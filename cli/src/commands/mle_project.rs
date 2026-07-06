@@ -7,7 +7,7 @@
 //!   dev loop stays permissive; the build command is where they block).
 //! - `run` drives the desktop runtime's run loop IN-PROCESS on the entry file
 //!   (cwd = the game dir, so asset paths resolve as usual) — post-E3 there is a
-//!   single `functor` binary, no separate `functor-runner` child.
+//!   single `functor` binary, no separate runner child process.
 //! - `develop` is `run`: the MLE producer hot-reloads on save by itself — no
 //!   watchexec loop, no rebuild. State is preserved across edits.
 //! - `run wasm` serves the project with the MLE index page (docs/mle.md C5):
@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
+use crate::output::{emit, Event, Severity};
 use crate::util::{self, ShellCommand, WasmDevServer};
 use crate::Environment;
 
@@ -65,19 +66,47 @@ impl MleProject {
     pub fn build(&self, working_directory: &str) -> Result<(), Error> {
         let path = self.entry_path(working_directory)?;
         let display = path.display().to_string();
-        let project = mle::project::load(&path).map_err(|e| Error::other(e.render()))?;
+        // A load failure (parse error, bad module name, cycle) is a positioned
+        // diagnostic too — surface its file:line:col structurally, like a check
+        // error, rather than flattening it into the final text-only error.
+        let project = match mle::project::load(&path) {
+            Ok(project) => project,
+            Err(e) => {
+                emit(Event::Diagnostic {
+                    severity: Severity::Error,
+                    file: Some(e.path.display().to_string()),
+                    line: Some(e.line),
+                    col: Some(e.col),
+                    message: e.message.clone(),
+                });
+                return Err(Error::other(format!("cannot load the {display} project")));
+            }
+        };
         let diags = project.check();
         for diag in &diags {
-            let rendered = project.sources.render(diag.span.start, &diag.message);
-            eprintln!("error: {rendered}");
+            let (file, line, col) = project.sources.resolve(diag.span.start);
+            emit(Event::Diagnostic {
+                severity: Severity::Error,
+                file: Some(file.path.display().to_string()),
+                line: Some(line),
+                col: Some(col),
+                message: diag.message.clone(),
+            });
         }
         if diags.is_empty() {
-            let modules = project.sources.files().len();
-            let and_siblings = match modules {
-                1 => String::new(),
-                n => format!(" (+ {} sibling module(s))", n - 1),
-            };
-            println!("[mle] {display}{and_siblings}: ok");
+            // The user's own sibling `.mle` files: exclude the entry and the
+            // prelude-injected builtin (`<builtin>/Net.mle`).
+            let sibling_count = project
+                .sources
+                .files()
+                .iter()
+                .filter(|f| !f.path.starts_with("<builtin>"))
+                .count()
+                .saturating_sub(1);
+            emit(Event::MleLoaded {
+                entry: self.entry.clone(),
+                sibling_count,
+            });
             Ok(())
         } else {
             Err(Error::other(format!(
@@ -101,14 +130,16 @@ impl MleProject {
         }
         self.entry_path(working_directory)?; // existence validated up front
         if develop {
-            println!(
-                "[mle] develop: hot reload is built in — edit {} and save",
-                self.entry
-            );
+            emit(Event::Info {
+                message: format!(
+                    "develop: hot reload is built in — edit {} and save",
+                    self.entry
+                ),
+            });
         }
 
         // Post-E3 there is one binary: drive the desktop runtime's run loop
-        // IN-PROCESS instead of spawning a `functor-runner` child. GLFW/Cocoa
+        // IN-PROCESS instead of spawning a separate runner child. GLFW/Cocoa
         // needs the main thread, and `run` blocks on the game loop; the CLI's
         // `#[tokio::main]` drives this future on the main thread (block_on), so
         // the call lands on the main thread and inside a tokio runtime context
@@ -159,17 +190,19 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
                 ))
             })? {
                 (200, body) => {
-                    println!("[mle] {body}");
+                    emit(Event::Info { message: body });
                     Ok(())
                 }
                 (status, body) => Err(Error::other(format!("push rejected ({status}): {body}"))),
             };
         }
 
-        println!(
-            "[mle] watching {} — pushing to http://{addr}/reload-source on save (Ctrl-C to stop)",
-            self.entry
-        );
+        emit(Event::Info {
+            message: format!(
+                "watching {} — pushing to http://{addr}/reload-source on save (Ctrl-C to stop)",
+                self.entry
+            ),
+        });
         // Track the last content ATTEMPTED, not the file mtime: coarse-mtime
         // filesystems can miss rapid saves, and atomic-save editors briefly
         // unlink the file mid-save (a failed read here just waits for the
@@ -181,16 +214,20 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
                 if attempted.as_deref() != Some(src.as_str()) {
                     match post_reload_source(addr, &src) {
                         Ok((200, body)) => {
-                            println!("[mle] {body}");
+                            emit(Event::Info { message: body });
                             attempted = Some(src);
                         }
                         Ok((status, body)) => {
-                            eprintln!("[mle] push rejected ({status}): {body}");
+                            emit(Event::Warning {
+                                message: format!("push rejected ({status}): {body}"),
+                            });
                             attempted = Some(src);
                         }
                         // Transport failure: leave `attempted` unset so the
                         // same content retries on the next poll.
-                        Err(e) => eprintln!("[mle] push failed ({e}); retrying…"),
+                        Err(e) => emit(Event::Warning {
+                            message: format!("push failed ({e}); retrying…"),
+                        }),
                     }
                 }
             }
@@ -222,7 +259,9 @@ relative path inside it (got {})",
             )));
         }
         if develop {
-            println!("[mle] develop (wasm): hot reload is native-only — reload the page to pick up edits");
+            emit(Event::Info {
+                message: "develop (wasm): hot reload is native-only — reload the page to pick up edits".to_string(),
+            });
         }
         let no_open = runner_args.iter().any(|a| a == "--no-open");
         let ignored: Vec<&str> = runner_args
@@ -231,17 +270,19 @@ relative path inside it (got {})",
             .map(|s| s.as_str())
             .collect();
         if !ignored.is_empty() {
-            eprintln!(
-                "warning: ignoring runner args (not supported for wasm): {}",
-                ignored.join(" ")
-            );
+            emit(Event::Warning {
+                message: format!(
+                    "ignoring runner args (not supported for wasm): {}",
+                    ignored.join(" ")
+                ),
+            });
         }
 
         let wasm_server_start = WasmDevServer::start_mle(working_directory, &self.entry);
         if no_open {
-            println!(
-                "[Functor] wasm server at http://127.0.0.1:8080 (--no-open: skipping browser)"
-            );
+            emit(Event::Info {
+                message: "--no-open: skipping browser launch".to_string(),
+            });
         } else {
             let cmd = if std::env::consts::OS == "windows" {
                 "start"

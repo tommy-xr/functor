@@ -1,17 +1,38 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use std::time::Instant;
 use std::{env, io, process};
 
 mod commands;
+mod output;
 
 pub mod util;
 
+use output::{emit, Event};
+
+/// Functor — a functional toolkit for building 3D games in MLE.
+///
+/// Operates on a project directory (a `functor.json` with
+/// `"language": "mle"`). Add `--json` to any command for a newline-delimited
+/// JSON event stream instead of human text (see `docs/cli-output.md`).
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Directory to override the current working directory
-    #[arg(short, long)]
+    /// Project directory (defaults to the current working directory).
+    #[arg(short, long, global = true)]
     dir: Option<PathBuf>,
+
+    /// Emit newline-delimited JSON (one event per line) instead of human text.
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Print only errors and the final status.
+    #[arg(long, global = true)]
+    quiet: bool,
+
+    /// Disable ANSI color even on an interactive terminal.
+    #[arg(long, global = true)]
+    no_color: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -27,35 +48,50 @@ impl Environment {
     fn default(maybe_env: &Option<Environment>) -> Environment {
         maybe_env.clone().unwrap_or(Environment::Native)
     }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Environment::Wasm => "wasm",
+            Environment::Native => "native",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Scaffold a new project from a template (not yet implemented).
     Init {
         #[arg()]
         template: String,
     },
+    /// Typecheck the MLE project (the strict build gate — diagnostics are
+    /// errors). Target-independent. E.g. `functor -d examples/primitives build`.
     Build {
         #[arg(value_enum)]
         environment: Option<Environment>,
     },
+    /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
+    /// server). E.g. `functor -d examples/primitives run native`.
     Run {
         #[arg(value_enum)]
         environment: Option<Environment>,
 
-        /// Extra arguments forwarded to functor-runner (native only). E.g.
-        /// `run native --fixed-time 2 --capture-frame f.png`. A leading `--` is
-        /// also accepted. On wasm these are ignored except `--no-open`, which
-        /// keeps the dev server but skips launching the browser.
+        /// Extra arguments forwarded to the in-process desktop runtime (native
+        /// only). E.g. `run native --fixed-time 2 --capture-frame f.png`. A
+        /// leading `--` is also accepted. On wasm these are ignored except
+        /// `--no-open`, which keeps the dev server but skips launching the browser.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },
+    /// Run with hot-reload (same as `run`; MLE reloads on save). E.g.
+    /// `functor -d examples/lighting develop native`.
     Develop {
         #[arg(value_enum)]
         environment: Option<Environment>,
 
-        /// Extra arguments forwarded to functor-runner (native only). E.g.
-        /// `develop native --debug-port 8077`. A leading `--` is also accepted.
+        /// Extra arguments forwarded to the in-process desktop runtime (native
+        /// only). E.g. `develop native --debug-port 8077`. A leading `--` is
+        /// also accepted.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },
@@ -64,12 +100,12 @@ enum Command {
         #[command(subcommand)]
         target: InspectTarget,
     },
-    /// Push the game's MLE source to a running functor-runner over the
-    /// network (POST /reload-source on its debug server) — the remote develop
-    /// loop. The runner can be on another machine or device; reloads preserve
-    /// the model. MLE projects only.
+    /// Push the game's MLE source to a running runtime over the network
+    /// (POST /reload-source on its debug server) — the remote develop loop.
+    /// The runtime can be on another machine or device; reloads preserve the
+    /// model. MLE projects only.
     Push {
-        /// The runner's debug server, host:port. Start the runner with
+        /// The runtime's debug server, host:port. Start it with
         /// `--debug-port <PORT>` (plus `--debug-bind 0.0.0.0` when remote).
         addr: String,
 
@@ -111,10 +147,15 @@ enum InspectTarget {
 // `functor_runtime_desktop::run`.
 #[tokio::main]
 async fn main() -> tokio::io::Result<()> {
+    let started = Instant::now();
     let args = Args::parse();
 
-    // `inspect` operates on an arbitrary asset path and does not need a game
-    // project, so handle it before the functor.json validation below.
+    output::init(args.json, args.quiet, args.no_color);
+
+    // `inspect` is a DATA command: it prints a report (its own `--format
+    // text|json` is its dual mode) to stdout, so it bypasses the event stream
+    // to keep that stdout payload pure. It also runs before functor.json
+    // validation, since it operates on an arbitrary asset path.
     if let Command::Inspect { target } = &args.command {
         let res = match target {
             InspectTarget::Model {
@@ -132,23 +173,33 @@ async fn main() -> tokio::io::Result<()> {
                 .await
             }
         };
-        return finish(res);
+        return finish_inspect(res);
     }
 
-    let working_directory = get_working_directory(&args);
-    // Validates functor.json exists (exits the process if not); the path itself
-    // is unused by the MLE-only dispatch below.
-    validate_metadata_path(&working_directory);
+    finish(run(&args).await, started)
+}
 
-    let working_directory_os_str = working_directory.into_os_string();
-    let working_directory_str = working_directory_os_str.into_string().unwrap();
+/// Emit `CommandStarted`, validate the project, dispatch, and return the
+/// command's result. All user-facing output flows through [`emit`].
+async fn run(args: &Args) -> io::Result<()> {
+    let working_directory = get_working_directory(args);
+    let working_directory_str = working_directory
+        .clone()
+        .into_os_string()
+        .into_string()
+        .map_err(|_| io::Error::other("project directory path is not valid UTF-8"))?;
 
-    println!("Running command: {:?}", args.command);
+    emit(Event::CommandStarted {
+        command: command_name(&args.command).to_string(),
+        project: Some(working_directory_str.clone()),
+        env: command_env(&args.command),
+    });
+
+    validate_metadata_path(&working_directory)?;
 
     // An MLE project (functor.json: `"language": "mle"`) routes build/run/
     // develop/push to the interpreter — no Fable, no cargo, hot reload built
-    // in. Only those are language-routed; anything else (Init, and Inspect
-    // handled earlier) falls through to the normal dispatch.
+    // in. Only those are language-routed; Init falls through below.
     let is_routed = matches!(
         &args.command,
         Command::Build { .. }
@@ -156,10 +207,10 @@ async fn main() -> tokio::io::Result<()> {
             | Command::Develop { .. }
             | Command::Push { .. }
     );
-    if let Some(project) = commands::mle_project::detect(&working_directory_str)
-        .filter(|_| is_routed)
+    if let Some(project) =
+        commands::mle_project::detect(&working_directory_str).filter(|_| is_routed)
     {
-        let res = match &args.command {
+        return match &args.command {
             Command::Init { .. } | Command::Inspect { .. } => unreachable!("is_routed excludes"),
             // `build` is target-independent for MLE: the strict typecheck
             // gate is the whole build — nothing compiles for either target
@@ -197,16 +248,16 @@ async fn main() -> tokio::io::Result<()> {
                 project.push(&working_directory_str, addr, *watch).await
             }
         };
-        return finish(res);
     }
 
-    let res = match &args.command {
+    match &args.command {
         Command::Init { template } => {
-            // TODO: Handle init
-            println!(
-                "TODO: Initialize with template '{}' in directory: {}",
-                template, &working_directory_str,
-            );
+            // TODO: Handle init (currently a stub — see docs/todo.md).
+            emit(Event::Info {
+                message: format!(
+                    "init is not yet implemented (template '{template}', directory {working_directory_str})"
+                ),
+            });
             Ok(())
         }
         // The F#/Fable pipeline was removed in E3: every Functor project is now
@@ -223,48 +274,81 @@ async fn main() -> tokio::io::Result<()> {
         )),
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
-    };
-
-    finish(res)
+    }
 }
 
-fn finish(res: io::Result<()>) -> tokio::io::Result<()> {
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Init { .. } => "init",
+        Command::Build { .. } => "build",
+        Command::Run { .. } => "run",
+        Command::Develop { .. } => "develop",
+        Command::Inspect { .. } => "inspect",
+        Command::Push { .. } => "push",
+    }
+}
+
+fn command_env(command: &Command) -> Option<String> {
+    match command {
+        Command::Run { environment, .. } | Command::Develop { environment, .. } => {
+            Some(Environment::default(environment).as_str().to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Terminal handler for the routed commands: emit the final status through the
+/// event stream, and exit non-zero on error.
+fn finish(res: io::Result<()>, started: Instant) -> tokio::io::Result<()> {
+    let duration_ms = started.elapsed().as_millis() as u64;
     match res {
         Ok(()) => {
-            // Status goes to stderr so stdout stays pure data (e.g. JSON from
-            // `inspect ... --format json` is directly pipeable).
-            eprintln!("Done");
+            emit(Event::CommandFinished {
+                ok: true,
+                duration_ms,
+            });
             Ok(())
         }
         Err(error) => {
-            eprintln!("Failed: {}", error);
+            emit(Event::Error {
+                message: error.to_string(),
+                hint: None,
+            });
+            emit(Event::CommandFinished {
+                ok: false,
+                duration_ms,
+            });
             process::exit(1);
         }
     }
 }
 
-fn validate_metadata_path(working_directory: &PathBuf) -> PathBuf {
-    let functor_path = working_directory.join("functor.json");
-
-    if functor_path.exists() {
-        println!("Found functor.json at {}", functor_path.display());
-        // Optional: Read and parse the JSON file
-        // let content = fs::read_to_string(&functor_path).expect("Failed to read functor.json");
-        // let json: serde_json::Value = serde_json::from_str(&content).expect("Failed to parse functor.json");
-        // println!("Content of functor.json: {}", json);
-    } else {
-        eprintln!("functor.json not found in {}", working_directory.display());
-        process::exit(1);
+/// Terminal handler for `inspect` — a data command that owns stdout with its
+/// report, so it stays off the event stream. Errors go to stderr.
+fn finish_inspect(res: io::Result<()>) -> tokio::io::Result<()> {
+    match res {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            eprintln!("error: {error}");
+            process::exit(1);
+        }
     }
+}
 
-    functor_path
+/// Validate that the project directory has a `functor.json`.
+fn validate_metadata_path(working_directory: &PathBuf) -> io::Result<()> {
+    if working_directory.join("functor.json").exists() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "functor.json not found in {}",
+            working_directory.display()
+        )))
+    }
 }
 
 fn get_working_directory(args: &Args) -> PathBuf {
-    let dir = args
-        .dir
+    args.dir
         .clone()
-        .unwrap_or_else(|| env::current_dir().expect("Failed to get current directory"));
-    println!("Hello from directory: {}", dir.display());
-    dir
+        .unwrap_or_else(|| env::current_dir().expect("Failed to get current directory"))
 }

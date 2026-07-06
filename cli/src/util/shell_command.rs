@@ -1,9 +1,10 @@
-use colored::*;
 use std::io::{self, Error};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
+
+use crate::output::{emit, Event};
 
 pub struct ShellCommand<'a> {
     pub prefix: &'a str,
@@ -16,9 +17,7 @@ pub struct ShellCommand<'a> {
 impl<'A> ShellCommand<'A> {
     pub async fn run_sequential(commands: Vec<ShellCommand<'A>>) -> Result<(), Error> {
         for command_spec in commands {
-            println!("Using working dir: {}", &command_spec.cwd);
             let mut command = TokioCommand::new(&command_spec.cmd);
-            println!("-- Running command: {}", &command_spec.cmd);
 
             // Set environment variables if any
             for (key, value) in command_spec.env {
@@ -47,12 +46,8 @@ impl<'A> ShellCommand<'A> {
             let status = child.wait().await?;
             if !status.success() {
                 let detail = describe_exit(&status);
-                eprintln!(
-                    "{}: {} {}",
-                    command_spec.prefix.red(),
-                    command_spec.cmd,
-                    detail
-                );
+                // The error bubbles to the CLI's terminal handler, which emits
+                // it as an `Error` event — no direct print here.
                 return Err(Error::new(
                     io::ErrorKind::Other,
                     format!("{} {}", command_spec.cmd, detail),
@@ -65,9 +60,7 @@ impl<'A> ShellCommand<'A> {
     pub async fn run_parallel(commands: Vec<ShellCommand<'A>>) -> Result<(), Error> {
         let mut handles = vec![];
         for command_spec in commands {
-            println!("Using working dir: {}", &command_spec.cwd);
             let mut command = TokioCommand::new(&command_spec.cmd);
-            println!("-- Running command: {}", &command_spec.cmd);
 
             // Set environment variables if any
             for (key, value) in command_spec.env {
@@ -129,12 +122,11 @@ async fn handle_output(prefix: String, stream: impl tokio::io::AsyncRead + Unpin
     let mut reader = BufReader::new(stream).lines();
 
     while let Some(line) = reader.next_line().await.unwrap_or(None) {
-        let colored_prefix = if is_stdout {
-            prefix.blue()
+        let message = format!("{prefix} {line}");
+        if is_stdout {
+            emit(Event::Info { message });
         } else {
-            prefix.red()
-        };
-
-        println!("{}: {}", colored_prefix, line);
+            emit(Event::Warning { message });
+        }
     }
 }
