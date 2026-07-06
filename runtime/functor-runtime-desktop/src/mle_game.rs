@@ -33,6 +33,7 @@ use functor_runtime_common::mle_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, view_value,
     EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
+use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::mle_producer::{forward_step_scene, FrameCtx, Reporter, SpanSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
@@ -143,6 +144,12 @@ pub struct MleGame {
 }
 
 const STATS_EVERY: u64 = 300;
+
+/// Round a microsecond figure to one decimal, matching the old stats line's
+/// `{:.1}` precision so the reported numbers stay tidy across both renderers.
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
 
 /// A successfully loaded, contract-validated game project.
 struct Loaded {
@@ -318,7 +325,6 @@ impl MleGame {
                 std::process::exit(1);
             }
         };
-        println!("[mle] loaded {path}");
         MleGame {
             path: path.to_string(),
             stamp,
@@ -445,11 +451,14 @@ impl MleGame {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let physics_us = self.physics_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let draw_us = self.draw_ns as f64 / STATS_EVERY as f64 / 1000.0;
-            println!(
-                "[mle] avg over {STATS_EVERY} frames: tick {tick_us:.1}µs, physics \
-                 {physics_us:.1}µs, draw {draw_us:.1}µs ({:.1}% of a 60fps budget)",
-                (tick_us + physics_us + draw_us) / 16_666.0 * 100.0
-            );
+            let frame_us = tick_us + physics_us + draw_us;
+            events::emit(RuntimeEvent::FrameStats {
+                tick_us: round1(tick_us),
+                draw_us: round1(draw_us),
+                frame_us: round1(frame_us),
+                budget_pct: round1(frame_us / 16_666.0 * 100.0),
+                over_n_frames: STATS_EVERY as u32,
+            });
             self.tick_ns = 0;
             self.physics_ns = 0;
             self.draw_ns = 0;
@@ -495,17 +504,21 @@ impl Game for MleGame {
                 } else {
                     String::new()
                 };
-                println!(
-                    "[mle] hot-reloaded {} in {:.2}ms (model preserved{stored}; an edited \
+                events::emit(RuntimeEvent::HotReload {
+                    ok: true,
+                    message: format!(
+                        "hot-reloaded {} in {:.2}ms (model preserved{stored}; an edited \
 `init` takes effect on restart)",
-                    self.path,
-                    started.elapsed().as_secs_f64() * 1000.0
-                );
+                        self.path,
+                        started.elapsed().as_secs_f64() * 1000.0
+                    ),
+                });
             }
             Err(message) => {
-                self.reporter.report_once(format!(
-                    "[mle] reload failed, keeping old program: {message}"
-                ));
+                events::emit(RuntimeEvent::HotReload {
+                    ok: false,
+                    message: format!("reload failed, keeping old program: {message}"),
+                });
             }
         }
     }
@@ -538,7 +551,10 @@ impl Game for MleGame {
             self.path,
             started.elapsed().as_secs_f64() * 1000.0
         );
-        println!("[mle] {status}");
+        events::emit(RuntimeEvent::HotReload {
+            ok: true,
+            message: status.clone(),
+        });
         Ok(status)
     }
 

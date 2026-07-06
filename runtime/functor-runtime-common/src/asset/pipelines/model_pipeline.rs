@@ -48,7 +48,6 @@ impl AssetPipeline<Model> for ModelPipeline {
                     let buffer = &buffers_data[view.buffer().index()];
                     let start = view.offset();
                     let end = start + view.length();
-                    println!("Random image loaded: {} {}", start, end);
                     let buf = buffer[start..end].to_vec();
                     let maybe_image = image::load_from_memory(&buf);
 
@@ -58,9 +57,8 @@ impl AssetPipeline<Model> for ModelPipeline {
                         TextureData::checkerboard_pattern(4, 4, [0, 255, 0, 255])
                     }
                 }
-                ImageSource::Uri { uri, .. } => {
+                ImageSource::Uri { .. } => {
                     // Manually resolve the image data
-                    println!("External image: {}", uri);
                     TextureData::checkerboard_pattern(4, 4, [0, 0, 255, 255])
                 }
             };
@@ -72,9 +70,7 @@ impl AssetPipeline<Model> for ModelPipeline {
         let mut maybe_skeleton: Option<Skeleton> = None;
 
         for scene in document.scenes() {
-            println!("Scene {}", scene.index());
             for node in scene.nodes() {
-                println!("- Node: {:?}", node.name());
                 process_node(
                     &node,
                     &buffers_data,
@@ -205,14 +201,6 @@ fn process_node(
             if tangents.is_empty() {
                 crate::geometry::compute_tangents(&mut vertices, &indices);
             }
-            println!(
-                "-- Mesh: {:?} vertices: {} indices: {} joints: {} weights: {}",
-                mesh.name(),
-                vertices.len(),
-                indices.len(),
-                joints.len(),
-                weights.len(),
-            );
 
             // Parse material
             let material = primitive.material();
@@ -384,8 +372,7 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
                     }
                 }
                 gltf::animation::util::ReadOutputs::MorphTargetWeights(_weights) => {
-                    // TODO:
-                    println!("WARN: ignoring morph target weights; not implemented");
+                    // TODO: morph target weights are not yet applied.
                     // for (i, weight) in weights.enumerate() {
                     //     let time = input_times[i];
                     //     keyframes.push(Keyframe {

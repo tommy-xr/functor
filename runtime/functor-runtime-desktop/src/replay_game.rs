@@ -44,7 +44,9 @@ impl ReplayGame {
         if frames.is_empty() {
             load_error(path, "the recording contains no frames".to_string());
         }
-        println!("[replay] loaded {} frame(s) from {path}", frames.len());
+        // Stderr, not stdout: keep the CLI's `--json` ndjson stream clean under
+        // `--replay` too.
+        eprintln!("[replay] loaded {} frame(s) from {path}", frames.len());
         ReplayGame {
             path: path.to_string(),
             frames,
