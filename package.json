@@ -8,7 +8,7 @@
     "build:oculus:apk": "ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-sdk} ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-/opt/homebrew/share/android-sdk/ndk/24.0.8215888} CARGO_TARGET_DIR=$PWD/target-android cargo apk build --manifest-path runtime/functor-runtime-oculus/Cargo.toml",
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "generate:audio": "node scripts/generate-audio.mjs",
-    "test:golden": "npm run build:examples:hello:rust && cargo build --manifest-path examples/hello/build-native/Cargo.toml && npm run build:examples:lighting:rust && cargo build --manifest-path examples/lighting/build-native/Cargo.toml && npm run build:examples:primitives:rust && cargo build --manifest-path examples/primitives/build-native/Cargo.toml && npm run build:examples:synthwave:rust && cargo build --manifest-path examples/synthwave/build-native/Cargo.toml && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
+    "test:golden": "npm run fetch:assets && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
     "build:examples:hello:rust": "dotnet fable examples/hello/hello.fsproj --lang rust --outDir .",
     "build:examples:lighting:rust": "dotnet fable examples/lighting/lighting.fsproj --lang rust --outDir .",
     "build:examples:primitives:rust": "dotnet fable examples/primitives/primitives.fsproj --lang rust --outDir .",

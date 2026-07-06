@@ -26,6 +26,7 @@ const TARGETS = [
   },
   {
     dir: "examples/mle-hello-gltf",
+    baseUrl: MESHES_BASE,
     assets: ["shark.glb", "ExplodingBarrel.glb", "fish.glb", "Xbot.glb"],
   },
   {

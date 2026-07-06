@@ -9,12 +9,16 @@
 //! with a small tolerance. This test runs every scenario whose `targets`
 //! includes `"native"`.
 //!
-//! Ignored by default: it needs a GL display and each sample's game dylib built
-//! first. Run it with:
+//! The runner is producer-agnostic: an MLE sample (`functor.json` with
+//! `"language": "mle"`) renders via `--mle --game-path <entry>`; an F# sample
+//! renders from its game dylib (`--game-path <dylib>`). MLE samples need no
+//! build step (the runner interprets the `.mle` in place); F# samples need
+//! their dylib built first.
+//!
+//! Ignored by default: it needs a GL display (and, for any F# scenario, its
+//! game dylib). Run it with:
 //!
 //! ```sh
-//! ./target/debug/functor -d examples/hello build native
-//! ./target/debug/functor -d examples/lighting build native
 //! cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture
 //! ```
 //!
@@ -74,38 +78,67 @@ fn load_scenarios() -> Vec<Scenario> {
     manifest.scenarios
 }
 
+/// If `sample_dir` is an MLE project (`functor.json` has `"language": "mle"`),
+/// return its entry file (default `game.mle`); otherwise `None` (an F# sample
+/// rendered from its game dylib). The runner is producer-agnostic — MLE and F#
+/// render the same protocol `Frame` through the same shell — so a scenario just
+/// needs to point the runner at the right producer.
+fn mle_entry(sample_dir: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(sample_dir.join("functor.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    if json.get("language").and_then(|v| v.as_str()) != Some("mle") {
+        return None;
+    }
+    Some(
+        json.get("entry")
+            .and_then(|v| v.as_str())
+            .unwrap_or("game.mle")
+            .to_string(),
+    )
+}
+
 /// Render `scenario`'s sample at its fixed time (plus any debug-render mode),
 /// capture to a temp PNG, and assert it matches the committed
 /// `examples/<sample>/golden/<name>.png` within tolerance.
 fn assert_scenario_matches(scenario: &Scenario) {
     let sample_dir = repo_root().join("examples").join(&scenario.sample);
-    let dylib = format!(
-        "{}game_native{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    );
-    let dylib_rel = format!("build-native/target/debug/{}", dylib);
-    assert!(
-        sample_dir.join(&dylib_rel).exists(),
-        "game dylib not found at {} — run `functor -d examples/{} build native` first",
-        sample_dir.join(&dylib_rel).display(),
-        scenario.sample
-    );
+
+    // Point the runner at the sample's producer: `--mle --game-path <entry>`
+    // for an MLE project, or `--game-path <dylib>` for an F# game dylib.
+    let (producer_args, game_path): (Vec<&str>, String) = match mle_entry(&sample_dir) {
+        Some(entry) => (vec!["--mle"], entry),
+        None => {
+            let dylib = format!(
+                "{}game_native{}",
+                std::env::consts::DLL_PREFIX,
+                std::env::consts::DLL_SUFFIX
+            );
+            let dylib_rel = format!("build-native/target/debug/{}", dylib);
+            assert!(
+                sample_dir.join(&dylib_rel).exists(),
+                "game dylib not found at {} — run `functor -d examples/{} build native` first",
+                sample_dir.join(&dylib_rel).display(),
+                scenario.sample
+            );
+            (vec![], dylib_rel)
+        }
+    };
 
     let out = std::env::temp_dir().join(format!("functor-golden-{}.png", scenario.name));
     let _ = std::fs::remove_file(&out);
 
     let fixed_time = scenario.fixed_time.to_string();
-    let mut args = vec![
+    let mut args = producer_args;
+    args.extend_from_slice(&[
         "--game-path",
-        &dylib_rel,
+        &game_path,
         "--fixed-time",
         &fixed_time,
         "--capture-frame",
         out.to_str().unwrap(),
         "--capture-time",
         "1.0",
-    ];
+    ]);
     if let Some(mode) = &scenario.debug_render {
         args.extend_from_slice(&["--debug-render", mode]);
     }

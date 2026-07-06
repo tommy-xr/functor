@@ -3,49 +3,49 @@
   "scenarios": [
     {
       "name": "primitives-t2",
-      "sample": "primitives",
+      "sample": "mle-primitives",
       "fixedTime": 2.0,
       "debugRender": null,
       "targets": ["native", "wasm"]
     },
     {
       "name": "hello-t2",
-      "sample": "hello",
+      "sample": "mle-hello-gltf",
       "fixedTime": 2.0,
       "debugRender": null,
       "targets": ["native"]
     },
     {
       "name": "hello-normals-t2",
-      "sample": "hello",
+      "sample": "mle-hello-gltf",
       "fixedTime": 2.0,
       "debugRender": "normals",
       "targets": ["native"]
     },
     {
       "name": "hello-tangents-t2",
-      "sample": "hello",
+      "sample": "mle-hello-gltf",
       "fixedTime": 2.0,
       "debugRender": "tangents",
       "targets": ["native"]
     },
     {
       "name": "lighting-t2",
-      "sample": "lighting",
+      "sample": "mle-lighting",
       "fixedTime": 2.0,
       "debugRender": null,
       "targets": ["native", "wasm"]
     },
     {
       "name": "synthwave-t0",
-      "sample": "synthwave",
+      "sample": "mle-synthwave",
       "fixedTime": 0.0,
       "debugRender": null,
       "targets": ["native"]
     },
     {
       "name": "synthwave-t2",
-      "sample": "synthwave",
+      "sample": "mle-synthwave",
       "fixedTime": 2.0,
       "debugRender": null,
       "targets": ["native"]

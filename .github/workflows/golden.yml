@@ -1,10 +1,15 @@
 name: Golden (wasm)
 
 # Headless render-regression check. Builds the CLI + embedded web runtime, serves
-# the asset-free `primitives` sample as wasm, and compares a screenshot of the
-# WebGL2 canvas (software swiftshader) to the committed golden — the
+# the asset-free `mle-primitives` sample as wasm, and compares a screenshot of
+# the WebGL2 canvas (software swiftshader) to the committed golden — the
 # `primitives-t2` scenario in golden-scenarios.json, driven by
 # e2e/golden-wasm.spec.mjs.
+#
+# The sample is MLE (functor.json `"language": "mle"`): its `.mle` source ships
+# as text and is interpreted by the embedded web runtime, so there is no Fable
+# transpile and no .NET toolchain — the CLI + web-runtime bundle is all that's
+# needed to serve it.
 #
 # Linux-only: golden images are renderer-specific, and swiftshader is a
 # deterministic software rasterizer, so this is the headless path that needs no
@@ -34,6 +39,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # The golden RENDER is the MLE `mle-primitives` sample (no Fable), but the
+      # runtime crates the CLI/web-bundle build still declare a path dependency on
+      # `fable_library_rust` (fable_modules/), so we must run Fable once to
+      # materialize it. This whole Fable/.NET setup drops out in E3 phase 3-4,
+      # once that dependency is removed from functor-runtime-common.
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
@@ -51,14 +61,11 @@ jobs:
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
-      # Transpile the `primitives` sample (the one the golden renders). This
-      # also materializes fable_modules/ (the fable_library_rust workspace dep)
-      # that the CLI build resolves. It must transpile *primitives* — Fable's
-      # incremental cache skips re-writing a sample's .rs once another sample has
-      # been transpiled in the same run, so primitives.rs only lands reliably if
-      # primitives is the first (here, only) transpile. See the build-wasm
-      # workflow for why this precedes the cache step.
-      - name: Build F# (primitives)
+      # Transpile an F# sample purely to materialize fable_modules/ (the
+      # fable_library_rust workspace dep the wasm-pack/CLI build resolves). Must
+      # be `primitives` (Fable's incremental cache only reliably lands the first
+      # sample transpiled in a run). The golden itself renders mle-primitives.
+      - name: Materialize fable_modules (F# primitives)
         run: npm run build:examples:primitives:rust -- --verbose
 
       - name: Cache Rust build
@@ -83,17 +90,12 @@ jobs:
       - name: Build functor CLI
         run: cargo build --bin functor
 
-      # Pre-build the primitives game wasm (primitives.rs was generated above).
-      # Doing it directly surfaces any cargo/wasm-pack error — the `functor run
-      # wasm` dev server below swallows child stderr — and warms the build so the
-      # server only rebuilds incrementally.
-      - name: Build primitives wasm bundle
-        run: wasm-pack build --target web
-        working-directory: examples/primitives/build-wasm
-
-      - name: Run wasm golden (asset-free primitives scene)
+      # No per-sample wasm build: the MLE sample ships its `.mle` as text and is
+      # interpreted by the embedded web runtime, so `functor run wasm` just
+      # serves the project directory (no Fable, no wasm-pack per game).
+      - name: Run wasm golden (asset-free mle-primitives scene)
         env:
-          FUNCTOR_SAMPLE: primitives
+          FUNCTOR_SAMPLE: mle-primitives
         run: |
           if [ "${{ github.event.inputs.update_snapshots }}" = "true" ]; then
             npm run test:wasm-golden:update
