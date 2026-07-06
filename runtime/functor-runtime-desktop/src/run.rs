@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::{Frame, GameClock, SceneContext};
-use std::collections::BTreeSet;
+use functor_runtime_common::{Frame, GameClock, RecordedInput, SceneContext};
+use std::collections::{BTreeSet, HashMap};
 
 use functor_runtime_common::Key as InputKey;
 use glfw::{Action, Key};
@@ -88,6 +88,46 @@ fn key_from_str(name: &str) -> Option<InputKey> {
         "escape" => Some(InputKey::Escape),
         _ => None,
     }
+}
+
+/// Parse an `--input-script` file into a frame → events map for deterministic
+/// scripted playback (docs/time-travel.md T6b). Each non-blank, non-comment
+/// line is `<frame:int> <KeyName> <down|up>` — e.g. `0 Right down`, `18 Up down`.
+/// `#` starts a comment (to end of line); the key name goes through the same
+/// `key_from_str` map the debug server's POST /input uses. Events are stored as
+/// raw `RecordedInput::Key` so playback re-runs the identical live input path.
+fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read input script {path}: {e}"))?;
+    let mut map: HashMap<u64, Vec<RecordedInput>> = HashMap::new();
+    for (i, raw) in text.lines().enumerate() {
+        let lineno = i + 1;
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "{path}:{lineno}: expected `<frame> <Key> <down|up>`, got `{raw}`"
+            ));
+        }
+        let frame: u64 = parts[0]
+            .parse()
+            .map_err(|_| format!("{path}:{lineno}: bad frame number `{}`", parts[0]))?;
+        let key = key_from_str(parts[1])
+            .ok_or_else(|| format!("{path}:{lineno}: unknown key `{}`", parts[1]))?;
+        let is_down = match parts[2].to_ascii_lowercase().as_str() {
+            "down" => true,
+            "up" => false,
+            other => return Err(format!("{path}:{lineno}: expected `down|up`, got `{other}`")),
+        };
+        map.entry(frame).or_default().push(RecordedInput::Key {
+            code: key as i32,
+            is_down,
+        });
+    }
+    Ok(map)
 }
 
 use clap::Parser;
@@ -186,6 +226,30 @@ pub struct Args {
     #[arg(long)]
     fixed_time: Option<f32>,
 
+    /// Drive the game deterministically from a scripted input file instead of
+    /// live window input (docs/time-travel.md T6b). Each line is
+    /// `<frame:int> <KeyName> <down|up>` (KeyName like `Right`, `Up`, `A`,
+    /// `Space`); `#` starts a comment. The sim advances by a FIXED `--script-dt`
+    /// per rendered frame (not wall-clock), and each frame's scripted events are
+    /// fed before that frame's tick, so frame N is always the same sim state —
+    /// combine with `--capture-frame`/`--capture-at-frame` for reproducible
+    /// stills. Off by default (goldens/live runs unaffected).
+    #[arg(long, conflicts_with = "fixed_time")]
+    input_script: Option<String>,
+
+    /// Fixed per-frame timestep (seconds) for `--input-script` deterministic
+    /// playback. Default is one 60 Hz frame. Must be positive and finite — a
+    /// zero/negative/NaN dt would stall or reverse the sim clock.
+    #[arg(long, default_value_t = 1.0 / 60.0, value_parser = parse_script_dt)]
+    script_dt: f32,
+
+    /// Capture `--capture-frame` at this exact deterministic sim frame (0-based),
+    /// then exit — instead of the wall-clock `--capture-time` trigger. Intended
+    /// with `--input-script`, so captures at frames 0, 3, 6, … are reproducible
+    /// stills of a scripted run.
+    #[arg(long, requires = "capture_frame")]
+    capture_at_frame: Option<u64>,
+
     /// Start an HTTP control server on <--debug-bind>:<PORT> exposing
     /// POST /capture (image/png of the next frame), GET /state (runtime JSON),
     /// and POST /reload-source (network hot-reload for MLE games).
@@ -255,6 +319,17 @@ pub struct Args {
     /// not a dead background thread.
     #[arg(long, default_value = xreal::DEFAULT_ADDR)]
     xreal_addr: std::net::SocketAddr,
+}
+
+/// `--script-dt` must be a positive, finite timestep: a zero/NaN dt would stall
+/// the sim clock and a negative one would run it backwards, breaking the
+/// deterministic-playback contract.
+fn parse_script_dt(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|e| format!("{e}"))?;
+    if !v.is_finite() || v <= 0.0 {
+        return Err("must be a positive, finite timestep in seconds".into());
+    }
+    Ok(v)
 }
 
 /// `--stereo-ipd` must be a positive, finite world-unit distance: NaN/inf
@@ -594,6 +669,28 @@ pub fn run(args: Args) {
         std::process::exit(1);
     };
 
+    // Scripted deterministic input (docs/time-travel.md T6b). Parsed up front so
+    // a malformed script is a clean CLI error before any window/GL work. None
+    // (the default) leaves live input and the wall-clock capture trigger
+    // untouched.
+    let input_script: Option<HashMap<u64, Vec<RecordedInput>>> =
+        args.input_script.as_ref().map(|path| match parse_input_script(path) {
+            Ok(map) => map,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        });
+
+    // `--capture-at-frame` only names a *deterministic* sim frame when playback
+    // advances by a fixed dt — i.e. under `--input-script`. Without it the loop
+    // runs on wall-clock time, so "frame N" is not reproducible; refuse rather
+    // than silently capture a non-deterministic frame.
+    if args.capture_at_frame.is_some() && input_script.is_none() {
+        eprintln!("error: --capture-at-frame requires --input-script (its frame index is only deterministic under scripted fixed-dt playback)");
+        std::process::exit(1);
+    }
+
     // Optional debug control server. Runs on its own thread; the GL loop drains
     // its request channel once per frame (see below). None when --debug-port is
     // not given, so behavior is unchanged.
@@ -762,6 +859,14 @@ pub fn run(args: Args) {
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
+            // Scripted deterministic playback (docs/time-travel.md T6b): advance
+            // the game clock by a FIXED --script-dt this frame instead of
+            // wall-clock, so frame N is always the same sim state. Queued as a
+            // one-shot step (which the clock consumes in `frame()` below), making
+            // every rendered frame a single fixed dt regardless of real timing.
+            if input_script.is_some() {
+                clock.step(args.script_dt);
+            }
             // The frame time handed to the game. Pinning it (--fixed-time, or the
             // debug server's /time) makes the rendered pose deterministic — used
             // for reproducible captures / golden images. The capture trigger
@@ -914,6 +1019,19 @@ Escape again to quit"
             // (Windowed-only: the headless loop has no audio device.)
             while let Ok(token) = audio_rx.try_recv() {
                 game.audio_push_finished(token as i32);
+            }
+
+            // Scripted input (docs/time-travel.md T6b): feed this frame's events
+            // through the SAME `key_event` path the live GLFW handlers use, before
+            // tick, so this frame's tick sees the scripted key state.
+            if let Some(script) = &input_script {
+                if let Some(events) = script.get(&frame_count) {
+                    for ev in events {
+                        if let RecordedInput::Key { code, is_down } = ev {
+                            game.key_event(*code, *is_down);
+                        }
+                    }
+                }
             }
 
             game.tick(time.clone());
@@ -1192,7 +1310,14 @@ Escape again to quit"
             }
 
             if let Some(capture_path) = &args.capture_frame {
-                if elapsed_time >= args.capture_time {
+                // Shoot at an exact deterministic sim frame (--capture-at-frame,
+                // for scripted runs) or after --capture-time wall-clock seconds
+                // (the default, so assets have time to load).
+                let shoot = match args.capture_at_frame {
+                    Some(n) => frame_count == n,
+                    None => elapsed_time >= args.capture_time,
+                };
+                if shoot {
                     capture_framebuffer(
                         &gl,
                         fb_width as u32,
@@ -1234,4 +1359,50 @@ Escape again to quit"
     }
 
     game.quit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_tmp(name: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(contents.as_bytes())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_input_script_maps_frames_to_events() {
+        let path = write_tmp(
+            "functor-test-jump.script",
+            "# comment\n\n0  Right down   # hold right\n18 Up down\n18 A down\n71 Right up\n",
+        );
+        let map = parse_input_script(path.to_str().unwrap()).unwrap();
+        assert_eq!(map[&0].len(), 1);
+        assert!(matches!(
+            map[&0][0],
+            RecordedInput::Key { code, is_down: true } if code == InputKey::Right as i32
+        ));
+        // Two events on the same frame accumulate in order.
+        assert_eq!(map[&18].len(), 2);
+        assert!(matches!(
+            map[&18][0],
+            RecordedInput::Key { code, is_down: true } if code == InputKey::Up as i32
+        ));
+        assert!(matches!(map[&71][0], RecordedInput::Key { is_down: false, .. }));
+    }
+
+    #[test]
+    fn parse_input_script_rejects_malformed_lines() {
+        let bad = write_tmp("functor-test-bad.script", "0 Right\n");
+        assert!(parse_input_script(bad.to_str().unwrap()).is_err());
+        let bad_key = write_tmp("functor-test-badkey.script", "0 Nope down\n");
+        assert!(parse_input_script(bad_key.to_str().unwrap()).is_err());
+        let bad_dir = write_tmp("functor-test-baddir.script", "0 Right sideways\n");
+        assert!(parse_input_script(bad_dir.to_str().unwrap()).is_err());
+    }
 }

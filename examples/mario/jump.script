@@ -1,0 +1,16 @@
+# Scripted input that clears the chasm in examples/mario (docs/time-travel.md T6b).
+# Format: <frame:int> <KeyName> <down|up>. Frames advance by --script-dt (1/60 s
+# by default); events are applied before that frame's tick. Fed to a headless
+# --input-script run and captured with --capture-at-frame to prove, with no
+# human, that mario runs off the left platform, jumps, and lands on the right.
+#
+# mario spawns grounded at x = -6 on the left platform (solid x in (-11, -3)).
+# Hold Right from frame 0; at frame 18 (x ~= -3.6, still grounded) jump Up. The
+# 6.4-unit jump arc carries mario over the 6.0-wide chasm; he lands ~frame 69 at
+# x ~= 3.3 on the right platform. Release Right just after landing so he stops
+# there instead of running off the far edge.
+
+0  Right down
+18 Up    down
+19 Up    up
+71 Right up
