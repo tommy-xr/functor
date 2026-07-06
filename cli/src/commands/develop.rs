@@ -15,6 +15,17 @@ pub async fn execute(
     let build_native_path = Path::new(&"build-native");
     let build_native_wd = cwd_path.join(build_native_path);
 
+    // Transpile the game's F# project directly (mirroring `build`), named after
+    // the game directory by convention (examples/foo -> foo.fsproj). `--outDir .`
+    // (the CLI's cwd, the repo root) writes `fable_modules/` where the
+    // build-native crate expects it.
+    let project_name = cwd_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| io::Error::other(format!("invalid game directory: {working_directory}")))?;
+    let fsproj = format!("{working_directory}/{project_name}.fsproj");
+    let fable_cmd = format!("dotnet fable {fsproj} --lang rust --outDir .");
+
     let functor_runner_exe =
         get_nearby_bin(&"functor-runner").expect("functor-runner should be available");
 
@@ -31,15 +42,9 @@ pub async fn execute(
         ShellCommand {
             prefix: "[1: Build F#]",
             cmd: "watchexec",
-            cwd: working_directory,
+            cwd: ".",
             env: vec![],
-            args: vec![
-                "-e",
-                "fs",
-                "--no-process-group",
-                "--",
-                "npm run build:examples:hello:rust",
-            ],
+            args: vec!["-e", "fs", "--no-process-group", "--", &fable_cmd],
         },
         ShellCommand {
             prefix: "[2: Build Rust]",

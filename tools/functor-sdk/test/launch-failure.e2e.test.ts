@@ -16,7 +16,7 @@ test(
 
     await assert.rejects(
       FunctorRunner.launch({
-        gameDir: join(repoRoot, "examples", "hello"),
+        gameDir: join(repoRoot, "examples", "mle-hello-gltf"),
         repoRoot,
         dylibPath: join(repoRoot, "does", "not", "exist.dylib"),
         port: Number(process.env.FUNCTOR_E2E_PORT ?? 8091),

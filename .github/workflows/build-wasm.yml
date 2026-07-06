@@ -40,7 +40,7 @@ jobs:
         run: npm install -g wasm-pack
 
       - name: Build F#
-        run: npm run build:examples:hello:rust -- --verbose
+        run: npm run build:framework:rust -- --verbose
 
       # Cache AFTER Build F#: that step generates fable_modules/, which contains
       # the fable_library_rust workspace dependency. If caching runs first,
@@ -51,14 +51,8 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            .
-            examples/hello/build-wasm
+          workspaces: "."
 
       - name: Build runtime wasm bundle
         run: wasm-pack build --target web
         working-directory: runtime/functor-runtime-web
-
-      - name: Build hello wasm bundle
-        run: wasm-pack build --target web
-        working-directory: examples/hello/build-wasm

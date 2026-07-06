@@ -61,12 +61,11 @@ jobs:
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
-      # Transpile an F# sample purely to materialize fable_modules/ (the
-      # fable_library_rust workspace dep the wasm-pack/CLI build resolves). Must
-      # be `primitives` (Fable's incremental cache only reliably lands the first
-      # sample transpiled in a run). The golden itself renders mle-primitives.
-      - name: Materialize fable_modules (F# primitives)
-        run: npm run build:examples:primitives:rust -- --verbose
+      # Transpile the F# framework purely to materialize fable_modules/ (the
+      # fable_library_rust workspace dep the wasm-pack/CLI build resolves). The
+      # golden itself renders mle-primitives.
+      - name: Materialize fable_modules (F# framework)
+        run: npm run build:framework:rust -- --verbose
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
