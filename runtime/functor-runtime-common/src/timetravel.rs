@@ -241,7 +241,7 @@ impl SceneRecorder {
     /// the scrubbed-to frame, so `tts`-driven visuals rewind with the model.
     /// `None` during live play: the producer then uses the real clock (no
     /// override). See docs/time-travel.md.
-    pub fn current_scene_tts(&self) -> Option<f64> {
+    pub fn scrub_render_tts(&self) -> Option<f64> {
         self.scrub_pos.map(|k| *self.tts_history.seek(k))
     }
 
@@ -250,6 +250,18 @@ impl SceneRecorder {
     pub fn current_scene_frame(&self) -> Option<u64> {
         self.scrub_pos
             .or_else(|| self.model_history.recorded_range().map(|(_, hi)| hi))
+    }
+
+    /// The recorded `tts` of the frame the scene currently sits on — the
+    /// scrubbed frame while dragging, else the newest recorded frame. The shells
+    /// read this to REBASE their [`crate::GameClock`] when a time-travel branch
+    /// resumes, so play continues from the scene's time rather than wall-clock.
+    /// Unlike [`Self::scrub_render_tts`] (scrub-only, for the paused render
+    /// override) this ALSO resolves after a branch commit / rewind, when
+    /// `scrub_pos` has been cleared — it then reports the newest frame's `tts`
+    /// (the rewind target). `None` before anything is recorded.
+    pub fn current_scene_frame_tts(&self) -> Option<f64> {
+        self.current_scene_frame().map(|f| *self.tts_history.seek(f))
     }
 
     /// The seekable window `(oldest, newest)` — the draggable range.
@@ -517,7 +529,7 @@ mod tests {
     // --- the coupled recorder: tts rewinds with the model ---
 
     #[test]
-    fn current_scene_tts_returns_the_scrubbed_frames_recorded_time() {
+    fn scrub_render_tts_returns_the_scrubbed_frames_recorded_time() {
         // Record frames with distinct render clocks; a physics-less scene means
         // the seek touches only the model + scrub position.
         let mut rec = SceneRecorder::new();
@@ -525,7 +537,7 @@ mod tests {
             rec.record(&Value::Number(f as f64), 0, f as f64 * 10.0);
         }
         // Live play (not scrubbing): no override, the producer uses the real clock.
-        assert_eq!(rec.current_scene_tts(), None);
+        assert_eq!(rec.scrub_render_tts(), None);
 
         let mut model = Value::Number(0.0);
         let mut physics = SteppedPhysics::new();
@@ -535,13 +547,13 @@ mod tests {
             .expect("seek");
         // A scrubbed frame draws at its recorded tts (2 * 10.0), and the model
         // restored in lockstep.
-        assert_eq!(rec.current_scene_tts(), Some(20.0));
+        assert_eq!(rec.scrub_render_tts(), Some(20.0));
         assert_eq!(model.to_string(), Value::Number(2.0).to_string());
 
         // Scrub forward to frame 4: the override tracks the handle.
         rec.seek_scene_to(4, &mut model, &mut physics, &mut status, false)
             .expect("seek");
-        assert_eq!(rec.current_scene_tts(), Some(40.0));
+        assert_eq!(rec.scrub_render_tts(), Some(40.0));
     }
 
     #[test]

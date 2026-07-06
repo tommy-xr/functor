@@ -416,6 +416,10 @@ impl GameProducer for MleWebGame {
         self.recorder.scene_frame_range()
     }
 
+    fn current_scene_tts(&self) -> Option<f64> {
+        self.recorder.current_scene_frame_tts()
+    }
+
     fn tick(&mut self, frame_time: FrameTime) {
         // The whole MVU frame body lives in the shared `FrameCtx`
         // (docs/time-travel.md T6a). Web runs it as one call — unlike native it
@@ -476,7 +480,7 @@ impl GameProducer for MleWebGame {
         // the model; live play uses the real clock (docs/time-travel.md).
         let tts = self
             .recorder
-            .current_scene_tts()
+            .scrub_render_tts()
             .unwrap_or(frame_time.tts as f64);
         let args = vec![self.model.clone(), Value::Number(tts)];
         match self.session.call("draw", args, &mut FunctorHost) {

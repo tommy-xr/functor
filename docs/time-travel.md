@@ -47,6 +47,19 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   are not). "Rewind shows the earlier *code* version" (the hard frontier from the
   prior-art notes) is deferred — the interpreter *could* do it by keeping old
   modules alive, but that's future work.
+- **`tts` is a game clock, not a wall clock.** Both shells own a shared
+  `GameClock` (`functor_runtime_common::game_clock`) that produces each frame's
+  `FrameTime`. Live, it ACCUMULATES the real frame delta (`game_time += dts`);
+  paused (scrubber / debug `POST /time`), it FREEZES (`dts = 0`, `tts` held) so
+  resuming continues from the freeze point instead of jumping forward by the
+  paused wall-clock span; and it REBASES to a scrubbed frame's recorded `tts`
+  when a time-travel branch resumes — on a resume-from-scrub, after a seek, and
+  after `POST /rewind` — so `tts`-driven visuals (orbiting lights, `sin(tts)`
+  motion) continue from the scrubbed scene time rather than snapping to "now".
+  The shell reads the rebase target from `GameProducer::current_scene_tts`
+  (the recorder's `current_scene_frame_tts`). `--fixed-time` / `?fixed-time` is
+  an unconditional pin (every frame `{ dts: 0, tts: <const> }`) that bypasses
+  accumulation, pause, and rebase — the deterministic golden-capture path.
 - **Shared logic, platform-native UI.** The `SceneRecorder` (the hard part) is
   shared; the *UI surface* is per-platform: egui-in-canvas on desktop (no DOM
   there), **native DOM on web** (`mle_scrub_*` wasm exports drive it). The web
