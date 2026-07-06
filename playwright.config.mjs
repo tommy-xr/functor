@@ -7,11 +7,11 @@ import { defineConfig, devices } from "@playwright/test";
 // needs the wasm build + a browser), not in CI.
 //
 // The dev server serves one sample, chosen by FUNCTOR_SAMPLE (default
-// "lighting"); the spec runs that sample's wasm-tagged scenarios.
+// "mle-lighting"); the spec runs that sample's wasm-tagged scenarios.
 //
 // Prerequisite: `npm run build:cli` (rebuilds the embedded web runtime + CLI).
 // Run: `npm run test:wasm-golden`   Update: `npm run test:wasm-golden:update`.
-const SAMPLE = process.env.FUNCTOR_SAMPLE || "lighting";
+const SAMPLE = process.env.FUNCTOR_SAMPLE || "mle-lighting";
 
 export default defineConfig({
   testDir: "./e2e",
