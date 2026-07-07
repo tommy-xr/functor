@@ -464,6 +464,9 @@ fn check_impl(
         locals: HashMap::new(),
         diags: Vec::new(),
         expr_types: HashMap::new(),
+        partials: HashMap::new(),
+        def_param_names: HashMap::new(),
+        ctor_param_names: HashMap::new(),
     };
 
     // Record type names first (nominal references may be forward), then
@@ -518,6 +521,12 @@ fn check_impl(
                         variant.name.clone(),
                         (decl.name.clone(), decl.params.len(), fields),
                     );
+                    // Field names, so a partially-applied constructor can name
+                    // the arguments it is still missing.
+                    checker.ctor_param_names.insert(
+                        variant.name.clone(),
+                        variant.fields.iter().map(|f| f.name.clone()).collect(),
+                    );
                 }
             }
         }
@@ -534,6 +543,12 @@ fn check_impl(
         checker.annot_vars.clear();
         let ty = match &def.value.kind {
             ExprKind::Lambda { params, ret, .. } => {
+                // Param names, so a partial application of this def can name
+                // the arguments it is still missing.
+                checker.def_param_names.insert(
+                    def.name.clone(),
+                    params.iter().map(|p| p.name.clone()).collect(),
+                );
                 let params = params
                     .iter()
                     .map(|p| checker.resolve_annotation(p.ty.as_ref(), false))
@@ -746,6 +761,33 @@ struct Checker<'s> {
     /// Best-known type per expression, recorded by [`Checker::infer`]. The
     /// loud pass runs last, so its (better-informed) types win.
     expr_types: HashMap<u32, Type>,
+    /// Provenance for under-applied calls (partial applications), keyed by
+    /// the call expression's id — the seam for the forgotten-argument
+    /// diagnostic (see [`Checker::report_forgotten_arg`]). Purely a
+    /// diagnostic side channel: never read by unification or generalization,
+    /// so HM inference is untouched.
+    partials: HashMap<u32, PartialApp>,
+    /// Top-level def name → its lambda parameter names, in order — so a
+    /// partial application can NAME the arguments it is missing.
+    def_param_names: HashMap<String, Vec<String>>,
+    /// Constructor name → its field names, in order (same purpose).
+    ctor_param_names: HashMap<String, Vec<String>>,
+}
+
+/// An under-applied call's provenance: enough to say `` `shift` is applied to
+/// 1 of 2 arguments here — missing `dy: Float` `` when that partial later
+/// flows into a position wanting a concrete non-function value. The
+/// OCaml-Warning-5 / F#-FS0020 recovery for currying's "a forgotten argument
+/// is now a legal partial" regression.
+struct PartialApp {
+    /// The callee as the user wrote it (`callee_label`).
+    label: String,
+    /// How many arguments were supplied, and how many the callee takes.
+    applied: usize,
+    total: usize,
+    /// The not-yet-supplied parameters: name (when the callee's params are
+    /// named — user defs and constructors) plus type.
+    missing: Vec<(Option<String>, Type)>,
 }
 
 impl Checker<'_> {
@@ -1172,9 +1214,76 @@ the type: `type Name<{name}> = …`"
             _ => {
                 let got = self.infer(expr);
                 let expected = self.zonk(expected);
+                // A partial application flowing into a concrete non-function
+                // position is a forgotten argument — name it, instead of the
+                // generic "expected X, got function" mismatch.
+                if self.report_forgotten_arg(expr, &got, &expected) {
+                    return;
+                }
                 self.unify(&got, &expected, expr.span, what);
             }
         }
+    }
+
+    /// The parameter names of `callee`, when it names a def or a constructor
+    /// (a partial application uses them to name its missing arguments). A
+    /// builtin or a local function value has no names here, so the diagnostic
+    /// falls back to the parameter types alone.
+    fn callee_param_names(&self, callee: &Expr) -> Option<Vec<String>> {
+        match &callee.kind {
+            ExprKind::Global(name) => self.def_param_names.get(name).cloned(),
+            ExprKind::Ctor { name, .. } => self.ctor_param_names.get(name).cloned(),
+            _ => None,
+        }
+    }
+
+    /// If `expr` is an under-applied call whose partial-function result is
+    /// flowing into a **concrete non-function** expectation, emit a diagnostic
+    /// naming the forgotten argument(s) and return `true` (the caller then
+    /// skips the generic "expected X, got function" mismatch). This recovers
+    /// the crisp forgotten-argument error currying traded away (OCaml
+    /// Warning-5 / F# FS0020), made precise by the checker's knowledge of the
+    /// callee's full arity, param names, and types.
+    ///
+    /// The non-function guard is essential: a partial passed where a FUNCTION
+    /// is wanted (`xs |> List.map(f)` as a value, `let inc = add(1.0)` used as
+    /// a callback) or into open inference (an unsolved `Var`/`Unknown`) is a
+    /// legitimate partial and stays silent.
+    fn report_forgotten_arg(&mut self, expr: &Expr, got: &Type, expected: &Type) -> bool {
+        // The value must really be a function (i.e. a partial)…
+        if !matches!(self.zonk(got), Type::Fn(..)) {
+            return false;
+        }
+        // …meeting a CONCRETE non-function expectation.
+        match expected {
+            Type::Var(_) | Type::Unknown | Type::Fn(..) => return false,
+            _ => {}
+        }
+        // …and this exact call site is one we recorded as under-applied.
+        let Some(info) = self.partials.get(&expr.id.raw()) else {
+            return false;
+        };
+        let (label, applied, total) = (info.label.clone(), info.applied, info.total);
+        let missing_params = info.missing.clone();
+        let missing = missing_params
+            .iter()
+            .map(|(name, ty)| {
+                let ty = self.zonk(ty);
+                match name {
+                    Some(n) => format!("`{n}: {ty}`"),
+                    None => format!("`{ty}`"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.diag(
+            expr.span,
+            format!(
+                "`{label}` is applied to {applied} of {total} arguments here — \
+missing {missing}. Did you forget an argument?"
+            ),
+        );
+        true
     }
 
     /// Check a record literal against declared record type `name`: every
@@ -1470,11 +1579,34 @@ the type: `type Name<{name}> = …`"
                         match args.len().cmp(&params.len()) {
                             std::cmp::Ordering::Equal => *ret,
                             // Under-applied: the value is a function of the
-                            // params not yet supplied. (A future diagnostic can
-                            // flag a partial that reaches a non-function
-                            // position; today it surfaces at the eventual use
-                            // site as a type mismatch.)
+                            // params not yet supplied. Record its provenance so
+                            // that IF this partial later flows into a concrete
+                            // non-function position, the mismatch can name the
+                            // forgotten argument(s) instead of a generic
+                            // "expected X, got function" (see
+                            // `report_forgotten_arg`).
                             std::cmp::Ordering::Less => {
+                                let names = self.callee_param_names(callee);
+                                let missing = params[args.len()..]
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, ty)| {
+                                        let name = names
+                                            .as_ref()
+                                            .and_then(|ns| ns.get(args.len() + i))
+                                            .cloned();
+                                        (name, ty.clone())
+                                    })
+                                    .collect();
+                                self.partials.insert(
+                                    expr.id.raw(),
+                                    PartialApp {
+                                        label: callee_label(callee),
+                                        applied: args.len(),
+                                        total: params.len(),
+                                        missing,
+                                    },
+                                );
                                 Type::Fn(params[args.len()..].to_vec(), ret)
                             }
                             // Over-applied: saturate, then apply the surplus

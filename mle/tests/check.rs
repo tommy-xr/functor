@@ -186,10 +186,10 @@ fn error_field_access_on_a_float() {
 }
 
 // Currying: under-application is a legal partial application, not an arity
-// error — `f(1.0)` on a 2-arg `f` yields a `(Float) => Float`. (The crisp
-// "takes N argument(s)" error is the accepted quality regression of the
-// currying migration; a dedicated "partial reaches a non-function position"
-// diagnostic is planned to recover it.)
+// error — `f(1.0)` on a 2-arg `f` yields a `(Float) => Float`. Here the
+// partial is the (unannotated) return value, a genuinely function-typed
+// position, so it stays clean — the forgotten-argument diagnostic fires only
+// when a partial reaches a NON-function position (see the tests below).
 #[test]
 fn partial_application_of_user_function_is_accepted() {
     assert_clean(
@@ -256,6 +256,95 @@ fn over_application_checks_surplus_against_result() {
          let g = () => f(1.0, 2.0)",
     );
     assert_eq!(message, "cannot call Float, not a function");
+}
+
+// Currying's error-quality recovery (OCaml Warning-5 / F# FS0020): a partial
+// application flowing into a CONCRETE non-function position is a forgotten
+// argument. The diagnostic names the missing parameter(s) — precise because
+// the checker knows the callee's full arity, param names, and types.
+#[test]
+fn forgotten_argument_of_user_function_into_argument_position() {
+    let (message, line, col) = single_diag(
+        "let add = (a: Float, b: Float): Float => a + b\n\
+         let use = (x: Float): Float => x\n\
+         let main = () => use(add(1.0))",
+    );
+    assert_eq!(
+        message,
+        "`add` is applied to 1 of 2 arguments here — missing `b: Float`. \
+         Did you forget an argument?"
+    );
+    // Points at the under-applied call, not the outer call.
+    assert_eq!((line, col), (3, 22));
+}
+
+// The same recovery in a return-annotation position (a concrete non-function
+// expectation), naming the second parameter as the one forgotten.
+#[test]
+fn forgotten_argument_into_return_annotation() {
+    let (message, _, _) = single_diag(
+        "let shift = (dx: Float, dy: Float): Float => dx + dy\n\
+         let go = (): Float => shift(1.0)",
+    );
+    assert_eq!(
+        message,
+        "`shift` is applied to 1 of 2 arguments here — missing `dy: Float`. \
+         Did you forget an argument?"
+    );
+}
+
+// A builtin has no param names in its signature, so the diagnostic falls back
+// to the missing parameter's TYPE alone (still names the arity gap).
+#[test]
+fn forgotten_argument_of_builtin() {
+    let (message, _, _) = single_diag(
+        "let use = (x: String): String => x\n\
+         let main = () => use(Text.concat(\"a\"))",
+    );
+    assert_eq!(
+        message,
+        "`Text.concat` is applied to 1 of 2 arguments here — missing `String`. \
+         Did you forget an argument?"
+    );
+}
+
+// A constructor carries its field names, so the diagnostic names the missing
+// field — and the enriched message REPLACES the generic mismatch (one diag).
+#[test]
+fn forgotten_argument_of_constructor() {
+    let (message, _, _) = single_diag(
+        "type Pair = | MkPair(a: Float, b: Float)\n\
+         let use = (x: Float): Float => x\n\
+         let main = () => use(MkPair(1.0))",
+    );
+    assert_eq!(
+        message,
+        "`MkPair` is applied to 1 of 2 arguments here — missing `b: Float`. \
+         Did you forget an argument?"
+    );
+}
+
+// The discriminator must NOT fire on legitimate partials — a partial that
+// reaches a FUNCTION-typed position is intended. An inline partial passed as
+// `List.map`'s callback stays clean.
+#[test]
+fn partial_into_function_position_is_clean() {
+    assert_clean(
+        "let add = (a: Float, b: Float): Float => a + b\n\
+         let go = (xs: List<Float>): List<Float> => List.map(add(1.0), xs)",
+    );
+}
+
+// …and a partial bound to a let, then used as a callback, is also clean (the
+// binding value is inferred, never checked against a non-function expectation).
+#[test]
+fn bound_partial_used_as_callback_is_clean() {
+    assert_clean(
+        "let add = (a: Float, b: Float): Float => a + b\n\
+         let go = (xs: List<Float>): List<Float> =>\n\
+         let inc = add(1.0) in\n\
+         xs |> List.map(inc)",
+    );
 }
 
 // A builtin's known callback shape checks: List.filter's predicate must
