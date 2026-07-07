@@ -39,6 +39,7 @@ Module {
         Def {
             id: d1,
             name: "add",
+            ty: None,
             value: Expr {
                 id: e3,
                 kind: Lambda {
@@ -106,6 +107,7 @@ Module {
         Def {
             id: d2,
             name: "average",
+            ty: None,
             value: Expr {
                 id: e9,
                 kind: Lambda {
@@ -169,6 +171,7 @@ Module {
         Def {
             id: d3,
             name: "total",
+            ty: None,
             value: Expr {
                 id: e16,
                 kind: Lambda {
@@ -248,6 +251,7 @@ Module {
         Def {
             id: d4,
             name: "bestTotal",
+            ty: None,
             value: Expr {
                 id: e26,
                 kind: Lambda {
@@ -368,6 +372,7 @@ Module {
         Def {
             id: d5,
             name: "isWinner",
+            ty: None,
             value: Expr {
                 id: e32,
                 kind: Lambda {
@@ -432,6 +437,7 @@ Module {
         Def {
             id: d6,
             name: "debug",
+            ty: None,
             value: Expr {
                 id: e33,
                 kind: Bool(
@@ -444,6 +450,7 @@ Module {
         Def {
             id: d7,
             name: "main",
+            ty: None,
             value: Expr {
                 id: e47,
                 kind: Lambda {

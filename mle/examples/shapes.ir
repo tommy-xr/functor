@@ -59,6 +59,7 @@ Module {
         Def {
             id: d1,
             name: "pi",
+            ty: None,
             value: Expr {
                 id: e0,
                 kind: Number(
@@ -71,6 +72,7 @@ Module {
         Def {
             id: d2,
             name: "area",
+            ty: None,
             value: Expr {
                 id: e12,
                 kind: Lambda {
@@ -239,6 +241,7 @@ Module {
         Def {
             id: d3,
             name: "isRound",
+            ty: None,
             value: Expr {
                 id: e17,
                 kind: Lambda {
@@ -323,6 +326,7 @@ Module {
         Def {
             id: d4,
             name: "sizeOf",
+            ty: None,
             value: Expr {
                 id: e26,
                 kind: Lambda {
@@ -432,6 +436,7 @@ Module {
         Def {
             id: d5,
             name: "describe",
+            ty: None,
             value: Expr {
                 id: e52,
                 kind: Lambda {
@@ -702,6 +707,7 @@ Module {
         Def {
             id: d6,
             name: "shapes",
+            ty: None,
             value: Expr {
                 id: e61,
                 kind: List(
@@ -776,6 +782,7 @@ Module {
         Def {
             id: d7,
             name: "main",
+            ty: None,
             value: Expr {
                 id: e68,
                 kind: Lambda {

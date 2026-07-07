@@ -170,6 +170,18 @@ impl Parser {
         })
     }
 
+    /// An optional `: Type` binding annotation between a `let` binder name and
+    /// its `=`. A binding is not in return position, so a function type here
+    /// needs no extra parens: `let f: (Float) => Float = …`.
+    fn opt_binding_annotation(&mut self) -> Result<Option<TypeName>, ParseError> {
+        if self.peek_kind() == &TokenKind::Colon {
+            self.bump();
+            Ok(Some(self.type_name()?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn let_decl(&mut self) -> Result<LetDecl, ParseError> {
         let kw = self.bump();
         if self.peek_kind() == &TokenKind::Mut {
@@ -181,10 +193,16 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             });
         }
         let (name, _) = self.expect_ident("a name after `let`")?;
+        let ty = self.opt_binding_annotation()?;
         self.expect(TokenKind::Eq, "`=`")?;
         let value = self.expr()?;
         let span = kw.span.to(value.span);
-        Ok(LetDecl { name, value, span })
+        Ok(LetDecl {
+            name,
+            ty,
+            value,
+            span,
+        })
     }
 
     fn type_decl(&mut self) -> Result<TypeDecl, ParseError> {
@@ -522,6 +540,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             });
         }
         let (name, _) = self.expect_ident("a name after `let`")?;
+        let ty = self.opt_binding_annotation()?;
         self.expect(TokenKind::Eq, "`=`")?;
         let value = self.expr()?;
         self.expect(TokenKind::In, "`in`")?;
@@ -531,6 +550,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             kind: ExprKind::Let {
                 mutable,
                 name,
+                ty,
                 value: Box::new(value),
                 body: Box::new(body),
             },

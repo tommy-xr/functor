@@ -549,29 +549,41 @@ fn check_impl(
 
     // Placeholder signatures: annotation-derived, with FRESH inference
     // variables where nothing is annotated (B7 — this is what makes
-    // unannotated code inferable instead of Unknown). Resolution is silent;
-    // the body pass resolves the same annotations again and reports once.
+    // unannotated code inferable instead of Unknown). Param/return annotation
+    // resolution is silent here (the body pass resolves them again and reports
+    // once); a whole-binding `def.ty` is the exception — resolved once, so it
+    // reports here.
     for def in &module.defs {
         checker.annot_vars.clear();
-        let ty = match &def.value.kind {
-            ExprKind::Lambda { params, ret, .. } => {
-                // Param names, so a partial application of this def can name
-                // the arguments it is still missing.
-                checker.def_param_names.insert(
-                    def.name.clone(),
-                    params.iter().map(|p| p.name.clone()).collect(),
-                );
-                let params = params
-                    .iter()
-                    .map(|p| checker.resolve_annotation(p.ty.as_ref(), false))
-                    .collect();
-                let ret = checker.resolve_annotation(ret.as_ref(), false);
-                Type::Fn(params, Box::new(ret))
-            }
-            ExprKind::Number(_) => Type::Float,
-            ExprKind::String(_) => Type::String,
-            ExprKind::Bool(_) => Type::Bool,
-            _ => checker.fresh(),
+        // Param names, so a partial application of this def can name the
+        // arguments it is still missing — recorded even for annotated defs.
+        if let ExprKind::Lambda { params, .. } = &def.value.kind {
+            checker.def_param_names.insert(
+                def.name.clone(),
+                params.iter().map(|p| p.name.clone()).collect(),
+            );
+        }
+        let ty = match &def.ty {
+            // A binding annotation IS the signature (`let f: (Float) => Float
+            // = …`); the body pass checks the value against it. Resolved with
+            // `report:true` — unlike param/return annotations (re-resolved in
+            // the body pass), `def.ty` is resolved ONCE here, so its own
+            // diagnostics (e.g. an arity error) must be emitted now or lost.
+            Some(annot) => checker.resolve_type(annot, true),
+            None => match &def.value.kind {
+                ExprKind::Lambda { params, ret, .. } => {
+                    let params = params
+                        .iter()
+                        .map(|p| checker.resolve_annotation(p.ty.as_ref(), false))
+                        .collect();
+                    let ret = checker.resolve_annotation(ret.as_ref(), false);
+                    Type::Fn(params, Box::new(ret))
+                }
+                ExprKind::Number(_) => Type::Float,
+                ExprKind::String(_) => Type::String,
+                ExprKind::Bool(_) => Type::Bool,
+                _ => checker.fresh(),
+            },
         };
         checker.globals.insert(def.name.clone(), ty);
     }
@@ -597,13 +609,20 @@ fn check_impl(
                 .get(&def.name)
                 .cloned()
                 .unwrap_or(Type::Unknown);
-            let inferred = checker.infer(&def.value);
-            checker.unify(
-                &inferred,
-                &placeholder,
-                def.value.span,
-                &format!("`{}`", def.name),
-            );
+            if def.ty.is_some() {
+                // Check the value against its binding annotation — flows the
+                // type in (unannotated params/returns get it) and checks
+                // literals structurally (`let m: Model = { wrong }`).
+                checker.expect(&def.value, &placeholder, &format!("`{}`", def.name));
+            } else {
+                let inferred = checker.infer(&def.value);
+                checker.unify(
+                    &inferred,
+                    &placeholder,
+                    def.value.span,
+                    &format!("`{}`", def.name),
+                );
+            }
         }
         for &i in &group {
             let def = &module.defs[i];
@@ -1232,6 +1251,38 @@ the type: `type Name<{name}> = …`"
                 }
                 self.expr_types.insert(expr.id.raw(), expected.clone());
             }
+            // A lambda against a known function type: push the expected param
+            // types INTO the body (so `let f: (Position) => Float = (p) => p.x`
+            // checks `p.x`), and check the body against the expected return.
+            // A param/return that also carries its own annotation must agree.
+            (ExprKind::Lambda { params, ret, body }, Type::Fn(exp_params, exp_ret))
+                if params.len() == exp_params.len() =>
+            {
+                for (param, exp) in params.iter().zip(exp_params) {
+                    let ty = if param.ty.is_some() {
+                        let declared = self.resolve_annotation(param.ty.as_ref(), true);
+                        self.unify(
+                            &declared,
+                            exp,
+                            param.span,
+                            &format!("parameter `{}`", param.name),
+                        );
+                        declared
+                    } else {
+                        exp.clone()
+                    };
+                    self.locals.insert(param.binding.0, ty);
+                }
+                let ret_ty = if ret.is_some() {
+                    let declared = self.resolve_annotation(ret.as_ref(), true);
+                    self.unify(&declared, exp_ret, body.span, "return value");
+                    declared
+                } else {
+                    (**exp_ret).clone()
+                };
+                self.expect(body, &ret_ty, "return value");
+                self.expr_types.insert(expr.id.raw(), expected.clone());
+            }
             _ => {
                 let got = self.infer(expr);
                 let expected = self.zonk(expected);
@@ -1509,11 +1560,23 @@ missing {missing}. Did you forget an argument?"
                 .unwrap_or(Type::Unknown),
             ExprKind::Let {
                 binding,
+                name,
+                ty,
                 value,
                 body,
                 ..
             } => {
-                let value_ty = self.infer(value);
+                let value_ty = match ty {
+                    // An annotated let-in binding: check the value against it
+                    // (flows in, checks literals), then the binder has that
+                    // type.
+                    Some(annot) => {
+                        let expected = self.resolve_type(annot, true);
+                        self.expect(value, &expected, &format!("`{name}`"));
+                        expected
+                    }
+                    None => self.infer(value),
+                };
                 self.locals.insert(binding.0, value_ty);
                 self.infer(body)
             }

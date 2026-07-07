@@ -4,6 +4,7 @@ Module {
         Def {
             id: d0,
             name: "threshold",
+            ty: None,
             value: Expr {
                 id: e0,
                 kind: Number(
@@ -16,6 +17,7 @@ Module {
         Def {
             id: d1,
             name: "isHigh",
+            ty: None,
             value: Expr {
                 id: e4,
                 kind: Lambda {
@@ -70,6 +72,7 @@ Module {
         Def {
             id: d2,
             name: "describe",
+            ty: None,
             value: Expr {
                 id: e11,
                 kind: Lambda {
@@ -141,6 +144,7 @@ Module {
         Def {
             id: d3,
             name: "normalized",
+            ty: None,
             value: Expr {
                 id: e17,
                 kind: Lambda {
@@ -201,6 +205,7 @@ Module {
         Def {
             id: d4,
             name: "report",
+            ty: None,
             value: Expr {
                 id: e27,
                 kind: Lambda {
@@ -297,6 +302,7 @@ Module {
         Def {
             id: d5,
             name: "main",
+            ty: None,
             value: Expr {
                 id: e34,
                 kind: Lambda {

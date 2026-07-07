@@ -3,6 +3,7 @@ Program {
         Let(
             LetDecl {
                 name: "encode",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -199,6 +200,7 @@ Program {
         Let(
             LetDecl {
                 name: "snapshot",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -266,6 +268,7 @@ Program {
         Let(
             LetDecl {
                 name: "parseRow",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -514,6 +517,7 @@ Program {
         Let(
             LetDecl {
                 name: "main",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [],
@@ -522,6 +526,7 @@ Program {
                             kind: Let {
                                 mutable: false,
                                 name: "wire",
+                                ty: None,
                                 value: Expr {
                                     kind: Call {
                                         callee: Expr {

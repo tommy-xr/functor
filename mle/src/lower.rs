@@ -377,6 +377,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
                 defs.push(Def {
                     id,
                     name: lowerer.self_qualify(&decl.name),
+                    ty: decl.ty,
                     value: lowerer.expr(decl.value)?,
                     span: decl.span,
                 });
@@ -666,6 +667,7 @@ impl Lowerer<'_> {
             ast::ExprKind::Let {
                 mutable,
                 name,
+                ty,
                 value,
                 body,
             } => {
@@ -684,6 +686,7 @@ impl Lowerer<'_> {
                     binding,
                     name,
                     mutable,
+                    ty,
                     value,
                     body: Box::new(body?),
                 }
