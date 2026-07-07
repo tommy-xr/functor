@@ -30,8 +30,8 @@ use std::collections::HashSet;
 use mle::{line_col, project::SourceMap, RunError, Session, Span, Value};
 
 use crate::mle_prelude::{
-    contains_effect, deliver_physics_events, drain_effects, http_response_value, needs_update,
-    net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
+    contains_effect, deliver_physics_events, drain_effects, frame_value, http_response_value,
+    needs_update, net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
     physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
     take_http_tagger, EffectLog, EffectRunner, EffectTree, FakeEffects, FunctorHost, NetEventKind,
 };
@@ -39,7 +39,7 @@ use crate::input::{Key, RecordedInput};
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
 use crate::timetravel::SceneRecorder;
-use crate::FrameTime;
+use crate::{Frame, FrameTime};
 
 /// Where a producer resolves per-frame error spans to `path:line:col: message`.
 /// The two shells hold their source differently (a multi-file project map on
@@ -805,4 +805,92 @@ pub fn forward_step_scene(
     // from the step above), leaving the registry as found.
     drop(dry_world);
     result
+}
+
+/// Forward-ghosting (docs/time-travel.md T6d): the shared producer body behind
+/// both shells' `GameProducer::ghost_frames`. Step the scene forward over a
+/// window of `divisions` divisions, each `dt` wide, from `start_tts` (a dry run
+/// over throwaway state via [`forward_step_scene`] — the live producer is
+/// untouched), then `draw` each stepped model at its division-boundary time and
+/// return the frames for the shell to composite. To keep velocity-integrated
+/// motion (mario's jump) faithful, each division is advanced in FINE
+/// `sub_dt = 1/60` sub-steps (`steps_per_division ≈ dt / sub_dt`) and sampled
+/// only at the boundary, so the strobe still has `divisions` frames but each is
+/// accurate integration. Division `div` draws at
+/// `tts = start_tts + (div+1)*steps_per_division*sub_dt`, matching the time
+/// `forward_step_scene` stepped the model to (the same f32 arithmetic). Each
+/// frame's camera is overridden to the paused view (`last_frame.camera`) so only
+/// world motion smears. A draw that errors or doesn't return a Frame is skipped,
+/// so the result may be shorter than `divisions`.
+///
+/// `script_inputs` selects the input source (docs/time-travel.md F2). When
+/// `Some`, the ghost forward-steps from `model` (the live anchor — K is NOT
+/// resolved from the recorder) replaying the caller-supplied SCRIPT slice, so the
+/// strobe is the *scripted* trajectory under the current code. When `None`, the
+/// T6d behavior: resolve K and replay the recorder's own log.
+#[allow(clippy::too_many_arguments)]
+pub fn ghost_frames(
+    session: &Session,
+    model: &Value,
+    recorder: &SceneRecorder,
+    has_physics: bool,
+    has_subscriptions: bool,
+    prev_tts: Option<f64>,
+    last_frame: &Frame,
+    divisions: usize,
+    dt: f32,
+    start_tts: f64,
+    script_inputs: Option<&[Vec<RecordedInput>]>,
+) -> Vec<Frame> {
+    // Replay the recorded inputs for the frames AFTER the fork point K, so a
+    // recorded jump/run ghosts (docs/time-travel.md T6b). The input log is
+    // per-rendered-frame = per-fine-step (both 1/60), so it feeds the fine
+    // step index directly. Beyond the recorded window the step coasts. Under
+    // F2 (`script_inputs = Some`) the caller's per-fine-step script slice is
+    // used directly, forward-stepping from the current anchor model.
+    let recorded;
+    let inputs: &[Vec<RecordedInput>] = match script_inputs {
+        Some(slice) => slice,
+        None => {
+            recorded = match recorder.current_scene_frame() {
+                Some(k) => recorder.inputs_from(k + 1),
+                None => Vec::new(),
+            };
+            &recorded
+        }
+    };
+    // Fine sub-step at 1/60; round the division width to a whole number of
+    // sub-steps (≥1). At the default 8 divisions over a ~2s window that's
+    // dt = 0.25 → ~15 fine steps per division.
+    let sub_dt = 1.0f32 / 60.0;
+    let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
+    let stepped = forward_step_scene(
+        session,
+        model,
+        has_physics,
+        has_subscriptions,
+        prev_tts,
+        start_tts as f32,
+        sub_dt,
+        divisions,
+        steps_per_division,
+        inputs,
+    );
+    let mut frames = Vec::with_capacity(stepped.len());
+    for (i, (model_i, _world)) in stepped.iter().enumerate() {
+        // Match forward_step_scene's f32 division-boundary tts exactly, so
+        // each redrawn frame's tts equals the tts its model was stepped at.
+        let tts = (start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt) as f64;
+        let args = vec![model_i.clone(), Value::Number(tts)];
+        // A draw error or non-Frame return for a division is skipped, not fatal.
+        if let Ok(value) = session.call("draw", args, &mut FunctorHost) {
+            if let Some(frame) = frame_value(&value) {
+                let mut frame = frame.clone();
+                // Freeze the view: composite only world motion, not the camera.
+                frame.camera = last_frame.camera.clone();
+                frames.push(frame);
+            }
+        }
+    }
+    frames
 }

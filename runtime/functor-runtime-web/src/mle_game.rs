@@ -428,6 +428,32 @@ impl GameProducer for MleWebGame {
         self.recorder.current_scene_frame_tts()
     }
 
+    /// Forward-ghosting (docs/time-travel.md T6d) — delegated to the shared
+    /// producer body (`mle_producer::ghost_frames`), identical to the desktop
+    /// producer. Makes the web producer's ghost half available; the web RENDER
+    /// loop compositing them is a later slice.
+    fn ghost_frames(
+        &self,
+        divisions: usize,
+        dt: f32,
+        start_tts: f64,
+        script_inputs: Option<&[Vec<functor_runtime_common::RecordedInput>]>,
+    ) -> Vec<Frame> {
+        functor_runtime_common::mle_producer::ghost_frames(
+            &self.session,
+            &self.model,
+            &self.recorder,
+            self.has_physics,
+            self.has_subscriptions,
+            self.prev_tts,
+            &self.last_frame,
+            divisions,
+            dt,
+            start_tts,
+            script_inputs,
+        )
+    }
+
     fn tick(&mut self, frame_time: FrameTime) {
         // The whole MVU frame body lives in the shared `FrameCtx`
         // (docs/time-travel.md T6a). Web runs it as one call — unlike native it
