@@ -40,6 +40,11 @@ async-trait = "0.1.80"
 log = "0.4"
 gltf = { version = "1.4.1", features = ["names", "KHR_materials_pbrSpecularGlossiness"] }
 
+[dev-dependencies]
+# The host prelude `.mlei` interface text, for the drift test that keeps the
+# declared Scene.* signatures in sync with the `PATHS` host registry.
+functor-prelude = { path = "../../functor-prelude" }
+
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
 tokio = { version = "1", features = ["full"] }
 

@@ -3,6 +3,7 @@ resolver = "1"
 
 members = [
     "cli",
+    "functor-prelude",
     "mle",
     "runtime/functor-netsim",
     "runtime/functor-runtime-common",

@@ -69,7 +69,15 @@ impl MleProject {
         // A load failure (parse error, bad module name, cycle) is a positioned
         // diagnostic too — surface its file:line:col structurally, like a check
         // error, rather than flattening it into the final text-only error.
-        let project = match mle::project::load(&path) {
+        // Inject the host prelude `.mlei` interfaces so the game's `Scene.*`
+        // (etc.) externals typecheck against real types instead of `Unknown`
+        // (docs/mlei.md). Check-time only — runtime evaluation is unchanged
+        // (the host provides the actual values).
+        let project = match mle::project::load_with_prelude(
+            &path,
+            &std::collections::HashMap::new(),
+            &functor_prelude::modules(),
+        ) {
             Ok(project) => project,
             Err(e) => {
                 // A load error (parse / bad module / cycle) carries only its

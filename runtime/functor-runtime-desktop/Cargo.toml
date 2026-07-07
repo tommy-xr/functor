@@ -17,6 +17,9 @@ required-features = []
 [dependencies]
 # The MLE language, for the --mle producer (docs/mle.md Track C2).
 mle = { path = "../../mle" }
+# The host prelude `.mlei` interfaces — injected at load time so a game's
+# `Scene.*` calls typecheck against real types (docs/mlei.md).
+functor-prelude = { path = "../../functor-prelude" }
 functor_runtime_common = { path = "./../functor-runtime-common" }
 glow = "0.17"
 cgmath = "0.18.0"

@@ -1,0 +1,48 @@
+// scene.mlei — the `Scene` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+//
+// Slice 2e-i authors ONE namespace (Scene) end-to-end to prove the prelude
+// pipeline. It is authored in FULL — every `Scene.*` the host provides — because
+// an interface-only module is a CLOSED module: a reference to a member it does
+// not declare is a load error, so a partial Scene would break real games. The
+// remaining host namespaces (Camera, Physics, Effect, Light, …) are authored in
+// 2e-ii; until then they stay gradual host externals (`Unknown`), unaffected.
+//
+// Branded argument types (`Angle`, `Texture`, `RenderTarget`) name types owned
+// by not-yet-authored host modules, so they resolve to `Unknown` for now (the
+// gradual seam) and become real once 2e-ii ships those modules.
+
+// The opaque scene-node handle. Because the module is itself `Scene`, this is
+// referred to as `Scene.Node` from game code.
+type Node
+
+// Primitive geometry.
+let cube : () => Node
+let sphere : () => Node
+let cylinder : () => Node
+let quad : () => Node
+let plane : () => Node
+
+// Assets and generated surfaces.
+let model : (String) => Node
+let heightmap : (List<List<Float>>) => Node
+
+// Composition.
+let group : (List<Node>) => Node
+
+// Materials (subject-last, so they pipe: `Scene.cube() |> Scene.color(r,g,b)`).
+let color : (Float, Float, Float, Node) => Node
+let lit : (Float, Float, Float, Node) => Node
+let emissive : (Float, Float, Float, Node) => Node
+let litTexture : (Texture, Node) => Node
+let emissiveTexture : (Texture, Node) => Node
+let litNormalMapped : (Float, Float, Float, Texture, Node) => Node
+let screen : (RenderTarget, Node) => Node
+
+// Transforms.
+let translate : (Float, Float, Float, Node) => Node
+let scale : (Float, Node) => Node
+let scaleXYZ : (Float, Float, Float, Node) => Node
+let rotateX : (Angle, Node) => Node
+let rotateY : (Angle, Node) => Node
+let rotateZ : (Angle, Node) => Node
