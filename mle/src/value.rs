@@ -38,6 +38,12 @@ pub enum Value {
         arity: usize,
     },
     Closure(Rc<Closure>),
+    /// A partially-applied callable: the underlying callable plus the
+    /// arguments supplied so far. Produced only when a call supplies FEWER
+    /// arguments than the callee's arity; calling it with the remaining
+    /// arguments saturates and dispatches. The saturated call path never
+    /// allocates one.
+    Partial(Rc<Partial>),
     Builtin(crate::eval::Builtin),
     /// A host-provided external function (see [`crate::eval::Host`]),
     /// identified by its qualified path (`Scene.cube`).
@@ -68,6 +74,19 @@ pub struct Closure {
     /// closures design note). Guarded by body pointer identity there, so a
     /// stale id from an older module can never mis-rebind.
     pub expr_id: crate::ir::ExprId,
+}
+
+/// A partially-applied callable. `callee` is the underlying callable (a
+/// closure, constructor, or builtin — never a host fn, which the host
+/// saturates, nor another `Partial`, which is unwrapped before capture);
+/// `applied` are the arguments already supplied. Only produced when a call
+/// supplies FEWER args than the callee's arity — the saturated call path never
+/// allocates one. The count still needed is derived from the callee's arity
+/// (see `Display`), so it can never drift out of sync (e.g. after a hot-reload
+/// that changes the callee's parameter count).
+pub struct Partial {
+    pub callee: Value,
+    pub applied: Vec<Value>,
 }
 
 /// Lexical environment: one scope per enclosing lambda call, as a persistent
@@ -165,6 +184,18 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")>")
             }
+            Value::Partial(p) => {
+                // How many args are still needed, derived live from the
+                // callee's arity (a Partial's callee is always a closure,
+                // ctor, or builtin — see [`Partial`]).
+                let arity = match &p.callee {
+                    Value::Closure(c) => c.params.len(),
+                    Value::Ctor { arity, .. } => *arity,
+                    Value::Builtin(b) => crate::eval::builtin_arity(*b),
+                    _ => p.applied.len(),
+                };
+                write!(f, "<partial {} more>", arity.saturating_sub(p.applied.len()))
+            }
             Value::Builtin(b) => write!(f, "<builtin {}>", builtin_name(*b)),
             Value::HostFn(path) => write!(f, "<host {path}>"),
             Value::HostData(data) => write!(f, "<{}>", data.type_name()),
@@ -185,6 +216,7 @@ impl Value {
             Value::Variant { .. } => "a variant",
             Value::Ctor { .. } => "a constructor",
             Value::Closure(_) => "a function",
+            Value::Partial(_) => "a partially-applied function",
             Value::Builtin(_) => "a builtin",
             Value::HostFn(_) => "a host function",
             Value::HostData(data) => data.type_name(),

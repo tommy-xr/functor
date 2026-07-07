@@ -157,13 +157,17 @@ fn error_top_level_forward_value_reference() {
     assert_eq!((line, col), (1, 9));
 }
 
+// Currying: under-application yields a partial rather than a runtime arity
+// error (the accepted quality regression of the currying migration).
 #[test]
-fn error_arity_mismatch() {
-    let (message, _, _) = run_err(
-        "let f = (a, b) => a + b\n\
-         let main = () => f(1.0)",
+fn under_application_yields_a_partial() {
+    assert_eq!(
+        main_result(
+            "let f = (a, b) => a + b\n\
+             let main = () => f(1.0)"
+        ),
+        "<partial 1 more>"
     );
-    assert_eq!(message, "`f` takes 2 argument(s), got 1");
 }
 
 #[test]
@@ -326,15 +330,17 @@ fn maximum_ignores_nan_unless_all_nan() {
     );
 }
 
+// Currying: a partially-applied callback is no longer a runtime arity error —
+// each element maps to a partial. (The old "blames the callback" arity message
+// is unreachable now that under-application is legal.)
 #[test]
-fn arity_error_blames_the_callback_not_the_builtin() {
-    let (message, _, _) = run_err(
-        "let add = (a, b) => a + b\n\
-         let main = () => [1.0] |> List.map(add)",
-    );
+fn partial_callback_maps_to_partials() {
     assert_eq!(
-        message,
-        "the function passed to List.map takes 2 argument(s), got 1"
+        main_result(
+            "let add = (a, b) => a + b\n\
+             let main = () => [1.0] |> List.map(add)"
+        ),
+        "[<partial 1 more>]"
     );
 }
 
@@ -663,12 +669,17 @@ fn error_comparing_unapplied_ctors() {
     assert_eq!(message, "functions cannot be compared with `==`");
 }
 
+// Currying: over-applying a saturated constructor is still an error (the
+// resulting variant isn't callable); under-applying it (here, zero args) is a
+// legal partial rather than an arity error.
 #[test]
-fn error_ctor_arity_at_runtime() {
+fn ctor_over_application_at_runtime_errors() {
     let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle(1.0, 2.0)"));
-    assert_eq!(message, "`Circle` takes 1 argument(s), got 2");
-    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle()"));
-    assert_eq!(message, "`Circle` takes 1 argument(s), got 0");
+    assert_eq!(message, "cannot call a variant");
+    assert_eq!(
+        main_result(&format!("{SHAPE}let main = () => Circle()")),
+        "<partial 1 more>"
+    );
 }
 
 /// A parameterful constructor is first-class: it pipes through the builtins
@@ -847,5 +858,93 @@ fn debug_log_returns_the_value_unchanged_and_emits_through_the_sink() {
             "piped: 3".to_string(),
             "pt: { x: 1, y: 2 }".to_string(),
         ]
+    );
+}
+
+// --- Currying / partial application (migration step 1) --------------------
+// The interpreter curries call sites: under-application yields a partial,
+// exact application dispatches as before, and over-application saturates then
+// applies the remainder to the result. Thread-first piping is UNCHANGED (the
+// pipe still PREPENDS its subject) — that flip is a later migration stage.
+
+/// A partial captured in a `let ... in` binding, then saturated.
+#[test]
+fn partial_then_saturate() {
+    assert_eq!(
+        main_result(
+            "let add = (a, b) => a + b\n\
+             let main = () => let inc = add(1.0) in inc(10.0)"
+        ),
+        "11"
+    );
+    // Same, but the partial lives in a top-level binding across defs.
+    assert_eq!(
+        main_result(
+            "let add = (a, b) => a + b\n\
+             let inc = add(1.0)\n\
+             let main = () => inc(41.0)"
+        ),
+        "42"
+    );
+}
+
+/// Over-application: saturate with the callee's arity, then apply the leftover
+/// args to the resulting function.
+#[test]
+fn over_application_applies_remainder_to_result() {
+    assert_eq!(
+        main_result(
+            "let adder = (a) => (b) => a + b\n\
+             let main = () => adder(3.0, 4.0)"
+        ),
+        "7"
+    );
+}
+
+/// A partially-applied constructor is a first-class value; saturating it
+/// builds the variant.
+#[test]
+fn constructor_partial_then_saturate() {
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let mkTall = Rect(2.0)\n\
+             let main = () => mkTall(5.0)"
+        )),
+        "Rect(2, 5)"
+    );
+}
+
+/// A partial passed as a value flows through a builtin like any function —
+/// each element saturates it.
+#[test]
+fn partial_passed_as_a_value() {
+    assert_eq!(
+        main_result(
+            "let add = (a, b) => a + b\n\
+             let main = () => [1.0, 2.0, 3.0] |> List.map(add(10.0))"
+        ),
+        "[11, 12, 13]"
+    );
+}
+
+/// Thread-first is PRESERVED: `xs |> List.map(f)` still lowers to the
+/// subject-FIRST call `List.map(xs, f)`, so existing pipes are unaffected by
+/// the currying mechanism.
+#[test]
+fn thread_first_pipe_still_prepends() {
+    assert_eq!(
+        main_result(
+            "let double = (x) => x * 2.0\n\
+             let main = () => [1.0, 2.0, 3.0] |> List.map(double)"
+        ),
+        "[2, 4, 6]"
+    );
+    // The un-piped subject-first form is identical.
+    assert_eq!(
+        main_result(
+            "let double = (x) => x * 2.0\n\
+             let main = () => List.map([1.0, 2.0, 3.0], double)"
+        ),
+        "[2, 4, 6]"
     );
 }

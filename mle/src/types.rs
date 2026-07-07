@@ -1058,6 +1058,50 @@ the type: `type Name<{name}> = …`"
         }
     }
 
+    /// Over-application: a call supplied more args than the callee's `params`.
+    /// The first `arity` args are already checked against the params; here the
+    /// surplus args (from index `arity` on) are applied to `ret`, which must
+    /// itself be a function, `Unknown`, or an unsolved `Var`. Returns the type
+    /// after consuming them.
+    fn over_apply(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        arity: usize,
+        ret: Type,
+        span: Span,
+    ) -> Type {
+        let mut result = ret;
+        for (i, arg) in args.iter().enumerate().skip(arity) {
+            // Re-zonk each iteration: an earlier surplus arg's `expect` may have
+            // solved a var that makes this result concrete (e.g. a `Var` now a
+            // `Fn`), and we want to check against the solved shape, not the
+            // stale one.
+            result = self.zonk(&result);
+            match result {
+                Type::Fn(ps, r) if !ps.is_empty() => {
+                    let what = format!("argument {} of `{}`", i + 1, callee_label(callee));
+                    self.expect(arg, &ps[0], &what);
+                    result = if ps.len() == 1 {
+                        *r
+                    } else {
+                        Type::Fn(ps[1..].to_vec(), r)
+                    };
+                }
+                Type::Unknown | Type::Var(_) => {
+                    self.infer(arg);
+                    result = Type::Unknown;
+                }
+                other => {
+                    self.diag(span, format!("cannot call {other}, not a function"));
+                    self.infer(arg);
+                    result = Type::Unknown;
+                }
+            }
+        }
+        result
+    }
+
     /// Check `expr` against a known expected type. Record and list literals
     /// are checked structurally against the expectation (this is where record
     /// literals meet their declared types); anything else is inferred and
@@ -1409,28 +1453,36 @@ the type: `type Name<{name}> = …`"
             ExprKind::Call { callee, args } => {
                 let callee_ty = self.infer(callee);
                 match callee_ty {
+                    // Currying: a call may supply FEWER args (partial
+                    // application → a function of the remaining params), an
+                    // EXACT count (→ the return type), or MORE (over-
+                    // application → apply the leftover to the result, which
+                    // must itself be a function).
                     Type::Fn(params, ret) => {
-                        if params.len() != args.len() {
-                            self.diag(
-                                expr.span,
-                                format!(
-                                    "`{}` takes {} argument(s), got {}",
-                                    callee_label(callee),
-                                    params.len(),
-                                    args.len()
-                                ),
-                            );
-                            for arg in args {
-                                self.infer(arg);
+                        // Check every arg that pairs with a declared param.
+                        for (i, (arg, param_ty)) in
+                            args.iter().zip(params.iter()).enumerate()
+                        {
+                            let what = format!("argument {} of `{}`", i + 1, callee_label(callee));
+                            self.expect(arg, param_ty, &what);
+                        }
+                        match args.len().cmp(&params.len()) {
+                            std::cmp::Ordering::Equal => *ret,
+                            // Under-applied: the value is a function of the
+                            // params not yet supplied. (A future diagnostic can
+                            // flag a partial that reaches a non-function
+                            // position; today it surfaces at the eventual use
+                            // site as a type mismatch.)
+                            std::cmp::Ordering::Less => {
+                                Type::Fn(params[args.len()..].to_vec(), ret)
                             }
-                        } else {
-                            for (i, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
-                                let what =
-                                    format!("argument {} of `{}`", i + 1, callee_label(callee));
-                                self.expect(arg, param_ty, &what);
+                            // Over-applied: saturate, then apply the surplus
+                            // args to the result type via a synthetic curried
+                            // call — the result must itself be a function.
+                            std::cmp::Ordering::Greater => {
+                                self.over_apply(callee, args, params.len(), *ret, expr.span)
                             }
                         }
-                        *ret
                     }
                     Type::Var(_) => {
                         let arg_tys: Vec<Type> = args.iter().map(|arg| self.infer(arg)).collect();

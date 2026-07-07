@@ -40,10 +40,17 @@ use std::rc::Rc;
 /// Evaluation depth cap: pathological or unboundedly recursive MLE code must
 /// fail as a clean spanned error, not a host stack overflow. Counts *every*
 /// nested `eval` entry (expression nesting and calls alike), so it bounds
-/// host stack usage directly. Like the parser's `MAX_DEPTH`, the cap must fit
-/// a 2 MiB test-thread stack in debug builds (each eval level costs several
-/// KB of debug frames); deep iteration belongs in the iterative builtins
+/// host stack usage directly. Deep iteration belongs in the iterative builtins
 /// (`List.map`/`fold`), not user-level recursion.
+///
+/// Kept at 200 through the currying migration (measured, debug build,
+/// Apple Silicon): 200 levels of the deepest recursion need ≈2.24 MiB of stack
+/// on this branch vs ≈2.18 MiB pre-currying — the call-site arity gate adds
+/// only ~320 bytes/level because the partial/over-application logic lives in an
+/// out-of-line `#[cold]` helper ([`Interp::call_curried`]), not `call`'s hot
+/// frame. Both already exceed a 2 MiB test-thread stack, so the suite runs with
+/// a bumped `RUST_MIN_STACK` regardless; the ~64 KiB currying delta is well
+/// within that and the 8 MiB release stack, so the cap need not drop.
 const MAX_EVAL_DEPTH: usize = 200;
 
 /// Trace-event cap; see the module doc.
@@ -631,6 +638,26 @@ impl Interp<'_> {
         span: Span,
         via: Option<&'static str>,
     ) -> Result<Value, RunError> {
+        // Currying: a cheap arity pre-check gates the three curried cases. The
+        // SATURATED case (`args.len() == arity` — every direct `f(a, b)` and
+        // every pipe) falls straight through to the original dispatch below
+        // with NO extra allocation and NO extra stack frame. The partial /
+        // over-application / partial-unwrap cases are handled by the `#[cold]`
+        // [`Self::call_curried`] so their locals never enlarge this hot frame
+        // (the per-recursion stack cost feeds the eval-depth cap's budget, so
+        // keeping this frame lean matters).
+        match callee_arity(&callee) {
+            Some(arity) if args.len() == arity => {}
+            Some(arity) => return self.call_curried(callee, args, Some(arity), label, span, via),
+            // A partial is unwrapped and re-dispatched on its underlying callee.
+            None if matches!(callee, Value::Partial(_)) => {
+                return self.call_curried(callee, args, None, label, span, via)
+            }
+            // Host fn (arity unknown) — treated as saturated; the host
+            // validates its own arg count.
+            None => {}
+        }
+        // ---- Saturated (or host) dispatch — the original body, unchanged ----
         self.trace_enter(&label, &args);
         self.call_depth += 1;
         let result = match &callee {
@@ -684,6 +711,49 @@ impl Interp<'_> {
             self.trace_exit(value);
         }
         result
+    }
+
+    /// Currying's COLD paths — under-application, over-application, and
+    /// partial-unwrap. Kept out of [`Self::call`]'s hot frame (`#[cold]`) so
+    /// the saturated path pays nothing for them. `arity` is the callee's known
+    /// arity (`None` only for a `Partial` being unwrapped). Each branch that
+    /// dispatches re-enters `self.call`, which re-runs the arity gate and does
+    /// its own tracing, so the outer call neither traces nor bumps
+    /// `call_depth` for these cases.
+    #[cold]
+    #[inline(never)]
+    fn call_curried(
+        &mut self,
+        callee: Value,
+        args: Vec<Value>,
+        arity: Option<usize>,
+        label: String,
+        span: Span,
+        via: Option<&'static str>,
+    ) -> Result<Value, RunError> {
+        // A partial absorbs the new args and re-dispatches on its underlying
+        // callable with the combined argument list.
+        if let Value::Partial(partial) = &callee {
+            let mut combined = partial.applied.clone();
+            combined.extend(args);
+            return self.call(partial.callee.clone(), combined, label, span, via);
+        }
+        let arity = arity.expect("non-partial cold path carries its arity");
+        if args.len() < arity {
+            // Under-applied → capture what we have as a partial. (The count
+            // still needed is derived from the callee's arity at display time,
+            // so we store only the callee and the args supplied so far.)
+            return Ok(Value::Partial(Rc::new(crate::value::Partial {
+                callee,
+                applied: args,
+            })));
+        }
+        // Over-applied → saturate with the first `arity` args, then apply the
+        // leftover args to the result (which must itself be callable).
+        let mut rest = args;
+        let now = rest.drain(..arity).collect();
+        let saturated = self.call(callee, now, label.clone(), span, via)?;
+        self.call(saturated, rest, label, span, None)
     }
 
     fn trace_enter(&mut self, callee: &str, args: &[Value]) {
@@ -1128,8 +1198,22 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
             Ok(true)
         }
         // An unapplied constructor is a function value — no equality.
-        (Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. }, _)
-        | (_, Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. }) => {
+        (
+            Value::Closure(_)
+            | Value::Partial(_)
+            | Value::Builtin(_)
+            | Value::HostFn(_)
+            | Value::Ctor { .. },
+            _,
+        )
+        | (
+            _,
+            Value::Closure(_)
+            | Value::Partial(_)
+            | Value::Builtin(_)
+            | Value::HostFn(_)
+            | Value::Ctor { .. },
+        ) => {
             Err(RunError {
                 message: "functions cannot be compared with `==`".to_string(),
                 span,
@@ -1169,8 +1253,49 @@ fn element_label(b: Builtin, i: usize) -> String {
 fn is_function(v: &Value) -> bool {
     matches!(
         v,
-        Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_) | Value::Ctor { .. }
+        Value::Closure(_)
+            | Value::Partial(_)
+            | Value::Builtin(_)
+            | Value::HostFn(_)
+            | Value::Ctor { .. }
     )
+}
+
+/// The statically-known arity of a callable, or `None` when it isn't known
+/// here (host functions — the host validates its own arg count; partials are
+/// unwrapped before this is consulted). Drives partial vs saturated vs
+/// over-application in [`Interp::call`].
+fn callee_arity(v: &Value) -> Option<usize> {
+    match v {
+        Value::Closure(c) => Some(c.params.len()),
+        Value::Ctor { arity, .. } => Some(*arity),
+        Value::Builtin(b) => Some(builtin_arity(*b)),
+        _ => None,
+    }
+}
+
+/// A builtin's argument count — currying needs each builtin's arity to decide
+/// partial vs saturated vs over-application. Must stay in sync with
+/// [`Interp::call_builtin`] (and [`crate::types::builtin_signature`]).
+pub fn builtin_arity(b: Builtin) -> usize {
+    match b {
+        Builtin::ListFold | Builtin::ListGrid => 3,
+        Builtin::ListMap
+        | Builtin::ListFilter
+        | Builtin::TextConcat
+        | Builtin::TextFixed
+        | Builtin::TextSplit
+        | Builtin::TextJoin
+        | Builtin::DebugLog => 2,
+        Builtin::ListRange
+        | Builtin::ListMaximum
+        | Builtin::TextFromFloat
+        | Builtin::TextToBullets
+        | Builtin::TextParseFloat
+        | Builtin::MathClamp01
+        | Builtin::MathSin
+        | Builtin::MathCos => 1,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

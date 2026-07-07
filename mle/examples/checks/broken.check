@@ -5,7 +5,6 @@ broken.mle:16:13: error: `==` compares different types Float and String (always 
 broken.mle:20:36: error: record literal for `Position` is missing field `y`
 broken.mle:20:44: error: `Position` has no field `z`
 broken.mle:23:36: error: `Position` has no field `z`
-broken.mle:27:13: error: `shift` takes 2 argument(s), got 1
 broken.mle:28:37: error: argument 2 of `shift`: expected Float, got String
 broken.mle:31:25: error: argument 1 of `Text.concat`: expected String, got Float
 broken.mle:35:17: error: `Position` takes 0 type argument(s), got 1
