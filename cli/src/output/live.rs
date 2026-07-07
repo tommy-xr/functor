@@ -77,7 +77,7 @@ impl Panel {
             None => lines.push(format!("  {}", "warming up…".dimmed())),
         }
         if let Some(reload) = &self.last_reload {
-            lines.push(format!("  {} {}", "↻".cyan(), reload));
+            lines.push(format!("  {} {}", super::g_reload().cyan(), reload));
         }
         self.bar.set_message(lines.join("\n"));
     }
@@ -88,7 +88,8 @@ impl Panel {
 fn budget_bar(pct: f64) -> String {
     const CELLS: usize = 20;
     let filled = ((pct / 100.0) * CELLS as f64).round().clamp(0.0, CELLS as f64) as usize;
-    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(CELLS - filled));
+    let (full, empty) = if super::ascii() { ("#", "-") } else { ("█", "░") };
+    let bar = format!("{}{}", full.repeat(filled), empty.repeat(CELLS - filled));
     let bar = if pct >= 100.0 {
         bar.red()
     } else if pct >= 70.0 {
@@ -277,13 +278,18 @@ impl Renderer for LiveRenderer {
     }
 }
 
-/// A braille phase spinner (⠋⠙⠹…) in cyan.
+/// A braille phase spinner (⠋⠙⠹…) in cyan — ASCII (`|/-\`) on a dumb terminal.
 fn phase_spinner() -> ProgressBar {
+    let ticks = if super::ascii() {
+        "|/-\\ "
+    } else {
+        "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "
+    };
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::with_template("{spinner:.cyan} {msg}")
             .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
+            .tick_chars(ticks),
     );
     pb
 }
@@ -291,9 +297,14 @@ fn phase_spinner() -> ProgressBar {
 /// The sticky telemetry panel: a header line (animated spinner + elapsed) over a
 /// multi-line `{msg}` block of stats.
 fn panel_style() -> ProgressStyle {
+    let ticks = if super::ascii() {
+        "|/-\\|"
+    } else {
+        "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋"
+    };
     ProgressStyle::with_template("{spinner:.green.bold} running {prefix:.bold} · {elapsed}\n{msg}")
         .unwrap()
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋")
+        .tick_chars(ticks)
 }
 
 /// Last path component, for a compact project label.
