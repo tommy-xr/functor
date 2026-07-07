@@ -30,7 +30,12 @@ let chasmHalf = 3.0       // gap spans x in [-chasmHalf, chasmHalf] -> width 6.0
 let leftEdge = -11.0      // outer x of the left platform
 let rightEdge = 11.0      // outer x of the right platform
 let startX = -6.0         // character spawn (on the left platform)
-let fallLimit = -15.0     // fall past this (into the chasm) and respawn
+let fallLimit = -2.0      // fall past this (into the chasm) and respawn.
+                          // Shallow on purpose: a weak jump that dips into the
+                          // gap respawns BEFORE its x reaches the right edge
+                          // (chasmHalf 3.0), so it visibly FALLS IN rather than
+                          // snapping up onto the far platform from below. The
+                          // default jump clears with y still above this line.
 
 // Character box half-extents (feet are at model.y; the box is drawn centered
 // half a height above).

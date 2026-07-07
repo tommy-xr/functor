@@ -136,8 +136,22 @@ pub trait GameProducer {
     /// composites the returned frames into one image (chronophotography), so
     /// moving elements smear into a strobe of their future positions. Each frame
     /// carries the *paused* camera so only world motion smears, not the view.
-    /// The default is empty (no ghosting) for producers without a model history.
-    fn ghost_frames(&self, _divisions: usize, _dt: f32, _start_tts: f64) -> Vec<crate::Frame> {
+    ///
+    /// `script_inputs` is the F2 forward-ghost-a-script mode (docs/time-travel.md
+    /// F2): when `Some`, the ghost forward-steps from the current live model (the
+    /// anchor) replaying THIS per-fine-step input slice instead of the recorder's
+    /// own input log — so editing a constant and hot-reloading re-renders the
+    /// scripted trajectory (the Bret-Victor "tweak a constant, see the arc" loop).
+    /// When `None`, the T6d behavior: replay the recorder's recorded inputs after
+    /// the fork point. The default is empty (no ghosting) for producers without a
+    /// model history.
+    fn ghost_frames(
+        &self,
+        _divisions: usize,
+        _dt: f32,
+        _start_tts: f64,
+        _script_inputs: Option<&[Vec<crate::RecordedInput>]>,
+    ) -> Vec<crate::Frame> {
         Vec::new()
     }
 

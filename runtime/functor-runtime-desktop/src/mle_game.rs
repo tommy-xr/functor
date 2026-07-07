@@ -607,14 +607,35 @@ impl Game for MleGame {
     /// (`last_frame.camera`) so only world motion smears. A draw that errors or
     /// doesn't return a Frame is skipped, so the result may be shorter than
     /// `divisions`.
-    fn ghost_frames(&self, divisions: usize, dt: f32, start_tts: f64) -> Vec<Frame> {
+    ///
+    /// `script_inputs` selects the input source (docs/time-travel.md F2). When
+    /// `Some`, the ghost forward-steps from `self.model` (the live anchor — K is
+    /// NOT resolved from the recorder) replaying the caller-supplied SCRIPT slice,
+    /// so the strobe is the *scripted* trajectory under the current code. When
+    /// `None`, the T6d behavior: resolve K and replay the recorder's own log.
+    fn ghost_frames(
+        &self,
+        divisions: usize,
+        dt: f32,
+        start_tts: f64,
+        script_inputs: Option<&[Vec<functor_runtime_common::RecordedInput>]>,
+    ) -> Vec<Frame> {
         // Replay the recorded inputs for the frames AFTER the fork point K, so a
         // recorded jump/run ghosts (docs/time-travel.md T6b). The input log is
         // per-rendered-frame = per-fine-step (both 1/60), so it feeds the fine
-        // step index directly. Beyond the recorded window the step coasts.
-        let inputs = match self.recorder.current_scene_frame() {
-            Some(k) => self.recorder.inputs_from(k + 1),
-            None => Vec::new(),
+        // step index directly. Beyond the recorded window the step coasts. Under
+        // F2 (`script_inputs = Some`) the caller's per-fine-step script slice is
+        // used directly, forward-stepping from the current anchor model.
+        let recorded;
+        let inputs: &[Vec<functor_runtime_common::RecordedInput>] = match script_inputs {
+            Some(slice) => slice,
+            None => {
+                recorded = match self.recorder.current_scene_frame() {
+                    Some(k) => self.recorder.inputs_from(k + 1),
+                    None => Vec::new(),
+                };
+                &recorded
+            }
         };
         // Fine sub-step at 1/60; round the division width to a whole number of
         // sub-steps (≥1). At the default 8 divisions over a ~2s window that's
