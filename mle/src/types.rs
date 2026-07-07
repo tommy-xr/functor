@@ -499,6 +499,14 @@ fn check_impl(
                     ),
                 );
             }
+            // An opaque nominal: a variant with NO constructors, so
+            // annotations resolve to `Type::Variant` (reusing unify/display)
+            // and its values can only come from host code.
+            TypeBody::Abstract => {
+                checker
+                    .variants
+                    .insert(decl.name.clone(), (decl.params.len(), Vec::new()));
+            }
         }
     }
     checker.in_type_decl = true;
@@ -541,6 +549,8 @@ fn check_impl(
                     );
                 }
             }
+            // Nothing to resolve — an abstract type has no fields or ctors.
+            TypeBody::Abstract => {}
         }
     }
 

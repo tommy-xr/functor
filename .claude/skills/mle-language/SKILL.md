@@ -44,6 +44,10 @@ type Shape =                                  // variant types (ADTs); nominal l
   | Rect(w: Float, h: Float)                  // fields named in the decl…
   | Point                                     // …nullary ctor: no parens, ever
 
+type SceneNode                                // ABSTRACT type (no `= body`): an opaque nominal —
+                                              //   no fields, no constructor; host code makes its
+                                              //   values. Use it in annotations (`(n: SceneNode)`).
+
 let c = Circle(2.0)                           // …but ctors are CALLED positionally
 let shapes = [c, Rect(3.0, 4.0), Point]       // bare Point IS the value
 

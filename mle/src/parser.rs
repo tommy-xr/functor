@@ -207,7 +207,8 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
 
     fn type_decl(&mut self) -> Result<TypeDecl, ParseError> {
         let kw = self.bump();
-        let (name, _) = self.expect_ident("a name after `type`")?;
+        let (name, name_span) = self.expect_ident("a name after `type`")?;
+        let mut end_span = name_span;
         // Optional type parameters: `type Box<a, b> = …` — lowercase names
         // (uppercase would shadow declared types; the checker enforces the
         // case, the grammar just collects idents).
@@ -241,9 +242,25 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                     break;
                 }
             }
-            self.expect(TokenKind::Gt, "`,` or `>`")?;
+            end_span = self.expect(TokenKind::Gt, "`,` or `>`")?.span;
         }
-        self.expect(TokenKind::Eq, "`=`")?;
+        // No `= body` → an ABSTRACT type: an opaque nominal (`type SceneNode`),
+        // no fields or constructors — host code produces/consumes its values.
+        if self.peek_kind() != &TokenKind::Eq {
+            // A `{`/`|` here means a forgotten `=` (`type P { … }`), not an
+            // abstract type — keep the targeted diagnostic instead of letting
+            // the body surface as a confusing top-level error.
+            if matches!(self.peek_kind(), TokenKind::LBrace | TokenKind::Pipe) {
+                return self.error("`=` before the type body");
+            }
+            return Ok(TypeDecl {
+                name,
+                params,
+                body: TypeBody::Abstract,
+                span: kw.span.to(end_span),
+            });
+        }
+        self.bump(); // `=`
         match self.peek_kind() {
             TokenKind::LBrace => {
                 self.bump();

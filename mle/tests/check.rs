@@ -1377,3 +1377,66 @@ fn binding_annotation_flows_into_body() {
     );
     assert_eq!(message, "`Position` has no field `z`");
 }
+
+// ── abstract (opaque) types (mlei slice 2c) ──────────────────────────────
+
+/// A `type Name` with no body is an opaque nominal: it resolves in
+/// annotations and unifies with itself.
+#[test]
+fn abstract_type_resolves_and_unifies() {
+    assert_clean(
+        "type SceneNode\n\
+         let identity = (n: SceneNode): SceneNode => n\n\
+         let pair = (a: SceneNode, b: SceneNode): SceneNode => a",
+    );
+    // Also usable in a 2b binding annotation and generic position.
+    assert_clean(
+        "type SceneNode\n\
+         let mk = (n: SceneNode): List<SceneNode> => let one: SceneNode = n in [one]",
+    );
+}
+
+/// An abstract type is distinct from every other type — a mismatch is caught.
+#[test]
+fn abstract_type_mismatch_is_flagged() {
+    let (message, _, _) = single_diag("type SceneNode\nlet bad = (n: SceneNode): Float => n");
+    assert_eq!(message, "return value: expected Float, got SceneNode");
+}
+
+/// An abstract type has NO constructor — its values come only from host code,
+/// so naming it as a value is an unresolved name (at lowering).
+#[test]
+fn abstract_type_has_no_constructor() {
+    let program = mle::parse("type SceneNode\nlet bad = () => SceneNode").expect("parse");
+    let err = mle::lower(program).expect_err("SceneNode is a type, not a value");
+    assert!(err.message.contains("SceneNode"), "unexpected: {}", err.message);
+}
+
+/// Abstract types may be generic: `type Handle<a>`.
+#[test]
+fn generic_abstract_type() {
+    assert_clean(
+        "type Handle<a>\n\
+         let use = (h: Handle<Float>): Handle<Float> => h",
+    );
+    // Arity is enforced, like other nominal types.
+    let (message, _, _) = single_diag("type Handle<a>\nlet f = (h: Handle): Float => 0.0");
+    assert!(
+        message.contains("Handle") && message.contains("type argument"),
+        "{message}"
+    );
+}
+
+/// Forgetting `=` on a type decl keeps its targeted diagnostic — it is NOT
+/// silently swallowed as an abstract type (mlei 2c review, Finding 1).
+#[test]
+fn forgotten_type_equals_is_diagnosed() {
+    for src in ["type Point { x: Float }", "type Shape | Circle(r: Float)"] {
+        let err = mle::parse(src).expect_err("a missing `=` should error");
+        assert!(
+            err.message.contains("`=` before the type body"),
+            "unexpected for {src:?}: {}",
+            err.message
+        );
+    }
+}
