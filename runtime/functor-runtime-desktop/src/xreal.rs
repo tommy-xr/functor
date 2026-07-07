@@ -334,15 +334,15 @@ fn reader_loop(
     loop {
         match TcpStream::connect_timeout(addr, Duration::from_secs(2)) {
             Ok(mut stream) => {
-                println!("[xreal] connected to {addr}; calibrating (keep the glasses still)…");
+                log::info!("[xreal] connected to {addr}; calibrating (keep the glasses still)…");
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                 read_stream(&mut stream, shared, recenter_flag);
-                println!("[xreal] stream ended; reconnecting…");
+                log::info!("[xreal] stream ended; reconnecting…");
                 // The old orientation would be stale after a gap; hold the
                 // last pose (identity jump on reconnect is worse).
             }
             Err(e) => {
-                println!("[xreal] connect to {addr} failed ({e}); retrying in 2s (are the glasses plugged in?)");
+                log::warn!("[xreal] connect to {addr} failed ({e}); retrying in 2s (are the glasses plugged in?)");
             }
         }
         // Pause on both paths — an accept-then-immediate-close peer must not
@@ -382,7 +382,7 @@ fn read_stream(
                     calibration.push(sample);
                     if calibration.len() >= CALIBRATION_SAMPLES {
                         let bias = gyro_bias(&calibration);
-                        println!(
+                        log::info!(
                             "[xreal] calibrated: gyro bias [{:+.4} {:+.4} {:+.4}] rad/s — tracking live (F1 recenters)",
                             bias.x, bias.y, bias.z
                         );
@@ -406,12 +406,12 @@ fn read_stream(
                                 // the moment they're put on (gaze drops below
                                 // vertical) instead of losing the one-shot.
                                 if auto_recenter_at.take().is_some() && !manual {
-                                    println!(
+                                    log::info!(
                                         "[xreal] recentered (automatic; F1 to recenter again)"
                                     );
                                 }
                             }
-                            None if manual => println!(
+                            None if manual => log::warn!(
                                 "[xreal] recenter skipped — gaze too vertical; look ahead and press F1 again"
                             ),
                             None => {}

@@ -38,6 +38,11 @@ struct Args {
     #[arg(long, global = true)]
     ascii: bool,
 
+    /// Show debug/info logs (default: warnings + errors only). `RUST_LOG=<level>`
+    /// overrides.
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -154,7 +159,7 @@ async fn main() -> tokio::io::Result<()> {
     let started = Instant::now();
     let args = Args::parse();
 
-    output::init(args.json, args.quiet, args.no_color, args.ascii);
+    output::init(args.json, args.quiet, args.no_color, args.ascii, args.verbose);
 
     // When the live (ink-style) renderer is up, a Ctrl-C would otherwise kill
     // the process mid-draw and leave the sticky live region stranded on screen.

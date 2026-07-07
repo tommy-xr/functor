@@ -26,6 +26,29 @@ pub enum Severity {
     Warning,
 }
 
+/// The level of a free-form [`Event::Log`] line. Mirrors the `log` crate's
+/// levels (trace folds into `Debug`); serialized snake_case for the JSON schema.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<log::Level> for LogLevel {
+    fn from(level: log::Level) -> Self {
+        match level {
+            log::Level::Error => LogLevel::Error,
+            log::Level::Warn => LogLevel::Warn,
+            log::Level::Info => LogLevel::Info,
+            // Trace is rare and folds into Debug — the CLI has no separate tier.
+            log::Level::Debug | log::Level::Trace => LogLevel::Debug,
+        }
+    }
+}
+
 /// A user-visible thing the CLI wants to say. Serialized as
 /// `{"type": "<snake_case>", …}` — the stable machine API (see
 /// `docs/cli-output.md`). Only the PR-1 (CLI-side) variants live here; the
@@ -103,6 +126,11 @@ pub enum Event {
     /// native runtime; wired with the wasm serve path).
     #[allow(dead_code)]
     Reload,
+    /// A free-form log line — any `log::{debug,info,warn,error}!` call in the CLI
+    /// or the in-process runtime, funneled through the region-aware renderer so
+    /// it never corrupts the live panel or the ndjson stream (see
+    /// `docs/cli-output.md`).
+    Log { level: LogLevel, message: String },
 }
 
 impl From<functor_runtime_common::events::RuntimeEvent> for Event {
@@ -131,15 +159,17 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
 }
 
 impl Event {
-    /// Whether `--quiet` keeps this event (errors + final status only).
+    /// Whether `--quiet` keeps this event (errors + final status only). A log
+    /// line survives `--quiet` only at warn/error — debug/info are suppressed.
     fn is_essential(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Event::Error { .. }
-                | Event::Diagnostic { .. }
-                | Event::CommandFinished { .. }
-                | Event::AssetError { .. }
-        )
+            | Event::Diagnostic { .. }
+            | Event::CommandFinished { .. }
+            | Event::AssetError { .. } => true,
+            Event::Log { level, .. } => matches!(level, LogLevel::Warn | LogLevel::Error),
+            _ => false,
+        }
     }
 }
 
@@ -307,6 +337,16 @@ impl PlainRenderer {
                 )]
             }
             Event::Reload => vec![format!("{} reload", g_reload().cyan())],
+            Event::Log { level, message } => {
+                // ASCII-safe level tags (`[debug]` … already plain ASCII).
+                let tag = match level {
+                    LogLevel::Debug => "[debug]".dimmed(),
+                    LogLevel::Info => "[info]".cyan(),
+                    LogLevel::Warn => "[warn]".yellow().bold(),
+                    LogLevel::Error => "[error]".red().bold(),
+                };
+                vec![format!("{tag} {message}")]
+            }
         }
     }
 }
@@ -413,10 +453,65 @@ fn detect_ascii(force_ascii: bool) -> bool {
 static RENDERER: OnceLock<Box<dyn Renderer>> = OnceLock::new();
 static LIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Whether a log record belongs to Functor's own crates (its `target` defaults
+/// to the module path, so `functor_runtime_common::…`, `functor_cli`, `mle::…`).
+/// We scope to these so `-v` means "Functor's debug logs" — not the debug/trace
+/// firehose of transitive deps (notify/mio/tokio/hyper/glow/egui/gltf all use
+/// `log`), and so a noisy dependency warning never lands in normal CLI output.
+fn is_functor_target(target: &str) -> bool {
+    target.starts_with("functor") || target == "mle" || target.starts_with("mle::")
+}
+
+/// A `log::Log` that funnels every Functor `log::{debug,info,warn,error}!` call
+/// (from the CLI or the in-process runtime) into an [`Event::Log`], so free-form
+/// logs travel the same region-aware renderer as everything else. Level is gated
+/// cheaply by `log`'s global `max_level` (set in [`init`]); target scoping keeps
+/// dependency logs out.
+struct EventLogger;
+
+impl log::Log for EventLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        // Global `max_level` gates the level; we additionally scope to Functor's
+        // own crates so a `-v` firehose from deps never floods the renderer.
+        is_functor_target(metadata.target())
+    }
+
+    fn log(&self, record: &log::Record) {
+        // `log!` checks `enabled` first, but be defensive against a record with a
+        // custom target that skips it.
+        if !is_functor_target(record.target()) {
+            return;
+        }
+        emit(Event::Log {
+            level: record.level().into(),
+            message: record.args().to_string(),
+        });
+    }
+
+    fn flush(&self) {}
+}
+
+/// Pick the log level: an explicit `RUST_LOG` (a bare level — `debug`, `warn`,
+/// …) wins; else `-v/--verbose` opens debug; else the quiet default (warn/error
+/// only), which keeps the CLI silent unless something needs attention.
+fn log_level(verbose: bool) -> log::LevelFilter {
+    if let Some(filter) = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|v| v.trim().parse::<log::LevelFilter>().ok())
+    {
+        return filter;
+    }
+    if verbose {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Warn
+    }
+}
+
 /// Select and install the process-wide renderer from the global flags +
 /// environment. Called once at startup, before any command logic runs. See
 /// `docs/cli-output.md` for the selection table.
-pub fn init(json: bool, quiet: bool, no_color: bool, ascii: bool) {
+pub fn init(json: bool, quiet: bool, no_color: bool, ascii: bool, verbose: bool) {
     // Color only on a real TTY, and never under NO_COLOR / --no-color / CI /
     // --json. Enforced globally so no code path can leak ANSI.
     let color = !json
@@ -446,6 +541,13 @@ pub fn init(json: bool, quiet: bool, no_color: bool, ascii: bool) {
         Box::new(PlainRenderer { quiet })
     };
     let _ = RENDERER.set(renderer);
+
+    // Install the `log` facade AFTER the renderer, so any `log!` — from the CLI
+    // or the in-process runtime — becomes an `Event::Log` routed through the
+    // region-aware renderer. `max_level` gates cheaply, so a suppressed
+    // `log::debug!` on the hot path costs almost nothing.
+    log::set_max_level(log_level(verbose));
+    let _ = log::set_boxed_logger(Box::new(EventLogger));
 }
 
 /// True when the live renderer is installed. `main` uses this to arm a Ctrl-C
