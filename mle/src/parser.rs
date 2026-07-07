@@ -59,15 +59,33 @@ pub fn parse(src: &str) -> Result<Program, ParseError> {
     parse_with_base(src, 0)
 }
 
+/// Parse an INTERFACE file (`.mlei`): top-level `let name : Type` is a bodyless
+/// signature (not a definition), and a `let … = …` with a body is an error.
+/// `type` declarations (including abstract) and `open` are unchanged.
+pub fn parse_interface(src: &str) -> Result<Program, ParseError> {
+    parse_interface_with_base(src, 0)
+}
+
 /// [`parse`] with a span base: every span is offset by `base`, placing the
 /// file in a project-wide span space (see [`crate::lexer::lex`] and
 /// [`crate::project`]).
 pub(crate) fn parse_with_base(src: &str, base: usize) -> Result<Program, ParseError> {
+    parse_impl(src, base, false)
+}
+
+/// [`parse_interface`] with a span base (the `.mlei` sibling of
+/// [`parse_with_base`]).
+pub(crate) fn parse_interface_with_base(src: &str, base: usize) -> Result<Program, ParseError> {
+    parse_impl(src, base, true)
+}
+
+fn parse_impl(src: &str, base: usize, interface: bool) -> Result<Program, ParseError> {
     let tokens = lex(src, base)?;
     Parser {
         tokens,
         pos: 0,
         depth: 0,
+        interface,
     }
     .program()
 }
@@ -82,6 +100,8 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     depth: usize,
+    /// Parsing a `.mlei` interface file: `let` is a bodyless signature.
+    interface: bool,
 }
 
 impl Parser {
@@ -137,7 +157,7 @@ impl Parser {
         let mut items = Vec::new();
         while self.peek_kind() != &TokenKind::Eof {
             match self.peek_kind() {
-                TokenKind::Let => items.push(Item::Let(self.let_decl()?)),
+                TokenKind::Let => items.push(self.let_item()?),
                 TokenKind::Type => items.push(Item::Type(self.type_decl()?)),
                 // `open` is contextual: only an `open` in item position is
                 // the module directive, so the name stays usable elsewhere.
@@ -182,7 +202,9 @@ impl Parser {
         }
     }
 
-    fn let_decl(&mut self) -> Result<LetDecl, ParseError> {
+    /// A top-level `let` item — a definition (`let name [: T] = value`) in a
+    /// `.mle`, or a bodyless signature (`let name : T`) in a `.mlei`.
+    fn let_item(&mut self) -> Result<Item, ParseError> {
         let kw = self.bump();
         if self.peek_kind() == &TokenKind::Mut {
             return Err(ParseError {
@@ -192,17 +214,36 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 span: self.peek().span,
             });
         }
-        let (name, _) = self.expect_ident("a name after `let`")?;
+        let (name, name_span) = self.expect_ident("a name after `let`")?;
         let ty = self.opt_binding_annotation()?;
+        if self.interface {
+            // `.mlei`: a bodyless signature `let name : Type`.
+            let ty = ty.ok_or_else(|| ParseError {
+                message: "a signature needs a type: `let name : Type`".to_string(),
+                span: name_span,
+            })?;
+            if self.peek_kind() == &TokenKind::Eq {
+                // A full-sentence message, so build the error directly rather
+                // than routing through `error()`'s "expected …, found …" shape.
+                return Err(ParseError {
+                    message:
+                        "interface files (.mlei) declare signatures, not definitions — drop the `= …`"
+                            .to_string(),
+                    span: self.peek().span,
+                });
+            }
+            let span = kw.span.to(ty.span);
+            return Ok(Item::Sig(SigDecl { name, ty, span }));
+        }
         self.expect(TokenKind::Eq, "`=`")?;
         let value = self.expr()?;
         let span = kw.span.to(value.span);
-        Ok(LetDecl {
+        Ok(Item::Let(LetDecl {
             name,
             ty,
             value,
             span,
-        })
+        }))
     }
 
     fn type_decl(&mut self) -> Result<TypeDecl, ParseError> {

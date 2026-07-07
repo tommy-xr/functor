@@ -467,6 +467,7 @@ fn check_impl(
         subst: HashMap::new(),
         next_var: 0,
         schemes: HashMap::new(),
+        signatures: HashMap::new(),
         in_type_decl: false,
         annot_vars: HashMap::new(),
         records: HashMap::new(),
@@ -555,6 +556,17 @@ fn check_impl(
     }
 
     checker.in_type_decl = false;
+    checker.annot_vars.clear();
+
+    // Interface (`.mlei`) value signatures: resolve each declared type now that
+    // all types (including the interfaces' own) are registered, and generalize
+    // it — an `External` reference then instantiates it fresh (like a builtin).
+    for sig in &module.signatures {
+        checker.annot_vars.clear();
+        let ty = checker.resolve_type(&sig.ty, true);
+        let scheme = checker.generalize(&ty);
+        checker.signatures.insert(sig.name.clone(), scheme);
+    }
     checker.annot_vars.clear();
 
     // Placeholder signatures: annotation-derived, with FRESH inference
@@ -770,6 +782,10 @@ struct Checker<'s> {
     /// Generalized top-level defs (populated as each dependency group
     /// finishes inference); instantiated fresh at every later use.
     schemes: HashMap<String, Scheme>,
+    /// Interface (`.mlei`) value signatures, keyed by canonical name
+    /// (`Scene.cube`); an `External` reference to one is typed from here
+    /// instead of `Unknown`, instantiated fresh per use.
+    signatures: HashMap<String, Scheme>,
     /// Resolving a TYPE DECLARATION's field annotations (lowercase names
     /// are refused there — see `resolve_type`).
     in_type_decl: bool,
@@ -1437,7 +1453,12 @@ missing {missing}. Did you forget an argument?"
                     free_vars_of(&sig, &mut vars);
                     self.instantiate(&Scheme { vars, ty: sig })
                 }
-                None => Type::Unknown,
+                // An interface (`.mlei`) signature gives a host external a real
+                // type; otherwise it stays the gradual seam (`Unknown`).
+                None => match self.signatures.get(&path.join(".")).cloned() {
+                    Some(scheme) => self.instantiate(&scheme),
+                    None => Type::Unknown,
+                },
             },
             // A record literal resolves NOMINALLY, F#-style (B7, user
             // decision): the unique declared type with exactly this field

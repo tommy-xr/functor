@@ -105,6 +105,10 @@ pub(crate) struct Exports {
     pub defs: HashSet<String>,
     pub ctors: HashMap<String, usize>,
     pub types: HashSet<String>,
+    /// Interface (`.mlei`) value signature names — a qualified reference to one
+    /// stays an [`ExprKind::External`] (host-resolved at runtime), unlike a
+    /// `def` which becomes a [`ExprKind::Global`].
+    pub signatures: HashSet<String>,
 }
 
 pub(crate) fn exports_of(program: &ast::Program) -> Exports {
@@ -123,6 +127,9 @@ pub(crate) fn exports_of(program: &ast::Program) -> Exports {
                             .insert(variant.name.clone(), variant.fields.len());
                     }
                 }
+            }
+            ast::Item::Sig(decl) => {
+                exports.signatures.insert(decl.name.clone());
             }
             ast::Item::Open(_) => {}
         }
@@ -175,20 +182,25 @@ fn lower_module(
     for item in &program.items {
         match item {
             ast::Item::Open(_) => {}
-            ast::Item::Let(decl) => {
-                if ctors.contains_key(&decl.name) {
+            // A signature shares the value namespace with `let`s for DUPLICATE
+            // DETECTION only — it is never lowered to a `Global` (references
+            // stay `External`; `.mlei` files have no value expressions, so
+            // `globals` is only read for defs). Grouped here purely to reuse
+            // the collision checks.
+            ast::Item::Let(ast::LetDecl { name, span, .. })
+            | ast::Item::Sig(ast::SigDecl { name, span, .. }) => {
+                if ctors.contains_key(name) {
                     return Err(LowerError {
                         message: format!(
-                            "duplicate definition `{}` (constructors live in the value namespace)",
-                            decl.name
+                            "duplicate definition `{name}` (constructors live in the value namespace)"
                         ),
-                        span: decl.span,
+                        span: *span,
                     });
                 }
-                if !globals.insert(decl.name.clone()) {
+                if !globals.insert(name.clone()) {
                     return Err(LowerError {
-                        message: format!("duplicate definition `{}`", decl.name),
-                        span: decl.span,
+                        message: format!("duplicate definition `{name}`"),
+                        span: *span,
                     });
                 }
             }
@@ -273,15 +285,27 @@ project entry (this file is being lowered on its own)",
             });
         };
         deps.insert(decl.module.clone());
-        // Value namespace: the opened module's defs and constructors.
-        let mut values: Vec<(&String, Option<usize>)> = exports
+        // Value namespace: the opened module's defs, constructors, and
+        // interface signatures.
+        let mut values: Vec<(&String, OpenedName)> = exports
             .defs
             .iter()
-            .map(|d| (d, None))
-            .chain(exports.ctors.iter().map(|(c, a)| (c, Some(*a))))
+            .map(|d| (d, OpenedName::Def(decl.module.clone())))
+            .chain(
+                exports
+                    .ctors
+                    .iter()
+                    .map(|(c, a)| (c, OpenedName::Ctor(decl.module.clone(), *a))),
+            )
+            .chain(
+                exports
+                    .signatures
+                    .iter()
+                    .map(|s| (s, OpenedName::Signature(decl.module.clone()))),
+            )
             .collect();
         values.sort_by_key(|(name, _)| name.as_str().to_string());
-        for (name, arity) in values {
+        for (name, opened) in values {
             if globals.contains(name) || ctors.contains_key(name) {
                 return Err(LowerError {
                     message: format!(
@@ -305,10 +329,6 @@ uses as `{}.{name}` instead of opening",
                     span: decl.span,
                 });
             }
-            let opened = match arity {
-                Some(arity) => OpenedName::Ctor(decl.module.clone(), arity),
-                None => OpenedName::Def(decl.module.clone()),
-            };
             open_values.insert(name.clone(), opened);
         }
         // Type namespace.
@@ -355,6 +375,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
     let mut next_def = bases.def;
     let mut types = Vec::new();
     let mut defs = Vec::new();
+    let mut signatures = Vec::new();
     for item in program.items {
         match item {
             // Opens were consumed in pass 1b; they leave no IR (and no
@@ -382,6 +403,16 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
                     span: decl.span,
                 });
             }
+            // An interface signature: no body, no DefId. Canonicalize its name
+            // and type (which may reference this module's — or another's —
+            // types) so the checker can type externals against it.
+            ast::Item::Sig(decl) => {
+                signatures.push(Signature {
+                    name: lowerer.self_qualify(&decl.name),
+                    ty: lowerer.canon_type(decl.ty)?,
+                    span: decl.span,
+                });
+            }
         }
     }
     let bases = IdBases {
@@ -389,7 +420,15 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
         binding: lowerer.next_binding,
         expr: lowerer.next_expr,
     };
-    Ok((Module { types, defs }, bases, lowerer.deps))
+    Ok((
+        Module {
+            types,
+            defs,
+            signatures,
+        },
+        bases,
+        lowerer.deps,
+    ))
 }
 
 /// A name an `open` brought into scope: which module provides it, and (for
@@ -398,12 +437,17 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
 enum OpenedName {
     Def(String),
     Ctor(String, usize),
+    /// An interface (`.mlei`) signature — a bare use resolves to an
+    /// [`ExprKind::External`], like a qualified one.
+    Signature(String),
 }
 
 impl OpenedName {
     fn module(&self) -> &str {
         match self {
-            OpenedName::Def(module) | OpenedName::Ctor(module, _) => module,
+            OpenedName::Def(module)
+            | OpenedName::Ctor(module, _)
+            | OpenedName::Signature(module) => module,
         }
     }
 }
@@ -994,6 +1038,10 @@ impl Lowerer<'_> {
                         arity,
                     })
                 }
+                // An opened interface signature stays External (host-resolved).
+                OpenedName::Signature(module) => {
+                    Some(ExprKind::External(vec![module, first.clone()]))
+                }
             }
         } else {
             None
@@ -1022,6 +1070,11 @@ impl Lowerer<'_> {
                         name: self.qualify(&module, member),
                         arity,
                     }
+                } else if exports.signatures.contains(member) {
+                    // An interface (`.mlei`) signature: keep it EXTERNAL so the
+                    // host resolves the value at runtime (like an unknown
+                    // qualified name) — the checker types it from the signature.
+                    ExprKind::External(vec![module.clone(), member.clone()])
                 } else {
                     return Err(LowerError {
                         message: format!("module `{module}` has no `{member}`"),

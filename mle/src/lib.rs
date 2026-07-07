@@ -30,7 +30,7 @@ pub use eval::{
     Tracing,
 };
 pub use lower::lower;
-pub use parser::parse;
+pub use parser::{parse, parse_interface};
 pub use rebind::{rebind_value, RebindReport};
 pub use span::{line_col, Span};
 pub use trace::set_trace_sink;

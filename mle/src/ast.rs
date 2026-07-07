@@ -17,6 +17,18 @@ pub enum Item {
     Let(LetDecl),
     Type(TypeDecl),
     Open(OpenDecl),
+    /// A bodyless value SIGNATURE (`let name : Type`), only in interface files
+    /// (`.mlei`): the type of a value the host implements (a module is either a
+    /// `.mle` or a `.mlei`, never both, so there is no paired implementation).
+    Sig(SigDecl),
+}
+
+/// `let name : Type` in a `.mlei` — a value signature with no body.
+#[derive(Debug)]
+pub struct SigDecl {
+    pub name: String,
+    pub ty: TypeName,
+    pub span: Span,
 }
 
 /// `open Utils` — bring a sibling module's defs, constructors, and types

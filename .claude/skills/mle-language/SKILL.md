@@ -182,9 +182,36 @@ let grab = (s) =>
   closures rebind per module — a def moved between files is a rename and
   keeps its old body with a warning).
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
-  source text (multi-file is native-only for now); the LSP checks single
-  files in isolation, so a project file's `open`/cross-module references
-  show as unknown there; `.mlei` interface files are B8 part 2.
+  source text (multi-file is native-only for now).
+
+### Interface files (`.mlei`)
+
+A sibling `.mlei` is an INTERFACE module: it declares **types** and **bodyless
+value signatures** for values the **host runtime** implements. (A module is
+either a `.mle` or a `.mlei`, never both — same-stem files are a load error —
+so there is no paired-`.mle` implementation.) Bodies are forbidden in a
+`.mlei`; a bodyless `let` is forbidden in a `.mle`.
+
+```mle
+// widget.mlei                              → interface module Widget
+type Handle                                 // abstract type (opaque; host-made)
+let make : () => Handle                     // bodyless SIGNATURE (the chosen form —
+let size : (Handle) => Float                //   `let name : Type`, no `= body`)
+```
+
+```mle
+// game.mle
+let area = (h: Widget.Handle): Float => Widget.size(h)   // qualified; typed by widget.mlei
+open Widget                                              // …or open, bringing make/size/Handle bare
+```
+
+- Signatures give the checker real types for what were `Unknown` externals
+  (`Widget.make()` is `Widget.Handle`, not `Unknown`), and mismatches are
+  caught. They surface in hover / inlay / codelens like any type.
+- **Runtime is unchanged**: an interface member stays an `External` (the host
+  provides its value at run time), so `.mlei` is a pure check-time overlay.
+- This is how the engine prelude's types will be declared (`Scene`, `Camera`,
+  … — currently `Unknown`).
 
 ## Semantics rules that WILL bite you
 

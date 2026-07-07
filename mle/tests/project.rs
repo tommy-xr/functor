@@ -865,3 +865,132 @@ fn shipped_hello_cubes_multifile_checks_clean() {
     let diags = project.check();
     assert!(diags.is_empty(), "hello-cubes checks clean: {diags:?}");
 }
+
+// ── interface files (.mlei) — mlei slice 2d ──────────────────────────────
+
+/// A `.mlei` gives host-implemented values real types: a sibling `.mle`'s
+/// `Widget.make()` / `Widget.size(h)` type against `widget.mlei` and check
+/// clean.
+#[test]
+fn interface_file_types_externals() {
+    let project = load(
+        "mlei-basic",
+        &[
+            (
+                "game.mle",
+                "let build = (): Widget.Handle => Widget.make()\n\
+                 let area = (h: Widget.Handle): Float => Widget.size(h)",
+            ),
+            (
+                "widget.mlei",
+                "type Handle\n\
+                 let make : () => Handle\n\
+                 let size : (Handle) => Float",
+            ),
+        ],
+    );
+    let diags = project.check();
+    assert!(diags.is_empty(), "should check clean: {diags:?}");
+}
+
+/// An interface signature is enforced — a wrong argument type is caught, with
+/// the interface's nominal type in the message.
+#[test]
+fn interface_signature_mismatch_is_flagged() {
+    let project = load(
+        "mlei-mismatch",
+        &[
+            ("game.mle", "let bad = (): Float => Widget.size(3.0)"),
+            (
+                "widget.mlei",
+                "type Handle\nlet size : (Handle) => Float",
+            ),
+        ],
+    );
+    let diags = project.check();
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("expected Widget.Handle"),
+        "unexpected: {}",
+        diags[0].message
+    );
+}
+
+/// `open` brings an interface's signatures (and types) unqualified.
+#[test]
+fn open_brings_interface_signatures() {
+    let project = load(
+        "mlei-open",
+        &[
+            ("game.mle", "open Widget\nlet f = (): Float => size(make())"),
+            (
+                "widget.mlei",
+                "type Handle\n\
+                 let make : () => Handle\n\
+                 let size : (Handle) => Float",
+            ),
+        ],
+    );
+    let diags = project.check();
+    assert!(diags.is_empty(), "should check clean: {diags:?}");
+}
+
+/// A body in a `.mlei` is a load error with a clear message — interface files
+/// declare, not define.
+#[test]
+fn body_in_interface_file_is_rejected() {
+    let err = load_err(
+        "mlei-body",
+        &[
+            ("game.mle", "let main = () => 1.0"),
+            ("widget.mlei", "let make : Float = 3.0"),
+        ],
+    );
+    assert!(
+        err.contains("declare signatures, not definitions"),
+        "unexpected: {err}"
+    );
+}
+
+/// An interface signature may reference a type in the module that USES it (a
+/// host callback typed against the app's own `Model`). Interface modules have
+/// no runtime initializers, so this is NOT a real cycle (mlei 2d review).
+#[test]
+fn interface_signature_may_reference_a_consumer_type() {
+    let project = load(
+        "mlei-consumer-type",
+        &[
+            (
+                "game.mle",
+                "type Model = { n: Float }\n\
+                 let sc = (m: Model): Widget.Handle => Widget.render(m)",
+            ),
+            (
+                "widget.mlei",
+                "type Handle\nlet render : (Game.Model) => Handle",
+            ),
+        ],
+    );
+    let diags = project.check();
+    assert!(diags.is_empty(), "no false cycle: {diags:?}");
+}
+
+/// An interface member still resolves as an External at runtime (host-backed),
+/// so a `.mle`-only project keeps running unchanged.
+#[test]
+fn interface_member_lowers_to_external() {
+    // The game references Widget.make but never calls it; run `main`, which is
+    // pure — proving the .mlei presence doesn't disturb evaluation.
+    let value = run_main(
+        "mlei-runtime",
+        &[
+            (
+                "game.mle",
+                "let unused = (): Widget.Handle => Widget.make()\n\
+                 let main = () => 40.0 + 2.0",
+            ),
+            ("widget.mlei", "type Handle\nlet make : () => Handle"),
+        ],
+    );
+    assert_eq!(number(&value), 42.0);
+}
