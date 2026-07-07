@@ -39,6 +39,15 @@
       #scrubber button:hover { background: rgba(110,110,125,0.7); }
       #scrub-slider { width: 320px; accent-color: #e0803a; }
       #scrub-label { min-width: 150px; }
+      /* Forward-ghosting controls (docs/time-travel.md T6d): toggle the ghost
+         and tune its divisions / window, alongside the transport. */
+      #scrubber label { display: flex; align-items: center; gap: 4px; }
+      #scrubber input[type="number"] {
+        width: 42px; font: 12px/1 monospace; color: #eee;
+        background: rgba(80,80,90,0.6); border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 5px; padding: 4px 5px;
+      }
+      #scrub-ghost { accent-color: #e0803a; }
     </style>
   </head>
   <body>
@@ -49,6 +58,15 @@
       <button id="scrub-pause">Pause</button>
       <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
       <button id="scrub-step">Step ▸</button>
+      <label title="Forward-ghost the scene (docs/time-travel.md T6d)">
+        <input id="scrub-ghost" type="checkbox" />ghost
+      </label>
+      <label title="Number of ghost divisions">
+        <input id="scrub-ghost-div" type="number" min="1" max="8" value="8" />÷
+      </label>
+      <label title="Ghost window (seconds)">
+        <input id="scrub-ghost-win" type="number" step="0.5" value="2" />s
+      </label>
     </div>
     <script type="module">
 
@@ -64,6 +82,7 @@
         mle_scrub_toggle_pause,
         mle_scrub_step,
         mle_scrub_paused,
+        mle_scrub_set_ghost,
       } from "./pkg/functor_runtime_web.js";
 
       // The MLE entry file, substituted in by the CLI's dev server (see
@@ -150,6 +169,9 @@
         const pause = document.getElementById("scrub-pause");
         const slider = document.getElementById("scrub-slider");
         const step = document.getElementById("scrub-step");
+        const ghost = document.getElementById("scrub-ghost");
+        const ghostDiv = document.getElementById("scrub-ghost-div");
+        const ghostWin = document.getElementById("scrub-ghost-win");
 
         let scrubbing = false;
         let pendingSeek = null;
@@ -158,6 +180,15 @@
         slider.addEventListener("input", () => (pendingSeek = Number(slider.value)));
         pause.addEventListener("click", () => mle_scrub_toggle_pause());
         step.addEventListener("click", () => mle_scrub_step());
+
+        // Forward-ghosting (docs/time-travel.md T6d): JS owns the ghost UI state
+        // and pushes the whole set on any change; the frame loop composites when
+        // the toggle is on. The web scrubber is always visible, so no overlay gate.
+        const pushGhost = () =>
+          mle_scrub_set_ghost(ghost.checked, +ghostDiv.value, +ghostWin.value);
+        ghost.addEventListener("change", pushGhost);
+        ghostDiv.addEventListener("input", pushGhost);
+        ghostWin.addEventListener("input", pushGhost);
 
         const update = () => {
           if (pendingSeek !== null) {
