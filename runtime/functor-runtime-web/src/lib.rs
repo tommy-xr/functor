@@ -979,20 +979,31 @@ async fn run_async() -> Result<(), JsValue> {
                 }
             }
 
-            // `?fixed-time` pins unconditionally (deterministic capture); pause
-            // freezes; a queued step advances one frame; else the clock advances
-            // by the real frame delta.
-            let frame_time = clock.frame((now - last_time) / 1000.0);
-
+            // Fixed-timestep model loop (docs/time-travel.md), mirroring the
+            // desktop shells: advance `tick` in whole 1/60 steps decoupled from
+            // the render (rAF) rate, so the sim is deterministic and a recorded
+            // frame is exactly one forward-step fine step (the ghost replay's
+            // assumption). `?fixed-time` yields one {dts:0} sub-frame (golden
+            // capture unchanged); a queued step yields one; paused yields none.
+            // `frame_time` is the RENDER frame time — the settled `tts` the frame
+            // is drawn / soundscaped / scrub-published at (its `dts` is unused).
+            let sub_frames = clock.fixed_frames((now - last_time) / 1000.0);
             last_time = now;
+            let frame_time = FrameTime {
+                dts: 0.0,
+                tts: clock.current_tts(),
+            };
 
             // Deliver page input queued since the last frame (the MLE path's
-            // `mle_*` exports). While paused, drain-and-discard: no input may
-            // reach the model on a paused frame (the input log would otherwise
-            // diverge replay), and draining stops the queue bursting on resume.
+            // `mle_*` exports), once per rendered frame before this frame's steps.
+            // While paused, drain-and-discard: no input may reach the model on a
+            // paused frame (the input log would otherwise diverge replay), and
+            // draining stops the queue bursting on resume.
             mle_game::drain_input(&mut **game, !clock.is_paused());
 
-            game.tick(frame_time.clone());
+            for sub in &sub_frames {
+                game.tick(sub.clone());
+            }
 
             // Perform any networking commands this frame's tick queued; results
             // are pushed back into the inbox asynchronously and decoded by a later
