@@ -263,12 +263,12 @@ fn over_application_checks_surplus_against_result() {
 #[test]
 fn error_filter_predicate_must_return_bool() {
     let (message, _, _) =
-        single_diag("let g = (xs: List<Float>) => List.filter(xs, (x): Float => x)");
+        single_diag("let g = (xs: List<Float>) => List.filter((x): Float => x, xs)");
     assert_eq!(
         message,
         // B7: the element type flows from `xs` into the predicate's
-        // signature — Float, not Unknown.
-        "argument 2 of `List.filter`: expected (Float) => Bool, got (Float) => Float"
+        // signature — Float, not Unknown. Subject-last: the predicate is arg 1.
+        "argument 1 of `List.filter`: expected (Float) => Bool, got (Float) => Float"
     );
 }
 
@@ -339,7 +339,7 @@ fn records_flow_gradually() {
 fn generic_builtin_slots_stay_unknown() {
     // List.map's result is List<Unknown>, which is compatible with the
     // List<Float> that List.maximum expects (no generic instantiation).
-    assert_clean("let best = (xs: List<Float>): Float => List.maximum(List.map(xs, (x) => x))");
+    assert_clean("let best = (xs: List<Float>): Float => List.maximum(List.map((x) => x, xs))");
 }
 
 #[test]
@@ -874,7 +874,7 @@ fn mutual_recursion_infers() {
 /// line, via hover's type table.
 #[test]
 fn unannotated_defs_get_inferred_signatures() {
-    let src = "let scale = (xs, k) => List.map(xs, (x) => x * k)";
+    let src = "let scale = (xs, k) => List.map((x) => x * k, xs)";
     let module = mle::lower(mle::parse(src).unwrap()).unwrap();
     let (diags, types) = mle::check_with_types(&module);
     assert!(diags.is_empty(), "{diags:?}");
@@ -950,12 +950,13 @@ fn undeclared_type_params_are_refused() {
 /// variable never wears two names in one message. [Claude M]
 #[test]
 fn diagnostic_variables_share_one_order() {
-    let (message, _, _) = single_diag("let f = (x) => List.fold(x, x, 1.0)");
-    // x is both the list and the folder: 'a is the element type in BOTH
-    // sides of the message (got is normalized first), 'b the accumulator.
+    let (message, _, _) = single_diag("let f = (x) => List.fold(x, 1.0, x)");
+    // Subject-last `List.fold(fn, init, list)`: x is both the folder (arg 1)
+    // and the list (arg 3), so 'a — the element type — appears on BOTH sides
+    // of the message with one consistent variable order.
     assert_eq!(
         message,
-        "argument 2 of `List.fold`: expected ('b, 'a) => 'b, got List<'a>"
+        "argument 3 of `List.fold`: expected List<'a>, got (Float, 'a) => Float"
     );
 }
 

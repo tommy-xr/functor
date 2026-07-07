@@ -6,5 +6,5 @@
 type Acc = { sum: Float, count: Float }
 let step = (r: Acc, x: Float): Acc => { r with sum: r.sum + x, count: r.count + 1.0 }
 let main = () =>
-  let final = List.fold(List.range(100000), step, { sum: 0.0, count: 0.0 }) in
+  let final = List.fold(step, { sum: 0.0, count: 0.0 }, List.range(100000)) in
   final.sum + final.count

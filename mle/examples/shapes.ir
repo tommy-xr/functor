@@ -810,18 +810,18 @@ Module {
                                         },
                                         args: [
                                             Expr {
-                                                id: e62,
-                                                kind: Global(
-                                                    "shapes",
-                                                ),
-                                                span: 1289..1295,
-                                            },
-                                            Expr {
                                                 id: e64,
                                                 kind: Global(
                                                     "describe",
                                                 ),
                                                 span: 1308..1316,
+                                            },
+                                            Expr {
+                                                id: e62,
+                                                kind: Global(
+                                                    "shapes",
+                                                ),
+                                                span: 1289..1295,
                                             },
                                         ],
                                     },

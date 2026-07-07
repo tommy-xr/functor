@@ -208,24 +208,24 @@ fn equality_is_structural_but_not_for_functions() {
 fn text_split_join_round_trip() {
     // split then join with the same separator is identity on the wire.
     assert_eq!(
-        main_result("let main = () => Text.join(Text.split(\"a,b,c\", \",\"), \",\")"),
+        main_result("let main = () => Text.join(\",\", Text.split(\",\", \"a,b,c\"))"),
         "\"a,b,c\""
     );
     // splitting an empty string yields one empty field (like F#'s String.Split).
     assert_eq!(
-        main_result("let main = () => Text.split(\"\", \"|\")"),
+        main_result("let main = () => Text.split(\"|\", \"\")"),
         "[\"\"]"
     );
     // multi-char separator (the reason sep is a String, not a char).
     assert_eq!(
-        main_result("let main = () => Text.split(\"a::b::c\", \"::\")"),
+        main_result("let main = () => Text.split(\"::\", \"a::b::c\")"),
         "[\"a\", \"b\", \"c\"]"
     );
 }
 
 #[test]
 fn text_split_rejects_empty_separator() {
-    let (message, _, _) = run_err("let main = () => Text.split(\"abc\", \"\")");
+    let (message, _, _) = run_err("let main = () => Text.split(\"\", \"abc\")");
     assert_eq!(message, "Text.split needs a non-empty separator");
 }
 
@@ -243,7 +243,7 @@ fn text_parse_float_defaults_to_zero_on_garbage() {
 
 #[test]
 fn text_join_rejects_non_strings() {
-    let (message, _, _) = run_err("let main = () => Text.join([1.0], \",\")");
+    let (message, _, _) = run_err("let main = () => Text.join(\",\", [1.0])");
     assert_eq!(message, "Text.join expects strings, got a number");
 }
 
@@ -251,12 +251,12 @@ fn text_join_rejects_non_strings() {
 fn list_grid_tabulates_a_2d_grid() {
     // f(row, col) over a 2x3 grid, both 0-based (the procedural-heightmap form).
     assert_eq!(
-        main_result("let main = () => List.grid(2.0, 3.0, (r, c) => r * 10.0 + c)"),
+        main_result("let main = () => List.grid((r, c) => r * 10.0 + c, 2.0, 3.0)"),
         "[[0, 1, 2], [10, 11, 12]]"
     );
     // A zero dimension yields an empty structure (no closure calls).
     assert_eq!(
-        main_result("let main = () => List.grid(0.0, 3.0, (r, c) => r)"),
+        main_result("let main = () => List.grid((r, c) => r, 0.0, 3.0)"),
         "[]"
     );
 }
@@ -264,8 +264,8 @@ fn list_grid_tabulates_a_2d_grid() {
 #[test]
 fn list_grid_rejects_non_integer_or_negative_dims() {
     for src in [
-        "let main = () => List.grid(2.5, 3.0, (r, c) => r)",
-        "let main = () => List.grid(-1.0, 3.0, (r, c) => r)",
+        "let main = () => List.grid((r, c) => r, 2.5, 3.0)",
+        "let main = () => List.grid((r, c) => r, -1.0, 3.0)",
     ] {
         let (message, _, _) = run_err(src);
         assert!(
@@ -830,10 +830,10 @@ fn debug_log_returns_the_value_unchanged_and_emits_through_the_sink() {
     let sink_buf = Arc::clone(&captured);
     mle::set_trace_sink(Box::new(move |m| sink_buf.lock().unwrap().push(m)));
 
-    // Value-first and pipe-friendly: the piped subject is logged and passed on,
-    // so the arithmetic result is exactly what it would be without the trace.
+    // Label-first and pipe-friendly: the subject (last arg) is logged and passed
+    // on, so the arithmetic result is exactly what it would be without the trace.
     assert_eq!(
-        main_result("let main = () => Debug.log(41.0, \"answer\") + 1.0"),
+        main_result("let main = () => Debug.log(\"answer\", 41.0) + 1.0"),
         "42"
     );
     // Works through a pipeline too (`x |> Debug.log(label)` == the value).
@@ -845,7 +845,7 @@ fn debug_log_returns_the_value_unchanged_and_emits_through_the_sink() {
     assert_eq!(
         main_result(
             "let main = () =>\n\
-             let r = Debug.log({ x: 1.0, y: 2.0 }, \"pt\") in r.x"
+             let r = Debug.log(\"pt\", { x: 1.0, y: 2.0 }) in r.x"
         ),
         "1"
     );
@@ -864,8 +864,8 @@ fn debug_log_returns_the_value_unchanged_and_emits_through_the_sink() {
 // --- Currying / partial application (migration step 1) --------------------
 // The interpreter curries call sites: under-application yields a partial,
 // exact application dispatches as before, and over-application saturates then
-// applies the remainder to the result. Thread-first piping is UNCHANGED (the
-// pipe still PREPENDS its subject) — that flip is a later migration stage.
+// applies the remainder to the result. Piping is thread-LAST (the pipe APPENDS
+// its subject as the final argument — migration step 3).
 
 /// A partial captured in a `let ... in` binding, then saturated.
 #[test]
@@ -927,11 +927,11 @@ fn partial_passed_as_a_value() {
     );
 }
 
-/// Thread-first is PRESERVED: `xs |> List.map(f)` still lowers to the
-/// subject-FIRST call `List.map(xs, f)`, so existing pipes are unaffected by
-/// the currying mechanism.
+/// Thread-LAST: `xs |> List.map(f)` lowers to the subject-LAST call
+/// `List.map(f, xs)` (the piped subject is APPENDED as the final argument), so
+/// a piped form and the equivalent direct call agree.
 #[test]
-fn thread_first_pipe_still_prepends() {
+fn thread_last_pipe_appends() {
     assert_eq!(
         main_result(
             "let double = (x) => x * 2.0\n\
@@ -939,11 +939,11 @@ fn thread_first_pipe_still_prepends() {
         ),
         "[2, 4, 6]"
     );
-    // The un-piped subject-first form is identical.
+    // The un-piped subject-LAST form is identical.
     assert_eq!(
         main_result(
             "let double = (x) => x * 2.0\n\
-             let main = () => List.map([1.0, 2.0, 3.0], double)"
+             let main = () => List.map(double, [1.0, 2.0, 3.0])"
         ),
         "[2, 4, 6]"
     );

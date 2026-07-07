@@ -7,7 +7,7 @@
 //! components of the call graph, so mutual recursion is monomorphic inside
 //! its group and forward references still work), and every use
 //! instantiates fresh (`id` at Float and String in one module is fine).
-//! Builtins carry generic schemes (`List.map : (List<'a>, ('a) => 'b) =>
+//! Builtins carry generic schemes (`List.map : (('a) => 'b, List<'a>) =>
 //! List<'b>`), so element types flow through pipelines. Lowercase names in
 //! annotations are scoped type variables (`(xs: List<a>, f: (a) => b)`).
 //!
@@ -328,8 +328,8 @@ fn free_vars_of(ty: &Type, out: &mut Vec<u32>) {
 
 /// The signature of a builtin (kept in sync with [`crate::eval`]'s registry
 /// by matching on [`Builtin`]). Generic slots are Unknown rather than
-/// instantiated type variables — e.g. `List.map : (List<T>, (T) => U) =>
-/// List<U>` is `(List<Unknown>, (Unknown) => Unknown) => List<Unknown>` — so
+/// instantiated type variables — e.g. `List.map : ((T) => U, List<T>) =>
+/// List<U>` is `((Unknown) => Unknown, List<Unknown>) => List<Unknown>` — so
 /// element types don't flow through, but arity and the known parts (like
 /// `List.filter`'s Bool-returning predicate) still check.
 pub fn builtin_signature(b: Builtin) -> Type {
@@ -340,30 +340,30 @@ pub fn builtin_signature(b: Builtin) -> Type {
     match b {
         // Generic slots are Var(0)/Var(1); every use site instantiates
         // them fresh (B7), so element types genuinely flow through.
-        // List.map : (List<'a>, ('a) => 'b) => List<'b>
+        // Subject-LAST. List.map : (('a) => 'b, List<'a>) => List<'b>
         Builtin::ListMap => func(
-            vec![List(Box::new(Var(0))), func(vec![Var(0)], Var(1))],
+            vec![func(vec![Var(0)], Var(1)), List(Box::new(Var(0)))],
             List(Box::new(Var(1))),
         ),
-        // List.filter : (List<'a>, ('a) => Bool) => List<'a>
+        // Subject-LAST. List.filter : (('a) => Bool, List<'a>) => List<'a>
         Builtin::ListFilter => func(
-            vec![List(Box::new(Var(0))), func(vec![Var(0)], Bool)],
+            vec![func(vec![Var(0)], Bool), List(Box::new(Var(0)))],
             List(Box::new(Var(0))),
         ),
-        // List.fold : (List<'a>, ('b, 'a) => 'b, 'b) => 'b
+        // Subject-LAST. List.fold : (('b, 'a) => 'b, 'b, List<'a>) => 'b
         Builtin::ListFold => func(
             vec![
-                List(Box::new(Var(0))),
                 func(vec![Var(1), Var(0)], Var(1)),
                 Var(1),
+                List(Box::new(Var(0))),
             ],
             Var(1),
         ),
         // List.range : (Float) => List<Float>
         Builtin::ListRange => func(vec![Float], List(Box::new(Float))),
-        // List.grid : (Float, Float, (Float, Float) => 'a) => List<List<'a>>
+        // Subject-LAST. List.grid : ((Float, Float) => 'a, Float, Float) => List<List<'a>>
         Builtin::ListGrid => func(
-            vec![Float, Float, func(vec![Float, Float], Var(0))],
+            vec![func(vec![Float, Float], Var(0)), Float, Float],
             List(Box::new(List(Box::new(Var(0))))),
         ),
         // List.maximum : (List<Float>) => Float
@@ -376,17 +376,18 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::TextFixed => func(vec![Float, Float], String),
         // Text.toBullets : (List<String>) => String
         Builtin::TextToBullets => func(vec![List(Box::new(String))], String),
-        // Text.split : (String, String) => List<String>
+        // Subject-LAST. Text.split : (String, String) => List<String> — (sep, s)
         Builtin::TextSplit => func(vec![String, String], List(Box::new(String))),
-        // Text.join : (List<String>, String) => String
-        Builtin::TextJoin => func(vec![List(Box::new(String)), String], String),
+        // Subject-LAST. Text.join : (String, List<String>) => String — (sep, list)
+        Builtin::TextJoin => func(vec![String, List(Box::new(String))], String),
         // Text.parseFloat : (String) => Float
         Builtin::TextParseFloat => func(vec![String], Float),
         // Math.clamp01 / sin / cos : (Float) => Float
         Builtin::MathClamp01 | Builtin::MathSin | Builtin::MathCos => func(vec![Float], Float),
-        // Debug.log : ('a, String) => 'a — logs `label: value` and returns the
-        // value unchanged (Var(0) is generic, so it's transparent in a pipe).
-        Builtin::DebugLog => func(vec![Var(0), String], Var(0)),
+        // Subject-LAST. Debug.log : (String, 'a) => 'a — label first, subject
+        // last; logs `label: subject` and returns the subject unchanged (Var(0)
+        // is generic, so it's transparent in a pipe).
+        Builtin::DebugLog => func(vec![String, Var(0)], Var(0)),
     }
 }
 

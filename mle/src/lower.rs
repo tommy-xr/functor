@@ -75,9 +75,11 @@
 //!
 //! ## Pipeline desugaring
 //!
-//! Each pipeline stage becomes a call with the piped value **prepended** as
-//! the first argument: `x |> f` → `f(x)`, `x |> g(a)` → `g(x, a)`, so
-//! `x |> f |> g(a)` → `g(f(x), a)`. The desugared call carries the span of
+//! Each pipeline stage becomes a call with the piped value **appended** as
+//! the LAST argument (thread-last): `x |> f` → `f(x)`, `x |> g(a)` → `g(a, x)`,
+//! so `x |> f |> g(a)` → `g(a, f(x))`. Because `|>` is syntax, the stage
+//! lowers directly to the SATURATED call — `x |> g(a)` is `g(a, x)`, never a
+//! partial `g(a)` — so pipes stay allocation-free. The desugared call carries the span of
 //! its stage — which means its first argument's span lies *outside* the
 //! call's own span (it came from an earlier stage); diagnostics must not
 //! assume parent spans contain child spans. The IR has no pipeline node.
@@ -921,16 +923,22 @@ impl Lowerer<'_> {
     fn pipe_stage(&mut self, piped: Expr, stage: ast::Expr) -> Result<Expr, LowerError> {
         let span = stage.span;
         let (callee, rest) = match stage.kind {
-            // `x |> g(a)` → `g(x, a)`
+            // `x |> g(a)` → `g(a, x)`
             ast::ExprKind::Call { callee, args } => (*callee, args),
             // `x |> f` → `f(x)` (any non-call stage is called directly)
             kind => (ast::Expr { kind, span }, Vec::new()),
         };
+        // Thread-LAST: the piped value becomes the callee's FINAL argument, so
+        // `x |> g(a)` lowers directly to the saturated `g(a, x)` (never a
+        // partial `g(a)`) and a subject-last signature — `x |>
+        // Debug.log("hp")` == `Debug.log("hp", x)` — threads x in as the
+        // subject. Pipes stay allocation-free (a saturated call, no PAP).
         let callee = Box::new(self.expr(callee)?);
-        let mut args = vec![piped];
+        let mut args = Vec::with_capacity(rest.len() + 1);
         for arg in rest {
             args.push(self.expr(arg)?);
         }
+        args.push(piped);
         Ok(Expr {
             id: self.expr_id(),
             kind: ExprKind::Call { callee, args },

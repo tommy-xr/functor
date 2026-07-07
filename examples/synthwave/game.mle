@@ -8,7 +8,7 @@
 //   functor -d examples/synthwave run native
 //
 // Port notes: F#'s procedural `heightmapFn rows cols fn` becomes
-// `Scene.heightmap(List.grid(rows, cols, fn))` — `List.grid` tabulates the grid
+// `Scene.heightmap(List.grid(fn, rows, cols))` — `List.grid` tabulates the grid
 // by calling the closure per cell in the engine's loop. The heightmap is a
 // unit square centered on origin, so F#'s non-uniform `Transform.scaleX/Z`
 // becomes `Scene.scaleXYZ` (sizing XZ to terrainSize while leaving Y at author
@@ -72,7 +72,7 @@ let draw = (m: Float, tts: Float) =>
   // hot-magenta edges) tiled one cell per quad, so the glowing lines align with
   // the mesh grid. Emissive = self-lit, so it glows in the dark.
   let terrain =
-    Scene.heightmap(List.grid(rows, cols, (r, c) => terrainHeight(phase, r, c)))
+    Scene.heightmap(List.grid((r, c) => terrainHeight(phase, r, c), rows, cols))
     |> Scene.scaleXYZ(terrainSize, 1.0, terrainSize)
     |> Scene.translate(0.0, -2.0, 0.0)
     |> Scene.emissiveTexture(gridTexture) in

@@ -189,7 +189,8 @@ main context.
 
 - **The `mle-language` skill is the source of truth for MLE.** MLE is a small, custom language —
   do NOT guess syntax/semantics from F#/OCaml intuition (e.g. there is no `if`/`else`; the
-  conditional is a bool-literal `match`; assignment is `:=`; pipelines *prepend* the subject).
+  conditional is a bool-literal `match`; assignment is `:=`; pipelines *append* the subject
+  (thread-last: `x |> f(a)` == `f(a, x)`)).
   When a change touches the language or the prelude, update the skill in the same PR.
 - **`file = module`.** Every `.mle` in the entry's directory loads with the project — an
   unreferenced (or stray scratch) sibling still parses, checks, and evaluates. Keep scratch `.mle`

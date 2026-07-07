@@ -280,7 +280,7 @@ snapshots — no GPU, fully agent-verifiable.
       Inference has teeth: unannotated bad calls, mixed lists,
       contradictory mut use, and foreign match arms are all caught now.
       *Verify (done):* both shipped games + all example goldens check
-      clean under inference; `(xs, k) => List.map(xs, (x) => x * k)`
+      clean under inference; `(xs, k) => List.map((x) => x * k, xs)`
       hovers as `(List<Float>, Float) => List<Float>`; teeth + occurs +
       ambiguity + SCC polymorphism pinned (215 mle tests).
       *Original verify:* unannotated examples get full inferred signatures (an
@@ -295,11 +295,35 @@ snapshots — no GPU, fully agent-verifiable.
       IS exhaustive, `[a, b]` alone needs a catch-all. Full stack: lexer
       (`..`), parser, lower, eval, HM types, hover/goto/rebind. Verify:
       `mle/examples/lists.mle` + goldens; run/parser/check pin tests.
-- [x] **Language: `Debug.log` trace builtin** (2026-07-06). Core `mle`-crate
-      builtin `Debug.log(value, label) : ('a, String) => 'a` — an Elm-style
+- [x] **Language: currying migration — call-site currying + thread-LAST piping**
+      (2026-07-07). Two steps landed. **Step 1** (#264): application curries at
+      the *call site* — `f(a, b)` is sugar for `((f a) b)`, so `f(a)` on a 2-arg
+      `f` is a legal partial application (a `Value::Partial`), not an arity error;
+      a saturated-call fast path keeps every direct `f(a,b)` and pipe at
+      allocation-free parity, and the checker's `Call` rule handles under/over
+      application. Multi-arg closures and `Type::Fn(Vec, ret)` are kept
+      (no nested arrows, no `f a b` syntax). **Step 3** (this): the flag-day
+      flip — `|>` now **appends** (thread-last: `x |> g(a)` ⇒ `g(a, x)`,
+      lowered directly to the saturated call, never a partial) and the whole
+      prelude/builtin surface flipped subject-first → **subject-LAST**
+      (`List.map(fn, list)`, `List.fold(fn, init, list)`, `Text.split(sep, s)`,
+      `Text.join(sep, list)`, `List.grid(fn, rows, cols)`, and every scene/body/
+      frame/target/source transform — `scene |> Scene.color(r,g,b)` now resolves
+      to `Scene.color(r, g, b, scene)`). Pipes and signatures flip together, so
+      existing piped code is untouched: the visually-rich pipe-heavy examples
+      (`lighting`, `synthwave`, `primitives`, `physics`) render **byte-identical**
+      before/after (`--fixed-time` PNG `cmp`), and the `mle bench` saturated +
+      piped corpus stays at parity. *Verify (done):* byte-identical example
+      captures; bench A/B; `cargo test -p mle` + `-p functor_runtime_common`
+      green with the reviewed golden regens. Decision record:
+      `docs/spikes/mle-currying.md`.
+- [x] **Language: `Debug.log` trace builtin** (2026-07-06; flipped label-first
+      in the currying migration step 3). Core `mle`-crate
+      builtin `Debug.log(label, value) : (String, 'a) => 'a` — an Elm-style
       trace: logs `label: <value>` (the interpreter's own `Value` display, any
       type) and returns `value` UNCHANGED, so it's pure to the program result
-      and pipe-friendly (`x |> Debug.log("x")`; value-first, label second).
+      and pipe-friendly (`x |> Debug.log("x")`; label-first / subject-last, so it
+      reads Elm-style standalone AND threads in a pipe).
       Lives in the `mle` crate (works in plain `mle run` AND under the host),
       routed through a settable, process-wide trace sink (`mle::set_trace_sink`,
       default: stdout). The Functor host installs a sink

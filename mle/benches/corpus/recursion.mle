@@ -14,4 +14,4 @@ let sumTo = (n, acc) =>
   | true => acc
   | false => sumTo(n - 1.0, acc + n)
 let main = () =>
-  List.fold(List.range(50000), (acc, x) => acc + sumTo(30.0, 0.0), 0.0)
+  List.fold((acc, x) => acc + sumTo(30.0, 0.0), 0.0, List.range(50000))

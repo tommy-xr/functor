@@ -191,21 +191,23 @@ fn pipeline_desugars_to_nested_calls() {
     let module = lower_src(src);
     let (params, body) = lambda_body(&module, 2);
 
-    // Outer call: g(<inner>, b), with the span of the `g(b)` stage.
+    // Thread-LAST: the piped value is APPENDED, so the outer call is
+    // g(b, <inner>) — the explicit stage arg `b` first, the piped `f(a)` last —
+    // with the span of the `g(b)` stage.
     let ExprKind::Call { callee, args } = &body.kind else {
         panic!("expected a call, got {body:?}");
     };
     assert!(matches!(&callee.kind, ExprKind::Global(name) if name == "g"));
     assert_eq!(args.len(), 2);
     assert!(
-        matches!(&args[1].kind, ExprKind::Local { binding, .. } if *binding == params[1].binding)
+        matches!(&args[0].kind, ExprKind::Local { binding, .. } if *binding == params[1].binding)
     );
     assert_eq!(&src[body.span.start..body.span.end], "g(b)");
 
-    // Inner call: f(a), with the span of the `f` stage.
-    let inner = &args[0];
+    // Inner call (the piped, LAST argument): f(a), with the span of the `f` stage.
+    let inner = &args[1];
     let ExprKind::Call { callee, args } = &inner.kind else {
-        panic!("expected the first argument to be a call, got {inner:?}");
+        panic!("expected the last argument to be a call, got {inner:?}");
     };
     assert!(matches!(&callee.kind, ExprKind::Global(name) if name == "f"));
     assert_eq!(args.len(), 1);

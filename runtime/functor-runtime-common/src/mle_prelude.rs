@@ -22,50 +22,50 @@
 //!    List builtins: List.range(rows) |> List.map((r) => List.range(cols)
 //!    |> List.map((c) => f(r, c))) — F#'s `heightmapFn`, in user space)
 //! Scene.group([scene, …])                                   -> Scene
-//! Scene.color(scene, r, g, b)                               -> Scene
-//! Scene.translate(scene, x, y, z)                           -> Scene
-//! Scene.rotateX/rotateY/rotateZ(scene, angle)               -> Scene
+//! Scene.color(r, g, b, scene)                               -> Scene
+//! Scene.translate(x, y, z, scene)                           -> Scene
+//! Scene.rotateX/rotateY/rotateZ(angle, scene)               -> Scene
 //! Angle.degrees(n) / Angle.radians(n)                       -> Angle
 //!   (rotations and camera angles take Angle VALUES, never bare numbers —
 //!    degree/radian confusion is unrepresentable)
-//! Scene.scale(scene, k)                                     -> Scene
+//! Scene.scale(k, scene)                                     -> Scene
 //! Texture.file(path)                                        -> Texture
 //!   (an image loaded by the shells' asset pipeline, path relative to the
 //!    game dir — F#'s `Texture.file`; declared once and passed as a VALUE,
 //!    the Angle rule applied to assets)
-//! Scene.litTexture(scene, texture)                          -> Scene
+//! Scene.litTexture(texture, scene)                          -> Scene
 //!   (a diffuse-lit textured surface — F#'s `Material.litTexture`)
-//! Scene.emissiveTexture(scene, texture)                     -> Scene
+//! Scene.emissiveTexture(texture, scene)                     -> Scene
 //!   (a self-lit textured surface, fullbright — F#'s `Material.emissiveTexture`)
 //! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
 //! RenderTarget.named(id)                                    -> RenderTarget
-//! RenderTarget.sized(target, w, h)                          -> RenderTarget
+//! RenderTarget.sized(w, h, target)                          -> RenderTarget
 //!   (a named offscreen texture, 512x512 unless sized; declare ONCE, use the
 //!    value at both sites — the writer and the reader — so writer/reader id
 //!    typos are unrepresentable, the Angle rule applied to identity)
-//! Frame.withRenderTarget(frame, target, targetFrame)        -> Frame
+//! Frame.withRenderTarget(target, targetFrame, frame)        -> Frame
 //!   (the writer: targetFrame — its own camera/scene/lights — is rendered
 //!    into the target before frame's main pass; a scene sampling its own
 //!    target sees last frame's image)
-//! Scene.screen(scene, target)                               -> Scene
+//! Scene.screen(target, scene)                               -> Scene
 //!   (the reader: an emissive "screen" surface showing the target's texture;
 //!    an id no frame declares shows magenta and warns once)
 //! Fog.linear(near, far, r, g, b) / Fog.exp(density, r, g, b) -> Fog
-//! Frame.withFog(frame, fog)                                  -> Frame
+//! Frame.withFog(fog, frame)                                  -> Frame
 //!   (frame-level distance fog on every forward material, emissive included —
 //!    fog occludes glow; the fog color is also the pass's clear color)
 //! Ui.text(s) / Ui.textColor(r, g, b, s)                     -> View
 //! Ui.column([view, …])                                      -> View
-//! Ui.panel(view, anchor)                                    -> View
+//! Ui.panel(anchor, view)                                    -> View
 //! Ui.topLeft()                                              -> Anchor
 //!   (the optional `ui = (model) => …` hook's tree — hello's HUD shape:
 //!    text lines stacked in a column, pinned to a screen corner. Only the
 //!    corner the port needed exists; the rest arrive with a port that
-//!    needs them. `Ui.panel` takes the view FIRST, so it pipes.)
+//!    needs them. `Ui.panel` takes the view LAST, so it pipes.)
 //! Skybox.files(px, nx, py, ny, pz, nz)                       -> Skybox
-//! Frame.withSkybox(frame, sky)                               -> Frame
+//! Frame.withSkybox(sky, frame)                               -> Frame
 //!   (a cubemap sky drawn behind everything; while the six faces load the
 //!    clear color shows, a failed face disables the sky with one warning;
 //!    fog does not apply to the sky — it IS the horizon)
@@ -85,12 +85,12 @@
 //!
 //! Physics.box(w, h, d) / sphere(r) / capsule(hh, r)         -> Shape
 //! Physics.dynamic/kinematic/fixed(tag, shape)               -> Body
-//! Physics.at/velocity(body, x, y, z)                        -> Body
-//! Physics.mass/friction/restitution(body, n)                -> Body
+//! Physics.at/velocity(x, y, z, body)                        -> Body
+//! Physics.mass/friction/restitution(n, body)                -> Body
 //! Physics.sensor(body)                                      -> Body
 //! Physics.scene(gx, gy, gz, [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
-//! Physics.transformed(scene, tag)                           -> Scene
+//! Physics.transformed(tag, scene)                           -> Scene
 //! Physics.applyImpulse/applyForce/setVelocity/teleport(tag, x, y, z)
 //!                                                           -> Effect
 //! ```
@@ -101,8 +101,8 @@
 //! process, so these are direct reads of live world state — the seam the
 //! dylib producers can't have.
 //!
-//! Scene-consuming functions take the scene FIRST, so they compose with
-//! `|>` (the piped value is prepended — see `mle`'s lowering docs):
+//! Scene-consuming functions take the scene LAST, so they compose with
+//! `|>` (the piped value is appended — thread-last; see `mle`'s lowering docs):
 //! `Scene.cube() |> Scene.color(1.0, 0.0, 0.0) |> Scene.translate(2.0, 0.0, 0.0)`.
 //!
 //! # Transform semantics (deliberate — see the Milestone-0 quirks)
@@ -118,7 +118,7 @@
 //! - `Scene3D::transform` right-multiplies (`self.xform * xform`), making
 //!   `translate(rotateY(x))` apply the translation *first*. Wrapping makes
 //!   each transform a parent node instead, so the outer call is applied last
-//!   in world space: `Scene.translate(Scene.rotateY(x, r), …)` rotates in
+//!   in world space: `s |> Scene.rotateY(r) |> Scene.translate(x, 0, 0)` rotates in
 //!   place, *then* moves — the order the source reads.
 
 use cgmath::Matrix4;
@@ -1018,16 +1018,16 @@ least 2 rows, each an equal-length list of at least 2 numbers",
                 }
                 _ => usage("Scene.group([scene, …])"),
             },
-            // Scene first, so they pipe: `Scene.cube() |> Scene.lit(r, g, b)`.
+            // Scene LAST (subject-last), so they pipe: `Scene.cube() |> Scene.lit(r, g, b)`.
             "Scene.lit" | "Scene.emissive" => match args.as_slice() {
-                [scene, r, g, b] => {
+                [r, g, b, scene] => {
                     let (r, g, b) = (
                         num(r, span)? as f32,
                         num(g, span)? as f32,
                         num(b, span)? as f32,
                     );
                     let Some(scene) = scene_of(scene) else {
-                        return usage(&format!("{path}(scene, r, g, b)"));
+                        return usage(&format!("{path}(r, g, b, scene)"));
                     };
                     let material = if path == "Scene.lit" {
                         MaterialDescription::lit(r, g, b, 1.0)
@@ -1039,7 +1039,7 @@ least 2 rows, each an equal-length list of at least 2 numbers",
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage(&format!("{path}(scene, r, g, b)")),
+                _ => usage(&format!("{path}(r, g, b, scene)")),
             },
             // An image texture by file path (relative to the game dir), the
             // MLE face of F#'s `Texture.file`. Loading is the shells' asset
@@ -1054,15 +1054,15 @@ least 2 rows, each an equal-length list of at least 2 numbers",
 the game dir",
                 ),
             },
-            // Scene first, so they pipe:
+            // Scene LAST (subject-last), so they pipe:
             // `Scene.plane() |> Scene.litTexture(Texture.file("dirt.png"))`.
             // The F# pair `Material.litTexture` / `Material.emissiveTexture`:
             // lit is shaded by the frame's lights (white albedo tint),
             // emissive renders fullbright (neon signage).
             "Scene.litTexture" | "Scene.emissiveTexture" => match args.as_slice() {
-                [scene, texture] => {
+                [texture, scene] => {
                     let Some(scene) = scene_of(scene) else {
-                        return usage(&format!("{path}(scene, texture)"));
+                        return usage(&format!("{path}(texture, scene)"));
                     };
                     let texture = texture_of(texture, path, span)?;
                     let material = if path == "Scene.litTexture" {
@@ -1075,16 +1075,16 @@ the game dir",
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage(&format!("{path}(scene, texture)")),
+                _ => usage(&format!("{path}(texture, scene)")),
             },
             // Lit material with a tangent-space normal map perturbing the
             // surface normal (F#'s `Material.litNormalMapped`), so the lights
             // and specular play across the bumps. `(r, g, b)` is the albedo
             // tint; the normal map is a Texture value (alpha fixed at 1.0).
             "Scene.litNormalMapped" => match args.as_slice() {
-                [scene, r, g, b, normal] => {
+                [r, g, b, normal, scene] => {
                     let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.litNormalMapped(scene, r, g, b, normalMap)");
+                        return usage("Scene.litNormalMapped(r, g, b, normalMap, scene)");
                     };
                     let normal = texture_of(normal, path, span)?;
                     scene_value(Scene3D {
@@ -1101,14 +1101,14 @@ the game dir",
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage("Scene.litNormalMapped(scene, r, g, b, normalMap)"),
+                _ => usage("Scene.litNormalMapped(r, g, b, normalMap, scene)"),
             },
-            // Scene first, so it pipes: `Scene.cube() |> Scene.color(r, g, b)`.
+            // Scene LAST (subject-last), so it pipes: `Scene.cube() |> Scene.color(r, g, b)`.
             "Scene.color" => match args.as_slice() {
-                [scene, r, g, b] => {
+                [r, g, b, scene] => {
                     let (r, g, b) = (num(r, span)?, num(g, span)?, num(b, span)?);
                     let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.color(scene, r, g, b)");
+                        return usage("Scene.color(r, g, b, scene)");
                     };
                     scene_value(Scene3D {
                         obj: SceneObject::Material(
@@ -1118,18 +1118,18 @@ the game dir",
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage("Scene.color(scene, r, g, b)"),
+                _ => usage("Scene.color(r, g, b, scene)"),
             },
             "Scene.translate" => match args.as_slice() {
-                [scene, x, y, z] => {
+                [x, y, z, scene] => {
                     let xform = Matrix4::from_translation(cgmath::vec3(
                         num(x, span)? as f32,
                         num(y, span)? as f32,
                         num(z, span)? as f32,
                     ));
-                    wrap_transform(scene, xform, "Scene.translate(scene, x, y, z)", span)
+                    wrap_transform(scene, xform, "Scene.translate(x, y, z, scene)", span)
                 }
-                _ => usage("Scene.translate(scene, x, y, z)"),
+                _ => usage("Scene.translate(x, y, z, scene)"),
             },
             "Angle.degrees" => match args.as_slice() {
                 [n] => Ok(host(MleAngle(Angle::from_degrees(num(n, span)? as f32)))),
@@ -1140,37 +1140,37 @@ the game dir",
                 _ => usage("Angle.radians(n)"),
             },
             "Scene.rotateX" | "Scene.rotateY" | "Scene.rotateZ" => match args.as_slice() {
-                [scene, angle] => {
+                [angle, scene] => {
                     let angle: cgmath::Rad<f32> = angle_of(angle, path, span)?.into();
                     let xform = match path {
                         "Scene.rotateX" => Matrix4::from_angle_x(angle),
                         "Scene.rotateY" => Matrix4::from_angle_y(angle),
                         _ => Matrix4::from_angle_z(angle),
                     };
-                    wrap_transform(scene, xform, &format!("{path}(scene, angle)"), span)
+                    wrap_transform(scene, xform, &format!("{path}(angle, scene)"), span)
                 }
-                _ => return usage(&format!("{path}(scene, angle)")),
+                _ => return usage(&format!("{path}(angle, scene)")),
             },
             "Scene.scale" => match args.as_slice() {
-                [scene, k] => {
+                [k, scene] => {
                     let xform = Matrix4::from_scale(num(k, span)? as f32);
-                    wrap_transform(scene, xform, "Scene.scale(scene, k)", span)
+                    wrap_transform(scene, xform, "Scene.scale(k, scene)", span)
                 }
-                _ => usage("Scene.scale(scene, k)"),
+                _ => usage("Scene.scale(k, scene)"),
             },
             // Non-uniform scale (the F# `Transform.scaleX/Y/Z`): stretch each
             // axis independently — e.g. a wide, short backdrop quad, or a
             // heightmap sized in XZ without inflating its Y heights.
             "Scene.scaleXYZ" => match args.as_slice() {
-                [scene, x, y, z] => {
+                [x, y, z, scene] => {
                     let xform = Matrix4::from_nonuniform_scale(
                         num(x, span)? as f32,
                         num(y, span)? as f32,
                         num(z, span)? as f32,
                     );
-                    wrap_transform(scene, xform, "Scene.scaleXYZ(scene, x, y, z)", span)
+                    wrap_transform(scene, xform, "Scene.scaleXYZ(x, y, z, scene)", span)
                 }
-                _ => usage("Scene.scaleXYZ(scene, x, y, z)"),
+                _ => usage("Scene.scaleXYZ(x, y, z, scene)"),
             },
             "Camera.lookAt" => match args.as_slice() {
                 [ex, ey, ez, tx, ty, tz] => Ok(host(MleCamera(Camera::look_at(
@@ -1345,10 +1345,10 @@ the game dir",
                 },
                 _ => usage(&format!("{path}(tag, shape)")),
             },
-            // Body first, so they pipe:
+            // Body LAST (subject-last), so they pipe:
             // `Physics.dynamic("crate", Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
             "Physics.at" | "Physics.velocity" => match args.as_slice() {
-                [body, x, y, z] => match body_of(body) {
+                [x, y, z, body] => match body_of(body) {
                     Some(inner) => {
                         let v = [
                             num(x, span)? as f32,
@@ -1361,12 +1361,12 @@ the game dir",
                             inner.clone().with_velocity(v)
                         })))
                     }
-                    None => usage(&format!("{path}(body, x, y, z)")),
+                    None => usage(&format!("{path}(x, y, z, body)")),
                 },
-                _ => usage(&format!("{path}(body, x, y, z)")),
+                _ => usage(&format!("{path}(x, y, z, body)")),
             },
             "Physics.mass" | "Physics.friction" | "Physics.restitution" => match args.as_slice() {
-                [body, n] => match body_of(body) {
+                [n, body] => match body_of(body) {
                     Some(inner) => {
                         let n = match path {
                             "Physics.mass" => positive_num(n, span, "Physics.mass")?,
@@ -1378,9 +1378,9 @@ the game dir",
                             _ => inner.clone().with_restitution(n),
                         })))
                     }
-                    None => usage(&format!("{path}(body, n)")),
+                    None => usage(&format!("{path}(n, body)")),
                 },
-                _ => usage(&format!("{path}(body, n)")),
+                _ => usage(&format!("{path}(n, body)")),
             },
             "Physics.sensor" => match args.as_slice() {
                 [body] => match body_of(body) {
@@ -1432,7 +1432,7 @@ the game dir",
                 },
                 _ => usage("Physics.position(tag)"),
             },
-            // Scene first, so it pipes: the way MLE draws a physics body —
+            // Scene LAST (subject-last), so it pipes: the way MLE draws a physics body —
             // `Scene.cube() |> Scene.lit(…) |> Physics.transformed("crate-1")`
             // places the visual at the body's live pose (position + rotation).
             // Command EFFECTS (docs/physics.md Phase 3): fire-and-forget,
@@ -1680,13 +1680,13 @@ the Net.HttpResponse, got {}",
                 }
                 _ => usage("AudioSource.at(key, sound, x, y, z)"),
             },
-            // Source-first so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
+            // Source LAST (subject-last) so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
             "AudioSource.gain" => match args.as_slice() {
-                [source, g] => match audio_source_of(source) {
+                [g, source] => match audio_source_of(source) {
                     Some(src) => Ok(host(MleAudioSource(src.clone().with_gain(num(g, span)? as f32)))),
-                    None => usage("AudioSource.gain(source, gain)"),
+                    None => usage("AudioSource.gain(gain, source)"),
                 },
-                _ => usage("AudioSource.gain(source, gain)"),
+                _ => usage("AudioSource.gain(gain, source)"),
             },
             "AudioScene.create" => match args.as_slice() {
                 [Value::List(items)] => {
@@ -1711,9 +1711,9 @@ the Net.HttpResponse, got {}",
                 _ => usage("AudioScene.empty()"),
             },
             "Physics.transformed" => match args.as_slice() {
-                [scene, Value::String(tag)] => {
+                [Value::String(tag), scene] => {
                     let Some(inner) = scene_of(scene) else {
-                        return usage("Physics.transformed(scene, tag)");
+                        return usage("Physics.transformed(tag, scene)");
                     };
                     match live_transform(tag) {
                         Some((pos, rot)) => {
@@ -1727,7 +1727,7 @@ the Net.HttpResponse, got {}",
                         None => err(no_body(tag)),
                     }
                 }
-                _ => usage("Physics.transformed(scene, tag)"),
+                _ => usage("Physics.transformed(tag, scene)"),
             },
             "RenderTarget.named" => match args.as_slice() {
                 [Value::String(name)] if !name.is_empty() => Ok(host(MleRenderTarget(
@@ -1738,10 +1738,10 @@ the Net.HttpResponse, got {}",
 piped through RenderTarget.sized",
                 ),
             },
-            // Target first, so it pipes:
+            // Target LAST (subject-last), so it pipes:
             // `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
             "RenderTarget.sized" => match args.as_slice() {
-                [target, w, h] => {
+                [w, h, target] => {
                     let inner = target_of(target, "RenderTarget.sized", span)?;
                     let w = positive_num(w, span, "RenderTarget.sized width")?;
                     let h = positive_num(h, span, "RenderTarget.sized height")?;
@@ -1749,17 +1749,17 @@ piped through RenderTarget.sized",
                         inner.clone().sized(w as f32, h as f32),
                     )))
                 }
-                _ => usage("RenderTarget.sized(target, width, height)"),
+                _ => usage("RenderTarget.sized(width, height, target)"),
             },
-            // Frame first, so it pipes:
+            // Frame LAST (subject-last), so it pipes:
             // `Frame.createLit(…) |> Frame.withRenderTarget(feed, feedFrame)`.
             "Frame.withRenderTarget" => match args.as_slice() {
-                [frame, target, target_frame] => {
+                [target, target_frame, frame] => {
                     let (Some(outer), Some(inner)) =
                         (frame_value(frame), frame_value(target_frame))
                     else {
                         return usage(
-                            "Frame.withRenderTarget(frame, target, targetFrame) — targetFrame \
+                            "Frame.withRenderTarget(target, targetFrame, frame) — targetFrame \
 is a Frame.create/createLit(…) rendered into the target each frame, before \
 frame's main pass",
                         );
@@ -1771,7 +1771,7 @@ frame's main pass",
                         inner.clone(),
                     ))))
                 }
-                _ => usage("Frame.withRenderTarget(frame, target, targetFrame)"),
+                _ => usage("Frame.withRenderTarget(target, targetFrame, frame)"),
             },
             "Fog.linear" => match args.as_slice() {
                 [near, far, r, g, b] => {
@@ -1801,16 +1801,16 @@ frame's main pass",
                 )))),
                 _ => usage("Fog.exp(density, r, g, b)"),
             },
-            // Frame first, so it pipes: `Frame.createLit(…) |> Frame.withFog(fog)`.
+            // Frame LAST (subject-last), so it pipes: `Frame.createLit(…) |> Frame.withFog(fog)`.
             "Frame.withFog" => match args.as_slice() {
-                [frame, fog] => {
+                [fog, frame] => {
                     let Some(inner) = frame_value(frame) else {
-                        return usage("Frame.withFog(frame, fog)");
+                        return usage("Frame.withFog(fog, frame)");
                     };
                     let fog = fog_of(fog, "Frame.withFog", span)?;
                     Ok(host(MleFrame(Frame::with_fog(inner.clone(), fog.clone()))))
                 }
-                _ => usage("Frame.withFog(frame, fog)"),
+                _ => usage("Frame.withFog(fog, frame)"),
             },
             "Skybox.files" => match args.as_slice() {
                 [Value::String(px), Value::String(nx), Value::String(py), Value::String(ny), Value::String(pz), Value::String(nz)]
@@ -1830,24 +1830,24 @@ frame's main pass",
 paths (+X, -X, +Y, -Y, +Z, -Z)",
                 ),
             },
-            // Frame first, so it pipes: `frame |> Frame.withSkybox(sky)`.
+            // Frame LAST (subject-last), so it pipes: `frame |> Frame.withSkybox(sky)`.
             "Frame.withSkybox" => match args.as_slice() {
-                [frame, sky] => {
+                [sky, frame] => {
                     let Some(inner) = frame_value(frame) else {
-                        return usage("Frame.withSkybox(frame, skybox)");
+                        return usage("Frame.withSkybox(skybox, frame)");
                     };
                     let sky = skybox_of(sky, "Frame.withSkybox", span)?;
                     Ok(host(MleFrame(Frame::with_skybox(inner.clone(), sky.clone()))))
                 }
-                _ => usage("Frame.withSkybox(frame, skybox)"),
+                _ => usage("Frame.withSkybox(skybox, frame)"),
             },
-            // Scene first, so it pipes: `Scene.quad() |> Scene.screen(feed)` —
+            // Scene LAST (subject-last), so it pipes: `Scene.quad() |> Scene.screen(feed)` —
             // an emissive (fullbright, screens glow) surface showing the
             // target's texture. A target no frame declares shows magenta.
             "Scene.screen" => match args.as_slice() {
-                [scene, target] => {
+                [target, scene] => {
                     let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.screen(scene, target)");
+                        return usage("Scene.screen(target, scene)");
                     };
                     let target = target_of(target, "Scene.screen", span)?;
                     scene_value(Scene3D {
@@ -1860,7 +1860,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage("Scene.screen(scene, target)"),
+                _ => usage("Scene.screen(target, scene)"),
             },
             "Frame.create" => match args.as_slice() {
                 [camera, scene] => {
@@ -1916,14 +1916,14 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                 }
                 _ => usage("Ui.column([view, …])"),
             },
-            // View first, so it pipes:
+            // View LAST (subject-last), so it pipes:
             // `Ui.column([…]) |> Ui.panel(Ui.topLeft())`. Only the corner
             // hello's HUD needed exists; the other three arrive with a port
             // that needs them.
             "Ui.panel" => match args.as_slice() {
-                [view, anchor] => {
+                [anchor, view] => {
                     let Some(view) = view_value(view) else {
-                        return usage("Ui.panel(view, anchor)");
+                        return usage("Ui.panel(anchor, view)");
                     };
                     let anchor = ui_anchor_of(anchor, span)?;
                     Ok(host(MleView(View::Panel {
@@ -1931,7 +1931,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                         child: Box::new(view.clone()),
                     })))
                 }
-                _ => usage("Ui.panel(view, anchor)"),
+                _ => usage("Ui.panel(anchor, view)"),
             },
             "Ui.topLeft" => match args.as_slice() {
                 [] => Ok(host(MleUiAnchor(ui::Anchor::TopLeft))),
@@ -3121,7 +3121,7 @@ mod tests {
             "let main = () =>\n\
              Frame.create(\n\
                Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
-               Scene.translate(Scene.rotateY(Scene.cube(), Angle.degrees(90.0)), 3.0, 0.0, 0.0))",
+               Scene.cube() |> Scene.rotateY(Angle.degrees(90.0)) |> Scene.translate(3.0, 0.0, 0.0))",
         );
         // World composition for nested Groups is parent-first:
         // world = T * R, so a cube corner rotates about the cube's own origin
@@ -3293,7 +3293,7 @@ the game dir"
     #[test]
     fn prelude_errors_are_spanned() {
         let module = mle::lower(
-            mle::parse("let main = () => Scene.color(Scene.cube(), 1.0, \"x\", 0.0)").unwrap(),
+            mle::parse("let main = () => Scene.color(1.0, \"x\", 0.0, Scene.cube())").unwrap(),
         )
         .unwrap();
         let failure = mle::run_with_host(&module, Tracing::Off, &mut FunctorHost)
@@ -3750,7 +3750,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
     #[test]
     fn non_finite_numbers_are_rejected_at_the_boundary() {
         let module = mle::lower(
-            mle::parse("let main = () => Scene.translate(Scene.cube(), 1.0 / 0.0, 0.0, 0.0)")
+            mle::parse("let main = () => Scene.translate(1.0 / 0.0, 0.0, 0.0, Scene.cube())")
                 .unwrap(),
         )
         .unwrap();
@@ -5181,7 +5181,7 @@ with Ui.topLeft()"
         // Debug.log in tick (the producer's reload path rebuilds the Session).
         let v2 = load(
             "let init = 0.0\n\
-             let tick = (m, dt, tts) => Debug.log(m + 1.0, \"tick m\")\n\
+             let tick = (m, dt, tts) => Debug.log(\"tick m\", m + 1.0)\n\
              let draw = (m, tts) => m",
         );
         // The trace fires on the next frame — model unaffected (returns m + 1).

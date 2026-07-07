@@ -799,8 +799,10 @@ impl Interp<'_> {
     ) -> Result<Value, RunError> {
         let err = |message: String| Err(RunError { message, span });
         match b {
+            // Subject-LAST — `List.map(fn, list)`, so `list |> List.map(fn)`
+            // threads the list in as the final argument.
             Builtin::ListMap => match args.as_slice() {
-                [Value::List(items), f] => {
+                [f, Value::List(items)] => {
                     let mut out = Vec::with_capacity(items.len());
                     for (i, item) in items.iter().enumerate() {
                         out.push(self.call(
@@ -813,10 +815,11 @@ impl Interp<'_> {
                     }
                     Ok(Value::List(Rc::new(out)))
                 }
-                _ => err("List.map(list, fn) expects a list and a function".to_string()),
+                _ => err("List.map(fn, list) expects a function and a list".to_string()),
             },
+            // Subject-LAST — `List.filter(fn, list)`.
             Builtin::ListFilter => match args.as_slice() {
-                [Value::List(items), f] => {
+                [f, Value::List(items)] => {
                     let mut out = Vec::new();
                     for (i, item) in items.iter().enumerate() {
                         match self.call(
@@ -838,12 +841,13 @@ impl Interp<'_> {
                     }
                     Ok(Value::List(Rc::new(out)))
                 }
-                _ => err("List.filter(list, fn) expects a list and a function".to_string()),
+                _ => err("List.filter(fn, list) expects a function and a list".to_string()),
             },
-            // List-first like map/filter, so it composes with `|>` (the piped
-            // value is PREPENDED as the first argument — see crate::lower).
+            // Subject-LAST like map/filter, so it composes with `|>` (the piped
+            // value is APPENDED as the final argument — see crate::lower):
+            // `list |> List.fold(fn, init)` == `List.fold(fn, init, list)`.
             Builtin::ListFold => match args.as_slice() {
-                [Value::List(items), f, init] => {
+                [f, init, Value::List(items)] => {
                     let mut acc = init.clone();
                     for (i, item) in items.iter().enumerate() {
                         acc = self.call(
@@ -857,7 +861,7 @@ impl Interp<'_> {
                     Ok(acc)
                 }
                 _ => err(
-                    "List.fold(list, fn, init) expects a list, a function, and an initial value"
+                    "List.fold(fn, init, list) expects a function, an initial value, and a list"
                         .to_string(),
                 ),
             },
@@ -883,12 +887,13 @@ impl Interp<'_> {
             // Tabulate a rows×cols grid by calling `f(row, col)` for each cell
             // (both 0-based) — `[[f(0,0), f(0,1), …], …]`. It is the engine's
             // tight-loop form of a procedural heightmap
-            // (`Scene.heightmap(List.grid(rows, cols, height))`); vs a nested
-            // `List.map(List.range(…))` it skips allocating the two range lists
+            // (`Scene.heightmap(List.grid(height, rows, cols))`); vs a nested
+            // `List.map(…)` it skips allocating the two range lists
             // and the outer-map closure each frame (both interpret `f` per cell,
             // and both loop iteratively so eval depth never accumulates).
+            // Subject-LAST: the callback comes FIRST — `List.grid(fn, rows, cols)`.
             Builtin::ListGrid => match args.as_slice() {
-                [Value::Number(rows), Value::Number(cols), f]
+                [f, Value::Number(rows), Value::Number(cols)]
                     if is_function(f)
                         && rows.is_finite()
                         && cols.is_finite()
@@ -918,12 +923,12 @@ impl Interp<'_> {
                     }
                     Ok(Value::List(Rc::new(grid)))
                 }
-                [Value::Number(_), Value::Number(_), f] if is_function(f) => err(
-                    "List.grid(rows, cols, fn) needs whole, non-negative counts with at \
+                [f, Value::Number(_), Value::Number(_)] if is_function(f) => err(
+                    "List.grid(fn, rows, cols) needs whole, non-negative counts with at \
 most 1000000 cells"
                         .to_string(),
                 ),
-                _ => err("List.grid(rows, cols, fn) expects two numbers and a function".to_string()),
+                _ => err("List.grid(fn, rows, cols) expects a function and two numbers".to_string()),
             },
             Builtin::ListMaximum => match args.as_slice() {
                 [Value::List(items)] => {
@@ -995,8 +1000,9 @@ most 1000000 cells"
             },
             // The wire-protocol string trio the multiplayer ports need (the
             // F# `String.Split` / `String.concat` / `parseInt` shapes).
+            // Subject-LAST — `Text.split(sep, s)`, so `s |> Text.split(sep)`.
             Builtin::TextSplit => match args.as_slice() {
-                [Value::String(s), Value::String(sep)] => {
+                [Value::String(sep), Value::String(s)] => {
                     if sep.is_empty() {
                         return err("Text.split needs a non-empty separator".to_string());
                     }
@@ -1004,10 +1010,11 @@ most 1000000 cells"
                         s.split(sep.as_ref()).map(|p| Value::String(Rc::from(p))).collect();
                     Ok(Value::List(Rc::new(parts)))
                 }
-                _ => err("Text.split(s, sep) expects two strings".to_string()),
+                _ => err("Text.split(sep, s) expects two strings".to_string()),
             },
+            // Subject-LAST — `Text.join(sep, list)`, so `list |> Text.join(sep)`.
             Builtin::TextJoin => match args.as_slice() {
-                [Value::List(items), Value::String(sep)] => {
+                [Value::String(sep), Value::List(items)] => {
                     let mut parts = Vec::with_capacity(items.len());
                     for item in items.iter() {
                         match item {
@@ -1022,7 +1029,7 @@ most 1000000 cells"
                     }
                     Ok(Value::String(Rc::from(parts.join(sep.as_ref()).as_str())))
                 }
-                _ => err("Text.join(list, sep) expects a list of strings and a string".to_string()),
+                _ => err("Text.join(sep, list) expects a string and a list of strings".to_string()),
             },
             // Parse a number out of a (possibly space-padded) string,
             // defaulting to 0.0 on failure — mirrors the F# ports'
@@ -1049,22 +1056,25 @@ most 1000000 cells"
                 [Value::Number(n)] => Ok(Value::Number(n.cos())),
                 _ => err("Math.cos(n) expects one number".to_string()),
             },
-            // Elm-style trace: log `label: <value>` through the process-wide
-            // trace sink and return `value` UNCHANGED — an impure observability
-            // escape hatch that never touches the model/sim (so a game with vs
-            // without a `Debug.log` produces byte-identical state). Value-first
-            // so it's pipe-friendly: `x |> Debug.log("x")`. The value renders
-            // with the interpreter's own `Value` display — the same text as
+            // Elm-style trace (`Debug.log : String -> a -> a`): log
+            // `label: <subject>` through the process-wide trace sink and return
+            // the SUBJECT unchanged — an impure observability escape hatch that
+            // never touches the model/sim (so a game with vs without a
+            // `Debug.log` produces byte-identical state). Label-first /
+            // subject-LAST, so it reads naturally standalone
+            // (`Debug.log("hp", m.hp)`) AND threads in a pipe
+            // (`m.hp |> Debug.log("hp")`). The subject renders with the
+            // interpreter's own `Value` display — the same text as
             // `mle run`/`trace` — for any type. The sink decides where the line
             // goes (stdout under plain `mle run`, the region-aware log path
             // under the host); see `crate::trace`.
             Builtin::DebugLog => match args.as_slice() {
-                [value, Value::String(label)] => {
-                    crate::trace::emit(format!("{label}: {value}"));
-                    Ok(value.clone())
+                [Value::String(label), subject] => {
+                    crate::trace::emit(format!("{label}: {subject}"));
+                    Ok(subject.clone())
                 }
                 _ => err(
-                    "Debug.log(value, label) expects a value and a string label".to_string(),
+                    "Debug.log(label, subject) expects a string label and a value".to_string(),
                 ),
             },
         }

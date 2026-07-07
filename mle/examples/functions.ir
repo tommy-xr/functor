@@ -208,6 +208,20 @@ Module {
                             },
                             args: [
                                 Expr {
+                                    id: e13,
+                                    kind: Global(
+                                        "add",
+                                    ),
+                                    span: 270..273,
+                                },
+                                Expr {
+                                    id: e14,
+                                    kind: Number(
+                                        0.0,
+                                    ),
+                                    span: 275..278,
+                                },
+                                Expr {
                                     id: e11,
                                     kind: FieldAccess {
                                         object: Expr {
@@ -221,20 +235,6 @@ Module {
                                         field: "scores",
                                     },
                                     span: 248..256,
-                                },
-                                Expr {
-                                    id: e13,
-                                    kind: Global(
-                                        "add",
-                                    ),
-                                    span: 270..273,
-                                },
-                                Expr {
-                                    id: e14,
-                                    kind: Number(
-                                        0.0,
-                                    ),
-                                    span: 275..278,
                                 },
                             ],
                         },
@@ -307,14 +307,6 @@ Module {
                                         },
                                         args: [
                                             Expr {
-                                                id: e17,
-                                                kind: Local {
-                                                    binding: b5,
-                                                    name: "players",
-                                                },
-                                                span: 333..340,
-                                            },
-                                            Expr {
                                                 id: e22,
                                                 kind: Lambda {
                                                     params: [
@@ -351,6 +343,14 @@ Module {
                                                     },
                                                 },
                                                 span: 353..368,
+                                            },
+                                            Expr {
+                                                id: e17,
+                                                kind: Local {
+                                                    binding: b5,
+                                                    name: "players",
+                                                },
+                                                span: 333..340,
                                             },
                                         ],
                                     },
