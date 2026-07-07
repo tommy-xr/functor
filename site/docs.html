@@ -263,9 +263,9 @@ let area = (s: Shape): Float =>
 
           <h3>Pipelines</h3>
           <p>
-            <code>|></code> <strong>prepends</strong> the piped value:
-            <code>x |> f(a)</code> is <code>f(x, a)</code>. Every prelude function therefore
-            takes its subject (list, scene, body) first.
+            <code>|></code> <strong>appends</strong> the piped value:
+            <code>x |> f(a)</code> is <code>f(a, x)</code>. Every prelude function therefore
+            takes its subject (list, scene, body) last (thread-last, F#/Elm-style).
           </p>
           <pre class="mle">let isHigh = (score) => score > 10.0
 let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
@@ -399,8 +399,8 @@ let span = (a, b) =>
           <h2>Builtins</h2>
           <table>
             <tbody>
-              <tr><td><code>List.map(list, fn)</code> · <code>List.filter(list, fn)</code></td><td rowspan="2">the subject comes first — pipeline-friendly</td></tr>
-              <tr><td><code>List.fold(list, fn, init)</code> — callback is <code>(acc, x) => …</code></td></tr>
+              <tr><td><code>List.map(fn, list)</code> · <code>List.filter(fn, list)</code></td><td rowspan="2">data comes last — pipeline-friendly (F#/Elm-style)</td></tr>
+              <tr><td><code>List.fold(fn, init, list)</code> — callback is <code>(acc, x) => …</code></td></tr>
               <tr><td><code>List.range(n)</code></td><td><code>[0 … n-1]</code></td></tr>
               <tr><td><code>List.maximum(list)</code></td><td></td></tr>
               <tr><td><code>Text.concat(a, b)</code> · <code>Text.fromFloat(n)</code> · <code>Text.toBullets(list)</code></td><td></td></tr>
@@ -412,7 +412,7 @@ let span = (a, b) =>
         <section id="sharp-edges">
           <h2>Sharp edges</h2>
           <ul>
-            <li><code>x |> f(a)</code> is <code>f(x, a)</code> — pipelines <em>prepend</em>.</li>
+            <li><code>x |> f(a)</code> is <code>f(a, x)</code> — pipelines <em>append</em> (thread-last).</li>
             <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
             <li>No <code>if</code>/<code>else</code> — use a bool-literal <code>match</code>.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>

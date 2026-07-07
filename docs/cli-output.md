@@ -112,7 +112,7 @@ so `-v --quiet` still shows only warn/error. Under `--json` the level gate still
 
 ### MLE `Debug.log` — the always-visible `trace` tier (PR-4b)
 
-MLE's `Debug.log(value, label)` builtin (an Elm-style trace: logs `label: <value>`, returns
+MLE's `Debug.log(label, value)` builtin (an Elm-style trace: logs `label: <value>`, returns
 `value` unchanged; see the `mle-language` skill) reuses this same region-aware log path — but with
 **one deliberate difference from the `-v`-gated `log` facade**: a `Debug.log` is *explicit user
 intent*, so it must show **by default, without `-v`**. It rides a distinct, always-visible
@@ -313,7 +313,7 @@ keypress in a focused window, never on a piped/`--json`/captured run.)
   region-aware path; `-v/--verbose` + `RUST_LOG` set the level (quiet warn/error default). Converts
   the runtime's informational `println!`s (asset-load debug, Xreal status). PR-4b adds the MLE
   `Debug.log` builtin through the same path.
-- **PR-4b (this):** the MLE `Debug.log(value, label)` builtin — a pipe-friendly Elm-style trace
+- **PR-4b (this):** the MLE `Debug.log(label, value)` builtin — a pipe-friendly Elm-style trace
   routed through the region-aware log path as the always-visible `trace` tier (shown by default, no
   `-v`, since it's explicit user intent). The `mle` crate owns a settable trace sink (default:
   stdout, for plain `mle run`); the host forwards it into `RuntimeEvent::MleTrace` →
