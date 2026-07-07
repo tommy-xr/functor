@@ -742,4 +742,5 @@ Module {
             span: 684..772,
         },
     ],
+    signatures: [],
 }

@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use crate::ast;
 use crate::ir::Module;
 use crate::lower::{exports_of, lower_in_project, Exports, IdBases, ProjectEnv};
-use crate::parser::{capitalize, parse_with_base};
+use crate::parser::{capitalize, parse_interface_with_base, parse_with_base};
 use crate::span::line_col;
 use crate::types::RecordLiteralScopes;
 use crate::CheckError;
@@ -113,6 +113,13 @@ pub struct SourceFile {
     pub module: String,
     pub src: String,
     pub base: usize,
+    /// A `.mlei` interface file (bodyless signatures), vs a `.mle`.
+    pub interface: bool,
+}
+
+/// Whether a path is an interface file (`.mlei`).
+fn is_interface(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("mlei")
 }
 
 /// Renders project-wide span offsets back to `file:line:col`.
@@ -204,8 +211,11 @@ pub fn project_files(entry_path: &Path) -> std::io::Result<Vec<PathBuf>> {
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
-            path.extension().and_then(|e| e.to_str()) == Some("mle")
-                && path.is_file()
+            // `.mle` implementations and `.mlei` interface files both load.
+            matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("mle" | "mlei")
+            ) && path.is_file()
                 && path.file_name() != entry_path.file_name()
         })
         .collect();
@@ -290,6 +300,7 @@ come from file names, capitalized",
         };
         let len = src.len();
         files.push(SourceFile {
+            interface: is_interface(path),
             path: path.clone(),
             module,
             src,
@@ -313,6 +324,7 @@ fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     // index 0. Both the filesystem and single-source loaders reach it here.
     let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
     files.push(SourceFile {
+        interface: false,
         path: PathBuf::from("<builtin>/Net.mle"),
         module: "Net".to_string(),
         src: NET_MODULE_SRC.to_string(),
@@ -335,8 +347,13 @@ fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     };
     let mut programs: Vec<ast::Program> = Vec::new();
     for (index, file) in files.iter().enumerate() {
-        let program = parse_with_base(&file.src, file.base)
-            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+        let parse = if file.interface {
+            parse_interface_with_base
+        } else {
+            parse_with_base
+        };
+        let program =
+            parse(&file.src, file.base).map_err(|e| render_span(&files, index, e.span, &e.message))?;
         programs.push(program);
     }
 
@@ -392,6 +409,15 @@ fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
             .map_err(|e| render_span(&files, index, e.span, &e.message))?;
         bases = next;
         lowered.push(module);
+        // An interface module has no runtime initializers, so its out-edges
+        // are meaningless for evaluation order and cannot form a real cycle.
+        // Dropping them lets a signature reference a consumer's type
+        // (`render : (Game.Model) => …`) without a spurious cycle error.
+        let module_deps = if file.interface {
+            HashSet::new()
+        } else {
+            module_deps
+        };
         deps.insert(file.module.clone(), module_deps);
     }
 
@@ -422,6 +448,7 @@ allowed (within one file, definitions may still be mutually recursive)",
     let mut merged = Module {
         types: Vec::new(),
         defs: Vec::new(),
+        signatures: Vec::new(),
     };
     let mut by_module: HashMap<String, Module> = files
         .iter()
@@ -432,6 +459,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         let module = by_module.remove(name).expect("ordered once");
         merged.types.extend(module.types);
         merged.defs.extend(module.defs);
+        merged.signatures.extend(module.signatures);
     }
 
     Ok(Project {
@@ -447,6 +475,7 @@ allowed (within one file, definitions may still be mutually recursive)",
 /// there are no sibling files. The built-in `Net` module is still injected.
 pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectError> {
     let files = vec![SourceFile {
+        interface: false,
         path: PathBuf::from(format!("{module}.mle")),
         module: module.to_string(),
         src: src.to_string(),
@@ -470,6 +499,7 @@ pub fn load_single_file(path: &Path, src: &str) -> Result<Project, ProjectError>
         _ => "Main".to_string(),
     };
     let files = vec![SourceFile {
+        interface: is_interface(path),
         path: path.to_path_buf(),
         module,
         src: src.to_string(),

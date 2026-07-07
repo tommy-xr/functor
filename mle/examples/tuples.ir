@@ -807,4 +807,5 @@ Module {
             span: 935..1062,
         },
     ],
+    signatures: [],
 }

@@ -68,6 +68,21 @@ impl fmt::Debug for ExprId {
 pub struct Module {
     pub types: Vec<TypeDef>,
     pub defs: Vec<Def>,
+    /// Bodyless value signatures from interface (`.mlei`) modules: the
+    /// declared type of a HOST-implemented value (`Scene.cube : () =>
+    /// SceneNode`). They give the checker types for otherwise-`Unknown`
+    /// externals; they have no body, so evaluation never sees them (the host
+    /// provides the value at runtime — there is no paired `.mle`).
+    pub signatures: Vec<Signature>,
+}
+
+/// One `.mlei` value signature: a canonical name (`Scene.cube`) and its
+/// declared type (carried symbolically, like a def annotation).
+#[derive(Debug)]
+pub struct Signature {
+    pub name: String,
+    pub ty: TypeName,
+    pub span: Span,
 }
 
 /// `type Position = { x: Float, y: Float }` or
