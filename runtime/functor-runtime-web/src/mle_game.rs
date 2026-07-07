@@ -772,6 +772,13 @@ pub enum ScrubControl {
     TogglePause,
     Step,
     SeekTo(u64),
+    /// Forward-ghosting (docs/time-travel.md T6d): toggle + parameters, pushed by
+    /// the DOM ghost controls. The frame loop owns the ghost state.
+    SetGhost {
+        on: bool,
+        divisions: usize,
+        window: f32,
+    },
 }
 
 thread_local! {
@@ -818,6 +825,17 @@ pub fn mle_scrub_toggle_pause() {
 #[wasm_bindgen]
 pub fn mle_scrub_step() {
     push_scrub(ScrubControl::Step);
+}
+
+/// Page → runtime: set forward-ghosting on/off and its parameters (JS owns the
+/// ghost UI state and pushes this on any change — docs/time-travel.md T6d).
+#[wasm_bindgen]
+pub fn mle_scrub_set_ghost(on: bool, divisions: usize, window: f32) {
+    push_scrub(ScrubControl::SetGhost {
+        on,
+        divisions,
+        window,
+    });
 }
 
 /// Page → runtime: non-destructively scrub to a rendered frame (slider drag).

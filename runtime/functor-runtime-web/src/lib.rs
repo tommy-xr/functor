@@ -926,6 +926,13 @@ async fn run_async() -> Result<(), JsValue> {
         // golden captures.
         let mut clock = GameClock::new(fixed_time);
 
+        // Forward-ghosting (docs/time-travel.md T6d). Unlike native (gated on the
+        // `~` overlay), the web DOM scrubber is always visible, so the ghost shows
+        // whenever `ghost_on`. JS owns this UI state and pushes `SetGhost` on change.
+        let mut ghost_on = false;
+        let mut ghost_divisions: usize = 8;
+        let mut ghost_window: f32 = 2.0;
+
         *g.borrow_mut() = Some(Closure::new(move || {
             // The frame's exclusive borrow of the shared producer. Cannot
             // collide with `mle_set_source`: JS is single-threaded, and
@@ -951,6 +958,15 @@ async fn run_async() -> Result<(), JsValue> {
                         clock.toggle_pause();
                     }
                     mle_game::ScrubControl::Step => clock.step(1.0 / 60.0),
+                    mle_game::ScrubControl::SetGhost {
+                        on,
+                        divisions,
+                        window,
+                    } => {
+                        ghost_on = on;
+                        ghost_divisions = divisions;
+                        ghost_window = window;
+                    }
                     mle_game::ScrubControl::SeekTo(f) => {
                         let _ = game.seek_scene_to(f);
                         // Park on the scrubbed frame and keep the clock aligned to
@@ -1017,19 +1033,50 @@ async fn run_async() -> Result<(), JsValue> {
             }
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
 
+            // Forward-ghosting (docs/time-travel.md T6d): when the DOM ghost
+            // toggle is on, forward-step the scene over `ghost_window` seconds in
+            // `ghost_divisions` slices and composite them at equal weight, so
+            // moving elements strobe across their future and static geometry stays
+            // solid. `None` = the recorded-log/coast path (web has no
+            // --input-script). Empty (→ this arm skipped) leaves live rendering
+            // unchanged. The web scrubber is always visible, so there is no
+            // overlay gate (unlike native's `~`).
+            let ghosts = if ghost_on {
+                let divisions = ghost_divisions.clamp(1, 8);
+                let dt = ghost_window / divisions as f32;
+                game.ghost_frames(divisions, dt, frame_time.tts as f64, None)
+            } else {
+                Vec::new()
+            };
+
             // Shadow + forward passes, shared with the desktop runtime.
-            functor_runtime_common::render_frame(
-                &gl,
-                shader_version,
-                asset_cache.clone(),
-                &scene_context,
-                &shadow_map,
-                &frame,
-                &frame.camera,
-                frame_time.clone(),
-                viewport,
-                debug_render_mode,
-            );
+            if !ghosts.is_empty() {
+                functor_runtime_common::render_composited_frames(
+                    &gl,
+                    shader_version,
+                    asset_cache.clone(),
+                    &scene_context,
+                    &shadow_map,
+                    &ghosts,
+                    &vec![1.0f32; ghosts.len()],
+                    frame_time.clone(),
+                    viewport,
+                    debug_render_mode,
+                );
+            } else {
+                functor_runtime_common::render_frame(
+                    &gl,
+                    shader_version,
+                    asset_cache.clone(),
+                    &scene_context,
+                    &shadow_map,
+                    &frame,
+                    &frame.camera,
+                    frame_time.clone(),
+                    viewport,
+                    debug_render_mode,
+                );
+            }
 
             // 2D UI overlay: the game's declarative `ui model` View, lowered to a
             // text overlay on top of the frame (HiDPI-aware via the device ratio).
