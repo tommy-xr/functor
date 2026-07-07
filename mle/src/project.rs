@@ -253,6 +253,21 @@ pub fn load_with_overrides(
     entry_path: &Path,
     overrides: &HashMap<PathBuf, String>,
 ) -> Result<Project, ProjectError> {
+    load_with_prelude(entry_path, overrides, &[])
+}
+
+/// [`load_with_overrides`], plus a set of injected PRELUDE interface modules —
+/// `(module name, .mlei source)` pairs describing host-provided values
+/// (`Scene.*`, `Camera.*`, …). Unlike project files they are not read from the
+/// directory and are EXEMPT from the protected-namespace check: they are
+/// precisely what defines those namespaces. This is the host's seam to give
+/// the checker real types for its externals (see `docs/mlei.md`); plain `mle`
+/// callers pass nothing, so the language stays host-agnostic.
+pub fn load_with_prelude(
+    entry_path: &Path,
+    overrides: &HashMap<PathBuf, String>,
+    prelude: &[(String, String)],
+) -> Result<Project, ProjectError> {
     let at = |path: &Path, message: String| ProjectError {
         path: path.to_path_buf(),
         line: 1,
@@ -309,6 +324,18 @@ come from file names, capitalized",
         // +1 gap: a span at one file's very end never collides with the
         // next file's base.
         base += len + 1;
+    }
+    // Injected prelude interface modules — after the project files, exempt
+    // from the protected-namespace check (they OWN those namespaces).
+    for (module, src) in prelude {
+        files.push(SourceFile {
+            interface: true,
+            path: PathBuf::from(format!("<prelude>/{module}.mlei")),
+            module: module.clone(),
+            src: src.clone(),
+            base,
+        });
+        base += src.len() + 1;
     }
     link(files)
 }

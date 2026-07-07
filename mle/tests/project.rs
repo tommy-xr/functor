@@ -994,3 +994,36 @@ fn interface_member_lowers_to_external() {
     );
     assert_eq!(number(&value), 42.0);
 }
+
+/// Injected prelude interface modules (mlei 2e) give the checker real types
+/// for host externals — exempt from the protected-namespace check, since they
+/// OWN those namespaces. `Scene.*` types against the injected `Scene` module.
+#[test]
+fn injected_prelude_types_host_externals() {
+    let scratch = Scratch::new(
+        "prelude-inject",
+        &[(
+            "game.mle",
+            "let ok = () => Scene.color(1.0, 0.0, 0.0, Scene.cube())\n\
+             let bad = () => Scene.color(1.0, 0.0, 0.0, 3.0)",
+        )],
+    );
+    let prelude = [(
+        "Scene".to_string(),
+        "type Node\n\
+         let cube : () => Node\n\
+         let color : (Float, Float, Float, Node) => Node"
+            .to_string(),
+    )];
+    let project =
+        mle::project::load_with_prelude(&scratch.entry, &Default::default(), &prelude)
+            .unwrap_or_else(|e| panic!("prelude load: {}", e.render()));
+    let diags = project.check();
+    // Only the deliberate `3.0` misuse; `Scene.cube()` → `Scene.Node` is fine.
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("expected Scene.Node"),
+        "unexpected: {}",
+        diags[0].message
+    );
+}
