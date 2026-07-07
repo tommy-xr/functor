@@ -185,14 +185,17 @@ fn error_field_access_on_a_float() {
     assert_eq!((line, col), (1, 23));
 }
 
+// Currying: under-application is a legal partial application, not an arity
+// error — `f(1.0)` on a 2-arg `f` yields a `(Float) => Float`. (The crisp
+// "takes N argument(s)" error is the accepted quality regression of the
+// currying migration; a dedicated "partial reaches a non-function position"
+// diagnostic is planned to recover it.)
 #[test]
-fn error_call_arity() {
-    let (message, line, col) = single_diag(
+fn partial_application_of_user_function_is_accepted() {
+    assert_clean(
         "let f = (a: Float, b: Float): Float => a + b\n\
          let g = () => f(1.0)",
     );
-    assert_eq!(message, "`f` takes 2 argument(s), got 1");
-    assert_eq!((line, col), (2, 15));
 }
 
 #[test]
@@ -215,10 +218,44 @@ fn error_builtin_argument_type() {
     assert_eq!((line, col), (1, 28));
 }
 
+// Currying: a partially-applied builtin is a legal value, not an arity error
+// — `Text.concat("a")` is a `(String) => String`.
 #[test]
-fn error_builtin_arity() {
-    let (message, _, _) = single_diag("let x = () => Text.concat(\"a\")");
-    assert_eq!(message, "`Text.concat` takes 2 argument(s), got 1");
+fn partial_application_of_builtin_is_accepted() {
+    assert_clean("let x = () => Text.concat(\"a\")");
+}
+
+// Currying: a partial has the type of the not-yet-supplied params, so
+// saturating it later still checks its remaining argument.
+#[test]
+fn partial_application_then_saturate_checks() {
+    assert_clean(
+        "let f = (a: Float, b: Float): Float => a + b\n\
+         let g = () => let inc = f(1.0) in inc(2.0)",
+    );
+    let (message, _, _) = single_diag(
+        "let f = (a: Float, b: Float): Float => a + b\n\
+         let g = () => let inc = f(1.0) in inc(\"s\")",
+    );
+    assert_eq!(message, "argument 1 of `inc`: expected Float, got String");
+}
+
+// Currying: over-application checks the surplus args against the result type,
+// which must itself be a function.
+#[test]
+fn over_application_checks_surplus_against_result() {
+    // A curried function over-applied in one call — clean, and the surplus arg
+    // is checked against the inner function's param.
+    assert_clean(
+        "let adder = (a: Float) => (b: Float) => a + b\n\
+         let main = () => adder(3.0, 4.0)",
+    );
+    // Over-applying a non-function result is an error.
+    let (message, _, _) = single_diag(
+        "let f = (a: Float): Float => a\n\
+         let g = () => f(1.0, 2.0)",
+    );
+    assert_eq!(message, "cannot call Float, not a function");
 }
 
 // A builtin's known callback shape checks: List.filter's predicate must
@@ -608,16 +645,18 @@ fn catch_all_var_binds_the_scrutinee_type() {
     assert_eq!(message, "`+` needs Float operands, got Shape");
 }
 
-/// Construction checks like any call: declared field types and arity.
+/// Construction checks like any call: declared field types are enforced on the
+/// supplied args, and (currying) a partially-applied constructor is a legal
+/// value rather than an arity error.
 #[test]
-fn error_ctor_argument_type_and_arity() {
+fn error_ctor_argument_type_and_partial() {
     let (message, _, _) = single_diag(&format!("{SHAPE}let x = () => Circle(\"s\")"));
     assert_eq!(
         message,
         "argument 1 of `Circle`: expected Float, got String"
     );
-    let (message, _, _) = single_diag(&format!("{SHAPE}let x = () => Rect(1.0)"));
-    assert_eq!(message, "`Rect` takes 2 argument(s), got 1");
+    // `Rect(1.0)` on a 2-arg ctor is a legal partial `(Float) => Shape`.
+    assert_clean(&format!("{SHAPE}let x = () => Rect(1.0)"));
 }
 
 /// Variant types are nominal in annotations, like records.

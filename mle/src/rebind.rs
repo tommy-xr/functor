@@ -134,6 +134,17 @@ fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut Rebind
             args: Rc::new(args.iter().map(|v| walk(v, old, new, report)).collect()),
         },
         Value::Closure(closure) => rebind_closure(closure, old, new, report),
+        // Rebind the captured callee and the already-applied args. (The count
+        // still needed is derived from the rebound callee's arity at display
+        // time, so a hot-reload that changes it can never leave a stale count.)
+        Value::Partial(partial) => Value::Partial(Rc::new(crate::value::Partial {
+            callee: walk(&partial.callee, old, new, report),
+            applied: partial
+                .applied
+                .iter()
+                .map(|v| walk(v, old, new, report))
+                .collect(),
+        })),
     }
 }
 
