@@ -1,0 +1,14 @@
+// BENCH: match-arm dispatch -- a 200k fold whose step classifies each element
+// with nested bool-literal matches (MLE's only conditional). Measures match
+// evaluation and arm selection, with no deep recursion.
+//
+// Convention: `main` is the timed unit of work. Also: `mle run pattern_match.mle`.
+let classify = (x) =>
+  match x > 150000.0 with
+  | true => 3.0
+  | false =>
+    (match x > 50000.0 with
+     | true => 2.0
+     | false => 1.0)
+let main = () =>
+  List.fold(List.range(200000), (acc, x) => acc + classify(x), 0.0)

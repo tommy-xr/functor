@@ -1,0 +1,18 @@
+// BENCH: ADT construct + match -- a 100k fold that builds a Shape variant per
+// element and matches it to compute an area. Measures constructor allocation
+// and variant-pattern dispatch together.
+//
+// Convention: `main` is the timed unit of work. Also: `mle run adt.mle`.
+type Shape =
+  | Circle(radius: Float)
+  | Rect(w: Float, h: Float)
+let area = (s: Shape): Float =>
+  match s with
+  | Circle(r) => 3.14159 * r * r
+  | Rect(w, h) => w * h
+let toShape = (x) =>
+  match x > 50000.0 with
+  | true => Circle(x)
+  | false => Rect(x, 2.0)
+let main = () =>
+  List.fold(List.range(100000), (acc, x) => acc + area(toShape(x)), 0.0)

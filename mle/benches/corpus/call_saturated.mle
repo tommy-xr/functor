@@ -1,0 +1,12 @@
+// BENCH: saturated multi-arg calls (the interpreter's call hot path).
+// Shape: fold over a 1,000,000-element range; each step makes one 2-arg call
+// (step) that makes one 3-arg call (f) -- ~2M fully-saturated closure calls,
+// all arguments supplied exactly. This is the number that decides whether
+// currying costs anything on the hot path: it is a pure call-overhead loop.
+//
+// Convention: `main` is the unit of work the bench harness times (see
+// mle/benches/README.md). Also runnable directly: `mle run call_saturated.mle`
+// (result: 1499998500000).
+let f = (a, b, c) => a + b * c
+let step = (acc, x) => acc + f(x, x, 2.0)
+let main = () => List.fold(List.range(1000000), step, 0.0)
