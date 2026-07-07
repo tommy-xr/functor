@@ -63,6 +63,15 @@ impl AssetCache {
         // If not cached, load bytes asynchronously
         let bytes_future = async move {
             let bytes = load_bytes_async2(asset_path_owned.clone()).await?;
+            // Region-aware debug line (see docs/cli-output.md): under the CLI's
+            // logger this becomes an `Event::Log` printed above the live panel;
+            // silent unless `-v`/`RUST_LOG=debug`. Fires once per asset (on the
+            // first load), not on the per-frame hot path.
+            log::debug!(
+                "loaded asset '{}' ({} bytes)",
+                asset_path_owned,
+                bytes.len()
+            );
             bytes_cache
                 .lock()
                 .unwrap()

@@ -60,8 +60,8 @@ panic (a chained panic hook).
 is the explicit opt-in to ndjson. TTY detection uses `std::io::IsTerminal` (std, no dep).
 
 Flags are **global** (accepted before or after the subcommand): `--json`, `--quiet`,
-`--no-color`, `--ascii`. `--json` takes precedence: under `--json`, `--quiet` is a no-op (the full
-event stream is emitted — machine consumers filter it themselves).
+`--no-color`, `--ascii`, `-v/--verbose`. `--json` takes precedence: under `--json`, `--quiet` is a
+no-op (the full event stream is emitted — machine consumers filter it themselves).
 
 **ASCII glyph fallback (PR-3).** The human renderers use unicode status glyphs (`▸ ✓ ✗ ◈ ↻`) and a
 braille spinner / block budget bar. On a terminal that can't render them, they degrade to ASCII
@@ -72,6 +72,43 @@ both the plain and live renderers), when any of: `--ascii` is passed, `TERM=dumb
 as UTF-8, so the default is unchanged. `--json` is pure structured data (no glyphs) and is
 unaffected. ASCII mode is orthogonal to color: a color TTY under `TERM=dumb`/`--ascii` keeps its
 colored live region but swaps in the ASCII glyphs.
+
+## Logging & verbosity (PR-4a)
+
+Free-form logs are first-class events, not raw prints. Any `log::{debug,info,warn,error}!` call —
+in the CLI **or** the in-process runtime (or a runtime dependency) — is turned into an
+[`Event::Log`](#the-log-event) and travels the **same region-aware renderer** as everything else.
+This is the crux: under the live renderer a log line is committed with `MultiProgress::println`, so
+it lands in scrollback **above** the sticky telemetry panel and the panel redraws intact — a raw
+`println!` into that region would corrupt it. Under `--json` a log is one more ndjson object; under
+`PlainRenderer` it's a plain `[level] message` line.
+
+**How it's wired.** The CLI installs one process-wide `log::Log` in `output::init` (a small adapter
+in `cli/src/output.rs`) that maps each `log::Record` onto `Event::Log { level, message }` and calls
+`output::emit`. The runtime crates depend only on the `log` **facade** (never on `cli`), so a plain
+`log::debug!("…")` in `runtime/` renders cleanly with zero coupling. Structured, schema'd facts
+(`frame_stats`, `capture_written`, `hot_reload`, `asset_error`, `runtime_ready`) still go through the
+typed `functor_runtime_common::events` sink — the `log` facade is only for **free-form** diagnostics.
+
+**Scoped to Functor's crates.** The logger filters on `record.target()` (which defaults to the
+module path) to Functor's own crates — `functor*` and `mle`. Transitive deps (notify, mio, tokio,
+hyper, glow, egui, gltf, …) all use `log` too, so without this a `-v` run would drown in their
+debug/trace and any dep `warn!` would surface in normal output. Scoping keeps `-v` meaning "*Functor's*
+debug logs."
+
+**Level & verbosity.** `log`'s global `max_level` gates cheaply (a suppressed `log::debug!` on a hot
+path is nearly free — just a level compare), decided once in `init`:
+
+| Condition (first match wins) | Level shown |
+| ---------------------------- | ----------- |
+| `RUST_LOG=<level>` set (a bare `error`/`warn`/`info`/`debug`/`trace`) | that level |
+| `-v` / `--verbose`           | `debug` and up (debug/info/warn/error) |
+| otherwise (default)          | `warn` and up (warn/error only) — the CLI stays quiet |
+
+So the CLI is **quiet by default** (warnings + errors); `-v` (or `RUST_LOG=debug`) opens the
+debug/info firehose. `--quiet` independently suppresses any log below `warn` in the plain renderer,
+so `-v --quiet` still shows only warn/error. Under `--json` the level gate still applies (a default
+`--json` run carries warn/error logs; `-v --json` carries debug/info too) — always as valid ndjson.
 
 ## The `Event` schema (stable API)
 
@@ -167,6 +204,19 @@ Example tail of `functor -d examples/lighting run native --json` (frame stats + 
 {"type":"capture_written","path":"/tmp/frame.png"}
 ```
 
+### The `log` event (PR-4a)
+
+The one free-form event — any `log::{debug,info,warn,error}!` in the CLI or the in-process runtime,
+funneled through the region-aware renderer (see [Logging & verbosity](#logging--verbosity-pr-4a)).
+
+| `type` | Fields                                                                    | Emitted when |
+| ------ | ------------------------------------------------------------------------- | ------------ |
+| `log`  | `level` (`"debug"`\|`"info"`\|`"warn"`\|`"error"`), `message` (string)     | a `log!` call passes the active level |
+
+```json
+{"type":"log","level":"debug","message":"loaded asset 'grid-neon.png' (24601 bytes)"}
+```
+
 ## Runtime-output routing — the event sink (PR-2a)
 
 Post-#243 `functor run native` drives the desktop runtime **in the CLI's process**. That runtime
@@ -207,9 +257,12 @@ visible where they were.
 **Everything else stays off stdout.** A few flag-gated runtime notices have no natural event —
 `--headless` mode, the `--debug-port` "listening on…" line, `--replay` "loaded N frames" — so they
 go to **stderr**, not the event stream. That keeps stdout pure ndjson under `--json` even for the
-`--debug-port` / `--headless` combos an SDK/automation consumer uses. (Interactive, TTY-only notices
-— cursor-release hints, Xreal tracking status — remain plain stdout lines; they only fire on a
-focused window with a real user, never on a piped/`--json`/captured run.)
+`--debug-port` / `--headless` combos an SDK/automation consumer uses. Free-form runtime status that
+*doesn't* map to a structured event (e.g. Xreal connect/calibration status, or an asset-load debug
+line) now goes through the **`log` facade** (PR-4a) instead of a raw `println!`, so it too renders
+region-aware and never corrupts `--json`. (The two genuinely-interactive TTY notices — the
+cursor-release hint and the F1-recenter ack — stay plain stdout `println!`; they only fire on a
+keypress in a focused window, never on a piped/`--json`/captured run.)
 
 ## Phasing
 
@@ -223,8 +276,13 @@ focused window with a real user, never on a piped/`--json`/captured run.)
   `✓` line, and a sticky `run native` telemetry panel that consumes `frame_stats`/`hot_reload`,
   above scrollback. TTY-only; the machine paths are untouched. (A full-screen `--dashboard` is
   explicitly out of scope.)
-- **PR-3 (this, closes the pass):** rich MLE diagnostics (the `source_line` field + a human caret
+- **PR-3 (closes the UX pass):** rich MLE diagnostics (the `source_line` field + a human caret
   block), actionable error `hint`s for common failures, and an ASCII glyph fallback for dumb /
   non-UTF-8 terminals (`--ascii`).
+- **PR-4a (this):** region-aware logging — the `log` event + a `log::Log` facade the CLI installs,
+  so any `log::{debug,info,warn,error}!` (CLI or in-process runtime) renders through the same
+  region-aware path; `-v/--verbose` + `RUST_LOG` set the level (quiet warn/error default). Converts
+  the runtime's informational `println!`s (asset-load debug, Xreal status). PR-4b adds the MLE
+  `Debug.log` builtin through the same path.
 </content>
 </invoke>

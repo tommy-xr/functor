@@ -13,6 +13,9 @@ path = "src/main.rs"
 mle = { path = "../mle" }
 clap = { version = "4.5.6", features = ["derive"] }
 colored = "2.1.0"
+# The `log` facade: the CLI installs a logger that turns any `log!` (its own or
+# the in-process runtime's) into a region-aware `Event::Log` (cli/src/output.rs).
+log = "0.4"
 # The ink-style live region: spinners + a sticky telemetry panel above
 # scrollback, on an interactive TTY only (see cli/src/output/live.rs).
 indicatif = "0.17"
