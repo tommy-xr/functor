@@ -152,6 +152,19 @@ async fn main() -> tokio::io::Result<()> {
 
     output::init(args.json, args.quiet, args.no_color);
 
+    // When the live (ink-style) renderer is up, a Ctrl-C would otherwise kill
+    // the process mid-draw and leave the sticky live region stranded on screen.
+    // Arm a handler that wipes it and restores the terminal first. Only the live
+    // path is affected — the plain/json signal behavior is unchanged.
+    if output::live_active() {
+        tokio::spawn(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                output::cleanup();
+                process::exit(130);
+            }
+        });
+    }
+
     // `inspect` is a DATA command: it prints a report (its own `--format
     // text|json` is its dual mode) to stdout, so it bypasses the event stream
     // to keep that stdout payload pure. It also runs before functor.json

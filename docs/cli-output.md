@@ -8,7 +8,8 @@ startup, turns that stream into either human-readable text or newline-delimited 
 as structured data.
 
 ```
-command logic ──emit(Event)──▶ ┌─ PlainRenderer  (human text; color on a TTY)
+command logic ──emit(Event)──▶ ┌─ LiveRenderer   (ink-style live region; interactive color TTY)
+                               ├─ PlainRenderer  (human text; --quiet / non-TTY / CI / NO_COLOR)
                                └─ JsonRenderer   (ndjson: one {type,…} object per line)
 ```
 
@@ -36,12 +37,24 @@ Selected once at startup from flags + environment:
 | ----------------------------------- | ---------------------------------------- | ----- |
 | `--json`                            | `JsonRenderer` — ndjson                   | never |
 | `--quiet`                           | `PlainRenderer`, minimal (errors + final status only) | per rule below |
-| stdout **not a TTY**, or `CI` set   | `PlainRenderer` — **plain text** (no ANSI) | off   |
-| interactive TTY (default)           | `PlainRenderer` — human text              | on    |
+| color allowed (interactive TTY, no `NO_COLOR`/`--no-color`/`CI`) | `LiveRenderer` — ink-style live region (PR-2b) | on |
+| otherwise (non-TTY / `CI` / `NO_COLOR` / `--no-color`) | `PlainRenderer` — **plain text** (no ANSI) | off |
 
 Color is enabled only when **stdout is a TTY** and `NO_COLOR` is unset and `--no-color` is
 not passed and `CI` is unset. `--json` never colors. This is enforced globally via
 `colored::control::set_override`, so a dumb terminal / pipe / `NO_COLOR` never leaks ANSI.
+
+The **`LiveRenderer`** (PR-2b, `cli/src/output/live.rs`) is the ink-style human path: an
+in-flight phase spinner that resolves to a stable `✓` line in scrollback, and — for
+`run native` — a sticky multi-line telemetry panel (fps / tick / draw / frame / a budget bar
+/ last hot-reload) pinned above scrollback, fed by `frame_stats`/`hot_reload`. It activates
+**only** on a color-allowed TTY and never under `--quiet`, so every machine-facing path
+(`--json`, `--quiet`, non-TTY, `CI`, `NO_COLOR`, `--no-color`) keeps the plain/json renderer
+byte-for-byte — no spinner or control char reaches a piped/CI/agent stream. It reuses
+`PlainRenderer::lines` for every committed line (no formatting is duplicated), animates via
+indicatif's cheap `enable_steady_tick` (never touching the game loop's hot path), and wipes
+the live region + restores the cursor on Ctrl-C (a `tokio::signal::ctrl_c` handler) and on
+panic (a chained panic hook).
 
 **Confirmed defaults:** non-TTY (piped/redirected) → **plain text**, *not* ndjson. `--json`
 is the explicit opt-in to ndjson. TTY detection uses `std::io::IsTerminal` (std, no dep).
@@ -166,8 +179,11 @@ focused window with a real user, never on a piped/`--json`/captured run.)
 - **PR-2a (this):** route the in-process runtime output (frame stats, capture, hot-reload, asset
   errors, ready) through the event sink above, so `run/develop native --json` is clean ndjson.
   `PlainRenderer` prints the new events as plain lines; `JsonRenderer` serializes them. No TUI.
-- **PR-2b:** the ink-style human renderer (spinners, a live region above scrollback, a sticky
-  telemetry panel that consumes `frame_stats`, grouped styled sections). Builds on PR-2a's events.
-- **PR-3:** rich MLE diagnostics (source line + caret), actionable error hints, polish.
+- **PR-2b (this):** the ink-style `LiveRenderer` — a phase spinner that resolves to a stable
+  `✓` line, and a sticky `run native` telemetry panel that consumes `frame_stats`/`hot_reload`,
+  above scrollback. TTY-only; the machine paths are untouched. (A full-screen `--dashboard` is
+  explicitly out of scope.)
+- **PR-3:** rich MLE diagnostics (source line + caret), actionable error hints, ASCII fallback
+  for dumb terminals, polish.
 </content>
 </invoke>
