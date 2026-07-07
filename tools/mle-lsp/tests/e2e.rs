@@ -74,6 +74,14 @@ fn diagnostics_over_real_stdio() {
         response["result"]["capabilities"]["definitionProvider"],
         true
     );
+    assert_eq!(
+        response["result"]["capabilities"]["inlayHintProvider"],
+        true
+    );
+    assert_eq!(
+        response["result"]["capabilities"]["codeLensProvider"]["resolveProvider"],
+        false
+    );
 
     server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
 
@@ -187,12 +195,147 @@ fn diagnostics_over_real_stdio() {
     assert_eq!(response["id"], 5);
     assert_eq!(response["result"], Value::Null, "expected null: {response}");
 
+    // didChange to a document with an unannotated lambda param, for inlay.
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": URI, "version": 4 },
+            "contentChanges": [ { "text": "let f = (x) => x + 1.0" } ],
+        },
+    }));
+    assert_eq!(server.recv()["params"]["diagnostics"], json!([]));
+
+    // Inlay hints over line 0 → one `: Float` type hint right after the `x`
+    // param (byte 10 = line 0 char 10).
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 6, "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": { "uri": URI },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 22 },
+            },
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(response["id"], 6);
+    assert_eq!(
+        response["result"],
+        json!([{
+            "position": { "line": 0, "character": 10 },
+            "label": ": Float",
+            "kind": 1,
+            "paddingLeft": false,
+            "paddingRight": false,
+        }]),
+        "inlay response: {response}"
+    );
+
+    // Code lens over the same document → one inferred-signature lens for `f`,
+    // anchored on its `let` line (bytes 0..22 of the single line).
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 7, "method": "textDocument/codeLens",
+        "params": { "textDocument": { "uri": URI } },
+    }));
+    let response = server.recv();
+    assert_eq!(response["id"], 7);
+    assert_eq!(
+        response["result"],
+        json!([{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 22 },
+            },
+            "command": { "title": "f : (Float) => Float", "command": "" },
+        }]),
+        "codeLens response: {response}"
+    );
+
     // Clean shutdown.
-    server.send(json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }));
-    assert_eq!(server.recv()["id"], 6);
+    server.send(json!({ "jsonrpc": "2.0", "id": 8, "method": "shutdown" }));
+    assert_eq!(server.recv()["id"], 8);
     server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
     let status = server.child.wait().expect("wait for exit");
     assert!(status.success(), "server exited with {status}");
+}
+
+/// Project-aware (Track D, slice 1b): a real `functor.json` project on disk
+/// with an entry that references a sibling. Hover on the cross-module call
+/// shows the sibling's inferred signature, and go-to-definition jumps to the
+/// sibling file — the two headline multi-file wins, over the real binary.
+#[test]
+fn project_aware_hover_and_cross_file_definition() {
+    // A scratch project: game.mle (entry) calls Utils.double from utils.mle.
+    let dir = std::env::temp_dir().join(format!("mle-lsp-e2e-project-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    std::fs::write(
+        dir.join("functor.json"),
+        r#"{"language":"mle","entry":"game.mle"}"#,
+    )
+    .unwrap();
+    let game = "let apply = (n) => Utils.double(n)\n";
+    std::fs::write(dir.join("game.mle"), game).unwrap();
+    std::fs::write(
+        dir.join("utils.mle"),
+        "let double = (x: Float): Float => x * 2.0\n",
+    )
+    .unwrap();
+    let game_uri = format!("file://{}/game.mle", dir.display());
+    let utils_uri = format!("file://{}/utils.mle", dir.display());
+
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": game_uri, "languageId": "mle", "version": 1, "text": game,
+        } },
+    }));
+    server.recv(); // publishDiagnostics (clean)
+
+    // Hover on the `Utils.double` call (char 19 = the `U`): the sibling's
+    // inferred signature, resolved across the file boundary.
+    let hover_col = game.find("Utils").unwrap() as i64;
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": game_uri },
+            "position": { "line": 0, "character": hover_col + 6 }, // inside `double`
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "```mle\nUtils.double : (Float) => Float\n```",
+        "cross-file hover: {response}"
+    );
+
+    // Go-to-definition on the same reference → a Location in utils.mle, NOT
+    // the entry: cross-file navigation.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": game_uri },
+            "position": { "line": 0, "character": hover_col + 6 },
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(response["result"]["uri"], utils_uri, "cross-file goto: {response}");
+    assert_eq!(
+        response["result"]["range"]["start"]["line"], 0,
+        "double is on line 0 of utils.mle: {response}"
+    );
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The VSCode extension's grammar and manifests must at least be valid JSON

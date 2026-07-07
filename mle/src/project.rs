@@ -81,6 +81,14 @@ impl Project {
     pub fn check(&self) -> Vec<CheckError> {
         crate::types::check_with_scopes(&self.module, &self.scopes)
     }
+
+    /// [`Project::check`], also returning the per-expression type table — the
+    /// project-wide input for `mle::hover` / `mle::inlay` / `mle::codelens`.
+    /// Spans (keys into the table's positions) are project-wide; render them
+    /// through [`Project::sources`].
+    pub fn check_with_types(&self) -> (Vec<CheckError>, crate::types::ExprTypes) {
+        crate::types::check_with_scopes_and_types(&self.module, &self.scopes)
+    }
 }
 
 /// One file of a project, with its base offset in the project-wide span
@@ -141,6 +149,21 @@ impl SourceMap {
     pub fn render(&self, offset: usize, message: &str) -> String {
         let (file, line, col) = self.resolve(offset);
         format!("{}:{line}:{col}: {message}", file.path.display())
+    }
+
+    /// The source file with this path, if the project has one — the LSP's
+    /// seam for mapping an editor document (a file path) to its base in the
+    /// project-wide span space. Matches on the exact path first, then on the
+    /// canonicalized path (a URI-derived path and a `read_dir` path can
+    /// differ in form: symlinks, `.`/`..`, absolute vs relative).
+    pub fn file_by_path(&self, path: &Path) -> Option<&SourceFile> {
+        if let Some(file) = self.files.iter().find(|f| f.path == path) {
+            return Some(file);
+        }
+        let canon = std::fs::canonicalize(path).ok()?;
+        self.files
+            .iter()
+            .find(|f| std::fs::canonicalize(&f.path).ok() == Some(canon.clone()))
     }
 }
 
@@ -204,6 +227,22 @@ pub fn load_with_entry_source(
     entry_path: &Path,
     entry_src: Option<String>,
 ) -> Result<Project, ProjectError> {
+    let overrides = match entry_src {
+        Some(src) => HashMap::from([(entry_path.to_path_buf(), src)]),
+        None => HashMap::new(),
+    };
+    load_with_overrides(entry_path, &overrides)
+}
+
+/// [`load`], with any project files' on-disk sources replaced by the given
+/// in-memory buffers (keyed by path). The LSP's seam: an editor holds
+/// unsaved edits for one or more open files (entry or sibling), and the rest
+/// load from disk. A key matching no project file is ignored. Matching is by
+/// exact path, then canonicalized path (see [`SourceMap::file_by_path`]).
+pub fn load_with_overrides(
+    entry_path: &Path,
+    overrides: &HashMap<PathBuf, String>,
+) -> Result<Project, ProjectError> {
     let at = |path: &Path, message: String| ProjectError {
         path: path.to_path_buf(),
         line: 1,
@@ -221,7 +260,7 @@ pub fn load_with_entry_source(
     // Derive and validate module names; read sources; assign span bases.
     let mut files: Vec<SourceFile> = Vec::new();
     let mut base = 0usize;
-    for (index, path) in paths.iter().enumerate() {
+    for path in paths.iter() {
         let module = module_name(path).map_err(|message| at(path, message))?;
         if PROTECTED_NAMESPACES.contains(&module.as_str()) {
             return Err(at(
@@ -244,9 +283,9 @@ come from file names, capitalized",
                 ),
             ));
         }
-        let src = match (index, &entry_src) {
-            (0, Some(src)) => src.clone(),
-            _ => std::fs::read_to_string(path)
+        let src = match override_for(path, overrides) {
+            Some(src) => src.clone(),
+            None => std::fs::read_to_string(path)
                 .map_err(|e| at(path, format!("cannot read {}: {e}", path.display())))?,
         };
         let len = src.len();
@@ -416,6 +455,29 @@ pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectErr
     link(files)
 }
 
+/// Load ONE in-memory file as a single-file project, keeping its real path in
+/// the [`SourceMap`] (so [`SourceMap::file_by_path`] resolves it) — the LSP's
+/// path for a `.mle` with no `functor.json`: check just this buffer, never
+/// scanning the directory for unrelated siblings. Module name is the file's
+/// (`Main` if the stem isn't an identifier); a single file is its own bare
+/// entry, so the name only labels it.
+pub fn load_single_file(path: &Path, src: &str) -> Result<Project, ProjectError> {
+    // Fall back to `Main` for a non-identifier stem OR one that capitalizes to
+    // a protected namespace (`net.mle` → `Net`), which would otherwise collide
+    // with the builtin module `link` injects and silently fail the load.
+    let module = match module_name(path) {
+        Ok(name) if !PROTECTED_NAMESPACES.contains(&name.as_str()) => name,
+        _ => "Main".to_string(),
+    };
+    let files = vec![SourceFile {
+        path: path.to_path_buf(),
+        module,
+        src: src.to_string(),
+        base: 0,
+    }];
+    link(files)
+}
+
 /// The module name a file provides: its stem, first letter capitalized
 /// (`utils.mle` → `Utils`). The stem must be a valid identifier — module
 /// names appear in source (`Utils.clamp`).
@@ -435,6 +497,23 @@ fn module_name(path: &Path) -> Result<String, String> {
         ));
     }
     Ok(capitalize(stem))
+}
+
+/// The override source for `path`, if any: exact-path match first, then a
+/// canonicalized match (the same fail-soft matching as
+/// [`SourceMap::file_by_path`]).
+fn override_for<'a>(path: &Path, overrides: &'a HashMap<PathBuf, String>) -> Option<&'a String> {
+    if overrides.is_empty() {
+        return None;
+    }
+    if let Some(src) = overrides.get(path) {
+        return Some(src);
+    }
+    let canon = std::fs::canonicalize(path).ok()?;
+    overrides
+        .iter()
+        .find(|(key, _)| std::fs::canonicalize(key).ok() == Some(canon.clone()))
+        .map(|(_, src)| src)
 }
 
 fn file_name(path: &Path) -> String {

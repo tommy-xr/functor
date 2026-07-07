@@ -10,13 +10,17 @@
 //! Document sync is **full** (`textDocumentSync: 1`): every change carries
 //! the whole buffer. The server keeps one piece of state — a uri→text map —
 //! to answer `textDocument/hover` (quick info: `name : Type` from the
-//! gradual checker, via `mle::hover`) and `textDocument/definition`
+//! gradual checker, via `mle::hover`), `textDocument/definition`
 //! (go-to-definition via `mle::goto`; MLE is single-file, so the answer is
-//! always a `Location` in the same document). Diagnostics cover parse,
+//! always a `Location` in the same document), `textDocument/inlayHint`
+//! (inferred `: Type` ghost text on unannotated lambda params, via
+//! `mle::inlay`), and `textDocument/codeLens` (each top-level def's inferred
+//! signature above it, via `mle::codelens`). Diagnostics cover parse,
 //! lowering, and every `mle::check` type diagnostic.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -66,6 +70,8 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                         "textDocumentSync": 1,
                         "hoverProvider": true,
                         "definitionProvider": true,
+                        "inlayHintProvider": true,
+                        "codeLensProvider": { "resolveProvider": false },
                     },
                     "serverInfo": { "name": "mle-lsp" },
                 });
@@ -84,8 +90,9 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
             ("textDocument/hover", Some(id)) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
                 let result = documents
-                    .get(uri)
-                    .and_then(|text| hover(text, &params["position"]))
+                    .contains_key(uri)
+                    .then(|| hover(uri, &documents, &params["position"]))
+                    .flatten()
                     .unwrap_or(Value::Null);
                 write_message(
                     writer,
@@ -95,9 +102,34 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
             ("textDocument/definition", Some(id)) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
                 let result = documents
-                    .get(uri)
-                    .and_then(|text| definition(text, uri, &params["position"]))
+                    .contains_key(uri)
+                    .then(|| definition(uri, &documents, &params["position"]))
+                    .flatten()
                     .unwrap_or(Value::Null);
+                write_message(
+                    writer,
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                );
+            }
+            ("textDocument/inlayHint", Some(id)) => {
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                let result = documents
+                    .contains_key(uri)
+                    .then(|| inlay_hints(uri, &documents, &params["range"]))
+                    .flatten()
+                    .unwrap_or_else(|| json!([]));
+                write_message(
+                    writer,
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                );
+            }
+            ("textDocument/codeLens", Some(id)) => {
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                let result = documents
+                    .contains_key(uri)
+                    .then(|| code_lenses(uri, &documents))
+                    .flatten()
+                    .unwrap_or_else(|| json!([]));
                 write_message(
                     writer,
                     &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -173,27 +205,206 @@ fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
     write_diagnostics(writer, uri, diagnostics);
 }
 
-/// Answer a hover request: parse/lower/check the buffer, find the innermost
-/// node at the (UTF-16) position, and render `name : Type` as markdown.
-fn hover(text: &str, position: &Value) -> Option<Value> {
-    let offset = position_to_offset(text, position)?;
-    let module = mle::lower(mle::parse(text).ok()?).ok()?;
-    let (_, types) = mle::check_with_types(&module);
-    let (span, hover_text) = mle::hover::hover_text(&module, &types, offset)?;
+/// Load the MLE program an open document belongs to. With a `functor.json`
+/// above it, that's the whole multi-file project — every open buffer stands
+/// in for its on-disk file (unsaved edits count), siblings load from disk.
+/// With no `functor.json`, it's just this buffer as a single-file project
+/// (the directory is NOT scanned — unrelated `.mle` files nearby must not
+/// leak in). `None` on a non-`file:` URI or a load failure.
+fn load_project(uri: &str, documents: &HashMap<String, String>) -> Option<mle::project::Project> {
+    let path = uri_to_path(uri)?;
+    let single_file = || mle::project::load_single_file(&path, documents.get(uri)?).ok();
+    match discover_entry(&path) {
+        Some(entry) => {
+            let overrides: HashMap<PathBuf, String> = documents
+                .iter()
+                .filter_map(|(u, text)| Some((uri_to_path(u)?, text.clone())))
+                .collect();
+            // Use the project only if it loaded AND actually contains this
+            // file. A nearest `functor.json` whose entry lives in another dir,
+            // or a broken sibling that fails the load, must not strip the open
+            // buffer of all features — fall back to a single-file view.
+            match mle::project::load_with_overrides(&entry, &overrides) {
+                Ok(project) if project.sources.file_by_path(&path).is_some() => Some(project),
+                _ => single_file(),
+            }
+        }
+        None => single_file(),
+    }
+}
+
+/// Answer a hover request: load the project, find the innermost node at the
+/// (UTF-16) position in the open file, and render `name : Type` as markdown.
+/// Cross-file inference means the type can come from a sibling module.
+fn hover(uri: &str, documents: &HashMap<String, String>, position: &Value) -> Option<Value> {
+    let project = load_project(uri, documents)?;
+    let file = project.sources.file_by_path(&uri_to_path(uri)?)?;
+    let offset = file.base + position_to_offset(&file.src, position)?;
+    let (_, types) = project.check_with_types();
+    let (span, hover_text) = mle::hover::hover_text(&project.module, &types, offset)?;
+    let (_, range) = localize(&project, span)?;
     Some(json!({
         "contents": { "kind": "markdown", "value": format!("```mle\n{hover_text}\n```") },
-        "range": span_to_range(text, span),
+        "range": range,
     }))
 }
 
-/// Answer a definition request: parse/lower the buffer, resolve the
-/// reference at the (UTF-16) position via `mle::goto`, and return the
-/// definition site as a `Location` in the same document.
-fn definition(text: &str, uri: &str, position: &Value) -> Option<Value> {
-    let offset = position_to_offset(text, position)?;
-    let module = mle::lower(mle::parse(text).ok()?).ok()?;
-    let span = mle::goto::definition_span(&module, offset)?;
-    Some(json!({ "uri": uri, "range": span_to_range(text, span) }))
+/// Answer a definition request: load the project, resolve the reference at
+/// the position via `mle::goto`, and return the definition site as a
+/// `Location`. The target may live in a **sibling file** (cross-file goto),
+/// so the location's URI is whichever file owns the resolved span.
+fn definition(uri: &str, documents: &HashMap<String, String>, position: &Value) -> Option<Value> {
+    let project = load_project(uri, documents)?;
+    let file = project.sources.file_by_path(&uri_to_path(uri)?)?;
+    let offset = file.base + position_to_offset(&file.src, position)?;
+    let span = mle::goto::definition_span(&project.module, offset)?;
+    let (target_uri, range) = localize(&project, span)?;
+    Some(json!({ "uri": target_uri, "range": range }))
+}
+
+/// Answer a code-lens request: load the project and return one lens per
+/// top-level def **in the open file** with a known inferred signature
+/// (`name : Type`), anchored on the line above the def. The command is inert
+/// (empty `command`), so the lens is informational, not clickable.
+fn code_lenses(uri: &str, documents: &HashMap<String, String>) -> Option<Value> {
+    let project = load_project(uri, documents)?;
+    let file = project.sources.file_by_path(&uri_to_path(uri)?)?;
+    let (_, types) = project.check_with_types();
+    let lenses: Vec<Value> = mle::codelens::signatures(&project.module, &types)
+        .into_iter()
+        // A merged project holds every module's defs; keep only this file's.
+        .filter(|lens| owns(file, lens.span.start))
+        .map(|lens| {
+            json!({
+                "range": local_range(file, lens.span),
+                "command": { "title": lens.title, "command": "" },
+            })
+        })
+        .collect();
+    Some(Value::Array(lenses))
+}
+
+/// Answer an inlay-hint request: load the project and return an inferred-type
+/// hint (`: Type`) after each unannotated lambda parameter **in the open
+/// file**, clipped to the requested range.
+fn inlay_hints(uri: &str, documents: &HashMap<String, String>, range: &Value) -> Option<Value> {
+    let project = load_project(uri, documents)?;
+    let file = project.sources.file_by_path(&uri_to_path(uri)?)?;
+    let (_, types) = project.check_with_types();
+    // The client's range is local to the open file; lift it into the
+    // project-wide span space. A missing/unparsable end means "no filter".
+    let start = position_to_offset(&file.src, &range["start"]).map(|o| file.base + o);
+    let end = position_to_offset(&file.src, &range["end"]).map(|o| file.base + o);
+    let in_range = |offset: usize| match (start, end) {
+        // LSP ranges are half-open — `end` is exclusive.
+        (Some(s), Some(e)) => s <= offset && offset < e,
+        _ => true,
+    };
+    let hints: Vec<Value> = mle::inlay::inlay_hints(&project.module, &types)
+        .into_iter()
+        .filter(|h| owns(file, h.offset) && in_range(h.offset))
+        .map(|h| {
+            json!({
+                "position": lsp_position(&file.src, h.offset - file.base),
+                "label": h.label,
+                "kind": 1, // InlayHintKind.Type
+                "paddingLeft": false,
+                "paddingRight": false,
+            })
+        })
+        .collect();
+    Some(Value::Array(hints))
+}
+
+/// Whether project-wide `offset` falls in `file` (its half-open base range).
+fn owns(file: &mle::project::SourceFile, offset: usize) -> bool {
+    file.base <= offset && offset <= file.base + file.src.len()
+}
+
+/// A project-wide span → an LSP range local to the file it belongs to, plus
+/// that file's URI. Spans never straddle files (each node is lowered from one
+/// file), so both ends localize against the start file.
+fn localize(project: &mle::project::Project, span: mle::Span) -> Option<(String, Value)> {
+    let file = project.sources.file_at(span.start);
+    Some((path_to_uri(&file.path), local_range(file, span)))
+}
+
+/// A project-wide span → an LSP range in `file`'s local coordinates.
+fn local_range(file: &mle::project::SourceFile, span: mle::Span) -> Value {
+    let start = span.start.saturating_sub(file.base);
+    let end = span.end.saturating_sub(file.base).min(file.src.len());
+    json!({
+        "start": lsp_position(&file.src, start),
+        "end": lsp_position(&file.src, end),
+    })
+}
+
+/// The project entry for `path`: walk up for a `functor.json` and join its
+/// `entry`. `None` when there's no `functor.json` above `path` — the caller
+/// then treats the file as a standalone single-file program. Reads at most
+/// one `functor.json` per ancestor — cheap, and the tree is shallow.
+fn discover_entry(path: &Path) -> Option<PathBuf> {
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        if let Ok(text) = std::fs::read_to_string(d.join("functor.json")) {
+            if let Ok(config) = serde_json::from_str::<Value>(&text) {
+                if let Some(entry) = config["entry"].as_str() {
+                    return Some(d.join(entry));
+                }
+            }
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// A `file:` URI → filesystem path (percent-decoded). `None` for other
+/// schemes (untitled buffers, `git:` diffs) — the server simply won't answer
+/// those, which is correct.
+fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    Some(PathBuf::from(percent_decode(rest)))
+}
+
+/// A filesystem path → `file:` URI. Every byte that isn't an unreserved URI
+/// character (or a `/` path separator) is percent-encoded — including
+/// non-ASCII bytes, which must be escaped per-byte rather than widened to a
+/// `char` (that would double-encode). Round-trips with [`uri_to_path`] /
+/// [`percent_decode`].
+fn path_to_uri(path: &Path) -> String {
+    let mut encoded = String::from("file://");
+    for byte in path.to_string_lossy().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+/// Decode `%XX` escapes in a URI path. Non-escape bytes pass through. Works
+/// on bytes (never slicing a `&str`), so a `%` before a multi-byte character
+/// or at the string's end can't panic — the LSP must survive odd URIs, like
+/// `read_message` survives garbage frames.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let hex = |b: u8| (b as char).to_digit(16);
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 3 <= bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Invert [`lsp_position`]: an LSP `{line, character}` (UTF-16 code units)
@@ -357,6 +568,26 @@ mod review_tests {
         let at = text.find('@').unwrap();
         let pos = lsp_position(text, at);
         assert_eq!(pos["character"], 13); // 12 chars, but the emoji counts twice
+    }
+
+    // [xreview High] percent_decode must not panic on a `%` before a
+    // multi-byte char or at the string's end — the old str-slice did.
+    #[test]
+    fn percent_decode_survives_malformed_escapes() {
+        assert_eq!(percent_decode("caf%C3%A9"), "café"); // valid escape
+        assert_eq!(percent_decode("%bé"), "%bé"); // % before a multi-byte char
+        assert_eq!(percent_decode("trailing%"), "trailing%"); // % at end
+        assert_eq!(percent_decode("bad%zz"), "bad%zz"); // non-hex digits
+    }
+
+    // [xreview Medium] path_to_uri must round-trip a non-ASCII path (each
+    // byte escaped, not widened to a char), so cross-file goto URIs resolve.
+    #[test]
+    fn path_to_uri_round_trips_non_ascii() {
+        let path = std::path::Path::new("/Users/café/game.mle");
+        let uri = path_to_uri(path);
+        assert!(!uri.contains('é'), "non-ascii must be percent-escaped: {uri}");
+        assert_eq!(uri_to_path(&uri).as_deref(), Some(path));
     }
 
     // exit without shutdown is code 1; after shutdown, 0. [review Low]
