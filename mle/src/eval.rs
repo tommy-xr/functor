@@ -979,6 +979,24 @@ most 1000000 cells"
                 [Value::Number(n)] => Ok(Value::Number(n.cos())),
                 _ => err("Math.cos(n) expects one number".to_string()),
             },
+            // Elm-style trace: log `label: <value>` through the process-wide
+            // trace sink and return `value` UNCHANGED — an impure observability
+            // escape hatch that never touches the model/sim (so a game with vs
+            // without a `Debug.log` produces byte-identical state). Value-first
+            // so it's pipe-friendly: `x |> Debug.log("x")`. The value renders
+            // with the interpreter's own `Value` display — the same text as
+            // `mle run`/`trace` — for any type. The sink decides where the line
+            // goes (stdout under plain `mle run`, the region-aware log path
+            // under the host); see `crate::trace`.
+            Builtin::DebugLog => match args.as_slice() {
+                [value, Value::String(label)] => {
+                    crate::trace::emit(format!("{label}: {value}"));
+                    Ok(value.clone())
+                }
+                _ => err(
+                    "Debug.log(value, label) expects a value and a string label".to_string(),
+                ),
+            },
         }
     }
 }
@@ -1173,6 +1191,7 @@ pub enum Builtin {
     TextJoin,
     TextParseFloat,
     MathClamp01,
+    DebugLog,
 }
 
 /// Resolve an [`ExprKind::External`] path against the registry.
@@ -1195,6 +1214,7 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Math.clamp01" => Builtin::MathClamp01,
         "Math.sin" => Builtin::MathSin,
         "Math.cos" => Builtin::MathCos,
+        "Debug.log" => Builtin::DebugLog,
         _ => return None,
     })
 }
@@ -1218,6 +1238,7 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::MathClamp01 => "Math.clamp01",
         Builtin::MathSin => "Math.sin",
         Builtin::MathCos => "Math.cos",
+        Builtin::DebugLog => "Debug.log",
     }
 }
 

@@ -57,6 +57,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Effect",
     "Physics",
     "RenderTarget",
+    "Debug",
 ];
 
 /// A loaded multi-file program: the merged module plus the per-file source

@@ -384,6 +384,9 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::TextParseFloat => func(vec![String], Float),
         // Math.clamp01 / sin / cos : (Float) => Float
         Builtin::MathClamp01 | Builtin::MathSin | Builtin::MathCos => func(vec![Float], Float),
+        // Debug.log : ('a, String) => 'a — logs `label: value` and returns the
+        // value unchanged (Var(0) is generic, so it's transparent in a pipe).
+        Builtin::DebugLog => func(vec![Var(0), String], Var(0)),
     }
 }
 

@@ -241,6 +241,14 @@ impl MleWebGame {
     /// rendered for `run_async` to fail loud with (there is no keep-running
     /// fallback: a page load either gets a valid game or a console error).
     pub fn create(path: &str, src: String) -> Result<MleWebGame, String> {
+        // Route MLE `Debug.log` traces to the browser console (once per process;
+        // the process-global sink survives hot-reload). The web runtime has no
+        // CLI event stream, so — unlike native, which forwards into the
+        // region-aware log path — a trace goes straight to `console.log`, the
+        // web equivalent of plain `mle run`'s stdout.
+        mle::set_trace_sink(Box::new(|message| {
+            web_sys::console::log_1(&JsValue::from_str(&message));
+        }));
         let loaded = load_source(path, src)?;
         web_sys::console::log_1(&format!("[mle] loaded {path}").into());
         Ok(MleWebGame {

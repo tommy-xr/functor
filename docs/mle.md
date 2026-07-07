@@ -295,6 +295,25 @@ snapshots — no GPU, fully agent-verifiable.
       IS exhaustive, `[a, b]` alone needs a catch-all. Full stack: lexer
       (`..`), parser, lower, eval, HM types, hover/goto/rebind. Verify:
       `mle/examples/lists.mle` + goldens; run/parser/check pin tests.
+- [x] **Language: `Debug.log` trace builtin** (2026-07-06). Core `mle`-crate
+      builtin `Debug.log(value, label) : ('a, String) => 'a` — an Elm-style
+      trace: logs `label: <value>` (the interpreter's own `Value` display, any
+      type) and returns `value` UNCHANGED, so it's pure to the program result
+      and pipe-friendly (`x |> Debug.log("x")`; value-first, label second).
+      Lives in the `mle` crate (works in plain `mle run` AND under the host),
+      routed through a settable, process-wide trace sink (`mle::set_trace_sink`,
+      default: stdout). The Functor host installs a sink
+      (`mle_prelude::install_debug_log_sink`) that forwards each trace into the
+      CLI's region-aware log path as `RuntimeEvent::MleTrace` →
+      `Event::Log { level: trace }` — shown BY DEFAULT (explicit user intent, so
+      it bypasses the `-v` gate), still clean ndjson under `--json`, and the
+      process-global sink survives hot-reload's `Session` rebuild. `Debug` is a
+      protected module namespace. Purely observability: a game with vs without
+      it is byte-identical (verified). *Verify (done):* mle run/check +
+      value-unchanged/sink unit tests; a headless hot-reload regression test in
+      the common producer seam (a `Debug.log` added live routes through the
+      surviving sink); `--json` ndjson-validity + determinism (PNG byte-identity)
+      + protected-namespace checks. Design: `docs/cli-output.md` (PR-4b).
 - [x] **Language: generic type declarations** (done 2026-07-04, the B7
       follow-up both review engines asked for). `type Box<v> = | Full(value:
       v) | Empty` / `type Pair<x, y> = { … }`: checker-only (the runtime

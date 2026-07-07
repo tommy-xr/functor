@@ -783,6 +783,21 @@ pub fn physics_scene_value(value: &Value) -> Option<&physics::PhysicsScene> {
 /// The prelude host. Stateless; construct one per interpreter session.
 pub struct FunctorHost;
 
+/// Route MLE `Debug.log` traces into the runtime's region-aware event stream.
+///
+/// The `mle` crate owns a process-wide trace sink (default: print to stdout, for
+/// plain `mle run`). The shell calls this once at producer startup to redirect
+/// it into [`events::emit`] as a [`RuntimeEvent::MleTrace`], which the CLI maps
+/// to an always-visible, region-aware `Event::Log` (above the live panel / a
+/// structured ndjson log event) — see `docs/cli-output.md`. It is installed on
+/// the process, NOT on any `Session`, so it survives hot-reload's `Session`
+/// rebuild for free; re-calling it is idempotent (the closure is stateless).
+pub fn install_debug_log_sink() {
+    mle::set_trace_sink(Box::new(|message| {
+        crate::events::emit(crate::events::RuntimeEvent::MleTrace { message });
+    }));
+}
+
 const PATHS: &[&str] = &[
     "Scene.cube",
     "Scene.sphere",
@@ -5113,6 +5128,81 @@ with Ui.topLeft()"
         assert_eq!(
             run_fail("let main = () => Ui.textColor(1.0, \"x\", 0.0, \"a\")"),
             "expected a number, got a string"
+        );
+    }
+
+    /// `Debug.log` added to `tick` via HOT-RELOAD fires on the next frame AND
+    /// still routes through the installed sink — the sink lives on the process
+    /// (installed once at host startup, not on any `Session`), so it survives
+    /// the reload's `Session` rebuild. This regression-guards the failure mode
+    /// where a live-added `Debug.log` would fall back to a raw stdout
+    /// `println!` and corrupt the ndjson stream / live telemetry panel.
+    ///
+    /// The test provides a CAPTURING sink (standing in for the real
+    /// region-aware one `install_debug_log_sink` wires up) and reads back the
+    /// emitted lines.
+    #[test]
+    fn debug_log_added_by_hot_reload_still_routes_through_the_installed_sink() {
+        use std::sync::{Arc, Mutex};
+
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_buf = Arc::clone(&captured);
+        // The sink is process-global; installed once, BEFORE the reload.
+        mle::set_trace_sink(Box::new(move |m| sink_buf.lock().unwrap().push(m)));
+
+        fn load(src: &str) -> mle::Session {
+            let module = mle::lower(mle::parse(src).expect("parse")).expect("lower");
+            mle::Session::load(&module, &mut FunctorHost)
+                .unwrap_or_else(|f| panic!("load failed: {}", f.error.message))
+        }
+        fn tick(session: &mle::Session, m: f64) -> Value {
+            session
+                .call(
+                    "tick",
+                    vec![Value::Number(m), Value::Number(0.016), Value::Number(1.0)],
+                    &mut FunctorHost,
+                )
+                .expect("tick")
+        }
+
+        // v1: tick has NO Debug.log. A frame emits nothing.
+        let v1 = load(
+            "let init = 0.0\n\
+             let tick = (m, dt, tts) => m + 1.0\n\
+             let draw = (m, tts) => m",
+        );
+        assert_eq!(tick(&v1, 3.0).to_string(), "4");
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "no trace before a Debug.log is added"
+        );
+
+        // Hot-reload: a NEW Session built from edited source that ADDS a
+        // Debug.log in tick (the producer's reload path rebuilds the Session).
+        let v2 = load(
+            "let init = 0.0\n\
+             let tick = (m, dt, tts) => Debug.log(m + 1.0, \"tick m\")\n\
+             let draw = (m, tts) => m",
+        );
+        // The trace fires on the next frame — model unaffected (returns m + 1).
+        assert_eq!(tick(&v2, 4.0).to_string(), "5");
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec!["tick m: 5".to_string()],
+            "the added Debug.log routed through the sink that survived the reload"
+        );
+
+        // The reverse: reload back to a Debug.log-free tick → it stops cleanly.
+        let v3 = load(
+            "let init = 0.0\n\
+             let tick = (m, dt, tts) => m + 1.0\n\
+             let draw = (m, tts) => m",
+        );
+        let _ = tick(&v3, 9.0);
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "removing the Debug.log stops emission (still just the one line)"
         );
     }
 }

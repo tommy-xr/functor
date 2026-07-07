@@ -425,6 +425,24 @@ namespace `Scene` — rename the file"
     );
 }
 
+/// `Debug` is protected (the `Debug.log` builtin's namespace), so a sibling
+/// `debug.mle` can't shadow it — a load error names the collision.
+#[test]
+fn debug_namespace_module_name_is_refused() {
+    let err = load_err(
+        "protected-debug",
+        &[
+            ("game.mle", "let main = () => 0.0\n"),
+            ("debug.mle", "let log = 1.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "debug.mle:1:1: module name `Debug` (from debug.mle) collides with the builtin/prelude \
+namespace `Debug` — rename the file"
+    );
+}
+
 #[test]
 fn non_identifier_file_stems_are_refused() {
     let err = load_err(
@@ -530,7 +548,7 @@ let main = () => p.x
             ),
             // Same field shape, never referenced, never opened.
             (
-                "debug.mle",
+                "extra.mle",
                 "type Point = { x: Float, y: Float }
 ",
             ),
