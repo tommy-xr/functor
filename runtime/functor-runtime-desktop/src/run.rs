@@ -788,6 +788,13 @@ pub fn run(args: Args) {
         // (it's a dev tool you summon with `~`, which also frees the cursor so
         // you can scrub right away). The wasm/vscode preview shows it always.
         let mut scrubber_visible = false;
+        // Forward-ghosting (docs/time-travel.md T6d) state, driven interactively
+        // from the scrubber overlay. Seeded from the launch flags so `--ghost`
+        // (the headless-capture escape hatch, overlay hidden) is unchanged; when
+        // the overlay is up, these vars take over (see the `ghost_active` gate).
+        let mut ghost_on = args.ghost;
+        let mut ghost_divisions = args.ghost_divisions;
+        let mut ghost_window: f32 = 2.0;
 
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
@@ -1072,13 +1079,17 @@ Escape again to quit"
             // deterministically capturable under --fixed-time.
             // Gate on the full ladder condition so we don't pay the dry-run + N
             // draws only to have stereo / composite-demo outrank the ghost arm.
-            let ghost_frames = if args.ghost
+            // Drive the ghost from the interactive toggle when the overlay is up,
+            // and from the `--ghost` launch flag when it's hidden (the headless
+            // capture path — F2 demo, goldens, tests — is byte-for-byte unchanged).
+            let ghost_active = if scrubber_visible { ghost_on } else { args.ghost };
+            let ghost_frames = if ghost_active
                 && !args.stereo_sbs
                 && args.composite_demo == CompositeDemoArg::Off
             {
                 const MAX_GHOST: usize = 8;
-                let divisions = args.ghost_divisions.clamp(1, MAX_GHOST);
-                let dt = 2.0 / divisions as f32;
+                let divisions = ghost_divisions.clamp(1, MAX_GHOST);
+                let dt = ghost_window / divisions as f32;
                 // F2 (docs/time-travel.md): when an --input-script is loaded, the
                 // ghost previews the SCRIPT's trajectory from the live anchor
                 // (mario at init) rather than the recorder's own input log. Build a
@@ -1296,6 +1307,9 @@ Escape again to quit"
                         frame: game.current_scene_frame().unwrap_or(0),
                         range: game.scene_frame_range(),
                         paused: clock.is_paused(),
+                        ghost_on,
+                        ghost_divisions,
+                        ghost_window,
                     },
                 )
             } else {
@@ -1336,6 +1350,15 @@ Escape again to quit"
                 Some(functor_runtime_common::ui::ScrubberAction::Step) => {
                     // Step implies pause: advance exactly one frame, then hold.
                     clock.step(1.0 / 60.0);
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetGhost(on)) => {
+                    ghost_on = on;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetGhostDivisions(n)) => {
+                    ghost_divisions = n.clamp(1, 8);
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetGhostWindow(w)) => {
+                    ghost_window = w.clamp(0.5, 5.0);
                 }
                 None => {}
             }

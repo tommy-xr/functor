@@ -308,15 +308,29 @@ pub struct ScrubberState {
     /// until something is recorded (the slider is then hidden).
     pub range: Option<(u64, u64)>,
     pub paused: bool,
+    /// Forward-ghosting (docs/time-travel.md T6d) toggle: composite the ~window-s
+    /// future into a strobe. Interactive companion to the `--ghost` launch flag.
+    pub ghost_on: bool,
+    /// Divisions composited by the ghost (1..=8, the compositor `MAX_GHOST` cap).
+    pub ghost_divisions: usize,
+    /// The forward window in seconds; `dt = ghost_window / ghost_divisions`.
+    pub ghost_window: f32,
 }
 
 /// A control the user activated in the scrubber this frame.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+// No `Eq`: `SetGhostWindow` carries an `f32`.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ScrubberAction {
     TogglePause,
     /// Non-destructive scrub to a rendered frame (dragging the timeline).
     SeekTo(u64),
     Step,
+    /// Toggle forward-ghosting on/off (the `ghost` checkbox).
+    SetGhost(bool),
+    /// Set the ghost's forward divisions (clamped 1..=8 by the shell).
+    SetGhostDivisions(usize),
+    /// Set the ghost's forward window in seconds.
+    SetGhostWindow(f32),
 }
 
 /// The scrubber's output for one frame.
@@ -436,6 +450,36 @@ impl Scrubber {
                             }
                             if ui.button("Step >").clicked() {
                                 action = Some(ScrubberAction::Step);
+                            }
+
+                            // Forward-ghosting controls (docs/time-travel.md T6d):
+                            // an in-app companion to the `--ghost` launch flag.
+                            ui.separator();
+                            let mut ghost_on = state.ghost_on;
+                            if ui.checkbox(&mut ghost_on, "ghost").changed() {
+                                action = Some(ScrubberAction::SetGhost(ghost_on));
+                            }
+                            // Divisions (1..=8, the compositor MAX_GHOST cap) and
+                            // the forward window in seconds (dt = window / divisions).
+                            let mut divisions = state.ghost_divisions.clamp(1, 8);
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut divisions)
+                                        .range(1..=8)
+                                        .prefix("÷"),
+                                )
+                                .changed()
+                            {
+                                action = Some(ScrubberAction::SetGhostDivisions(divisions));
+                            }
+                            let mut window = state.ghost_window;
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut window, 0.5..=5.0).suffix("s"),
+                                )
+                                .changed()
+                            {
+                                action = Some(ScrubberAction::SetGhostWindow(window));
                             }
                         });
                     });
