@@ -67,146 +67,146 @@ Module {
                             },
                             args: [
                                 Expr {
-                                    id: e17,
+                                    id: e1,
+                                    kind: String(
+                                        ",",
+                                    ),
+                                    span: 356..359,
+                                },
+                                Expr {
+                                    id: e18,
                                     kind: List(
                                         [
                                             Expr {
-                                                id: e4,
+                                                id: e5,
                                                 kind: Call {
                                                     callee: Expr {
-                                                        id: e1,
+                                                        id: e2,
                                                         kind: External(
                                                             [
                                                                 "Text",
                                                                 "fixed",
                                                             ],
                                                         ),
-                                                        span: 357..367,
+                                                        span: 366..376,
                                                     },
                                                     args: [
                                                         Expr {
-                                                            id: e2,
+                                                            id: e3,
                                                             kind: Local {
                                                                 binding: b0,
                                                                 name: "pid",
                                                             },
-                                                            span: 368..371,
+                                                            span: 377..380,
                                                         },
                                                         Expr {
-                                                            id: e3,
+                                                            id: e4,
                                                             kind: Number(
                                                                 0.0,
                                                             ),
-                                                            span: 373..376,
+                                                            span: 382..385,
                                                         },
                                                     ],
                                                 },
-                                                span: 357..377,
+                                                span: 366..386,
                                             },
                                             Expr {
-                                                id: e10,
+                                                id: e11,
                                                 kind: Call {
                                                     callee: Expr {
-                                                        id: e5,
+                                                        id: e6,
                                                         kind: External(
                                                             [
                                                                 "Text",
                                                                 "fixed",
                                                             ],
                                                         ),
-                                                        span: 379..389,
+                                                        span: 388..398,
                                                     },
                                                     args: [
                                                         Expr {
-                                                            id: e8,
+                                                            id: e9,
                                                             kind: Binary {
                                                                 op: Mul,
                                                                 lhs: Expr {
-                                                                    id: e6,
+                                                                    id: e7,
                                                                     kind: Local {
                                                                         binding: b1,
                                                                         name: "x",
                                                                     },
-                                                                    span: 390..391,
+                                                                    span: 399..400,
                                                                 },
                                                                 rhs: Expr {
-                                                                    id: e7,
+                                                                    id: e8,
                                                                     kind: Number(
                                                                         100.0,
                                                                     ),
-                                                                    span: 394..399,
+                                                                    span: 403..408,
                                                                 },
                                                             },
-                                                            span: 390..399,
+                                                            span: 399..408,
                                                         },
                                                         Expr {
-                                                            id: e9,
+                                                            id: e10,
                                                             kind: Number(
                                                                 0.0,
                                                             ),
-                                                            span: 401..404,
+                                                            span: 410..413,
                                                         },
                                                     ],
                                                 },
-                                                span: 379..405,
+                                                span: 388..414,
                                             },
                                             Expr {
-                                                id: e16,
+                                                id: e17,
                                                 kind: Call {
                                                     callee: Expr {
-                                                        id: e11,
+                                                        id: e12,
                                                         kind: External(
                                                             [
                                                                 "Text",
                                                                 "fixed",
                                                             ],
                                                         ),
-                                                        span: 407..417,
+                                                        span: 416..426,
                                                     },
                                                     args: [
                                                         Expr {
-                                                            id: e14,
+                                                            id: e15,
                                                             kind: Binary {
                                                                 op: Mul,
                                                                 lhs: Expr {
-                                                                    id: e12,
+                                                                    id: e13,
                                                                     kind: Local {
                                                                         binding: b2,
                                                                         name: "z",
                                                                     },
-                                                                    span: 418..419,
+                                                                    span: 427..428,
                                                                 },
                                                                 rhs: Expr {
-                                                                    id: e13,
+                                                                    id: e14,
                                                                     kind: Number(
                                                                         100.0,
                                                                     ),
-                                                                    span: 422..427,
+                                                                    span: 431..436,
                                                                 },
                                                             },
-                                                            span: 418..427,
+                                                            span: 427..436,
                                                         },
                                                         Expr {
-                                                            id: e15,
+                                                            id: e16,
                                                             kind: Number(
                                                                 0.0,
                                                             ),
-                                                            span: 429..432,
+                                                            span: 438..441,
                                                         },
                                                     ],
                                                 },
-                                                span: 407..433,
+                                                span: 416..442,
                                             },
                                         ],
                                     ),
-                                    span: 356..434,
-                                },
-                                Expr {
-                                    id: e18,
-                                    kind: String(
-                                        ",",
-                                    ),
-                                    span: 440..443,
+                                    span: 365..443,
                                 },
                             ],
                         },
@@ -266,18 +266,18 @@ Module {
                             args: [
                                 Expr {
                                     id: e22,
+                                    kind: String(
+                                        "|",
+                                    ),
+                                    span: 550..553,
+                                },
+                                Expr {
+                                    id: e23,
                                     kind: Local {
                                         binding: b3,
                                         name: "rows",
                                     },
-                                    span: 550..554,
-                                },
-                                Expr {
-                                    id: e23,
-                                    kind: String(
-                                        "|",
-                                    ),
-                                    span: 556..559,
+                                    span: 555..559,
                                 },
                             ],
                         },
@@ -350,17 +350,17 @@ Module {
                                     args: [
                                         Expr {
                                             id: e27,
-                                            kind: Local {
-                                                binding: b4,
-                                                name: "row",
-                                            },
+                                            kind: String(
+                                                ",",
+                                            ),
                                             span: 705..708,
                                         },
                                         Expr {
                                             id: e28,
-                                            kind: String(
-                                                ",",
-                                            ),
+                                            kind: Local {
+                                                binding: b4,
+                                                name: "row",
+                                            },
                                             span: 710..713,
                                         },
                                     ],

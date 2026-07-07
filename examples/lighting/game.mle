@@ -159,7 +159,7 @@ let pointPos = (i: Float, tts: Float) =>
 
 // An emissive marker sphere at each point light's position.
 let markers = (tts: Float) =>
-  List.map(List.range(3.0), (i) =>
+  List.range(3.0) |> List.map((i) =>
     let p = pointPos(i, tts) in
     let (r, g, b) = pointColor(i) in
     Scene.sphere()
@@ -168,7 +168,7 @@ let markers = (tts: Float) =>
       |> Scene.emissive(r, g, b))
 
 let pointLights = (tts: Float) =>
-  List.map(List.range(3.0), (i) =>
+  List.range(3.0) |> List.map((i) =>
     let p = pointPos(i, tts) in
     let (r, g, b) = pointColor(i) in
     Light.point(p.x, p.y, p.z, r, g, b, 1.4, 4.0))

@@ -54,7 +54,7 @@ A benchmark is an ordinary `.mle` project whose entry defines a **zero-arg
 ```mle
 // BENCH: <one line naming what this measures>
 let step = (acc, x) => acc + x
-let main = () => List.fold(List.range(1000000), step, 0.0)
+let main = () => List.fold(step, 0.0, List.range(1000000))
 ```
 
 Rules:

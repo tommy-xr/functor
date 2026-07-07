@@ -74,8 +74,8 @@ let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
 
 let report = (scores) =>
   scores
-    |> List.filter(isHigh)                    // pipeline: |> PREPENDS the piped value
-    |> List.map(describe)                     //   x |> g(a)  ==  g(x, a)
+    |> List.filter(isHigh)                    // pipeline: |> APPENDS the piped value (thread-last)
+    |> List.map(describe)                     //   x |> g(a)  ==  g(a, x)
     |> Text.toBullets
 
 let nudge = (p: Position): Position => { p with x: p.x + 1.0 }  // record update (fields must exist)
@@ -179,8 +179,10 @@ let grab = (s) =>
 
 ## Semantics rules that WILL bite you
 
-- **Pipelines prepend**: `x |> f(a)` is `f(x, a)`. Every builtin/prelude
-  function therefore takes its "subject" (list, scene) FIRST.
+- **Pipelines append (thread-last)**: `x |> f(a)` is `f(a, x)`. Every
+  builtin/prelude function therefore takes its "subject" (list, scene) LAST.
+  Because `|>` is syntax, `x |> f(a)` lowers directly to the saturated `f(a, x)`
+  (never a partial `f(a)`), so scene/list pipes allocate nothing.
 - **`:=` not `<-`** — `<-` is reserved for future do-block binds.
   Assignment must be followed by `;` and a continuation expression.
 - **`mut` is non-capturable**: a lambda may not read or assign an enclosing
@@ -219,23 +221,27 @@ let grab = (s) =>
 
 ## Builtins (the whole registry)
 
-`List.map(list, fn)` · `List.filter(list, fn)` · `List.fold(list, fn, init)`
+All are **subject-LAST** (the collection/subject is the final arg), so they
+thread through `|>` (which appends): `list |> List.map(fn)` == `List.map(fn, list)`.
+
+`List.map(fn, list)` · `List.filter(fn, list)` · `List.fold(fn, init, list)`
 (callback is `(acc, x) => …`) · `List.range(n)` (`[0 … n-1]`) ·
-`List.grid(rows, cols, fn)` (→ `List<List<a>>`; calls `fn(row, col)`, both
+`List.grid(fn, rows, cols)` (→ `List<List<a>>`; calls `fn(row, col)`, both
 0-based, per cell — the engine-loop form of a procedural heightmap, e.g.
-`Scene.heightmap(List.grid(r, c, height))`) ·
+`Scene.heightmap(List.grid(height, r, c))`) ·
 `List.maximum(list)` · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
 `Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
-`%d` shape) · `Text.toBullets(list)` · `Text.split(s, sep)` (→ `List<String>`;
-empty `sep` is an error; `Text.split("", sep)` = `[""]`) · `Text.join(list, sep)`
+`%d` shape) · `Text.toBullets(list)` · `Text.split(sep, s)` (→ `List<String>`;
+empty `sep` is an error; `Text.split(sep, "")` = `[""]`) · `Text.join(sep, list)`
 (strings only) · `Text.parseFloat(s)` (trims; unparseable → `0.0`, the F#
 `unwrap_or(0)` shape) · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)` ·
-`Debug.log(value, label)` — `('a, String) => 'a`: an Elm-style trace. Logs
+`Debug.log(label, value)` — `(String, 'a) => 'a`: an Elm-style trace. Logs
 `label: <value>` (the value rendered exactly as `mle run`/`trace` displays it —
 any type) and returns `value` **unchanged**, so it's pure to the program
 result and safe to drop into a pipe: `m.x |> Debug.log("x") |> clamp(0.0, 1.0)`
-logs then passes the value on. Value-FIRST (pipelines prepend), so `label` is
-the second arg. An impure observability escape hatch — it can't affect the
+logs then passes the value on. Label-FIRST / subject-LAST (thread-last), so it
+reads Elm-style standalone (`Debug.log("x", m.x)`) AND threads in a pipe. An
+impure observability escape hatch — it can't affect the
 model/sim (a game with vs without it is byte-identical). Under plain `mle run`
 the line prints to stdout; under the runner it routes region-aware to the
 CLI's log stream (shown by default — no `-v`; `docs/cli-output.md`) — or the
@@ -254,7 +260,7 @@ Scene.model("shark.glb")                                   // glTF by path, rela
                                                            //   game dir; missing file =
                                                            //   logged error + empty fallback
 Scene.group([scene, …])
-scene |> Scene.color(r, g, b)                              // scene-first: pipes
+scene |> Scene.color(r, g, b)                              // scene-last: pipes
 scene |> Scene.lit(r, g, b)                                // diffuse+specular
 scene |> Scene.litNormalMapped(r, g, b, normalTex)         // + tangent-space
                                                            //   normal map (a
@@ -338,13 +344,13 @@ Effect.playThen(sound, msg)                                // one-shot; delivers
 AudioSource.ambient(key, sound)                            // soundScape voice: non-spatial bed
 AudioSource.at(key, sound, x, y, z)                        //   / positioned emitter (key =
                                                            //   cross-frame identity)
-source |> AudioSource.gain(g)                              // source-first: linear gain (1.0=full)
+source |> AudioSource.gain(g)                              // source-last: linear gain (1.0=full)
 AudioScene.create([source, …]) / AudioScene.empty()       // what `soundScape` returns
 
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body
 Physics.kinematic("tag", shape) / Physics.fixed("tag", shape)
-body |> Physics.at(x, y, z)                                // body-first: pipes
+body |> Physics.at(x, y, z)                                // body-last: pipes
 body |> Physics.velocity(vx, vy, vz)
 body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
 body |> Physics.sensor                                     // overlap-only, no forces

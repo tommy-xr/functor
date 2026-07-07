@@ -242,6 +242,13 @@ Module {
                                         },
                                         args: [
                                             Expr {
+                                                id: e23,
+                                                kind: Global(
+                                                    "describe",
+                                                ),
+                                                span: 457..465,
+                                            },
+                                            Expr {
                                                 id: e21,
                                                 kind: Call {
                                                     callee: Expr {
@@ -256,6 +263,13 @@ Module {
                                                     },
                                                     args: [
                                                         Expr {
+                                                            id: e20,
+                                                            kind: Global(
+                                                                "isHigh",
+                                                            ),
+                                                            span: 433..439,
+                                                        },
+                                                        Expr {
                                                             id: e18,
                                                             kind: Local {
                                                                 binding: b3,
@@ -263,23 +277,9 @@ Module {
                                                             },
                                                             span: 407..413,
                                                         },
-                                                        Expr {
-                                                            id: e20,
-                                                            kind: Global(
-                                                                "isHigh",
-                                                            ),
-                                                            span: 433..439,
-                                                        },
                                                     ],
                                                 },
                                                 span: 421..440,
-                                            },
-                                            Expr {
-                                                id: e23,
-                                                kind: Global(
-                                                    "describe",
-                                                ),
-                                                span: 457..465,
                                             },
                                         ],
                                     },

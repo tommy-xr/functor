@@ -42,8 +42,8 @@ let init = { conn: Offline, world: [], status: "connecting" }
 // exactly 3 fields) and undoes the *100 fixed-point; draw order is irrelevant,
 // so the reversal cons introduces doesn't matter.
 let parseSnapshot = (s: String): List<Player> =>
-  List.fold(Text.split(s, "|"), (acc, row) =>
-    match Text.split(row, ",") with
+  Text.split("|", s) |> List.fold((acc, row) =>
+    match Text.split(",", row) with
     | [p, x, z] =>
         [{ pid: Text.parseFloat(p),
            x: Text.parseFloat(x) / 100.0,
@@ -104,7 +104,7 @@ let draw = (m: Model, tts: Float) =>
   // One colored cube per player in the last snapshot the server sent (same
   // framing + palette as mpserver, so panes line up in the netsim viewer).
   let playerNodes =
-    List.map(m.world, (p) =>
+    m.world |> List.map((p) =>
       let (r, g, b) = colorFor(p.pid) in
       Scene.cube()
       |> Scene.scale(0.6)

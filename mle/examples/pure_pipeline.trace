@@ -1,6 +1,6 @@
 > main()
   > report([12, 3.5, 40])
-    > List.filter([12, 3.5, 40], <fn(score)>)
+    > List.filter(<fn(score)>, [12, 3.5, 40])
       > List.filter[0](12)
       < true
       > List.filter[1](3.5)
@@ -8,7 +8,7 @@
       > List.filter[2](40)
       < true
     < [12, 40]
-    > List.map([12, 40], <fn(score)>)
+    > List.map(<fn(score)>, [12, 40])
       > List.map[0](12)
         > Text.fromFloat(12)
         < "12"
