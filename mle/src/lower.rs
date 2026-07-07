@@ -537,6 +537,8 @@ impl Lowerer<'_> {
                 .collect()
         };
         Ok(match body {
+            // No fields to canonicalize — an abstract type is opaque.
+            ast::TypeBody::Abstract => ast::TypeBody::Abstract,
             ast::TypeBody::Record(fields) => ast::TypeBody::Record(canon_fields(self, fields)?),
             ast::TypeBody::Variants(variants) => ast::TypeBody::Variants(
                 variants

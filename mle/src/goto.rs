@@ -251,6 +251,8 @@ fn type_body_fields(body: &TypeBody) -> Vec<&TypeName> {
             .iter()
             .flat_map(|VariantDecl { fields, .. }| fields.iter().map(|f| &f.ty))
             .collect(),
+        // An abstract type has no annotated fields.
+        TypeBody::Abstract => Vec::new(),
     }
 }
 

@@ -53,12 +53,15 @@ pub struct TypeDecl {
     pub span: Span,
 }
 
-/// What a `type` declares: a record shape, or one-or-more variant
-/// constructors (each `|`-led, including the first).
+/// What a `type` declares: a record shape, one-or-more variant constructors
+/// (each `|`-led, including the first), or — with no `= body` — an ABSTRACT
+/// (opaque) nominal type: a named handle with no fields and no constructors,
+/// produced/consumed only by host functions (`type SceneNode`).
 #[derive(Debug)]
 pub enum TypeBody {
     Record(Vec<FieldTy>),
     Variants(Vec<VariantDecl>),
+    Abstract,
 }
 
 /// One `| Ctor(name: Type, …)` / `| Ctor` alternative of a variant type.
