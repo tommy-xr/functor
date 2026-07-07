@@ -9,9 +9,11 @@
 //! IR ([`types`]) — checking with annotations, not inference.
 
 pub mod ast;
+pub mod codelens;
 pub mod eval;
 pub mod goto;
 pub mod hover;
+pub mod inlay;
 pub mod ir;
 mod lexer;
 mod lower;
@@ -32,7 +34,7 @@ pub use parser::parse;
 pub use rebind::{rebind_value, RebindReport};
 pub use span::{line_col, Span};
 pub use trace::set_trace_sink;
-pub use types::{check, check_with_types, ExprTypes};
+pub use types::{check, check_with_scopes_and_types, check_with_types, ExprTypes};
 pub use value::{HostData, Value};
 
 /// A lex or parse failure: a message plus the span of the offending source.

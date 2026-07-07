@@ -445,6 +445,17 @@ pub fn check_with_types(module: &Module) -> (Vec<CheckError>, ExprTypes) {
     check_impl(module, None)
 }
 
+/// [`check_with_types`] for a merged multi-file module, with per-module
+/// record-literal scopes — the typed counterpart of [`check_with_scopes`]
+/// (`crate::project::Project::check_with_types` is the caller-facing seam,
+/// letting the LSP hover/inlay/codelens over a whole project).
+pub fn check_with_scopes_and_types(
+    module: &Module,
+    scopes: &RecordLiteralScopes,
+) -> (Vec<CheckError>, ExprTypes) {
+    check_impl(module, Some(scopes))
+}
+
 fn check_impl(
     module: &Module,
     scopes: Option<&RecordLiteralScopes>,

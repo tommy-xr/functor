@@ -761,3 +761,107 @@ fn same_named_defs_in_different_modules_do_not_cross_rebind() {
         .expect("apply beta");
     assert_eq!(number(&result), 1.0); // beta unchanged: 2 - 1
 }
+
+// --- Track D: project-aware LSP typed check (slice 1a) ---
+
+/// `Project::check_with_types` types the whole program, so a def in the entry
+/// that calls a sibling recovers a concrete signature — the cross-file
+/// inference the LSP's hover/inlay/codelens build on. And a hint's
+/// project-wide span resolves back to the file that owns it.
+#[test]
+fn project_typed_check_infers_across_files() {
+    let project = load(
+        "typed-xfile",
+        &[
+            // Entry calls Utils.double with no annotations anywhere.
+            ("game.mle", "let apply = (n) => Utils.double(n)\n"),
+            ("utils.mle", "let double = (x: Float): Float => x * 2.0\n"),
+        ],
+    );
+    let (diags, types) = project.check_with_types();
+    assert!(diags.is_empty(), "clean: {diags:?}");
+
+    // The entry's `apply` is inferred `(Float) => Float` across the file
+    // boundary (Utils.double is annotated Float→Float).
+    let sigs: Vec<String> = mle::codelens::signatures(&project.module, &types)
+        .into_iter()
+        .map(|s| s.title)
+        .collect();
+    assert!(
+        sigs.contains(&"apply : (Float) => Float".to_string()),
+        "signatures: {sigs:?}"
+    );
+
+    // The sibling's def is canonicalized to `Utils.double` in a project.
+    // Its signature lens carries a project-wide span; it must resolve to
+    // utils.mle, not the entry.
+    let double = mle::codelens::signatures(&project.module, &types)
+        .into_iter()
+        .find(|s| s.title.starts_with("Utils.double :"))
+        .expect("Utils.double has a signature");
+    let (file, _line, _col) = project.sources.resolve(double.span.start);
+    assert_eq!(
+        file.path.file_name().unwrap().to_str().unwrap(),
+        "utils.mle",
+        "double should resolve to its own file"
+    );
+}
+
+/// `load_with_overrides` replaces a *sibling* file's on-disk source with an
+/// in-memory buffer (the LSP editing a non-entry file), and `file_by_path`
+/// maps a path back to its project base. Disk still holds the old sibling.
+#[test]
+fn overrides_replace_a_sibling_buffer() {
+    let scratch = Scratch::new(
+        "override-sibling",
+        &[
+            ("game.mle", "let apply = (n) => Utils.tripled(n)\n"),
+            // On disk `utils.mle` has no `tripled` — loading from disk fails.
+            ("utils.mle", "let double = (x: Float): Float => x * 2.0\n"),
+        ],
+    );
+    // Disk-only load: `Utils.tripled` is unresolved (load or check fails).
+    let disk_clean = match mle::project::load(&scratch.entry) {
+        Ok(project) => project.check().is_empty(),
+        Err(_) => false,
+    };
+    assert!(!disk_clean, "disk load should not resolve Utils.tripled");
+
+    // Override the sibling buffer with a version that defines `tripled`.
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert(
+        scratch.dir.join("utils.mle"),
+        "let tripled = (x: Float): Float => x * 3.0\n".to_string(),
+    );
+    let project = mle::project::load_with_overrides(&scratch.entry, &overrides)
+        .unwrap_or_else(|e| panic!("override load: {}", e.render()));
+    assert!(project.check().is_empty(), "clean with override");
+
+    // `file_by_path` maps the sibling path to its project file (which now
+    // carries the overridden source).
+    let file = project
+        .sources
+        .file_by_path(&scratch.dir.join("utils.mle"))
+        .expect("utils.mle is a project file");
+    assert!(file.src.contains("tripled"), "override source is in the map");
+}
+
+/// The shipped multi-file example (`examples/hello-cubes` = game.mle +
+/// pieces.mle) must keep loading as a project and checking clean, so the
+/// split sample can't silently bit-rot.
+#[test]
+fn shipped_hello_cubes_multifile_checks_clean() {
+    let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("examples")
+        .join("hello-cubes")
+        .join("game.mle");
+    let project = mle::project::load(&entry)
+        .unwrap_or_else(|e| panic!("hello-cubes should load: {}", e.render()));
+    assert!(
+        project.sources.files().iter().any(|f| f.module == "Pieces"),
+        "pieces.mle loads as module Pieces"
+    );
+    let diags = project.check();
+    assert!(diags.is_empty(), "hello-cubes checks clean: {diags:?}");
+}
