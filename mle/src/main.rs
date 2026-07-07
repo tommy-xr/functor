@@ -1,4 +1,4 @@
-//! The `mle` CLI. Five subcommands:
+//! The `mle` CLI. Six subcommands:
 //!
 //! ```text
 //! mle parse <file.mle>   # print the surface AST (pretty-Debug; this file only)
@@ -6,6 +6,7 @@
 //! mle check <file.mle>   # typecheck the project; all diagnostics, exit 1
 //! mle run <file.mle>     # evaluate; print main's result, or the entry's bindings
 //! mle trace <file.mle>   # evaluate with the call trace; print the trace
+//! mle bench [--all] [--json] [<file.mle>|<dir>]  # time interpreter eval (see bench.rs)
 //! ```
 //!
 //! `ir`/`check`/`run`/`trace` treat the file as a project entry (B8): every
@@ -20,14 +21,23 @@
 
 use std::process::exit;
 
+mod bench;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `bench` takes its own flags (`--all`, `--json`) and an optional path, so
+    // it is dispatched before the rigid single-path subcommand parsing.
+    if args.first().is_some_and(|a| a == "bench") {
+        bench::main(&args[1..]);
+    }
     let (command, path) = match args.as_slice() {
         [command, path] if ["parse", "ir", "check", "run", "trace"].contains(&command.as_str()) => {
             (command.as_str(), path)
         }
         _ => {
-            eprintln!("usage: mle <parse|ir|check|run|trace> <file.mle>");
+            eprintln!(
+                "usage: mle <parse|ir|check|run|trace> <file.mle>\n       mle bench [--all] [--json] [<file.mle>|<dir>]"
+            );
             exit(2);
         }
     };

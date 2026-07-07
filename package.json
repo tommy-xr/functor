@@ -6,6 +6,7 @@
     "build:cli": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
     "build:oculus": "ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-sdk} CARGO_TARGET_DIR=target-android cargo ndk -t arm64-v8a build --manifest-path runtime/functor-runtime-oculus/Cargo.toml",
     "build:oculus:apk": "ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-sdk} ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-/opt/homebrew/share/android-sdk/ndk/24.0.8215888} CARGO_TARGET_DIR=$PWD/target-android cargo apk build --manifest-path runtime/functor-runtime-oculus/Cargo.toml",
+    "bench": "cargo run -q --release -p mle -- bench --all",
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "generate:audio": "node scripts/generate-audio.mjs",
     "test:golden": "npm run fetch:assets && npm run build:cli && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
