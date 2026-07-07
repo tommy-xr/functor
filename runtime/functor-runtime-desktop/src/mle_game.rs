@@ -1771,4 +1771,111 @@ mod tests {
             "character should be grounded on the right platform"
         );
     }
+
+    /// The INTERACTIVE scrubber+ghost path end-to-end (docs/time-travel.md T6d):
+    /// record a live run+jump at the fixed 1/60 step, SCRUB back to a pre-jump
+    /// frame, then resolve the fork exactly as `mle_producer::ghost_frames` does —
+    /// `k = current_scene_frame()`, `inputs_from(k + 1)`, forward-step from the
+    /// scrubbed `model` — and assert the strobe's per-division models reproduce the
+    /// RECORDED future exactly. Unlike `mario_forward_step_...` (which hand-picks a
+    /// fork model + input slice) this exercises `seek_scene_to` +
+    /// `current_scene_frame` + `inputs_from` integration — the alignment the live
+    /// scrubber+ghost actually depends on.
+    #[test]
+    fn mario_interactive_ghost_from_scrubbed_frame_matches_recorded_future() {
+        use functor_runtime_common::Key;
+
+        fn field(v: &Value, name: &str) -> f64 {
+            match v {
+                Value::Record(fields) => match &fields.iter().find(|(k, _)| k == name).unwrap().1 {
+                    Value::Number(x) => *x,
+                    Value::Bool(b) => (*b as i32) as f64,
+                    other => panic!("{name} is not a number/bool: {other}"),
+                },
+                _ => panic!("model is not a record"),
+            }
+        }
+
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.mle");
+        let mut game = MleGame::create(mario);
+
+        const SUB_DT: f32 = 1.0 / 60.0;
+        const N: usize = 90; // run to the edge, jump, land, run on the right
+
+        // Live play at the fixed step: hold Right, jump at the edge, recording the
+        // settled (x, y) of every frame as ground truth. `game.tick` fills the
+        // recorder exactly as the shell's fixed-timestep loop now does.
+        game.key_event(Key::Right as i32, true);
+        let mut recorded: Vec<(f64, f64)> = Vec::with_capacity(N);
+        let mut tts = 0.0f32;
+        let mut jumped = false;
+        for _ in 0..N {
+            if !jumped
+                && field(&game.model, "grounded") == 1.0
+                && field(&game.model, "x") + (8.0 * SUB_DT as f64) >= -3.0
+            {
+                game.key_event(Key::Up as i32, true);
+                jumped = true;
+            }
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+            recorded.push((field(&game.model, "x"), field(&game.model, "y")));
+        }
+        assert!(jumped, "the scripted jump must have fired");
+
+        // Scrub back to a PRE-JUMP frame and confirm the scene sits on it.
+        const S: u64 = 3;
+        game.seek_scene_to(S).expect("seek to S");
+        assert_eq!(game.current_scene_frame(), Some(S), "scrubbed to frame S");
+        assert!(
+            (field(&game.model, "x") - recorded[S as usize].0).abs() < 1e-9,
+            "scrubbed model must be the recorded frame S"
+        );
+        assert_eq!(field(&game.model, "grounded"), 1.0, "S is pre-jump / grounded");
+
+        // Resolve the fork EXACTLY as `ghost_frames(script_inputs = None)` does.
+        let k = game.current_scene_frame().unwrap();
+        let inputs = game.recorder.inputs_from(k + 1);
+        let start_tts = game.recorder.current_scene_frame_tts().unwrap() as f32;
+
+        const DIVISIONS: usize = 8;
+        const STEPS_PER_DIV: usize = 5;
+        let forward = functor_runtime_common::mle_producer::forward_step_scene(
+            &game.session,
+            &game.model, // the scrubbed model = seek(k)
+            game.has_physics,
+            game.has_subscriptions,
+            game.prev_tts,
+            start_tts,
+            SUB_DT,
+            DIVISIONS,
+            STEPS_PER_DIV,
+            &inputs,
+        );
+        assert_eq!(forward.len(), DIVISIONS, "division count");
+
+        // Each division boundary reproduces recorded frame S + (div+1)*STEPS — the
+        // strobe retraces the true recorded arc (exact at fixed dt).
+        let mut peak_y = f64::MIN;
+        for (div, (m, _w)) in forward.iter().enumerate() {
+            peak_y = peak_y.max(field(m, "y"));
+            let f = S as usize + (div + 1) * STEPS_PER_DIV;
+            if f >= N {
+                break; // beyond the recorded window the step coasts; stop comparing
+            }
+            let (rx, ry) = recorded[f];
+            assert!(
+                (field(m, "x") - rx).abs() < 1e-9,
+                "ghost x diverged at division {div} (frame {f}): {} vs {rx}",
+                field(m, "x")
+            );
+            assert!(
+                (field(m, "y") - ry).abs() < 1e-9,
+                "ghost y diverged at division {div} (frame {f}): {} vs {ry}",
+                field(m, "y")
+            );
+        }
+        // The strobe visibly shows the JUMP: some division rose above the ground.
+        assert!(peak_y > 0.5, "the ghost should show the jump arc, peak y = {peak_y}");
+    }
 }
