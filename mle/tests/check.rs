@@ -816,11 +816,11 @@ fn polymorphic_arm_results_are_constrained() {
 /// pattern is a can-never-match diagnostic.
 #[test]
 fn tuple_pattern_arity_mismatch_is_flagged() {
-    let diags = check_src("let f = (t: Float * String): Bool => match t with | (x, y, z) => true");
+    let diags = check_src("let f = (t: (Float, String)): Bool => match t with | (x, y, z) => true");
     assert_eq!(diags.len(), 2, "{diags:?}");
     let has = |needle: &str| diags.iter().any(|(m, _, _)| m.contains(needle));
     assert!(
-        has("names 3 element(s), but the matched value is Float * String"),
+        has("names 3 element(s), but the matched value is (Float, String)"),
         "{diags:?}"
     );
     // The mismatched arm must NOT count as exhaustive: the match as a whole
@@ -847,7 +847,7 @@ fn tuple_pattern_against_non_tuple_is_flagged() {
 /// typed variables (a String element used as Float errors).
 #[test]
 fn tuple_element_types_flow_through_patterns() {
-    let diags = check_src("let f = (t: Float * String): Float => let (n, s) = t in n + s");
+    let diags = check_src("let f = (t: (Float, String)): Float => let (n, s) = t in n + s");
     assert_eq!(diags.len(), 1);
     assert!(diags[0].0.contains("String"), "unexpected: {}", diags[0].0);
 }
@@ -857,7 +857,7 @@ fn tuple_element_types_flow_through_patterns() {
 /// [Codex H — tuples review]
 #[test]
 fn tuple_elements_meet_declared_types() {
-    let diags = check_src("type P = { x: Float }\nlet main = (): P * Float => ({ y: 1.0 }, 2.0)");
+    let diags = check_src("type P = { x: Float }\nlet main = (): (P, Float) => ({ y: 1.0 }, 2.0)");
     assert!(
         diags.iter().any(|(m, _, _)| m.contains("`y`")),
         "expected the record-literal field check to fire: {diags:?}"
@@ -878,7 +878,7 @@ fn tuple_equality_with_function_elements_is_an_error() {
 #[test]
 fn matching_arity_arm_satisfies_exhaustiveness() {
     let diags = check_src(
-        "let f = (t: Float * String): Float => match t with | (x, y, z) => 0.0 | (x, y) => x",
+        "let f = (t: (Float, String)): Float => match t with | (x, y, z) => 0.0 | (x, y) => x",
     );
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].0.contains("names 3 element(s)"));
@@ -904,7 +904,7 @@ fn polymorphic_defs_instantiate_per_use() {
 #[test]
 fn lowercase_annotations_are_type_variables() {
     assert_clean(
-        "let first = (pair: a * b): a => match pair with | (x, _) => x\n\
+        "let first = (pair: (a, b)): a => match pair with | (x, _) => x\n\
          let go = () => (first((1.0, \"s\")) + 1.0, first((true, 2.0)))",
     );
     // …and they CONSTRAIN: both params share `a`, so mixed args error.
@@ -1237,5 +1237,73 @@ fn list_pattern_against_non_list() {
     assert!(
         message.contains("a list pattern cannot match Float"),
         "unexpected: {message}"
+    );
+}
+
+// ── Function & tuple type syntax (mlei slice 2a) ─────────────────────────
+
+/// A higher-order parameter annotated with a function type checks clean and
+/// its type flows: `apply` applies `f` to `x`.
+#[test]
+fn function_type_annotation_on_a_parameter() {
+    assert_clean("let apply = (f: (Float) => Float, x: Float): Float => f(x)");
+    assert_clean("let twice = (f: (Float) => Float, x: Float): Float => f(f(x))");
+}
+
+/// A function-typed argument is checked against its declared signature.
+#[test]
+fn function_typed_argument_is_checked() {
+    let (message, _, _) = single_diag(
+        "let apply = (f: (Float) => Float, x: Float): Float => f(x)\n\
+         let bad = () => apply((s: String): String => s, 1.0)",
+    );
+    assert!(
+        message.contains("expected") && message.contains("=>"),
+        "unexpected: {message}"
+    );
+}
+
+/// A zero-argument function type parses and checks.
+#[test]
+fn nullary_function_type() {
+    assert_clean("let run = (cb: () => Float): Float => cb()");
+}
+
+/// `(A, B)` is the tuple type spelling (the old `*` is gone).
+#[test]
+fn paren_tuple_type_annotation() {
+    assert_clean(
+        "let swap = (p: (Float, String)): (String, Float) => match p with | (a, b) => (b, a)",
+    );
+}
+
+/// A function type used as a *return* annotation must be parenthesized — then
+/// it checks (currying: `adder(n)` returns a `(Float) => Float`).
+#[test]
+fn parenthesized_function_return_type() {
+    assert_clean("let adder = (n: Float): ((Float) => Float) => (x: Float): Float => x + n");
+}
+
+/// `(A)` is grouping — the same as `A`.
+#[test]
+fn parenthesized_group_is_the_inner_type() {
+    assert_clean("let f = (x: (Float)): Float => x + 1.0");
+}
+
+/// The removed `*` product spelling is now a parse error in type position.
+#[test]
+fn star_tuple_type_is_rejected() {
+    assert!(
+        mle::parse("let f = (p: Float * Float): Float => 0.0").is_err(),
+        "`*` should no longer parse as a tuple type"
+    );
+}
+
+/// Bare `()` is only a zero-argument function type, not an empty tuple.
+#[test]
+fn empty_parens_require_an_arrow() {
+    assert!(
+        mle::parse("let f = (x: ()): Float => 0.0").is_err(),
+        "`()` alone is not a type"
     );
 }

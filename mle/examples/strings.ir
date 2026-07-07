@@ -315,7 +315,7 @@ Module {
                                 TypeName {
                                     name: "Float",
                                     args: [],
-                                    span: 661..666,
+                                    span: 662..667,
                                 },
                                 TypeName {
                                     name: "Float",
@@ -325,7 +325,7 @@ Module {
                                 TypeName {
                                     name: "Float",
                                     args: [],
-                                    span: 677..682,
+                                    span: 676..681,
                                 },
                             ],
                             span: 661..682,
