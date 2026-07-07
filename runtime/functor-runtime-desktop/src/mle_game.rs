@@ -34,7 +34,7 @@ use functor_runtime_common::mle_prelude::{
     EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
 };
 use functor_runtime_common::events::{self, RuntimeEvent};
-use functor_runtime_common::mle_producer::{forward_step_scene, FrameCtx, Reporter, SpanSource};
+use functor_runtime_common::mle_producer::{FrameCtx, Reporter, SpanSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
@@ -620,58 +620,21 @@ impl Game for MleGame {
         start_tts: f64,
         script_inputs: Option<&[Vec<functor_runtime_common::RecordedInput>]>,
     ) -> Vec<Frame> {
-        // Replay the recorded inputs for the frames AFTER the fork point K, so a
-        // recorded jump/run ghosts (docs/time-travel.md T6b). The input log is
-        // per-rendered-frame = per-fine-step (both 1/60), so it feeds the fine
-        // step index directly. Beyond the recorded window the step coasts. Under
-        // F2 (`script_inputs = Some`) the caller's per-fine-step script slice is
-        // used directly, forward-stepping from the current anchor model.
-        let recorded;
-        let inputs: &[Vec<functor_runtime_common::RecordedInput>] = match script_inputs {
-            Some(slice) => slice,
-            None => {
-                recorded = match self.recorder.current_scene_frame() {
-                    Some(k) => self.recorder.inputs_from(k + 1),
-                    None => Vec::new(),
-                };
-                &recorded
-            }
-        };
-        // Fine sub-step at 1/60; round the division width to a whole number of
-        // sub-steps (≥1). At the default 8 divisions over a ~2s window that's
-        // dt = 0.25 → ~15 fine steps per division.
-        let sub_dt = 1.0f32 / 60.0;
-        let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
-        let stepped = forward_step_scene(
+        // The body is shared (`mle_producer::ghost_frames`) so both shells ghost
+        // through one impl; this just hands it the producer's state.
+        functor_runtime_common::mle_producer::ghost_frames(
             &self.session,
             &self.model,
+            &self.recorder,
             self.has_physics,
             self.has_subscriptions,
             self.prev_tts,
-            start_tts as f32,
-            sub_dt,
+            &self.last_frame,
             divisions,
-            steps_per_division,
-            &inputs,
-        );
-        let mut frames = Vec::with_capacity(stepped.len());
-        for (i, (model_i, _world)) in stepped.iter().enumerate() {
-            // Match forward_step_scene's f32 division-boundary tts exactly, so
-            // each redrawn frame's tts equals the tts its model was stepped at.
-            let tts =
-                (start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt) as f64;
-            let args = vec![model_i.clone(), Value::Number(tts)];
-            // A draw error or non-Frame return for a division is skipped, not fatal.
-            if let Ok(value) = self.session.call("draw", args, &mut FunctorHost) {
-                if let Some(frame) = frame_value(&value) {
-                    let mut frame = frame.clone();
-                    // Freeze the view: composite only world motion, not the camera.
-                    frame.camera = self.last_frame.camera.clone();
-                    frames.push(frame);
-                }
-            }
-        }
-        frames
+            dt,
+            start_tts,
+            script_inputs,
+        )
     }
 
     /// Non-destructive scrub — delegated to the shared [`SceneRecorder`]
