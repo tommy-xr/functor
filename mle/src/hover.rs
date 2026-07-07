@@ -184,12 +184,18 @@ fn type_name_text(ty: &TypeName) -> String {
         return ty.name.clone();
     }
     let args: Vec<String> = ty.args.iter().map(type_name_text).collect();
-    // The parser encodes product annotations under the reserved name `*` —
-    // render them back as the source spelling, not `*<A, B>`.
-    if ty.name == "*" {
-        return args.join(" * ");
+    // The parser encodes structural types under reserved names — render them
+    // back as the source spelling, not `*<A, B>` / `=><A, B>`.
+    match ty.name.as_str() {
+        // Tuple: `(A, B)`.
+        "*" => format!("({})", args.join(", ")),
+        // Function: `(params) => ret` (args = [params…, ret]).
+        "=>" => {
+            let (ret, params) = args.split_last().expect("function type has a return");
+            format!("({}) => {ret}", params.join(", "))
+        }
+        _ => format!("{}<{}>", ty.name, args.join(", ")),
     }
-    format!("{}<{}>", ty.name, args.join(", "))
 }
 
 #[cfg(test)]

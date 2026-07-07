@@ -14,25 +14,25 @@ Program {
                                     ty: TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 334..339,
+                                        span: 335..340,
                                     },
-                                    span: 330..339,
+                                    span: 331..340,
                                 },
                                 FieldTy {
                                     name: "dy",
                                     ty: TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 345..350,
+                                        span: 346..351,
                                     },
-                                    span: 341..350,
+                                    span: 342..351,
                                 },
                             ],
-                            span: 324..351,
+                            span: 325..352,
                         },
                     ],
                 ),
-                span: 309..351,
+                span: 310..352,
             },
         ),
         Let(
@@ -47,10 +47,10 @@ Program {
                                     TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 414..419,
+                                        span: 415..420,
                                     },
                                 ),
-                                span: 411..419,
+                                span: 412..420,
                             },
                             Param {
                                 name: "b",
@@ -58,10 +58,10 @@ Program {
                                     TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 424..429,
+                                        span: 425..430,
                                     },
                                 ),
-                                span: 421..429,
+                                span: 422..430,
                             },
                         ],
                         ret: Some(
@@ -71,15 +71,15 @@ Program {
                                     TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 432..437,
+                                        span: 434..439,
                                     },
                                     TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 440..445,
+                                        span: 441..446,
                                     },
                                 ],
-                                span: 432..445,
+                                span: 433..447,
                             },
                         ),
                         body: Expr {
@@ -93,7 +93,7 @@ Program {
                                                     "a",
                                                 ],
                                             ),
-                                            span: 457..458,
+                                            span: 459..460,
                                         },
                                         rhs: Expr {
                                             kind: Ident(
@@ -101,10 +101,10 @@ Program {
                                                     "b",
                                                 ],
                                             ),
-                                            span: 461..462,
+                                            span: 463..464,
                                         },
                                     },
-                                    span: 457..462,
+                                    span: 459..464,
                                 },
                                 arms: [
                                     MatchArm {
@@ -112,7 +112,7 @@ Program {
                                             kind: Bool(
                                                 true,
                                             ),
-                                            span: 472..476,
+                                            span: 474..478,
                                         },
                                         body: Expr {
                                             kind: Tuple(
@@ -123,7 +123,7 @@ Program {
                                                                 "a",
                                                             ],
                                                         ),
-                                                        span: 481..482,
+                                                        span: 483..484,
                                                     },
                                                     Expr {
                                                         kind: Ident(
@@ -131,20 +131,20 @@ Program {
                                                                 "b",
                                                             ],
                                                         ),
-                                                        span: 484..485,
+                                                        span: 486..487,
                                                     },
                                                 ],
                                             ),
-                                            span: 480..486,
+                                            span: 482..488,
                                         },
-                                        span: 470..486,
+                                        span: 472..488,
                                     },
                                     MatchArm {
                                         pattern: Pattern {
                                             kind: Bool(
                                                 false,
                                             ),
-                                            span: 491..496,
+                                            span: 493..498,
                                         },
                                         body: Expr {
                                             kind: Tuple(
@@ -155,7 +155,7 @@ Program {
                                                                 "b",
                                                             ],
                                                         ),
-                                                        span: 501..502,
+                                                        span: 503..504,
                                                     },
                                                     Expr {
                                                         kind: Ident(
@@ -163,22 +163,22 @@ Program {
                                                                 "a",
                                                             ],
                                                         ),
-                                                        span: 504..505,
+                                                        span: 506..507,
                                                     },
                                                 ],
                                             ),
-                                            span: 500..506,
+                                            span: 502..508,
                                         },
-                                        span: 489..506,
+                                        span: 491..508,
                                     },
                                 ],
                             },
-                            span: 451..506,
+                            span: 453..508,
                         },
                     },
-                    span: 410..506,
+                    span: 411..508,
                 },
-                span: 397..506,
+                span: 398..508,
             },
         ),
         Let(
@@ -190,12 +190,12 @@ Program {
                             Param {
                                 name: "a",
                                 ty: None,
-                                span: 520..521,
+                                span: 522..523,
                             },
                             Param {
                                 name: "b",
                                 ty: None,
-                                span: 523..524,
+                                span: 525..526,
                             },
                         ],
                         ret: None,
@@ -209,7 +209,7 @@ Program {
                                                     "minMax",
                                                 ],
                                             ),
-                                            span: 546..552,
+                                            span: 548..554,
                                         },
                                         args: [
                                             Expr {
@@ -218,7 +218,7 @@ Program {
                                                         "a",
                                                     ],
                                                 ),
-                                                span: 553..554,
+                                                span: 555..556,
                                             },
                                             Expr {
                                                 kind: Ident(
@@ -226,11 +226,11 @@ Program {
                                                         "b",
                                                     ],
                                                 ),
-                                                span: 556..557,
+                                                span: 558..559,
                                             },
                                         ],
                                     },
-                                    span: 546..558,
+                                    span: 548..560,
                                 },
                                 arms: [
                                     MatchArm {
@@ -241,17 +241,17 @@ Program {
                                                         kind: Var(
                                                             "lo",
                                                         ),
-                                                        span: 536..538,
+                                                        span: 538..540,
                                                     },
                                                     Pattern {
                                                         kind: Var(
                                                             "hi",
                                                         ),
-                                                        span: 540..542,
+                                                        span: 542..544,
                                                     },
                                                 ],
                                             ),
-                                            span: 535..543,
+                                            span: 537..545,
                                         },
                                         body: Expr {
                                             kind: Binary {
@@ -262,7 +262,7 @@ Program {
                                                             "hi",
                                                         ],
                                                     ),
-                                                    span: 564..566,
+                                                    span: 566..568,
                                                 },
                                                 rhs: Expr {
                                                     kind: Ident(
@@ -270,21 +270,21 @@ Program {
                                                             "lo",
                                                         ],
                                                     ),
-                                                    span: 569..571,
+                                                    span: 571..573,
                                                 },
                                             },
-                                            span: 564..571,
+                                            span: 566..573,
                                         },
-                                        span: 535..571,
+                                        span: 537..573,
                                     },
                                 ],
                             },
-                            span: 531..571,
+                            span: 533..573,
                         },
                     },
-                    span: 519..571,
+                    span: 521..573,
                 },
-                span: 508..571,
+                span: 510..573,
             },
         ),
         Let(
@@ -302,25 +302,25 @@ Program {
                                             TypeName {
                                                 name: "Float",
                                                 args: [],
-                                                span: 666..671,
+                                                span: 669..674,
                                             },
                                             TypeName {
                                                 name: "String",
                                                 args: [],
-                                                span: 674..680,
+                                                span: 676..682,
                                             },
                                         ],
-                                        span: 666..680,
+                                        span: 668..683,
                                     },
                                 ),
-                                span: 660..680,
+                                span: 662..683,
                             },
                         ],
                         ret: Some(
                             TypeName {
                                 name: "String",
                                 args: [],
-                                span: 683..689,
+                                span: 686..692,
                             },
                         ),
                         body: Expr {
@@ -331,7 +331,7 @@ Program {
                                             "pair",
                                         ],
                                     ),
-                                    span: 701..705,
+                                    span: 704..708,
                                 },
                                 arms: [
                                     MatchArm {
@@ -342,17 +342,17 @@ Program {
                                                         kind: Var(
                                                             "n",
                                                         ),
-                                                        span: 716..717,
+                                                        span: 719..720,
                                                     },
                                                     Pattern {
                                                         kind: Var(
                                                             "label",
                                                         ),
-                                                        span: 719..724,
+                                                        span: 722..727,
                                                     },
                                                 ],
                                             ),
-                                            span: 715..725,
+                                            span: 718..728,
                                         },
                                         body: Expr {
                                             kind: Call {
@@ -363,7 +363,7 @@ Program {
                                                             "concat",
                                                         ],
                                                     ),
-                                                    span: 729..740,
+                                                    span: 732..743,
                                                 },
                                                 args: [
                                                     Expr {
@@ -372,7 +372,7 @@ Program {
                                                                 "label",
                                                             ],
                                                         ),
-                                                        span: 741..746,
+                                                        span: 744..749,
                                                     },
                                                     Expr {
                                                         kind: Call {
@@ -383,7 +383,7 @@ Program {
                                                                         "fromFloat",
                                                                     ],
                                                                 ),
-                                                                span: 748..762,
+                                                                span: 751..765,
                                                             },
                                                             args: [
                                                                 Expr {
@@ -392,26 +392,26 @@ Program {
                                                                             "n",
                                                                         ],
                                                                     ),
-                                                                    span: 763..764,
+                                                                    span: 766..767,
                                                                 },
                                                             ],
                                                         },
-                                                        span: 748..765,
+                                                        span: 751..768,
                                                     },
                                                 ],
                                             },
-                                            span: 729..766,
+                                            span: 732..769,
                                         },
-                                        span: 713..766,
+                                        span: 716..769,
                                     },
                                 ],
                             },
-                            span: 695..766,
+                            span: 698..769,
                         },
                     },
-                    span: 659..766,
+                    span: 661..769,
                 },
-                span: 644..766,
+                span: 646..769,
             },
         ),
         Let(
@@ -426,10 +426,10 @@ Program {
                                     TypeName {
                                         name: "Msg",
                                         args: [],
-                                        span: 848..851,
+                                        span: 851..854,
                                     },
                                 ),
-                                span: 843..851,
+                                span: 846..854,
                             },
                         ],
                         ret: Some(
@@ -439,15 +439,15 @@ Program {
                                     TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 854..859,
+                                        span: 858..863,
                                     },
                                     TypeName {
                                         name: "Float",
                                         args: [],
-                                        span: 862..867,
+                                        span: 865..870,
                                     },
                                 ],
-                                span: 854..867,
+                                span: 857..871,
                             },
                         ),
                         body: Expr {
@@ -458,7 +458,7 @@ Program {
                                             "msg",
                                         ],
                                     ),
-                                    span: 879..882,
+                                    span: 883..886,
                                 },
                                 arms: [
                                     MatchArm {
@@ -470,17 +470,17 @@ Program {
                                                         kind: Var(
                                                             "dx",
                                                         ),
-                                                        span: 898..900,
+                                                        span: 902..904,
                                                     },
                                                     Pattern {
                                                         kind: Var(
                                                             "dy",
                                                         ),
-                                                        span: 902..904,
+                                                        span: 906..908,
                                                     },
                                                 ],
                                             },
-                                            span: 892..905,
+                                            span: 896..909,
                                         },
                                         body: Expr {
                                             kind: Tuple(
@@ -494,16 +494,16 @@ Program {
                                                                         "dx",
                                                                     ],
                                                                 ),
-                                                                span: 910..912,
+                                                                span: 914..916,
                                                             },
                                                             rhs: Expr {
                                                                 kind: Number(
                                                                     2.0,
                                                                 ),
-                                                                span: 915..918,
+                                                                span: 919..922,
                                                             },
                                                         },
-                                                        span: 910..918,
+                                                        span: 914..922,
                                                     },
                                                     Expr {
                                                         kind: Binary {
@@ -514,31 +514,31 @@ Program {
                                                                         "dy",
                                                                     ],
                                                                 ),
-                                                                span: 920..922,
+                                                                span: 924..926,
                                                             },
                                                             rhs: Expr {
                                                                 kind: Number(
                                                                     2.0,
                                                                 ),
-                                                                span: 925..928,
+                                                                span: 929..932,
                                                             },
                                                         },
-                                                        span: 920..928,
+                                                        span: 924..932,
                                                     },
                                                 ],
                                             ),
-                                            span: 909..929,
+                                            span: 913..933,
                                         },
-                                        span: 890..929,
+                                        span: 894..933,
                                     },
                                 ],
                             },
-                            span: 873..929,
+                            span: 877..933,
                         },
                     },
-                    span: 842..929,
+                    span: 845..933,
                 },
-                span: 831..929,
+                span: 834..933,
             },
         ),
         Let(
@@ -558,7 +558,7 @@ Program {
                                                     "step",
                                                 ],
                                             ),
-                                            span: 965..969,
+                                            span: 969..973,
                                         },
                                         args: [
                                             Expr {
@@ -569,14 +569,14 @@ Program {
                                                                 "Moved",
                                                             ],
                                                         ),
-                                                        span: 970..975,
+                                                        span: 974..979,
                                                     },
                                                     args: [
                                                         Expr {
                                                             kind: Number(
                                                                 1.5,
                                                             ),
-                                                            span: 976..979,
+                                                            span: 980..983,
                                                         },
                                                         Expr {
                                                             kind: Neg(
@@ -584,18 +584,18 @@ Program {
                                                                     kind: Number(
                                                                         0.5,
                                                                     ),
-                                                                    span: 982..985,
+                                                                    span: 986..989,
                                                                 },
                                                             ),
-                                                            span: 981..985,
+                                                            span: 985..989,
                                                         },
                                                     ],
                                                 },
-                                                span: 970..986,
+                                                span: 974..990,
                                             },
                                         ],
                                     },
-                                    span: 965..987,
+                                    span: 969..991,
                                 },
                                 arms: [
                                     MatchArm {
@@ -606,17 +606,17 @@ Program {
                                                         kind: Var(
                                                             "vx",
                                                         ),
-                                                        span: 955..957,
+                                                        span: 959..961,
                                                     },
                                                     Pattern {
                                                         kind: Var(
                                                             "vy",
                                                         ),
-                                                        span: 959..961,
+                                                        span: 963..965,
                                                     },
                                                 ],
                                             ),
-                                            span: 954..962,
+                                            span: 958..966,
                                         },
                                         body: Expr {
                                             kind: Tuple(
@@ -629,24 +629,24 @@ Program {
                                                                         "span",
                                                                     ],
                                                                 ),
-                                                                span: 994..998,
+                                                                span: 998..1002,
                                                             },
                                                             args: [
                                                                 Expr {
                                                                     kind: Number(
                                                                         9.0,
                                                                     ),
-                                                                    span: 999..1002,
+                                                                    span: 1003..1006,
                                                                 },
                                                                 Expr {
                                                                     kind: Number(
                                                                         3.0,
                                                                     ),
-                                                                    span: 1004..1007,
+                                                                    span: 1008..1011,
                                                                 },
                                                             ],
                                                         },
-                                                        span: 994..1008,
+                                                        span: 998..1012,
                                                     },
                                                     Expr {
                                                         kind: Call {
@@ -656,7 +656,7 @@ Program {
                                                                         "describe",
                                                                     ],
                                                                 ),
-                                                                span: 1010..1018,
+                                                                span: 1014..1022,
                                                             },
                                                             args: [
                                                                 Expr {
@@ -668,21 +668,21 @@ Program {
                                                                                         "vx",
                                                                                     ],
                                                                                 ),
-                                                                                span: 1020..1022,
+                                                                                span: 1024..1026,
                                                                             },
                                                                             Expr {
                                                                                 kind: String(
                                                                                     "vx: ",
                                                                                 ),
-                                                                                span: 1024..1030,
+                                                                                span: 1028..1034,
                                                                             },
                                                                         ],
                                                                     ),
-                                                                    span: 1019..1031,
+                                                                    span: 1023..1035,
                                                                 },
                                                             ],
                                                         },
-                                                        span: 1010..1032,
+                                                        span: 1014..1036,
                                                     },
                                                     Expr {
                                                         kind: Binary {
@@ -696,7 +696,7 @@ Program {
                                                                                     "vx",
                                                                                 ],
                                                                             ),
-                                                                            span: 1035..1037,
+                                                                            span: 1039..1041,
                                                                         },
                                                                         Expr {
                                                                             kind: Ident(
@@ -704,11 +704,11 @@ Program {
                                                                                     "vy",
                                                                                 ],
                                                                             ),
-                                                                            span: 1039..1041,
+                                                                            span: 1043..1045,
                                                                         },
                                                                     ],
                                                                 ),
-                                                                span: 1034..1042,
+                                                                span: 1038..1046,
                                                             },
                                                             rhs: Expr {
                                                                 kind: Tuple(
@@ -717,7 +717,7 @@ Program {
                                                                             kind: Number(
                                                                                 3.0,
                                                                             ),
-                                                                            span: 1047..1050,
+                                                                            span: 1051..1054,
                                                                         },
                                                                         Expr {
                                                                             kind: Neg(
@@ -725,32 +725,32 @@ Program {
                                                                                     kind: Number(
                                                                                         1.0,
                                                                                     ),
-                                                                                    span: 1053..1056,
+                                                                                    span: 1057..1060,
                                                                                 },
                                                                             ),
-                                                                            span: 1052..1056,
+                                                                            span: 1056..1060,
                                                                         },
                                                                     ],
                                                                 ),
-                                                                span: 1046..1057,
+                                                                span: 1050..1061,
                                                             },
                                                         },
-                                                        span: 1034..1057,
+                                                        span: 1038..1061,
                                                     },
                                                 ],
                                             ),
-                                            span: 993..1058,
+                                            span: 997..1062,
                                         },
-                                        span: 954..1058,
+                                        span: 958..1062,
                                     },
                                 ],
                             },
-                            span: 950..1058,
+                            span: 954..1062,
                         },
                     },
-                    span: 942..1058,
+                    span: 946..1062,
                 },
-                span: 931..1058,
+                span: 935..1062,
             },
         ),
     ],

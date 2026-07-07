@@ -118,13 +118,14 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "Bool"),
             Type::List(elem) => write!(f, "List<{elem}>"),
             Type::Tuple(elems) => {
+                write!(f, "(")?;
                 for (i, elem) in elems.iter().enumerate() {
                     if i > 0 {
-                        write!(f, " * ")?;
+                        write!(f, ", ")?;
                     }
                     write!(f, "{elem}")?;
                 }
-                Ok(())
+                write!(f, ")")
             }
             Type::Record(name, args) | Type::Variant(name, args) => {
                 write!(f, "{name}")?;
@@ -1029,14 +1030,23 @@ impl Checker<'_> {
                 }
                 Type::List(Box::new(self.resolve_type(&ty.args[0], report)))
             }
-            // The parser encodes a product annotation (`Float * Float`) as
-            // the reserved name `*` with the elements as args.
+            // The parser encodes a tuple annotation (`(Float, Float)`) as the
+            // reserved name `*` with the elements as args.
             "*" => Type::Tuple(
                 ty.args
                     .iter()
                     .map(|arg| self.resolve_type(arg, report))
                     .collect(),
             ),
+            // A function annotation (`(A, B) => C`), encoded under `=>` with
+            // args `[params…, ret]` (always at least the return).
+            "=>" => {
+                let (ret, params) = ty.args.split_last().expect("function type has a return");
+                Type::Fn(
+                    params.iter().map(|p| self.resolve_type(p, report)).collect(),
+                    Box::new(self.resolve_type(ret, report)),
+                )
+            }
             name if self.records.contains_key(name) => {
                 let params = self.records.get(name).map(|(p, _)| *p).unwrap_or(0);
                 if ty.args.len() != params {

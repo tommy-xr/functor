@@ -8,7 +8,11 @@
 //! typeDecl  := "type" ident ("<" ident ("," ident)* ">")?
 //!              "=" ("{" (ident ":" type),* "}" | variant+)
 //! variant   := "|" upperIdent ("(" (ident ":" type),+ ")")?
-//! type      := tatom ("*" tatom)*                    (flat products)
+//! type      := "(" type,* ")" "=>" type              (function: params in parens)
+//!            | "(" type,* ")"                         (tuple >=2, or group of 1)
+//!            | tatom
+//!   (in a lambda RETURN annotation the `=>` is the body arrow, so a bare
+//!    "(" … ")" is only a tuple/group — a function return type is parenthesized)
 //! tatom     := ident ("<" type ("," type)* ">")?
 //! expr      := letIn | assign | match | pipeline
 //! letIn     := "let" ("mut"? ident | tuplePat) "=" expr "in" expr
@@ -309,7 +313,29 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         Ok(VariantDecl { name, fields, span })
     }
 
+    /// A type expression: a function type `(A, B) => C`, a tuple `(A, B)`, a
+    /// parenthesized group `(A)`, or an atom (`Float`, `List<Float>`). Tuples
+    /// and functions share the `( … )` head; a trailing `=>` decides between
+    /// them (ReasonML's rule). Structural types are encoded on [`TypeName`]
+    /// under reserved names an identifier can never lex as — `*` for tuples,
+    /// `=>` for functions (args = `[params…, ret]`) — so downstream passes
+    /// that carry `TypeName` verbatim need no new shape.
     fn type_name(&mut self) -> Result<TypeName, ParseError> {
+        self.type_expr(true)
+    }
+
+    /// A type-return annotation (`): T => body`). Like [`Self::type_name`] but
+    /// a bare `( … )` is only ever a tuple or group — never a function —
+    /// because the `=>` right after it is the lambda body arrow, not a
+    /// function type arrow. A function *return* type must be parenthesized:
+    /// `(): ((A) => B) => body`.
+    fn type_return(&mut self) -> Result<TypeName, ParseError> {
+        self.type_expr(false)
+    }
+
+    /// The depth-guarded entry to type parsing. `allow_fn` gates whether a
+    /// top-level `( … ) =>` forms a function type (false in return position).
+    fn type_expr(&mut self, allow_fn: bool) -> Result<TypeName, ParseError> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return Err(ParseError {
@@ -317,48 +343,74 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 span: self.peek().span,
             });
         }
-        let (name, mut span) = self.qualified_type_head()?;
-        let mut args = Vec::new();
-        if self.peek_kind() == &TokenKind::Lt {
-            self.bump();
-            loop {
-                args.push(self.type_name()?);
-                if self.peek_kind() == &TokenKind::Comma {
-                    self.bump();
-                    if self.peek_kind() == &TokenKind::Gt {
-                        break; // trailing comma
-                    }
-                } else {
-                    break;
-                }
-            }
-            let close = self.expect(TokenKind::Gt, "`,` or `>`")?;
-            span = span.to(close.span);
-        }
-        let mut ty = TypeName { name, args, span };
-        // A product annotation: `Float * Float * String`. Encoded as the
-        // reserved name `*` with the elements as args (an identifier can
-        // never lex as `*`, so this cannot collide with a user type). Flat —
-        // no grouping in type position yet.
-        if self.peek_kind() == &TokenKind::Star {
-            let mut elems = vec![ty];
-            while self.peek_kind() == &TokenKind::Star {
-                self.bump();
-                elems.push(self.type_atom()?);
-            }
-            let span = elems
-                .first()
-                .expect("non-empty")
-                .span
-                .to(elems.last().expect("non-empty").span);
-            ty = TypeName {
-                name: "*".to_string(),
-                args: elems,
-                span,
-            };
-        }
+        let ty = self.type_prefix(allow_fn)?;
         self.depth -= 1;
         Ok(ty)
+    }
+
+    /// The type-expression body. `allow_fn` gates whether a `( … )` followed
+    /// by `=>` forms a function type (false only in return position).
+    fn type_prefix(&mut self, allow_fn: bool) -> Result<TypeName, ParseError> {
+        if self.peek_kind() != &TokenKind::LParen {
+            return self.type_atom();
+        }
+        let open = self.bump(); // `(`
+
+        // `()` is meaningful only as a zero-argument function type `() => R`.
+        if self.peek_kind() == &TokenKind::RParen {
+            let close = self.bump();
+            if allow_fn && self.peek_kind() == &TokenKind::FatArrow {
+                self.bump();
+                let ret = self.type_name()?;
+                let span = open.span.to(ret.span);
+                return Ok(TypeName {
+                    name: "=>".to_string(),
+                    args: vec![ret],
+                    span,
+                });
+            }
+            return Err(ParseError {
+                message: "`()` is only valid as a zero-argument function type, `() => …`"
+                    .to_string(),
+                span: open.span.to(close.span),
+            });
+        }
+
+        // A comma-separated list of types.
+        let mut elems = vec![self.type_name()?];
+        while self.peek_kind() == &TokenKind::Comma {
+            self.bump();
+            if self.peek_kind() == &TokenKind::RParen {
+                break; // trailing comma
+            }
+            elems.push(self.type_name()?);
+        }
+        let close = self.expect(TokenKind::RParen, "`,` or `)`")?;
+
+        // `( params ) => ret` — a function type (params position only).
+        if allow_fn && self.peek_kind() == &TokenKind::FatArrow {
+            self.bump();
+            let ret = self.type_name()?;
+            let span = open.span.to(ret.span);
+            elems.push(ret);
+            return Ok(TypeName {
+                name: "=>".to_string(),
+                args: elems,
+                span,
+            });
+        }
+        // `(A, B)` — a tuple.
+        if elems.len() >= 2 {
+            return Ok(TypeName {
+                name: "*".to_string(),
+                args: elems,
+                span: open.span.to(close.span),
+            });
+        }
+        // `(A)` — grouping; widen the span to include the parens.
+        let mut inner = elems.pop().expect("one element");
+        inner.span = open.span.to(close.span);
+        Ok(inner)
     }
 
     /// A type-position name, possibly module-qualified: `Shape` or
@@ -379,8 +431,8 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         Ok((name, span))
     }
 
-    /// One element of a product type: a named type with optional generic
-    /// args, but no `*` continuation (that's the caller's loop).
+    /// A named type with optional generic args (`Float`, `List<Float>`,
+    /// `Utils.Shape`) — the atomic, non-parenthesized case of [`type_prefix`].
     fn type_atom(&mut self) -> Result<TypeName, ParseError> {
         let (name, mut span) = self.qualified_type_head()?;
         let mut args = Vec::new();
@@ -1036,7 +1088,9 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         self.expect(TokenKind::RParen, "`,` or `)`")?;
         let ret = if self.peek_kind() == &TokenKind::Colon {
             self.bump();
-            Some(self.type_name()?)
+            // Return position: the `=>` that follows is the body arrow, so a
+            // function return type must be parenthesized (see `type_return`).
+            Some(self.type_return()?)
         } else {
             None
         };

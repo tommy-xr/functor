@@ -210,7 +210,7 @@ snapshots — no GPU, fully agent-verifiable.
       stays grouping); tuple patterns in `match` (`| (x, y) =>`, shallow
       like ctor sub-patterns) and a destructuring let
       (`let (a, b) = e in …`) since multiple-returns is the point;
-      `Float * Float` product types in annotations; `Value::Tuple` with
+      `(Float, Float)` tuple types in annotations; `Value::Tuple` with
       structural equality and `(1, 2)` display; checker arity + element
       types, exhaustiveness-compatible; hover/LSP display; rebind walk;
       no positional field access (`t.0`) — destructure instead (named

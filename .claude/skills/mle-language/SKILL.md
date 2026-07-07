@@ -80,10 +80,13 @@ let report = (scores) =>
 
 let nudge = (p: Position): Position => { p with x: p.x + 1.0 }  // record update (fields must exist)
 
-let minMax = (a: Float, b: Float): Float * Float =>   // tuple: (e1, e2, …), 2+ elements
+let minMax = (a: Float, b: Float): (Float, Float) =>  // tuple TYPE: (A, B); value tuple: (e1,e2,…)
   match a < b with
-  | true => (a, b)                            // `(e)` is GROUPING, not a 1-tuple
+  | true => (a, b)                            // `(e)` / `(A)` is GROUPING, not a 1-tuple
   | false => (b, a)
+
+let apply = (f: (Float) => Float, x: Float): Float => f(x)  // function TYPE: (A, B) => C, () => C
+// return-position function types need parens: (): ((A) => B) => …  (the outer => is the body)
 
 let span = (a, b) =>
   let (lo, hi) = minMax(a, b) in              // destructuring let (sugar for a
@@ -103,9 +106,10 @@ loosest), unary `-`. There is **no** if/else, loops, or string-concatenation
 operator — iteration is `List.map/filter/fold`,
 and the conditional is a **bool-literal match**
 (`match x > 3.0 with | true => a | false => b`). Tuples are structural:
-`(1.0, "a") == (1.0, "a")`; product types annotate as `Float * String`
-(flat — no grouping in type position). Prefer named records for anything
-that outlives an expression; tuples are for multiple returns.
+`(1.0, "a") == (1.0, "a")`; tuple types annotate as `(Float, String)` and
+function types as `(A, B) => C` / `() => C`, with `(A)` as grouping. Prefer
+named records for anything that outlives an expression; tuples are for
+multiple returns.
 
 ## Modules (multi-file projects)
 

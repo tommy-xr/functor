@@ -12,7 +12,7 @@ let firstOr = (xs: List<Float>, fallback: Float): Float =>
   | [x, ..rest] => x
   | [] => fallback
 
-let pair = (xs: List<Float>): Float * Float =>
+let pair = (xs: List<Float>): (Float, Float) =>
   match xs with
   | [a, b] => (a, b)
   | _ => (0.0, 0.0)

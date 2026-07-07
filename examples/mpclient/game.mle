@@ -93,7 +93,7 @@ let mod4 = (n: Float): Float =>
   | true => n
   | false => mod4(n - 4.0)
 
-let colorFor = (pid: Float): Float * Float * Float =>
+let colorFor = (pid: Float): (Float, Float, Float) =>
   match mod4(pid) with
   | 0.0 => (0.90, 0.35, 0.35)
   | 1.0 => (0.35, 0.60, 0.95)
