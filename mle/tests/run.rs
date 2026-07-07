@@ -806,3 +806,46 @@ fn cons_tail_must_be_a_list() {
     let (message, _, _) = run_err("let main = () => [1.0, ..2.0]");
     assert_eq!(message, "`..` spreads a list, but the tail is a number");
 }
+
+/// `Debug.log(value, label)` is an Elm-style trace: it emits `label: <value>`
+/// through the process-wide sink AND returns the value UNCHANGED (so it is
+/// transparent to the program result and can't affect the model/sim).
+#[test]
+fn debug_log_returns_the_value_unchanged_and_emits_through_the_sink() {
+    use std::sync::{Arc, Mutex};
+
+    // A capturing sink stands in for the real (host) region-aware one.
+    let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink_buf = Arc::clone(&captured);
+    mle::set_trace_sink(Box::new(move |m| sink_buf.lock().unwrap().push(m)));
+
+    // Value-first and pipe-friendly: the piped subject is logged and passed on,
+    // so the arithmetic result is exactly what it would be without the trace.
+    assert_eq!(
+        main_result("let main = () => Debug.log(41.0, \"answer\") + 1.0"),
+        "42"
+    );
+    // Works through a pipeline too (`x |> Debug.log(label)` == the value).
+    assert_eq!(
+        main_result("let main = () => 3.0 |> Debug.log(\"piped\") |> Math.clamp01"),
+        "1"
+    );
+    // Any value type renders with the interpreter's own display (records here).
+    assert_eq!(
+        main_result(
+            "let main = () =>\n\
+             let r = Debug.log({ x: 1.0, y: 2.0 }, \"pt\") in r.x"
+        ),
+        "1"
+    );
+
+    let lines = captured.lock().unwrap();
+    assert_eq!(
+        *lines,
+        vec![
+            "answer: 41".to_string(),
+            "piped: 3".to_string(),
+            "pt: { x: 1, y: 2 }".to_string(),
+        ]
+    );
+}

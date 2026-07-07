@@ -314,6 +314,10 @@ fn project_stamp(path: &str) -> Vec<(PathBuf, SystemTime)> {
 
 impl MleGame {
     pub fn create(path: &str) -> MleGame {
+        // Route MLE `Debug.log` traces into the region-aware event stream (once
+        // per process; survives hot-reload's Session rebuild — the sink is
+        // installed on the process, not the Session). See mle_prelude.
+        functor_runtime_common::mle_prelude::install_debug_log_sink();
         // Stat BEFORE reading: an edit that lands mid-load then compares
         // unequal on the next frame and triggers a reload, instead of being
         // silently absorbed into a stale session.

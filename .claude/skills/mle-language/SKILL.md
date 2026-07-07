@@ -156,9 +156,9 @@ let grab = (s) =>
   (they evaluate first); siblings may reference the entry (`Game.foo`) if
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
-  builtin/prelude namespace (Net, List, Text, Math, Scene, Camera, Frame,
-  Light, Angle, Time, Sub, Effect, Physics, RenderTarget) is a load error
-  — rename the file.
+  builtin/prelude namespace (Net, List, Text, Math, Debug, Scene, Camera,
+  Frame, Light, Angle, Time, Sub, Effect, Physics, RenderTarget) is a load
+  error — rename the file.
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
   | Connected(id: Float) | Message(id: Float, text: String) |
   Disconnected(id: Float) | Error(id: Float, text: String)`. A `Sub.connect`/
@@ -229,7 +229,19 @@ let grab = (s) =>
 `%d` shape) · `Text.toBullets(list)` · `Text.split(s, sep)` (→ `List<String>`;
 empty `sep` is an error; `Text.split("", sep)` = `[""]`) · `Text.join(list, sep)`
 (strings only) · `Text.parseFloat(s)` (trims; unparseable → `0.0`, the F#
-`unwrap_or(0)` shape) · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)`
+`unwrap_or(0)` shape) · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)` ·
+`Debug.log(value, label)` — `('a, String) => 'a`: an Elm-style trace. Logs
+`label: <value>` (the value rendered exactly as `mle run`/`trace` displays it —
+any type) and returns `value` **unchanged**, so it's pure to the program
+result and safe to drop into a pipe: `m.x |> Debug.log("x") |> clamp(0.0, 1.0)`
+logs then passes the value on. Value-FIRST (pipelines prepend), so `label` is
+the second arg. An impure observability escape hatch — it can't affect the
+model/sim (a game with vs without it is byte-identical). Under plain `mle run`
+the line prints to stdout; under the runner it routes region-aware to the
+CLI's log stream (shown by default — no `-v`; `docs/cli-output.md`) — or the
+browser console on wasm. Not rate-limited: a `Debug.log` in `tick`/`draw` fires
+every frame (~60/s), so prefer an event path (`input`/`update`), or remove it
+when done.
 
 ## Functor prelude (only under the engine host — `FunctorHost`)
 

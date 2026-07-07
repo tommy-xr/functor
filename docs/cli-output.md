@@ -110,6 +110,33 @@ debug/info firehose. `--quiet` independently suppresses any log below `warn` in 
 so `-v --quiet` still shows only warn/error. Under `--json` the level gate still applies (a default
 `--json` run carries warn/error logs; `-v --json` carries debug/info too) — always as valid ndjson.
 
+### MLE `Debug.log` — the always-visible `trace` tier (PR-4b)
+
+MLE's `Debug.log(value, label)` builtin (an Elm-style trace: logs `label: <value>`, returns
+`value` unchanged; see the `mle-language` skill) reuses this same region-aware log path — but with
+**one deliberate difference from the `-v`-gated `log` facade**: a `Debug.log` is *explicit user
+intent*, so it must show **by default, without `-v`**. It rides a distinct, always-visible
+`LogLevel::Trace` tier (rendered `[trace]`), so it is never subject to the `log` `max_level` gate
+above. `--quiet` still suppresses it (quiet is an explicit "shut up" — `Trace` is not essential).
+
+**Why it bypasses the `-v` gate cleanly.** The `-v`/`max_level` gate lives entirely in the `log`
+facade (`EventLogger` in `cli/src/output.rs`). A `Debug.log` does **not** travel that facade — it
+travels the typed `functor_runtime_common::events` sink as a new `RuntimeEvent::MleTrace { message }`
+(the same structured sink as `frame_stats`/`asset_error`), which the CLI maps to
+`Event::Log { level: Trace, message }`. So it never touches `max_level`, yet lands as the same
+region-aware `Event::Log` (above the live panel via `MultiProgress::println`; one more ndjson object
+under `--json`).
+
+**The mle → host sink (dependency-clean).** The `mle` crate must not depend on the runtime/CLI, so
+it owns a process-wide, settable trace sink (`mle::set_trace_sink`, default: print `label: value` to
+stdout — plain `mle run` has no renderer of its own). The Functor host installs the sink once at
+producer startup (`functor_runtime_common::mle_prelude::install_debug_log_sink`), forwarding each
+trace into `events::emit(RuntimeEvent::MleTrace { … })`. The dependency edge stays
+`cli → functor_runtime_common → mle`, never the reverse. Because the sink lives on the *process*
+(not any interpreter `Session`), it **survives MLE hot-reload's `Session` rebuild** — a `Debug.log`
+added to a game live starts routing region-aware on the next frame, never falling back to a raw
+`println!`.
+
 ## The `Event` schema (stable API)
 
 Serialized with serde as `{"type": "<snake_case>", …fields}`. Optional fields are omitted
@@ -204,17 +231,19 @@ Example tail of `functor -d examples/lighting run native --json` (frame stats + 
 {"type":"capture_written","path":"/tmp/frame.png"}
 ```
 
-### The `log` event (PR-4a)
+### The `log` event (PR-4a, PR-4b)
 
 The one free-form event — any `log::{debug,info,warn,error}!` in the CLI or the in-process runtime,
-funneled through the region-aware renderer (see [Logging & verbosity](#logging--verbosity-pr-4a)).
+funneled through the region-aware renderer (see [Logging & verbosity](#logging--verbosity-pr-4a)) —
+plus the always-visible `trace` tier that carries MLE `Debug.log` output (PR-4b).
 
-| `type` | Fields                                                                    | Emitted when |
-| ------ | ------------------------------------------------------------------------- | ------------ |
-| `log`  | `level` (`"debug"`\|`"info"`\|`"warn"`\|`"error"`), `message` (string)     | a `log!` call passes the active level |
+| `type` | Fields                                                                              | Emitted when |
+| ------ | ----------------------------------------------------------------------------------- | ------------ |
+| `log`  | `level` (`"trace"`\|`"debug"`\|`"info"`\|`"warn"`\|`"error"`), `message` (string)     | a `log!` passes the active level, or an MLE `Debug.log` runs (`trace`, always shown) |
 
 ```json
 {"type":"log","level":"debug","message":"loaded asset 'grid-neon.png' (24601 bytes)"}
+{"type":"log","level":"trace","message":"player x: 3.14"}
 ```
 
 ## Runtime-output routing — the event sink (PR-2a)
@@ -279,10 +308,17 @@ keypress in a focused window, never on a piped/`--json`/captured run.)
 - **PR-3 (closes the UX pass):** rich MLE diagnostics (the `source_line` field + a human caret
   block), actionable error `hint`s for common failures, and an ASCII glyph fallback for dumb /
   non-UTF-8 terminals (`--ascii`).
-- **PR-4a (this):** region-aware logging — the `log` event + a `log::Log` facade the CLI installs,
+- **PR-4a:** region-aware logging — the `log` event + a `log::Log` facade the CLI installs,
   so any `log::{debug,info,warn,error}!` (CLI or in-process runtime) renders through the same
   region-aware path; `-v/--verbose` + `RUST_LOG` set the level (quiet warn/error default). Converts
   the runtime's informational `println!`s (asset-load debug, Xreal status). PR-4b adds the MLE
   `Debug.log` builtin through the same path.
+- **PR-4b (this):** the MLE `Debug.log(value, label)` builtin — a pipe-friendly Elm-style trace
+  routed through the region-aware log path as the always-visible `trace` tier (shown by default, no
+  `-v`, since it's explicit user intent). The `mle` crate owns a settable trace sink (default:
+  stdout, for plain `mle run`); the host forwards it into `RuntimeEvent::MleTrace` →
+  `Event::Log { level: trace }`, keeping the `cli → runtime → mle` dependency direction clean. The
+  process-global sink survives hot-reload's `Session` rebuild. (See
+  [MLE `Debug.log`](#mle-debuglog--the-always-visible-trace-tier-pr-4b).)
 </content>
 </invoke>

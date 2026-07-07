@@ -26,11 +26,15 @@ pub enum Severity {
     Warning,
 }
 
-/// The level of a free-form [`Event::Log`] line. Mirrors the `log` crate's
-/// levels (trace folds into `Debug`); serialized snake_case for the JSON schema.
+/// The level of a free-form [`Event::Log`] line. `Debug`/`Info`/`Warn`/`Error`
+/// mirror the `log` crate's levels (its `Trace` folds into `Debug`) and are
+/// gated by verbosity (`-v`); `Trace` is a distinct, always-visible tier used
+/// only for explicit MLE `Debug.log` traces (which are user intent, so they
+/// show by default — see `docs/cli-output.md`). Serialized snake_case.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
+    Trace,
     Debug,
     Info,
     Warn,
@@ -154,6 +158,13 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
             R::CaptureWritten { path } => Event::CaptureWritten { path },
             R::HotReload { ok, message } => Event::HotReload { ok, message },
             R::AssetError { path, message } => Event::AssetError { path, message },
+            // An MLE `Debug.log` trace: explicit user intent, so it's an
+            // always-visible `Trace`-level log (not `-v`-gated like the `log`
+            // facade). The message is already `"label: value"`.
+            R::MleTrace { message } => Event::Log {
+                level: LogLevel::Trace,
+                message,
+            },
         }
     }
 }
@@ -340,6 +351,7 @@ impl PlainRenderer {
             Event::Log { level, message } => {
                 // ASCII-safe level tags (`[debug]` … already plain ASCII).
                 let tag = match level {
+                    LogLevel::Trace => "[trace]".magenta(),
                     LogLevel::Debug => "[debug]".dimmed(),
                     LogLevel::Info => "[info]".cyan(),
                     LogLevel::Warn => "[warn]".yellow().bold(),
