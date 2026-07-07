@@ -4,6 +4,7 @@ Module {
         Def {
             id: d0,
             name: "encode",
+            ty: None,
             value: Expr {
                 id: e20,
                 kind: Lambda {
@@ -220,6 +221,7 @@ Module {
         Def {
             id: d1,
             name: "snapshot",
+            ty: None,
             value: Expr {
                 id: e25,
                 kind: Lambda {
@@ -291,6 +293,7 @@ Module {
         Def {
             id: d2,
             name: "parseRow",
+            ty: None,
             value: Expr {
                 id: e49,
                 kind: Lambda {
@@ -562,6 +565,7 @@ Module {
         Def {
             id: d3,
             name: "main",
+            ty: None,
             value: Expr {
                 id: e73,
                 kind: Lambda {
@@ -573,6 +577,7 @@ Module {
                             binding: b8,
                             name: "wire",
                             mutable: false,
+                            ty: None,
                             value: Expr {
                                 id: e63,
                                 kind: Call {

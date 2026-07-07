@@ -58,6 +58,7 @@ Program {
         Let(
             LetDecl {
                 name: "pi",
+                ty: None,
                 value: Expr {
                     kind: Number(
                         3.14159,
@@ -70,6 +71,7 @@ Program {
         Let(
             LetDecl {
                 name: "area",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -230,6 +232,7 @@ Program {
         Let(
             LetDecl {
                 name: "isRound",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -310,6 +313,7 @@ Program {
         Let(
             LetDecl {
                 name: "sizeOf",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -413,6 +417,7 @@ Program {
         Let(
             LetDecl {
                 name: "describe",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -666,6 +671,7 @@ Program {
         Let(
             LetDecl {
                 name: "shapes",
+                ty: None,
                 value: Expr {
                     kind: List(
                         [
@@ -735,6 +741,7 @@ Program {
         Let(
             LetDecl {
                 name: "main",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [],

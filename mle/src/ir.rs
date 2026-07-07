@@ -85,11 +85,14 @@ pub struct TypeDef {
     pub span: Span,
 }
 
-/// A lowered top-level `let`. `name` is the def's stable identity.
+/// A lowered top-level `let`. `name` is the def's stable identity. `ty` is the
+/// optional binding annotation (`let name: Type = …`), carried symbolically
+/// for the checker.
 #[derive(Debug)]
 pub struct Def {
     pub id: DefId,
     pub name: String,
+    pub ty: Option<TypeName>,
     pub value: Expr,
     pub span: Span,
 }
@@ -142,11 +145,12 @@ pub enum ExprKind {
         binding: BindingId,
         name: String,
     },
-    /// `let [mut] name = value in body`.
+    /// `let [mut] name [: ty] = value in body`.
     Let {
         binding: BindingId,
         name: String,
         mutable: bool,
+        ty: Option<TypeName>,
         value: Box<Expr>,
         body: Box<Expr>,
     },

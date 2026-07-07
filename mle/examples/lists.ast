@@ -3,6 +3,7 @@ Program {
         Let(
             LetDecl {
                 name: "sum",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -132,6 +133,7 @@ Program {
         Let(
             LetDecl {
                 name: "firstOr",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -245,6 +247,7 @@ Program {
         Let(
             LetDecl {
                 name: "pair",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -380,6 +383,7 @@ Program {
         Let(
             LetDecl {
                 name: "main",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [],
@@ -388,6 +392,7 @@ Program {
                             kind: Let {
                                 mutable: false,
                                 name: "xs",
+                                ty: None,
                                 value: Expr {
                                     kind: List(
                                         [

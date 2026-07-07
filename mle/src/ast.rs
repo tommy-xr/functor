@@ -29,10 +29,13 @@ pub struct OpenDecl {
     pub span: Span,
 }
 
-/// `let name = expr` — the expr may be a lambda (`let f = (a, b) => …`).
+/// `let name = expr` or `let name: Type = expr` — the expr may be a lambda
+/// (`let f = (a, b) => …`). An optional binding type annotation (`ty`) is
+/// checked against the value (see `crate::types`).
 #[derive(Debug)]
 pub struct LetDecl {
     pub name: String,
+    pub ty: Option<TypeName>,
     pub value: Expr,
     pub span: Span,
 }
@@ -133,6 +136,7 @@ pub enum ExprKind {
     Let {
         mutable: bool,
         name: String,
+        ty: Option<TypeName>,
         value: Box<Expr>,
         body: Box<Expr>,
     },

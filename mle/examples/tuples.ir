@@ -39,6 +39,7 @@ Module {
         Def {
             id: d1,
             name: "minMax",
+            ty: None,
             value: Expr {
                 id: e10,
                 kind: Lambda {
@@ -191,6 +192,7 @@ Module {
         Def {
             id: d2,
             name: "span",
+            ty: None,
             value: Expr {
                 id: e19,
                 kind: Lambda {
@@ -303,6 +305,7 @@ Module {
         Def {
             id: d3,
             name: "describe",
+            ty: None,
             value: Expr {
                 id: e28,
                 kind: Lambda {
@@ -438,6 +441,7 @@ Module {
         Def {
             id: d4,
             name: "step",
+            ty: None,
             value: Expr {
                 id: e38,
                 kind: Lambda {
@@ -574,6 +578,7 @@ Module {
         Def {
             id: d5,
             name: "main",
+            ty: None,
             value: Expr {
                 id: e65,
                 kind: Lambda {

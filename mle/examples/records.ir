@@ -61,6 +61,7 @@ Module {
         Def {
             id: d2,
             name: "origin",
+            ty: None,
             value: Expr {
                 id: e2,
                 kind: Record(
@@ -96,6 +97,7 @@ Module {
         Def {
             id: d3,
             name: "move",
+            ty: None,
             value: Expr {
                 id: e18,
                 kind: Lambda {
@@ -272,6 +274,7 @@ Module {
         Def {
             id: d4,
             name: "delta",
+            ty: None,
             value: Expr {
                 id: e30,
                 kind: Lambda {
@@ -406,6 +409,7 @@ Module {
         Def {
             id: d5,
             name: "mirror",
+            ty: None,
             value: Expr {
                 id: e37,
                 kind: Lambda {
@@ -490,6 +494,7 @@ Module {
         Def {
             id: d6,
             name: "isOrigin",
+            ty: None,
             value: Expr {
                 id: e42,
                 kind: Lambda {
@@ -551,6 +556,7 @@ Module {
         Def {
             id: d7,
             name: "nudge",
+            ty: None,
             value: Expr {
                 id: e49,
                 kind: Lambda {
@@ -632,6 +638,7 @@ Module {
         Def {
             id: d8,
             name: "main",
+            ty: None,
             value: Expr {
                 id: e61,
                 kind: Lambda {
@@ -643,6 +650,7 @@ Module {
                             binding: b8,
                             name: "moved",
                             mutable: false,
+                            ty: None,
                             value: Expr {
                                 id: e56,
                                 kind: Call {

@@ -38,6 +38,7 @@ Program {
         Let(
             LetDecl {
                 name: "minMax",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -184,6 +185,7 @@ Program {
         Let(
             LetDecl {
                 name: "span",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -290,6 +292,7 @@ Program {
         Let(
             LetDecl {
                 name: "describe",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -417,6 +420,7 @@ Program {
         Let(
             LetDecl {
                 name: "step",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -544,6 +548,7 @@ Program {
         Let(
             LetDecl {
                 name: "main",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [],

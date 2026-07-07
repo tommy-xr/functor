@@ -4,6 +4,7 @@ Module {
         Def {
             id: d0,
             name: "sum",
+            ty: None,
             value: Expr {
                 id: e8,
                 kind: Lambda {
@@ -139,6 +140,7 @@ Module {
         Def {
             id: d1,
             name: "firstOr",
+            ty: None,
             value: Expr {
                 id: e13,
                 kind: Lambda {
@@ -257,6 +259,7 @@ Module {
         Def {
             id: d2,
             name: "pair",
+            ty: None,
             value: Expr {
                 id: e22,
                 kind: Lambda {
@@ -400,6 +403,7 @@ Module {
         Def {
             id: d3,
             name: "main",
+            ty: None,
             value: Expr {
                 id: e44,
                 kind: Lambda {
@@ -411,6 +415,7 @@ Module {
                             binding: b10,
                             name: "xs",
                             mutable: false,
+                            ty: None,
                             value: Expr {
                                 id: e26,
                                 kind: List(

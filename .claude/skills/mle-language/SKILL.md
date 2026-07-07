@@ -60,7 +60,8 @@ let sizeOf = (s: Shape): String =>
                                               // (they need a catch-all: `| x =>` or `| _ =>`)
 
 let threshold = 10                            // top-level let; ints/floats are all Float (f64)
-let origin = { x: 0.0, y: 0.0 }               // record literal
+let origin: Position = { x: 0.0, y: 0.0 }     // OPTIONAL binding annotation `let name: Type = …`
+                                              //   (checked against the value; also on `let … in`)
 let scores = [1.0, 2.0, 3.0]                  // list literal; [x, ..xs] prepends
 let sumList = (xs: List<Float>): Float =>     // list PATTERNS: [] / [a,b] / [h, ..t]
   match xs with

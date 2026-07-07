@@ -3,6 +3,7 @@ Program {
         Let(
             LetDecl {
                 name: "threshold",
+                ty: None,
                 value: Expr {
                     kind: Number(
                         10.0,
@@ -15,6 +16,7 @@ Program {
         Let(
             LetDecl {
                 name: "isHigh",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -68,6 +70,7 @@ Program {
         Let(
             LetDecl {
                 name: "describe",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -133,6 +136,7 @@ Program {
         Let(
             LetDecl {
                 name: "normalized",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -188,6 +192,7 @@ Program {
         Let(
             LetDecl {
                 name: "report",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -279,6 +284,7 @@ Program {
         Let(
             LetDecl {
                 name: "main",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [],

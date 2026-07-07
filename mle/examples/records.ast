@@ -61,6 +61,7 @@ Program {
         Let(
             LetDecl {
                 name: "origin",
+                ty: None,
                 value: Expr {
                     kind: Record(
                         [
@@ -94,6 +95,7 @@ Program {
         Let(
             LetDecl {
                 name: "move",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -258,6 +260,7 @@ Program {
         Let(
             LetDecl {
                 name: "delta",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -383,6 +386,7 @@ Program {
         Let(
             LetDecl {
                 name: "mirror",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -462,6 +466,7 @@ Program {
         Let(
             LetDecl {
                 name: "isOrigin",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -519,6 +524,7 @@ Program {
         Let(
             LetDecl {
                 name: "nudge",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -595,6 +601,7 @@ Program {
         Let(
             LetDecl {
                 name: "main",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [],
@@ -603,6 +610,7 @@ Program {
                             kind: Let {
                                 mutable: false,
                                 name: "moved",
+                                ty: None,
                                 value: Expr {
                                     kind: Call {
                                         callee: Expr {

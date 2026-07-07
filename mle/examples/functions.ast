@@ -38,6 +38,7 @@ Program {
         Let(
             LetDecl {
                 name: "add",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -102,6 +103,7 @@ Program {
         Let(
             LetDecl {
                 name: "average",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -160,6 +162,7 @@ Program {
         Let(
             LetDecl {
                 name: "total",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -242,6 +245,7 @@ Program {
         Let(
             LetDecl {
                 name: "bestTotal",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -355,6 +359,7 @@ Program {
         Let(
             LetDecl {
                 name: "isWinner",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [
@@ -416,6 +421,7 @@ Program {
         Let(
             LetDecl {
                 name: "debug",
+                ty: None,
                 value: Expr {
                     kind: Bool(
                         false,
@@ -428,6 +434,7 @@ Program {
         Let(
             LetDecl {
                 name: "main",
+                ty: None,
                 value: Expr {
                     kind: Lambda {
                         params: [],

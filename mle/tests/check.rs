@@ -356,8 +356,10 @@ fn error_filter_predicate_must_return_bool() {
     assert_eq!(
         message,
         // B7: the element type flows from `xs` into the predicate's
-        // signature — Float, not Unknown. Subject-last: the predicate is arg 1.
-        "argument 1 of `List.filter`: expected (Float) => Bool, got (Float) => Float"
+        // signature — Float, not Unknown. The expected function type flows
+        // INTO the predicate, so the mismatch localizes to its return value
+        // rather than the whole callback (mlei 2b `(Lambda, Fn)` checking).
+        "return value: expected Bool, got Float"
     );
 }
 
@@ -1250,16 +1252,19 @@ fn function_type_annotation_on_a_parameter() {
     assert_clean("let twice = (f: (Float) => Float, x: Float): Float => f(f(x))");
 }
 
-/// A function-typed argument is checked against its declared signature.
+/// A function-typed argument is checked against its declared signature — the
+/// expected `(Float) => Float` flows into the lambda, so a `(String) => String`
+/// argument flags both its param and its return precisely.
 #[test]
 fn function_typed_argument_is_checked() {
-    let (message, _, _) = single_diag(
+    let diags = check_src(
         "let apply = (f: (Float) => Float, x: Float): Float => f(x)\n\
          let bad = () => apply((s: String): String => s, 1.0)",
     );
+    let msgs: Vec<&str> = diags.iter().map(|(m, _, _)| m.as_str()).collect();
     assert!(
-        message.contains("expected") && message.contains("=>"),
-        "unexpected: {message}"
+        msgs.iter().any(|m| m.contains("parameter `s`") && m.contains("expected Float")),
+        "want a param mismatch, got {msgs:?}"
     );
 }
 
@@ -1306,4 +1311,69 @@ fn empty_parens_require_an_arrow() {
         mle::parse("let f = (x: ()): Float => 0.0").is_err(),
         "`()` alone is not a type"
     );
+}
+
+// ── let-binding type annotations (mlei slice 2b) ─────────────────────────
+
+/// A top-level binding annotation checks against the value and flows into an
+/// unannotated body: `let f: (Float) => Float = (x) => …` gives `x: Float`.
+#[test]
+fn top_level_binding_annotation() {
+    assert_clean("let x: Float = 3.0");
+    assert_clean("let f: (Float) => Float = (x) => x + 1.0");
+    assert_clean("type M = { a: Bool }\nlet m: M = { a: true }");
+}
+
+/// A binding annotation is enforced — a simple, a record-literal, and a
+/// function return-type mismatch all error.
+#[test]
+fn binding_annotation_mismatch_is_flagged() {
+    let (message, _, _) = single_diag("let x: Bool = 3.0");
+    assert_eq!(message, "`x`: expected Bool, got Float");
+
+    let (message, _, _) = single_diag("type M = { a: Bool }\nlet m: M = { a: 3.0 }");
+    assert_eq!(message, "field `a` of `M`: expected Bool, got Float");
+
+    // The annotation flows `x: Float` in and pushes the expected return into
+    // the body, so the mismatch localizes to the return value.
+    let (message, _, _) = single_diag("let f: (Float) => Bool = (x) => x");
+    assert_eq!(message, "return value: expected Bool, got Float");
+}
+
+/// let-in bindings take annotations too, checked the same way.
+#[test]
+fn let_in_binding_annotation() {
+    assert_clean("let g = () => let y: Float = 3.0 in y + 1.0");
+    let (message, _, _) = single_diag("let g = () => let y: Bool = 3.0 in y");
+    assert_eq!(message, "`y`: expected Bool, got Float");
+}
+
+/// A `mut` let-in binding can be annotated.
+#[test]
+fn annotated_mut_binding() {
+    assert_clean("let f = (n: Float): Float => let mut acc: Float = n in acc := acc + 1.0; acc");
+}
+
+/// An invalid binding annotation (here a `List` arity error) reports at the
+/// top level — not only inside `let … in` (mlei 2b review: was swallowed
+/// because a top-level `def.ty` is resolved just once, silently).
+#[test]
+fn invalid_top_level_annotation_reports() {
+    let (message, _, _) = single_diag("let xs: List = [1.0, 2.0]");
+    assert!(
+        message.contains('`') && message.to_lowercase().contains("type argument"),
+        "want an arity diagnostic, got {message:?}"
+    );
+}
+
+/// A binding annotation's param types flow into an unannotated lambda body,
+/// so a bad field access against the declared param type is caught (mlei 2b
+/// review Finding 2 — the `(Lambda, Fn)` checking path).
+#[test]
+fn binding_annotation_flows_into_body() {
+    let (message, _, _) = single_diag(
+        "type Position = { x: Float }\n\
+         let getX: (Position) => Float = (p) => p.z",
+    );
+    assert_eq!(message, "`Position` has no field `z`");
 }
