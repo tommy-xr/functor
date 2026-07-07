@@ -577,6 +577,12 @@ impl Game for MleGame {
             self.pending_events.clear();
             clear_http_taggers();
             clear_audio_completions();
+            // Drop any input buffered since the last recorded frame: the model was
+            // just restored to `target`, so a stray live event (e.g. one buffered
+            // on a 0-substep frame under the fixed-timestep loop) is now orphaned
+            // and must not be recorded into the branch — it would diverge a
+            // ghost/replay taken there (xreview).
+            self.input_buf.clear();
         }
         result
     }
@@ -641,13 +647,21 @@ impl Game for MleGame {
     /// (docs/time-travel.md T3): restore model + world for display without
     /// truncating, so the draggable bar can seek back and forth.
     fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
-        self.recorder.seek_scene_to(
+        let result = self.recorder.seek_scene_to(
             target,
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_status,
             self.has_physics,
-        )
+        );
+        if result.is_ok() {
+            // The model was restored to `target`; drop any input buffered since
+            // the last recorded frame so a stray live event (buffered on a
+            // 0-substep frame under the fixed-timestep loop) can't be recorded
+            // into the resulting branch and diverge a ghost/replay (xreview).
+            self.input_buf.clear();
+        }
+        result
     }
 
     fn tick(&mut self, frame_time: FrameTime) {
@@ -1877,5 +1891,45 @@ mod tests {
         }
         // The strobe visibly shows the JUMP: some division rose above the ground.
         assert!(peak_y > 0.5, "the ghost should show the jump arc, peak y = {peak_y}");
+    }
+
+    /// Regression (xreview): under the fixed-timestep loop a live input can be
+    /// buffered on a 0-substep render frame — `key_event` buffers it, but no
+    /// `tick` runs that frame, so `record_frame` never drains it. If the user
+    /// then SCRUBS, the model is restored to the recorded frame while the buffered
+    /// event is left orphaned; recording it into the resulting branch on resume
+    /// would diverge a ghost/replay. `seek_scene_to` (and `rewind_scene_to`) must
+    /// drop the buffer when they restore the model.
+    #[test]
+    fn scrub_drops_input_buffered_on_a_zero_substep_frame() {
+        use functor_runtime_common::Key;
+
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.mle");
+        let mut game = MleGame::create(mario);
+
+        // Record a few frames of history at the fixed step (each tick records).
+        let sub_dt = 1.0 / 60.0;
+        for i in 0..5u32 {
+            game.tick(FrameTime {
+                tts: (i + 1) as f32 * sub_dt,
+                dts: sub_dt,
+            });
+        }
+        assert!(game.current_scene_frame().is_some(), "history recorded");
+
+        // A live input on a 0-SUBSTEP frame: buffered, but no tick drains it.
+        game.key_event(Key::Up as i32, true);
+        assert!(
+            !game.input_buf.is_empty(),
+            "input must be buffered when no tick follows it"
+        );
+
+        // Scrub back — the model is restored, so the buffered event is orphaned
+        // and must be dropped (the fix), not recorded into the branch.
+        game.seek_scene_to(1).expect("seek to an earlier frame");
+        assert!(
+            game.input_buf.is_empty(),
+            "seek must drop input orphaned by the model restore"
+        );
     }
 }
