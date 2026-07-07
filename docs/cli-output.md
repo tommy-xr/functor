@@ -60,8 +60,18 @@ panic (a chained panic hook).
 is the explicit opt-in to ndjson. TTY detection uses `std::io::IsTerminal` (std, no dep).
 
 Flags are **global** (accepted before or after the subcommand): `--json`, `--quiet`,
-`--no-color`. `--json` takes precedence: under `--json`, `--quiet` is a no-op (the full
+`--no-color`, `--ascii`. `--json` takes precedence: under `--json`, `--quiet` is a no-op (the full
 event stream is emitted — machine consumers filter it themselves).
+
+**ASCII glyph fallback (PR-3).** The human renderers use unicode status glyphs (`▸ ✓ ✗ ◈ ↻`) and a
+braille spinner / block budget bar. On a terminal that can't render them, they degrade to ASCII
+(`-> [ok] [x] :: ~`, a `|/-\` spinner, a `#`/`-` bar) so output is never mojibake. This is decided
+**once in `init`, alongside the color decision, from a single source** (`output::ascii()`, read by
+both the plain and live renderers), when any of: `--ascii` is passed, `TERM=dumb`, or the locale
+(`LC_ALL` / `LC_CTYPE` / `LANG`, first set wins) is set but not UTF-8. An **unset** locale is treated
+as UTF-8, so the default is unchanged. `--json` is pure structured data (no glyphs) and is
+unaffected. ASCII mode is orthogonal to color: a color TTY under `TERM=dumb`/`--ascii` keeps its
+colored live region but swaps in the ASCII glyphs.
 
 ## The `Event` schema (stable API)
 
@@ -75,7 +85,7 @@ when absent (`skip_serializing_if`). Every line of `--json` output is one of the
 | `command_started`  | `command` (string), `project` (string?), `env` (string?)     | a command begins |
 | `command_finished` | `ok` (bool), `duration_ms` (number)                          | a command ends |
 | `mle_loaded`       | `entry` (string), `sibling_count` (number)                   | `build` typecheck passes |
-| `diagnostic`       | `severity` (`"error"`\|`"warning"`), `file` (string?), `line` (number?), `col` (number?), `message` (string) | an MLE check / load error |
+| `diagnostic`       | `severity` (`"error"`\|`"warning"`), `file` (string?), `line` (number?), `col` (number?), `message` (string), `source_line` (string?) | an MLE check / load error |
 | `server_listening` | `url` (string)                                               | the wasm dev server binds |
 | `info`             | `message` (string)                                           | neutral status (e.g. hot-reload hint, a push ack) |
 | `warning`          | `message` (string)                                           | non-fatal issue (e.g. ignored wasm runner args) |
@@ -93,10 +103,40 @@ A build with a type error:
 
 ```json
 {"type":"command_started","command":"build","project":"scratch/broken"}
-{"type":"diagnostic","severity":"error","file":"scratch/broken/game.mle","line":3,"col":5,"message":"..."}
+{"type":"diagnostic","severity":"error","file":"scratch/broken/game.mle","line":4,"col":11,"message":"`+` needs Float operands, got String","source_line":"  model + \"not a number\""}
 {"type":"error","message":"1 type error(s) in the scratch/broken/game.mle project"}
 {"type":"command_finished","ok":false,"duration_ms":4}
 ```
+
+### Rich diagnostics — the source line + caret (PR-3)
+
+`diagnostic` carries an **optional `source_line`**: the raw offending line of source
+(newline-stripped, **no caret baked in**). The CLI fills it for check errors straight from the
+in-memory source, and for load/parse errors by re-reading the file (missing file / out-of-range
+line → the field is simply omitted, `skip_serializing_if`). The `--json` schema stays structured
+and stable: `source_line` is one more optional string field, and machine consumers still read
+`line`/`col` and render their own pointer.
+
+The **human** renderer turns those fields into a rustc-style block — the location header, then the
+source line in a numbered gutter, then a caret under `col`:
+
+```
+error: game.mle:4:11: `+` needs Float operands, got String
+  |
+4 |   model + "not a number"
+  |           ^
+```
+
+The caret indent copies the source line's own leading run (tabs kept as tabs), so it stays aligned
+regardless of tab width. `col` is 1-based, counting characters from the start of the line.
+
+### Actionable error hints (PR-3)
+
+The `error` event's optional `hint` is populated for the common, recognizable CLI failures
+(`functor.json not found` → *point `-d` at an MLE project directory*; a project missing
+`"language": "mle"`; a missing `entry` file). Hints are **targeted** — most errors have no useful
+generic advice and carry none. Both renderers show the hint (human: a `hint:` line under the error;
+`--json`: the `hint` field).
 
 ### Implemented in PR-2a (runtime-side — routed through the event sink)
 
@@ -183,7 +223,8 @@ focused window with a real user, never on a piped/`--json`/captured run.)
   `✓` line, and a sticky `run native` telemetry panel that consumes `frame_stats`/`hot_reload`,
   above scrollback. TTY-only; the machine paths are untouched. (A full-screen `--dashboard` is
   explicitly out of scope.)
-- **PR-3:** rich MLE diagnostics (source line + caret), actionable error hints, ASCII fallback
-  for dumb terminals, polish.
+- **PR-3 (this, closes the pass):** rich MLE diagnostics (the `source_line` field + a human caret
+  block), actionable error `hint`s for common failures, and an ASCII glyph fallback for dumb /
+  non-UTF-8 terminals (`--ascii`).
 </content>
 </invoke>

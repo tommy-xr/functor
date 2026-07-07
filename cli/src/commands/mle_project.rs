@@ -72,12 +72,19 @@ impl MleProject {
         let project = match mle::project::load(&path) {
             Ok(project) => project,
             Err(e) => {
+                // A load error (parse / bad module / cycle) carries only its
+                // position; re-read the file to recover the offending line for
+                // the caret. Missing/short file → no source line (fail soft).
+                let source_line = std::fs::read_to_string(&e.path)
+                    .ok()
+                    .and_then(|src| nth_line(&src, e.line));
                 emit(Event::Diagnostic {
                     severity: Severity::Error,
                     file: Some(e.path.display().to_string()),
                     line: Some(e.line),
                     col: Some(e.col),
                     message: e.message.clone(),
+                    source_line,
                 });
                 return Err(Error::other(format!("cannot load the {display} project")));
             }
@@ -85,12 +92,15 @@ impl MleProject {
         let diags = project.check();
         for diag in &diags {
             let (file, line, col) = project.sources.resolve(diag.span.start);
+            // The source is already in memory (the SourceFile) — no extra IO.
+            let source_line = nth_line(&file.src, line);
             emit(Event::Diagnostic {
                 severity: Severity::Error,
                 file: Some(file.path.display().to_string()),
                 line: Some(line),
                 col: Some(col),
                 message: diag.message.clone(),
+                source_line,
             });
         }
         if diags.is_empty() {
@@ -350,6 +360,15 @@ Content-Length: {}\r\nConnection: close\r\n\r\n",
     Ok((status, body))
 }
 
+/// The 1-based `line`th line of `src`, without its newline — `None` when the
+/// line is out of range (a defensive fail-soft: the caret is a nicety, never a
+/// hard dependency of surfacing the diagnostic).
+fn nth_line(src: &str, line: usize) -> Option<String> {
+    line.checked_sub(1)
+        .and_then(|idx| src.lines().nth(idx))
+        .map(str::to_string)
+}
+
 /// True when `entry` can't be served by the wasm dev server, which roots at
 /// the project directory: absolute paths and any `..` component escape it.
 fn entry_escapes_project(entry: &str) -> bool {
@@ -358,7 +377,22 @@ fn entry_escapes_project(entry: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::entry_escapes_project;
+    use super::{entry_escapes_project, nth_line};
+
+    #[test]
+    fn nth_line_returns_the_1_based_line_without_newline() {
+        let src = "one\ntwo\nthree";
+        assert_eq!(nth_line(src, 1).as_deref(), Some("one"));
+        assert_eq!(nth_line(src, 3).as_deref(), Some("three"));
+    }
+
+    #[test]
+    fn nth_line_fails_soft_out_of_range() {
+        // Line 0 (never valid, 1-based) and past-the-end → None, not a panic.
+        assert_eq!(nth_line("only\n", 0), None);
+        assert_eq!(nth_line("only\n", 5), None);
+        assert_eq!(nth_line("", 1), None);
+    }
 
     #[test]
     fn entries_inside_the_project_are_servable() {

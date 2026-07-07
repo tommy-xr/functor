@@ -46,7 +46,10 @@ pub enum Event {
     CommandFinished { ok: bool, duration_ms: u64 },
     /// A `build` typecheck passed (`entry` plus `sibling_count` sibling modules).
     MleLoaded { entry: String, sibling_count: usize },
-    /// An MLE check / load error, positioned in its file.
+    /// An MLE check / load error, positioned in its file. `source_line` is the
+    /// raw offending line (no caret baked in) so the human renderer can draw a
+    /// rustc-style caret under `col`; machine consumers get the same structured
+    /// fields and can render their own. Omitted from JSON when absent.
     Diagnostic {
         severity: Severity,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +59,8 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         col: Option<usize>,
         message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_line: Option<String>,
     },
     /// The wasm dev server bound and is serving.
     ServerListening { url: String },
@@ -188,7 +193,7 @@ impl PlainRenderer {
                 project,
                 env,
             } => {
-                let mut s = format!("{} {}", "▸".cyan(), command.bold());
+                let mut s = format!("{} {}", g_bullet().cyan(), command.bold());
                 if let Some(project) = project {
                     s.push_str(&format!(" {}", project.dimmed()));
                 }
@@ -200,9 +205,9 @@ impl PlainRenderer {
             Event::CommandFinished { ok, duration_ms } => {
                 let dur = format_duration(*duration_ms).dimmed();
                 if *ok {
-                    vec![format!("{} done {}", "✓".green(), dur)]
+                    vec![format!("{} done {}", g_ok().green(), dur)]
                 } else {
-                    vec![format!("{} failed {}", "✗".red(), dur)]
+                    vec![format!("{} failed {}", g_fail().red(), dur)]
                 }
             }
             Event::MleLoaded {
@@ -216,7 +221,7 @@ impl PlainRenderer {
                 };
                 vec![format!(
                     "{} checked {}{}",
-                    "✓".green(),
+                    g_ok().green(),
                     entry,
                     siblings.dimmed()
                 )]
@@ -227,6 +232,7 @@ impl PlainRenderer {
                 line,
                 col,
                 message,
+                source_line,
             } => {
                 let label = match severity {
                     Severity::Error => "error".red().bold(),
@@ -237,10 +243,15 @@ impl PlainRenderer {
                     (Some(f), _, _) => format!("{f}: "),
                     _ => String::new(),
                 };
-                vec![format!("{label}: {}{message}", loc.dimmed())]
+                let mut out = vec![format!("{label}: {}{message}", loc.dimmed())];
+                // rustc-style source line + caret, when we resolved the line.
+                if let (Some(src), Some(l), Some(c)) = (source_line, line, col) {
+                    out.extend(caret_block(src, *l, *c, *severity));
+                }
+                out
             }
             Event::ServerListening { url } => {
-                vec![format!("{} serving {}", "◈".cyan(), url.underline())]
+                vec![format!("{} serving {}", g_serve().cyan(), url.underline())]
             }
             Event::Info { message } => vec![message.clone()],
             Event::Warning { message } => {
@@ -253,7 +264,7 @@ impl PlainRenderer {
                 }
                 out
             }
-            Event::RuntimeReady => vec![format!("{} running", "▸".cyan())],
+            Event::RuntimeReady => vec![format!("{} running", g_bullet().cyan())],
             Event::FrameStats {
                 tick_us,
                 draw_us,
@@ -275,11 +286,11 @@ impl PlainRenderer {
                 )]
             }
             Event::CaptureWritten { path } => {
-                vec![format!("{} captured {}", "✓".green(), path)]
+                vec![format!("{} captured {}", g_ok().green(), path)]
             }
             Event::HotReload { ok, message } => {
                 if *ok {
-                    vec![format!("{} {message}", "↻".cyan())]
+                    vec![format!("{} {message}", g_reload().cyan())]
                 } else {
                     vec![format!("{}: {message}", "reload".yellow().bold())]
                 }
@@ -295,7 +306,7 @@ impl PlainRenderer {
                     loc.dimmed()
                 )]
             }
-            Event::Reload => vec![format!("{} reload", "↻".cyan())],
+            Event::Reload => vec![format!("{} reload", g_reload().cyan())],
         }
     }
 }
@@ -308,13 +319,104 @@ fn format_duration(ms: u64) -> String {
     }
 }
 
+/// A rustc-style source-line + caret block under column `col` (1-based). The
+/// caret indent copies the source line's own prefix (tabs kept as tabs) so it
+/// lands under the right glyph regardless of tab width.
+fn caret_block(source_line: &str, line: usize, col: usize, severity: Severity) -> Vec<String> {
+    let n = line.to_string();
+    let gutter = " ".repeat(n.len());
+    let bar = "|".dimmed();
+    let indent: String = source_line
+        .chars()
+        .take(col.saturating_sub(1))
+        .map(|c| if c == '\t' { '\t' } else { ' ' })
+        .collect();
+    let caret = match severity {
+        Severity::Error => "^".red().bold(),
+        Severity::Warning => "^".yellow().bold(),
+    };
+    vec![
+        format!("{gutter} {bar}"),
+        format!("{} {bar} {source_line}", n.dimmed()),
+        format!("{gutter} {bar} {indent}{caret}"),
+    ]
+}
+
+// ── ASCII fallback ───────────────────────────────────────────────────────────
+// A single source of truth for the status glyphs. On a dumb / non-UTF-8 terminal
+// (or under `--ascii`) they degrade to plain ASCII so output is never mojibake.
+// Decided once in `init`; read here and by the live renderer.
+
+static ASCII: AtomicBool = AtomicBool::new(false);
+
+/// Whether the CLI is in ASCII-only mode (dumb terminal / non-UTF-8 locale /
+/// `--ascii`). The live renderer reads this for its spinner + bar glyphs too.
+pub(crate) fn ascii() -> bool {
+    ASCII.load(Ordering::Relaxed)
+}
+
+pub(crate) fn g_bullet() -> &'static str {
+    if ascii() {
+        "->"
+    } else {
+        "▸"
+    }
+}
+pub(crate) fn g_ok() -> &'static str {
+    if ascii() {
+        "[ok]"
+    } else {
+        "✓"
+    }
+}
+pub(crate) fn g_fail() -> &'static str {
+    if ascii() {
+        "[x]"
+    } else {
+        "✗"
+    }
+}
+pub(crate) fn g_serve() -> &'static str {
+    if ascii() {
+        "::"
+    } else {
+        "◈"
+    }
+}
+pub(crate) fn g_reload() -> &'static str {
+    if ascii() {
+        "~"
+    } else {
+        "↻"
+    }
+}
+
+/// Decide ASCII-only mode: an explicit `--ascii`, a dumb `TERM`, or a locale
+/// (`LC_ALL` / `LC_CTYPE` / `LANG`, first one set wins) that is set but is not
+/// UTF-8. An unset locale is treated as UTF-8, so the default stays unchanged.
+fn detect_ascii(force_ascii: bool) -> bool {
+    if force_ascii {
+        return true;
+    }
+    if std::env::var("TERM").as_deref() == Ok("dumb") {
+        return true;
+    }
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
+    match locale {
+        Some(v) => !v.to_ascii_lowercase().replace('-', "").contains("utf8"),
+        None => false,
+    }
+}
+
 static RENDERER: OnceLock<Box<dyn Renderer>> = OnceLock::new();
 static LIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Select and install the process-wide renderer from the global flags +
 /// environment. Called once at startup, before any command logic runs. See
 /// `docs/cli-output.md` for the selection table.
-pub fn init(json: bool, quiet: bool, no_color: bool) {
+pub fn init(json: bool, quiet: bool, no_color: bool, ascii: bool) {
     // Color only on a real TTY, and never under NO_COLOR / --no-color / CI /
     // --json. Enforced globally so no code path can leak ANSI.
     let color = !json
@@ -323,6 +425,10 @@ pub fn init(json: bool, quiet: bool, no_color: bool) {
         && std::env::var_os("CI").is_none()
         && !no_color;
     colored::control::set_override(color);
+
+    // ASCII glyph fallback — decided once, alongside color. `--json` is pure
+    // structured data (no glyphs), so leave it on the default there.
+    ASCII.store(!json && detect_ascii(ascii), Ordering::Relaxed);
 
     // The live (ink-style) renderer activates ONLY on an interactive, color-
     // allowed TTY, and never under --quiet (which keeps its exact minimal plain

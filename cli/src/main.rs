@@ -34,6 +34,10 @@ struct Args {
     #[arg(long, global = true)]
     no_color: bool,
 
+    /// Use ASCII-only glyphs (auto-detected on a dumb / non-UTF-8 terminal).
+    #[arg(long, global = true)]
+    ascii: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -150,7 +154,7 @@ async fn main() -> tokio::io::Result<()> {
     let started = Instant::now();
     let args = Args::parse();
 
-    output::init(args.json, args.quiet, args.no_color);
+    output::init(args.json, args.quiet, args.no_color, args.ascii);
 
     // When the live (ink-style) renderer is up, a Ctrl-C would otherwise kill
     // the process mid-draw and leave the sticky live region stranded on screen.
@@ -323,16 +327,34 @@ fn finish(res: io::Result<()>, started: Instant) -> tokio::io::Result<()> {
             Ok(())
         }
         Err(error) => {
-            emit(Event::Error {
-                message: error.to_string(),
-                hint: None,
-            });
+            let message = error.to_string();
+            let hint = hint_for(&message);
+            emit(Event::Error { message, hint });
             emit(Event::CommandFinished {
                 ok: false,
                 duration_ms,
             });
             process::exit(1);
         }
+    }
+}
+
+/// An actionable hint for the common, recognizable CLI failures — matched on the
+/// (locally-defined) error message. Targeted on purpose: most errors have no
+/// useful generic advice, so they get none.
+fn hint_for(message: &str) -> Option<String> {
+    if message.contains("functor.json not found") {
+        Some(
+            "point -d at an MLE project directory (one containing a functor.json), \
+e.g. `functor -d examples/primitives build`"
+                .to_string(),
+        )
+    } else if message.contains("not an MLE project") {
+        Some("add `\"language\": \"mle\"` to the project's functor.json".to_string())
+    } else if message.contains("mle entry not found") {
+        Some("check the `entry` field in functor.json (defaults to game.mle)".to_string())
+    } else {
+        None
     }
 }
 
