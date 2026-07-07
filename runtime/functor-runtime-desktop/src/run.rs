@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::{Frame, GameClock, RecordedInput, SceneContext};
+use functor_runtime_common::{Frame, FrameTime, GameClock, RecordedInput, SceneContext};
 use std::collections::{BTreeSet, HashMap};
 
 use functor_runtime_common::Key as InputKey;
@@ -297,6 +297,14 @@ pub struct Args {
     /// compositor max). More divisions = a finer strobe over the same ~2s window.
     #[arg(long, default_value_t = 8)]
     ghost_divisions: usize,
+
+    /// Narrate the game clock + time-travel seams to stderr: pause/resume/seek
+    /// rebases (with the tts they land on), ghost on/off, and per-frame HITCH
+    /// warnings when a rendered frame's dt blows past 33ms (the tell-tale of the
+    /// ghost compositor starving the frame loop). High-signal diagnostics for the
+    /// interactive scrubber — off by default.
+    #[arg(long)]
+    debug_clock: bool,
 
     /// Eye separation for --stereo-sbs, in world units. The default assumes
     /// meter-scale worlds (human IPD ≈ 64mm); raise it for larger-unit worlds
@@ -600,14 +608,25 @@ fn run_headless(
 
     loop {
         let elapsed = start_time.elapsed().as_secs_f32();
-        let time = clock.frame(elapsed - last_time);
+        // Fixed-timestep model loop, same as the windowed loop (docs/time-travel
+        // .md): 0..N fixed 1/60 steps per iteration (one per debug `/time advance`,
+        // one {dts:0} under a pin, none while paused). `time` carries the settled
+        // render `tts` for /scene + /state.
+        let sub_frames = clock.fixed_frames(elapsed - last_time);
         last_time = elapsed;
+        let time = FrameTime {
+            dts: 0.0,
+            tts: clock.current_tts(),
+        };
 
         // Same per-frame ordering as the windowed loop (the source of truth),
         // minus everything that needs GL.
         game.check_hot_reload(time.clone());
         deliver_net_ws(&mut *game, &net_rx, &ws_rx);
-        game.tick(time.clone());
+        for sub in &sub_frames {
+            game.tick(sub.clone());
+            frame_count += 1;
+        }
         dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
 
         // The frame is pure data (no GL); it powers GET /scene. Drain and drop
@@ -637,7 +656,6 @@ fn run_headless(
             }
         }
 
-        frame_count += 1;
         // Cap the loop near 60 Hz so it doesn't busy-spin a core.
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
@@ -886,13 +904,34 @@ pub fn run(args: Args) {
             if input_script.is_some() && !args.ghost {
                 clock.step(args.script_dt);
             }
-            // The frame time handed to the game. Pinning it (--fixed-time, or the
-            // debug server's /time) makes the rendered pose deterministic — used
-            // for reproducible captures / golden images. The capture trigger
-            // below still keys off wall-clock elapsed, so the loop runs long
-            // enough for assets to load before a shot is taken.
-            let time = clock.frame(elapsed_time - last_time);
+            // The fixed-timestep model loop (docs/time-travel.md): advance `tick`
+            // in whole 1/60 steps decoupled from the render rate, so the sim is
+            // deterministic and a recorded frame is exactly one forward-step fine
+            // step (the ghost replay's assumption). Scripted playback queued a
+            // one-shot `step` above, so this yields exactly one sub-frame then;
+            // --fixed-time / the debug pin yields one {dts:0} sub-frame; paused
+            // yields none. `time` is the RENDER frame time — the settled `tts` the
+            // frame is drawn / hot-reloaded / reported at (its `dts` is unused by
+            // render/draw). Capture still keys off wall-clock `elapsed_time` so the
+            // loop runs long enough for assets to load before a shot.
+            let real_delta = elapsed_time - last_time;
+            let sub_frames = clock.fixed_frames(real_delta);
             last_time = elapsed_time;
+            let time = FrameTime {
+                dts: 0.0,
+                tts: clock.current_tts(),
+            };
+
+            // Surface frame hitches (a real delta past 33ms = under 30fps) — the
+            // signature of the ghost compositor's N forward-steps starving the
+            // loop, which reads to the user as "jerky / can't move".
+            if args.debug_clock && real_delta > 1.0 / 30.0 {
+                eprintln!(
+                    "[clock] HITCH dt={:.1}ms tts={:.3} (slow frame)",
+                    real_delta * 1000.0,
+                    time.tts
+                );
+            }
 
             game.check_hot_reload(time.clone());
 
@@ -1040,22 +1079,31 @@ Escape again to quit"
                 game.audio_push_finished(token as i32);
             }
 
-            // Scripted input (docs/time-travel.md T6b): feed this frame's events
-            // through the SAME `key_event` path the live GLFW handlers use, before
-            // tick, so this frame's tick sees the scripted key state. Under --ghost
-            // the script drives the GHOST instead (F2): leave the live game at its
-            // init anchor so the strobed arc reads against a clean, static pose.
-            if let Some(script) = input_script.as_ref().filter(|_| !args.ghost) {
-                if let Some(events) = script.get(&frame_count) {
-                    for ev in events {
-                        if let RecordedInput::Key { code, is_down } = ev {
-                            game.key_event(*code, *is_down);
+            // Run this render frame's fixed model steps (0..N). Scripted input
+            // (docs/time-travel.md T6b) is fed per fixed frame through the SAME
+            // `key_event` path the live GLFW handlers use, before that frame's
+            // tick. Under --ghost the script drives the GHOST instead (F2): leave
+            // the live game at its init anchor so the strobed arc reads against a
+            // clean, static pose. `--capture-at-frame` fires on the fixed frame it
+            // names — scripted playback is exactly one fixed step per render frame,
+            // so that index stays deterministic.
+            let mut capture_due = false;
+            for sub in &sub_frames {
+                if let Some(script) = input_script.as_ref().filter(|_| !args.ghost) {
+                    if let Some(events) = script.get(&frame_count) {
+                        for ev in events {
+                            if let RecordedInput::Key { code, is_down } = ev {
+                                game.key_event(*code, *is_down);
+                            }
                         }
                     }
                 }
+                game.tick(sub.clone());
+                if args.capture_at_frame == Some(frame_count) {
+                    capture_due = true;
+                }
+                frame_count += 1;
             }
-
-            game.tick(time.clone());
 
             // Perform the HTTP + WebSocket commands this frame's tick queued
             // (shared with the headless loop).
@@ -1082,7 +1130,17 @@ Escape again to quit"
             // Drive the ghost from the interactive toggle when the overlay is up,
             // and from the `--ghost` launch flag when it's hidden (the headless
             // capture path — F2 demo, goldens, tests — is byte-for-byte unchanged).
-            let ghost_active = if scrubber_visible { ghost_on } else { args.ghost };
+            //
+            // Interactive ghost only renders while PAUSED: the strobe is a preview
+            // of a frozen frame's future, and forward-stepping the scene N times
+            // every LIVE frame tanks the framerate (the "can't move with the
+            // scrubber open" bug). `is_paused()` is false under --fixed-time, so
+            // the headless `args.ghost` capture branch is unaffected.
+            let ghost_active = if scrubber_visible {
+                ghost_on && clock.is_paused()
+            } else {
+                args.ghost
+            };
             let ghost_frames = if ghost_active
                 && !args.stereo_sbs
                 && args.composite_demo == CompositeDemoArg::Off
@@ -1327,9 +1385,22 @@ Escape again to quit"
                     // it's the newest recorded frame's `tts`, which already equals
                     // the frozen `game_time` — a harmless no-op.
                     if clock.is_paused() {
-                        if let Some(tts) = game.current_scene_tts() {
-                            clock.rebase(tts as f32);
+                        match game.current_scene_tts() {
+                            Some(tts) => {
+                                if args.debug_clock {
+                                    eprintln!("[clock] resume: rebase tts={tts:.3}");
+                                }
+                                clock.rebase(tts as f32);
+                            }
+                            None if args.debug_clock => {
+                                eprintln!(
+                                    "[clock] resume: no scene tts — NOT rebased (game_time held)"
+                                );
+                            }
+                            None => {}
                         }
+                    } else if args.debug_clock {
+                        eprintln!("[clock] pause");
                     }
                     clock.toggle_pause();
                 }
@@ -1343,6 +1414,9 @@ Escape again to quit"
                         Err(e) => eprintln!("[scrubber] {e}"),
                     }
                     if let Some(tts) = game.current_scene_tts() {
+                        if args.debug_clock {
+                            eprintln!("[clock] seek frame={f}: rebase tts={tts:.3}");
+                        }
                         clock.rebase(tts as f32);
                     }
                     clock.pause();
@@ -1352,6 +1426,9 @@ Escape again to quit"
                     clock.step(1.0 / 60.0);
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SetGhost(on)) => {
+                    if args.debug_clock {
+                        eprintln!("[clock] ghost {}", if on { "on" } else { "off" });
+                    }
                     ghost_on = on;
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SetGhostDivisions(n)) => {
@@ -1368,7 +1445,7 @@ Escape again to quit"
                 // for scripted runs) or after --capture-time wall-clock seconds
                 // (the default, so assets have time to load).
                 let shoot = match args.capture_at_frame {
-                    Some(n) => frame_count == n,
+                    Some(_) => capture_due,
                     None => elapsed_time >= args.capture_time,
                 };
                 if shoot {
@@ -1408,7 +1485,6 @@ Escape again to quit"
             }
 
             window.swap_buffers();
-            frame_count += 1;
         }
     }
 

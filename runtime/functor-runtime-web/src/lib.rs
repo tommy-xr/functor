@@ -979,20 +979,31 @@ async fn run_async() -> Result<(), JsValue> {
                 }
             }
 
-            // `?fixed-time` pins unconditionally (deterministic capture); pause
-            // freezes; a queued step advances one frame; else the clock advances
-            // by the real frame delta.
-            let frame_time = clock.frame((now - last_time) / 1000.0);
-
+            // Fixed-timestep model loop (docs/time-travel.md), mirroring the
+            // desktop shells: advance `tick` in whole 1/60 steps decoupled from
+            // the render (rAF) rate, so the sim is deterministic and a recorded
+            // frame is exactly one forward-step fine step (the ghost replay's
+            // assumption). `?fixed-time` yields one {dts:0} sub-frame (golden
+            // capture unchanged); a queued step yields one; paused yields none.
+            // `frame_time` is the RENDER frame time — the settled `tts` the frame
+            // is drawn / soundscaped / scrub-published at (its `dts` is unused).
+            let sub_frames = clock.fixed_frames((now - last_time) / 1000.0);
             last_time = now;
+            let frame_time = FrameTime {
+                dts: 0.0,
+                tts: clock.current_tts(),
+            };
 
             // Deliver page input queued since the last frame (the MLE path's
-            // `mle_*` exports). While paused, drain-and-discard: no input may
-            // reach the model on a paused frame (the input log would otherwise
-            // diverge replay), and draining stops the queue bursting on resume.
+            // `mle_*` exports), once per rendered frame before this frame's steps.
+            // While paused, drain-and-discard: no input may reach the model on a
+            // paused frame (the input log would otherwise diverge replay), and
+            // draining stops the queue bursting on resume.
             mle_game::drain_input(&mut **game, !clock.is_paused());
 
-            game.tick(frame_time.clone());
+            for sub in &sub_frames {
+                game.tick(sub.clone());
+            }
 
             // Perform any networking commands this frame's tick queued; results
             // are pushed back into the inbox asynchronously and decoded by a later
@@ -1034,14 +1045,19 @@ async fn run_async() -> Result<(), JsValue> {
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
 
             // Forward-ghosting (docs/time-travel.md T6d): when the DOM ghost
-            // toggle is on, forward-step the scene over `ghost_window` seconds in
-            // `ghost_divisions` slices and composite them at equal weight, so
-            // moving elements strobe across their future and static geometry stays
-            // solid. `None` = the recorded-log/coast path (web has no
-            // --input-script). Empty (→ this arm skipped) leaves live rendering
-            // unchanged. The web scrubber is always visible, so there is no
-            // overlay gate (unlike native's `~`).
-            let ghosts = if ghost_on {
+            // toggle is on AND the clock is paused, forward-step the scene over
+            // `ghost_window` seconds in `ghost_divisions` slices and composite them
+            // at equal weight, so moving elements strobe across their future and
+            // static geometry stays solid. `None` = the recorded-log/coast path
+            // (web has no --input-script). Empty (→ this arm skipped) leaves live
+            // rendering unchanged.
+            //
+            // Gated on `is_paused()` to match the desktop shell: the strobe is a
+            // preview of a FROZEN frame's future, and forward-stepping the scene N
+            // times every LIVE rAF frame would starve the wasm render loop (the
+            // interpreter forward-step is costly on WebGL2). Pause via the DOM
+            // scrubber to see it.
+            let ghosts = if ghost_on && clock.is_paused() {
                 let divisions = ghost_divisions.clamp(1, 8);
                 let dt = ghost_window / divisions as f32;
                 game.ghost_frames(divisions, dt, frame_time.tts as f64, None)

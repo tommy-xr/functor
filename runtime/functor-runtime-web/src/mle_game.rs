@@ -402,18 +402,27 @@ impl GameProducer for MleWebGame {
         if result.is_ok() {
             self.deferred_queries.clear();
             self.pending_events.clear();
+            // Model restored to `target`; drop orphaned buffered input so it can't
+            // record into the branch (fixed-timestep 0-substep buffering, xreview).
+            self.input_buf.clear();
         }
         result
     }
 
     fn seek_scene_to(&mut self, target: u64) -> Result<String, String> {
-        self.recorder.seek_scene_to(
+        let result = self.recorder.seek_scene_to(
             target,
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_status,
             self.has_physics,
-        )
+        );
+        if result.is_ok() {
+            // Same as rewind: the model was restored, so buffered input since the
+            // last recorded frame is orphaned and must not enter the branch.
+            self.input_buf.clear();
+        }
+        result
     }
 
     fn current_scene_frame(&self) -> Option<u64> {
