@@ -298,6 +298,14 @@ pub struct Args {
     #[arg(long, default_value_t = 8)]
     ghost_divisions: usize,
 
+    /// Narrate the game clock + time-travel seams to stderr: pause/resume/seek
+    /// rebases (with the tts they land on), ghost on/off, and per-frame HITCH
+    /// warnings when a rendered frame's dt blows past 33ms (the tell-tale of the
+    /// ghost compositor starving the frame loop). High-signal diagnostics for the
+    /// interactive scrubber — off by default.
+    #[arg(long)]
+    debug_clock: bool,
+
     /// Eye separation for --stereo-sbs, in world units. The default assumes
     /// meter-scale worlds (human IPD ≈ 64mm); raise it for larger-unit worlds
     /// to deepen the 3D effect.
@@ -894,6 +902,17 @@ pub fn run(args: Args) {
             let time = clock.frame(elapsed_time - last_time);
             last_time = elapsed_time;
 
+            // Surface frame hitches (a dt past 33ms = under 30fps) — the
+            // signature of the ghost compositor's N forward-steps starving the
+            // loop, which reads to the user as "jerky / can't move".
+            if args.debug_clock && time.dts > 1.0 / 30.0 {
+                eprintln!(
+                    "[clock] HITCH dt={:.1}ms tts={:.3} (slow frame)",
+                    time.dts * 1000.0,
+                    time.tts
+                );
+            }
+
             game.check_hot_reload(time.clone());
 
             glfw.poll_events();
@@ -1082,7 +1101,17 @@ Escape again to quit"
             // Drive the ghost from the interactive toggle when the overlay is up,
             // and from the `--ghost` launch flag when it's hidden (the headless
             // capture path — F2 demo, goldens, tests — is byte-for-byte unchanged).
-            let ghost_active = if scrubber_visible { ghost_on } else { args.ghost };
+            //
+            // Interactive ghost only renders while PAUSED: the strobe is a preview
+            // of a frozen frame's future, and forward-stepping the scene N times
+            // every LIVE frame tanks the framerate (the "can't move with the
+            // scrubber open" bug). `is_paused()` is false under --fixed-time, so
+            // the headless `args.ghost` capture branch is unaffected.
+            let ghost_active = if scrubber_visible {
+                ghost_on && clock.is_paused()
+            } else {
+                args.ghost
+            };
             let ghost_frames = if ghost_active
                 && !args.stereo_sbs
                 && args.composite_demo == CompositeDemoArg::Off
@@ -1327,9 +1356,22 @@ Escape again to quit"
                     // it's the newest recorded frame's `tts`, which already equals
                     // the frozen `game_time` — a harmless no-op.
                     if clock.is_paused() {
-                        if let Some(tts) = game.current_scene_tts() {
-                            clock.rebase(tts as f32);
+                        match game.current_scene_tts() {
+                            Some(tts) => {
+                                if args.debug_clock {
+                                    eprintln!("[clock] resume: rebase tts={tts:.3}");
+                                }
+                                clock.rebase(tts as f32);
+                            }
+                            None if args.debug_clock => {
+                                eprintln!(
+                                    "[clock] resume: no scene tts — NOT rebased (game_time held)"
+                                );
+                            }
+                            None => {}
                         }
+                    } else if args.debug_clock {
+                        eprintln!("[clock] pause");
                     }
                     clock.toggle_pause();
                 }
@@ -1343,6 +1385,9 @@ Escape again to quit"
                         Err(e) => eprintln!("[scrubber] {e}"),
                     }
                     if let Some(tts) = game.current_scene_tts() {
+                        if args.debug_clock {
+                            eprintln!("[clock] seek frame={f}: rebase tts={tts:.3}");
+                        }
                         clock.rebase(tts as f32);
                     }
                     clock.pause();
@@ -1352,6 +1397,9 @@ Escape again to quit"
                     clock.step(1.0 / 60.0);
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SetGhost(on)) => {
+                    if args.debug_clock {
+                        eprintln!("[clock] ghost {}", if on { "on" } else { "off" });
+                    }
                     ghost_on = on;
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SetGhostDivisions(n)) => {
