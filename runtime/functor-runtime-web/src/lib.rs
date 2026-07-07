@@ -1045,14 +1045,19 @@ async fn run_async() -> Result<(), JsValue> {
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
 
             // Forward-ghosting (docs/time-travel.md T6d): when the DOM ghost
-            // toggle is on, forward-step the scene over `ghost_window` seconds in
-            // `ghost_divisions` slices and composite them at equal weight, so
-            // moving elements strobe across their future and static geometry stays
-            // solid. `None` = the recorded-log/coast path (web has no
-            // --input-script). Empty (→ this arm skipped) leaves live rendering
-            // unchanged. The web scrubber is always visible, so there is no
-            // overlay gate (unlike native's `~`).
-            let ghosts = if ghost_on {
+            // toggle is on AND the clock is paused, forward-step the scene over
+            // `ghost_window` seconds in `ghost_divisions` slices and composite them
+            // at equal weight, so moving elements strobe across their future and
+            // static geometry stays solid. `None` = the recorded-log/coast path
+            // (web has no --input-script). Empty (→ this arm skipped) leaves live
+            // rendering unchanged.
+            //
+            // Gated on `is_paused()` to match the desktop shell: the strobe is a
+            // preview of a FROZEN frame's future, and forward-stepping the scene N
+            // times every LIVE rAF frame would starve the wasm render loop (the
+            // interpreter forward-step is costly on WebGL2). Pause via the DOM
+            // scrubber to see it.
+            let ghosts = if ghost_on && clock.is_paused() {
                 let divisions = ghost_divisions.clamp(1, 8);
                 let dt = ghost_window / divisions as f32;
                 game.ghost_frames(divisions, dt, frame_time.tts as f64, None)
