@@ -183,7 +183,17 @@ fn load_source(path: &str, src: String) -> Result<Loaded, String> {
 }
 
 fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String> {
-    let project = mle::project::load_with_entry_source(std::path::Path::new(path), entry_src)
+    let entry = std::path::Path::new(path);
+    // A pushed buffer (network reload) stands in for the entry file; siblings
+    // still load from disk.
+    let overrides = match entry_src {
+        Some(src) => std::collections::HashMap::from([(entry.to_path_buf(), src)]),
+        None => std::collections::HashMap::new(),
+    };
+    // Inject the host prelude `.mlei` interfaces so `Scene.*` (etc.) typecheck
+    // against real types (docs/mlei.md). Check-time only — the FunctorHost still
+    // provides the actual runtime values.
+    let project = mle::project::load_with_prelude(entry, &overrides, &functor_prelude::modules())
         .map_err(|e| format!("cannot load {}", e.render()))?;
     // Type diagnostics are advisory in the dev loop: print, keep going.
     for diag in project.check() {

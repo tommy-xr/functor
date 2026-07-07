@@ -11,6 +11,9 @@ path = "src/main.rs"
 [dependencies]
 # The MLE language, for `language: "mle"` projects (docs/mle.md Track C4).
 mle = { path = "../mle" }
+# The host prelude `.mlei` interfaces — injected at load time so a game's
+# `Scene.*` calls typecheck against real types (docs/mlei.md).
+functor-prelude = { path = "../functor-prelude" }
 clap = { version = "4.5.6", features = ["derive"] }
 colored = "2.1.0"
 # The `log` facade: the CLI installs a logger that turns any `log!` (its own or

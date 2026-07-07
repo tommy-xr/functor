@@ -3068,6 +3068,36 @@ mod tests {
             .clone()
     }
 
+    // Drift guard: every signature authored in the `functor-prelude` `.mlei`
+    // interfaces must name a real host external in `PATHS`, so the declared
+    // types and the Rust implementations cannot silently diverge. We parse the
+    // `.mlei` sources to extract `Module.name` signatures and check each exists.
+    //
+    // TODO(2e-ii): assert the FULL bijection (every `PATHS` entry also has a
+    // signature) once every host namespace is authored as `.mlei`.
+    #[test]
+    fn prelude_signatures_map_to_host_paths() {
+        let mut checked = 0;
+        for (module, src) in functor_prelude::modules() {
+            let program = mle::parse_interface(&src)
+                .unwrap_or_else(|e| panic!("prelude module `{module}` must parse: {}", e.message));
+            for item in &program.items {
+                if let mle::ast::Item::Sig(sig) = item {
+                    let path = format!("{module}.{}", sig.name);
+                    assert!(
+                        PATHS.contains(&path.as_str()),
+                        "prelude signature `{path}` has no matching host external in PATHS \
+(mle_prelude.rs) — a phantom signature"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        // Guard against a vacuous pass (an empty/renamed `.mlei` parsing to zero
+        // signatures would otherwise satisfy the loop trivially).
+        assert!(checked > 0, "the prelude authored no signatures to check");
+    }
+
     // The C1 verify criterion (docs/mle.md): an .mle snippet emits exactly
     // the protocol data the shells consume — pinned as the serialized wire
     // form the protocol tests use.
