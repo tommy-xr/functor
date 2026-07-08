@@ -28,11 +28,38 @@
 //   node e2e/wasm-smoke.mjs  # all samples, or: node e2e/wasm-smoke.mjs lighting hello-cubes
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BASE = "http://127.0.0.1:8080";
+const PORT = 8080;
+
+// Is :PORT accepting connections? Used to serialize the per-sample servers: a
+// lingering dev server from a previous sample would make the next one connect to
+// the WRONG project (the stale-:8080 hazard that produces phantom errors), so we
+// wait for the port to be FREE before spawning and after killing.
+function portInUse() {
+  return new Promise((resolve) => {
+    const sock = net
+      .connect(PORT, "127.0.0.1")
+      .on("connect", () => {
+        sock.destroy();
+        resolve(true);
+      })
+      .on("error", () => resolve(false));
+  });
+}
+
+async function waitPortFree(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await portInUse())) return true;
+    await sleep(200);
+  }
+  return false;
+}
 
 // Samples that stand alone (no companion network server). The multiplayer /
 // websocket demos need a running server to do anything, so they're out of a
@@ -73,6 +100,16 @@ function entrySource(sample) {
 }
 
 async function smoke(sample) {
+  // A previous sample's dev server must have fully released :8080, or this
+  // sample would connect to the wrong project (stale-server false results).
+  if (!(await waitPortFree(15000))) {
+    return {
+      sample,
+      ok: false,
+      reason: `:${PORT} still in use by a previous server — cannot serve this sample cleanly`,
+      mleErrors: [],
+    };
+  }
   const server = spawn(
     "./target/debug/functor",
     ["-d", `examples/${sample}`, "run", "wasm", "--no-open"],
@@ -116,6 +153,25 @@ async function smoke(sample) {
       await sleep(250);
     }
 
+    // Guard against a stale server: the entry the page fetched must match this
+    // sample's entry on disk. A mismatch means we connected to a leftover dev
+    // server for a different project — fail loud instead of reporting phantom
+    // errors from the wrong game.
+    const served = await page.evaluate(async () => {
+      const path = window.__mleGamePath;
+      const res = await fetch(path, { cache: "no-store" });
+      return res.text();
+    });
+    if (served.trim() !== entrySource(sample).trim()) {
+      return {
+        sample,
+        ok: false,
+        reason: "served entry source does not match this sample (stale/wrong dev server?)",
+        mleErrors,
+        log,
+      };
+    }
+
     // Run a few frames.
     await sleep(1500);
 
@@ -130,24 +186,37 @@ async function smoke(sample) {
       });
     });
     const src = entrySource(sample);
-    const before = await page.evaluate(() => window.__smokeResults.length);
-    await page.evaluate(
-      (s) => window.postMessage({ type: "mle-set-source", source: s }, "*"),
-      src,
-    );
-    await page
-      .waitForFunction((n) => window.__smokeResults.length > n, before, {
-        timeout: 5000,
-      })
-      .catch(() => {});
-    const result = await page.evaluate(
-      () => window.__smokeResults[window.__smokeResults.length - 1],
-    );
+    // `mle_set_source` refuses ("runtime is mid-frame; retry") if the frame loop
+    // holds the producer borrow when the push lands — likelier on the heavier
+    // samples under slow software GL — so retry that transient a few times.
+    let result;
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const before = await page.evaluate(() => window.__smokeResults.length);
+      await page.evaluate(
+        (s) => window.postMessage({ type: "mle-set-source", source: s }, "*"),
+        src,
+      );
+      await page
+        .waitForFunction((n) => window.__smokeResults.length > n, before, {
+          timeout: 10000,
+        })
+        .catch(() => {});
+      result = await page.evaluate(
+        () => window.__smokeResults[window.__smokeResults.length - 1],
+      );
+      if (result && result.ok === true) break;
+      const msg = (result && result.message) || "";
+      if (result && result.ok === false && /mid-frame|not running/.test(msg)) {
+        await sleep(200);
+        continue;
+      }
+      break; // a real reload error (or no result) — stop and report it
+    }
     if (!result || result.ok !== true) {
       return {
         sample,
         ok: false,
-        reason: `reload push failed: ${result ? result.error : "no result"}`,
+        reason: `reload push failed: ${result ? result.message : "no result (timed out)"}`,
         mleErrors,
         log,
       };
@@ -176,8 +245,10 @@ async function smoke(sample) {
     return { sample, ok: true, mleErrors };
   } finally {
     await browser.close();
-    server.kill();
-    await sleep(400);
+    server.kill("SIGKILL");
+    // Wait for :PORT to actually release before the next sample spawns, so the
+    // next one can't connect to this server.
+    await waitPortFree(10000);
   }
 }
 
