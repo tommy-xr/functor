@@ -3068,16 +3068,16 @@ mod tests {
             .clone()
     }
 
-    // Drift guard: every signature authored in the `functor-prelude` `.mlei`
-    // interfaces must name a real host external in `PATHS`, so the declared
-    // types and the Rust implementations cannot silently diverge. We parse the
-    // `.mlei` sources to extract `Module.name` signatures and check each exists.
-    //
-    // TODO(2e-ii): assert the FULL bijection (every `PATHS` entry also has a
-    // signature) once every host namespace is authored as `.mlei`.
+    // Drift guard: a HARD BIJECTION between the `functor-prelude` `.mlei`
+    // signatures and the host `PATHS`. Every `.mlei` `val`/`let` signature must
+    // name a real host external, AND every host external must have exactly one
+    // signature — so the declared types and the Rust implementations cannot
+    // silently diverge in either direction. We parse the `.mlei` sources to
+    // extract `Module.name` signatures and compare the two sets.
     #[test]
     fn prelude_signatures_map_to_host_paths() {
-        let mut checked = 0;
+        use std::collections::BTreeSet;
+        let mut signatures: BTreeSet<String> = BTreeSet::new();
         for (module, src) in functor_prelude::modules() {
             let program = mle::parse_interface(&src)
                 .unwrap_or_else(|e| panic!("prelude module `{module}` must parse: {}", e.message));
@@ -3085,17 +3085,28 @@ mod tests {
                 if let mle::ast::Item::Sig(sig) = item {
                     let path = format!("{module}.{}", sig.name);
                     assert!(
-                        PATHS.contains(&path.as_str()),
-                        "prelude signature `{path}` has no matching host external in PATHS \
-(mle_prelude.rs) — a phantom signature"
+                        signatures.insert(path.clone()),
+                        "prelude signature `{path}` is authored more than once"
                     );
-                    checked += 1;
                 }
             }
         }
-        // Guard against a vacuous pass (an empty/renamed `.mlei` parsing to zero
-        // signatures would otherwise satisfy the loop trivially).
-        assert!(checked > 0, "the prelude authored no signatures to check");
+
+        let paths: BTreeSet<String> = PATHS.iter().map(|p| p.to_string()).collect();
+
+        let phantom: Vec<&String> = signatures.difference(&paths).collect();
+        assert!(
+            phantom.is_empty(),
+            "prelude signatures with no matching host external in PATHS \
+(mle_prelude.rs) — phantom signatures: {phantom:?}"
+        );
+
+        let missing: Vec<&String> = paths.difference(&signatures).collect();
+        assert!(
+            missing.is_empty(),
+            "host externals in PATHS with no `.mlei` signature — an interface-only \
+module is CLOSED, so games referencing these break at load: {missing:?}"
+        );
     }
 
     // The C1 verify criterion (docs/mle.md): an .mle snippet emits exactly

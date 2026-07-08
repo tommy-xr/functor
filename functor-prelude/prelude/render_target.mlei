@@ -1,0 +1,12 @@
+// render_target.mlei — the `RenderTarget` host module (interface only;
+// implemented in Rust by FunctorHost in functor_runtime_common::mle_prelude).
+// See docs/mlei.md.
+
+// The opaque render-target handle (`RenderTarget.T` from game code).
+type T
+
+// A named target (512x512 unless piped through `RenderTarget.sized`).
+let named : (String) => T
+// Target LAST (subject-last), so it pipes:
+// `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
+let sized : (Float, Float, T) => T

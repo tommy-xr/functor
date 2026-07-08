@@ -51,12 +51,18 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Camera",
     "Frame",
     "Light",
+    "Fog",
+    "Skybox",
     "Angle",
+    "Texture",
     "Time",
     "Sub",
     "Effect",
     "Physics",
     "RenderTarget",
+    "Ui",
+    "AudioSource",
+    "AudioScene",
     "Debug",
 ];
 

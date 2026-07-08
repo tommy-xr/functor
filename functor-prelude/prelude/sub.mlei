@@ -1,0 +1,18 @@
+// sub.mlei — the `Sub` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+//
+// Subscriptions: what the optional `subscriptions = (model) => …` hook returns.
+// The `msg` type variable is the game's message type (typically an ADT variant).
+
+// The opaque subscription handle (`Sub.T` from game code).
+type T
+
+let none : () => T
+// The `msg` is a message VALUE, held by the host and handed back verbatim when
+// the timer fires.
+let every : (Time.T, msg) => T
+let batch : (List<T>) => T
+// A persistent connection (client) / listener (server): the tagger receives
+// `Net.NetEvent` values.
+let connect : (String, (Net.NetEvent) => msg) => T
+let listen : (String, (Net.NetEvent) => msg) => T

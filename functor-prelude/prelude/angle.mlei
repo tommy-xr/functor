@@ -1,0 +1,12 @@
+// angle.mlei — the `Angle` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+//
+// A branded angle: rotation/camera functions accept ONLY `Angle.T` values, so a
+// bare number is rejected with a teaching error. Build one with `Angle.degrees`
+// or `Angle.radians`.
+
+// The opaque angle handle (`Angle.T` from game code).
+type T
+
+let degrees : (Float) => T
+let radians : (Float) => T

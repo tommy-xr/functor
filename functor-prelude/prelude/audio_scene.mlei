@@ -1,0 +1,10 @@
+// audio_scene.mlei — the `AudioScene` host module (interface only; implemented
+// in Rust by FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+//
+// The audio scene the optional `soundScape = (model) => …` hook returns.
+
+// The opaque audio-scene handle (`AudioScene.T` from game code).
+type T
+
+let create : (List<AudioSource.T>) => T
+let empty : () => T

@@ -1960,20 +1960,22 @@ a catch-all arm (`_` or a name)"
     /// lift first: the B6 producer treats a bare model as
     /// `(model, Effect.none())`, so an arm returning `m` beside an arm
     /// returning `(m, effect)` joins as the PAIR — otherwise the unifier
-    /// is asked for the infinite type `'a = 'a * Unknown` and every
+    /// is asked for the infinite type `'a = 'a * Effect` and every
     /// effect-returning game fails `functor build`. The lift keys on the
-    /// pair's second element being the host seam (Unknown), so real tuple
-    /// mismatches (`(m, 1.0)` vs `m`) still error.
+    /// pair's second element being the effect seam — `Unknown` under plain
+    /// `mle` (no prelude, effects are gradual externals) or the host prelude's
+    /// opaque `Effect` type under the runner — so real tuple mismatches
+    /// (`(m, 1.0)` vs `m`) still error.
     fn join_arms(&mut self, prev: Type, body: Type, span: Span) -> Type {
         let (p, b) = (self.zonk(&prev), self.zonk(&body));
         for (pair, bare) in [(&p, &b), (&b, &p)] {
             if let Type::Tuple(items) = pair {
                 if items.len() == 2
-                    && items[1] == Type::Unknown
+                    && is_effect_seam(&items[1])
                     && !matches!(bare, Type::Tuple(_))
                     && self.unify_rec(bare, &items[0], span, "match arm")
                 {
-                    return Type::Tuple(vec![self.zonk(&items[0]), Type::Unknown]);
+                    return Type::Tuple(vec![self.zonk(&items[0]), items[1].clone()]);
                 }
             }
         }
@@ -2284,6 +2286,21 @@ is {other}"
                 format!("`{}` needs Float operands, got {ty}", op_str(op)),
             );
         }
+    }
+}
+
+/// The second element of an entry point's `(model, effect)` return, for the
+/// bare-model lift in [`Checker::join_arms`]. `Unknown` under plain `mle` (no
+/// prelude — `Effect.*` is a gradual external), or the host prelude's opaque
+/// `Effect` value type (any type owned by the `Effect` module — a user module
+/// cannot claim that name, it is a protected namespace) under the runner.
+fn is_effect_seam(ty: &Type) -> bool {
+    match ty {
+        Type::Unknown => true,
+        Type::Variant(name, _) => name
+            .rsplit_once('.')
+            .is_some_and(|(module, _)| module == "Effect"),
+        _ => false,
     }
 }
 

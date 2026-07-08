@@ -166,8 +166,8 @@ let grab = (s) =>
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude namespace (Net, List, Text, Math, Debug, Scene, Camera,
-  Frame, Light, Angle, Time, Sub, Effect, Physics, RenderTarget) is a load
-  error — rename the file.
+  Frame, Light, Fog, Skybox, Angle, Texture, Time, Sub, Effect, Physics,
+  RenderTarget, Ui, AudioSource, AudioScene) is a load error — rename the file.
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
   | Connected(id: Float) | Message(id: Float, text: String) |
   Disconnected(id: Float) | Error(id: Float, text: String)`. A `Sub.connect`/
@@ -210,8 +210,15 @@ open Widget                                              // …or open, bringing
   caught. They surface in hover / inlay / codelens like any type.
 - **Runtime is unchanged**: an interface member stays an `External` (the host
   provides its value at run time), so `.mlei` is a pure check-time overlay.
-- This is how the engine prelude's types will be declared (`Scene`, `Camera`,
-  … — currently `Unknown`).
+- This is how the **engine prelude's types are declared**: the `functor-prelude`
+  crate ships a `.mlei` for every host namespace (`Scene`, `Camera`, `Frame`,
+  `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`, `Sub`,
+  `Effect`, `Physics`, `Ui`, `AudioSource`, `AudioScene`), loaded by the runner
+  so engine calls carry real types (no longer `Unknown`). Each module's primary
+  opaque handle is `Mod.T` (`Camera.T`, `Frame.T`, `Effect.T`, …); modules that
+  own several name each (`Scene.Node`; `Physics.Shape`/`Body`/`Scene`;
+  `Ui.View`/`Anchor`). Physics query/event results are records
+  (`Physics.Position`, `Physics.RayHit`, `Physics.CollisionEvent`).
 
 ## Semantics rules that WILL bite you
 

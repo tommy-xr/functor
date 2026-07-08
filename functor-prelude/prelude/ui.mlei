@@ -1,0 +1,17 @@
+// ui.mlei — the `Ui` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+//
+// The optional `ui = (model) => …` hook's vocabulary: text lines stacked in a
+// column, pinned to a screen corner.
+
+// The opaque view handle (`Ui.View` from game code).
+type View
+// The opaque panel-anchor handle (`Ui.Anchor` from game code).
+type Anchor
+
+let text : (String) => View
+let textColor : (Float, Float, Float, String) => View
+let column : (List<View>) => View
+// View LAST (subject-last), so it pipes: `Ui.column([…]) |> Ui.panel(Ui.topLeft())`.
+let panel : (Anchor, View) => View
+let topLeft : () => Anchor
