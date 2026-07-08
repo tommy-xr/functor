@@ -186,37 +186,36 @@ async function smoke(sample) {
       });
     });
     const src = entrySource(sample);
-    // `mle_set_source` refuses ("runtime is mid-frame; retry") if the frame loop
-    // holds the producer borrow when the push lands — likelier on the heavier
-    // samples under slow software GL — so retry that transient a few times.
-    let result;
-    for (let attempt = 0; attempt < 15; attempt++) {
-      const before = await page.evaluate(() => window.__smokeResults.length);
-      await page.evaluate(
-        (s) => window.postMessage({ type: "mle-set-source", source: s }, "*"),
-        src,
-      );
-      await page
-        .waitForFunction((n) => window.__smokeResults.length > n, before, {
-          timeout: 10000,
-        })
-        .catch(() => {});
-      result = await page.evaluate(
-        () => window.__smokeResults[window.__smokeResults.length - 1],
-      );
-      if (result && result.ok === true) break;
-      const msg = (result && result.message) || "";
-      if (result && result.ok === false && /mid-frame|not running/.test(msg)) {
-        await sleep(200);
-        continue;
-      }
-      break; // a real reload error (or no result) — stop and report it
-    }
+    // The runtime QUEUES the pushed source and applies it at the top of a frame
+    // (never mid-frame), then posts `mle-set-source-result`. On a heavy sample
+    // under software GL a frame can take several seconds, so wait generously.
+    const before = await page.evaluate(() => window.__smokeResults.length);
+    const pushStart = Date.now();
+    await page.evaluate(
+      (s) => window.postMessage({ type: "mle-set-source", source: s }, "*"),
+      src,
+    );
+    await page
+      .waitForFunction((n) => window.__smokeResults.length > n, before, {
+        timeout: 30000,
+      })
+      .catch(() => {});
+    const result = await page.evaluate(
+      () => window.__smokeResults[window.__smokeResults.length - 1],
+    );
     if (!result || result.ok !== true) {
+      const waited = ((Date.now() - pushStart) / 1000).toFixed(1);
+      // Did the runtime log that it applied the reload? (Distinguishes a frame
+      // loop that never got to it from a result that wasn't delivered.)
+      const applied = log.filter((m) => /\[mle\] (reloaded|reload error)/.test(m));
+      const tail = log.slice(-8).map((m) => m.replace(/\s+/g, " ").slice(0, 100));
       return {
         sample,
         ok: false,
-        reason: `reload push failed: ${result ? result.message : "no result (timed out)"}`,
+        reason:
+          `reload push failed after ${waited}s: ${result ? result.message : "no mle-set-source-result received"}` +
+          ` | runtime applied-reload log: ${applied.length ? applied.join(" ; ") : "NONE"}` +
+          ` | last console: ${tail.join(" | ")}`,
         mleErrors,
         log,
       };
