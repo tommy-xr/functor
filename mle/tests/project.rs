@@ -124,9 +124,9 @@ fn qualified_values_and_ctors_work_without_open() {
             ),
             (
                 "util.mle",
-                "type Carton = | Wrapped(value: Float)\n\
+                "type Carton = | Wrapped(value: float)\n\
                  let base = 10.0\n\
-                 let wrap = (n: Float): Carton => Wrapped(n)\n",
+                 let wrap = (n: float): Carton => Wrapped(n)\n",
             ),
         ],
     );
@@ -146,7 +146,7 @@ fn qualified_ctor_is_first_class() {
             ),
             (
                 "util.mle",
-                "type Carton = | Wrapped(value: Float)\n\
+                "type Carton = | Wrapped(value: float)\n\
                  let unwrap = (c) => match c with | Wrapped(n) => n\n",
             ),
         ],
@@ -272,12 +272,12 @@ fn open_brings_defs_ctors_and_types_into_scope() {
             (
                 "game.mle",
                 "open Util\n\
-                 let grab = (c: Carton): Float => match c with | Wrapped(n) => n\n\
+                 let grab = (c: Carton): float => match c with | Wrapped(n) => n\n\
                  let main = () => grab(Wrapped(base))\n",
             ),
             (
                 "util.mle",
-                "type Carton = | Wrapped(value: Float)\nlet base = 42.0\n",
+                "type Carton = | Wrapped(value: float)\nlet base = 42.0\n",
             ),
         ],
     );
@@ -324,9 +324,9 @@ fn open_type_collision_is_an_error() {
         &[
             (
                 "game.mle",
-                "open Util\ntype Carton = { x: Float }\nlet main = () => 0.0\n",
+                "open Util\ntype Carton = { x: float }\nlet main = () => 0.0\n",
             ),
-            ("util.mle", "type Carton = | Wrapped(value: Float)\n"),
+            ("util.mle", "type Carton = | Wrapped(value: float)\n"),
         ],
     );
     assert_eq!(
@@ -483,7 +483,7 @@ fn unreferenced_sibling_diagnostics_surface_with_their_file() {
             ("game.mle", "let main = () => 0.0\n"),
             (
                 "util.mle",
-                "// an unreferenced module with a type error\nlet bad = (a: Float): Float => a + \"one\"\n",
+                "// an unreferenced module with a type error\nlet bad = (a: float): float => a + \"one\"\n",
             ),
         ],
     );
@@ -511,11 +511,11 @@ fn cross_module_generics_check() {
             (
                 "game.mle",
                 "open Boxes\n\
-                 let good = (b: Box<Float>): Float =>\n\
+                 let good = (b: Box<float>): float =>\n\
                  match b with | Full(v) => v + 1.0 | Empty => 0.0\n\
                  let bad = () => good(Full(\"nope\"))\n",
             ),
-            ("boxes.mle", "type Box<v> = | Full(value: v) | Empty\n"),
+            ("boxes.mle", "type Box<'v> = | Full(value: 'v) | Empty\n"),
         ],
     );
     let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
@@ -524,7 +524,7 @@ fn cross_module_generics_check() {
     assert!(
         diags[0]
             .message
-            .contains("expected Boxes.Box<Float>, got Boxes.Box<String>"),
+            .contains("expected Boxes.Box<float>, got Boxes.Box<string>"),
         "unexpected diagnostic: {}",
         diags[0].message
     );
@@ -541,7 +541,7 @@ fn stray_sibling_type_does_not_capture_bare_literals() {
         &[
             (
                 "game.mle",
-                "type Position = { x: Float, y: Float }
+                "type Position = { x: float, y: float }
                  let p = { x: 1.0, y: 2.0 }
 let main = () => p.x
 ",
@@ -549,7 +549,7 @@ let main = () => p.x
             // Same field shape, never referenced, never opened.
             (
                 "extra.mle",
-                "type Point = { x: Float, y: Float }
+                "type Point = { x: float, y: float }
 ",
             ),
         ],
@@ -578,7 +578,7 @@ let bad = f() + 1.0
             ),
             (
                 "vec.mle",
-                "type V2 = { x: Float, y: Float }
+                "type V2 = { x: float, y: float }
 ",
             ),
         ],
@@ -608,7 +608,7 @@ let bad = f() + 1.0
             ),
             (
                 "vec.mle",
-                "type V2 = { x: Float, y: Float }
+                "type V2 = { x: float, y: float }
 ",
             ),
         ],
@@ -629,8 +629,8 @@ fn single_file_project_adds_only_the_builtin_net_module() {
     // A project always includes the built-in `Net` prelude module (so any
     // game can `match ev with | Net.Connected(id) => …`), so its merged IR
     // is plain lowering's defs/types PLUS Net's — nothing else changes.
-    let src = "type Shape = | Circle(radius: Float) | Point\n\
-               let area = (s: Shape): Float =>\n\
+    let src = "type Shape = | Circle(radius: float) | Point\n\
+               let area = (s: Shape): float =>\n\
                match s with | Circle(r) => 3.14 * r * r | Point => 0.0\n\
                let main = () => area(Circle(2.0))\n";
     let project = load("single-file", &[("game.mle", src)]);
@@ -775,20 +775,20 @@ fn project_typed_check_infers_across_files() {
         &[
             // Entry calls Utils.double with no annotations anywhere.
             ("game.mle", "let apply = (n) => Utils.double(n)\n"),
-            ("utils.mle", "let double = (x: Float): Float => x * 2.0\n"),
+            ("utils.mle", "let double = (x: float): float => x * 2.0\n"),
         ],
     );
     let (diags, types) = project.check_with_types();
     assert!(diags.is_empty(), "clean: {diags:?}");
 
-    // The entry's `apply` is inferred `(Float) => Float` across the file
-    // boundary (Utils.double is annotated Float→Float).
+    // The entry's `apply` is inferred `(float) => float` across the file
+    // boundary (Utils.double is annotated float→float).
     let sigs: Vec<String> = mle::codelens::signatures(&project.module, &types)
         .into_iter()
         .map(|s| s.title)
         .collect();
     assert!(
-        sigs.contains(&"apply : (Float) => Float".to_string()),
+        sigs.contains(&"apply : (float) => float".to_string()),
         "signatures: {sigs:?}"
     );
 
@@ -817,7 +817,7 @@ fn overrides_replace_a_sibling_buffer() {
         &[
             ("game.mle", "let apply = (n) => Utils.tripled(n)\n"),
             // On disk `utils.mle` has no `tripled` — loading from disk fails.
-            ("utils.mle", "let double = (x: Float): Float => x * 2.0\n"),
+            ("utils.mle", "let double = (x: float): float => x * 2.0\n"),
         ],
     );
     // Disk-only load: `Utils.tripled` is unresolved (load or check fails).
@@ -831,7 +831,7 @@ fn overrides_replace_a_sibling_buffer() {
     let mut overrides = std::collections::HashMap::new();
     overrides.insert(
         scratch.dir.join("utils.mle"),
-        "let tripled = (x: Float): Float => x * 3.0\n".to_string(),
+        "let tripled = (x: float): float => x * 3.0\n".to_string(),
     );
     let project = mle::project::load_with_overrides(&scratch.entry, &overrides)
         .unwrap_or_else(|e| panic!("override load: {}", e.render()));
@@ -879,13 +879,13 @@ fn interface_file_types_externals() {
             (
                 "game.mle",
                 "let build = (): Widget.Handle => Widget.make()\n\
-                 let area = (h: Widget.Handle): Float => Widget.size(h)",
+                 let area = (h: Widget.Handle): float => Widget.size(h)",
             ),
             (
                 "widget.mlei",
                 "type Handle\n\
                  let make : () => Handle\n\
-                 let size : (Handle) => Float",
+                 let size : (Handle) => float",
             ),
         ],
     );
@@ -900,10 +900,10 @@ fn interface_signature_mismatch_is_flagged() {
     let project = load(
         "mlei-mismatch",
         &[
-            ("game.mle", "let bad = (): Float => Widget.size(3.0)"),
+            ("game.mle", "let bad = (): float => Widget.size(3.0)"),
             (
                 "widget.mlei",
-                "type Handle\nlet size : (Handle) => Float",
+                "type Handle\nlet size : (Handle) => float",
             ),
         ],
     );
@@ -922,12 +922,12 @@ fn open_brings_interface_signatures() {
     let project = load(
         "mlei-open",
         &[
-            ("game.mle", "open Widget\nlet f = (): Float => size(make())"),
+            ("game.mle", "open Widget\nlet f = (): float => size(make())"),
             (
                 "widget.mlei",
                 "type Handle\n\
                  let make : () => Handle\n\
-                 let size : (Handle) => Float",
+                 let size : (Handle) => float",
             ),
         ],
     );
@@ -943,7 +943,7 @@ fn body_in_interface_file_is_rejected() {
         "mlei-body",
         &[
             ("game.mle", "let main = () => 1.0"),
-            ("widget.mlei", "let make : Float = 3.0"),
+            ("widget.mlei", "let make : float = 3.0"),
         ],
     );
     assert!(
@@ -962,7 +962,7 @@ fn interface_signature_may_reference_a_consumer_type() {
         &[
             (
                 "game.mle",
-                "type Model = { n: Float }\n\
+                "type Model = { n: float }\n\
                  let sc = (m: Model): Widget.Handle => Widget.render(m)",
             ),
             (
@@ -1012,7 +1012,7 @@ fn injected_prelude_types_host_externals() {
         "Scene".to_string(),
         "type Node\n\
          let cube : () => Node\n\
-         let color : (Float, Float, Float, Node) => Node"
+         let color : (float, float, float, Node) => Node"
             .to_string(),
     )];
     let project =

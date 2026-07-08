@@ -146,7 +146,7 @@ fn error_deeply_nested_expression() {
 
 #[test]
 fn generic_args_allow_trailing_comma() {
-    assert!(mle::parse("type T = { xs: List<Float,> }").is_ok());
+    assert!(mle::parse("type T = { xs: List<float,> }").is_ok());
 }
 
 /// Error spans must stay sliceable (char-boundary aligned) even when the
@@ -213,7 +213,7 @@ fn assignment_to_field_is_a_targeted_error() {
 #[test]
 fn variant_declaration_forms_parse() {
     assert!(
-        mle::parse("type Shape = | Circle(radius: Float) | Rect(w: Float, h: Float,) | Point")
+        mle::parse("type Shape = | Circle(radius: float) | Rect(w: float, h: float,) | Point")
             .is_ok()
     );
     assert!(mle::parse("type Answer = | Yes").is_ok());
@@ -223,7 +223,7 @@ fn variant_declaration_forms_parse() {
 #[test]
 fn error_variant_requires_leading_bar() {
     assert_eq!(
-        parse_err("type Shape = Circle(radius: Float)"),
+        parse_err("type Shape = Circle(radius: float)"),
         (
             "expected `{` (a record type) or `|` (a variant alternative), found `Circle`"
                 .to_string(),
@@ -236,7 +236,7 @@ fn error_variant_requires_leading_bar() {
 #[test]
 fn error_lowercase_constructor_name() {
     assert_eq!(
-        parse_err("type Shape = | circle(radius: Float)"),
+        parse_err("type Shape = | circle(radius: float)"),
         (
             "constructor name `circle` must start uppercase".to_string(),
             1,
@@ -249,7 +249,7 @@ fn error_lowercase_constructor_name() {
 #[test]
 fn error_variant_field_needs_a_name() {
     assert_eq!(
-        parse_err("type Shape = | Circle(Float)"),
+        parse_err("type Shape = | Circle(float)"),
         (
             "expected `:` after field name, found `)`".to_string(),
             1,
@@ -407,17 +407,17 @@ fn error_mut_cannot_destructure() {
 #[test]
 fn error_duplicate_type_parameter() {
     assert_eq!(
-        parse_err("type Pair<a, a> = { x: a }"),
-        ("duplicate type parameter `a`".to_string(), 1, 14)
+        parse_err("type Pair<'a, 'a> = { x: 'a }"),
+        ("duplicate type parameter `'a`".to_string(), 1, 15)
     );
 }
 
 #[test]
-fn error_uppercase_type_parameter() {
+fn error_non_typevar_type_parameter() {
     assert_eq!(
         parse_err("type Box<T> = | Full(v: T)"),
         (
-            "type parameters are lowercase (`t`), like annotation type variables".to_string(),
+            "expected a type parameter (e.g. `'a`), found `T`".to_string(),
             1,
             10
         )

@@ -6,13 +6,13 @@
 //
 //   functor -d examples/wsserverdemo run native
 
-type Model = { clients: Float, status: String, lastMsg: String }
+type Model = { clients: float, status: string, lastMsg: string }
 
 type Msg =
-  | ClientConnected(id: Float)
-  | Received(id: Float, text: String)
-  | ClientLeft(id: Float)
-  | ConnError(text: String)
+  | ClientConnected(id: float)
+  | Received(id: float, text: string)
+  | ClientLeft(id: float)
+  | ConnError(text: string)
 
 // The tagger: NetEvent -> a game-specific Msg (a closure, not a ctor).
 let toMsg = (ev: Net.NetEvent): Msg =>
@@ -37,9 +37,9 @@ let update = (m: Model, msg: Msg) =>
 // Declaring the listener in `subscriptions` keeps the server bound.
 let subscriptions = (m: Model) => Sub.listen("127.0.0.1:9001", toMsg)
 
-let tick = (m: Model, dt: Float, tts: Float) => m
+let tick = (m: Model, dt: float, tts: float) => m
 
-let draw = (m: Model, tts: Float) =>
+let draw = (m: Model, tts: float) =>
   Frame.create(
     Camera.firstPerson(
       0.0, 0.0, -5.0,

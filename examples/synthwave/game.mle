@@ -47,7 +47,7 @@ let scrollSpeed = 4.0
 // wavelength regardless of `rows`/`cols`. Rows run along +Z (into the distance);
 // cols run along X. A couple of sine ridges in depth give rolling hills, gently
 // modulated across X; the lift keeps valleys mostly at/above y = 0.
-let terrainHeight = (phase: Float, r: Float, c: Float): Float =>
+let terrainHeight = (phase: float, r: float, c: float): float =>
   let z = r * rowScale + phase in
   let x = c * colScale in
   Math.sin(z * 0.35) * 1.6
@@ -64,9 +64,9 @@ let skyTexture = Texture.file("sky.png")
 // No per-frame state: the scene is a pure function of time.
 let init = 0.0
 
-let tick = (m: Float, dt: Float, tts: Float) => m
+let tick = (m: float, dt: float, tts: float) => m
 
-let draw = (m: Float, tts: Float) =>
+let draw = (m: float, tts: float) =>
   let phase = tts * scrollSpeed in
   // The neon grid terrain: an emissive grid-cell texture (dark interior,
   // hot-magenta edges) tiled one cell per quad, so the glowing lines align with

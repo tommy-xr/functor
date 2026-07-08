@@ -16,10 +16,10 @@
 // Where the request is in its lifecycle.
 type Phase =
   | Loading
-  | Done(status: Float, body: String)
-  | Failed(text: String)
+  | Done(status: float, body: string)
+  | Failed(text: string)
 
-type Model = { phase: Phase, frame: Float }
+type Model = { phase: Phase, frame: float }
 
 // The HTTP result, tagged back to us. `Net.HttpResponse` is the built-in ADT
 // `| Response(status, body) | Failure(error)` (a completed request vs a
@@ -40,12 +40,12 @@ let update = (m: Model, msg: Msg) =>
 
 // Fire the request once, on the first frame (the F# startup-effect seed); the
 // runtime applies the `GotResponse` tagger when the response lands.
-let tick = (m: Model, dt: Float, tts: Float) =>
+let tick = (m: Model, dt: float, tts: float) =>
   match m.frame == 0.0 with
   | true => ({ m with frame: 1.0 }, Effect.httpGet(endpoint, GotResponse))
   | false => { m with frame: m.frame + 1.0 }
 
-let draw = (m: Model, tts: Float) =>
+let draw = (m: Model, tts: float) =>
   // A single emissive cube so there's something on screen; the meaningful
   // state is the textual phase, inspected via /state.
   Frame.create(

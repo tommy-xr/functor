@@ -9,7 +9,7 @@ Program {
                         FieldTy {
                             name: "x",
                             ty: TypeName {
-                                name: "Float",
+                                name: "float",
                                 args: [],
                                 span: 162..167,
                             },
@@ -18,7 +18,7 @@ Program {
                         FieldTy {
                             name: "y",
                             ty: TypeName {
-                                name: "Float",
+                                name: "float",
                                 args: [],
                                 span: 172..177,
                             },
@@ -38,7 +38,7 @@ Program {
                         FieldTy {
                             name: "dx",
                             ty: TypeName {
-                                name: "Float",
+                                name: "float",
                                 args: [],
                                 span: 202..207,
                             },
@@ -47,7 +47,7 @@ Program {
                         FieldTy {
                             name: "dy",
                             ty: TypeName {
-                                name: "Float",
+                                name: "float",
                                 args: [],
                                 span: 213..218,
                             },
@@ -125,7 +125,7 @@ Program {
                                 name: "dt",
                                 ty: Some(
                                     TypeName {
-                                        name: "Float",
+                                        name: "float",
                                         args: [],
                                         span: 297..302,
                                     },
@@ -484,7 +484,7 @@ Program {
                         ],
                         ret: Some(
                             TypeName {
-                                name: "Bool",
+                                name: "bool",
                                 args: [],
                                 span: 540..544,
                             },

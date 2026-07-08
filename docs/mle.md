@@ -162,7 +162,7 @@ snapshots — no GPU, fully agent-verifiable.
       example, a `.trace` golden, and a semantics/runtime-error suite
       (closures, late binding, arity, depth caps, NaN policy). (done)
 - [x] **B4. Basic types.** Gradual checking over the core IR (`mle check`),
-      with annotations, not inference: primitives (`Float`/`String`/`Bool`),
+      with annotations, not inference: primitives (`float`/`string`/`bool`),
       nominal declared record types, `List<T>`, and function types from
       lambda annotations. Anything unannotated or unrecognized (e.g. a
       generic parameter) is Unknown, and a check fires only where both sides
@@ -210,7 +210,7 @@ snapshots — no GPU, fully agent-verifiable.
       stays grouping); tuple patterns in `match` (`| (x, y) =>`, shallow
       like ctor sub-patterns) and a destructuring let
       (`let (a, b) = e in …`) since multiple-returns is the point;
-      `(Float, Float)` tuple types in annotations; `Value::Tuple` with
+      `(float, float)` tuple types in annotations; `Value::Tuple` with
       structural equality and `(1, 2)` display; checker arity + element
       types, exhaustiveness-compatible; hover/LSP display; rebind walk;
       no positional field access (`t.0`) — destructure instead (named
@@ -281,7 +281,7 @@ snapshots — no GPU, fully agent-verifiable.
       contradictory mut use, and foreign match arms are all caught now.
       *Verify (done):* both shipped games + all example goldens check
       clean under inference; `(xs, k) => List.map((x) => x * k, xs)`
-      hovers as `(List<Float>, Float) => List<Float>`; teeth + occurs +
+      hovers as `(List<float>, float) => List<float>`; teeth + occurs +
       ambiguity + SCC polymorphism pinned (215 mle tests).
       *Original verify:* unannotated examples get full inferred signatures (an
       `mle types` dump, goldened); the B4 diagnostic suite still passes;
@@ -319,7 +319,7 @@ snapshots — no GPU, fully agent-verifiable.
       `docs/spikes/mle-currying.md`.
 - [x] **Language: `Debug.log` trace builtin** (2026-07-06; flipped label-first
       in the currying migration step 3). Core `mle`-crate
-      builtin `Debug.log(label, value) : (String, 'a) => 'a` — an Elm-style
+      builtin `Debug.log(label, value) : (string, 'a) => 'a` — an Elm-style
       trace: logs `label: <value>` (the interpreter's own `Value` display, any
       type) and returns `value` UNCHANGED, so it's pure to the program result
       and pipe-friendly (`x |> Debug.log("x")`; label-first / subject-last, so it
@@ -339,8 +339,8 @@ snapshots — no GPU, fully agent-verifiable.
       surviving sink); `--json` ndjson-validity + determinism (PNG byte-identity)
       + protected-namespace checks. Design: `docs/cli-output.md` (PR-4b).
 - [x] **Language: generic type declarations** (done 2026-07-04, the B7
-      follow-up both review engines asked for). `type Box<v> = | Full(value:
-      v) | Empty` / `type Pair<x, y> = { … }`: checker-only (the runtime
+      follow-up both review engines asked for). `type Box<'v> = | Full(value:
+      'v) | Empty` / `type Pair<'x, 'y> = { … }`: checker-only (the runtime
       was already type-erased) — declarations store parameter placeholders
       in an out-of-band Var namespace (the builtin-scheme trick),
       substituted at every use; ctors instantiate fresh per use; record

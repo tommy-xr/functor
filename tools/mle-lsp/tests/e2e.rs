@@ -145,7 +145,7 @@ fn diagnostics_over_real_stdio() {
     let response = server.recv();
     assert_eq!(response["id"], 3);
     assert_eq!(
-        response["result"]["contents"]["value"], "```mle\nx : Float\n```",
+        response["result"]["contents"]["value"], "```mle\nx : float\n```",
         "hover response: {response}"
     );
 
@@ -155,7 +155,7 @@ fn diagnostics_over_real_stdio() {
         "params": {
             "textDocument": { "uri": URI, "version": 3 },
             "contentChanges": [ { "text":
-                "let double = (x: Float): Float => x * 2.0\nlet main = () => double(2.0)" } ],
+                "let double = (x: float): float => x * 2.0\nlet main = () => double(2.0)" } ],
         },
     }));
     assert_eq!(server.recv()["params"]["diagnostics"], json!([]));
@@ -205,7 +205,7 @@ fn diagnostics_over_real_stdio() {
     }));
     assert_eq!(server.recv()["params"]["diagnostics"], json!([]));
 
-    // Inlay hints over line 0 → one `: Float` type hint right after the `x`
+    // Inlay hints over line 0 → one `: float` type hint right after the `x`
     // param (byte 10 = line 0 char 10).
     server.send(json!({
         "jsonrpc": "2.0", "id": 6, "method": "textDocument/inlayHint",
@@ -223,7 +223,7 @@ fn diagnostics_over_real_stdio() {
         response["result"],
         json!([{
             "position": { "line": 0, "character": 10 },
-            "label": ": Float",
+            "label": ": float",
             "kind": 1,
             "paddingLeft": false,
             "paddingRight": false,
@@ -246,7 +246,7 @@ fn diagnostics_over_real_stdio() {
                 "start": { "line": 0, "character": 0 },
                 "end": { "line": 0, "character": 22 },
             },
-            "command": { "title": "f : (Float) => Float", "command": "" },
+            "command": { "title": "f : (float) => float", "command": "" },
         }]),
         "codeLens response: {response}"
     );
@@ -278,7 +278,7 @@ fn project_aware_hover_and_cross_file_definition() {
     std::fs::write(dir.join("game.mle"), game).unwrap();
     std::fs::write(
         dir.join("utils.mle"),
-        "let double = (x: Float): Float => x * 2.0\n",
+        "let double = (x: float): float => x * 2.0\n",
     )
     .unwrap();
     let game_uri = format!("file://{}/game.mle", dir.display());
@@ -311,7 +311,7 @@ fn project_aware_hover_and_cross_file_definition() {
     let response = server.recv();
     assert_eq!(
         response["result"]["contents"]["value"],
-        "```mle\nUtils.double : (Float) => Float\n```",
+        "```mle\nUtils.double : (float) => float\n```",
         "cross-file hover: {response}"
     );
 

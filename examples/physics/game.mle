@@ -70,9 +70,9 @@ let crateVisual = (model, i) =>
 
 // The message ADT: ctor taggers wrap each async result in its own arm —
 // raycast answers and contact events share one `update` without ambiguity.
-type Msg<h, e> =
-  | GotHit(hit: h)
-  | Contact(ev: e)
+type Msg<'h, 'e> =
+  | GotHit(hit: 'h)
+  | Contact(ev: 'e)
 
 let init = { drop: 0.0, spaceHeld: false, hot: "", paused: false, pHeld: false }
 

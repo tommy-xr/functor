@@ -12,7 +12,7 @@ Module {
                             FieldTy {
                                 name: "radius",
                                 ty: TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 320..325,
                                 },
@@ -27,7 +27,7 @@ Module {
                             FieldTy {
                                 name: "w",
                                 ty: TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 339..344,
                                 },
@@ -36,7 +36,7 @@ Module {
                             FieldTy {
                                 name: "h",
                                 ty: TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 349..354,
                                 },
@@ -92,7 +92,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "Float",
+                            name: "float",
                             args: [],
                             span: 408..413,
                         },
@@ -261,7 +261,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "Bool",
+                            name: "bool",
                             args: [],
                             span: 528..532,
                         },
@@ -346,7 +346,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "String",
+                            name: "string",
                             args: [],
                             span: 657..663,
                         },
@@ -456,7 +456,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "String",
+                            name: "string",
                             args: [],
                             span: 969..975,
                         },

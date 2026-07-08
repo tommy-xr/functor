@@ -5,7 +5,7 @@
 //! ```text
 //! program   := (letDecl | typeDecl)*
 //! letDecl   := "let" ident "=" expr
-//! typeDecl  := "type" ident ("<" ident ("," ident)* ">")?
+//! typeDecl  := "type" ident ("<" typevar ("," typevar)* ">")?
 //!              "=" ("{" (ident ":" type),* "}" | variant+)
 //! variant   := "|" upperIdent ("(" (ident ":" type),+ ")")?
 //! type      := "(" type,* ")" "=>" type              (function: params in parens)
@@ -13,7 +13,7 @@
 //!            | tatom
 //!   (in a lambda RETURN annotation the `=>` is the body arrow, so a bare
 //!    "(" … ")" is only a tuple/group — a function return type is parenthesized)
-//! tatom     := ident ("<" type ("," type)* ">")?
+//! tatom     := typevar | ident ("<" type ("," type)* ">")?
 //! expr      := letIn | assign | match | pipeline
 //! letIn     := "let" ("mut"? ident | tuplePat) "=" expr "in" expr
 //!              (a tuple-pattern let is sugar for a single-arm match)
@@ -250,23 +250,19 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         let kw = self.bump();
         let (name, name_span) = self.expect_ident("a name after `type`")?;
         let mut end_span = name_span;
-        // Optional type parameters: `type Box<a, b> = …` — lowercase names
-        // (uppercase would shadow declared types; the checker enforces the
-        // case, the grammar just collects idents).
+        // Optional type parameters: `type Box<'a, 'b> = …` — apostrophe-prefixed
+        // type variables, like annotation type variables.
         let mut params = Vec::new();
         if self.peek_kind() == &TokenKind::Lt {
             self.bump();
             loop {
-                let (param, param_span) = self.expect_ident("a type parameter name")?;
-                if !param.chars().next().is_some_and(char::is_lowercase) {
-                    return Err(ParseError {
-                        message: format!(
-                            "type parameters are lowercase (`{}`), like annotation type variables",
-                            param.to_lowercase()
-                        ),
-                        span: param_span,
-                    });
-                }
+                let (param, param_span) = match self.peek_kind() {
+                    TokenKind::TypeVar(name) => {
+                        let name = name.clone();
+                        (name, self.bump().span)
+                    }
+                    _ => return self.error("a type parameter (e.g. `'a`)"),
+                };
                 if params.contains(&param) {
                     return Err(ParseError {
                         message: format!("duplicate type parameter `{param}`"),
@@ -510,6 +506,17 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
     /// A named type with optional generic args (`Float`, `List<Float>`,
     /// `Utils.Shape`) — the atomic, non-parenthesized case of [`type_prefix`].
     fn type_atom(&mut self) -> Result<TypeName, ParseError> {
+        // A type variable (`'a`) — marked by the leading apostrophe (kept in
+        // the name so the checker can distinguish it); it takes no arguments.
+        if let TokenKind::TypeVar(name) = self.peek_kind() {
+            let name = name.clone();
+            let span = self.bump().span;
+            return Ok(TypeName {
+                name,
+                args: Vec::new(),
+                span,
+            });
+        }
         let (name, mut span) = self.qualified_type_head()?;
         let mut args = Vec::new();
         if self.peek_kind() == &TokenKind::Lt {

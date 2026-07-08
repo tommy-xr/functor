@@ -8,6 +8,8 @@
     { "include": "#keyword" },
     { "include": "#boolean" },
     { "include": "#number" },
+    { "include": "#type-variable" },
+    { "include": "#primitive-type" },
     { "include": "#qualified-name" },
     { "include": "#type-name" },
     { "include": "#operator" },
@@ -60,8 +62,18 @@
         "3": { "name": "support.function.mle" }
       }
     },
+    "type-variable": {
+      "comment": "Apostrophe-prefixed type variable in type position (`'a`, `'msg`)",
+      "name": "entity.name.type.parameter.mle",
+      "match": "'[a-zA-Z][A-Za-z0-9_]*\\b"
+    },
+    "primitive-type": {
+      "comment": "The lowercase primitive types (F#/OCaml convention)",
+      "name": "support.type.primitive.mle",
+      "match": "\\b(float|bool|string)\\b"
+    },
     "type-name": {
-      "comment": "Any other uppercase identifier is a type: `type` decl names, annotations after `:`, and generic arguments (`List<Float>`)",
+      "comment": "Any other uppercase identifier is a type: `type` decl names, annotations after `:`, and generic arguments (`List<float>`)",
       "name": "entity.name.type.mle",
       "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
     },

@@ -19,13 +19,13 @@ let sky = Skybox.files(
   "TropicalSunnyDay_pz.jpg", "TropicalSunnyDay_nz.jpg")
 
 // One pillar at depth i (world z = i * 3), staggered left/right.
-let pillar = (i: Float) =>
+let pillar = (i: float) =>
   Scene.cube()
     |> Scene.lit(0.75, 0.55, 0.4)
     |> Scene.translate(Math.sin(i * 1.7) * 4.0, 0.5, i * 3.0)
 
 // An emissive glow weaving through the colonnade.
-let drifter = (tts: Float) =>
+let drifter = (tts: float) =>
   Scene.sphere()
     |> Scene.scale(0.5)
     |> Scene.emissive(1.0, 0.6, 0.2)
@@ -39,7 +39,7 @@ let lights = () => [
 let init = {}
 let tick = (m, dt, tts) => m
 
-let draw = (m, tts: Float) =>
+let draw = (m, tts: float) =>
   Frame.createLit(
     Camera.lookAt(0.0, 2.4, -6.0, 0.0, 1.0, 8.0),
     Scene.group([

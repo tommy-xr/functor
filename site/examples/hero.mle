@@ -9,7 +9,7 @@ let gridRows = 10.0
 let spacing = 2.0
 
 // The rolling wave: a diagonal sine marching toward the camera.
-let waveY = (t: Float, ix: Float, iz: Float): Float =>
+let waveY = (t: float, ix: float, iz: float): float =>
   Math.sin(iz * 0.8 - t * 2.2 + ix * 0.3) * 0.55
 
 // One glowing grid dot. Near rows burn hot magenta; far rows cool toward
@@ -56,9 +56,9 @@ let ground = () =>
 
 let init = { t: 0.0 }
 
-let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
+let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 
-let draw = (model, tts: Float) =>
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(0.0, 3.4, -13.0, 0.0, 1.8, 12.0),
     Scene.group([sky(), ground(), sun(model.t), grid(model.t)]))

@@ -213,42 +213,42 @@ mod tests {
     #[test]
     fn hover_on_a_builtin_shows_its_signature() {
         let text = hover_at("let f = (xs) => xs |> List.maximum", "List.maximum").unwrap();
-        assert_eq!(text, "List.maximum : (List<Float>) => Float");
+        assert_eq!(text, "List.maximum : (List<float>) => float");
     }
 
     #[test]
     fn hover_on_an_annotated_param_shows_its_type() {
-        let text = hover_at("let f = (score: Float): Bool => score > 1.0", "score:").unwrap();
-        assert_eq!(text, "score : Float");
+        let text = hover_at("let f = (score: float): bool => score > 1.0", "score:").unwrap();
+        assert_eq!(text, "score : float");
     }
 
     #[test]
     fn hover_on_a_local_reference_shows_the_inferred_type() {
-        let text = hover_at("let f = (score: Float): Bool => score > 1.0", "score >").unwrap();
-        assert_eq!(text, "score : Float");
+        let text = hover_at("let f = (score: float): bool => score > 1.0", "score >").unwrap();
+        assert_eq!(text, "score : float");
     }
 
     #[test]
     fn hover_on_a_global_reference_shows_its_signature() {
-        let src = "let double = (x: Float): Float => x * 2.0\nlet main = () => double(2.0)";
+        let src = "let double = (x: float): float => x * 2.0\nlet main = () => double(2.0)";
         let text = hover_at(src, "double(2.0)").unwrap();
-        assert_eq!(text, "double : (Float) => Float");
+        assert_eq!(text, "double : (float) => float");
     }
 
     #[test]
     fn hover_on_a_mut_binding_says_mut() {
-        let src = "let f = (x: Float) => let mut a = x in a := a + 1.0; a";
+        let src = "let f = (x: float) => let mut a = x in a := a + 1.0; a";
         let offset = src.rfind("a").unwrap();
         let module = crate::lower(crate::parse(src).unwrap()).unwrap();
         let (_, types) = check_with_types(&module);
         let (_, text) = hover_text(&module, &types, offset).unwrap();
-        assert_eq!(text, "mut a : Float");
+        assert_eq!(text, "mut a : float");
     }
 
     #[test]
     fn hover_on_the_definition_name_shows_its_type() {
         let text = hover_at("let threshold = 10", "threshold").unwrap();
-        assert_eq!(text, "threshold : Float");
+        assert_eq!(text, "threshold : float");
     }
 
     #[test]
@@ -267,13 +267,13 @@ mod tests {
 
     // --- Variants + match (B5 part 1) ---
 
-    const SHAPE: &str = "type Shape = | Circle(r: Float) | Point\n";
+    const SHAPE: &str = "type Shape = | Circle(r: float) | Point\n";
 
     #[test]
     fn hover_on_a_ctor_shows_its_signature() {
         let src = format!("{SHAPE}let c = Circle(2.0)");
         let text = hover_at(&src, "Circle(2.0)").unwrap();
-        assert_eq!(text, "Circle : (Float) => Shape");
+        assert_eq!(text, "Circle : (float) => Shape");
     }
 
     #[test]
@@ -289,23 +289,23 @@ mod tests {
     #[test]
     fn hover_on_a_pattern_var_shows_the_field_type() {
         let src =
-            format!("{SHAPE}let f = (s: Shape): Float => match s with | Circle(r) => r | _ => 0.0");
+            format!("{SHAPE}let f = (s: Shape): float => match s with | Circle(r) => r | _ => 0.0");
         let text = hover_at(&src, "r) =>").unwrap();
-        assert_eq!(text, "r : Float");
+        assert_eq!(text, "r : float");
     }
 
     #[test]
     fn hover_on_a_catch_all_var_shows_the_scrutinee_type() {
-        let src = format!("{SHAPE}let f = (s: Shape): Float => match s with | other => 0.0");
+        let src = format!("{SHAPE}let f = (s: Shape): float => match s with | other => 0.0");
         let text = hover_at(&src, "other =>").unwrap();
         assert_eq!(text, "other : Shape");
     }
 
     #[test]
     fn hover_on_a_match_shows_its_joined_type() {
-        let src = "let f = (b: Bool) => match b with | true => 1.0 | false => 0.0";
+        let src = "let f = (b: bool) => match b with | true => 1.0 | false => 0.0";
         let text = hover_at(src, "match").unwrap();
-        assert_eq!(text, "Float");
+        assert_eq!(text, "float");
     }
 }
 
@@ -327,37 +327,37 @@ mod review_tests {
     // their checked type, not Unknown.
     #[test]
     fn checked_record_literal_hovers_with_its_type() {
-        let src = "type P = { x: Float }\nlet mk = (): P => { x: 1.0 }";
+        let src = "type P = { x: float }\nlet mk = (): P => { x: 1.0 }";
         assert_eq!(hover_at(src, "{ x: 1.0 }"), "P");
     }
 
     #[test]
     fn checked_list_literal_hovers_with_its_type() {
-        let src = "let f = (): List<Float> => [1.0, 2.0]";
-        assert_eq!(hover_at(src, "[1.0"), "List<Float>");
+        let src = "let f = (): List<float> => [1.0, 2.0]";
+        assert_eq!(hover_at(src, "[1.0"), "List<float>");
     }
 
     // [review] inner nodes of a binary spine are recorded too.
     #[test]
     fn inner_binary_nodes_hover_with_their_type() {
-        let src = "let f = (x: Float) => x + x + x";
+        let src = "let f = (x: float) => x + x + x";
         let inner_plus = src.find('+').unwrap();
         let module = crate::lower(crate::parse(src).unwrap()).unwrap();
         let (_, types) = check_with_types(&module);
         let (_, text) = hover_text(&module, &types, inner_plus).unwrap();
-        assert_eq!(text, "Float");
+        assert_eq!(text, "float");
     }
 
     // [review] let/mut binder names hover with `name : Type`.
     #[test]
     fn let_binder_name_hovers_named() {
-        let src = "let f = (x: Float) => let y = x in y + 1.0";
-        assert_eq!(hover_at(src, "y ="), "y : Float");
+        let src = "let f = (x: float) => let y = x in y + 1.0";
+        assert_eq!(hover_at(src, "y ="), "y : float");
     }
 
     #[test]
     fn mut_binder_name_hovers_named() {
-        let src = "let f = (x: Float) => let mut a = x in a := a + 1.0; a";
-        assert_eq!(hover_at(src, "mut a ="), "mut a : Float");
+        let src = "let f = (x: float) => let mut a = x in a := a + 1.0; a";
+        assert_eq!(hover_at(src, "mut a ="), "mut a : float");
     }
 }

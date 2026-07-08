@@ -19,15 +19,15 @@
 //   - MLE has no `%` or `<>`, so `mod4` (bounded recursion) picks the color
 //     and a bool-literal match expresses "not equal".
 
-type Player = { cid: Float, pid: Float, x: Float, z: Float, vx: Float, vz: Float }
+type Player = { cid: float, pid: float, x: float, z: float, vx: float, vz: float }
 
-type Model = { players: List<Player>, nextPid: Float }
+type Model = { players: List<Player>, nextPid: float }
 
 type Msg =
-  | Joined(cid: Float)
-  | Moved(cid: Float, text: String)
-  | Left(cid: Float)
-  | NetErr(text: String)
+  | Joined(cid: float)
+  | Moved(cid: float, text: string)
+  | Left(cid: float)
+  | NetErr(text: string)
 
 let bind = "127.0.0.1:9001"
 let speed = 2.0
@@ -43,7 +43,7 @@ let toMsg = (ev: Net.NetEvent): Msg =>
 
 // Integrate one axis a frame, wrapping around the arena edges (asteroids-style)
 // so entities stay in a fixed playfield instead of drifting off-screen.
-let wrapAxis = (pos: Float, vel: Float, dt: Float): Float =>
+let wrapAxis = (pos: float, vel: float, dt: float): float =>
   let p = pos + vel * speed * dt in
   match p > arena with
   | true => p - 2.0 * arena
@@ -53,12 +53,12 @@ let wrapAxis = (pos: Float, vel: Float, dt: Float): Float =>
      | false => p)
 
 // Wire format: "pid,x*100,z*100|pid,x*100,z*100|...".
-let encodePlayer = (p: Player): String =>
+let encodePlayer = (p: Player): string =>
   Text.join(
     ",",
     [Text.fixed(p.pid, 0.0), Text.fixed(p.x * 100.0, 0.0), Text.fixed(p.z * 100.0, 0.0)])
 
-let encode = (players: List<Player>): String =>
+let encode = (players: List<Player>): string =>
   Text.join("|", List.map(encodePlayer, players))
 
 let init = { players: [], nextPid: 0.0 }
@@ -92,7 +92,7 @@ let update = (m: Model, msg: Msg): Model =>
 // Declaring the listener in `subscriptions` keeps the server bound.
 let subscriptions = (m: Model) => Sub.listen(bind, toMsg)
 
-let tick = (m: Model, dt: Float, tts: Float) =>
+let tick = (m: Model, dt: float, tts: float) =>
   // Integrate, then broadcast the snapshot to every client.
   let players =
     m.players |> List.map((p) =>
@@ -105,19 +105,19 @@ let tick = (m: Model, dt: Float, tts: Float) =>
 // the same color in every pane. MLE has no `%`, so mod4 wraps by recursion —
 // bounded by the demo's small player count (the z-lane spawn runs players off
 // the arena past a handful, so pid stays small).
-let mod4 = (n: Float): Float =>
+let mod4 = (n: float): float =>
   match n < 4.0 with
   | true => n
   | false => mod4(n - 4.0)
 
-let colorFor = (pid: Float): (Float, Float, Float) =>
+let colorFor = (pid: float): (float, float, float) =>
   match mod4(pid) with
   | 0.0 => (0.90, 0.35, 0.35)
   | 1.0 => (0.35, 0.60, 0.95)
   | 2.0 => (0.45, 0.85, 0.45)
   | _ => (0.95, 0.80, 0.35)
 
-let draw = (m: Model, tts: Float) =>
+let draw = (m: Model, tts: float) =>
   // One colored cube per player at its authoritative position, on a ground
   // plane sized to the wrap boundary (so the playfield edges are visible).
   let playerNodes =

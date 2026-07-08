@@ -17,7 +17,7 @@ Module {
                                     name: "List",
                                     args: [
                                         TypeName {
-                                            name: "Float",
+                                            name: "float",
                                             args: [],
                                             span: 217..222,
                                         },
@@ -30,7 +30,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "Float",
+                            name: "float",
                             args: [],
                             span: 226..231,
                         },
@@ -153,7 +153,7 @@ Module {
                                     name: "List",
                                     args: [
                                         TypeName {
-                                            name: "Float",
+                                            name: "float",
                                             args: [],
                                             span: 329..334,
                                         },
@@ -168,7 +168,7 @@ Module {
                             name: "fallback",
                             ty: Some(
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 347..352,
                                 },
@@ -178,7 +178,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "Float",
+                            name: "float",
                             args: [],
                             span: 355..360,
                         },
@@ -272,7 +272,7 @@ Module {
                                     name: "List",
                                     args: [
                                         TypeName {
-                                            name: "Float",
+                                            name: "float",
                                             args: [],
                                             span: 442..447,
                                         },
@@ -288,12 +288,12 @@ Module {
                             name: "*",
                             args: [
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 452..457,
                                 },
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 459..464,
                                 },

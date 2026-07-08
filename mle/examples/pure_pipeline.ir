@@ -27,7 +27,7 @@ Module {
                             name: "score",
                             ty: Some(
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 148..153,
                                 },
@@ -37,7 +37,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "Bool",
+                            name: "bool",
                             args: [],
                             span: 156..160,
                         },

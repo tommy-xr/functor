@@ -2,17 +2,17 @@
 // `[x, ..xs]` prepend in expressions. Refutable, so a list match needs a
 // catch-all (`_`, a name, or `[..rest]`).
 
-let sum = (xs: List<Float>): Float =>
+let sum = (xs: List<float>): float =>
   match xs with
   | [] => 0.0
   | [head, ..rest] => head + sum(rest)
 
-let firstOr = (xs: List<Float>, fallback: Float): Float =>
+let firstOr = (xs: List<float>, fallback: float): float =>
   match xs with
   | [x, ..rest] => x
   | [] => fallback
 
-let pair = (xs: List<Float>): (Float, Float) =>
+let pair = (xs: List<float>): (float, float) =>
   match xs with
   | [a, b] => (a, b)
   | _ => (0.0, 0.0)

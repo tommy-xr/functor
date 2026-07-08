@@ -277,8 +277,8 @@ mod tests {
 
     #[test]
     fn param_reference_resolves_to_the_parameter() {
-        let src = "let f = (score: Float): Bool => score > 1.0";
-        assert_eq!(def_at(src, "score >"), Some("score: Float"));
+        let src = "let f = (score: float): bool => score > 1.0";
+        assert_eq!(def_at(src, "score >"), Some("score: float"));
     }
 
     #[test]
@@ -290,13 +290,13 @@ mod tests {
     #[test]
     fn shadowing_resolves_to_the_innermost_binder() {
         // `x` in the body is the inner `let x`, not the parameter.
-        let src = "let f = (x: Float) => let x = 2.0 in x + 1.0";
+        let src = "let f = (x: float) => let x = 2.0 in x + 1.0";
         assert_eq!(def_at(src, "x +"), Some("let x = "));
     }
 
     #[test]
     fn mut_reference_and_assign_target_resolve_to_the_mut_binder() {
-        let src = "let f = (x: Float) => let mut a = x in a := a + 1.0; a";
+        let src = "let f = (x: float) => let mut a = x in a := a + 1.0; a";
         assert_eq!(def_at_last(src, "a"), Some("let mut a = "));
         assert_eq!(def_at(src, "a :="), Some("let mut a = "));
         // …but the `:=` itself is not a reference.
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn global_reference_resolves_to_the_def() {
-        let src = "let double = (x: Float): Float => x * 2.0\nlet main = () => double(2.0)";
+        let src = "let double = (x: float): float => x * 2.0\nlet main = () => double(2.0)";
         assert_eq!(def_at(src, "double(2.0)"), Some("let double = "));
     }
 
@@ -330,12 +330,12 @@ mod tests {
 
     // --- Constructors ---
 
-    const SHAPE: &str = "type Shape = | Circle(r: Float) | Point\n";
+    const SHAPE: &str = "type Shape = | Circle(r: float) | Point\n";
 
     #[test]
     fn ctor_expression_resolves_to_the_variant_decl() {
         let src = format!("{SHAPE}let c = Circle(2.0)");
-        assert_eq!(def_at(&src, "Circle(2.0)"), Some("Circle(r: Float)"));
+        assert_eq!(def_at(&src, "Circle(2.0)"), Some("Circle(r: float)"));
     }
 
     #[test]
@@ -351,14 +351,14 @@ mod tests {
     #[test]
     fn ctor_pattern_resolves_to_the_variant_decl() {
         let src =
-            format!("{SHAPE}let f = (s: Shape): Float => match s with | Circle(r) => r | _ => 0.0");
-        assert_eq!(def_at(&src, "Circle(r)"), Some("Circle(r: Float)"));
+            format!("{SHAPE}let f = (s: Shape): float => match s with | Circle(r) => r | _ => 0.0");
+        assert_eq!(def_at(&src, "Circle(r)"), Some("Circle(r: float)"));
     }
 
     #[test]
     fn a_pattern_variable_is_a_binder_not_a_reference() {
         let src =
-            format!("{SHAPE}let f = (s: Shape): Float => match s with | Circle(r) => r | _ => 0.0");
+            format!("{SHAPE}let f = (s: Shape): float => match s with | Circle(r) => r | _ => 0.0");
         assert_eq!(def_at(&src, "r) =>"), None);
     }
 
@@ -366,26 +366,26 @@ mod tests {
 
     #[test]
     fn annotation_resolves_to_the_type_decl() {
-        let src = "type P = { x: Float }\nlet mk = (p: P): P => p";
-        assert_eq!(def_at(src, "P)"), Some("type P = { x: Float }"));
-        assert_eq!(def_at(src, "P =>"), Some("type P = { x: Float }"));
+        let src = "type P = { x: float }\nlet mk = (p: P): P => p";
+        assert_eq!(def_at(src, "P)"), Some("type P = { x: float }"));
+        assert_eq!(def_at(src, "P =>"), Some("type P = { x: float }"));
     }
 
     #[test]
     fn generic_argument_resolves_to_the_type_decl() {
-        let src = "type P = { x: Float }\nlet f = (ps: List<P>) => ps";
-        assert_eq!(def_at(src, "P>"), Some("type P = { x: Float }"));
+        let src = "type P = { x: float }\nlet f = (ps: List<P>) => ps";
+        assert_eq!(def_at(src, "P>"), Some("type P = { x: float }"));
     }
 
     #[test]
     fn type_decl_field_annotation_resolves_too() {
-        let src = "type P = { x: Float }\ntype Q = | Wrap(p: P)";
-        assert_eq!(def_at(src, "P)"), Some("type P = { x: Float }"));
+        let src = "type P = { x: float }\ntype Q = | Wrap(p: P)";
+        assert_eq!(def_at(src, "P)"), Some("type P = { x: float }"));
     }
 
     #[test]
     fn primitive_type_name_has_no_definition() {
-        assert_eq!(def_at("let f = (x: Float) => x", "Float"), None);
+        assert_eq!(def_at("let f = (x: float) => x", "float"), None);
     }
 
     // --- Nothing ---

@@ -1,10 +1,10 @@
 // camera.mlei — the `Camera` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
 
-// The opaque camera handle (`Camera.T` from game code).
-type T
+// The opaque camera handle (`Camera.t` from game code).
+type t
 
 // Eye + target (Y-up, right-handed), a fixed 45° fov.
-let lookAt : (Float, Float, Float, Float, Float, Float) => T
+let lookAt : (float, float, float, float, float, float) => t
 // Eye + yaw/pitch/fov Angles: yaw = 0 / pitch = 0 looks down +Z.
-let firstPerson : (Float, Float, Float, Angle.T, Angle.T, Angle.T) => T
+let firstPerson : (float, float, float, Angle.t, Angle.t, Angle.t) => t

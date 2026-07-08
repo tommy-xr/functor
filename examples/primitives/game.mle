@@ -12,7 +12,7 @@
 let tau = 6.2831853
 let orbitRadius = 3.2
 
-let pointPos = (i: Float, tts: Float) =>
+let pointPos = (i: float, tts: float) =>
   let a = tts * 0.6 + i * (tau / 2.0) in
   { x: Math.cos(a) * orbitRadius, y: 2.2, z: Math.sin(a) * orbitRadius }
 
@@ -25,14 +25,14 @@ let whiteShapes = () =>
   ]) |> Scene.lit(0.9, 0.9, 0.9)
 
 // An emissive marker sphere at a point light's position.
-let marker = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
+let marker = (i: float, tts: float, r: float, g: float, b: float) =>
   let p = pointPos(i, tts) in
   Scene.sphere()
     |> Scene.scale(0.15)
     |> Scene.emissive(r, g, b)
     |> Scene.translate(p.x, p.y, p.z)
 
-let pointLight = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
+let pointLight = (i: float, tts: float, r: float, g: float, b: float) =>
   let p = pointPos(i, tts) in
   Light.point(p.x, p.y, p.z, r, g, b, 1.4, 4.0)
 
@@ -40,7 +40,7 @@ let init = {}
 
 let tick = (m, dt, tts) => m
 
-let draw = (m, tts: Float) =>
+let draw = (m, tts: float) =>
   Frame.createLit(
     Camera.firstPerson(
       0.0, 3.5, -8.0,
