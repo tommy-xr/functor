@@ -1,0 +1,59 @@
+name: WASM smoke
+
+# Loads every self-contained MLE sample in the real web runtime (headless
+# Chromium) and asserts it LOADS → survives a pushed reload → ticks a few frames
+# without a persistent error overlay. This is the guard for "works native,
+# broken in wasm" divergence — a missing sibling module, a dropped record field,
+# a contract regression — that the native tests and even the wasm GOLDEN tests
+# miss (goldens run under `--fixed-time`, which masks first-frame races).
+#
+# Software WebGL2 (swiftshader, set in e2e/wasm-smoke.mjs) means no GPU is
+# needed, so this runs on a plain ubuntu runner.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  wasm-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      # The single `functor` binary embeds the web-runtime bundle via
+      # `include_bytes!`, so the bundle must exist before the CLI is built.
+      - name: Build web runtime bundle
+        run: wasm-pack build --target=web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build functor CLI
+        run: cargo build --bin functor
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run wasm smoke
+        run: npm run test:wasm-smoke

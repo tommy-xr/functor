@@ -106,11 +106,18 @@ impl Reporter {
     /// The span identifies the file too (project-wide spans), so an error in a
     /// sibling module names that module's file.
     pub fn frame_error(&mut self, stage: &str, err: &RunError) {
-        let rendered = format!(
+        self.report_once(self.render_frame_error(stage, err));
+    }
+
+    /// Render a per-frame `RunError` to its `[mle] {stage} error at
+    /// path:line:col: message` form WITHOUT reporting it — for a caller (the web
+    /// error overlay) that also surfaces the text elsewhere, so it can report
+    /// once and display the same string without re-deriving the position.
+    pub fn render_frame_error(&self, stage: &str, err: &RunError) -> String {
+        format!(
             "[mle] {stage} error at {}",
             self.source.render(err.span, &err.message)
-        );
-        self.report_once(rendered);
+        )
     }
 }
 

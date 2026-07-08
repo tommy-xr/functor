@@ -30,6 +30,50 @@ fn window() -> web_sys::Window {
     web_sys::window().expect("no global `window` exists")
 }
 
+/// The red error overlay's inline style — a fixed panel pinned to the top of
+/// the page, above the canvas, scrollable if the message is long. Kept as one
+/// string so `show`/`hide` toggle the same element.
+const ERROR_OVERLAY_STYLE: &str = "position:fixed;top:0;left:0;right:0;max-height:60%;\
+overflow:auto;z-index:2147483647;margin:0;padding:12px 16px;background:#2b0a0a;color:#ffb3b3;\
+border-bottom:2px solid #ff5555;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\
+white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)";
+
+/// Show (or update) a red error overlay in the page — the web runtime's take on
+/// React's hot-reload error screen, so a failed load or a broken edit shows the
+/// message instead of a blank canvas (the desktop runner prints to stderr; the
+/// browser has no console the user is watching). Idempotent: reuses one
+/// `#mle-error` element. Best-effort — a missing document just no-ops.
+fn show_error_overlay(message: &str) {
+    let Some(doc) = window().document() else {
+        return;
+    };
+    let el = match doc.get_element_by_id("mle-error") {
+        Some(el) => el,
+        None => {
+            let Ok(el) = doc.create_element("div") else {
+                return;
+            };
+            el.set_id("mle-error");
+            if let Some(body) = doc.body() {
+                let _ = body.append_child(&el);
+            }
+            el
+        }
+    };
+    let _ = el.set_attribute("style", ERROR_OVERLAY_STYLE);
+    el.set_text_content(Some(&format!("⛔ MLE error\n\n{message}")));
+}
+
+/// Hide the error overlay if present — called after a successful (re)load so a
+/// fixed edit clears the panel.
+fn hide_error_overlay() {
+    if let Some(doc) = window().document() {
+        if let Some(el) = doc.get_element_by_id("mle-error") {
+            let _ = el.set_attribute("style", "display:none");
+        }
+    }
+}
+
 fn request_animation_frame(f: &Closure<dyn FnMut()>) {
     window()
         .request_animation_frame(f.as_ref().unchecked_ref())
@@ -88,17 +132,42 @@ fn mle_game_path() -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Fetch the `.mle` source and build the interpreter producer. Failures are
-/// rendered strings (fetch status, parse/load position, contract violation)
-/// for `run_async` to fail loud with.
-async fn create_mle_game(path: &str) -> Result<mle_game::MleWebGame, String> {
-    let (status, src) = perform_fetch(HttpMethod::Get, path, &[], &[])
-        .await
-        .map_err(|e| format!("cannot fetch {path}: {e}"))?;
-    if status != 200 {
-        return Err(format!("cannot fetch {path}: HTTP {status}"));
+/// The project's full file list (entry FIRST, then siblings), as the CLI's MLE
+/// index page injects it (`window.__mleProjectFiles`, mirroring `__mleGamePath`
+/// — see `wasm_dev_server.rs`). Absent (a page that only set the single entry,
+/// e.g. the site sandbox) → `None`, and the caller falls back to the entry
+/// alone.
+fn mle_project_files() -> Option<Vec<String>> {
+    use wasm_bindgen::JsCast;
+    let value = js_sys::Reflect::get(&window(), &JsValue::from_str("__mleProjectFiles")).ok()?;
+    let array = value.dyn_into::<js_sys::Array>().ok()?;
+    let files: Vec<String> = array.iter().filter_map(|v| v.as_string()).collect();
+    (!files.is_empty()).then_some(files)
+}
+
+/// Fetch every project `.mle`/`.mlei` source (entry first, then siblings) and
+/// build the interpreter producer. `file = module`, so a game split across
+/// `game.mle` + `pieces.mle` links exactly as it does natively. Failures are
+/// rendered strings (fetch status, parse/load position, contract violation) for
+/// `run_async` to fail loud with.
+async fn create_mle_game(entry: &str) -> Result<mle_game::MleWebGame, String> {
+    // The CLI injects the whole project file list; a page that set only the
+    // entry (or none) falls back to loading the entry alone.
+    let paths = mle_project_files().unwrap_or_else(|| vec![entry.to_string()]);
+    let mut sources: Vec<(String, String)> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        // `no_store`: never serve project source from the browser cache — the
+        // dev server reuses `/game.mle` across samples, so a cached response
+        // would keep showing the previous game after switching projects.
+        let (status, src) = perform_fetch(HttpMethod::Get, path, &[], &[], true)
+            .await
+            .map_err(|e| format!("cannot fetch {path}: {e}"))?;
+        if status != 200 {
+            return Err(format!("cannot fetch {path}: HTTP {status}"));
+        }
+        sources.push((path.clone(), src));
     }
-    mle_game::MleWebGame::create(path, src)
+    mle_game::MleWebGame::create(sources)
 }
 
 thread_local! {
@@ -134,7 +203,19 @@ pub fn mle_set_source(source: String) -> Result<String, String> {
     let Ok(mut game) = game.try_borrow_mut() else {
         return Err("runtime is mid-frame; retry".to_string());
     };
-    game.reload_source(&source)
+    // A good push clears any lingering error overlay; a broken one shows it
+    // (and still returns the rendered error to the pusher — e.g. the VSCode
+    // editor — as before).
+    match game.reload_source(&source) {
+        Ok(status) => {
+            hide_error_overlay();
+            Ok(status)
+        }
+        Err(message) => {
+            show_error_overlay(&format!("[mle] reload error: {message}"));
+            Err(message)
+        }
+    }
 }
 
 /// Route a socket event to the LIVE producer via the shared `GAME` handle (the
@@ -195,7 +276,7 @@ async fn perform_and_push(cmd: NetCommand) {
         body,
     } = cmd;
     let token = token as i32;
-    let result = perform_fetch(method, &url, &headers, &body).await;
+    let result = perform_fetch(method, &url, &headers, &body, false).await;
     // Route the completion to the LIVE producer via the shared GAME handle —
     // the MLE page's MleWebGame, which folds the response through `update`.
     // This runs as a fetch microtask, never mid-frame, so the borrow can't
@@ -218,12 +299,16 @@ async fn perform_fetch(
     url: &str,
     headers: &[(String, String)],
     body: &[u8],
+    no_store: bool,
 ) -> Result<(i32, String), String> {
     use wasm_bindgen::JsCast;
-    use web_sys::{Request, RequestInit, Response};
+    use web_sys::{Request, RequestCache, RequestInit, Response};
 
     let mut opts = RequestInit::new();
     opts.method(http_method_str(method));
+    if no_store {
+        opts.cache(RequestCache::NoStore);
+    }
     if !body.is_empty() {
         let text = String::from_utf8_lossy(body).to_string();
         opts.body(Some(&JsValue::from_str(&text)));
@@ -769,6 +854,7 @@ async fn run_async() -> Result<(), JsValue> {
     let Some(path) = mle_game_path() else {
         let rendered = "[mle] error: no game entry — window.__mleGamePath is not set".to_string();
         web_sys::console::error_1(&rendered.as_str().into());
+        show_error_overlay(&rendered);
         return Err(JsValue::from_str(&rendered));
     };
     let game: Box<dyn GameProducer> = match create_mle_game(&path).await {
@@ -776,6 +862,7 @@ async fn run_async() -> Result<(), JsValue> {
         Err(message) => {
             let rendered = format!("[mle] error: {message}");
             web_sys::console::error_1(&rendered.as_str().into());
+            show_error_overlay(&rendered);
             return Err(JsValue::from_str(&rendered));
         }
     };

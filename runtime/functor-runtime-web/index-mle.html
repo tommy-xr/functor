@@ -93,6 +93,13 @@
       window.__mleGamePath = "__MLE_ENTRY__"
         .split("/").map(encodeURIComponent).join("/");
 
+      // The project's full file list (entry first, then siblings) — file =
+      // module, so a game split across game.mle + pieces.mle loads all its
+      // modules. The CLI substitutes this JSON array (see wasm_dev_server.rs);
+      // each path is URL-encoded per segment like the entry above.
+      window.__mleProjectFiles = ("__MLE_PROJECT_FILES__")
+        .map((p) => p.split("/").map(encodeURIComponent).join("/"));
+
       // Map a browser KeyboardEvent.code to the canonical key code expected by
       // the game (functor_runtime_common::Key as i32 — the same mapping as
       // index.html). Keep in sync with that enum: A=1..Z=26, then the entries
