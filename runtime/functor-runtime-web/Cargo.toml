@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
+functor-prelude = { path = "../../functor-prelude" }
 # The MLE language, for the in-runtime interpreter producer (docs/mle.md C5).
 mle = { path = "../../mle" }
 glow = "0.17"
@@ -20,7 +21,7 @@ serde_json = "1.0"
 
 [dependencies.web-sys]
 version = "0.3.4"
-features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Location', 'Performance', 'PerformanceTiming', 'Document', 'Element', 'Request', 'RequestInit', 'Response', 'Headers', 'AudioContext', 'BaseAudioContext', 'AudioBuffer', 'AudioBufferSourceNode', 'AudioDestinationNode', 'AudioNode', 'AudioParam', 'GainNode', 'StereoPannerNode', 'WebSocket', 'MessageEvent', 'CloseEvent', 'ErrorEvent']
+features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'console', 'Window', 'Location', 'Performance', 'PerformanceTiming', 'Document', 'Element', 'Node', 'HtmlElement', 'Request', 'RequestInit', 'RequestCache', 'Response', 'Headers', 'AudioContext', 'BaseAudioContext', 'AudioBuffer', 'AudioBufferSourceNode', 'AudioDestinationNode', 'AudioNode', 'AudioParam', 'GainNode', 'StereoPannerNode', 'WebSocket', 'MessageEvent', 'CloseEvent', 'ErrorEvent']
 
 [profile.release]
 codegen-units = 1

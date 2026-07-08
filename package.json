@@ -14,6 +14,7 @@
     "test:golden": "npm run fetch:assets && npm run build:cli && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",
+    "test:wasm-smoke": "node e2e/wasm-smoke.mjs",
     "site:build": "node site/build.mjs",
     "site:serve": "node site/serve.mjs",
     "test:site": "node e2e/site-sandbox.mjs"

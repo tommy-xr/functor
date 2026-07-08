@@ -30,6 +30,50 @@ fn window() -> web_sys::Window {
     web_sys::window().expect("no global `window` exists")
 }
 
+/// The red error overlay's inline style — a fixed panel pinned to the top of
+/// the page, above the canvas, scrollable if the message is long. Kept as one
+/// string so `show`/`hide` toggle the same element.
+const ERROR_OVERLAY_STYLE: &str = "position:fixed;top:0;left:0;right:0;max-height:60%;\
+overflow:auto;z-index:2147483647;margin:0;padding:12px 16px;background:#2b0a0a;color:#ffb3b3;\
+border-bottom:2px solid #ff5555;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\
+white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)";
+
+/// Show (or update) a red error overlay in the page — the web runtime's take on
+/// React's hot-reload error screen, so a failed load or a broken edit shows the
+/// message instead of a blank canvas (the desktop runner prints to stderr; the
+/// browser has no console the user is watching). Idempotent: reuses one
+/// `#mle-error` element. Best-effort — a missing document just no-ops.
+fn show_error_overlay(message: &str) {
+    let Some(doc) = window().document() else {
+        return;
+    };
+    let el = match doc.get_element_by_id("mle-error") {
+        Some(el) => el,
+        None => {
+            let Ok(el) = doc.create_element("div") else {
+                return;
+            };
+            el.set_id("mle-error");
+            if let Some(body) = doc.body() {
+                let _ = body.append_child(&el);
+            }
+            el
+        }
+    };
+    let _ = el.set_attribute("style", ERROR_OVERLAY_STYLE);
+    el.set_text_content(Some(&format!("⛔ MLE error\n\n{message}")));
+}
+
+/// Hide the error overlay if present — called after a successful (re)load so a
+/// fixed edit clears the panel.
+fn hide_error_overlay() {
+    if let Some(doc) = window().document() {
+        if let Some(el) = doc.get_element_by_id("mle-error") {
+            let _ = el.set_attribute("style", "display:none");
+        }
+    }
+}
+
 fn request_animation_frame(f: &Closure<dyn FnMut()>) {
     window()
         .request_animation_frame(f.as_ref().unchecked_ref())
@@ -88,17 +132,42 @@ fn mle_game_path() -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Fetch the `.mle` source and build the interpreter producer. Failures are
-/// rendered strings (fetch status, parse/load position, contract violation)
-/// for `run_async` to fail loud with.
-async fn create_mle_game(path: &str) -> Result<mle_game::MleWebGame, String> {
-    let (status, src) = perform_fetch(HttpMethod::Get, path, &[], &[])
-        .await
-        .map_err(|e| format!("cannot fetch {path}: {e}"))?;
-    if status != 200 {
-        return Err(format!("cannot fetch {path}: HTTP {status}"));
+/// The project's full file list (entry FIRST, then siblings), as the CLI's MLE
+/// index page injects it (`window.__mleProjectFiles`, mirroring `__mleGamePath`
+/// — see `wasm_dev_server.rs`). Absent (a page that only set the single entry,
+/// e.g. the site sandbox) → `None`, and the caller falls back to the entry
+/// alone.
+fn mle_project_files() -> Option<Vec<String>> {
+    use wasm_bindgen::JsCast;
+    let value = js_sys::Reflect::get(&window(), &JsValue::from_str("__mleProjectFiles")).ok()?;
+    let array = value.dyn_into::<js_sys::Array>().ok()?;
+    let files: Vec<String> = array.iter().filter_map(|v| v.as_string()).collect();
+    (!files.is_empty()).then_some(files)
+}
+
+/// Fetch every project `.mle`/`.mlei` source (entry first, then siblings) and
+/// build the interpreter producer. `file = module`, so a game split across
+/// `game.mle` + `pieces.mle` links exactly as it does natively. Failures are
+/// rendered strings (fetch status, parse/load position, contract violation) for
+/// `run_async` to fail loud with.
+async fn create_mle_game(entry: &str) -> Result<mle_game::MleWebGame, String> {
+    // The CLI injects the whole project file list; a page that set only the
+    // entry (or none) falls back to loading the entry alone.
+    let paths = mle_project_files().unwrap_or_else(|| vec![entry.to_string()]);
+    let mut sources: Vec<(String, String)> = Vec::with_capacity(paths.len());
+    for path in &paths {
+        // `no_store`: never serve project source from the browser cache — the
+        // dev server reuses `/game.mle` across samples, so a cached response
+        // would keep showing the previous game after switching projects.
+        let (status, src) = perform_fetch(HttpMethod::Get, path, &[], &[], true)
+            .await
+            .map_err(|e| format!("cannot fetch {path}: {e}"))?;
+        if status != 200 {
+            return Err(format!("cannot fetch {path}: HTTP {status}"));
+        }
+        sources.push((path.clone(), src));
     }
-    mle_game::MleWebGame::create(path, src)
+    mle_game::MleWebGame::create(sources)
 }
 
 thread_local! {
@@ -117,24 +186,71 @@ pub fn mle_is_running() -> bool {
     GAME.with(|g| g.borrow().is_some())
 }
 
+thread_local! {
+    /// Source pushed via `mle_set_source`, waiting to be applied at a SAFE point
+    /// (the top of the frame loop, where the loop already holds the producer
+    /// borrow). Deferring — rather than reloading straight from the message
+    /// handler — is what keeps a push from ever colliding with the frame's
+    /// borrow ("runtime is mid-frame"); it also coalesces a burst of edits to
+    /// the last one. Mirrors the desktop runner, which applies reloads between
+    /// frames.
+    static PENDING_RELOAD: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Post a `mle-set-source-result` back to the page (the reload's outcome). The
+/// pusher — the VSCode live preview, the site sandbox, a test harness — listens
+/// for this. Because the reload is applied asynchronously (next frame), the
+/// result is delivered here rather than returned from `mle_set_source`.
+fn post_reload_result(ok: bool, message: &str) {
+    let obj = js_sys::Object::new();
+    let set = |k: &str, v: &JsValue| {
+        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), v);
+    };
+    set("type", &JsValue::from_str("mle-set-source-result"));
+    set("ok", &JsValue::from_bool(ok));
+    set("message", &JsValue::from_str(message));
+    // Deliver to the PARENT — the push's original sender (the VSCode preview
+    // host, the site sandbox frame). When the page is top-level, `parent` is the
+    // window itself, so a standalone page / test harness listening on `window`
+    // still receives it.
+    let target = window().parent().ok().flatten().unwrap_or_else(window);
+    let _ = target.post_message(&obj, "*");
+}
+
+/// Apply a pending pushed source, if any — called at the top of each frame while
+/// the frame loop holds the producer borrow, so it never collides with a frame.
+/// A good push clears the error overlay; a broken one shows it; either way the
+/// outcome is posted back to the page.
+fn apply_pending_reload(game: &mut dyn GameProducer) {
+    let Some(source) = PENDING_RELOAD.with(|p| p.borrow_mut().take()) else {
+        return;
+    };
+    match game.reload_source(&source) {
+        Ok(status) => {
+            hide_error_overlay();
+            post_reload_result(true, &status);
+        }
+        Err(message) => {
+            show_error_overlay(&format!("[mle] reload error: {message}"));
+            post_reload_result(false, &message);
+        }
+    }
+}
+
 /// Hot-swap the running game's logic from pushed `.mle` source — the wasm
-/// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md
-/// D4). Same semantics: the model is preserved (`mle::rebind_value`), a
-/// broken push keeps the old program running. `Ok` carries a short status
-/// line; `Err` (a JS throw) the rendered load error.
+/// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md D4).
+/// The source is QUEUED and applied at the top of the next frame (see
+/// [`apply_pending_reload`]); the outcome is delivered asynchronously as a
+/// `mle-set-source-result` message, not returned here. Model preserved
+/// (`mle::rebind_value`); a broken push keeps the old program running.
 #[wasm_bindgen]
-pub fn mle_set_source(source: String) -> Result<String, String> {
-    let game = GAME.with(|g| g.borrow().clone());
-    let Some(game) = game else {
-        return Err("game is not running yet (still loading, or the load failed)".to_string());
-    };
-    // JS is single-threaded and postMessage handlers never run mid-frame, so
-    // this borrow can't collide with the frame loop's — but a panic here
-    // would poison the page, so refuse instead of unwrapping.
-    let Ok(mut game) = game.try_borrow_mut() else {
-        return Err("runtime is mid-frame; retry".to_string());
-    };
-    game.reload_source(&source)
+pub fn mle_set_source(source: String) {
+    if !mle_is_running() {
+        post_reload_result(false, "game is not running yet (still loading, or the load failed)");
+        return;
+    }
+    // Last edit wins: a burst of pushes before the next frame coalesces.
+    PENDING_RELOAD.with(|p| *p.borrow_mut() = Some(source));
 }
 
 /// Route a socket event to the LIVE producer via the shared `GAME` handle (the
@@ -195,7 +311,7 @@ async fn perform_and_push(cmd: NetCommand) {
         body,
     } = cmd;
     let token = token as i32;
-    let result = perform_fetch(method, &url, &headers, &body).await;
+    let result = perform_fetch(method, &url, &headers, &body, false).await;
     // Route the completion to the LIVE producer via the shared GAME handle —
     // the MLE page's MleWebGame, which folds the response through `update`.
     // This runs as a fetch microtask, never mid-frame, so the borrow can't
@@ -218,12 +334,16 @@ async fn perform_fetch(
     url: &str,
     headers: &[(String, String)],
     body: &[u8],
+    no_store: bool,
 ) -> Result<(i32, String), String> {
     use wasm_bindgen::JsCast;
-    use web_sys::{Request, RequestInit, Response};
+    use web_sys::{Request, RequestCache, RequestInit, Response};
 
     let mut opts = RequestInit::new();
     opts.method(http_method_str(method));
+    if no_store {
+        opts.cache(RequestCache::NoStore);
+    }
     if !body.is_empty() {
         let text = String::from_utf8_lossy(body).to_string();
         opts.body(Some(&JsValue::from_str(&text)));
@@ -769,6 +889,7 @@ async fn run_async() -> Result<(), JsValue> {
     let Some(path) = mle_game_path() else {
         let rendered = "[mle] error: no game entry — window.__mleGamePath is not set".to_string();
         web_sys::console::error_1(&rendered.as_str().into());
+        show_error_overlay(&rendered);
         return Err(JsValue::from_str(&rendered));
     };
     let game: Box<dyn GameProducer> = match create_mle_game(&path).await {
@@ -776,6 +897,7 @@ async fn run_async() -> Result<(), JsValue> {
         Err(message) => {
             let rendered = format!("[mle] error: {message}");
             web_sys::console::error_1(&rendered.as_str().into());
+            show_error_overlay(&rendered);
             return Err(JsValue::from_str(&rendered));
         }
     };
@@ -934,11 +1056,13 @@ async fn run_async() -> Result<(), JsValue> {
         let mut ghost_window: f32 = 2.0;
 
         *g.borrow_mut() = Some(Closure::new(move || {
-            // The frame's exclusive borrow of the shared producer. Cannot
-            // collide with `mle_set_source`: JS is single-threaded, and
-            // message handlers only run between rAF callbacks.
+            // The frame's exclusive borrow of the shared producer.
             let mut game = game.borrow_mut();
             let now = performance.now() as f32;
+
+            // Apply a pushed source (`mle_set_source`) here, at a safe point that
+            // already holds the borrow — so a push never collides with a frame.
+            apply_pending_reload(&mut **game);
 
             // Apply scrubber controls from the DOM (pause / step / seek), which
             // drive the shared game clock BEFORE this frame's time is computed.

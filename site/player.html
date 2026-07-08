@@ -106,22 +106,10 @@
           if (event.source !== window.parent) return;
           const data = event.data;
           if (!data || data.type !== "mle-set-source" || typeof data.source !== "string") return;
-          let ok = true;
-          let message = "";
-          try {
-            message = mle_set_source(data.source);
-          } catch (e) {
-            // A broken push: the wasm export throws the rendered load error
-            // and the old program keeps running.
-            ok = false;
-            message = String(e);
-          }
-          if (event.source) {
-            event.source.postMessage(
-              { type: "mle-set-source-result", ok, message },
-              event.origin || "*"
-            );
-          }
+          // Queue the source; the wasm frame loop applies it at a safe point
+          // (never mid-frame) and posts an `mle-set-source-result` back to the
+          // hosting frame with the outcome (a broken push keeps the old program).
+          mle_set_source(data.source);
         });
         // Announce once the PRODUCER is installed (not just the wasm module):
         // run_async still has to fetch the source, so poll mle_is_running().

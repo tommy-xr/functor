@@ -31,11 +31,17 @@ use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
+use mle::project::SourceMap;
 use mle::{Session, Value};
 use wasm_bindgen::prelude::*;
 
 pub struct MleWebGame {
     path: String,
+    /// The project's fetched source files (entry FIRST, then siblings) as
+    /// `(path, source)` — the web's stand-in for the on-disk directory the
+    /// desktop producer re-reads on reload. A push (`reload_source`) replaces
+    /// only the ENTRY buffer; siblings keep their last-fetched text.
+    sources: Vec<(String, String)>,
     /// The lowered module the current session came from — kept (like the
     /// desktop producer) so a pushed reload can rebind model-stored closures
     /// (old module × new module).
@@ -104,12 +110,17 @@ pub struct MleWebGame {
     /// span rendering) — shared with the desktop producer
     /// (`mle_producer::Reporter`).
     reporter: Reporter,
+    /// The DRAW error currently shown on the page's red overlay, if any (the
+    /// web-only "blank screen" guard — a broken `draw` shows the message instead
+    /// of a frozen canvas, React-HMR style). Tracked so the DOM is touched only
+    /// on a transition (draw breaks / recovers), not every frame.
+    overlay_error: Option<String>,
 }
 
 /// A successfully loaded, contract-validated game module (the desktop
 /// producer's `Loaded`, verbatim minus the file-shaped fields).
 struct Loaded {
-    src: String,
+    sources: SourceMap,
     module: mle::ir::Module,
     session: Session,
     init: Value,
@@ -122,30 +133,39 @@ struct Loaded {
     has_ui: bool,
 }
 
-/// Load, check, and contract-validate game source — the web counterpart of
-/// the desktop `load_source`, shared by the page-load path (`create`) and
-/// the editor push path (`reload_source`). Errors come back as fully
-/// rendered strings (`path:line:col: message`); `path` is only a label for
-/// error rendering.
-fn load_source(path: &str, src: String) -> Result<Loaded, String> {
-    let render = |stage: &str, span: mle::Span, message: &str| {
-        let (line, col) = mle::line_col(&src, span.start);
-        format!("cannot {stage} {path}:{line}:{col}: {message}")
-    };
-    // Load through the single-source project path so the built-in `Net`
-    // module is in scope (the web fetches ONE file — no siblings — but the
-    // Net ADT must still resolve). Spans render against the entry source.
-    let project = mle::project::load_single_source("Game", &src)
-        .map_err(|e| format!("cannot load {path}:{}:{}: {}", e.line, e.col, e.message))?;
+/// Load, check, and contract-validate a game PROJECT — the web counterpart of
+/// the desktop `load_source`, shared by the page-load path (`create`) and the
+/// editor push path (`reload_source`). `sources` is every fetched project file
+/// as `(path, source)`, the ENTRY first, then siblings (`file = module`, so
+/// `pieces.mle` is module `Pieces`). Errors come back as fully rendered strings
+/// (`path:line:col: message`).
+fn load_source(sources: &[(String, String)]) -> Result<Loaded, String> {
+    let path = sources
+        .first()
+        .map(|(p, _)| p.clone())
+        .unwrap_or_else(|| "game.mle".to_string());
+    let pairs: Vec<(std::path::PathBuf, String)> = sources
+        .iter()
+        .map(|(p, s)| (std::path::PathBuf::from(p), s.clone()))
+        .collect();
+    // Link the entry with its siblings, injecting the host prelude `.mlei`
+    // interfaces so `Scene.*` (etc.) typecheck against real types — the exact
+    // path the desktop producer runs (docs/mlei.md). Check-time only; the
+    // FunctorHost still provides the actual runtime values.
+    let project = mle::project::load_sources_with_prelude(pairs, &functor_prelude::modules())
+        .map_err(|e| format!("cannot load {}", e.render()))?;
     let module = project.module;
+    let source_map = project.sources;
     // Type diagnostics are advisory in the dev loop: warn, keep going
-    // (the CLI's `build` is the strict gate).
+    // (the CLI's `build` is the strict gate). Spans render against whichever
+    // project file they land in.
     for diag in mle::check(&module) {
-        let (line, col) = mle::line_col(&src, diag.span.start);
-        web_sys::console::warn_1(&format!("warning: {path}:{line}:{col}: {}", diag.message).into());
+        web_sys::console::warn_1(
+            &format!("warning: {}", source_map.render(diag.span.start, &diag.message)).into(),
+        );
     }
     let session = Session::load(&module, &mut FunctorHost)
-        .map_err(|f| render("load", f.error.span, &f.error.message))?;
+        .map_err(|f| format!("cannot load {}", source_map.render(f.error.span.start, &f.error.message)))?;
     // The producer contract is knowable at load — fail here, not once per
     // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
     // right arity.
@@ -166,30 +186,30 @@ fn load_source(path: &str, src: String) -> Result<Loaded, String> {
 return them beside the model as `(model, effect)`"
         ));
     }
-    require_function(path, &session, "tick", 3)?;
-    require_function(path, &session, "draw", 2)?;
+    require_function(&path, &session, "tick", 3)?;
+    require_function(&path, &session, "draw", 2)?;
     // `input` is optional (many games are non-interactive), but when
     // present it must honor the contract: (model, key, isDown) => model.
     let has_input = session.global("input").is_some();
     if has_input {
-        require_function(path, &session, "input", 3)?;
+        require_function(&path, &session, "input", 3)?;
     }
     // Same deal for the mouse: `mouseMove(model, x, y)` in window pixels,
     // `mouseWheel(model, delta)`.
     let has_mouse_move = session.global("mouseMove").is_some();
     if has_mouse_move {
-        require_function(path, &session, "mouseMove", 3)?;
+        require_function(&path, &session, "mouseMove", 3)?;
     }
     let has_mouse_wheel = session.global("mouseWheel").is_some();
     if has_mouse_wheel {
-        require_function(path, &session, "mouseWheel", 2)?;
+        require_function(&path, &session, "mouseWheel", 2)?;
     }
     // The MVU pair: `subscriptions(model)` declares timers whose fired
     // messages fold through `update(model, msg)` — so subscriptions
     // without an update have nowhere to deliver.
     let has_subscriptions = session.global("subscriptions").is_some();
     if has_subscriptions {
-        require_function(path, &session, "subscriptions", 1)?;
+        require_function(&path, &session, "subscriptions", 1)?;
         if session.global("update").is_none() {
             return Err(format!(
                 "{path}: `subscriptions` produces messages but there is no \
@@ -198,7 +218,7 @@ return them beside the model as `(model, effect)`"
         }
     }
     if session.global("update").is_some() {
-        require_function(path, &session, "update", 2)?;
+        require_function(&path, &session, "update", 2)?;
     }
     // Optional physics: `physics(model) => Physics.scene(…)` declares the
     // bodies that should exist; the host reconciles + fixed-steps the
@@ -206,23 +226,23 @@ return them beside the model as `(model, effect)`"
     // the world runs in the browser exactly as it does natively.
     let has_physics = session.global("physics").is_some();
     if has_physics {
-        require_function(path, &session, "physics", 1)?;
+        require_function(&path, &session, "physics", 1)?;
     }
     // Optional soundscape: `soundScape(model)` returns an AudioScene (the
     // continuous, reconciled half of audio). No `update` requirement — the
     // scene is reconciled by the shell, not folded back as a message.
     let has_soundscape = session.global("soundScape").is_some();
     if has_soundscape {
-        require_function(path, &session, "soundScape", 1)?;
+        require_function(&path, &session, "soundScape", 1)?;
     }
     // Optional HUD: `ui(model)` returns a View (Ui.text / Ui.column /
     // Ui.panel), lowered to the shared text overlay — the F# `ui` hook.
     let has_ui = session.global("ui").is_some();
     if has_ui {
-        require_function(path, &session, "ui", 1)?;
+        require_function(&path, &session, "ui", 1)?;
     }
     Ok(Loaded {
-        src,
+        sources: source_map,
         module,
         session,
         init,
@@ -237,10 +257,11 @@ return them beside the model as `(model, effect)`"
 }
 
 impl MleWebGame {
-    /// Build the producer from fetched game source. Errors come back fully
-    /// rendered for `run_async` to fail loud with (there is no keep-running
-    /// fallback: a page load either gets a valid game or a console error).
-    pub fn create(path: &str, src: String) -> Result<MleWebGame, String> {
+    /// Build the producer from the fetched project sources (entry FIRST, then
+    /// siblings). Errors come back fully rendered for `run_async` to fail loud
+    /// with (there is no keep-running fallback: a page load either gets a valid
+    /// game or a console error).
+    pub fn create(sources: Vec<(String, String)>) -> Result<MleWebGame, String> {
         // Route MLE `Debug.log` traces to the browser console (once per process;
         // the process-global sink survives hot-reload). The web runtime has no
         // CLI event stream, so — unlike native, which forwards into the
@@ -249,17 +270,17 @@ impl MleWebGame {
         mle::set_trace_sink(Box::new(|message| {
             web_sys::console::log_1(&JsValue::from_str(&message));
         }));
-        let loaded = load_source(path, src)?;
+        let path = sources
+            .first()
+            .map(|(p, _)| p.clone())
+            .unwrap_or_else(|| "game.mle".to_string());
+        let loaded = load_source(&sources)?;
         web_sys::console::log_1(&format!("[mle] loaded {path}").into());
         Ok(MleWebGame {
-            reporter: Reporter::new(
-                SpanSource::Single {
-                    src: loaded.src,
-                    path: path.to_string(),
-                },
-                report_to_console,
-            ),
-            path: path.to_string(),
+            reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_console),
+            overlay_error: None,
+            sources,
+            path,
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
@@ -302,10 +323,7 @@ impl MleWebGame {
         for warning in &report.warnings {
             web_sys::console::warn_1(&format!("[mle] reload: {warning}").into());
         }
-        self.reporter.set_source(SpanSource::Single {
-            src: loaded.src,
-            path: self.path.clone(),
-        });
+        self.reporter.set_source(SpanSource::Project(loaded.sources));
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
@@ -340,7 +358,25 @@ impl MleWebGame {
             self.last_view = View::Empty;
         }
         self.reporter.reset();
+        // The push path (`mle_set_source`) already hid the overlay in the DOM;
+        // clear our shadow so the reloaded program's first draw re-shows it if
+        // that program's `draw` still errors.
+        self.overlay_error = None;
         report.rebound
+    }
+
+    /// Toggle the page's red draw-error overlay, touching the DOM only when the
+    /// state actually changes (draw breaks with a new message, or recovers) so a
+    /// persistent error doesn't rewrite the overlay every frame.
+    fn set_draw_overlay(&mut self, error: Option<String>) {
+        if self.overlay_error == error {
+            return;
+        }
+        match &error {
+            Some(message) => crate::show_error_overlay(message),
+            None => crate::hide_error_overlay(),
+        }
+        self.overlay_error = error;
     }
 
     /// Bundle this producer's per-frame state into the shared [`FrameCtx`]
@@ -381,7 +417,17 @@ impl GameProducer for MleWebGame {
         // who is looking at the source that caused it). No mtime bookkeeping
         // — the browser has no file watcher; pushes are the only reload.
         let started = js_sys::Date::now();
-        let loaded = load_source(&self.path, source.to_string())?;
+        // The push replaces the ENTRY buffer; siblings keep their last-fetched
+        // text (the web has no filesystem to re-read, unlike the desktop
+        // producer). A load failure leaves `self.sources` untouched.
+        let mut sources = self.sources.clone();
+        if let Some(entry) = sources.first_mut() {
+            entry.1 = source.to_string();
+        } else {
+            sources.push((self.path.clone(), source.to_string()));
+        }
+        let loaded = load_source(&sources)?;
+        self.sources = sources;
         let rebound = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
@@ -544,16 +590,26 @@ impl GameProducer for MleWebGame {
         let args = vec![self.model.clone(), Value::Number(tts)];
         match self.session.call("draw", args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
-                Some(frame) => self.last_frame = frame.clone(),
+                Some(frame) => {
+                    self.last_frame = frame.clone();
+                    // A live draw clears the blank-screen overlay: the canvas is
+                    // rendering again (a transient/first-frame error recovers).
+                    self.set_draw_overlay(None);
+                }
                 None => {
                     let rendered = format!(
                         "[mle] draw must return Frame.create(camera, scene), got {}",
                         value.kind_name()
                     );
-                    self.reporter.report_once(rendered);
+                    self.reporter.report_once(rendered.clone());
+                    self.set_draw_overlay(Some(rendered));
                 }
             },
-            Err(err) => self.reporter.frame_error("draw", &err),
+            Err(err) => {
+                let rendered = self.reporter.render_frame_error("draw", &err);
+                self.reporter.report_once(rendered.clone());
+                self.set_draw_overlay(Some(rendered));
+            }
         }
         // The optional HUD, evaluated beside `draw` (same settled model) and
         // cached — `ui()` is a `&self` accessor, and errors need `&mut`

@@ -288,10 +288,42 @@ pub fn load_with_prelude(
         )
     })?;
 
-    // Derive and validate module names; read sources; assign span bases.
+    // Read every project file (entry first), honoring the in-memory overrides,
+    // then hand the (path, source) pairs to the shared linker.
+    let mut sources: Vec<(PathBuf, String)> = Vec::new();
+    for path in paths.iter() {
+        let src = match override_for(path, overrides) {
+            Some(src) => src.clone(),
+            None => std::fs::read_to_string(path)
+                .map_err(|e| at(path, format!("cannot read {}: {e}", path.display())))?,
+        };
+        sources.push((path.clone(), src));
+    }
+    load_sources_with_prelude(sources, prelude)
+}
+
+/// Link an already-read set of project sources (entry FIRST, then siblings —
+/// each a `(path, source)` pair) plus the injected prelude modules. The
+/// in-memory core shared by the on-disk [`load_with_prelude`] and the wasm
+/// producer, which fetches each project file over HTTP rather than reading the
+/// directory — so native and web run ONE link path (module-name derivation,
+/// the protected-namespace guard, span bases, prelude injection). The paths are
+/// only labels here (module names + error rendering); nothing is read from disk.
+pub fn load_sources_with_prelude(
+    sources: Vec<(PathBuf, String)>,
+    prelude: &[(String, String)],
+) -> Result<Project, ProjectError> {
+    let at = |path: &Path, message: String| ProjectError {
+        path: path.to_path_buf(),
+        line: 1,
+        col: 1,
+        message,
+    };
+
+    // Derive and validate module names; assign span bases.
     let mut files: Vec<SourceFile> = Vec::new();
     let mut base = 0usize;
-    for path in paths.iter() {
+    for (path, src) in sources.iter() {
         let module = module_name(path).map_err(|message| at(path, message))?;
         if PROTECTED_NAMESPACES.contains(&module.as_str()) {
             return Err(at(
@@ -314,17 +346,12 @@ come from file names, capitalized",
                 ),
             ));
         }
-        let src = match override_for(path, overrides) {
-            Some(src) => src.clone(),
-            None => std::fs::read_to_string(path)
-                .map_err(|e| at(path, format!("cannot read {}: {e}", path.display())))?,
-        };
         let len = src.len();
         files.push(SourceFile {
             interface: is_interface(path),
             path: path.clone(),
             module,
-            src,
+            src: src.clone(),
             base,
         });
         // +1 gap: a span at one file's very end never collides with the

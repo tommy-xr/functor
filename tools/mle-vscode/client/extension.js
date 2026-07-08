@@ -14,12 +14,16 @@ let client;
 // The open preview panel, if any. A singleton: the dev server owns a fixed
 // port, so a second panel would race the first for it — and closing either
 // panel would kill the server out from under the other. Re-running the
-// command reveals the existing panel instead.
+// command for the SAME project reveals the existing panel; for a DIFFERENT
+// project it tears this one down first (see openLivePreview).
 let previewPanel;
 // The preview's dev-server child process — module-scoped so deactivate()
 // can kill it even if the panel outlives the command's closure (extension
 // reload/disable with the panel open must not orphan the server).
 let previewChild;
+// Project dir the open preview is serving — used to tell "reveal the existing
+// panel" (same project) apart from "restart for a different sample".
+let previewProjectDir;
 
 // Where `functor run wasm` serves the game — fixed by the CLI's dev server.
 const PREVIEW_URL = "http://127.0.0.1:8080";
@@ -105,18 +109,42 @@ function waitForServer(timeoutMs) {
 // `functor run wasm` and host the running game in a webview panel that
 // hot-reloads from the LIVE buffer (unsaved included), model preserved.
 async function openLivePreview() {
-  if (previewPanel) {
-    previewPanel.reveal();
-    return;
-  }
   const editor = vscode.window.activeTextEditor;
+  const project =
+    editor && editor.document.fileName.endsWith(".mle")
+      ? findMleProject(editor.document.fileName)
+      : null;
+
+  if (previewPanel) {
+    // Same project (or no new project resolvable from the active editor) →
+    // just focus the running preview.
+    if (!project || project.dir === previewProjectDir) {
+      previewPanel.reveal();
+      return;
+    }
+    // Switching samples: dispose the old panel (its onDidDispose kills the
+    // dev-server child) and wait for that child to actually exit, so port 8080
+    // is free before the new server tries to bind it.
+    const dying = previewChild;
+    previewPanel.dispose();
+    const running = dying && dying.exitCode === null && dying.signalCode === null;
+    if (running) {
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 3000); // fail-safe: never hang the command
+        dying.once("exit", () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+    }
+  }
+
   if (!editor || !editor.document.fileName.endsWith(".mle")) {
     vscode.window.showErrorMessage(
       "MLE: open the project's .mle file first — the preview serves the project it belongs to."
     );
     return;
   }
-  const project = findMleProject(editor.document.fileName);
   if (!project) {
     vscode.window.showErrorMessage(
       `MLE: no functor.json with "language": "mle" found in any directory above ` +
@@ -145,6 +173,7 @@ async function openLivePreview() {
     cwd: project.dir,
   });
   previewChild = child;
+  previewProjectDir = project.dir;
   child.stdout.on("data", (d) => log(d.toString()));
   child.stderr.on("data", (d) => log(d.toString()));
   child.on("error", (e) => {
@@ -220,6 +249,7 @@ async function openLivePreview() {
     disposed = true;
     previewPanel = undefined;
     previewChild = undefined;
+    previewProjectDir = undefined;
     clearTimeout(debounce);
     clearTimeout(readyTimeout);
     changeSub.dispose();
