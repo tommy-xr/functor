@@ -8,6 +8,7 @@ edition = "2021"
 # only dependency besides the language crate itself.
 [dependencies]
 mle = { path = "../../mle" }
+functor-prelude = { path = "../../functor-prelude" }
 serde_json = "1.0"
 
 [[bin]]

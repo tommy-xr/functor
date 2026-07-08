@@ -213,7 +213,12 @@ fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
 /// leak in). `None` on a non-`file:` URI or a load failure.
 fn load_project(uri: &str, documents: &HashMap<String, String>) -> Option<mle::project::Project> {
     let path = uri_to_path(uri)?;
-    let single_file = || mle::project::load_single_file(&path, documents.get(uri)?).ok();
+    // The engine prelude (`Scene.*`, `Camera.*`, …) as a check-time overlay, so
+    // the editor shows real host types (`Scene.cube() : Scene.t`) instead of
+    // `Unknown`. This is what makes the LSP host-aware; the runtime injects the
+    // same set (mlei 2e).
+    let prelude = functor_prelude::modules();
+    let single_file = || mle::project::load_single_file(&path, documents.get(uri)?, &prelude).ok();
     match discover_entry(&path) {
         Some(entry) => {
             let overrides: HashMap<PathBuf, String> = documents
@@ -224,7 +229,7 @@ fn load_project(uri: &str, documents: &HashMap<String, String>) -> Option<mle::p
             // file. A nearest `functor.json` whose entry lives in another dir,
             // or a broken sibling that fails the load, must not strip the open
             // buffer of all features — fall back to a single-file view.
-            match mle::project::load_with_overrides(&entry, &overrides) {
+            match mle::project::load_with_prelude(&entry, &overrides, &prelude) {
                 Ok(project) if project.sources.file_by_path(&path).is_some() => Some(project),
                 _ => single_file(),
             }

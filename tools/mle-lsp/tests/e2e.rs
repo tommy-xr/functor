@@ -359,3 +359,45 @@ fn vscode_extension_assets_are_well_formed() {
     let program = mle::parse(&sample).expect("sample.mle parses");
     mle::lower(program).expect("sample.mle lowers");
 }
+
+/// The engine prelude is injected as a check-time overlay (mlei 2e-iii), so a
+/// host call hovers with its real type — `Scene.cube : () => Scene.t` — not
+/// `Unknown`. Single-file (no functor.json) still gets the prelude.
+#[test]
+fn prelude_gives_host_calls_real_types() {
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    let text = "let s = () => Scene.cube()\n";
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": URI, "languageId": "mle", "version": 1, "text": text,
+        } },
+    }));
+    server.recv(); // publishDiagnostics (clean — Scene.cube is known)
+
+    // Hover on `Scene.cube` (char 13 = the `c` of cube).
+    let col = text.find("Scene.cube").unwrap() as i64 + 6;
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 0, "character": col },
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "```mle\nScene.cube : () => Scene.t\n```",
+        "prelude hover: {response}"
+    );
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
+}
