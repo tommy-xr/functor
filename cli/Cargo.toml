@@ -8,6 +8,14 @@ edition = "2021"
 name = "functor"
 path = "src/main.rs"
 
+[features]
+# `web` embeds the WebGL2 runtime bundle (`include_bytes!`) for `run wasm`, so it
+# requires `npm run build:cli` first. ON by default; disable it
+# (`--no-default-features`) for a FAST native + typecheck build that needs no
+# wasm bundle — `run wasm` then errors with a rebuild hint.
+default = ["web"]
+web = []
+
 [dependencies]
 # The MLE language, for `language: "mle"` projects (docs/mle.md Track C4).
 mle = { path = "../mle" }
