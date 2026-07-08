@@ -71,23 +71,23 @@ const EXCLUDE = new Set([
   "wsserverdemo",
 ]);
 
-// A sample "needs assets" if its directory carries fetched binary assets
-// (glTF/textures/audio via `npm run fetch:assets`, gitignored). When those
-// aren't present — the default on CI, which mirrors golden.yml's asset-free
-// stance — such a sample would 404 its assets, so we SKIP it (loudly) rather
-// than fail. Local runs (assets fetched) still cover it. NOTE: a missing asset
-// currently PANICS the wasm runtime instead of falling back to the empty asset
-// (docs/mle.md says it should degrade) — tracked as a follow-up; until then the
-// skip keeps this CI check meaningful for the asset-free samples.
-function needsMissingAssets(sample) {
+// Whether the sample references a binary asset (glTF/texture/audio, fetched via
+// `npm run fetch:assets` and gitignored) that ISN'T present on disk. On CI —
+// asset-free by convention (golden.yml uses the asset-free primitives sample) —
+// those files 404, so we SKIP such a sample (loudly) rather than fail. Local
+// runs (assets fetched) still cover it. Checked per-referenced-file, because a
+// sample can commit SOME assets (e.g. a .png) yet fetch others (a .glb).
+// NOTE: a missing asset currently PANICS the wasm runtime ("RuntimeError:
+// unreachable") instead of falling back to the empty asset (docs/mle.md says it
+// should degrade) — tracked as a follow-up; until then the skip keeps this CI
+// check meaningful for the asset-free samples.
+function missingReferencedAssets(sample) {
   const dir = `${ROOT}/examples/${sample}`;
-  const refsAssets = /\.(glb|png|jpg|wav)\b/i.test(
-    readFileSync(`${dir}/game.mle`, "utf8"),
+  const src = readFileSync(`${dir}/game.mle`, "utf8");
+  const refs = [...src.matchAll(/["']([^"']+\.(?:glb|png|jpg|wav))["']/gi)].map(
+    (m) => m[1],
   );
-  const hasAssets = readdirSync(dir).some((f) =>
-    /\.(glb|png|jpg|wav)$/i.test(f),
-  );
-  return refsAssets && !hasAssets;
+  return refs.some((ref) => !existsSync(`${dir}/${ref}`));
 }
 
 // The sample list: CLI args if given, else every examples/* with a functor.json
@@ -274,7 +274,7 @@ let failures = 0;
 console.log(`wasm smoke: ${samples.length} sample(s)\n`);
 let skipped = 0;
 for (const sample of samples) {
-  if (needsMissingAssets(sample)) {
+  if (missingReferencedAssets(sample)) {
     skipped++;
     console.log(`SKIP  ${sample} — references assets not present (run npm run fetch:assets to include it)`);
     continue;
