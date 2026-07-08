@@ -1,0 +1,8 @@
+// skybox.mlei — the `Skybox` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+
+// The opaque skybox handle (`Skybox.T` from game code).
+type T
+
+// Six non-empty cubemap face paths (+X, -X, +Y, -Y, +Z, -Z).
+let files : (String, String, String, String, String, String) => T

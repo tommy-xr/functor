@@ -1,0 +1,15 @@
+// audio_source.mlei — the `AudioSource` host module (interface only; implemented
+// in Rust by FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+//
+// Soundscape voices (the continuous, reconciled half of audio). Keyed for
+// cross-frame identity so the shell keeps a live voice playing.
+
+// The opaque audio-source handle (`AudioSource.T` from game code).
+type T
+
+// key, sound.
+let ambient : (String, String) => T
+// key, sound, x, y, z.
+let at : (String, String, Float, Float, Float) => T
+// Source LAST (subject-last), so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
+let gain : (Float, T) => T

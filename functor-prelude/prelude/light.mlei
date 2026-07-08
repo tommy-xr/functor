@@ -1,0 +1,13 @@
+// light.mlei — the `Light` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
+
+// The opaque light handle (`Light.T` from game code).
+type T
+
+let ambient : (Float, Float, Float) => T
+let directional : (Float, Float, Float, Float, Float, Float, Float) => T
+let point : (Float, Float, Float, Float, Float, Float, Float, Float) => T
+// px, py, pz, dx, dy, dz, r, g, b, intensity, range, coneAngle.
+let spot : (Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Float, Angle.T) => T
+// Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
+let castShadows : (T) => T
