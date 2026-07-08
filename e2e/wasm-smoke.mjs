@@ -70,25 +70,12 @@ const EXCLUDE = new Set([
   "wsdemo",
   "wsserverdemo",
 ]);
-
-// Whether the sample references a binary asset (glTF/texture/audio, fetched via
-// `npm run fetch:assets` and gitignored) that ISN'T present on disk. On CI —
-// asset-free by convention (golden.yml uses the asset-free primitives sample) —
-// those files 404, so we SKIP such a sample (loudly) rather than fail. Local
-// runs (assets fetched) still cover it. Checked per-referenced-file, because a
-// sample can commit SOME assets (e.g. a .png) yet fetch others (a .glb).
-// NOTE: a missing asset currently PANICS the wasm runtime ("RuntimeError:
-// unreachable") instead of falling back to the empty asset (docs/mle.md says it
-// should degrade) — tracked as a follow-up; until then the skip keeps this CI
-// check meaningful for the asset-free samples.
-function missingReferencedAssets(sample) {
-  const dir = `${ROOT}/examples/${sample}`;
-  const src = readFileSync(`${dir}/game.mle`, "utf8");
-  const refs = [...src.matchAll(/["']([^"']+\.(?:glb|png|jpg|wav))["']/gi)].map(
-    (m) => m[1],
-  );
-  return refs.some((ref) => !existsSync(`${dir}/${ref}`));
-}
+// A sample that references binary assets (glTF/texture/audio, fetched via
+// `npm run fetch:assets` and gitignored) runs fine WITHOUT them: a missing/404
+// asset degrades to the empty fallback (matching native — see
+// functor_runtime_common::io::load_bytes_async), so the sample still loads,
+// reloads, and ticks without an MLE error. So every sample runs on CI even
+// asset-free; the missing-asset path is itself worth exercising here.
 
 // The sample list: CLI args if given, else every examples/* with a functor.json
 // declaring `"language": "mle"`, minus the network demos.
@@ -272,13 +259,7 @@ async function smoke(sample) {
 
 let failures = 0;
 console.log(`wasm smoke: ${samples.length} sample(s)\n`);
-let skipped = 0;
 for (const sample of samples) {
-  if (missingReferencedAssets(sample)) {
-    skipped++;
-    console.log(`SKIP  ${sample} — references assets not present (run npm run fetch:assets to include it)`);
-    continue;
-  }
   let r;
   try {
     r = await smoke(sample);
@@ -297,11 +278,9 @@ for (const sample of samples) {
   }
 }
 
-const ran = samples.length - skipped;
-const skipNote = skipped ? ` (${skipped} skipped — assets not fetched)` : "";
 console.log(
   failures === 0
-    ? `\nALL ${ran} SAMPLES PASSED${skipNote}`
-    : `\n${failures} SAMPLE(S) FAILED${skipNote}`,
+    ? `\nALL ${samples.length} SAMPLES PASSED`
+    : `\n${failures} SAMPLE(S) FAILED`,
 );
 process.exit(failures === 0 ? 0 : 1);

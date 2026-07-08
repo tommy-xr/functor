@@ -19,6 +19,14 @@ pub async fn load_bytes_async(path: &str) -> Result<Vec<u8>, String> {
             .dyn_into()
             .map_err(|_| "Failed to cast to Response")?;
 
+        // A missing asset must FAIL (like the native `File::open` path), not
+        // return the 404 page's body as if it were the asset — otherwise the
+        // glTF/PNG parser downstream chokes on that HTML and panics. Returning
+        // Err here routes into the asset system's fallback (empty) asset instead.
+        if !response.ok() {
+            return Err(format!("{}: HTTP {}", path, response.status()));
+        }
+
         let array_buffer = JsFuture::from(
             response
                 .array_buffer()
