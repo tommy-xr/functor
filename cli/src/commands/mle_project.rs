@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 
 use crate::output::{emit, Event, Severity};
+// `util` (the shell-command runner + wasm dev server) is only used by the
+// `web`-gated `run wasm` path.
+#[cfg(feature = "web")]
 use crate::util::{self, ShellCommand, WasmDevServer};
 use crate::Environment;
 
@@ -274,59 +277,70 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         runner_args: &[String],
         develop: bool,
     ) -> Result<(), Error> {
-        self.entry_path(working_directory)?; // fail before serving, not per fetch
-
-        // The dev server can only serve files INSIDE the project dir — an
-        // entry that escapes it (absolute, or `..`) is readable natively but
-        // unfetchable by the page. Fail loud here, not as a browser 404.
-        if entry_escapes_project(&self.entry) {
-            return Err(Error::other(format!(
-                "mle on wasm serves the project directory over HTTP, so `entry` must be a \
-relative path inside it (got {})",
-                self.entry
-            )));
+        #[cfg(not(feature = "web"))]
+        {
+            let _ = (working_directory, runner_args, develop);
+            return Err(Error::other(
+                "the web runtime is not bundled in this build — rebuild with the `web` feature \
+                 (`npm run build:cli`) to `run wasm`",
+            ));
         }
-        if develop {
-            emit(Event::Info {
+        #[cfg(feature = "web")]
+        {
+            self.entry_path(working_directory)?; // fail before serving, not per fetch
+
+            // The dev server can only serve files INSIDE the project dir — an
+            // entry that escapes it (absolute, or `..`) is readable natively but
+            // unfetchable by the page. Fail loud here, not as a browser 404.
+            if entry_escapes_project(&self.entry) {
+                return Err(Error::other(format!(
+                    "mle on wasm serves the project directory over HTTP, so `entry` must be a \
+relative path inside it (got {})",
+                    self.entry
+                )));
+            }
+            if develop {
+                emit(Event::Info {
                 message: "develop (wasm): hot reload is native-only — reload the page to pick up edits".to_string(),
             });
-        }
-        let no_open = runner_args.iter().any(|a| a == "--no-open");
-        let ignored: Vec<&str> = runner_args
-            .iter()
-            .filter(|a| a.as_str() != "--no-open")
-            .map(|s| s.as_str())
-            .collect();
-        if !ignored.is_empty() {
-            emit(Event::Warning {
-                message: format!(
-                    "ignoring runner args (not supported for wasm): {}",
-                    ignored.join(" ")
-                ),
-            });
-        }
+            }
+            let no_open = runner_args.iter().any(|a| a == "--no-open");
+            let ignored: Vec<&str> = runner_args
+                .iter()
+                .filter(|a| a.as_str() != "--no-open")
+                .map(|s| s.as_str())
+                .collect();
+            if !ignored.is_empty() {
+                emit(Event::Warning {
+                    message: format!(
+                        "ignoring runner args (not supported for wasm): {}",
+                        ignored.join(" ")
+                    ),
+                });
+            }
 
-        let wasm_server_start = WasmDevServer::start_mle(working_directory, &self.entry);
-        if no_open {
-            emit(Event::Info {
-                message: "--no-open: skipping browser launch".to_string(),
-            });
-        } else {
-            let cmd = if std::env::consts::OS == "windows" {
-                "start"
+            let wasm_server_start = WasmDevServer::start_mle(working_directory, &self.entry);
+            if no_open {
+                emit(Event::Info {
+                    message: "--no-open: skipping browser launch".to_string(),
+                });
             } else {
-                "open"
-            };
-            let commands = vec![ShellCommand {
-                prefix: "[Open Browser]",
-                cmd,
-                cwd: working_directory,
-                env: vec![],
-                args: vec!["http://127.0.0.1:8080"],
-            }];
-            util::ShellCommand::run_sequential(commands).await?;
+                let cmd = if std::env::consts::OS == "windows" {
+                    "start"
+                } else {
+                    "open"
+                };
+                let commands = vec![ShellCommand {
+                    prefix: "[Open Browser]",
+                    cmd,
+                    cwd: working_directory,
+                    env: vec![],
+                    args: vec!["http://127.0.0.1:8080"],
+                }];
+                util::ShellCommand::run_sequential(commands).await?;
+            }
+            wasm_server_start.await
         }
-        wasm_server_start.await
     }
 }
 
@@ -379,6 +393,7 @@ fn nth_line(src: &str, line: usize) -> Option<String> {
 
 /// True when `entry` can't be served by the wasm dev server, which roots at
 /// the project directory: absolute paths and any `..` component escape it.
+#[cfg(feature = "web")]
 fn entry_escapes_project(entry: &str) -> bool {
     Path::new(entry).is_absolute() || entry.split(['/', '\\']).any(|seg| seg == "..")
 }

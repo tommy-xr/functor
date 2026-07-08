@@ -90,6 +90,7 @@ pub enum Event {
         source_line: Option<String>,
     },
     /// The wasm dev server bound and is serving.
+    #[cfg(feature = "web")]
     ServerListening { url: String },
     /// Neutral status (a hot-reload hint, a push acknowledgement, …).
     Info { message: String },
@@ -291,6 +292,7 @@ impl PlainRenderer {
                 }
                 out
             }
+            #[cfg(feature = "web")]
             Event::ServerListening { url } => {
                 vec![format!("{} serving {}", g_serve().cyan(), url.underline())]
             }
@@ -428,6 +430,7 @@ pub(crate) fn g_fail() -> &'static str {
         "✗"
     }
 }
+#[cfg(feature = "web")]
 pub(crate) fn g_serve() -> &'static str {
     if ascii() {
         "::"

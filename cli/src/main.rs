@@ -159,7 +159,13 @@ async fn main() -> tokio::io::Result<()> {
     let started = Instant::now();
     let args = Args::parse();
 
-    output::init(args.json, args.quiet, args.no_color, args.ascii, args.verbose);
+    output::init(
+        args.json,
+        args.quiet,
+        args.no_color,
+        args.ascii,
+        args.verbose,
+    );
 
     // When the live (ink-style) renderer is up, a Ctrl-C would otherwise kill
     // the process mid-draw and leave the sticky live region stranded on screen.
@@ -186,13 +192,8 @@ async fn main() -> tokio::io::Result<()> {
                 animation,
                 format,
             } => {
-                commands::inspect::execute_model(
-                    path,
-                    *time,
-                    animation.as_deref(),
-                    format.clone(),
-                )
-                .await
+                commands::inspect::execute_model(path, *time, animation.as_deref(), format.clone())
+                    .await
             }
         };
         return finish_inspect(res);

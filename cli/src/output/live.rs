@@ -87,8 +87,14 @@ impl Panel {
 /// Green under budget, yellow tight, red over.
 fn budget_bar(pct: f64) -> String {
     const CELLS: usize = 20;
-    let filled = ((pct / 100.0) * CELLS as f64).round().clamp(0.0, CELLS as f64) as usize;
-    let (full, empty) = if super::ascii() { ("#", "-") } else { ("█", "░") };
+    let filled = ((pct / 100.0) * CELLS as f64)
+        .round()
+        .clamp(0.0, CELLS as f64) as usize;
+    let (full, empty) = if super::ascii() {
+        ("#", "-")
+    } else {
+        ("█", "░")
+    };
     let bar = format!("{}{}", full.repeat(filled), empty.repeat(CELLS - filled));
     let bar = if pct >= 100.0 {
         bar.red()
