@@ -58,6 +58,15 @@ pub struct GameClock {
     /// Unconditional pin (`--fixed-time` / `?fixed-time`). When set, every frame
     /// is `{ dts: 0, tts: <const> }` — no accumulation, no pause, no rebase.
     fixed_time: Option<f32>,
+    /// Whether [`Self::fixed_frames`] has run its first live frame yet. The live
+    /// path emits ZERO sub-frames when under one whole [`FIXED_DT`] has
+    /// accumulated — normal at >60fps, but on the VERY FIRST frame that would
+    /// draw before the model/physics has run at all (physics never reconciles,
+    /// so a `Physics.transformed` in `draw` errors). This forces one bootstrap
+    /// `{ dts: 0 }` frame the first time, so the body runs before the first draw
+    /// (the physics driver has the same first-frame guarantee, but only once
+    /// `advance` is actually called — which needs a sub-frame here).
+    started: bool,
 }
 
 impl GameClock {
@@ -69,6 +78,7 @@ impl GameClock {
             paused: false,
             pending_step: None,
             fixed_time,
+            started: false,
         }
     }
 
@@ -146,6 +156,19 @@ impl GameClock {
                 dts: FIXED_DT,
                 tts: self.game_time,
             });
+        }
+        // First live frame: run the body once even if under a whole step has
+        // accumulated, so the model/physics settles before the first draw. A
+        // zero-dt sub-frame advances nothing (the accumulator keeps its time for
+        // the next frame) — it just guarantees `tick`/`physics` run frame one.
+        if !self.started {
+            self.started = true;
+            if frames.is_empty() {
+                frames.push(FrameTime {
+                    dts: 0.0,
+                    tts: self.game_time,
+                });
+            }
         }
         frames
     }
@@ -296,6 +319,24 @@ mod tests {
     }
 
     // --- fixed_frames (the fixed-timestep model loop) ---
+
+    #[test]
+    fn fixed_frames_bootstraps_the_first_live_frame() {
+        let mut clock = GameClock::new(None);
+        // First frame with less than one whole step of real time: without the
+        // bootstrap this is EMPTY (so `draw` runs before physics reconciles);
+        // with it, one zero-dt sub-frame runs the body once.
+        let first = clock.fixed_frames(FIXED_DT * 0.3);
+        assert_eq!(first.len(), 1, "first live frame must run the body once");
+        assert_eq!(first[0].dts, 0.0, "bootstrap sub-frame advances nothing");
+        // The carried 0.3 step is NOT consumed by the bootstrap: a later 0.8
+        // still crosses a whole step.
+        let next = clock.fixed_frames(FIXED_DT * 0.8);
+        assert_eq!(next.len(), 1);
+        // ...and the bootstrap is one-shot: a second sub-one-step frame is empty.
+        let third = clock.fixed_frames(FIXED_DT * 0.1);
+        assert!(third.is_empty(), "bootstrap fires only once");
+    }
 
     #[test]
     fn fixed_frames_emit_whole_steps_at_fixed_dt() {
