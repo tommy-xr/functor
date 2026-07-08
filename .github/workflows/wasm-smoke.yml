@@ -40,6 +40,31 @@ jobs:
         with:
           workspaces: "."
 
+      # Post-E3 the single `functor` binary always includes the native
+      # GLFW/OpenGL runtime, so building the CLI links X11/GL/ALSA — install the
+      # same system libs as build-native.yml / golden.yml (even though this job
+      # only serves wasm, the binary links them).
+      - name: Install GL/X11 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libglfw3 \
+            libglfw3-dev \
+            libasound2-dev
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
       # The single `functor` binary embeds the web-runtime bundle via
       # `include_bytes!`, so the bundle must exist before the CLI is built.
       - name: Build web runtime bundle
@@ -48,12 +73,6 @@ jobs:
 
       - name: Build functor CLI
         run: cargo build --bin functor
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
 
       - name: Run wasm smoke
         run: npm run test:wasm-smoke
