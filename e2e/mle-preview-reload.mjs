@@ -184,7 +184,7 @@ const broken = await push(V_BROKEN);
 check("broken push rejected", broken.ok === false, JSON.stringify(broken));
 check(
   "broken push reports the parse error",
-  !broken.ok && broken.message.includes("cannot parse"),
+  !broken.ok && broken.message.includes("expected an expression"),
   broken.message
 );
 await sleep(400);

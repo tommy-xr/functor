@@ -186,36 +186,71 @@ pub fn mle_is_running() -> bool {
     GAME.with(|g| g.borrow().is_some())
 }
 
-/// Hot-swap the running game's logic from pushed `.mle` source — the wasm
-/// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md
-/// D4). Same semantics: the model is preserved (`mle::rebind_value`), a
-/// broken push keeps the old program running. `Ok` carries a short status
-/// line; `Err` (a JS throw) the rendered load error.
-#[wasm_bindgen]
-pub fn mle_set_source(source: String) -> Result<String, String> {
-    let game = GAME.with(|g| g.borrow().clone());
-    let Some(game) = game else {
-        return Err("game is not running yet (still loading, or the load failed)".to_string());
+thread_local! {
+    /// Source pushed via `mle_set_source`, waiting to be applied at a SAFE point
+    /// (the top of the frame loop, where the loop already holds the producer
+    /// borrow). Deferring — rather than reloading straight from the message
+    /// handler — is what keeps a push from ever colliding with the frame's
+    /// borrow ("runtime is mid-frame"); it also coalesces a burst of edits to
+    /// the last one. Mirrors the desktop runner, which applies reloads between
+    /// frames.
+    static PENDING_RELOAD: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Post a `mle-set-source-result` back to the page (the reload's outcome). The
+/// pusher — the VSCode live preview, the site sandbox, a test harness — listens
+/// for this. Because the reload is applied asynchronously (next frame), the
+/// result is delivered here rather than returned from `mle_set_source`.
+fn post_reload_result(ok: bool, message: &str) {
+    let obj = js_sys::Object::new();
+    let set = |k: &str, v: &JsValue| {
+        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), v);
     };
-    // JS is single-threaded and postMessage handlers never run mid-frame, so
-    // this borrow can't collide with the frame loop's — but a panic here
-    // would poison the page, so refuse instead of unwrapping.
-    let Ok(mut game) = game.try_borrow_mut() else {
-        return Err("runtime is mid-frame; retry".to_string());
+    set("type", &JsValue::from_str("mle-set-source-result"));
+    set("ok", &JsValue::from_bool(ok));
+    set("message", &JsValue::from_str(message));
+    // Deliver to the PARENT — the push's original sender (the VSCode preview
+    // host, the site sandbox frame). When the page is top-level, `parent` is the
+    // window itself, so a standalone page / test harness listening on `window`
+    // still receives it.
+    let target = window().parent().ok().flatten().unwrap_or_else(window);
+    let _ = target.post_message(&obj, "*");
+}
+
+/// Apply a pending pushed source, if any — called at the top of each frame while
+/// the frame loop holds the producer borrow, so it never collides with a frame.
+/// A good push clears the error overlay; a broken one shows it; either way the
+/// outcome is posted back to the page.
+fn apply_pending_reload(game: &mut dyn GameProducer) {
+    let Some(source) = PENDING_RELOAD.with(|p| p.borrow_mut().take()) else {
+        return;
     };
-    // A good push clears any lingering error overlay; a broken one shows it
-    // (and still returns the rendered error to the pusher — e.g. the VSCode
-    // editor — as before).
     match game.reload_source(&source) {
         Ok(status) => {
             hide_error_overlay();
-            Ok(status)
+            post_reload_result(true, &status);
         }
         Err(message) => {
             show_error_overlay(&format!("[mle] reload error: {message}"));
-            Err(message)
+            post_reload_result(false, &message);
         }
     }
+}
+
+/// Hot-swap the running game's logic from pushed `.mle` source — the wasm
+/// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md D4).
+/// The source is QUEUED and applied at the top of the next frame (see
+/// [`apply_pending_reload`]); the outcome is delivered asynchronously as a
+/// `mle-set-source-result` message, not returned here. Model preserved
+/// (`mle::rebind_value`); a broken push keeps the old program running.
+#[wasm_bindgen]
+pub fn mle_set_source(source: String) {
+    if !mle_is_running() {
+        post_reload_result(false, "game is not running yet (still loading, or the load failed)");
+        return;
+    }
+    // Last edit wins: a burst of pushes before the next frame coalesces.
+    PENDING_RELOAD.with(|p| *p.borrow_mut() = Some(source));
 }
 
 /// Route a socket event to the LIVE producer via the shared `GAME` handle (the
@@ -1021,11 +1056,13 @@ async fn run_async() -> Result<(), JsValue> {
         let mut ghost_window: f32 = 2.0;
 
         *g.borrow_mut() = Some(Closure::new(move || {
-            // The frame's exclusive borrow of the shared producer. Cannot
-            // collide with `mle_set_source`: JS is single-threaded, and
-            // message handlers only run between rAF callbacks.
+            // The frame's exclusive borrow of the shared producer.
             let mut game = game.borrow_mut();
             let now = performance.now() as f32;
+
+            // Apply a pushed source (`mle_set_source`) here, at a safe point that
+            // already holds the borrow — so a push never collides with a frame.
+            apply_pending_reload(&mut **game);
 
             // Apply scrubber controls from the DOM (pause / step / seek), which
             // drive the shared game clock BEFORE this frame's time is computed.
