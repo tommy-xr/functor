@@ -4,9 +4,9 @@
 //
 // Convention: `main` is the timed unit of work. Also: `mle run adt.mle`.
 type Shape =
-  | Circle(radius: Float)
-  | Rect(w: Float, h: Float)
-let area = (s: Shape): Float =>
+  | Circle(radius: float)
+  | Rect(w: float, h: float)
+let area = (s: Shape): float =>
   match s with
   | Circle(r) => 3.14159 * r * r
   | Rect(w, h) => w * h

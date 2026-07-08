@@ -5,41 +5,41 @@
 // interface-only module is a CLOSED module: a reference to a member it does not
 // declare is a load error, so a partial Scene would break real games.
 //
-// Branded argument types (`Angle.T`, `Texture.T`, `RenderTarget.T`) name types
+// Branded argument types (`Angle.t`, `Texture.t`, `RenderTarget.t`) name types
 // owned by the sibling host modules authored in 2e-ii, so they resolve to those
 // real opaque types.
 
 // The opaque scene-node handle. Because the module is itself `Scene`, this is
-// referred to as `Scene.Node` from game code.
-type Node
+// referred to as `Scene.t` from game code.
+type t
 
 // Primitive geometry.
-let cube : () => Node
-let sphere : () => Node
-let cylinder : () => Node
-let quad : () => Node
-let plane : () => Node
+let cube : () => t
+let sphere : () => t
+let cylinder : () => t
+let quad : () => t
+let plane : () => t
 
 // Assets and generated surfaces.
-let model : (String) => Node
-let heightmap : (List<List<Float>>) => Node
+let model : (string) => t
+let heightmap : (List<List<float>>) => t
 
 // Composition.
-let group : (List<Node>) => Node
+let group : (List<t>) => t
 
 // Materials (subject-last, so they pipe: `Scene.cube() |> Scene.color(r,g,b)`).
-let color : (Float, Float, Float, Node) => Node
-let lit : (Float, Float, Float, Node) => Node
-let emissive : (Float, Float, Float, Node) => Node
-let litTexture : (Texture.T, Node) => Node
-let emissiveTexture : (Texture.T, Node) => Node
-let litNormalMapped : (Float, Float, Float, Texture.T, Node) => Node
-let screen : (RenderTarget.T, Node) => Node
+let color : (float, float, float, t) => t
+let lit : (float, float, float, t) => t
+let emissive : (float, float, float, t) => t
+let litTexture : (Texture.t, t) => t
+let emissiveTexture : (Texture.t, t) => t
+let litNormalMapped : (float, float, float, Texture.t, t) => t
+let screen : (RenderTarget.t, t) => t
 
 // Transforms.
-let translate : (Float, Float, Float, Node) => Node
-let scale : (Float, Node) => Node
-let scaleXYZ : (Float, Float, Float, Node) => Node
-let rotateX : (Angle.T, Node) => Node
-let rotateY : (Angle.T, Node) => Node
-let rotateZ : (Angle.T, Node) => Node
+let translate : (float, float, float, t) => t
+let scale : (float, t) => t
+let scaleXYZ : (float, float, float, t) => t
+let rotateX : (Angle.t, t) => t
+let rotateY : (Angle.t, t) => t
+let rotateZ : (Angle.t, t) => t

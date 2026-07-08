@@ -3,7 +3,7 @@
 
 let threshold = 10
 
-let isHigh = (score: Float): Bool => score > threshold
+let isHigh = (score: float): bool => score > threshold
 
 let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
 

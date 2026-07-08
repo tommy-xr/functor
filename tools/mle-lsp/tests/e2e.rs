@@ -145,7 +145,7 @@ fn diagnostics_over_real_stdio() {
     let response = server.recv();
     assert_eq!(response["id"], 3);
     assert_eq!(
-        response["result"]["contents"]["value"], "```mle\nx : Float\n```",
+        response["result"]["contents"]["value"], "```mle\nx : float\n```",
         "hover response: {response}"
     );
 
@@ -155,7 +155,7 @@ fn diagnostics_over_real_stdio() {
         "params": {
             "textDocument": { "uri": URI, "version": 3 },
             "contentChanges": [ { "text":
-                "let double = (x: Float): Float => x * 2.0\nlet main = () => double(2.0)" } ],
+                "let double = (x: float): float => x * 2.0\nlet main = () => double(2.0)" } ],
         },
     }));
     assert_eq!(server.recv()["params"]["diagnostics"], json!([]));
@@ -205,7 +205,7 @@ fn diagnostics_over_real_stdio() {
     }));
     assert_eq!(server.recv()["params"]["diagnostics"], json!([]));
 
-    // Inlay hints over line 0 → one `: Float` type hint right after the `x`
+    // Inlay hints over line 0 → one `: float` type hint right after the `x`
     // param (byte 10 = line 0 char 10).
     server.send(json!({
         "jsonrpc": "2.0", "id": 6, "method": "textDocument/inlayHint",
@@ -223,7 +223,7 @@ fn diagnostics_over_real_stdio() {
         response["result"],
         json!([{
             "position": { "line": 0, "character": 10 },
-            "label": ": Float",
+            "label": ": float",
             "kind": 1,
             "paddingLeft": false,
             "paddingRight": false,
@@ -246,7 +246,7 @@ fn diagnostics_over_real_stdio() {
                 "start": { "line": 0, "character": 0 },
                 "end": { "line": 0, "character": 22 },
             },
-            "command": { "title": "f : (Float) => Float", "command": "" },
+            "command": { "title": "f : (float) => float", "command": "" },
         }]),
         "codeLens response: {response}"
     );
@@ -278,7 +278,7 @@ fn project_aware_hover_and_cross_file_definition() {
     std::fs::write(dir.join("game.mle"), game).unwrap();
     std::fs::write(
         dir.join("utils.mle"),
-        "let double = (x: Float): Float => x * 2.0\n",
+        "let double = (x: float): float => x * 2.0\n",
     )
     .unwrap();
     let game_uri = format!("file://{}/game.mle", dir.display());
@@ -311,7 +311,7 @@ fn project_aware_hover_and_cross_file_definition() {
     let response = server.recv();
     assert_eq!(
         response["result"]["contents"]["value"],
-        "```mle\nUtils.double : (Float) => Float\n```",
+        "```mle\nUtils.double : (float) => float\n```",
         "cross-file hover: {response}"
     );
 
@@ -358,4 +358,46 @@ fn vscode_extension_assets_are_well_formed() {
     let sample = std::fs::read_to_string(format!("{extension_dir}/test/sample.mle")).unwrap();
     let program = mle::parse(&sample).expect("sample.mle parses");
     mle::lower(program).expect("sample.mle lowers");
+}
+
+/// The engine prelude is injected as a check-time overlay (mlei 2e-iii), so a
+/// host call hovers with its real type — `Scene.cube : () => Scene.t` — not
+/// `Unknown`. Single-file (no functor.json) still gets the prelude.
+#[test]
+fn prelude_gives_host_calls_real_types() {
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    let text = "let s = () => Scene.cube()\n";
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": URI, "languageId": "mle", "version": 1, "text": text,
+        } },
+    }));
+    server.recv(); // publishDiagnostics (clean — Scene.cube is known)
+
+    // Hover on `Scene.cube` (char 13 = the `c` of cube).
+    let col = text.find("Scene.cube").unwrap() as i64 + 6;
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 0, "character": col },
+        },
+    }));
+    let response = server.recv();
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "```mle\nScene.cube : () => Scene.t\n```",
+        "prelude hover: {response}"
+    );
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
 }

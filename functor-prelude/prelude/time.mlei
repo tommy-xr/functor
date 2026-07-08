@@ -2,10 +2,10 @@
 // FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
 //
 // A branded duration (seconds): timing functions (`Sub.every`) accept ONLY
-// `Time.T` values, so a bare number is rejected with a teaching error.
+// `Time.t` values, so a bare number is rejected with a teaching error.
 
-// The opaque duration handle (`Time.T` from game code).
-type T
+// The opaque duration handle (`Time.t` from game code).
+type t
 
-let seconds : (Float) => T
-let millis : (Float) => T
+let seconds : (float) => t
+let millis : (float) => t

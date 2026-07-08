@@ -4,25 +4,25 @@
 // language's first conditional), and a catch-all variable.
 
 type Shape =
-  | Circle(radius: Float)
-  | Rect(w: Float, h: Float)
+  | Circle(radius: float)
+  | Rect(w: float, h: float)
   | Point
 
 let pi = 3.14159
 
-let area = (s: Shape): Float =>
+let area = (s: Shape): float =>
   match s with
   | Circle(r) => pi * r * r
   | Rect(w, h) => w * h
   | Point => 0.0
 
-let isRound = (s: Shape): Bool =>
+let isRound = (s: Shape): bool =>
   match s with
   | Circle(_) => true
   | _ => false
 
-// The first conditional: match on a Bool.
-let sizeOf = (s: Shape): String =>
+// The first conditional: match on a bool.
+let sizeOf = (s: Shape): string =>
   match area(s) > 10.0 with
   | true => "big"
   | false => "small"
@@ -30,7 +30,7 @@ let sizeOf = (s: Shape): String =>
 // Arm bodies are full expressions, so this nested match is greedy: it is
 // only unambiguous because it sits in the LAST arm — anywhere else it would
 // need parentheses (see the parser's grammar notes).
-let describe = (s: Shape): String =>
+let describe = (s: Shape): string =>
   match s with
   | Point => "a point"
   | other =>

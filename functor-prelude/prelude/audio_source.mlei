@@ -4,12 +4,12 @@
 // Soundscape voices (the continuous, reconciled half of audio). Keyed for
 // cross-frame identity so the shell keeps a live voice playing.
 
-// The opaque audio-source handle (`AudioSource.T` from game code).
-type T
+// The opaque audio-source handle (`AudioSource.t` from game code).
+type t
 
 // key, sound.
-let ambient : (String, String) => T
+let ambient : (string, string) => t
 // key, sound, x, y, z.
-let at : (String, String, Float, Float, Float) => T
+let at : (string, string, float, float, float) => t
 // Source LAST (subject-last), so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
-let gain : (Float, T) => T
+let gain : (float, t) => t

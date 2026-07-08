@@ -58,20 +58,20 @@ mod tests {
     #[test]
     fn signature_of_a_function_def() {
         assert_eq!(
-            sigs("let double = (x: Float): Float => x * 2.0"),
-            vec!["double : (Float) => Float"]
+            sigs("let double = (x: float): float => x * 2.0"),
+            vec!["double : (float) => float"]
         );
     }
 
     #[test]
     fn signature_of_a_constant() {
-        assert_eq!(sigs("let threshold = 10.0"), vec!["threshold : Float"]);
+        assert_eq!(sigs("let threshold = 10.0"), vec!["threshold : float"]);
     }
 
     #[test]
     fn infers_an_unannotated_signature() {
         // The whole signature is recovered with no annotations written.
-        assert_eq!(sigs("let f = (x) => x + 1.0"), vec!["f : (Float) => Float"]);
+        assert_eq!(sigs("let f = (x) => x + 1.0"), vec!["f : (float) => float"]);
     }
 
     #[test]
@@ -83,7 +83,7 @@ mod tests {
     fn one_lens_per_def_in_file_order() {
         assert_eq!(
             sigs("let a = 1.0\nlet b = (x) => x + 1.0"),
-            vec!["a : Float", "b : (Float) => Float"]
+            vec!["a : float", "b : (float) => float"]
         );
     }
 

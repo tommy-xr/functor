@@ -14,7 +14,7 @@ Program {
                                         name: "List",
                                         args: [
                                             TypeName {
-                                                name: "Float",
+                                                name: "float",
                                                 args: [],
                                                 span: 217..222,
                                             },
@@ -27,7 +27,7 @@ Program {
                         ],
                         ret: Some(
                             TypeName {
-                                name: "Float",
+                                name: "float",
                                 args: [],
                                 span: 226..231,
                             },
@@ -144,7 +144,7 @@ Program {
                                         name: "List",
                                         args: [
                                             TypeName {
-                                                name: "Float",
+                                                name: "float",
                                                 args: [],
                                                 span: 329..334,
                                             },
@@ -158,7 +158,7 @@ Program {
                                 name: "fallback",
                                 ty: Some(
                                     TypeName {
-                                        name: "Float",
+                                        name: "float",
                                         args: [],
                                         span: 347..352,
                                     },
@@ -168,7 +168,7 @@ Program {
                         ],
                         ret: Some(
                             TypeName {
-                                name: "Float",
+                                name: "float",
                                 args: [],
                                 span: 355..360,
                             },
@@ -258,7 +258,7 @@ Program {
                                         name: "List",
                                         args: [
                                             TypeName {
-                                                name: "Float",
+                                                name: "float",
                                                 args: [],
                                                 span: 442..447,
                                             },
@@ -274,12 +274,12 @@ Program {
                                 name: "*",
                                 args: [
                                     TypeName {
-                                        name: "Float",
+                                        name: "float",
                                         args: [],
                                         span: 452..457,
                                     },
                                     TypeName {
-                                        name: "Float",
+                                        name: "float",
                                         args: [],
                                         span: 459..464,
                                     },

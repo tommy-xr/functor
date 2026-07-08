@@ -35,7 +35,7 @@ let fountainPos = { x: 5.0, y: 0.5, z: 0.0 }
 // turns by per-frame deltas and never jumps (F#'s `lastMouse` option).
 type Mouse =
   | NoMouse
-  | MouseAt(x: Float, y: Float)
+  | MouseAt(x: float, y: float)
 
 // Delivered when the spacebar gunshot finishes playing (Effect.playThen).
 type Msg =
@@ -146,19 +146,19 @@ let update = (model, msg) =>
   | GunshotDone => model
 
 // The three orbiting point-light colors, by index: red / green / blue.
-let pointColor = (i: Float): (Float, Float, Float) =>
+let pointColor = (i: float): (float, float, float) =>
   match i with
   | 0.0 => (1.0, 0.25, 0.2)
   | 1.0 => (0.3, 1.0, 0.35)
   | _ => (0.4, 0.5, 1.0)
 
 // A point light's position at time tts: orbiting (120 degrees apart), animated.
-let pointPos = (i: Float, tts: Float) =>
+let pointPos = (i: float, tts: float) =>
   let a = tts * 0.6 + i * (tau / 3.0) in
   { x: Math.cos(a) * orbitRadius, y: orbitHeight, z: Math.sin(a) * orbitRadius }
 
 // An emissive marker sphere at each point light's position.
-let markers = (tts: Float) =>
+let markers = (tts: float) =>
   List.range(3.0) |> List.map((i) =>
     let p = pointPos(i, tts) in
     let (r, g, b) = pointColor(i) in
@@ -167,13 +167,13 @@ let markers = (tts: Float) =>
       |> Scene.translate(p.x, p.y, p.z)
       |> Scene.emissive(r, g, b))
 
-let pointLights = (tts: Float) =>
+let pointLights = (tts: float) =>
   List.range(3.0) |> List.map((i) =>
     let p = pointPos(i, tts) in
     let (r, g, b) = pointColor(i) in
     Light.point(p.x, p.y, p.z, r, g, b, 1.4, 4.0))
 
-let draw = (model, tts: Float) =>
+let draw = (model, tts: float) =>
   // Ground + a few lit objects sitting on it (each centered at y = its
   // half-height so it rests on y = 0). Near-white so the colored lights tint
   // them; the ground is a neutral grey.

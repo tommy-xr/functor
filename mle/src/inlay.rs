@@ -97,13 +97,13 @@ mod tests {
         let got = hints(src);
         assert_eq!(got.len(), 1);
         // The hint sits right after the `x`, labelled with the inferred type.
-        assert_eq!(got[0].1, ": Float");
+        assert_eq!(got[0].1, ": float");
         assert_eq!(&src[got[0].0 - 1..got[0].0], "x");
     }
 
     #[test]
     fn skips_an_annotated_param() {
-        assert!(hints("let f = (x: Float) => x + 1.0").is_empty());
+        assert!(hints("let f = (x: float) => x + 1.0").is_empty());
     }
 
     #[test]
@@ -121,7 +121,7 @@ mod tests {
         let got = hints("let f = (x, y) => x + y");
         assert_eq!(
             got.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(),
-            vec![": Float", ": Float"]
+            vec![": float", ": float"]
         );
     }
 
@@ -130,13 +130,13 @@ mod tests {
         // A curried inner lambda's param is inferred through its use.
         let got = hints("let f = (x) => (y) => x + y");
         assert_eq!(got.len(), 2);
-        assert!(got.iter().all(|(_, l)| l == ": Float"));
+        assert!(got.iter().all(|(_, l)| l == ": float"));
     }
 
     #[test]
     fn infers_a_list_param() {
         let got = hints("let f = (xs) => xs |> List.maximum");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].1, ": List<Float>");
+        assert_eq!(got[0].1, ": List<float>");
     }
 }

@@ -70,7 +70,7 @@ fn stored_closure_adopts_edited_body_and_keeps_env() {
 fn closures_rebind_inside_containers() {
     let src = |body: &str| {
         format!(
-            "{APPLY}type Slot = | Held(f: Float)\n\
+            "{APPLY}type Slot = | Held(f: float)\n\
              let mul = (k) => (x) => {body}\n\
              let main = () => {{ fns: [mul(2.0)], slot: Held(mul(10.0)) }}"
         )

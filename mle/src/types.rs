@@ -113,9 +113,9 @@ impl fmt::Display for Type {
             // Raw display; hover/errors normalize vars to 'a, 'b first
             // (see `Checker::zonk_normalized`).
             Type::Var(v) => write!(f, "'{}", var_name(*v)),
-            Type::Float => write!(f, "Float"),
-            Type::String => write!(f, "String"),
-            Type::Bool => write!(f, "Bool"),
+            Type::Float => write!(f, "float"),
+            Type::String => write!(f, "string"),
+            Type::Bool => write!(f, "bool"),
             Type::List(elem) => write!(f, "List<{elem}>"),
             Type::Tuple(elems) => {
                 write!(f, "(")?;
@@ -1059,13 +1059,13 @@ impl Checker<'_> {
             Type::Unknown
         };
         match ty.name.as_str() {
-            "Float" | "String" | "Bool" => {
+            "float" | "string" | "bool" => {
                 if !ty.args.is_empty() {
                     return arity_error(self, 0);
                 }
                 match ty.name.as_str() {
-                    "Float" => Type::Float,
-                    "String" => Type::String,
+                    "float" => Type::Float,
+                    "string" => Type::String,
                     _ => Type::Bool,
                 }
             }
@@ -1116,14 +1116,12 @@ impl Checker<'_> {
                     .collect();
                 Type::Variant(name.to_string(), args)
             }
-            // A lowercase name is a TYPE VARIABLE, scoped to the enclosing
-            // def's signature: `(xs: List<a>, f: (a) => b): List<b>`. The
-            // same name maps to the same variable within one def. In TYPE
-            // DECLARATIONS they are refused — generic type declarations
-            // aren't designed yet, and a declaration-held variable would be
-            // module-global (first use pins it for everyone; both review
-            // engines' probe). [F4 — B7 review]
-            name if name.chars().next().is_some_and(char::is_lowercase) => {
+            // An apostrophe-prefixed name is a TYPE VARIABLE, scoped to the
+            // enclosing def's signature: `(xs: List<'a>, f: ('a) => 'b): List<'b>`.
+            // The same name maps to the same variable within one def. In a TYPE
+            // DECLARATION a variable must be declared on the type (`type Box<'a>`);
+            // an undeclared one is a teaching error.
+            name if name.starts_with('\'') => {
                 if !ty.args.is_empty() {
                     return arity_error(self, 0);
                 }
@@ -1784,7 +1782,7 @@ missing {missing}. Did you forget an argument?"
                 } else if !compatible(&ty, &Type::Float) {
                     self.diag(
                         inner.span,
-                        format!("unary `-` needs a Float operand, got {ty}"),
+                        format!("unary `-` needs a float operand, got {ty}"),
                     );
                 }
                 Type::Float
@@ -1901,7 +1899,7 @@ missing {missing}. Did you forget an argument?"
                         };
                         self.diag(
                             expr.span,
-                            format!("match on Bool is not exhaustive: missing {missing}"),
+                            format!("match on bool is not exhaustive: missing {missing}"),
                         );
                     }
                 }
@@ -2283,7 +2281,7 @@ is {other}"
         if !compatible(&ty, &Type::Float) {
             self.diag(
                 span,
-                format!("`{}` needs Float operands, got {ty}", op_str(op)),
+                format!("`{}` needs float operands, got {ty}", op_str(op)),
             );
         }
     }

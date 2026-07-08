@@ -106,12 +106,12 @@ fn error_unknown_name() {
 }
 
 /// Redeclaring a builtin type name would shadow the primitive in annotations
-/// ("expected Float, got Float"). [Claude L — B5 review]
+/// ("expected float, got float"). [Claude L — B5 review]
 #[test]
 fn error_redeclare_builtin_type() {
-    let (message, _, _) = lower_err("type Float = | Foo");
-    assert_eq!(message, "cannot redeclare builtin type `Float`");
-    let (message, _, _) = lower_err("type List = { head: Float }");
+    let (message, _, _) = lower_err("type float = | Foo");
+    assert_eq!(message, "cannot redeclare builtin type `float`");
+    let (message, _, _) = lower_err("type List = { head: float }");
     assert_eq!(message, "cannot redeclare builtin type `List`");
 }
 
@@ -228,7 +228,7 @@ fn error_duplicate_parameter() {
 // `let Foo` coexist; each namespace keys its own hot-reload identities.
 #[test]
 fn type_and_let_may_share_a_name() {
-    let module = lower_src("type Foo = { x: Float }\nlet Foo = 1");
+    let module = lower_src("type Foo = { x: float }\nlet Foo = 1");
     assert_eq!(module.types.len(), 1);
     assert_eq!(module.defs.len(), 1);
     assert_eq!(module.types[0].name, "Foo");
@@ -292,8 +292,8 @@ fn error_duplicate_update_field() {
 #[test]
 fn error_ctor_collision_across_types() {
     let (message, line, col) = lower_err(
-        "type Shape = | Circle(r: Float)\n\
-         type Blob = | Circle(r: Float)",
+        "type Shape = | Circle(r: float)\n\
+         type Blob = | Circle(r: float)",
     );
     assert_eq!(message, "duplicate constructor `Circle`");
     assert_eq!((line, col), (2, 15));
@@ -301,7 +301,7 @@ fn error_ctor_collision_across_types() {
 
 #[test]
 fn error_ctor_collision_within_a_type() {
-    let (message, _, _) = lower_err("type Shape = | Circle(r: Float) | Circle(d: Float)");
+    let (message, _, _) = lower_err("type Shape = | Circle(r: float) | Circle(d: float)");
     assert_eq!(message, "duplicate constructor `Circle`");
 }
 
@@ -310,10 +310,10 @@ fn error_ctor_collision_within_a_type() {
 #[test]
 fn error_ctor_collides_with_let() {
     let expected = "duplicate definition `Circle` (constructors live in the value namespace)";
-    let (message, line, col) = lower_err("let Circle = 1\ntype Shape = | Circle(r: Float)");
+    let (message, line, col) = lower_err("let Circle = 1\ntype Shape = | Circle(r: float)");
     assert_eq!(message, expected);
     assert_eq!((line, col), (2, 16));
-    let (message, line, col) = lower_err("type Shape = | Circle(r: Float)\nlet Circle = 1");
+    let (message, line, col) = lower_err("type Shape = | Circle(r: float)\nlet Circle = 1");
     assert_eq!(message, expected);
     assert_eq!((line, col), (2, 1));
 }
@@ -323,7 +323,7 @@ fn error_ctor_collides_with_let() {
 /// (only bare `Circle` is) — it stays an unknown external.
 #[test]
 fn qualified_ctor_form_is_not_supported() {
-    let module = lower_src("type Shape = | Circle(r: Float)\nlet f = () => Shape.Circle(1.0)");
+    let module = lower_src("type Shape = | Circle(r: float)\nlet f = () => Shape.Circle(1.0)");
     let (_, body) = lambda_body(&module, 0);
     let ExprKind::Call { callee, .. } = &body.kind else {
         panic!("expected a call, got {body:?}");
@@ -338,7 +338,7 @@ fn qualified_ctor_form_is_not_supported() {
 /// declared arity rides along in the IR.
 #[test]
 fn bare_ctor_resolves_with_arity() {
-    let module = lower_src("type Shape = | Circle(r: Float) | Point\nlet f = () => Circle(2.0)");
+    let module = lower_src("type Shape = | Circle(r: float) | Point\nlet f = () => Circle(2.0)");
     let (_, body) = lambda_body(&module, 0);
     let ExprKind::Call { callee, .. } = &body.kind else {
         panic!("expected a call, got {body:?}");
@@ -352,7 +352,7 @@ fn bare_ctor_resolves_with_arity() {
 /// A local binding shadows a constructor, exactly like it shadows a global.
 #[test]
 fn param_shadows_ctor() {
-    let module = lower_src("type Shape = | Circle(r: Float)\nlet f = (Circle) => Circle");
+    let module = lower_src("type Shape = | Circle(r: float)\nlet f = (Circle) => Circle");
     let (params, body) = lambda_body(&module, 0);
     let ExprKind::Local { binding, .. } = &body.kind else {
         panic!("expected a local, got {body:?}");
@@ -373,13 +373,13 @@ fn error_unknown_ctor_in_pattern() {
 #[test]
 fn error_pattern_arity_mismatch() {
     let (message, _, _) = lower_err(
-        "type Shape = | Circle(r: Float)\n\
+        "type Shape = | Circle(r: float)\n\
          let f = (s) => match s with | Circle(a, b) => a | _ => 0.0",
     );
     assert_eq!(message, "`Circle` has 1 field(s), but the pattern names 2");
 
     let (message, _, _) = lower_err(
-        "type Shape = | Circle(r: Float)\n\
+        "type Shape = | Circle(r: float)\n\
          let f = (s) => match s with | Circle => 1.0 | _ => 0.0",
     );
     assert_eq!(message, "`Circle` has 1 field(s), but the pattern names 0");
@@ -388,7 +388,7 @@ fn error_pattern_arity_mismatch() {
 #[test]
 fn error_duplicate_pattern_variable() {
     let (message, line, col) = lower_err(
-        "type Shape = | Rect(w: Float, h: Float)\n\
+        "type Shape = | Rect(w: float, h: float)\n\
          let f = (s) => match s with | Rect(a, a) => a | _ => 0.0",
     );
     assert_eq!(message, "duplicate pattern variable `a`");
@@ -400,7 +400,7 @@ fn error_duplicate_pattern_variable() {
 #[test]
 fn pattern_vars_do_not_leak_between_arms() {
     let (message, _, _) = lower_err(
-        "type Shape = | Circle(r: Float) | Point\n\
+        "type Shape = | Circle(r: float) | Point\n\
          let f = (s) => match s with | Circle(r) => r | Point => r",
     );
     assert_eq!(message, "unknown name `r`");
@@ -411,7 +411,7 @@ fn pattern_vars_do_not_leak_between_arms() {
 #[test]
 fn lambdas_may_capture_pattern_vars() {
     let module = lower_src(
-        "type Shape = | Circle(r: Float)\n\
+        "type Shape = | Circle(r: float)\n\
          let f = (s) => match s with | Circle(r) => (x) => r + x | _ => (x) => x",
     );
     assert_eq!(module.defs.len(), 1);
@@ -421,7 +421,7 @@ fn lambdas_may_capture_pattern_vars() {
 #[test]
 fn error_assign_to_pattern_var() {
     let (message, _, _) = lower_err(
-        "type Shape = | Circle(r: Float)\n\
+        "type Shape = | Circle(r: float)\n\
          let f = (s) => match s with | Circle(r) => r := 1.0; r | _ => 0.0",
     );
     assert_eq!(message, "cannot assign to immutable binding `r`");

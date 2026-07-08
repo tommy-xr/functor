@@ -331,8 +331,15 @@ come from file names, capitalized",
         // next file's base.
         base += len + 1;
     }
-    // Injected prelude interface modules — after the project files, exempt
-    // from the protected-namespace check (they OWN those namespaces).
+    push_prelude(&mut files, prelude);
+    link(files)
+}
+
+/// Append injected PRELUDE interface modules to `files` (after the project's
+/// own files), assigning span bases past the last one. They are exempt from
+/// the protected-namespace check — they OWN those namespaces.
+fn push_prelude(files: &mut Vec<SourceFile>, prelude: &[(String, String)]) {
+    let mut base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
     for (module, src) in prelude {
         files.push(SourceFile {
             interface: true,
@@ -343,7 +350,6 @@ come from file names, capitalized",
         });
         base += src.len() + 1;
     }
-    link(files)
 }
 
 /// Parse, lower, and link a set of source files into one merged module,
@@ -523,7 +529,11 @@ pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectErr
 /// scanning the directory for unrelated siblings. Module name is the file's
 /// (`Main` if the stem isn't an identifier); a single file is its own bare
 /// entry, so the name only labels it.
-pub fn load_single_file(path: &Path, src: &str) -> Result<Project, ProjectError> {
+pub fn load_single_file(
+    path: &Path,
+    src: &str,
+    prelude: &[(String, String)],
+) -> Result<Project, ProjectError> {
     // Fall back to `Main` for a non-identifier stem OR one that capitalizes to
     // a protected namespace (`net.mle` → `Net`), which would otherwise collide
     // with the builtin module `link` injects and silently fail the load.
@@ -531,13 +541,14 @@ pub fn load_single_file(path: &Path, src: &str) -> Result<Project, ProjectError>
         Ok(name) if !PROTECTED_NAMESPACES.contains(&name.as_str()) => name,
         _ => "Main".to_string(),
     };
-    let files = vec![SourceFile {
+    let mut files = vec![SourceFile {
         interface: is_interface(path),
         path: path.to_path_buf(),
         module,
         src: src.to_string(),
         base: 0,
     }];
+    push_prelude(&mut files, prelude);
     link(files)
 }
 

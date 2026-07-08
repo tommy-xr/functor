@@ -12,7 +12,7 @@ Program {
                                 FieldTy {
                                     name: "radius",
                                     ty: TypeName {
-                                        name: "Float",
+                                        name: "float",
                                         args: [],
                                         span: 320..325,
                                     },
@@ -27,7 +27,7 @@ Program {
                                 FieldTy {
                                     name: "w",
                                     ty: TypeName {
-                                        name: "Float",
+                                        name: "float",
                                         args: [],
                                         span: 339..344,
                                     },
@@ -36,7 +36,7 @@ Program {
                                 FieldTy {
                                     name: "h",
                                     ty: TypeName {
-                                        name: "Float",
+                                        name: "float",
                                         args: [],
                                         span: 349..354,
                                     },
@@ -89,7 +89,7 @@ Program {
                         ],
                         ret: Some(
                             TypeName {
-                                name: "Float",
+                                name: "float",
                                 args: [],
                                 span: 408..413,
                             },
@@ -250,7 +250,7 @@ Program {
                         ],
                         ret: Some(
                             TypeName {
-                                name: "Bool",
+                                name: "bool",
                                 args: [],
                                 span: 528..532,
                             },
@@ -331,7 +331,7 @@ Program {
                         ],
                         ret: Some(
                             TypeName {
-                                name: "String",
+                                name: "string",
                                 args: [],
                                 span: 657..663,
                             },
@@ -435,7 +435,7 @@ Program {
                         ],
                         ret: Some(
                             TypeName {
-                                name: "String",
+                                name: "string",
                                 args: [],
                                 span: 969..975,
                             },

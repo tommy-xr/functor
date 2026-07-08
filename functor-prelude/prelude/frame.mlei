@@ -1,14 +1,14 @@
 // frame.mlei — the `Frame` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
 
-// The opaque frame handle (`Frame.T` from game code) — what `draw` returns.
-type T
+// The opaque frame handle (`Frame.t` from game code) — what `draw` returns.
+type t
 
-let create : (Camera.T, Scene.Node) => T
-let createLit : (Camera.T, Scene.Node, List<Light.T>) => T
+let create : (Camera.t, Scene.t) => t
+let createLit : (Camera.t, Scene.t, List<Light.t>) => t
 // Frame LAST (subject-last), so they pipe: `Frame.createLit(…) |> Frame.withFog(fog)`.
 // `withRenderTarget(target, targetFrame, frame)` renders `targetFrame` into
 // `target` each frame, before `frame`'s main pass.
-let withRenderTarget : (RenderTarget.T, T, T) => T
-let withFog : (Fog.T, T) => T
-let withSkybox : (Skybox.T, T) => T
+let withRenderTarget : (RenderTarget.t, t, t) => t
+let withFog : (Fog.t, t) => t
+let withSkybox : (Skybox.t, t) => t

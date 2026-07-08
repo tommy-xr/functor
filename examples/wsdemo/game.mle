@@ -8,13 +8,13 @@
 
 type Conn =
   | NoConn
-  | Conn(id: Float)
+  | Conn(id: float)
 
-type Model = { conn: Conn, status: String, lastMsg: String }
+type Model = { conn: Conn, status: string, lastMsg: string }
 
 type Msg =
   | Ws(ev: Net.NetEvent)
-  | Send(text: String)
+  | Send(text: string)
 
 let init = { conn: NoConn, status: "connecting", lastMsg: "" }
 
@@ -36,9 +36,9 @@ let update = (m: Model, msg: Msg) =>
 // Declaring the connection in `subscriptions` is what keeps it open.
 let subscriptions = (m: Model) => Sub.connect("ws://127.0.0.1:9001/echo", Ws)
 
-let tick = (m: Model, dt: Float, tts: Float) => m
+let tick = (m: Model, dt: float, tts: float) => m
 
-let draw = (m: Model, tts: Float) =>
+let draw = (m: Model, tts: float) =>
   Frame.create(
     Camera.firstPerson(
       0.0, 0.0, -5.0,

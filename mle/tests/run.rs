@@ -571,7 +571,7 @@ fn text_fixed_formats_fixed_decimals() {
 
 // --- Variants + match (B5 part 1) ---
 
-const SHAPE: &str = "type Shape = | Circle(r: Float) | Rect(w: Float, h: Float) | Point\n";
+const SHAPE: &str = "type Shape = | Circle(r: float) | Rect(w: float, h: float) | Point\n";
 
 /// First matching arm wins, top to bottom — a catch-all above a more
 /// specific arm shadows it.
@@ -702,7 +702,7 @@ fn error_calling_a_nullary_ctor() {
     assert_eq!(message, "cannot call a variant");
 }
 
-/// Bool-literal matches are the language's first conditional.
+/// bool-literal matches are the language's first conditional.
 #[test]
 fn bool_match_is_a_conditional() {
     assert_eq!(
@@ -768,7 +768,7 @@ fn destructuring_let_arity_mismatch_fails_loud() {
 fn generic_adts_run_type_erased() {
     assert_eq!(
         main_result(
-            "type Box<v> = | Full(value: v) | Empty\n\
+            "type Box<'v> = | Full(value: 'v) | Empty\n\
              let orElse = (b, d) => match b with | Full(v) => v | Empty => d\n\
              let main = () => (orElse(Full(1.0), 0.0), orElse(Full(\"s\"), \"\"), orElse(Empty, 9.0))"
         ),

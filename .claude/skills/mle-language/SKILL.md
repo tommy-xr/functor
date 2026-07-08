@@ -33,15 +33,15 @@ regenerates). VSCode gets live parse/lower/type diagnostics,
 
 ```mle
 // line comments only
-type Position = { x: Float, y: Float }        // record types; nominal in annotations
+type Position = { x: float, y: float }        // record types; nominal in annotations
 
-type Box<v> =                                 // GENERIC declarations: lowercase params
-  | Full(value: v)                            //   Box<Float> and Box<String> coexist;
+type Box<'v> =                                // GENERIC declarations: 'v type-var params
+  | Full(value: 'v)                           //   Box<float> and Box<string> coexist;
   | Empty                                     //   params substitute through fields/patterns
 
 type Shape =                                  // variant types (ADTs); nominal like records
-  | Circle(radius: Float)                     // leading | REQUIRED, first alternative too
-  | Rect(w: Float, h: Float)                  // fields named in the decl…
+  | Circle(radius: float)                     // leading | REQUIRED, first alternative too
+  | Rect(w: float, h: float)                  // fields named in the decl…
   | Point                                     // …nullary ctor: no parens, ever
 
 type SceneNode                                // ABSTRACT type (no `= body`): an opaque nominal —
@@ -51,30 +51,30 @@ type SceneNode                                // ABSTRACT type (no `= body`): an
 let c = Circle(2.0)                           // …but ctors are CALLED positionally
 let shapes = [c, Rect(3.0, 4.0), Point]       // bare Point IS the value
 
-let area = (s: Shape): Float =>
+let area = (s: Shape): float =>
   match s with                                // match: | pattern => full-expression body
   | Circle(r) => 3.14 * r * r                 // ctor patterns bind positionally
   | Rect(w, _) => w * w                       // sub-patterns: names or _ ONLY (no nesting)
   | Point => 0.0                              // exhaustiveness checked when s's type is known
 
-let sizeOf = (s: Shape): String =>
+let sizeOf = (s: Shape): string =>
   match area(s) > 10.0 with                   // bool-literal match = the ONLY conditional
   | true => "big"
   | false => "small"                          // number/string literal arms exist too
                                               // (they need a catch-all: `| x =>` or `| _ =>`)
 
-let threshold = 10                            // top-level let; ints/floats are all Float (f64)
+let threshold = 10                            // top-level let; ints/floats are all float (f64)
 let origin: Position = { x: 0.0, y: 0.0 }     // OPTIONAL binding annotation `let name: Type = …`
                                               //   (checked against the value; also on `let … in`)
 let scores = [1.0, 2.0, 3.0]                  // list literal; [x, ..xs] prepends
-let sumList = (xs: List<Float>): Float =>     // list PATTERNS: [] / [a,b] / [h, ..t]
+let sumList = (xs: List<float>): float =>     // list PATTERNS: [] / [a,b] / [h, ..t]
   match xs with
   | [] => 0.0
   | [head, ..rest] => head + sumList(rest)    // refutable; needs a catch-all or [..r]
 let s = "text\n"                              // strings: escapes \" \\ \n \t
 let flag = true                               // bools
 
-let isHigh = (score: Float): Bool => score > threshold   // annotations OPTIONAL (gradual)
+let isHigh = (score: float): bool => score > threshold   // annotations OPTIONAL (gradual)
 let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
 
 let report = (scores) =>
@@ -85,12 +85,12 @@ let report = (scores) =>
 
 let nudge = (p: Position): Position => { p with x: p.x + 1.0 }  // record update (fields must exist)
 
-let minMax = (a: Float, b: Float): (Float, Float) =>  // tuple TYPE: (A, B); value tuple: (e1,e2,…)
+let minMax = (a: float, b: float): (float, float) =>  // tuple TYPE: (A, B); value tuple: (e1,e2,…)
   match a < b with
   | true => (a, b)                            // `(e)` / `(A)` is GROUPING, not a 1-tuple
   | false => (b, a)
 
-let apply = (f: (Float) => Float, x: Float): Float => f(x)  // function TYPE: (A, B) => C, () => C
+let apply = (f: (float) => float, x: float): float => f(x)  // function TYPE: (A, B) => C, () => C
 // return-position function types need parens: (): ((A) => B) => …  (the outer => is the body)
 
 let span = (a, b) =>
@@ -111,7 +111,7 @@ loosest), unary `-`. There is **no** if/else, loops, or string-concatenation
 operator — iteration is `List.map/filter/fold`,
 and the conditional is a **bool-literal match**
 (`match x > 3.0 with | true => a | false => b`). Tuples are structural:
-`(1.0, "a") == (1.0, "a")`; tuple types annotate as `(Float, String)` and
+`(1.0, "a") == (1.0, "a")`; tuple types annotate as `(float, string)` and
 function types as `(A, B) => C` / `() => C`, with `(A)` as grouping. Prefer
 named records for anything that outlives an expression; tuples are for
 multiple returns.
@@ -129,9 +129,9 @@ still counts. File stems must be identifiers (`pure_pipeline.mle`, not
 
 ```mle
 // utils.mle                                  // → module Utils
-type Shape = | Circle(radius: Float) | Point
+type Shape = | Circle(radius: float) | Point
 let tau = 6.28
-let area = (s: Shape): Float =>
+let area = (s: Shape): float =>
   match s with
   | Circle(r) => 3.14 * r * r
   | Point => 0.0
@@ -153,7 +153,7 @@ let grab = (s) =>
 
 - **Qualified access needs NO import**: `Utils.clamp(x)`, `Utils.Circle(…)`
   (expressions and patterns, first-class when unapplied), `Utils.Shape` /
-  `Utils.Box<Float>` in annotations. `open Utils` adds unqualified access;
+  `Utils.Box<float>` in annotations. `open Utils` adds unqualified access;
   a name collision with the module's own defs or another `open` is a load
   error naming both sides (qualify instead). `open` is contextual — it
   stays a valid binding name.
@@ -169,8 +169,8 @@ let grab = (s) =>
   Frame, Light, Fog, Skybox, Angle, Texture, Time, Sub, Effect, Physics,
   RenderTarget, Ui, AudioSource, AudioScene) is a load error — rename the file.
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
-  | Connected(id: Float) | Message(id: Float, text: String) |
-  Disconnected(id: Float) | Error(id: Float, text: String)`. A `Sub.connect`/
+  | Connected(id: float) | Message(id: float, text: string) |
+  Disconnected(id: float) | Error(id: float, text: string)`. A `Sub.connect`/
   `Sub.listen` tagger receives these — `match ev with | Net.Connected(id)
   => …` — with no declaration needed.
 - Constructor names must be unique per MODULE (not per project); values
@@ -196,12 +196,12 @@ so there is no paired-`.mle` implementation.) Bodies are forbidden in a
 // widget.mlei                              → interface module Widget
 type Handle                                 // abstract type (opaque; host-made)
 let make : () => Handle                     // bodyless SIGNATURE (the chosen form —
-let size : (Handle) => Float                //   `let name : Type`, no `= body`)
+let size : (Handle) => float                //   `let name : Type`, no `= body`)
 ```
 
 ```mle
 // game.mle
-let area = (h: Widget.Handle): Float => Widget.size(h)   // qualified; typed by widget.mlei
+let area = (h: Widget.Handle): float => Widget.size(h)   // qualified; typed by widget.mlei
 open Widget                                              // …or open, bringing make/size/Handle bare
 ```
 
@@ -215,10 +215,10 @@ open Widget                                              // …or open, bringing
   `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`, `Sub`,
   `Effect`, `Physics`, `Ui`, `AudioSource`, `AudioScene`), loaded by the runner
   so engine calls carry real types (no longer `Unknown`). Each module's primary
-  opaque handle is `Mod.T` (`Camera.T`, `Frame.T`, `Effect.T`, …); modules that
-  own several name each (`Scene.Node`; `Physics.Shape`/`Body`/`Scene`;
-  `Ui.View`/`Anchor`). Physics query/event results are records
-  (`Physics.Position`, `Physics.RayHit`, `Physics.CollisionEvent`).
+  opaque handle is `Mod.t` (`Camera.t`, `Frame.t`, `Effect.t`, …); modules that
+  own several name each (`Scene.t`; `Physics.shape`/`body`/`world`;
+  `Ui.view`/`anchor`). Physics query/event results are records
+  (`Physics.position`, `Physics.rayHit`, `Physics.collisionEvent`).
 
 ## Semantics rules that WILL bite you
 
@@ -269,16 +269,16 @@ thread through `|>` (which appends): `list |> List.map(fn)` == `List.map(fn, lis
 
 `List.map(fn, list)` · `List.filter(fn, list)` · `List.fold(fn, init, list)`
 (callback is `(acc, x) => …`) · `List.range(n)` (`[0 … n-1]`) ·
-`List.grid(fn, rows, cols)` (→ `List<List<a>>`; calls `fn(row, col)`, both
+`List.grid(fn, rows, cols)` (→ `List<List<'a>>`; calls `fn(row, col)`, both
 0-based, per cell — the engine-loop form of a procedural heightmap, e.g.
 `Scene.heightmap(List.grid(height, r, c))`) ·
 `List.maximum(list)` · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
 `Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
-`%d` shape) · `Text.toBullets(list)` · `Text.split(sep, s)` (→ `List<String>`;
+`%d` shape) · `Text.toBullets(list)` · `Text.split(sep, s)` (→ `List<string>`;
 empty `sep` is an error; `Text.split(sep, "")` = `[""]`) · `Text.join(sep, list)`
 (strings only) · `Text.parseFloat(s)` (trims; unparseable → `0.0`, the F#
 `unwrap_or(0)` shape) · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)` ·
-`Debug.log(label, value)` — `(String, 'a) => 'a`: an Elm-style trace. Logs
+`Debug.log(label, value)` — `(string, 'a) => 'a`: an Elm-style trace. Logs
 `label: <value>` (the value rendered exactly as `mle run`/`trace` displays it —
 any type) and returns `value` **unchanged**, so it's pure to the program
 result and safe to drop into a pipe: `m.x |> Debug.log("x") |> clamp(0.0, 1.0)`
@@ -374,7 +374,7 @@ frame |> Frame.withSkybox(sky)                             //   paths (+X..-Z). 
                                                            //   Fog never fogs the sky
 Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
 Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
-Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (Float) => Msg
+Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (float) => Msg
 Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connections; tagger: (Net.NetEvent) => Msg
 Effect.send(connId, text)                                  // send on an open connection
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
@@ -412,7 +412,7 @@ Physics.events(tagger)                                     // -> Sub (from `subs
                                                            //   sensor} per contact begin/end
 Physics.pause() / Physics.resume() / Physics.stepOnce()   // -> Effect: recorder controls
 Physics.rewindTo(frame)                                    // -> Effect: seek (resume = branch)
-Physics.timelineFrame()                                    // -> Float: current fixed frame
+Physics.timelineFrame()                                    // -> float: current fixed frame
 ```
 
 `Physics.position` / `Physics.transformed` read the live stepped world
@@ -451,8 +451,8 @@ testable with no world at all.
 
 `Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
 `Sub.batch`; it requires `update`). Every contact begin/end from this
-frame's physics step arrives post-step as `{started: Bool, a: Text,
-b: Text, sensor: Bool}` — `a`/`b` are the pair's tags in rapier's
+frame's physics step arrives post-step as `{started: bool, a: Text,
+b: Text, sensor: bool}` — `a`/`b` are the pair's tags in rapier's
 (deterministic) order, so check both; `sensor: true` marks an overlap with
 a `Physics.sensor` body (no contact forces). Events for a pair whose body
 was despawned this frame are dropped (there is nothing left to name), and
@@ -553,13 +553,13 @@ inspected, compared, or serialized.
 `mle check` runs REAL INFERENCE (B7): unannotated code gets full types via
 unification with let-polymorphism — generic functions instantiate fresh at
 every use, element types flow through `List.map`/`filter`/`fold`, and
-lowercase annotation names are type variables (`(xs: List<a>, seed: b): List<b>`). Inference has teeth: unannotated bad calls, mixed-element
+apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: 'b): List<'b>`). Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
-at genuinely-dynamic seams (host values, unrecognized Uppercase type
+at genuinely-dynamic seams (host values, unrecognized type
 names) and absorbs anything. (Function TYPES cannot be written in
-annotations yet — `f: (a) => b` does not parse; leave higher-order
-parameters unannotated and let inference type them.) Generic declarations (`type Pair<x, y> = { first: x, second: y }`)
-instantiate fresh per use; an UNDECLARED lowercase name in a declaration is
+annotations yet — `f: ('a) => 'b` does not parse; leave higher-order
+parameters unannotated and let inference type them.) Generic declarations (`type Pair<'x, 'y> = { first: 'x, second: 'y }`)
+instantiate fresh per use; an UNDECLARED type variable in a declaration is
 a teaching error. Record literals resolve nominally, F#-style:
 the unique declared type with exactly that field set (no match = anonymous
 data, still fine; two same-shaped declarations make a bare literal

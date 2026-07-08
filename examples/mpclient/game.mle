@@ -12,19 +12,19 @@
 // shared color palette) and no Option (a ConnState ADT holds the connection id
 // once the socket opens; `Text.fixed` rounding matches mpserver's wire).
 
-type Player = { pid: Float, x: Float, z: Float }
+type Player = { pid: float, x: float, z: float }
 
 type ConnState =
-  | Online(id: Float)
+  | Online(id: float)
   | Offline
 
-type Model = { conn: ConnState, world: List<Player>, status: String }
+type Model = { conn: ConnState, world: List<Player>, status: string }
 
 type Msg =
-  | Joined(id: Float)
-  | Snapshot(text: String)
+  | Joined(id: float)
+  | Snapshot(text: string)
   | Dropped
-  | ConnErr(text: String)
+  | ConnErr(text: string)
 
 let serverUrl = "ws://127.0.0.1:9001/play"
 
@@ -41,7 +41,7 @@ let init = { conn: Offline, world: [], status: "connecting" }
 // "pid,x*100,z*100|..." -> [Player]. Fold+cons filters malformed rows (not
 // exactly 3 fields) and undoes the *100 fixed-point; draw order is irrelevant,
 // so the reversal cons introduces doesn't matter.
-let parseSnapshot = (s: String): List<Player> =>
+let parseSnapshot = (s: string): List<Player> =>
   Text.split("|", s) |> List.fold((acc, row) =>
     match Text.split(",", row) with
     | [p, x, z] =>
@@ -62,10 +62,10 @@ let update = (m: Model, msg: Msg) =>
 // Declaring the connection in `subscriptions` keeps it open.
 let subscriptions = (m: Model) => Sub.connect(serverUrl, toMsg)
 
-let tick = (m: Model, dt: Float, tts: Float) => m
+let tick = (m: Model, dt: float, tts: float) => m
 
 // WASD -> a velocity string the server understands; other keys send nothing.
-let velocityFor = (key: String): String =>
+let velocityFor = (key: string): string =>
   match key with
   | "W" => "0 1"
   | "S" => "0 -1"
@@ -75,7 +75,7 @@ let velocityFor = (key: String): String =>
 
 // Key down sends the direction; key release sends a stop. Both need the live
 // connection id, so nothing is sent until the socket has opened.
-let input = (m: Model, key: String, isDown: Bool) =>
+let input = (m: Model, key: string, isDown: bool) =>
   match m.conn with
   | Offline => m
   | Online(id) =>
@@ -88,19 +88,19 @@ let input = (m: Model, key: String, isDown: Bool) =>
 
 // Same palette as mpserver, keyed by player id, so a player is the same
 // color in every pane. MLE has no `%`, so mod4 wraps by recursion.
-let mod4 = (n: Float): Float =>
+let mod4 = (n: float): float =>
   match n < 4.0 with
   | true => n
   | false => mod4(n - 4.0)
 
-let colorFor = (pid: Float): (Float, Float, Float) =>
+let colorFor = (pid: float): (float, float, float) =>
   match mod4(pid) with
   | 0.0 => (0.90, 0.35, 0.35)
   | 1.0 => (0.35, 0.60, 0.95)
   | 2.0 => (0.45, 0.85, 0.45)
   | _ => (0.95, 0.80, 0.35)
 
-let draw = (m: Model, tts: Float) =>
+let draw = (m: Model, tts: float) =>
   // One colored cube per player in the last snapshot the server sent (same
   // framing + palette as mpserver, so panes line up in the netsim viewer).
   let playerNodes =

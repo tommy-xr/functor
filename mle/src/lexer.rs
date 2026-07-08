@@ -10,6 +10,9 @@ pub enum TokenKind {
     Number(f64),
     Str(String),
     Ident(String),
+    /// A type variable in type position: `'a`, `'msg`. Stored WITH the leading
+    /// apostrophe, so the string is exactly the source spelling.
+    TypeVar(String),
     Let,
     Type,
     True,
@@ -57,6 +60,7 @@ pub fn describe(kind: &TokenKind) -> String {
         Number(n) => format!("number `{n}`"),
         Str(_) => "a string".to_string(),
         Ident(name) => format!("`{name}`"),
+        TypeVar(name) => format!("`{name}`"),
         Let => "`let`".to_string(),
         Type => "`type`".to_string(),
         True => "`true`".to_string(),
@@ -221,6 +225,21 @@ pub fn lex(src: &str, base: usize) -> Result<Vec<Token>, ParseError> {
                 let (kind, next) = lex_string(src, i, base)?;
                 i = next;
                 kind
+            }
+            // A type variable: `'a`, `'msg`. The apostrophe must be followed by
+            // an identifier char; a bare `'` is a lex error.
+            b'\'' => {
+                i += 1; // consume `'`
+                if i >= bytes.len() || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+                    return Err(ParseError {
+                        message: "expected a type-variable name after `'` (e.g. `'a`)".to_string(),
+                        span: Span::new(base + start, base + i),
+                    });
+                }
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                TokenKind::TypeVar(src[start..i].to_string())
             }
             b'0'..=b'9' => {
                 while i < bytes.len() && bytes[i].is_ascii_digit() {

@@ -50,11 +50,11 @@ fn real_tuple_mismatch_still_errors() {
 /// Host calls carry real types from the prelude `.mlei`, across namespaces.
 #[test]
 fn host_calls_have_real_types() {
-    let diags = check("let bad : Float = Camera.lookAt(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)");
-    assert!(diags.iter().any(|m| m.contains("Camera.T")), "{diags:?}");
+    let diags = check("let bad : float = Camera.lookAt(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)");
+    assert!(diags.iter().any(|m| m.contains("Camera.t")), "{diags:?}");
     let diags = check(
-        "let bad : Float =\n\
+        "let bad : float =\n\
          Frame.create(Camera.lookAt(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), Scene.cube())",
     );
-    assert!(diags.iter().any(|m| m.contains("Frame.T")), "{diags:?}");
+    assert!(diags.iter().any(|m| m.contains("Frame.t")), "{diags:?}");
 }

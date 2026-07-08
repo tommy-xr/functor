@@ -14,7 +14,7 @@ Module {
                             name: "pid",
                             ty: Some(
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 301..306,
                                 },
@@ -26,7 +26,7 @@ Module {
                             name: "x",
                             ty: Some(
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 311..316,
                                 },
@@ -38,7 +38,7 @@ Module {
                             name: "z",
                             ty: Some(
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 321..326,
                                 },
@@ -48,7 +48,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "String",
+                            name: "string",
                             args: [],
                             span: 329..335,
                         },
@@ -234,7 +234,7 @@ Module {
                                     name: "List",
                                     args: [
                                         TypeName {
-                                            name: "String",
+                                            name: "string",
                                             args: [],
                                             span: 520..526,
                                         },
@@ -247,7 +247,7 @@ Module {
                     ],
                     ret: Some(
                         TypeName {
-                            name: "String",
+                            name: "string",
                             args: [],
                             span: 530..536,
                         },
@@ -303,7 +303,7 @@ Module {
                             name: "row",
                             ty: Some(
                                 TypeName {
-                                    name: "String",
+                                    name: "string",
                                     args: [],
                                     span: 652..658,
                                 },
@@ -316,17 +316,17 @@ Module {
                             name: "*",
                             args: [
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 662..667,
                                 },
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 669..674,
                                 },
                                 TypeName {
-                                    name: "Float",
+                                    name: "float",
                                     args: [],
                                     span: 676..681,
                                 },

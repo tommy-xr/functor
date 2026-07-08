@@ -206,9 +206,9 @@ fn lower_module(
             }
             ast::Item::Type(decl) => {
                 // Builtin type names would shadow the primitives in
-                // annotations (the checker resolves `Float` before user
-                // types), yielding nonsense like "expected Float, got Float".
-                if matches!(decl.name.as_str(), "Float" | "Bool" | "String" | "List") {
+                // annotations (the checker resolves `float` before user
+                // types), yielding nonsense like "expected float, got float".
+                if matches!(decl.name.as_str(), "float" | "bool" | "string" | "List") {
                     return Err(LowerError {
                         message: format!("cannot redeclare builtin type `{}`", decl.name),
                         span: decl.span,

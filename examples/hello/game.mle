@@ -52,7 +52,7 @@ let gridTexture = Texture.file("grid.png")
 // (F#'s `lastMouse: (float32 * float32) option`).
 type Mouse =
   | NoMouse
-  | MouseAt(x: Float, y: Float)
+  | MouseAt(x: float, y: float)
 
 // Fired every second by the subscription below (F#'s `Msg.Tick`).
 type Msg =

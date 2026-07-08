@@ -13,8 +13,8 @@ to their own bindings — so inference flows real types through engine-touching
 code instead of collapsing to `Unknown`.
 
 Today the engine API resolves to `ExprKind::External` → `Type::Unknown`, so a
-signature like `ringCube` shows `(Float, Float) => 'i` in hover/codelens instead
-of `(Float, Float) => SceneNode`. The vehicle is **interface files**: a `.mlei`
+signature like `ringCube` shows `(float, float) => 'i` in hover/codelens instead
+of `(float, float) => SceneNode`. The vehicle is **interface files**: a `.mlei`
 declares *types without implementations*, the way OCaml `.mli` / TypeScript
 `.d.ts` do.
 
@@ -26,7 +26,7 @@ and later module encapsulation).
 
 ## Current state (verified) — what parses today
 
-| Position | Simple / generic (`Float`, `List<Float>`) | `*`-tuple (`Float * Float`) | Function type (`(A) => B`) |
+| Position | Simple / generic (`float`, `List<float>`) | `*`-tuple (`float * float`) | Function type (`(A) => B`) |
 | --- | --- | --- | --- |
 | Function parameter `(x: T)` | ✅ | ✅ | ❌ |
 | Return type `(): T =>` | ✅ | ✅ | ❌ |
@@ -83,7 +83,7 @@ grammar (it stays a value-level multiply operator), and switch the type
 `(A, B)` so hover/codelens output matches the input spelling.
 
 This also fixes higher-order annotations that error today:
-`let apply = (f: (Float) => Float, x: Float) => f(x)`.
+`let apply = (f: (float) => float, x: float) => f(x)`.
 
 *Verify:* parse + check tests for every form (function, tuple, grouping, nested,
 return-parens); the migrated examples still check clean; hover/codelens now
@@ -106,7 +106,7 @@ let name : Type = value in body  // let-in
   becomes an error instead of silently `Unknown`.
 - Inlay hints: an annotated binding is skipped (like an annotated param).
 
-*Verify:* `let x: Float = 3.0` checks; a mismatched annotation errors at the
+*Verify:* `let x: float = 3.0` checks; a mismatched annotation errors at the
 value's span; inlay suppresses the hint on annotated bindings.
 
 ### 2c — Abstract types
@@ -123,8 +123,8 @@ type SceneNode           // abstract: no constructors, no fields
 - Check: abstract types are nominal and unify only with themselves (by canonical
   name, e.g. `Scene.SceneNode`); they have no constructors, so you can hold and
   pass one but only host `val`s produce/consume it. Plug into the existing
-  nominal-type table (`Type::Record(String,…)` / `Variant(String,…)`); likely a
-  new `Type::Opaque(String, Vec<Type>)` (name + type args) variant.
+  nominal-type table (`Type::Record(string,…)` / `Variant(string,…)`); likely a
+  new `Type::Opaque(string, Vec<Type>)` (name + type args) variant.
 
 *Verify:* `type T` + a function passing a `T` through checks; constructing a `T`
 (no ctor exists) errors; cross-module `Mod.T` resolves to the same nominal.
@@ -136,10 +136,10 @@ The interface file itself. A `.mlei` contains **only** declarations — no bodie
 ```
 // scene.mlei  →  module `Scene`
 type SceneNode
-type Color = { r: Float, g: Float, b: Float }   // concrete types allowed too
+type Color = { r: float, g: float, b: float }   // concrete types allowed too
 
 val cube    : () => SceneNode
-val color   : (Float, Float, Float, SceneNode) => SceneNode
+val color   : (float, float, float, SceneNode) => SceneNode
 val group   : (List<SceneNode>) => SceneNode
 val rotateY : (Angle, SceneNode) => SceneNode
 ```
@@ -178,7 +178,7 @@ and become ordinary interface-only modules owned by the bundled prelude.
 - **Drift test:** a Rust test asserting every `val` in the bundled `.mlei` maps
   to a real entry in the host registry (`mle_prelude.rs`) and vice versa, so the
   declared types and the Rust implementations cannot silently diverge.
-- Result: `ringCube : (Float, Float) => SceneNode` in hover/codelens; inlay/
+- Result: `ringCube : (float, float) => SceneNode` in hover/codelens; inlay/
   codelens across a real game stop showing `'a`/`Unknown` for engine calls.
 
 ## Module semantics summary
