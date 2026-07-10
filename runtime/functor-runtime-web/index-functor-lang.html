@@ -74,6 +74,8 @@
         functor_lang_key_event,
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
+        functor_lang_ui_pointer,
+        functor_lang_ui_pointer_leave,
         functor_lang_is_running,
         functor_lang_set_source,
         functor_lang_scene_frame,
@@ -162,6 +164,34 @@
         canvas.addEventListener("wheel", (e) => {
           e.preventDefault();
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
+        });
+
+        // Interactive game UI (docs/ui-interaction.md U3): while the pointer
+        // is FREE (not look mode), its canvas position + primary button drive
+        // the game's `Ui.*` widgets. CSS px — the runtime scales by the
+        // device pixel ratio. Pointer lock engaging counts as leaving.
+        let uiButtonDown = false;
+        const uiPointer = (e) => {
+          if (document.pointerLockElement === canvas) return;
+          functor_lang_ui_pointer(e.offsetX, e.offsetY, uiButtonDown);
+        };
+        canvas.addEventListener("mousemove", uiPointer);
+        canvas.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          uiButtonDown = true;
+          uiPointer(e);
+        });
+        canvas.addEventListener("mouseup", (e) => {
+          if (e.button !== 0) return;
+          uiButtonDown = false;
+          uiPointer(e);
+        });
+        canvas.addEventListener("mouseleave", () => {
+          uiButtonDown = false;
+          functor_lang_ui_pointer_leave();
+        });
+        document.addEventListener("pointerlockchange", () => {
+          if (document.pointerLockElement === canvas) functor_lang_ui_pointer_leave();
         });
       };
 

@@ -439,6 +439,25 @@ AudioSource.at(key, sound, x, y, z)                        //   / positioned emi
 source |> AudioSource.gain(g)                              // source-last: linear gain (1.0=full)
 AudioScene.create([source, …]) / AudioScene.empty()       // what `soundScape` returns
 
+Ui.text("line") / Ui.textColor(r, g, b, "line")            // HUD text (monospace, 14pt)
+Ui.column([view, …])                                       // stack top-to-bottom
+view |> Ui.panel(Ui.topLeft())                             // pin to a corner (view-LAST: pipes;
+                                                           //   only topLeft exists so far)
+Ui.button("label", msg)                                    // INTERACTIVE (docs/ui-interaction.md):
+                                                           //   a click delivers msg VERBATIM
+                                                           //   through `update` (the Sub.every
+                                                           //   message shape; requires update).
+                                                           //   Interactive widgets are numbered
+                                                           //   by SLOT in construction order —
+                                                           //   the debug server clicks them
+                                                           //   headlessly: POST /input
+                                                           //   {"type":"ui_event","slot":0,
+                                                           //    "kind":"Clicked"}. Like
+                                                           //   Sub.every's msg, the msg↔update
+                                                           //   type link is a runtime check.
+                                                           //   `examples/counter` is the
+                                                           //   reference
+
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body
 Physics.kinematic("tag", shape) / Physics.fixed("tag", shape)
@@ -533,6 +552,9 @@ let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
                                             // OPTIONAL, but requires update
 let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …])  // OPTIONAL
+let ui = (model) => Ui.column([…]) |> Ui.panel(Ui.topLeft())  // OPTIONAL; the 2D HUD,
+                                            // drawn over the frame. Ui.button clicks
+                                            // arrive as msgs through `update`
 let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; continuous
                                             // looping voices, reconciled by key each
                                             // frame (needs no `update`)

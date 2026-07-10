@@ -1120,10 +1120,12 @@ async fn run_async() -> Result<(), JsValue> {
 
             // Deliver page input queued since the last frame (the Functor Lang path's
             // `functor_lang_*` exports), once per rendered frame before this frame's steps.
-            // While paused, drain-and-discard: no input may reach the model on a
-            // paused frame (the input log would otherwise diverge replay), and
+            // While PINNED (paused or ?fixed-time — the desktop `ignore_user_input`
+            // rule), drain-and-discard: no input may reach the model on a pinned
+            // frame (a paused frame's input would diverge the replay log; a
+            // fixed-time frame must stay deterministic for captures), and
             // draining stops the queue bursting on resume.
-            functor_lang_game::drain_input(&mut **game, !clock.is_paused());
+            functor_lang_game::drain_input(&mut **game, !clock.is_pinned());
 
             for sub in &sub_frames {
                 game.tick(sub.clone());
@@ -1221,11 +1223,28 @@ async fn run_async() -> Result<(), JsValue> {
             }
 
             // 2D UI overlay: the game's declarative `ui model` View, lowered to a
-            // text overlay on top of the frame (HiDPI-aware via the device ratio).
+            // text overlay on top of the frame (HiDPI-aware via the device
+            // ratio). The page's unlocked-pointer canvas listeners feed the
+            // pointer (CSS px, scaled to framebuffer px here); widget
+            // interactions come back slot-stamped and fold through the game's
+            // `update` — except while paused, matching `drain_input`'s gate
+            // (no input may reach the model on a paused frame).
             let view: functor_runtime_common::ui::View = game.ui();
             let dpr = web_sys::window().unwrap().device_pixel_ratio() as f32;
             let dpr = dpr.max(1.0);
-            text_overlay.draw_view(canvas.width(), canvas.height(), dpr, &view);
+            let ui_pointer = functor_lang_game::ui_pointer_state(dpr);
+            let ui_out = text_overlay.draw_view(
+                canvas.width(),
+                canvas.height(),
+                dpr,
+                ui_pointer,
+                &view,
+            );
+            if !clock.is_pinned() {
+                for event in ui_out.events {
+                    game.ui_event(event);
+                }
+            }
 
             // Publish the scrubber state for the DOM slider to poll (the UI
             // itself is native HTML in index-functor-lang.html, outside the canvas).

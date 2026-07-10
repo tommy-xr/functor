@@ -15,3 +15,7 @@ let column : (List<view>) => view
 // view LAST (subject-last), so it pipes: `Ui.column([…]) |> Ui.panel(Ui.topLeft())`.
 let panel : (anchor, view) => view
 let topLeft : () => anchor
+// Interactive: a click delivers `msg` verbatim through `update`
+// (docs/ui-interaction.md). Like Sub.every's msg, 'msg is erased by the
+// opaque `view` — the msg↔update link is checked at runtime.
+let button : (string, 'msg) => view
