@@ -1,16 +1,14 @@
 # Interactive UI (Elm-style)
 
-Status: **design — nothing shipped.** Today `ui = (model) => View` renders a
-text-only HUD (`Ui.text`/`column`/`panel`) that egui paints with every area
-`.interactable(false)`; mouse buttons never reach game logic at all (the
-desktop shell consumes them for cursor recapture and the scrubber). This doc
-is the design for making UI *interactive* — buttons, sliders, text inputs that
-produce messages folded through `update` — targeting **parity with React and
-Elm**. It absorbs `docs/todo.md` time-travel items T2 (pointer/click plumbing)
-and T4 (interactive `View`), but the UI system itself is independent of the
-scrubber — the scrubber shows up only as U1's verification target, being the
-one interactive egui widget that exists today. The culmination is
-`examples/ui`, a widget showcase.
+Status: **SHIPPED** (U1–U5, 2026-07-10). `ui = (model) => View` is
+interactive: `Ui.button` / `Ui.slider` / `Ui.textInput` produce messages
+folded through `update` — Elm/React-parity controlled widgets — drivable
+headlessly through the debug server (`POST /input {"type":"ui_event",…}`).
+This doc is the design record and the map of the machinery; the reference
+example is **`examples/ui`** (the widget showcase; `examples/counter` is the
+button-only hello world). It absorbed `docs/todo.md` time-travel items T2
+(pointer/click plumbing) and T4 (interactive `View`); the UI system is
+independent of the scrubber.
 
 ## The shape
 
@@ -114,29 +112,30 @@ game's perspective this is fully Elm-controlled.
 
 ## Roadmap
 
-- [ ] **U1 — pointer plumbing (= todo T2).** Extract the scrubber's
-      hand-rolled `PointerState` → egui-event synthesis into a shared,
-      unit-tested `PointerBridge` — the piece the interactive game-UI pass
-      reuses. Desktop-only: the web shell has no egui input consumer yet, so
-      its pointer wiring lands with U3 where it's observable. No game-facing
-      change. *Verify:* bridge unit tests; the scrubber behaves identically
-      through the shared path.
-- [ ] **U2 — the seam.** `UiEvent`, `GameProducer::ui_event`, the slot table,
-      `FrameCtx::deliver_ui_event`, the `RecordedInput` variant, debug-server
-      injection. *Verify:* headless unit tests (inject event → `update` ran),
-      before any widget renders.
-- [ ] **U3 — `Ui.button` (= todo T4) + counter example.** Prelude ctor,
-      interactable egui rendering (the `TextOverlay` pass gains pointer input
-      via the U1 bridge, on both shells — web adds its unlocked-pointer canvas
-      listeners here), click → msg. *Verify:* debug-server e2e clicks the
-      button and reads the count; functor-lang skill updated.
-- [ ] **U4 — `Ui.slider` + `Ui.textInput`.** Tagger-carrying, with the
-      reconciliation algorithm above and the keyboard-focus gate; plus the
-      missing basics (`Ui.row`, remaining anchors). *Verify:* typing-fast and
-      programmatic-reset cases as producer tests; validate the egui
-      `TextEdit` buffer integration first — it's the riskiest piece.
-- [ ] **U5 — `examples/ui`.** A widget showcase: one panel exercising every
-      interactive widget (buttons, slider, text input) plus the display
-      vocabulary (`row`/`column`/anchors), each wired to model state echoed
-      back as text — the full UI → msg → model → view loop, no 3D scene or
-      scrubber involvement required. GIF/PNG via pr-visuals.
+- [x] **U1 — pointer plumbing (= todo T2)** (#288). The scrubber's
+      hand-rolled `PointerState` → egui-event synthesis extracted into the
+      shared, unit-tested `PointerBridge` the game-UI pass reuses.
+- [x] **U2 — the seam** (#291). `UiEvent`, `GameProducer::ui_event`, the slot
+      table, `FrameCtx::deliver_ui_event`, the `RecordedInput` variant,
+      debug-server injection — all headlessly tested before any widget
+      rendered. Replay rebuilds the handler table once per fine step, before
+      the step's inputs (the live last-render contract).
+- [x] **U3 — `Ui.button` (= todo T4) + `examples/counter`** (#293). The
+      interactive `TextOverlay` pass (pointer via the U1 bridge, both
+      shells), click → msg. Review catches now baked in: a press LATCH so
+      sub-frame clicks aren't level-sampled away; scrubber pointer priority
+      over an overlapping game widget; Empty-view frames still flush bridge
+      events so egui can't hold a stuck press.
+- [x] **U4 — `Ui.slider` (#294) + `Ui.textInput` (#297)** plus `Ui.row` and
+      the remaining anchors. Both reconciliation algorithms above shipped
+      as specified (per-slot buffers keyed by slot, dropped when the slot
+      leaves the view); the keyboard focus gate suppresses the game's
+      `input` hook — including releases whose press was swallowed — and the
+      pinned clock hides the pointer from the pass entirely. The egui
+      `TextEdit` integration is unit-tested headlessly (egui runs without
+      GL; input hit-tests against the previous frame's rects, so click
+      tests need a warmup frame).
+- [x] **U5 — `examples/ui`.** The widget showcase: one panel exercising
+      every interactive widget plus the display vocabulary, each wired to
+      model state echoed back as text — the full UI → msg → model → view
+      loop, no 3D scene or scrubber involvement.

@@ -273,10 +273,17 @@ fn render_view(ui: &mut egui::Ui, view: &View, state: &mut UiFrameState) {
         View::Empty => {}
         View::Text { text, color, .. } => {
             let [r, g, b] = *color;
-            ui.label(
-                egui::RichText::new(text)
-                    .font(egui::FontId::monospace(UI_FONT_SIZE))
-                    .color(egui::Color32::from_rgb(r, g, b)),
+            // Extend, never soft-wrap: a corner Area remembers its width, so
+            // dynamic text that shrinks then grows back would wrap at the
+            // STALE narrower constraint (e.g. an echo line after a model
+            // reset). HUD text is one line unless the author breaks it.
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .font(egui::FontId::monospace(UI_FONT_SIZE))
+                        .color(egui::Color32::from_rgb(r, g, b)),
+                )
+                .wrap_mode(egui::TextWrapMode::Extend),
             );
         }
         View::Column(items) => {
