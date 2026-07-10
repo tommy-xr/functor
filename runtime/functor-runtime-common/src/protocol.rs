@@ -17,6 +17,9 @@
 //!   **`i32` discriminants** are the wire representation on both sides
 //!   (mirrored by F# `Input.ofKeyCode`) — inserting a variant mid-enum is a
 //!   protocol break even though serde names don't change.
+//! - [`crate::ui::UiEvent`] — an interaction on an interactive UI widget
+//!   (slot-addressed; see docs/ui-interaction.md), delivered like the input
+//!   scalars above.
 //!
 //! # Per-frame, logic → runtime
 //!
@@ -178,6 +181,12 @@ pub trait GameProducer {
 
     /// Deliver a mouse-wheel event (vertical scroll offset).
     fn mouse_wheel(&mut self, delta: i32);
+
+    /// Deliver an interaction on an interactive UI widget
+    /// ([`crate::ui::UiEvent`], slot-addressed — docs/ui-interaction.md). The
+    /// default drops it: the honest no-op for producers with no interactive
+    /// UI (replays, producers whose games define no `ui`).
+    fn ui_event(&mut self, _event: crate::ui::UiEvent) {}
 
     fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame;
 
@@ -522,6 +531,36 @@ mod tests {
         // The exact hop the runtimes use (audio_scene_json).
         let back: AudioScene = serde_json::from_str(&crate::audio::scene_to_json(&scene)).unwrap();
         assert_eq!(scene, back);
+    }
+
+    // The UI-interaction event (docs/ui-interaction.md U2): slot-addressed,
+    // one variant per widget kind. Crosses the debug-server wire and the
+    // recorder's event log.
+    #[test]
+    fn ui_event_is_pinned() {
+        use crate::ui::{UiEvent, UiEventKind};
+
+        assert_wire(
+            &UiEvent {
+                slot: 0,
+                kind: UiEventKind::Clicked,
+            },
+            r#"{"slot":0,"kind":"Clicked"}"#,
+        );
+        assert_wire(
+            &UiEvent {
+                slot: 2,
+                kind: UiEventKind::SliderChanged(0.5),
+            },
+            r#"{"slot":2,"kind":{"SliderChanged":0.5}}"#,
+        );
+        assert_wire(
+            &UiEvent {
+                slot: 1,
+                kind: UiEventKind::TextChanged("hi".to_string()),
+            },
+            r#"{"slot":1,"kind":{"TextChanged":"hi"}}"#,
+        );
     }
 
     #[test]

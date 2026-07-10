@@ -33,7 +33,8 @@ use crate::functor_lang_prelude::{
     contains_effect, deliver_physics_events, drain_effects, frame_value, http_response_value,
     needs_update, net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
     physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
-    take_http_tagger, DryRunEffects, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind,
+    take_http_tagger, take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree,
+    FunctorHost, NetEventKind, UiHandler,
 };
 use crate::input::{Key, RecordedInput};
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
@@ -360,8 +361,19 @@ impl FrameCtx<'_> {
                 // so the model absorbs them exactly as the live frame did (coast
                 // when the log has no entry for this step).
                 if let Some(events) = inputs.get(step) {
+                    // A recorded UiEvent resolved against the LAST RENDER's
+                    // handler table live — the tree the user saw, built from
+                    // the settled model BEFORE this step's inputs. Rebuild
+                    // that table once here, at the step top, so a step with
+                    // several inputs can't resolve later UiEvents against a
+                    // tree an earlier input already re-shaped (xreview).
+                    let ui_handlers = events
+                        .iter()
+                        .any(|e| matches!(e, RecordedInput::UiEvent(_)))
+                        .then(|| self.eval_ui_handlers())
+                        .unwrap_or_default();
                     for event in events {
-                        self.replay_input(*event);
+                        self.replay_input(event.clone(), &ui_handlers);
                     }
                 }
                 let frame_time = FrameTime {
@@ -385,6 +397,26 @@ impl FrameCtx<'_> {
         out
     }
 
+    /// Evaluate `ui(model)` for its HANDLER TABLE only (the view is discarded)
+    /// — how the replay path reconstructs the table a recorded frame's
+    /// `UiEvent`s resolved against. A failed evaluation reports (silenced under
+    /// the dry-run reporter) and yields an empty table, so the events drop as
+    /// unknown slots.
+    fn eval_ui_handlers(&mut self) -> Vec<UiHandler> {
+        match self
+            .session
+            .call("ui", vec![self.model.clone()], &mut FunctorHost)
+        {
+            Ok(_) => take_ui_handlers(),
+            Err(err) => {
+                // A failed evaluation must not leak a partial table.
+                let _ = take_ui_handlers();
+                self.reporter.frame_error("ui", &err);
+                Vec::new()
+            }
+        }
+    }
+
     /// Replay one recorded input event during the forward-step, mirroring the
     /// LIVE path (`key_event`/`mouse_move`/`mouse_wheel`): call the game's
     /// `input`/`mouseMove`/`mouseWheel` entry point with the SAME reconstructed
@@ -392,8 +424,10 @@ impl FrameCtx<'_> {
     /// so nothing escapes). A `Key` re-runs `Key::from_i32` on the raw code just
     /// as the live path does; an unknown code is dropped, like live. An entry
     /// point the game doesn't define resolves to an interpreter error, reported
-    /// (and silenced) through the dry-run reporter.
-    fn replay_input(&mut self, event: RecordedInput) {
+    /// (and silenced) through the dry-run reporter. A `UiEvent` resolves against
+    /// `ui_handlers` — the step-top table the caller rebuilt (the live frame's
+    /// last-render contract).
+    fn replay_input(&mut self, event: RecordedInput, ui_handlers: &[UiHandler]) {
         let (entry, args) = match event {
             RecordedInput::Key { code, is_down } => {
                 let Some(key) = Key::from_i32(code) else {
@@ -418,6 +452,10 @@ impl FrameCtx<'_> {
             ),
             RecordedInput::MouseWheel { delta } => {
                 ("mouseWheel", vec![self.model.clone(), Value::Number(delta as f64)])
+            }
+            RecordedInput::UiEvent(event) => {
+                self.deliver_ui_event(ui_handlers, &event);
+                return;
             }
         };
         match self.session.call(entry, args, &mut FunctorHost) {
@@ -663,6 +701,73 @@ to receive their messages; dropping them"
         {
             Ok(msg) => msg,
             Err(err) => return self.reporter.frame_error("http response", &err),
+        };
+        match self
+            .session
+            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
+        {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.reporter.frame_error("update", &err),
+        }
+    }
+
+    /// Route an interaction the shell detected on an interactive UI widget to
+    /// its handler and fold the resulting message through `update`
+    /// (docs/ui-interaction.md U2). `handlers` is the table the producer kept
+    /// from the `ui(model)` evaluation that built the tree the shell rendered
+    /// — slots resolve against exactly what the user saw. A verbatim-msg
+    /// handler (a button) ignores the event's payload; a tagger handler is
+    /// applied to it (a slider's new value, a text input's new text).
+    pub fn deliver_ui_event(&mut self, handlers: &[UiHandler], event: &crate::ui::UiEvent) {
+        use crate::ui::UiEventKind;
+        // Check the receiver exists before doing any work (the `absorb` rule)
+        // — a game with widgets but no `update` gets the teaching error, not
+        // a wasted tagger application.
+        if self.session.global("update").is_none() {
+            return self.reporter.report_once(
+                "[functor-lang] a ui widget produced a message but there is no \
+`let update = (model, msg) => …` to receive it; dropping it"
+                    .to_string(),
+            );
+        }
+        let Some(handler) = handlers.get(event.slot as usize) else {
+            return self.reporter.report_once(format!(
+                "[functor-lang] ui event for unknown widget slot {} (the view registered {}) — dropped",
+                event.slot,
+                handlers.len()
+            ));
+        };
+        let msg = match (handler, &event.kind) {
+            (UiHandler::Msg(msg), _) => msg.clone(),
+            (UiHandler::Tagger(tagger), UiEventKind::SliderChanged(value)) => {
+                match self.session.apply(
+                    tagger.clone(),
+                    vec![Value::Number(*value)],
+                    "ui event tagger",
+                    &mut FunctorHost,
+                ) {
+                    Ok(msg) => msg,
+                    Err(err) => return self.reporter.frame_error("ui event tagger", &err),
+                }
+            }
+            (UiHandler::Tagger(tagger), UiEventKind::TextChanged(text)) => {
+                match self.session.apply(
+                    tagger.clone(),
+                    vec![Value::String(std::rc::Rc::from(text.as_str()))],
+                    "ui event tagger",
+                    &mut FunctorHost,
+                ) {
+                    Ok(msg) => msg,
+                    Err(err) => return self.reporter.frame_error("ui event tagger", &err),
+                }
+            }
+            (UiHandler::Tagger(_), UiEventKind::Clicked) => {
+                return self.reporter.report_once(format!(
+                    "[functor-lang] ui click for slot {} reached a tagger handler — a click \
+carries no payload to tag; dropped",
+                    event.slot
+                ));
+            }
         };
         match self
             .session
@@ -931,4 +1036,171 @@ pub fn ghost_frames(
         }
     }
     frames
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::functor_lang_prelude::UiHandler;
+    use crate::ui::{UiEvent, UiEventKind};
+
+    /// A minimal MVU game with one message per widget shape: a verbatim msg
+    /// (the button contract) and taggers over a number / a string (the
+    /// slider / text-input contracts). The `expect*` globals are the models
+    /// the tests assert against (compared via `Display`, so the expectation
+    /// is built by the same evaluator as the result).
+    const SRC: &str = "\
+        type Msg = | Inc | SetN(n: Float) | SetS(s: String)\n\
+        type Model = { count: Float, n: Float, s: String }\n\
+        let init = { count: 0.0, n: 0.0, s: \"\" }\n\
+        let update = (m: Model, msg: Msg) =>\n\
+          match msg with\n\
+          | Inc => { m with count: m.count + 1.0 }\n\
+          | SetN(n) => { m with n: n }\n\
+          | SetS(s) => { m with s: s }\n\
+        let incMsg = Inc\n\
+        let setN = (v) => SetN(v)\n\
+        let setS = (v) => SetS(v)\n\
+        let expectInc = { count: 1.0, n: 0.0, s: \"\" }\n\
+        let expectSlider = { count: 0.0, n: 0.7, s: \"\" }\n\
+        let expectText = { count: 0.0, n: 0.0, s: \"hi\" }\n";
+
+    fn load_session() -> (Session, Value) {
+        let project = functor_lang::project::load_single_source("game", SRC)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let model = session.global("init").expect("init");
+        (session, model)
+    }
+
+    /// Drive one `deliver_ui_event` through a throwaway [`FrameCtx`] (the
+    /// dry-run construction of `forward_step_scene`, minus physics).
+    fn deliver(session: &Session, model: &mut Value, handlers: &[UiHandler], event: &UiEvent) {
+        let mut physics_rt = SteppedPhysics::new();
+        let mut physics_frame = 0u64;
+        let mut recorder = SceneRecorder::new();
+        let mut effect_runner = DryRunEffects::new();
+        let mut effect_log = EffectLog::new();
+        let mut deferred_queries: Vec<EffectTree> = Vec::new();
+        let mut pending_events: Vec<PhysicsEvent> = Vec::new();
+        let mut live_conn_keys: HashSet<String> = HashSet::new();
+        let mut prev_tts: Option<f64> = None;
+        let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut reporter = Reporter::new(
+            SpanSource::Single {
+                src: String::new(),
+                path: String::new(),
+            },
+            silent_emit,
+        );
+        let mut ctx = FrameCtx {
+            session,
+            model,
+            physics_rt: &mut physics_rt,
+            physics_frame: &mut physics_frame,
+            recorder: &mut recorder,
+            effect_runner: &mut effect_runner as &mut dyn EffectRunner,
+            effect_log: &mut effect_log,
+            deferred_queries: &mut deferred_queries,
+            pending_events: &mut pending_events,
+            live_conn_keys: &mut live_conn_keys,
+            prev_tts: &mut prev_tts,
+            input_buf: &mut input_buf,
+            has_physics: false,
+            has_subscriptions: false,
+            suppress_outbound: false,
+            reporter: &mut reporter,
+        };
+        ctx.deliver_ui_event(handlers, event);
+    }
+
+    fn assert_model(session: &Session, model: &Value, expected_global: &str) {
+        let expected = session.global(expected_global).expect(expected_global);
+        assert_eq!(model.to_string(), expected.to_string());
+    }
+
+    #[test]
+    fn ui_click_delivers_the_msg_through_update() {
+        let (session, mut model) = load_session();
+        let handlers = vec![UiHandler::Msg(session.global("incMsg").unwrap())];
+        deliver(
+            &session,
+            &mut model,
+            &handlers,
+            &UiEvent {
+                slot: 0,
+                kind: UiEventKind::Clicked,
+            },
+        );
+        assert_model(&session, &model, "expectInc");
+    }
+
+    #[test]
+    fn ui_slider_applies_the_tagger_to_the_new_value() {
+        let (session, mut model) = load_session();
+        // Slot 1: also proves slot addressing picks the right handler.
+        let handlers = vec![
+            UiHandler::Msg(session.global("incMsg").unwrap()),
+            UiHandler::Tagger(session.global("setN").unwrap()),
+        ];
+        deliver(
+            &session,
+            &mut model,
+            &handlers,
+            &UiEvent {
+                slot: 1,
+                kind: UiEventKind::SliderChanged(0.7),
+            },
+        );
+        assert_model(&session, &model, "expectSlider");
+    }
+
+    #[test]
+    fn ui_text_change_applies_the_tagger_to_the_new_text() {
+        let (session, mut model) = load_session();
+        let handlers = vec![UiHandler::Tagger(session.global("setS").unwrap())];
+        deliver(
+            &session,
+            &mut model,
+            &handlers,
+            &UiEvent {
+                slot: 0,
+                kind: UiEventKind::TextChanged("hi".to_string()),
+            },
+        );
+        assert_model(&session, &model, "expectText");
+    }
+
+    #[test]
+    fn ui_event_for_an_unknown_slot_is_dropped() {
+        let (session, mut model) = load_session();
+        let handlers = vec![UiHandler::Msg(session.global("incMsg").unwrap())];
+        deliver(
+            &session,
+            &mut model,
+            &handlers,
+            &UiEvent {
+                slot: 9,
+                kind: UiEventKind::Clicked,
+            },
+        );
+        assert_model(&session, &model, "init"); // unchanged
+    }
+
+    #[test]
+    fn ui_click_on_a_tagger_handler_is_dropped() {
+        let (session, mut model) = load_session();
+        let handlers = vec![UiHandler::Tagger(session.global("setN").unwrap())];
+        deliver(
+            &session,
+            &mut model,
+            &handlers,
+            &UiEvent {
+                slot: 0,
+                kind: UiEventKind::Clicked,
+            },
+        );
+        assert_model(&session, &model, "init"); // unchanged
+    }
 }

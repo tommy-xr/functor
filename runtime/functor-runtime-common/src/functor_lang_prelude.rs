@@ -2397,6 +2397,47 @@ pub fn clear_audio_completions() {
     PENDING_AUDIO.with(|m| m.borrow_mut().clear());
 }
 
+/// What an interactive UI widget delivers when the shell reports an
+/// interaction on it (docs/ui-interaction.md): either a message VALUE handed
+/// to `update` verbatim (a button — the `Sub.every` shape) or a TAGGER applied
+/// to the event's payload first (a slider / text input — the `Effect.now`
+/// shape).
+pub enum UiHandler {
+    Msg(Value),
+    Tagger(Value),
+}
+
+thread_local! {
+    /// The handler table for the `ui(model)` evaluation in progress: each
+    /// interactive `Ui.*` constructor pushes its handler and stamps the node
+    /// with the returned slot index (construction order). The producer drains
+    /// it with [`take_ui_handlers`] right after the evaluation and keeps it
+    /// beside the frame's cached `View`, so an event the shell reports later
+    /// resolves against the exact table that produced the tree it saw. Unlike
+    /// [`PENDING_HTTP`] this never spans frames — it is rebuilt every `ui`
+    /// evaluation — so hot reload needs no clearing here (the producer drops
+    /// its own kept copy instead).
+    static UI_HANDLERS: std::cell::RefCell<Vec<UiHandler>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Register a widget's handler for the `ui(model)` evaluation in progress and
+/// return its slot index (see [`UI_HANDLERS`]).
+pub fn push_ui_handler(handler: UiHandler) -> u32 {
+    UI_HANDLERS.with(|h| {
+        let mut handlers = h.borrow_mut();
+        handlers.push(handler);
+        (handlers.len() - 1) as u32
+    })
+}
+
+/// Drain the handlers the just-finished `ui(model)` evaluation registered.
+/// Call it after EVERY evaluation — including a failed one, whose partial
+/// table must not leak into the next frame's slots.
+pub fn take_ui_handlers() -> Vec<UiHandler> {
+    UI_HANDLERS.with(|h| std::mem::take(&mut *h.borrow_mut()))
+}
+
 #[derive(Clone, Copy)]
 pub enum NetEventKind {
     Connected,

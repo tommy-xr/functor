@@ -98,6 +98,29 @@ impl View {
     }
 }
 
+/// An interaction the shell detected on an interactive [`View`] widget,
+/// delivered to the producer via `GameProducer::ui_event` and folded through
+/// the game's `update` (docs/ui-interaction.md U2). `slot` addresses the
+/// widget: interactive `Ui.*` constructors register their handler (a msg or a
+/// tagger) in a per-frame table during `ui(model)` evaluation, in construction
+/// order, and stamp the node with the index. Serializable — it crosses the
+/// debug-server wire (`POST /input`) and is recorded for replay.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UiEvent {
+    pub slot: u32,
+    pub kind: UiEventKind,
+}
+
+/// What happened to the widget. `Clicked` pairs with a verbatim-msg handler
+/// (a button); the payload-carrying kinds pair with a tagger applied to the
+/// new value (a slider / text input).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum UiEventKind {
+    Clicked,
+    SliderChanged(f64),
+    TextChanged(String),
+}
+
 /// Point size of the overlay's monospace text.
 const UI_FONT_SIZE: f32 = 14.0;
 /// Inset of an anchored panel from the screen edge, in points.

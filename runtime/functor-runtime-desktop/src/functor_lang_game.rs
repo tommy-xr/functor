@@ -30,8 +30,9 @@
 use std::time::Instant;
 
 use functor_runtime_common::functor_lang_prelude::{
-    audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, view_value,
-    EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
+    audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, take_ui_handlers,
+    view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
+    UiHandler,
 };
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_producer::{FrameCtx, Reporter, SpanSource};
@@ -86,6 +87,12 @@ pub struct FunctorLangGame {
     /// keeps the last good view (the `last_frame` rule); a reload that drops
     /// the hook clears it.
     last_view: View,
+    /// The interactive-widget handler table registered by the `ui(model)`
+    /// evaluation that built `last_view` (docs/ui-interaction.md U2): a
+    /// `UiEvent` the shell reports resolves its slot here. Kept in lockstep
+    /// with `last_view` (updated only on a successful evaluation) and cleared
+    /// on reload — its values may close over the old session.
+    ui_handlers: Vec<UiHandler>,
     /// The last serialized soundscape (`soundScape model` → JSON), cached
     /// because `audio_scene_json` is a `&self` accessor — evaluated beside
     /// `draw` each frame so errors can `&mut`-dedupe. A bad frame keeps the
@@ -356,6 +363,7 @@ impl FunctorLangGame {
             has_soundscape: loaded.has_soundscape,
             has_ui: loaded.has_ui,
             last_view: View::Empty,
+            ui_handlers: Vec::new(),
             last_soundscape_json: empty_soundscape_json(),
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
@@ -451,6 +459,10 @@ impl FunctorLangGame {
         // too — drop them alongside the HTTP taggers (a late finish for a
         // dropped token arrives orphaned and is ignored).
         clear_audio_completions();
+        // The widget handler table holds msgs/taggers into the OLD session;
+        // the next render's `ui(model)` rebuilds it against the new one. A
+        // click landing in the gap resolves an unknown slot and is dropped.
+        self.ui_handlers.clear();
         // Reload is a model-history BOUNDARY: the retained snapshots can hold
         // closures bound to the old module, so — unlike the live model, which
         // `rebind_value` migrates above — they can't safely cross a reload. The
@@ -748,6 +760,23 @@ impl Game for FunctorLangGame {
             .push(functor_runtime_common::RecordedInput::MouseWheel { delta });
     }
 
+    fn ui_event(&mut self, event: functor_runtime_common::ui::UiEvent) {
+        // No `ui` hook → no widgets to have interacted with; drop silently
+        // (mirrors the has_input gates above).
+        if !self.has_ui {
+            return;
+        }
+        // The table is moved out for the call — `ctx()` borrows every other
+        // producer field mutably — and restored after.
+        let handlers = std::mem::take(&mut self.ui_handlers);
+        self.ctx().deliver_ui_event(&handlers, &event);
+        self.ui_handlers = handlers;
+        // Buffer for the frame-indexed input log (T6b), like key events, so a
+        // replay re-delivers the interaction.
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::UiEvent(event));
+    }
+
     fn render(&mut self, frame_time: FrameTime) -> Frame {
         let started = Instant::now();
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
@@ -777,13 +806,26 @@ impl Game for FunctorLangGame {
                 .call("ui", vec![self.model.clone()], &mut FunctorHost)
             {
                 Ok(value) => match view_value(&value) {
-                    Some(view) => self.last_view = view.clone(),
-                    None => self.reporter.report_once(format!(
-                        "[functor-lang] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
-                        value.kind_name()
-                    )),
+                    Some(view) => {
+                        self.last_view = view.clone();
+                        // The evaluation registered this tree's widget handlers
+                        // — adopt them in lockstep with the view they address.
+                        self.ui_handlers = take_ui_handlers();
+                    }
+                    None => {
+                        let _ = take_ui_handlers();
+                        self.reporter.report_once(format!(
+                            "[functor-lang] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                            value.kind_name()
+                        ))
+                    }
                 },
-                Err(err) => self.reporter.frame_error("ui", &err),
+                Err(err) => {
+                    // A failed evaluation keeps the last good view AND its
+                    // handlers; drop the partial table it registered.
+                    let _ = take_ui_handlers();
+                    self.reporter.frame_error("ui", &err)
+                }
             }
         }
         // The optional soundscape, evaluated beside `draw` (same settled model)

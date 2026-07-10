@@ -562,6 +562,10 @@ fn service_debug_request(
                     game.mouse_wheel(delta);
                     Ok(())
                 }
+                debug_server::InputCommand::UiEvent { slot, kind } => {
+                    game.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    Ok(())
+                }
             };
             let _ = resp.send(result);
         }
