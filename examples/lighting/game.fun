@@ -195,7 +195,7 @@ let draw = (model, tts: float) =>
   // deforming shadow as it swims (skinned shadow caster).
   let shark =
     Scene.model("shark.glb")
-      |> Scene.scale(0.003)
+      |> Scene.scale(0.18)
       |> Scene.rotateY(Angle.degrees(90.0))
       |> Scene.translate(1.5, 1.8, 0.5) in
 

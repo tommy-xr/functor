@@ -15,7 +15,7 @@ use gltf::buffer::Source as BufferSource;
 use serde::Serialize;
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
-use crate::model::{Skeleton, SkeletonBuilder};
+use crate::model::{build_skeleton_from_skin, document_hierarchy, HierarchyNode, Skeleton};
 
 /// An axis-aligned bounding box in model space.
 #[derive(Clone, Copy, Debug)]
@@ -177,11 +177,16 @@ pub fn inspect_model(
     let mut mesh_count: usize = 0;
     let mut maybe_skeleton: Option<Skeleton> = None;
 
+    // The full node hierarchy, so the skeleton can include ancestor nodes
+    // above the skin root (see `build_skeleton_from_skin`).
+    let hierarchy = document_hierarchy(&document);
+
     for scene in document.scenes() {
         for node in scene.nodes() {
             inspect_node(
                 &node,
                 &buffers_data,
+                &hierarchy,
                 &mut primitives,
                 &mut skinned_vertices,
                 &mut static_aabb,
@@ -304,6 +309,7 @@ fn skin_position(v: &SkinnedVertex, skinning_transforms: &[Matrix4<f32>]) -> Vec
 fn inspect_node(
     node: &gltf::Node,
     buffers: &[gltf::buffer::Data],
+    hierarchy: &HashMap<usize, HierarchyNode>,
     primitives: &mut Vec<PrimitiveReport>,
     skinned_vertices: &mut Vec<SkinnedVertex>,
     static_aabb: &mut Aabb,
@@ -380,40 +386,20 @@ fn inspect_node(
             .map(|v| v.map(Matrix4::from).collect::<Vec<Matrix4<f32>>>())
             .unwrap_or_default();
 
-        let joints = skin.joints().collect::<Vec<_>>();
+        let joint_node_indices = skin.joints().map(|j| j.index()).collect::<Vec<_>>();
 
-        let mut joint_index_to_parent_index: HashMap<usize, usize> = HashMap::new();
-        for joint in joints.iter() {
-            for child in joint.children() {
-                joint_index_to_parent_index.insert(child.index(), joint.index());
-            }
-        }
-
-        let mut skeleton_builder = SkeletonBuilder::create(inverse_bind_matrices);
-
-        for (i, joint) in joints.iter().enumerate() {
-            let name = joint.name().unwrap_or("None");
-            let transform = joint.transform().matrix().into();
-            let parent_index_i32 = joint_index_to_parent_index
-                .get(&joint.index())
-                .map(|u| *u as i32);
-
-            skeleton_builder.add_joint(
-                i,
-                joint.index() as i32,
-                name.to_owned(),
-                parent_index_i32,
-                transform,
-            );
-        }
-
-        *maybe_skeleton = Some(skeleton_builder.build());
+        *maybe_skeleton = Some(build_skeleton_from_skin(
+            inverse_bind_matrices,
+            &joint_node_indices,
+            hierarchy,
+        ));
     }
 
     for child in node.children() {
         inspect_node(
             &child,
             buffers,
+            hierarchy,
             primitives,
             skinned_vertices,
             static_aabb,

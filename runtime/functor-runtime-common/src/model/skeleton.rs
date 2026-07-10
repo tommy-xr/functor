@@ -209,6 +209,98 @@ impl Skeleton {
     }
 }
 
+/// One node of the full glTF document hierarchy (every node, not just skin
+/// joints) — enough to resolve joint parents and the ancestor chain above a
+/// skin's root joints.
+#[derive(Clone, Debug)]
+pub struct HierarchyNode {
+    pub parent: Option<usize>,
+    pub name: String,
+    pub transform: Matrix4<f32>,
+}
+
+/// The full document hierarchy, keyed by node index. Parent edges come from
+/// every node's `children()` (a glTF node has at most one parent).
+pub fn document_hierarchy(document: &gltf::Document) -> HashMap<usize, HierarchyNode> {
+    let mut hierarchy: HashMap<usize, HierarchyNode> = document
+        .nodes()
+        .map(|node| {
+            (
+                node.index(),
+                HierarchyNode {
+                    parent: None,
+                    name: node.name().unwrap_or("None").to_owned(),
+                    transform: Matrix4::from(node.transform().matrix()),
+                },
+            )
+        })
+        .collect();
+    for node in document.nodes() {
+        for child in node.children() {
+            if let Some(entry) = hierarchy.get_mut(&child.index()) {
+                entry.parent = Some(node.index());
+            }
+        }
+    }
+    hierarchy
+}
+
+/// Build a [`Skeleton`] from a skin's joints (glTF node indices, in
+/// `skin.joints()` order — the order the inverse bind matrices index) plus
+/// the document hierarchy.
+///
+/// Per glTF 2.0, a joint's global transform is the product of the node
+/// transforms from the scene root down to the joint — including ancestor
+/// nodes ABOVE the skin's root joints (e.g. Mixamo's Armature node carrying
+/// a cm→m scale + orientation). Those ancestors are added as extra
+/// NON-skinning joints: they shape their descendants' absolute transforms
+/// but own no inverse-bind-matrix slot. Keeping them as joints — rather than
+/// folding their product into the root joints' local transforms — keeps
+/// animation correct: a channel targets a node index and replaces that
+/// joint's LOCAL transform (Mixamo clips animate the root joint, Hips), and
+/// the ancestor transform above it must survive that override.
+pub fn build_skeleton_from_skin(
+    inverse_bind_matrices: Vec<Matrix4<f32>>,
+    joint_node_indices: &[usize],
+    hierarchy: &HashMap<usize, HierarchyNode>,
+) -> Skeleton {
+    let mut builder = SkeletonBuilder::create(inverse_bind_matrices);
+
+    for (array_index, &node_index) in joint_node_indices.iter().enumerate() {
+        let node = &hierarchy[&node_index];
+        builder.add_joint(
+            array_index,
+            node_index as i32,
+            node.name.clone(),
+            node.parent.map(|p| p as i32),
+            node.transform,
+        );
+    }
+
+    // Walk each joint's ancestor chain, adding every node not already
+    // present. Non-root joints break immediately (their parent is a skin
+    // joint); root joints pull in the chain up to the scene root.
+    let mut present: HashSet<usize> = joint_node_indices.iter().copied().collect();
+    for &node_index in joint_node_indices {
+        let mut current = hierarchy[&node_index].parent;
+        while let Some(index) = current {
+            if !present.insert(index) {
+                break; // Already added — its own chain is done too.
+            }
+            let node = &hierarchy[&index];
+            builder.add_ancestor_joint(
+                index as i32,
+                node.name.clone(),
+                node.parent.map(|p| p as i32),
+                node.transform,
+            );
+            current = node.parent;
+        }
+    }
+
+    builder.build()
+}
+
 pub struct SkeletonBuilder {
     skeleton: Skeleton,
 }
@@ -243,6 +335,26 @@ impl SkeletonBuilder {
             parent: parent_index,
         };
         self.skeleton.joint_info.insert(joint_index, joint);
+    }
+
+    /// Add a non-skinning joint — an ancestor node above the skin root. It
+    /// shapes its descendants' absolute transforms but has no inverse bind
+    /// matrix and no slot in the skinning array.
+    pub fn add_ancestor_joint(
+        &mut self,
+        joint_index: i32,
+        name: String,
+        parent_index: Option<i32>,
+        transform: Matrix4<f32>,
+    ) {
+        self.skeleton.joint_info.insert(
+            joint_index,
+            Joint {
+                name,
+                transform,
+                parent: parent_index,
+            },
+        );
     }
 
     pub fn build(mut self) -> Skeleton {
@@ -420,6 +532,114 @@ mod tests {
         assert!(
             matrices_approx_equal(&abs_transform_joint_2, &expected_abs_transform_joint_2),
             "Joint 2 absolute transform does not match expected value."
+        );
+    }
+
+    /// A synthetic Mixamo-shaped hierarchy: node 0 is an "Armature" ABOVE the
+    /// skin root, carrying a cm→m scale + orientation; nodes 1 ("Hips") and
+    /// 2 ("Spine") are the skin's joints.
+    fn mixamo_like_hierarchy(
+        armature: Matrix4<f32>,
+        hips: Matrix4<f32>,
+        spine: Matrix4<f32>,
+    ) -> HashMap<usize, HierarchyNode> {
+        let mut hierarchy = HashMap::new();
+        hierarchy.insert(
+            0,
+            HierarchyNode {
+                parent: None,
+                name: "Armature".to_string(),
+                transform: armature,
+            },
+        );
+        hierarchy.insert(
+            1,
+            HierarchyNode {
+                parent: Some(0),
+                name: "Hips".to_string(),
+                transform: hips,
+            },
+        );
+        hierarchy.insert(
+            2,
+            HierarchyNode {
+                parent: Some(1),
+                name: "Spine".to_string(),
+                transform: spine,
+            },
+        );
+        hierarchy
+    }
+
+    #[test]
+    fn ancestors_above_skin_root_shape_absolute_transforms() {
+        // The Armature's transform (a scale + rotation, like Mixamo's cm→m
+        // conversion) must flow into every joint's absolute transform even
+        // though it is not one of the skin's joints.
+        let armature =
+            Matrix4::from_scale(0.01) * Matrix4::from_angle_x(cgmath::Deg(-90.0_f32));
+        let hips = Matrix4::from_translation(Vector3::new(0.0, 100.0, 0.0));
+        let spine = Matrix4::from_translation(Vector3::new(0.0, 10.0, 0.0));
+        let hierarchy = mixamo_like_hierarchy(armature, hips, spine);
+
+        let skeleton = build_skeleton_from_skin(
+            vec![Matrix4::identity(), Matrix4::identity()],
+            &[1, 2],
+            &hierarchy,
+        );
+
+        assert_eq!(skeleton.get_joint_absolute_transform(1), armature * hips);
+        assert_eq!(
+            skeleton.get_joint_absolute_transform(2),
+            armature * hips * spine
+        );
+        // The ancestor is a joint too (so it survives pose application), but
+        // it owns no skinning-array slot: the skinning transforms are exactly
+        // the two bind matrices' worth.
+        assert_eq!(skeleton.get_skinning_transforms().len(), 2);
+    }
+
+    #[test]
+    fn animating_the_root_joint_keeps_the_ancestor_transform() {
+        // A clip channel targets the ROOT joint (Mixamo animates Hips) and
+        // replaces its LOCAL transform. The Armature's scale above it must
+        // still apply — this is why the ancestor chain is kept as joints
+        // instead of being folded into the root joint's local transform.
+        let armature = Matrix4::from_scale(0.01);
+        let hips = Matrix4::from_translation(Vector3::new(0.0, 100.0, 0.0));
+        let spine = Matrix4::from_translation(Vector3::new(0.0, 10.0, 0.0));
+        let hierarchy = mixamo_like_hierarchy(armature, hips, spine);
+
+        let skeleton = build_skeleton_from_skin(
+            vec![Matrix4::identity(), Matrix4::identity()],
+            &[1, 2],
+            &hierarchy,
+        );
+
+        // One channel: Hips (node 1) translated to (0, 50, 0), in cm space.
+        let animation = Animation {
+            name: "test".to_string(),
+            duration: 1.0,
+            channels: vec![crate::animation::AnimationChannel {
+                target_node_index: 1,
+                target_property: crate::animation::AnimationProperty::Translation,
+                keyframes: vec![Keyframe {
+                    time: 0.0,
+                    value: AnimationValue::Translation(Vector3::new(0.0, 50.0, 0.0)),
+                }],
+            }],
+        };
+
+        let animated = Skeleton::animate(&skeleton, &animation, 0.0);
+
+        // The animated hips translation lands under the Armature's 0.01
+        // scale: 50 cm → 0.5 world units (not 50).
+        let abs = animated.get_joint_absolute_transform(1);
+        let origin = abs * cgmath::Vector4::new(0.0, 0.0, 0.0, 1.0);
+        assert!(
+            (origin.y - 0.5).abs() < 1e-5,
+            "expected hips at y=0.5, got {:?}",
+            origin
         );
     }
 }
