@@ -299,6 +299,44 @@ pub struct PointerState {
     pub primary_down: bool,
 }
 
+/// Turns per-frame [`PointerState`] snapshots into egui input events: a move
+/// whenever the pointer is on the overlay, and a primary-button event on the
+/// press/release EDGE (egui needs both edges to register a click). One bridge
+/// per egui context — it holds the previous button state to find the edges, so
+/// every interactive pass (the scrubber today, the game UI next) synthesizes
+/// identical input from the same shell state.
+#[derive(Default)]
+pub struct PointerBridge {
+    last_primary_down: bool,
+}
+
+impl PointerBridge {
+    /// This frame's egui events. `pixels_per_point` maps the snapshot's
+    /// physical-pixel position into egui's point space. While `pos` is `None`
+    /// (cursor captured) no events are emitted, but button state is still
+    /// tracked — a press begun off-overlay is swallowed, never replayed (its
+    /// release, if it lands on-overlay, is delivered unmatched, which egui
+    /// tolerates; symmetrically, a release that happens off-overlay is never
+    /// delivered, so egui holds the press until the next on-overlay edge).
+    pub fn events(&mut self, pointer: PointerState, pixels_per_point: f32) -> Vec<egui::Event> {
+        let mut events = Vec::new();
+        if let Some((px, py)) = pointer.pos {
+            let pos = egui::pos2(px / pixels_per_point, py / pixels_per_point);
+            events.push(egui::Event::PointerMoved(pos));
+            if pointer.primary_down != self.last_primary_down {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: pointer.primary_down,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+        }
+        self.last_primary_down = pointer.primary_down;
+        events
+    }
+}
+
 /// The time-travel state the shell hands the scrubber to render.
 #[derive(Clone, Copy)]
 pub struct ScrubberState {
@@ -350,7 +388,7 @@ pub struct Scrubber {
     ctx: egui::Context,
     painter: egui_glow::Painter,
     gl: Arc<glow::Context>,
-    last_primary_down: bool,
+    pointer: PointerBridge,
 }
 
 impl Scrubber {
@@ -361,7 +399,7 @@ impl Scrubber {
             ctx: egui::Context::default(),
             painter,
             gl,
-            last_primary_down: false,
+            pointer: PointerBridge::default(),
         }
     }
 
@@ -387,23 +425,9 @@ impl Scrubber {
             height as f32 / pixels_per_point,
         );
 
-        // Synthesize egui pointer events from the shell's current pointer state:
-        // a move every frame, and a button event on the press/release EDGE (egui
-        // needs both to register a click).
-        let mut events = Vec::new();
-        if let Some((px, py)) = pointer.pos {
-            let pos = egui::pos2(px / pixels_per_point, py / pixels_per_point);
-            events.push(egui::Event::PointerMoved(pos));
-            if pointer.primary_down != self.last_primary_down {
-                events.push(egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: pointer.primary_down,
-                    modifiers: egui::Modifiers::default(),
-                });
-            }
-        }
-        self.last_primary_down = pointer.primary_down;
+        // Synthesize egui pointer events from the shell's current pointer state
+        // (a move every frame, button events on the press/release edge).
+        let events = self.pointer.events(pointer, pixels_per_point);
 
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_points)),
@@ -500,5 +524,87 @@ impl Scrubber {
             action,
             wants_pointer: self.ctx.egui_wants_pointer_input(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn on(x: f32, y: f32, down: bool) -> PointerState {
+        PointerState {
+            pos: Some((x, y)),
+            primary_down: down,
+        }
+    }
+
+    fn off(down: bool) -> PointerState {
+        PointerState {
+            pos: None,
+            primary_down: down,
+        }
+    }
+
+    #[test]
+    fn hover_emits_only_a_move() {
+        let mut bridge = PointerBridge::default();
+        let events = bridge.events(on(30.0, 40.0, false), 1.0);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], egui::Event::PointerMoved(p) if p == egui::pos2(30.0, 40.0)));
+    }
+
+    #[test]
+    fn press_and_release_emit_button_edges_and_holds_do_not() {
+        let mut bridge = PointerBridge::default();
+
+        let press = bridge.events(on(5.0, 5.0, true), 1.0);
+        assert_eq!(press.len(), 2);
+        // The button event carries the position egui hit-tests the click at.
+        assert!(matches!(
+            press[1],
+            egui::Event::PointerButton { pressed: true, button: egui::PointerButton::Primary, pos, .. }
+                if pos == egui::pos2(5.0, 5.0)
+        ));
+
+        // Held: moves only, no repeated button event.
+        let held = bridge.events(on(6.0, 5.0, true), 1.0);
+        assert_eq!(held.len(), 1);
+        assert!(matches!(held[0], egui::Event::PointerMoved(_)));
+
+        let release = bridge.events(on(6.0, 5.0, false), 1.0);
+        assert_eq!(release.len(), 2);
+        assert!(matches!(
+            release[1],
+            egui::Event::PointerButton { pressed: false, .. }
+        ));
+    }
+
+    #[test]
+    fn captured_cursor_emits_nothing_but_still_tracks_button_state() {
+        let mut bridge = PointerBridge::default();
+
+        // Press while the cursor is captured (off-overlay): swallowed…
+        assert!(bridge.events(off(true), 1.0).is_empty());
+
+        // …and not replayed when the pointer arrives already-down: egui never
+        // sees a press edge, so the drag-in can't click anything.
+        let arrive = bridge.events(on(10.0, 10.0, true), 1.0);
+        assert_eq!(arrive.len(), 1);
+        assert!(matches!(arrive[0], egui::Event::PointerMoved(_)));
+
+        // The release edge on-overlay is still delivered.
+        let release = bridge.events(on(10.0, 10.0, false), 1.0);
+        assert_eq!(release.len(), 2);
+        assert!(matches!(
+            release[1],
+            egui::Event::PointerButton { pressed: false, .. }
+        ));
+    }
+
+    #[test]
+    fn positions_scale_physical_pixels_to_points() {
+        let mut bridge = PointerBridge::default();
+        let events = bridge.events(on(200.0, 100.0, false), 2.0);
+        assert!(matches!(events[0], egui::Event::PointerMoved(p) if p == egui::pos2(100.0, 50.0)));
     }
 }
