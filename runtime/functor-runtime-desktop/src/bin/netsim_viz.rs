@@ -1,14 +1,14 @@
 //! A live multi-pane viewer for the netsim.
 //!
-//! Loads each MLE game as an independent in-process instance, wires them through
+//! Loads each Functor Lang game as an independent in-process instance, wires them through
 //! the virtual network, and renders every instance's view in its own column of
 //! one window while stepping the simulation each frame. So you can *watch* a
 //! server's authoritative world next to each client's (slightly lagging) view.
 //!
 //! ```sh
-//! functor-netsim-viz <game.mle> [<game.mle> ...]
+//! functor-netsim-viz <game.functor> [<game.functor> ...]
 //! # e.g. the multiplayer prototype (server + two clients), run from the repo root:
-//! functor-netsim-viz mle-mpserver mle-mpclient mle-mpclient
+//! functor-netsim-viz mpserver mpclient mpclient
 //! ```
 //!
 //! Keys: Esc quit · Space pause/resume · Right step one frame (while paused).
@@ -24,18 +24,18 @@ use functor_netsim::{ClientRole, NetSim};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::ui::{Label, TextOverlay};
 use functor_runtime_common::{DebugRenderMode, FrameTime, SceneContext, Viewport};
-use functor_runtime_desktop::mle_game::MleGame;
+use functor_runtime_desktop::functor_lang_game::FunctorLangGame;
 use glfw::Context;
 use glow::*;
 
-/// Accept either an `.mle` path or a sample name (resolved to
-/// `examples/<name>/game.mle`, run from the repo root) — so
-/// `functor-netsim-viz mle-mpserver mle-mpclient mle-mpclient` works.
+/// Accept either a `.functor` path or a sample name (resolved to
+/// `examples/<name>/game.functor`, run from the repo root) — so
+/// `functor-netsim-viz mpserver mpclient mpclient` works.
 fn resolve(arg: &str) -> String {
     if std::path::Path::new(arg).exists() {
         return arg.to_string();
     }
-    format!("examples/{arg}/game.mle")
+    format!("examples/{arg}/game.functor")
 }
 
 /// Read back the default framebuffer and encode it as a PNG. GL rows are
@@ -88,9 +88,9 @@ fn main() {
     }
     if paths.is_empty() {
         eprintln!(
-            "usage: functor-netsim-viz [--capture <png> [--capture-after <n>]] <game.mle|sample> ..."
+            "usage: functor-netsim-viz [--capture <png> [--capture-after <n>]] <game.functor|sample> ..."
         );
-        eprintln!("   e.g. functor-netsim-viz mle-mpserver mle-mpclient mle-mpclient");
+        eprintln!("   e.g. functor-netsim-viz mpserver mpclient mpclient");
         std::process::exit(2);
     }
 
@@ -99,9 +99,9 @@ fn main() {
         let path = resolve(arg);
         assert!(
             std::path::Path::new(&path).exists(),
-            "not found: {path} (expected a committed MLE example at examples/{arg}/game.mle)"
+            "not found: {path} (expected a committed Functor Lang example at examples/{arg}/game.functor)"
         );
-        sim.add_producer(Box::new(MleGame::create(&path)));
+        sim.add_producer(Box::new(FunctorLangGame::create(&path)));
     }
     let panes = sim.len();
     println!("[netsim-viz] {panes} instance(s); Space=pause, Right=step, Esc=quit");

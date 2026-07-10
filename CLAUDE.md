@@ -4,27 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Functor is a functional toolkit for building 3D games in **MLE** — Functor's own interpreted,
-F#-inspired game-logic language (roadmap and design: `docs/mle.md`; syntax/semantics source of
-truth: the **`mle-language` skill**, `.claude/skills/mle-language/`). You write a game as a `.mle`
+Functor is a functional toolkit for building 3D games in **Functor Lang** — Functor's own interpreted,
+F#-inspired game-logic language (roadmap and design: `docs/functor-lang.md`; syntax/semantics source of
+truth: the **`functor-lang` skill**, `.claude/skills/functor-lang/`). You write a game as a `.functor`
 file. There is **no transpile or compile step for game logic**: the Rust runtime *interprets* the
-`.mle` directly, on one of two targets:
+`.functor` directly, on one of two targets:
 
 - **native** — the desktop runtime (GLFW + OpenGL), now built into the single `functor` binary
-  (the desktop crate is a library the CLI drives in-process), loads and runs your `.mle`,
+  (the desktop crate is a library the CLI drives in-process), loads and runs your `.functor`,
   with hot-reloading on save.
-- **wasm** — the web runtime (WebGL2) ships the `.mle` source as text and interprets it in the
+- **wasm** — the web runtime (WebGL2) ships the `.functor` source as text and interprets it in the
   browser.
 
 The same tree-walking interpreter runs everywhere Rust runs. (Functor formerly used F# + Fable →
-Rust; that pipeline was deleted in roadmap **E3** — see `docs/mle.md`.)
+Rust; that pipeline was deleted in roadmap **E3** — see `docs/functor-lang.md`.)
 
 ## Design principles
 
 These shape how features should be built. Weigh changes against them.
 
 1. **Functional-core, imperative shell.** Push as much logic as possible into the pure functional
-   core (the MLE game logic: `init`/`update`/`tick`/`draw` are pure functions of `model`). Keep
+   core (the Functor Lang game logic: `init`/`update`/`tick`/`draw` are pure functions of `model`). Keep
    side effects (rendering, GLFW/window, file IO, the interpreter/wasm boundary) in the thin
    imperative shell — the Rust runtimes under `runtime/`.
 2. **LLM-native.** Functor functionality must be introspectable by LLMs at runtime — favor live
@@ -38,10 +38,10 @@ These shape how features should be built. Weigh changes against them.
 
 ## Architecture
 
-**The MVU loop (Elm-style).** A game is a set of top-level MLE bindings the runner looks up by
-name (contract in the `mle-language` skill; reference: `examples/hello/game.mle`):
+**The MVU loop (Elm-style).** A game is a set of top-level Functor Lang bindings the runner looks up by
+name (contract in the `functor-lang` skill; reference: `examples/hello/game.functor`):
 
-- `init` — the initial model, a plain MLE value
+- `init` — the initial model, a plain Functor Lang value
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as canonical names
   ("W", "Up", "Space"). `mouseMove`/`mouseWheel` are the analogous optional entry points
 - `tick = (model, dt, tts) => model'` — per-frame simulation step
@@ -55,7 +55,7 @@ The model-updating entry points (`tick`, `input`, `mouseMove`, `mouseWheel`, `up
 a `(model', effect)` tuple instead of a bare model, whose effect result folds back through
 `update`. `init` is a plain value (an Effect in it is rejected at load); `draw`/`physics`/
 `soundScape`/`ui`/`subscriptions` return their own specific values. The model is a plain
-`mle::Value` the host holds between frames.
+`functor_lang::Value` the host holds between frames.
 
 **Coordinates: Y-up, right-handed** (like OpenGL / glTF / Unity / Godot; *not* Unreal's Z-up). +Y
 is up, +X is right, and the ground is the XZ plane. The camera's up is `[0,1,0]` and view uses
@@ -67,52 +67,52 @@ By convention, `plane` geometry lies in XZ (ground) and `quad` in XY (screen/wal
 messages and effect results through `update`, **draining the effect queue to a fixed point**
 (capped at 1000 effects/frame to avoid hangs) before running `tick` on the settled state. The
 frame order is `subscriptions → update → tick → physics → draw`. This machinery is shared,
-prelude-level Rust in `functor_runtime_common::mle_prelude` (`drain_effects`, an `EffectRunner`:
+prelude-level Rust in `functor_runtime_common::functor_lang_prelude` (`drain_effects`, an `EffectRunner`:
 `RealEffects` / `FakeEffects` / `ReplayEffects`), consumed by both producers — every performed
 effect lands in a structured log, so under a fake/replay runner the same program is exactly
 deterministic (the test seam).
 
-**The MLE producer is the seam between game logic and the shells.** `mle_game.rs` (desktop) and
-its wasm sibling in `runtime/functor-runtime-web/` run `.mle` logic through an `mle::Session` with
-the **Functor prelude** (`FunctorHost` in `functor_runtime_common::mle_prelude`): the host-provided
+**The Functor Lang producer is the seam between game logic and the shells.** `functor_lang_game.rs` (desktop) and
+its wasm sibling in `runtime/functor-runtime-web/` run `.functor` logic through an `functor_lang::Session` with
+the **Functor prelude** (`FunctorHost` in `functor_runtime_common::functor_lang_prelude`): the host-provided
 externals that make `Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*` / `Effect.*` /
 `Sub.*` resolve to real protocol values. Both producers implement the shared
 `functor_runtime_common::protocol::GameProducer` trait the runtime loop consumes; the versioned
 logic↔runtime boundary is enumerated in `functor_runtime_common::protocol`. When you add or change
-a prelude surface, the real implementation lives in `mle_prelude.rs` and both producers must wire it.
+a prelude surface, the real implementation lives in `functor_lang_prelude.rs` and both producers must wire it.
 
-**Hot-reload and state persistence.** MLE hot-reload is built into the producer: it polls the
+**Hot-reload and state persistence.** Functor Lang hot-reload is built into the producer: it polls the
 project files' mtime each frame and on change reparses → rechecks → builds a new `Session` with
 **the model preserved** (it is a plain value the host holds). Closures stored *inside* the model
 rebind to the edited code, carrying their captured values over (matched by the enclosing def's
-name; a renamed/deleted def keeps its old body with a loud `[mle]` warning). A broken edit prints
+name; a renamed/deleted def keeps its old body with a loud `[functor-lang]` warning). A broken edit prints
 once and keeps the old program running. The physics world (like the model) survives reload. Pending
 effects are reset on reload (an in-flight HTTP tagger would dangle). Native watches every project
-`.mle`; on wasm, hot-reload is native-only (reload the page, or push source via a
-`{ type: "mle-set-source", source }` postMessage). See the `mle-language` skill for the exact rules.
+`.functor`; on wasm, hot-reload is native-only (reload the page, or push source via a
+`{ type: "functor-lang-set-source", source }` postMessage). See the `functor-lang` skill for the exact rules.
 
 ### Layout
 
 | Path | What it is |
 | --- | --- |
-| `mle/` | The MLE language crate — parser, IR, interpreter (`Session`), typechecker; `mle parse/ir/run/trace/check` |
-| `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the effect broker, and the MLE prelude (`mle_prelude::FunctorHost`) |
-| `runtime/functor-runtime-desktop/` | Desktop runtime (GLFW/OpenGL) — a library the `functor` CLI drives in-process (no separate binary); the native MLE producer (`mle_game.rs`) |
-| `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle; the wasm MLE producer (`mle_game.rs`) |
-| `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`); MLE projects route through `cli/src/commands/mle_project.rs` |
-| `tools/` | Editor tooling: `mle-vscode` (extension), `mle-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
-| `examples/*/` | Sample games (each a dir with `functor.json` + `game.mle`) — e.g. `hello`, `primitives`, `lighting`, `physics` |
+| `functor-lang/` | The Functor Lang language crate — parser, IR, interpreter (`Session`), typechecker; `functor-lang parse/ir/run/trace/check` |
+| `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the effect broker, and the Functor Lang prelude (`functor_lang_prelude::FunctorHost`) |
+| `runtime/functor-runtime-desktop/` | Desktop runtime (GLFW/OpenGL) — a library the `functor` CLI drives in-process (no separate binary); the native Functor Lang producer (`functor_lang_game.rs`) |
+| `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle; the wasm Functor Lang producer (`functor_lang_game.rs`) |
+| `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`); Functor Lang projects route through `cli/src/commands/functor_lang_project.rs` |
+| `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
+| `examples/*/` | Sample games (each a dir with `functor.json` + `game.functor`) — e.g. `hello`, `primitives`, `lighting`, `physics` |
 | `docs/todo.md` | The backlog — incomplete work only |
 
-MLE files use `file = module`: every sibling `.mle` in the entry's directory loads with it. The
-language, prelude, and semantics are documented in the **`mle-language` skill** — treat it and
-`docs/mle.md` as the source of truth, and keep the skill in sync when you change the language.
+Functor Lang files use `file = module`: every sibling `.functor` in the entry's directory loads with it. The
+language, prelude, and semantics are documented in the **`functor-lang` skill** — treat it and
+`docs/functor-lang.md` as the source of truth, and keep the skill in sync when you change the language.
 
 ## Commands
 
 **Prerequisites:** Rust stable + `wasm32-unknown-unknown` target, Node 22 / npm 10, and
 `wasm-pack`. **No .NET / Fable** — the toolchain is Rust + Node only. (`watchexec` is optional;
-MLE hot-reload is built into the runtime, so `develop` does not need it.)
+Functor Lang hot-reload is built into the runtime, so `develop` does not need it.)
 
 **Build the CLI.** Order matters — the CLI embeds the web runtime bundle at compile time via
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
@@ -123,32 +123,32 @@ npm run build:cli   # the wasm bundle, then the functor CLI
 
 Produces `target/debug/functor` — a single binary with the desktop runtime built in.
 
-**Scaffold a game.** `init` creates an embedded MLE starter without overwriting an existing
-`functor.json` or `game.mle`; `3d` is the default template:
+**Scaffold a game.** `init` creates an embedded Functor Lang starter without overwriting an existing
+`functor.json` or `game.functor`; `3d` is the default template:
 
 ```sh
 ./target/debug/functor -d my-game init [3d|fps]
 ```
 
 **Run / build a game.** The CLI operates on a directory with a `functor.json`
-(`{"language": "mle", "entry": "game.mle"}`); `-d` points to it:
+(`{"language": "functor-lang", "entry": "game.functor"}`); `-d` points to it:
 
 ```sh
 ./target/debug/functor -d examples/primitives run native   # opens a window (native is the default env)
-./target/debug/functor -d examples/primitives run wasm      # serves the .mle + wasm at http://127.0.0.1:8080
+./target/debug/functor -d examples/primitives run wasm      # serves the .functor + wasm at http://127.0.0.1:8080
 ./target/debug/functor -d examples/primitives build [native|wasm]
-./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; MLE hot-reload is built in
+./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; Functor Lang hot-reload is built in
 ```
 
-Under the hood: `build` typechecks the whole `.mle` project (diagnostics are errors). `run native`
+Under the hood: `build` typechecks the whole `.functor` project (diagnostics are errors). `run native`
 drives the built-in desktop runtime in-process from the game dir; it **interprets** the
-`.mle` each frame — nothing compiles. `run wasm` serves the project directory: the `.mle` ships as
+`.functor` each frame — nothing compiles. `run wasm` serves the project directory: the `.functor` ships as
 text and is interpreted by the embedded web runtime. `develop` is `run` (hot-reload is built in; on
 wasm, reload the page).
 
-**Verify the language without a GPU:** `cargo run -q -p mle -- run|check|trace|parse|ir <file.mle>`
-drives the interpreter/typechecker headlessly (the plain-`mle` prelude, no engine host). See the
-`mle-language` skill.
+**Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|parse|ir <file.functor>`
+drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the
+`functor-lang` skill.
 
 **Capture a frame to PNG** (no OS screen-recording permission needed — the runner reads back its
 own framebuffer; ideal for verifying rendering changes). The CLI forwards extra args to
@@ -167,7 +167,7 @@ or captures the cursor, so capture runs don't steal input from the user. For deb
 sessions (`--debug-port`) prefer passing `--hidden` explicitly — or `--headless` when no pixels
 are needed at all (see `docs/debug-runtime.md`).
 
-**Golden-image test:** `npm run test:golden` renders the MLE samples (`hello`,
+**Golden-image test:** `npm run test:golden` renders the Functor Lang samples (`hello`,
 `lighting`, `primitives`, `synthwave` — the scenarios in `golden-scenarios.json`) at a
 fixed time and compares each capture to a committed reference
 (`runtime/functor-runtime-desktop/tests/golden.rs`). It's `#[ignore]`d (needs a GL display), so it
@@ -175,8 +175,8 @@ runs locally/manually, not in CI. Goldens are renderer/display-specific — the 
 is in the test's doc comment.
 
 **Tests** are Rust: the runtime in `functor-runtime-common`
-(`cargo test -p functor_runtime_common`, includes the MLE prelude) and the language in the `mle`
-crate (`cargo test -p mle`; `UPDATE_GOLDENS=1` regenerates its snapshots).
+(`cargo test -p functor_runtime_common`, includes the Functor Lang prelude) and the language in the `functor_lang`
+crate (`cargo test -p functor-lang`; `UPDATE_GOLDENS=1` regenerates its snapshots).
 
 ## Visual changes
 
@@ -194,23 +194,23 @@ main context.
 
 ## Gotchas
 
-- **The `mle-language` skill is the source of truth for MLE.** MLE is a small, custom language —
+- **The `functor-lang` skill is the source of truth for Functor Lang.** Functor Lang is a small, custom language —
   do NOT guess syntax/semantics from F#/OCaml intuition (e.g. there is no `if`/`else`; the
   conditional is a bool-literal `match`; assignment is `:=`; pipelines *append* the subject
   (thread-last: `x |> f(a)` == `f(a, x)`)).
   When a change touches the language or the prelude, update the skill in the same PR.
-- **`file = module`.** Every `.mle` in the entry's directory loads with the project — an
-  unreferenced (or stray scratch) sibling still parses, checks, and evaluates. Keep scratch `.mle`
+- **`file = module`.** Every `.functor` in the entry's directory loads with the project — an
+  unreferenced (or stray scratch) sibling still parses, checks, and evaluates. Keep scratch `.functor`
   files in their own directory, and don't leave a broken sibling next to a game.
 - **The engine prelude only exists under the host.** `Scene.*`/`Camera.*`/`Frame.*`/`Physics.*`
-  etc. resolve only in runner-hosted MLE (and tests via `functor_runtime_common::mle_prelude`), NOT
-  in a plain `cargo run -p mle -- run`. Branded values (`Angle`, `Time`/`Duration`, `Fog`, render
+  etc. resolve only in runner-hosted Functor Lang (and tests via `functor_runtime_common::functor_lang_prelude`), NOT
+  in a plain `cargo run -p functor-lang -- run`. Branded values (`Angle`, `Time`/`Duration`, `Fog`, render
   targets) refuse bare numbers/strings with a teaching error — pass `Angle.degrees(60.0)`, not `60`.
-- **`functor run` does not rebuild the runtimes.** It only (re)loads the *game* `.mle`, which the
+- **`functor run` does not rebuild the runtimes.** It only (re)loads the *game* `.functor`, which the
   runner interprets. The asset pipeline and rendering execute in the shells, which are prebuilt:
   natively in the desktop runtime built into the `functor` binary, and on wasm in the web-runtime
   bundle that is `include_bytes!`-embedded into the `functor` CLI. After changing `runtime/` crates (including the
-  MLE prelude), run `npm run build:cli` first or the running shell silently won't have your change.
+  Functor Lang prelude), run `npm run build:cli` first or the running shell silently won't have your change.
 - **Sample glTF assets vary wildly in units.** The demo assets come from
   [BabylonJS/Assets](https://github.com/BabylonJS/Assets/) (`meshes/*.glb`): `ExplodingBarrel.glb`
   is ~72 units tall, Mixamo-style humanoids (`Xbot.glb`) are centimeter scale, and `fish.glb` is an

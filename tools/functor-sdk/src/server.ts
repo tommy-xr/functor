@@ -84,7 +84,7 @@ export function formatCrashOutput(logLines: string[]): string {
  * ```ts
  * await using game = await FunctorRunner.launch({
  *   gameDir: "examples/hello",
- *   mlePath: "examples/hello/game.mle",
+ *   functorLangPath: "examples/hello/game.functor",
  * });
  * ```
  */
@@ -113,7 +113,7 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
   }
 
   /** Spawn `functor -d <gameDir> run native` (which drives the desktop runtime's
-   * `--mle --debug-port` loop in-process) and wait until the render loop is
+   * `--functor-lang --debug-port` loop in-process) and wait until the render loop is
    * serving requests. Requires the CLI binary to already be built
    * (`cargo build --bin functor`). Post-E3 there is a single `functor` binary;
    * the game source is the project's `functor.json` entry. */
@@ -136,15 +136,15 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     if (options.headless && options.visible) {
       throw new Error("headless and visible are mutually exclusive");
     }
-    // The game is an `.mle` source; `functor run native` reads the entry from
-    // the project's functor.json (which the sample games set to game.mle).
-    const gamePath = isAbsolute(options.mlePath)
-      ? options.mlePath
-      : resolve(options.mlePath);
+    // The game is an `.functor` source; `functor run native` reads the entry from
+    // the project's functor.json (which the sample games set to game.functor).
+    const gamePath = isAbsolute(options.functorLangPath)
+      ? options.functorLangPath
+      : resolve(options.functorLangPath);
 
     for (const [label, path] of [
       ["functor CLI", runnerBin],
-      ["mle game source", gamePath],
+      ["functor-lang game source", gamePath],
     ] as const) {
       if (!existsSync(path)) {
         throw new Error(
@@ -155,32 +155,32 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     }
 
     // `functor run native` is project-oriented: it reads the entry (and detects
-    // the MLE language) from a `functor.json` in the game dir, NOT from an
+    // the Functor Lang language) from a `functor.json` in the game dir, NOT from an
     // explicit game-path — so the launched source is the functor.json entry.
     // Real games ship one; synthetic/temp game dirs (tests that just write a
-    // bare `.mle`) may not — write a minimal config pointing at the entry so the
-    // single `functor` binary can run them, matching what `functor-runner --mle`
+    // bare `.functor`) may not — write a minimal config pointing at the entry so the
+    // single `functor` binary can run them, matching what `functor-runner --functor-lang`
     // did directly pre-consolidation.
     const functorJson = join(gameDir, "functor.json");
-    const wantEntry = relative(gameDir, gamePath) || "game.mle";
+    const wantEntry = relative(gameDir, gamePath) || "game.functor";
     if (existsSync(functorJson)) {
       // Don't clobber a real project's config — but since the CLI launches its
-      // entry (not `mlePath`), verify they agree, or the SDK would silently run
+      // entry (not `functorLangPath`), verify they agree, or the SDK would silently run
       // a DIFFERENT game than the caller asked for.
       const cfg = JSON.parse(readFileSync(functorJson, "utf8"));
-      const cfgEntry: string = cfg.entry ?? "game.mle";
+      const cfgEntry: string = cfg.entry ?? "game.functor";
       if (resolve(gameDir, cfgEntry) !== gamePath) {
         throw new Error(
           `functor.json in ${gameDir} points at entry "${cfgEntry}", but launch ` +
-            `requested mlePath ${gamePath}. They must match — \`functor run native\` ` +
+            `requested functorLangPath ${gamePath}. They must match — \`functor run native\` ` +
             `launches the functor.json entry.`,
         );
       }
     } else {
-      writeFileSync(functorJson, JSON.stringify({ language: "mle", entry: wantEntry }));
+      writeFileSync(functorJson, JSON.stringify({ language: "functor-lang", entry: wantEntry }));
     }
 
-    // Forward the runtime flags after `--`; the CLI prepends `--mle
+    // Forward the runtime flags after `--`; the CLI prepends `--functor-lang`
     // --game-path <entry>` and runs the desktop loop in-process.
     const runnerArgs = [
       "-d",

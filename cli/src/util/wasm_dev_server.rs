@@ -4,7 +4,8 @@ use warp::{http::Response, Filter};
 
 pub struct WasmDevServer;
 
-const INDEX_MLE_HTML: &str = include_str!("../../../runtime/functor-runtime-web/index-mle.html");
+const INDEX_FUNCTOR_LANG_HTML: &str =
+    include_str!("../../../runtime/functor-runtime-web/index-functor-lang.html");
 const WASM_FILE: &[u8] =
     include_bytes!("../../../runtime/functor-runtime-web/pkg/functor_runtime_web_bg.wasm");
 const JS_FILE_1: &[u8] =
@@ -17,33 +18,33 @@ fn script_safe(json: String) -> String {
     json.replace("</", "<\\/")
 }
 
-/// Substitute the project's MLE entry + full file list into the MLE index page:
+/// Substitute the project's Functor Lang entry + full file list into the Functor Lang index page:
 ///
-/// - `"__MLE_ENTRY__"` becomes a JSON string literal → `window.__mleGamePath`,
+/// - `"__FUNCTOR_LANG_ENTRY__"` becomes a JSON string literal → `window.__functorLangGamePath`,
 ///   the program root.
-/// - `"__MLE_PROJECT_FILES__"` becomes a JSON array literal (entry first, then
-///   siblings) → `window.__mleProjectFiles`, so multi-file games (`file =
-///   module`) load EVERY module, not just the entry (docs/mle.md Track C5).
+/// - `"__FUNCTOR_LANG_PROJECT_FILES__"` becomes a JSON array literal (entry first, then
+///   siblings) → `window.__functorLangProjectFiles`, so multi-file games (`file =
+///   module`) load EVERY module, not just the entry (docs/functor-lang.md Track C5).
 ///
 /// Both are valid JS for any path (quotes/backslashes included).
-fn render_mle_index(entry: &str, files: &[String]) -> String {
+fn render_functor_lang_index(entry: &str, files: &[String]) -> String {
     let entry_literal =
         script_safe(serde_json::to_string(entry).expect("a string always serializes"));
     let files_literal =
         script_safe(serde_json::to_string(files).expect("a string slice always serializes"));
-    INDEX_MLE_HTML
-        .replace("\"__MLE_ENTRY__\"", &entry_literal)
-        .replace("\"__MLE_PROJECT_FILES__\"", &files_literal)
+    INDEX_FUNCTOR_LANG_HTML
+        .replace("\"__FUNCTOR_LANG_ENTRY__\"", &entry_literal)
+        .replace("\"__FUNCTOR_LANG_PROJECT_FILES__\"", &files_literal)
 }
 
 /// The project's file list as URLs relative to the served directory (entry
-/// first, then sibling `.mle`/`.mlei` files) — the same set the desktop
-/// producer links (`mle::project::project_files`), made relative so the web
+/// first, then sibling `.functor`/`.functori` files) — the same set the desktop
+/// producer links (`functor_lang::project::project_files`), made relative so the web
 /// runtime fetches each from the dev server's filesystem route. Falls back to
 /// just the entry if the directory can't be scanned.
 fn project_file_urls(working_directory: &str, entry: &str) -> Vec<String> {
     let entry_path = std::path::Path::new(working_directory).join(entry);
-    let paths = match mle::project::project_files(&entry_path) {
+    let paths = match functor_lang::project::project_files(&entry_path) {
         Ok(paths) => paths,
         Err(_) => return vec![entry.to_string()],
     };
@@ -60,15 +61,15 @@ fn project_file_urls(working_directory: &str, entry: &str) -> Vec<String> {
 }
 
 impl WasmDevServer {
-    /// Serve an MLE project (docs/mle.md Track C5): same embedded runtime
-    /// bundle + filesystem routes, but the index page is the MLE one — there
+    /// Serve a Functor Lang project (docs/functor-lang.md Track C5): same embedded runtime
+    /// bundle + filesystem routes, but the index page is the Functor Lang one — there
     /// is no game wasm module; the runtime fetches the entry file, which the
     /// filesystem route serves straight from the project directory.
-    pub async fn start_mle(working_directory: &str, entry: &str) -> Result<(), io::Error> {
+    pub async fn start_functor_lang(working_directory: &str, entry: &str) -> Result<(), io::Error> {
         let files = project_file_urls(working_directory, entry);
         Self::serve(
             working_directory,
-            render_mle_index(entry, &files).into_bytes(),
+            render_functor_lang_index(entry, &files).into_bytes(),
         )
         .await
     }
@@ -104,9 +105,9 @@ impl WasmDevServer {
         let route_filesystem = warp::fs::dir(wd);
 
         // Combine all routes. `no-store` on everything: this is a dev server,
-        // and the index page + `.mle` source are re-generated per run — without
+        // and the index page + `.functor` source are re-generated per run — without
         // it, switching samples (each serving its source at the same
-        // `/game.mle` URL) can show a stale game from the browser cache.
+        // `/game.functor` URL) can show a stale game from the browser cache.
         let static_routes = route_index.or(route_js1).or(route_wasm);
         let routes = static_routes
             .or(route_filesystem)
@@ -130,35 +131,35 @@ impl WasmDevServer {
 
 #[cfg(test)]
 mod tests {
-    use super::render_mle_index;
+    use super::render_functor_lang_index;
 
     #[test]
     fn substitutes_the_entry_as_a_js_string() {
-        let html = render_mle_index("game.mle", &["game.mle".to_string()]);
-        assert!(html.contains("window.__mleGamePath = \"game.mle\""));
-        assert!(!html.contains("__MLE_ENTRY__"));
+        let html = render_functor_lang_index("game.functor", &["game.functor".to_string()]);
+        assert!(html.contains("window.__functorLangGamePath = \"game.functor\""));
+        assert!(!html.contains("__FUNCTOR_LANG_ENTRY__"));
     }
 
     #[test]
     fn substitutes_the_project_file_list_as_a_js_array() {
-        let html = render_mle_index(
-            "game.mle",
-            &["game.mle".to_string(), "pieces.mle".to_string()],
+        let html = render_functor_lang_index(
+            "game.functor",
+            &["game.functor".to_string(), "pieces.functor".to_string()],
         );
         assert!(html.contains("(["));
-        assert!(html.contains("\"game.mle\",\"pieces.mle\""));
-        assert!(!html.contains("__MLE_PROJECT_FILES__"));
+        assert!(html.contains("\"game.functor\",\"pieces.functor\""));
+        assert!(!html.contains("__FUNCTOR_LANG_PROJECT_FILES__"));
     }
 
     #[test]
     fn escapes_entries_that_would_break_the_script() {
-        let html = render_mle_index("we\"ird\\name.mle", &["we\"ird\\name.mle".to_string()]);
-        assert!(html.contains("we\\\"ird\\\\name.mle"));
+        let html = render_functor_lang_index("we\"ird\\name.functor", &["we\"ird\\name.functor".to_string()]);
+        assert!(html.contains("we\\\"ird\\\\name.functor"));
     }
 
     #[test]
     fn escapes_a_script_terminator_in_the_entry() {
-        let html = render_mle_index("bad</script>.mle", &["bad</script>.mle".to_string()]);
-        assert!(html.contains("bad<\\/script>.mle"));
+        let html = render_functor_lang_index("bad</script>.functor", &["bad</script>.functor".to_string()]);
+        assert!(html.contains("bad<\\/script>.functor"));
     }
 }

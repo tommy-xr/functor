@@ -18,11 +18,11 @@ npm run build     # tsc -> dist/
 ```ts
 import { FunctorRunner, stepAll } from "@functor/sdk";
 
-// Launch a game and drive it deterministically. MLE games are run via `mlePath`
-// (the runner interprets the .mle — nothing to build).
+// Launch a game and drive it deterministically. Functor Lang games are run via `functorLangPath`
+// (the runner interprets the .functor — nothing to build).
 await using game = await FunctorRunner.launch({
   gameDir: "examples/hello",
-  mlePath: "examples/hello/game.mle",
+  functorLangPath: "examples/hello/game.functor",
 });
 
 await game.pause();              // pin the clock
@@ -68,7 +68,7 @@ players and each client converges on a 2-player world.
 const launch = (game: string, port: number) =>
   FunctorRunner.launch({
     gameDir: `examples/${game}`,
-    mlePath: `examples/${game}/game.mle`,
+    functorLangPath: `examples/${game}/game.functor`,
     port,
   });
 await using a = await launch("mpserver", 8077);
@@ -88,7 +88,7 @@ npm run test:e2e  # FUNCTOR_E2E=1 — launches a real functor runtime
 ```
 
 The e2e tests require the `functor` binary to be built, and a display to open
-the GL window. The games are MLE sources (`examples/*`) interpreted in place, so
+the GL window. The games are Functor Lang sources (`examples/*`) interpreted in place, so
 there is no per-game build step:
 
 ```sh
@@ -98,7 +98,7 @@ cargo build --bin functor
 (The games driven by the tests are `examples/hello` — the held-input
 test — and `examples/mpserver` / `examples/mpclient` — the multiplayer
 test. A `build` step is optional: `functor -d <dir> build native` just
-typechecks the `.mle`.)
+typechecks the `.functor`.)
 
 The headline e2e (`held-input.e2e.test.ts`) is the durable guard for the
 input→state→step loop: inject `up`, step a frame, assert the model's `held.up`

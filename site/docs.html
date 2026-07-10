@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>functor docs — the MLE language</title>
+    <title>functor docs — the Functor Lang language</title>
     <meta
       name="description"
-      content="Get started with functor and learn MLE — the tiny live-editable game language. Every full program here runs in the sandbox with one click."
+      content="Get started with functor and learn Functor Lang — the tiny live-editable game language. Every full program here runs in the sandbox with one click."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -36,9 +36,9 @@
       </nav>
 
       <main class="docs-main">
-        <h1>MLE — the functor game language</h1>
+        <h1>Functor Lang — the functor game language</h1>
         <p>
-          MLE is a deliberately small, F#-inspired language for game logic. It is
+          Functor Lang is a deliberately small, F#-inspired language for game logic. It is
           <em>interpreted</em> — the source ships as text and runs natively, in the browser, and
           in the <a href="sandbox.html">sandbox</a> — and it hot-reloads with your game's state
           preserved. Every full program on this page has a <strong>▶ try it</strong> button that
@@ -54,11 +54,11 @@
           </p>
           <pre class="shell">git clone https://github.com/tommy-xr/functor && cd functor
 npm run build:cli                    # builds the functor CLI + runtimes</pre>
-          <p>An MLE project is a directory with two files:</p>
+          <p>An Functor Lang project is a directory with two files:</p>
           <pre class="shell"># functor.json
-{ "language": "mle", "entry": "game.mle" }</pre>
+{ "language": "functor-lang", "entry": "game.functor" }</pre>
           <p>And the game itself — here is the smallest interesting one:</p>
-          <pre class="mle runnable">let init = {}
+          <pre class="functor-lang runnable">let init = {}
 let tick = (m, dt, tts) => m
 let draw = (m, tts: Float) =>
   Frame.create(
@@ -88,7 +88,7 @@ functor -d . build           # typecheck (diagnostics are errors)</pre>
             (from timers, effects) fold through <code>update</code>. This one pulses a sphere and
             counts beats once a second:
           </p>
-          <pre class="mle runnable">// a pulsing sphere with a beat counter
+          <pre class="functor-lang runnable">// a pulsing sphere with a beat counter
 type Msg = | Beat
 
 let init = { spin: 0.0, beat: 0.0 }
@@ -112,7 +112,7 @@ let draw = (model, tts: Float) =>
             Input is another pure function — slide the cube with A and D (click the preview
             first so it has keyboard focus):
           </p>
-          <pre class="mle runnable">let init = { x: 0.0 }
+          <pre class="functor-lang runnable">let init = { x: 0.0 }
 
 let input = (model, key, isDown) =>
   match isDown with
@@ -135,7 +135,7 @@ let draw = (model, tts) =>
             And physics is declarative — describe the bodies each frame; the runtime reconciles
             and steps the world:
           </p>
-          <pre class="mle runnable">let init = {}
+          <pre class="functor-lang runnable">let init = {}
 let tick = (m, dt, tts) => m
 
 let physics = (m) =>
@@ -199,7 +199,7 @@ let draw = (m, tts) =>
           <h2>The language</h2>
 
           <h3>Values and bindings</h3>
-          <pre class="mle">let threshold = 10          // every number is a Float (f64)
+          <pre class="functor-lang">let threshold = 10          // every number is a Float (f64)
 let name = "neon\n"         // strings: \" \\ \n \t
 let on = true
 let origin = { x: 0.0, y: 0.0 }
@@ -211,7 +211,7 @@ let scores = [1.0, 2.0, 3.0]</pre>
           </p>
 
           <h3>Functions</h3>
-          <pre class="mle">let area = (w: Float, h: Float): Float => w * h   // annotations optional
+          <pre class="functor-lang">let area = (w: Float, h: Float): Float => w * h   // annotations optional
 let describe = (score) => Text.concat("score: ", Text.fromFloat(score))</pre>
           <p>
             Typing is <em>gradual</em>: unannotated values check against everything; annotations
@@ -220,13 +220,13 @@ let describe = (score) => Text.concat("score: ", Text.fromFloat(score))</pre>
           </p>
 
           <h3>Records</h3>
-          <pre class="mle">type Position = { x: Float, y: Float }        // nominal in annotations
+          <pre class="functor-lang">type Position = { x: Float, y: Float }        // nominal in annotations
 
 let p = { x: 0.0, y: 1.0 }
 let nudged = { p with x: p.x + 1.0 }          // update: fields must exist</pre>
 
           <h3>Variants and match</h3>
-          <pre class="mle">type Shape =
+          <pre class="functor-lang">type Shape =
   | Circle(radius: Float)     // leading | required — first alternative too
   | Rect(w: Float, h: Float)
   | Point                     // nullary: no parens, ever
@@ -256,7 +256,7 @@ let area = (s: Shape): Float =>
 
           <h3>The conditional</h3>
           <p>There is no <code>if</code>/<code>else</code>. The conditional is a bool-literal match:</p>
-          <pre class="mle">let sizeOf = (n: Float): String =>
+          <pre class="functor-lang">let sizeOf = (n: Float): String =>
   match n > 10.0 with
   | true => "big"
   | false => "small"</pre>
@@ -267,7 +267,7 @@ let area = (s: Shape): Float =>
             <code>x |> f(a)</code> is <code>f(a, x)</code>. Every prelude function therefore
             takes its subject (list, scene, body) last (thread-last, F#/Elm-style).
           </p>
-          <pre class="mle">let isHigh = (score) => score > 10.0
+          <pre class="functor-lang">let isHigh = (score) => score > 10.0
 let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
 
 let report = (scores) =>
@@ -277,7 +277,7 @@ let report = (scores) =>
     |> Text.toBullets</pre>
 
           <h3>Tuples</h3>
-          <pre class="mle">let minMax = (a: Float, b: Float): Float * Float =>
+          <pre class="functor-lang">let minMax = (a: Float, b: Float): Float * Float =>
   match a &lt; b with
   | true => (a, b)            // (e) is grouping, not a 1-tuple
   | false => (b, a)
@@ -291,7 +291,7 @@ let span = (a, b) =>
           </p>
 
           <h3>Local mutation</h3>
-          <pre class="mle">let sum3 = (a, b, c) =>
+          <pre class="functor-lang">let sum3 = (a, b, c) =>
   let mut acc = a in          // a rebindable slot; expression let-in
   acc := acc + b;             // assignment is := and carries a continuation
   acc := acc + c;
@@ -316,7 +316,7 @@ let span = (a, b) =>
           <h2>The prelude</h2>
           <p>
             Available in runner-hosted games (the CLI, the sandbox) — not in the bare
-            <code>mle</code> interpreter.
+            <code>functor-lang</code> interpreter.
           </p>
 
           <h3>Scene</h3>
@@ -352,7 +352,7 @@ let span = (a, b) =>
           </table>
 
           <h3>Render targets</h3>
-          <pre class="mle">let feed = RenderTarget.named("security") |> RenderTarget.sized(256.0, 256.0)</pre>
+          <pre class="functor-lang">let feed = RenderTarget.named("security") |> RenderTarget.sized(256.0, 256.0)</pre>
           <table>
             <tbody>
               <tr><td><code>frame |> Frame.withRenderTarget(target, targetFrame)</code></td><td>writer: renders a full frame (own camera + lights) into the target before the main pass</td></tr>
@@ -424,7 +424,7 @@ let span = (a, b) =>
           </ul>
           <p class="docs-footnote">
             This page tracks the language exactly — if a construct isn't here, it doesn't parse.
-            The roadmap lives in <a href="https://github.com/tommy-xr/functor/blob/main/docs/mle.md">docs/mle.md</a>.
+            The roadmap lives in <a href="https://github.com/tommy-xr/functor/blob/main/docs/functor-lang.md">docs/functor-lang.md</a>.
           </p>
         </section>
       </main>

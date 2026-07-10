@@ -1,0 +1,12 @@
+// BENCH: List.map + List.filter pipeline over a 100k list. Exercises the
+// builtin map/filter hot path plus one closure dispatch per element, and the
+// intermediate list allocations between stages.
+//
+// Convention: `main` is the timed unit of work. Also: `functor-lang run list_map.functor`.
+let double = (x) => x * 2.0
+let isBig = (x) => x > 100000.0
+let main = () =>
+  List.range(100000)
+    |> List.map(double)
+    |> List.filter(isBig)
+    |> List.fold((acc, x) => acc + x, 0.0)

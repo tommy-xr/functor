@@ -14,7 +14,7 @@ use crate::shader_program::{ShaderProgram, UniformLocation};
 ///
 /// Like `Light`, this accepts degenerate parameters (`far <= near`,
 /// `density <= 0`) without judgement — validation with teaching errors is
-/// the MLE/game-surface layer's job.
+/// the Functor Lang/game-surface layer's job.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Fog {
     /// `factor = clamp((far - d) / (far - near), 0, 1)`: fully clear at

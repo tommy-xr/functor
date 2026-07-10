@@ -1,0 +1,75 @@
+// physics.functori — the `Physics` host module (interface only; implemented in Rust
+// by FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md and
+// docs/physics.md (the declarative surface).
+//
+// Shapes are values, bodies are tag + shape + piped attributes, and the optional
+// `physics = (model) => Physics.scene(…)` hook declares the world each frame.
+// This module owns three opaque handles (shape, body, world) plus the plain-data
+// records the query/event APIs hand back.
+
+// Opaque handles.
+type shape
+type body
+type world
+
+// The record `Physics.position` returns — the live pose of a body.
+type position = { x: float, y: float, z: float }
+// The record a `Physics.raycast` tagger receives (hit: false with zeroed fields
+// for a miss).
+type rayHit = {
+  hit: bool,
+  x: float, y: float, z: float,
+  nx: float, ny: float, nz: float,
+  distance: float,
+  tag: string
+}
+// The record a `Physics.events` tagger receives, one per contact begin/end.
+type collisionEvent = { started: bool, a: string, b: string, sensor: bool }
+
+// Shapes.
+let box : (float, float, float) => shape
+let sphere : (float) => shape
+let capsule : (float, float) => shape
+
+// Bodies (tag, shape).
+let dynamic : (string, shape) => body
+let kinematic : (string, shape) => body
+let fixed : (string, shape) => body
+
+// body LAST (subject-last), so they pipe:
+// `Physics.dynamic("crate", Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
+let at : (float, float, float, body) => body
+let velocity : (float, float, float, body) => body
+let mass : (float, body) => body
+let friction : (float, body) => body
+let restitution : (float, body) => body
+let sensor : (body) => body
+
+// The world (gx, gy, gz, bodies).
+let scene : (float, float, float, List<body>) => world
+
+// Reads of the LIVE stepped world (in-process, no boundary).
+let position : (string) => position
+let timelineFrame : () => float
+
+// world LAST (subject-last), so it pipes: place a visual at a body's live pose —
+// `Scene.cube() |> Physics.transformed("crate-1")`.
+let transformed : (string, Scene.t) => Scene.t
+
+// Command EFFECTS (tag, x, y, z).
+let applyImpulse : (string, float, float, float) => Effect.t
+let applyForce : (string, float, float, float) => Effect.t
+let setVelocity : (string, float, float, float) => Effect.t
+let teleport : (string, float, float, float) => Effect.t
+
+// Query EFFECT: ox, oy, oz, dx, dy, dz, maxDist, tagger.
+let raycast : (float, float, float, float, float, float, float, (rayHit) => 'msg) => Effect.t
+
+// Collision-event SUB (what `subscriptions` returns).
+let events : ((collisionEvent) => 'msg) => Sub.t
+
+// Timeline-control EFFECTS.
+let pause : () => Effect.t
+let resume : () => Effect.t
+let stepOnce : () => Effect.t
+let rewindTo : (float) => Effect.t

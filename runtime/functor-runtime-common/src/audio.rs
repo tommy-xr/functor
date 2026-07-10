@@ -91,8 +91,8 @@ pub fn drain_commands_json() -> String {
 // --- Completion: token minting for `Effect.playThen` ---
 //
 // A `playThen` one-shot correlates its completion with the play via a token.
-// The MLE producer holds the pending completion MESSAGE keyed by that token in
-// its own per-session registry (`mle_prelude::register_audio_completion`); this
+// The Functor Lang producer holds the pending completion MESSAGE keyed by that token in
+// its own per-session registry (`functor_lang_prelude::register_audio_completion`); this
 // module just mints the tokens.
 
 thread_local! {
@@ -339,7 +339,7 @@ pub fn reconcile(live: &HashMap<String, AudioSource>, desired: &AudioScene) -> V
 }
 
 /// Serializes tests that touch the process-global [`OUTBOUND`] queue (here and
-/// in `mle_prelude`), so they don't drain each other's commands under CI's
+/// in `functor_lang_prelude`), so they don't drain each other's commands under CI's
 /// parallel scheduling. `unwrap_or_else(into_inner)` shrugs off a poisoned lock
 /// from an unrelated panicking test.
 #[cfg(test)]

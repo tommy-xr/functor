@@ -1,0 +1,18 @@
+// sub.functori — the `Sub` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//
+// Subscriptions: what the optional `subscriptions = (model) => …` hook returns.
+// The `'msg` type variable is the game's message type (typically an ADT variant).
+
+// The opaque subscription handle (`Sub.t` from game code).
+type t
+
+let none : () => t
+// The `'msg` is a message VALUE, held by the host and handed back verbatim when
+// the timer fires.
+let every : (Time.t, 'msg) => t
+let batch : (List<t>) => t
+// A persistent connection (client) / listener (server): the tagger receives
+// `Net.NetEvent` values.
+let connect : (string, (Net.NetEvent) => 'msg) => t
+let listen : (string, (Net.NetEvent) => 'msg) => t

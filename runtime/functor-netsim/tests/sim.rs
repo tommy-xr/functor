@@ -1,13 +1,13 @@
 //! End-to-end netsim tests: a real server game + a real client game, run as
-//! independent in-process MLE producers, wired through the virtual network and
+//! independent in-process Functor Lang producers, wired through the virtual network and
 //! stepped deterministically — no GL, no sockets.
 //!
 //! Uses the `wsserverdemo` (greet + echo) and `wsdemo` (connect + send)
 //! samples. Their authorities match (127.0.0.1:9001) so the harness routes the
 //! client to the server.
 //!
-//! The instances are `.mle` games (E3 phase 0b): no dylib build is needed, only
-//! the committed `examples/*/game.mle` sources. Still `#[ignore]`d by
+//! The instances are `.functor` games (E3 phase 0b): no dylib build is needed, only
+//! the committed `examples/*/game.functor` sources. Still `#[ignore]`d by
 //! default (they pull in the full desktop runtime as a dev-dependency); run
 //! with:
 //!
@@ -16,29 +16,29 @@
 //! ```
 
 use functor_netsim::{InstanceId, Link, NetSim};
-use functor_runtime_desktop::mle_game::MleGame;
+use functor_runtime_desktop::functor_lang_game::FunctorLangGame;
 
-// MLE producers share this process's global conn-command queue, so the tests in
+// Functor Lang producers share this process's global conn-command queue, so the tests in
 // this binary (cargo runs them as parallel threads) must not build/step their
 // sims concurrently. Serialize them, and clear any residue at each test's start.
 static NET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn mle_path(sample: &str) -> String {
+fn functor_lang_path(sample: &str) -> String {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join(format!("examples/{sample}/game.mle"))
+        .join(format!("examples/{sample}/game.functor"))
         .to_str()
         .unwrap()
         .to_string()
 }
 
-fn add_mle(sim: &mut NetSim, sample: &str) -> InstanceId {
-    let path = mle_path(sample);
+fn add_functor_lang(sim: &mut NetSim, sample: &str) -> InstanceId {
+    let path = functor_lang_path(sample);
     assert!(
         std::path::Path::new(&path).exists(),
-        "missing {path} (the committed MLE example)"
+        "missing {path} (the committed Functor Lang example)"
     );
-    sim.add_producer(Box::new(MleGame::create(&path)))
+    sim.add_producer(Box::new(FunctorLangGame::create(&path)))
 }
 
 #[test]
@@ -48,8 +48,8 @@ fn server_and_client_exchange_messages() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_mle(&mut sim, "wsserverdemo");
-    let client = add_mle(&mut sim, "wsdemo");
+    let server = add_functor_lang(&mut sim, "wsserverdemo");
+    let client = add_functor_lang(&mut sim, "wsdemo");
 
     // Default (perfect) link: the exchange settles in a handful of frames.
     sim.step_n(10);
@@ -73,8 +73,8 @@ fn latency_delays_delivery_deterministically() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_mle(&mut sim, "wsserverdemo");
-    let client = add_mle(&mut sim, "wsdemo");
+    let server = add_functor_lang(&mut sim, "wsserverdemo");
+    let client = add_functor_lang(&mut sim, "wsdemo");
     // 8-tick one-way latency on the client<->server link.
     sim.set_link(
         client,

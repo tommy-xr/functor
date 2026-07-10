@@ -1,4 +1,4 @@
-//! The host prelude (`functor-prelude`) as a check-time overlay (mlei 2e):
+//! The host prelude (`functor-prelude`) as a check-time overlay (functori 2e):
 //! host calls get real types, and the MVU `(model, effect)` lift still works
 //! now that `Effect` has a concrete type instead of the old `Unknown` seam.
 
@@ -10,9 +10,9 @@ fn check(src: &str) -> Vec<String> {
         std::env::temp_dir().join(format!("functor-prelude-typecheck-{}", src.len()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("game.mle"), src).unwrap();
-    let project = match mle::project::load_with_prelude(
-        &dir.join("game.mle"),
+    std::fs::write(dir.join("game.functor"), src).unwrap();
+    let project = match functor_lang::project::load_with_prelude(
+        &dir.join("game.functor"),
         &HashMap::new(),
         &functor_prelude::modules(),
     ) {
@@ -47,7 +47,7 @@ fn real_tuple_mismatch_still_errors() {
     assert!(!diags.is_empty(), "a real (m, Float) vs m mismatch must error");
 }
 
-/// Host calls carry real types from the prelude `.mlei`, across namespaces.
+/// Host calls carry real types from the prelude `.functori`, across namespaces.
 #[test]
 fn host_calls_have_real_types() {
     let diags = check("let bad : float = Camera.lookAt(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)");

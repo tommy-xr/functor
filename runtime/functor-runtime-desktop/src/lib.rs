@@ -7,17 +7,17 @@
 //! spawning a separate `functor-runner` process. [`run`] owns the GLFW/OpenGL
 //! window + the game loop and must be called on the main thread (see its docs).
 //!
-//! The game **producers** (`game`/`mle_game`) are also exposed so in-process
+//! The game **producers** (`game`/`functor_lang_game`) are also exposed so in-process
 //! drivers in OTHER crates can construct them (the `functor-netsim` harness
-//! drives an [`mle_game::MleGame`] as one of its instances — E3 phase 0b).
+//! drives an [`functor_lang_game::FunctorLangGame`] as one of its instances — E3 phase 0b).
 
 pub mod game;
-pub mod mle_game;
+pub mod functor_lang_game;
 
 // The run loop and its supporting modules pull native-only deps (glfw, tokio,
 // reqwest, rodio, tiny_http, …) declared under this crate's
 // `cfg(not(wasm32))` target section, so they are gated to native builds. The
-// wasm-visible surface stays exactly `game` + `mle_game` (the producers).
+// wasm-visible surface stays exactly `game` + `functor_lang_game` (the producers).
 #[cfg(not(target_arch = "wasm32"))]
 mod audio;
 #[cfg(not(target_arch = "wasm32"))]

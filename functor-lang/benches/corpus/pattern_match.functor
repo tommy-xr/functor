@@ -1,0 +1,14 @@
+// BENCH: match-arm dispatch -- a 200k fold whose step classifies each element
+// with nested bool-literal matches (Functor Lang's only conditional). Measures match
+// evaluation and arm selection, with no deep recursion.
+//
+// Convention: `main` is the timed unit of work. Also: `functor-lang run pattern_match.functor`.
+let classify = (x) =>
+  match x > 150000.0 with
+  | true => 3.0
+  | false =>
+    (match x > 50000.0 with
+     | true => 2.0
+     | false => 1.0)
+let main = () =>
+  List.fold((acc, x) => acc + classify(x), 0.0, List.range(200000))

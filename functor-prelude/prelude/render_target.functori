@@ -1,0 +1,12 @@
+// render_target.functori — the `RenderTarget` host module (interface only;
+// implemented in Rust by FunctorHost in functor_runtime_common::functor_lang_prelude).
+// See docs/functor-lang-interfaces.md.
+
+// The opaque render-target handle (`RenderTarget.t` from game code).
+type t
+
+// A named target (512x512 unless piped through `RenderTarget.sized`).
+let named : (string) => t
+// Target LAST (subject-last), so it pipes:
+// `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
+let sized : (float, float, t) => t

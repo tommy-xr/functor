@@ -1,0 +1,15 @@
+// audio_source.functori — the `AudioSource` host module (interface only; implemented
+// in Rust by FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//
+// Soundscape voices (the continuous, reconciled half of audio). Keyed for
+// cross-frame identity so the shell keeps a live voice playing.
+
+// The opaque audio-source handle (`AudioSource.t` from game code).
+type t
+
+// key, sound.
+let ambient : (string, string) => t
+// key, sound, x, y, z.
+let at : (string, string, float, float, float) => t
+// Source LAST (subject-last), so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
+let gain : (float, t) => t

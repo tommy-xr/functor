@@ -1,0 +1,16 @@
+[package]
+name = "functor-lang-lsp"
+version = "0.1.0"
+edition = "2021"
+
+# Deliberately tiny (docs/functor-lang.md Track D): a blocking stdio loop needs no
+# async runtime or LSP framework — serde_json (already in the tree) is the
+# only dependency besides the language crate itself.
+[dependencies]
+functor-lang = { path = "../../functor-lang" }
+functor-prelude = { path = "../../functor-prelude" }
+serde_json = "1.0"
+
+[[bin]]
+name = "functor-lang-lsp"
+path = "src/main.rs"

@@ -1,0 +1,133 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Functor Lang",
+  "scopeName": "source.functor",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#keyword" },
+    { "include": "#boolean" },
+    { "include": "#number" },
+    { "include": "#type-variable" },
+    { "include": "#primitive-type" },
+    { "include": "#qualified-name" },
+    { "include": "#type-name" },
+    { "include": "#operator" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.functor",
+      "match": "//.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.functor",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.functor" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.functor" }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.functor",
+          "match": "\\\\[\\\\\"nt]"
+        },
+        {
+          "name": "invalid.illegal.unknown-escape.functor",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "keyword": {
+      "name": "keyword.control.functor",
+      "match": "\\b(let|type)\\b"
+    },
+    "boolean": {
+      "name": "constant.language.boolean.functor",
+      "match": "\\b(true|false)\\b"
+    },
+    "number": {
+      "name": "constant.numeric.functor",
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "qualified-name": {
+      "comment": "Module access like `List.map` / `Text.concat`",
+      "match": "\\b([A-Z][A-Za-z0-9_]*)(\\.)([a-z][A-Za-z0-9_]*)\\b",
+      "captures": {
+        "1": { "name": "entity.name.namespace.functor" },
+        "2": { "name": "punctuation.accessor.functor" },
+        "3": { "name": "support.function.functor" }
+      }
+    },
+    "type-variable": {
+      "comment": "Apostrophe-prefixed type variable in type position (`'a`, `'msg`)",
+      "name": "entity.name.type.parameter.functor",
+      "match": "'[a-zA-Z][A-Za-z0-9_]*\\b"
+    },
+    "primitive-type": {
+      "comment": "The lowercase primitive types (F#/OCaml convention)",
+      "name": "support.type.primitive.functor",
+      "match": "\\b(float|bool|string)\\b"
+    },
+    "type-name": {
+      "comment": "Any other uppercase identifier is a type: `type` decl names, annotations after `:`, and generic arguments (`List<float>`)",
+      "name": "entity.name.type.functor",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.pipeline.functor",
+          "match": "\\|>"
+        },
+        {
+          "name": "storage.type.function.arrow.functor",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.comparison.functor",
+          "match": "==|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.functor",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.functor",
+          "match": "[+*/]|-"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.comma.functor",
+          "match": ","
+        },
+        {
+          "name": "punctuation.separator.key-value.functor",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.accessor.functor",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.section.braces.functor",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.brackets.functor",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.section.parens.functor",
+          "match": "[()]"
+        }
+      ]
+    }
+  }
+}

@@ -6,7 +6,7 @@
     <title>functor — a functional toolkit for 3D games</title>
     <meta
       name="description"
-      content="Write 3D games as pure functions in MLE — a tiny, interpreted, F#-inspired game language that the Rust runtime runs live on native + WebAssembly, with state-preserving hot-reload and no compile step."
+      content="Write 3D games as pure functions in Functor Lang — a tiny, interpreted, F#-inspired game language that the Rust runtime runs live on native + WebAssembly, with state-preserving hot-reload and no compile step."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -17,12 +17,12 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="landing-page">
-    <!-- The hero background IS a functor program: site/examples/hero.mle,
+    <!-- The hero background IS a functor program: site/examples/hero.functor,
          interpreted live by the wasm runtime in this iframe. -->
     <section class="hero">
       <iframe
         class="hero-scene"
-        src="player.html?game=examples%2Fhero.mle"
+        src="player.html?game=examples%2Fhero.functor"
         title="live synthwave scene rendered by functor"
         tabindex="-1"
       ></iframe>
@@ -30,7 +30,7 @@
         <h1 class="hero-title">FUNCTOR</h1>
         <p class="hero-tagline">A functional toolkit for 3D games.</p>
         <p class="hero-sub">
-          Pure functions in, frames out. Write MLE — a tiny interpreted language — and the
+          Pure functions in, frames out. Write Functor Lang — a tiny interpreted language — and the
           Rust runtime runs it live on native&nbsp;+&nbsp;WebAssembly, with hot-reload that
           keeps your game state alive.
         </p>
@@ -53,7 +53,7 @@
         </p>
       </div>
       <div class="feature">
-        <h2>λ MLE — a tiny game language</h2>
+        <h2>λ Functor Lang — a tiny game language</h2>
         <p>
           An F#-inspired language with records, variants, pattern matching, and pipelines —
           interpreted by a zero-dependency engine that runs natively and in your browser.
@@ -71,7 +71,7 @@
 
     <section class="code-sample">
       <h2>The whole game loop</h2>
-      <p>Model–View–Update, all the way down. This is real MLE — paste it into the sandbox.</p>
+      <p>Model–View–Update, all the way down. This is real Functor Lang — paste it into the sandbox.</p>
       <pre><code><span class="tok-c">// a pulsing sphere with a beat counter</span>
 <span class="tok-k">type</span> <span class="tok-t">Msg</span> = | <span class="tok-t">Beat</span>
 
@@ -98,7 +98,7 @@
       <h2>How it works</h2>
       <ol>
         <li>
-          <strong>Games are written in MLE</strong> — a small, interpreted, F#-inspired functional
+          <strong>Games are written in Functor Lang</strong> — a small, interpreted, F#-inspired functional
           language. There is no compile step: the source ships as text and a tree-walking
           interpreter inside the runtime evaluates it, natively and in the browser.
         </li>
@@ -118,7 +118,7 @@
     <footer class="landing-footer">
       <p>
         <a href="https://github.com/tommy-xr/functor">github.com/tommy-xr/functor</a>
-        · built with functor — this page's sky is a <code>.mle</code> file
+        · built with functor — this page's sky is a <code>.functor</code> file
       </p>
     </footer>
   </body>

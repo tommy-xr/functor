@@ -93,7 +93,7 @@ shell spine (no game-language surface).
 Design + phased roadmap: `docs/time-travel.md` (generalize #215's physics rewind
 into a generic, shell-owned whole-game scrubber — pause/scrub/rewind/replay/branch
 — plus the authoring experiences it unlocks). Builds on the physics
-`Simulatable`/`Timeline` seam; MLE-first. Overlaps the "Live variables / fast
+`Simulatable`/`Timeline` seam; Functor Lang-first. Overlaps the "Live variables / fast
 iteration" item below (T6, trajectory preview).
 
 - [ ] T1: model as a `Simulatable` (snapshot = `Value` clone, command = frame
@@ -101,17 +101,17 @@ iteration" item below (T6, trajectory preview).
 - [ ] T2: pointer/click input plumbing (real `RawInput` to egui; deliver mouse
       buttons to the runtime) — unblocks the scrubber and interactive UI.
 - [ ] T3: shell-owned egui scrubber overlay; `~` toggle (native), default-on (web/VSCode).
-- [ ] T4: interactive MLE `View` (`Button { label, onClick }`, storable closure).
+- [ ] T4: interactive Functor Lang `View` (`Button { label, onClick }`, storable closure).
 - [ ] T5: forked timelines + ~50%-opacity render composite.
 - [ ] T6: trajectory preview (deterministic forward-sim + trail draw) — the
       *Inventing on Principle* demo.
 
-## Language (MLE)
+## Language (Functor Lang)
 
-**SHIPPED** — MLE is now Functor's only game-logic language; the F#/Fable
+**SHIPPED** — Functor Lang is now Functor's only game-logic language; the F#/Fable
 pipeline was deleted (roadmap E3). The full history and design record is in
-`docs/mle.md` (all tracks/checkboxes done); the live language reference is the
-`mle-language` skill. Remaining language follow-ups tracked there: `.mlei`
+`docs/functor-lang.md` (all tracks/checkboxes done); the live language reference is the
+`functor-lang` skill. Remaining language follow-ups tracked there: `.functori`
 interface files (B8 part 2), LSP cross-file support, and wasm/live-preview
 multi-file.
 
@@ -119,7 +119,7 @@ multi-file.
 
 - [ ] Live-variable debugging: a `Constant`-style function (name + value) editable
       at runtime, backed by a string→value map. See
-      [const-tweaker](https://github.com/tversteeg/const-tweaker). (MLE hot-reload
+      [const-tweaker](https://github.com/tversteeg/const-tweaker). (Functor Lang hot-reload
       already rebinds edited top-level values live; this is the finer-grained,
       no-reload knob.)
 

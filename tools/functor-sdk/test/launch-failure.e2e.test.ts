@@ -18,11 +18,11 @@ test(
       FunctorRunner.launch({
         gameDir: join(repoRoot, "examples", "hello"),
         repoRoot,
-        mlePath: join(repoRoot, "does", "not", "exist.mle"),
+        functorLangPath: join(repoRoot, "does", "not", "exist.functor"),
         port: Number(process.env.FUNCTOR_E2E_PORT ?? 8091),
       }),
       (error: Error) => {
-        assert.match(error.message, /mle game source not found/);
+        assert.match(error.message, /functor-lang game source not found/);
         assert.match(error.message, /Build it first/);
         return true;
       },

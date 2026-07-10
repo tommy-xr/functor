@@ -1,0 +1,7 @@
+// BENCH: arithmetic-heavy fold -- 500k iterations, each doing several float
+// ops (mul / add / div) plus a Math.sin builtin call. Measures numeric
+// expression evaluation and builtin dispatch rather than call overhead.
+//
+// Convention: `main` is the timed unit of work. Also: `functor-lang run arith_loop.functor`.
+let step = (acc, x) => acc + x * 2.0 - x / 3.0 + Math.sin(x)
+let main = () => List.fold(step, 0.0, List.range(500000))

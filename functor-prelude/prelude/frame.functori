@@ -1,0 +1,14 @@
+// frame.functori — the `Frame` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+
+// The opaque frame handle (`Frame.t` from game code) — what `draw` returns.
+type t
+
+let create : (Camera.t, Scene.t) => t
+let createLit : (Camera.t, Scene.t, List<Light.t>) => t
+// Frame LAST (subject-last), so they pipe: `Frame.createLit(…) |> Frame.withFog(fog)`.
+// `withRenderTarget(target, targetFrame, frame)` renders `targetFrame` into
+// `target` each frame, before `frame`'s main pass.
+let withRenderTarget : (RenderTarget.t, t, t) => t
+let withFog : (Fog.t, t) => t
+let withSkybox : (Skybox.t, t) => t

@@ -1,8 +1,0 @@
-// texture.mlei — the `Texture` host module (interface only; implemented in Rust
-// by FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
-
-// The opaque texture handle (`Texture.t` from game code).
-type t
-
-// An image texture by file path (relative to the game dir).
-let file : (string) => t

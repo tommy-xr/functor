@@ -4,7 +4,7 @@ Functor on headsets, built as a train of small PRs (2026-07-03/04). Two devices,
 one architecture: the **Xreal One** as a desktop 3DoF stereo dev display, and
 the **Quest 3** as the real standalone target. The through-line is Functor's
 existing principles doing the heavy lifting: `draw` is a pure `Frame`, so
-stereo is "render it twice with shell-supplied cameras"; MLE games are text
+stereo is "render it twice with shell-supplied cameras"; Functor Lang games are text
 interpreted at runtime, so the headset runtime is a **tool APK built once** and
 games deploy over the network.
 
@@ -17,7 +17,7 @@ games deploy over the network.
 | [#185](https://github.com/tommy-xr/functor/pull/185) | Axis remap corrected from a live wear-test (raw sensor frame is right/down/forward — the optical convention; the first guess was an improper det −1 transform, which mirrors gyro vs accel) + auto/yaw-only recenter | merged |
 | [#183](https://github.com/tommy-xr/functor/pull/183) | Network hot-reload: `POST /reload-source` on the debug server (model preserved, broken push keeps the old program), `--debug-bind`, `functor push <addr> [--watch]` | open, CI green |
 | [#189](https://github.com/tommy-xr/functor/pull/189) | Quest OpenXR runtime shell (`runtime/functor-runtime-oculus`): EGL/GLES 3.2 + openxr 0.21 + android-activity, per-eye sRGB swapchains, head-pose cameras, renders through the shared `render_frame`. Builds to a signed APK (`npm run build:oculus[:apk]`) | open, CI green |
-| `feat/oculus-mle-producer` | MLE producer + debug server shared into `functor_runtime_common`; the Quest shell boots an embedded demo game (`src/demo.mle`), serves `/state` `/scene` `/reload-source` LAN-wide on :8077 — `functor push <quest-ip>:8077` replaces the running game live | branch pushed; PR after #183/#189 merge |
+| `feat/oculus-functor-lang-producer` | Functor Lang producer + debug server shared into `functor_runtime_common`; the Quest shell boots an embedded demo game (`src/demo.functor`), serves `/state` `/scene` `/reload-source` LAN-wide on :8077 — `functor push <quest-ip>:8077` replaces the running game live | branch pushed; PR after #183/#189 merge |
 
 ## Working today on the Xreal One
 

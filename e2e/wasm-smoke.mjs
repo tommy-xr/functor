@@ -1,4 +1,4 @@
-// wasm smoke test: every MLE sample must LOAD → UPDATE (a pushed reload) → run
+// wasm smoke test: every Functor Lang sample must LOAD → UPDATE (a pushed reload) → run
 // several frames in the browser wasm runtime WITHOUT a persistent error.
 //
 // This is the guard for the whole class of "works native, broken in wasm" bugs
@@ -7,16 +7,16 @@
 // see. Each sample:
 //
 //   1. serves with the built CLI (`functor run wasm`) and loads in headless
-//      Chromium (asserts the game reached "[mle] loaded");
+//      Chromium (asserts the game reached "[functor-lang] loaded");
 //   2. runs a few frames, then PUSHES its own entry source back through the
-//      `mle-set-source` seam (the VSCode live-preview / hot-reload path) and
+//      `functor-lang-set-source` seam (the VSCode live-preview / hot-reload path) and
 //      asserts the reload succeeds — for a multi-file game this re-links the
 //      siblings kept from the initial fetch;
 //   3. runs a few more frames and asserts the red DRAW-error overlay is NOT
 //      showing (a persistent broken `draw` — the blank-screen symptom — leaves
 //      it up; a benign first-frame transient auto-clears and passes).
 //
-// A visible overlay or a failed load/push fails that sample. Per-frame `[mle]`
+// A visible overlay or a failed load/push fails that sample. Per-frame `[functor-lang]`
 // error console lines are printed as info (they may be benign transients) but
 // don't by themselves fail the run.
 //
@@ -74,11 +74,11 @@ const EXCLUDE = new Set([
 // `npm run fetch:assets` and gitignored) runs fine WITHOUT them: a missing/404
 // asset degrades to the empty fallback (matching native — see
 // functor_runtime_common::io::load_bytes_async), so the sample still loads,
-// reloads, and ticks without an MLE error. So every sample runs on CI even
+// reloads, and ticks without a Functor Lang error. So every sample runs on CI even
 // asset-free; the missing-asset path is itself worth exercising here.
 
 // The sample list: CLI args if given, else every examples/* with a functor.json
-// declaring `"language": "mle"`, minus the network demos.
+// declaring `"language": "functor-lang"`, minus the network demos.
 const allSamples = readdirSync(`${ROOT}/examples`, { withFileTypes: true })
   .filter((d) => d.isDirectory())
   .map((d) => d.name)
@@ -86,7 +86,7 @@ const allSamples = readdirSync(`${ROOT}/examples`, { withFileTypes: true })
     const cfg = `${ROOT}/examples/${name}/functor.json`;
     return (
       existsSync(cfg) &&
-      JSON.parse(readFileSync(cfg, "utf8")).language === "mle" &&
+      JSON.parse(readFileSync(cfg, "utf8")).language === "functor-lang" &&
       !EXCLUDE.has(name)
     );
   })
@@ -101,7 +101,7 @@ function entrySource(sample) {
   const cfg = JSON.parse(
     readFileSync(`${ROOT}/examples/${sample}/functor.json`, "utf8"),
   );
-  const entry = cfg.entry || "game.mle";
+  const entry = cfg.entry || "game.functor";
   return readFileSync(`${ROOT}/examples/${sample}/${entry}`, "utf8");
 }
 
@@ -113,7 +113,7 @@ async function smoke(sample) {
       sample,
       ok: false,
       reason: `:${PORT} still in use by a previous server — cannot serve this sample cleanly`,
-      mleErrors: [],
+      functorLangErrors: [],
     };
   }
   const server = spawn(
@@ -132,14 +132,14 @@ async function smoke(sample) {
       "--ignore-gpu-blocklist",
     ],
   });
-  const mleErrors = [];
+  const functorLangErrors = [];
   try {
     const page = await browser.newPage({ viewport: { width: 640, height: 480 } });
     const log = [];
     page.on("console", (m) => {
       const line = `${m.type()}: ${m.text()}`;
       log.push(line);
-      if (/\[mle\].*error/.test(m.text())) mleErrors.push(m.text());
+      if (/\[functor-lang\].*error/.test(m.text())) functorLangErrors.push(m.text());
     });
     page.on("pageerror", (e) => log.push(`pageerror: ${e}`));
 
@@ -152,9 +152,9 @@ async function smoke(sample) {
         await sleep(500);
       }
     }
-    for (let i = 0; !log.some((m) => m.includes("[mle] loaded")); i++) {
+    for (let i = 0; !log.some((m) => m.includes("[functor-lang] loaded")); i++) {
       if (i > 60) {
-        return { sample, ok: false, reason: "never loaded", mleErrors, log };
+        return { sample, ok: false, reason: "never loaded", functorLangErrors, log };
       }
       await sleep(250);
     }
@@ -164,7 +164,7 @@ async function smoke(sample) {
     // server for a different project — fail loud instead of reporting phantom
     // errors from the wrong game.
     const served = await page.evaluate(async () => {
-      const path = window.__mleGamePath;
+      const path = window.__functorLangGamePath;
       const res = await fetch(path, { cache: "no-store" });
       return res.text();
     });
@@ -173,7 +173,7 @@ async function smoke(sample) {
         sample,
         ok: false,
         reason: "served entry source does not match this sample (stale/wrong dev server?)",
-        mleErrors,
+        functorLangErrors,
         log,
       };
     }
@@ -187,18 +187,18 @@ async function smoke(sample) {
     await page.evaluate(() => {
       window.__smokeResults = [];
       window.addEventListener("message", (e) => {
-        if (e.data && e.data.type === "mle-set-source-result")
+        if (e.data && e.data.type === "functor-lang-set-source-result")
           window.__smokeResults.push(e.data);
       });
     });
     const src = entrySource(sample);
     // The runtime QUEUES the pushed source and applies it at the top of a frame
-    // (never mid-frame), then posts `mle-set-source-result`. On a heavy sample
+    // (never mid-frame), then posts `functor-lang-set-source-result`. On a heavy sample
     // under software GL a frame can take several seconds, so wait generously.
     const before = await page.evaluate(() => window.__smokeResults.length);
     const pushStart = Date.now();
     await page.evaluate(
-      (s) => window.postMessage({ type: "mle-set-source", source: s }, "*"),
+      (s) => window.postMessage({ type: "functor-lang-set-source", source: s }, "*"),
       src,
     );
     await page
@@ -213,16 +213,16 @@ async function smoke(sample) {
       const waited = ((Date.now() - pushStart) / 1000).toFixed(1);
       // Did the runtime log that it applied the reload? (Distinguishes a frame
       // loop that never got to it from a result that wasn't delivered.)
-      const applied = log.filter((m) => /\[mle\] (reloaded|reload error)/.test(m));
+      const applied = log.filter((m) => /\[functor-lang\] (reloaded|reload error)/.test(m));
       const tail = log.slice(-8).map((m) => m.replace(/\s+/g, " ").slice(0, 100));
       return {
         sample,
         ok: false,
         reason:
-          `reload push failed after ${waited}s: ${result ? result.message : "no mle-set-source-result received"}` +
+          `reload push failed after ${waited}s: ${result ? result.message : "no functor-lang-set-source-result received"}` +
           ` | runtime applied-reload log: ${applied.length ? applied.join(" ; ") : "NONE"}` +
           ` | last console: ${tail.join(" | ")}`,
-        mleErrors,
+        functorLangErrors,
         log,
       };
     }
@@ -230,7 +230,7 @@ async function smoke(sample) {
     // Run a few more frames, then read the draw-error overlay state.
     await sleep(1500);
     const overlay = await page.evaluate(() => {
-      const el = document.getElementById("mle-error");
+      const el = document.getElementById("functor-lang-error");
       if (!el) return { visible: false, text: "" };
       return {
         visible: getComputedStyle(el).display !== "none",
@@ -242,12 +242,12 @@ async function smoke(sample) {
         sample,
         ok: false,
         reason: `draw-error overlay visible: ${overlay.text.replace(/\s+/g, " ").trim()}`,
-        mleErrors,
+        functorLangErrors,
         log,
       };
     }
 
-    return { sample, ok: true, mleErrors };
+    return { sample, ok: true, functorLangErrors };
   } finally {
     await browser.close();
     server.kill("SIGKILL");
@@ -264,17 +264,17 @@ for (const sample of samples) {
   try {
     r = await smoke(sample);
   } catch (e) {
-    r = { sample, ok: false, reason: `harness error: ${e}`, mleErrors: [] };
+    r = { sample, ok: false, reason: `harness error: ${e}`, functorLangErrors: [] };
   }
-  const note = r.mleErrors?.length
-    ? ` (${r.mleErrors.length} transient [mle] error line(s))`
+  const note = r.functorLangErrors?.length
+    ? ` (${r.functorLangErrors.length} transient [functor-lang] error line(s))`
     : "";
   if (r.ok) {
     console.log(`PASS  ${sample}${note}`);
   } else {
     failures++;
     console.log(`FAIL  ${sample} — ${r.reason}${note}`);
-    for (const e of (r.mleErrors || []).slice(0, 3)) console.log(`        ${e}`);
+    for (const e of (r.functorLangErrors || []).slice(0, 3)) console.log(`        ${e}`);
   }
 }
 
