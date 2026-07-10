@@ -106,11 +106,12 @@ pub struct FunctorLangGame {
     /// `Physics.events` taggers of the current `subscriptions(model)`.
     pending_events: Vec<functor_runtime_common::physics::PhysicsEvent>,
     /// The recorded physics drive (docs/physics.md Phase 6): the Timeline
-    /// recorder + pause flag + fixed-step accumulator. The World stays in
-    /// the registry; this owns the rewind machinery over it.
+    /// recorder + fixed-step accumulator. The World stays in the registry;
+    /// this owns the rewind machinery over it (driven by the shell scrubber).
     physics_rt: physics::SteppedPhysics,
-    /// Latest recorder status for the overlay: (fixed frame, paused, history).
-    physics_status: (u64, bool, u64),
+    /// The physics world's fixed frame after the latest advance — what the
+    /// coupled scene recorder stores per rendered frame.
+    physics_frame: u64,
     /// The coupled time-travel recorder (docs/time-travel.md T1–T3): records the
     /// settled `model` + physics fixed-frame each rendered frame and seeks/
     /// rewinds them together. Shared with the web producer (one tested impl).
@@ -361,7 +362,7 @@ impl FunctorLangGame {
             deferred_queries: Vec::new(),
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
-            physics_status: (0, false, 0),
+            physics_frame: 0,
             recorder: SceneRecorder::new(),
             input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
@@ -383,7 +384,7 @@ impl FunctorLangGame {
             session: &self.session,
             model: &mut self.model,
             physics_rt: &mut self.physics_rt,
-            physics_status: &mut self.physics_status,
+            physics_frame: &mut self.physics_frame,
             recorder: &mut self.recorder,
             effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
             effect_log: &mut self.effect_log,
@@ -581,7 +582,7 @@ impl Game for FunctorLangGame {
             target,
             &mut self.model,
             &mut self.physics_rt,
-            &mut self.physics_status,
+            &mut self.physics_frame,
             self.has_physics,
         );
         if result.is_ok() {
@@ -665,7 +666,7 @@ impl Game for FunctorLangGame {
             target,
             &mut self.model,
             &mut self.physics_rt,
-            &mut self.physics_status,
+            &mut self.physics_frame,
             self.has_physics,
         );
         if result.is_ok() {
@@ -815,24 +816,7 @@ AudioScene.empty), got {}",
     }
 
     fn ui(&self) -> View {
-        // The game's own `ui` view, plus a read-only recorder status line
-        // while paused (docs/physics.md, the culmination) — shown only when
-        // paused so live play stays clean. All physics CONTROL is via the
-        // game's keyboard bindings (egui input isn't wired). Composing via a
-        // column keeps both: an `Empty` game view (e.g. physics has no
-        // `ui` hook) renders nothing, leaving just the status.
-        let (frame, paused, history) = self.physics_status;
-        if !paused {
-            return self.last_view.clone();
-        }
-        let status = View::Text {
-            text: format!(
-                "physics ⏸ frame {frame} · {history} recorded · Left/Right scrub · Space resume"
-            ),
-            color: [255, 255, 255],
-            font: None,
-        };
-        View::Column(vec![self.last_view.clone(), status])
+        self.last_view.clone()
     }
 
     fn state_debug(&self) -> String {
@@ -1599,7 +1583,7 @@ mod tests {
         let fork_tts = tts;
         let live_model_before = game.model.to_string();
         let live_world_before = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
-        let live_frame_before = game.physics_status.0;
+        let live_frame_before = game.physics_frame;
 
         // Forward-step DIVISIONS divisions (STEPS_PER_DIV fine ticks each) from
         // the fork — a dry run over throwaway state.
@@ -1624,7 +1608,7 @@ mod tests {
             "live world untouched"
         );
         assert_eq!(
-            game.physics_status.0, live_frame_before,
+            game.physics_frame, live_frame_before,
             "live fixed frame untouched"
         );
 

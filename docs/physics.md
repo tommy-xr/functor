@@ -15,14 +15,19 @@ roadmap table; the highlights:
 
 - **Declarative bodies** (`Physics.scene`/`dynamic`/`kinematic`/`fixed` + the
   divergence rule), **live reads** (`Physics.position`/`transformed`),
-  **commands** (impulse/force/velocity/teleport), **raycast queries**,
-  **collision events** (`Physics.events`), and **pause/rewind/replay**
-  (`Physics.pause`/`resume`/`stepOnce`/`rewindTo`) — all on the Functor Lang prelude,
+  **commands** (impulse/force/velocity/teleport), **raycast queries**, and
+  **collision events** (`Physics.events`) — all on the Functor Lang prelude,
   native + wasm.
 - **Determinism goldens**, the `Simulatable`/`Timeline` rewind seam, and a
   `--debug-render physics` collider-wireframe overlay (native).
-- `examples/physics` exercises the whole surface (K kick, R raycast, P/Left/
-  Right/G timeline scrub, contact-flash).
+- **Pause/rewind/replay is shell-owned**: the recorded drive powers the
+  whole-game scrubber (docs/time-travel.md), which restores model + world
+  together. The game-authored timeline effects this doc originally sketched
+  (`Physics.pause`/`resume`/`stepOnce`/`rewindTo`/`timelineFrame`) shipped in
+  Phase 6 and were later REMOVED once the scrubber superseded them — the
+  F#-era sketches below are the archival design, not the live surface.
+- `examples/physics` exercises the whole surface (K kick, R raycast,
+  contact-flash; scrub time with the shell scrubber overlay).
 
 **Not yet built:** the model-layer `Entities`/`Archetype` abstraction (5b),
 networked physics (7a/7b — the `mpserver`/`mpclient` demo), and cross-target
@@ -575,28 +580,19 @@ through `TimelineLog`: each substep is recorded with exactly the `Command`s
 that produce it (the frame's `DeclareScene` + any queued `PhysicsCommand`s),
 then run through `Simulatable::step` — the **same path a `seek` replays**, so
 live and replayed frames are byte-identical by construction (the recorder
-tests assert this). Controls arrive as tagger-less effects queued for the
-recorder (the world's command-queue pattern, one level up).
+tests assert this).
 
-The `examples/physics` bindings:
-
-- **P** -> `Physics.pause()` / `Physics.resume()` (toggle). Paused, real time
-  doesn't accumulate — resuming never fast-forwards.
-- **Left / Right** -> `Physics.rewindTo(Physics.timelineFrame() - 10.0)` /
-  `Physics.stepOnce()`. Scrub backward (10 fixed frames per key-repeat) and
-  single-step forward; `draw` reads the rewound world live
-  (`Physics.transformed`), so the scene visibly moves.
-- **G** -> `rewindTo(0)` + `resume` — deterministic **replay** from the oldest
-  recorded frame; pressing **K** mid-replay applies a fresh impulse and
-  **branches** the timeline (`TimelineLog::truncate_from` discards the old
-  future), demonstrating determinism-and-divergence live.
-
-The status overlay (`View`, the existing 2D text layer) shows **read-only
-status** — current fixed frame, history depth, the scrub keys — while paused;
-all *control* is via the keyboard, since egui input isn't wired. History is
-bounded (~15s at 60Hz, pruned each frame); `rewindTo` clamps to it. Frame 0's
-pre-step state is the empty world, so the rewind floor is frame 1 (the world's
-first stepped state) — reads never hit an empty world.
+**Control is shell-owned** (this changed after Phase 6 shipped): the recorder
+is driven by the whole-game scrubber (docs/time-travel.md) through
+`SteppedPhysics::rewind_to_frame` / `seek_to_frame`, which restore the world
+together with the MVU model. The original game-facing control effects
+(`Physics.pause`/`resume`/`stepOnce`/`rewindTo`/`timelineFrame`) and
+`examples/physics`'s P/Left/Right/G bindings were removed once the scrubber
+superseded them — a game no longer scripts its own timeline. Rewind-then-
+resume still **branches** (`TimelineLog::truncate_from` discards the old
+future). History is bounded (~15s at 60Hz, pruned each frame); rewind clamps
+to it. Frame 0's pre-step state is the empty world, so the rewind floor is
+frame 1 (the world's first stepped state) — reads never hit an empty world.
 
 ## Debug visualization (wireframes via Rapier's debug renderer)
 
@@ -687,7 +683,7 @@ It's worth building in two steps, because they exercise different machinery:
 | **4. Queries** | `Physics.raycast` as a deferred tagger effect over the B6.5 structured-payload broker (`EffectValue`); performed post-step for same-frame freshness; fake/replay runners can raycasts. `shapeCast` deferred until a game needs it. **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
 | **5. Collision events** | `Physics.events(tagger)` sub: contact begin/end as `{started, a, b, sensor}` records, collected per fixed substep (rapier `ActiveEvents::COLLISION_EVENTS` on every collider), delivered post-step through `update`; `Simulatable::step` now returns the frame's events (the doc's original seam). **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
 | **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `physics` grows a bullet/debris archetype. | both |
-| **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: `Physics.pause`/`resume`/`stepOnce`/`rewindTo` control effects, `timelineFrame` read, per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history, read-only status overlay + keyboard scrub in `physics`. **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
+| **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history. **Shipped**; the game-facing control effects (`Physics.pause`/`resume`/`stepOnce`/`rewindTo`/`timelineFrame`) and the example's keyboard scrub shipped here too but were later **removed** — the recorder now drives the shell-owned whole-game scrubber (docs/time-travel.md) via `rewind_to_frame`/`seek_to_frame`. | native+wasm (Functor Lang) |
 | **7a. Networked physics (state-sync)** | `Authority`, `mpserver`/`mpclient` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
 | **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
 

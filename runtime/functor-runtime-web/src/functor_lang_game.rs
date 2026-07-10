@@ -86,11 +86,12 @@ pub struct FunctorLangWebGame {
     /// `Physics.events` taggers of the current `subscriptions(model)`.
     pending_events: Vec<functor_runtime_common::physics::PhysicsEvent>,
     /// The recorded physics drive (docs/physics.md Phase 6): the Timeline
-    /// recorder + pause flag + fixed-step accumulator. The World stays in
-    /// the registry; this owns the rewind machinery over it.
+    /// recorder + fixed-step accumulator. The World stays in the registry;
+    /// this owns the rewind machinery over it (driven by the shell scrubber).
     physics_rt: physics::SteppedPhysics,
-    /// Latest recorder status for the overlay: (fixed frame, paused, history).
-    physics_status: (u64, bool, u64),
+    /// The physics world's fixed frame after the latest advance — what the
+    /// coupled scene recorder stores per rendered frame.
+    physics_frame: u64,
     /// The coupled time-travel recorder (docs/time-travel.md T1–T3), shared with
     /// the desktop producer (one tested impl): records the settled `model` +
     /// physics fixed-frame each rendered frame and seeks/rewinds them together.
@@ -294,7 +295,7 @@ impl FunctorLangWebGame {
             deferred_queries: Vec::new(),
             pending_events: Vec::new(),
             physics_rt: physics::SteppedPhysics::new(),
-            physics_status: (0, false, 0),
+            physics_frame: 0,
             recorder: SceneRecorder::new(),
             input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
@@ -388,7 +389,7 @@ impl FunctorLangWebGame {
             session: &self.session,
             model: &mut self.model,
             physics_rt: &mut self.physics_rt,
-            physics_status: &mut self.physics_status,
+            physics_frame: &mut self.physics_frame,
             recorder: &mut self.recorder,
             effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
             effect_log: &mut self.effect_log,
@@ -450,7 +451,7 @@ impl GameProducer for FunctorLangWebGame {
             target,
             &mut self.model,
             &mut self.physics_rt,
-            &mut self.physics_status,
+            &mut self.physics_frame,
             self.has_physics,
         );
         if result.is_ok() {
@@ -468,7 +469,7 @@ impl GameProducer for FunctorLangWebGame {
             target,
             &mut self.model,
             &mut self.physics_rt,
-            &mut self.physics_status,
+            &mut self.physics_frame,
             self.has_physics,
         );
         if result.is_ok() {

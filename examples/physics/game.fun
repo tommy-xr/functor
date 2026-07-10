@@ -8,11 +8,10 @@
 // record folds through `update`, which kicks whatever the ray hit — a query
 // chaining into a command, answered against this frame's stepped world.
 // Collision events (Physics.events) flash whatever the ball touches: the
-// touched crate glows until the ball's next contact. And the TIMELINE
-// (docs/physics.md, the culmination): P pauses (the overlay shows the
-// frame), Left scrubs BACKWARD through recorded history, Right steps one
-// fixed frame forward, G rewinds to the oldest recorded frame and resumes
-// — a live replay; kick differently this time and the timeline branches.
+// touched crate glows until the ball's next contact. Time travel is the
+// SHELL's job, not the game's: open the scrubber overlay (`~` on the
+// desktop runner) to pause, scrub, and rewind the whole scene — model and
+// physics world together (docs/time-travel.md).
 // Run with:
 //
 //   functor -d examples/physics run native
@@ -74,7 +73,7 @@ type Msg<'h, 'e> =
   | GotHit(hit: 'h)
   | Contact(ev: 'e)
 
-let init = { drop: 0.0, spaceHeld: false, hot: "", paused: false, pHeld: false }
+let init = { drop: 0.0, spaceHeld: false, hot: "" }
 
 let tick = (model, dt, tts) => model
 
@@ -105,33 +104,6 @@ let input = (model, key, isDown) =>
        (model,
         Physics.raycast(scatterX(model.drop, 0.0), 8.0, scatterZ(model.drop, 0.0),
                         0.0, -1.0, 0.0, 20.0, GotHit)))
-  | "P" =>
-    (match isDown with
-     | false => { model with pHeld: false }
-     | true =>
-       (match model.pHeld with
-        | true => model
-        | false =>
-          (match model.paused with
-           | false => ({ model with paused: true, pHeld: true }, Physics.pause())
-           | true => ({ model with paused: false, pHeld: true }, Physics.resume()))))
-  | "Left" =>
-    // Scrub: 10 fixed frames per press/repeat (key repeats make this a
-    // smooth reverse). The clamp to recorded history is the recorder's job.
-    (match isDown with
-     | false => model
-     | true => (model, Physics.rewindTo(Physics.timelineFrame() - 10.0)))
-  | "Right" =>
-    // One fixed frame forward (only meaningful while paused).
-    (match isDown with
-     | false => model
-     | true => (model, Physics.stepOnce()))
-  | "G" =>
-    // Replay: back to the oldest recorded frame, playing. Press K mid-replay
-    // and the timeline BRANCHES from that point.
-    (match isDown with
-     | false => model
-     | true => ({ model with paused: false }, Effect.batch([Physics.rewindTo(0.0), Physics.resume()])))
   | _ => model
 
 // Contact events name both tags in rapier's pair order — find the ball's

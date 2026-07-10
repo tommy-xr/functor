@@ -410,9 +410,6 @@ Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)   // -> Effect (QUERY):
 Physics.events(tagger)                                     // -> Sub (from `subscriptions`):
                                                            //   tagger gets {started, a, b,
                                                            //   sensor} per contact begin/end
-Physics.pause() / Physics.resume() / Physics.stepOnce()   // -> Effect: recorder controls
-Physics.rewindTo(frame)                                    // -> Effect: seek (resume = branch)
-Physics.timelineFrame()                                    // -> float: current fixed frame
 ```
 
 `Physics.position` / `Physics.transformed` read the live stepped world
@@ -458,15 +455,16 @@ a `Physics.sensor` body (no contact forces). Events for a pair whose body
 was despawned this frame are dropped (there is nothing left to name), and
 a frame's undelivered events never carry over.
 
-The physics drive is **recorded** (docs/physics.md, the culmination):
-`Physics.pause()`/`resume()`/`stepOnce()` freeze and single-step the
-simulation; `Physics.rewindTo(frame)` seeks the recorded timeline and
-`Physics.timelineFrame()` reads the current fixed frame (for scrub math,
-e.g. `rewindTo(timelineFrame() - 10.0)`). These are fire-and-forget
-effects (no tagger). Resuming after a rewind **branches** — the old future
-is discarded, so a different input replays a different timeline. History is
-bounded (~15s at 60Hz); rewind clamps to it. Everything is deterministic:
-replaying identical inputs from a rewind reproduces the run byte-for-byte.
+The physics drive is **recorded** (docs/physics.md), but time travel is the
+SHELL's tool, not a game API: the runner's scrubber overlay (`~` on desktop,
+the DOM scrubber on web) pauses, scrubs, and rewinds the whole scene — the
+MVU model and the physics world together (docs/time-travel.md). Resuming
+from a scrubbed frame **branches** — the old future is discarded. History
+is bounded (~15s at 60Hz). Everything is deterministic: replaying identical
+inputs from a rewind reproduces the run byte-for-byte. (The game-authored
+timeline effects — `Physics.pause`/`resume`/`stepOnce`/`rewindTo`/
+`timelineFrame` — were removed when the whole-game scrubber superseded
+them.)
 
 
 A runner-hosted game (`functor -d <project-dir> run native`, with

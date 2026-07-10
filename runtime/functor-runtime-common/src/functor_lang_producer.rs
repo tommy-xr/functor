@@ -129,7 +129,9 @@ pub struct FrameCtx<'a> {
     pub session: &'a Session,
     pub model: &'a mut Value,
     pub physics_rt: &'a mut SteppedPhysics,
-    pub physics_status: &'a mut (u64, bool, u64),
+    /// The physics world's current fixed frame (what the coupled scene
+    /// recorder stores per rendered frame).
+    pub physics_frame: &'a mut u64,
     pub recorder: &'a mut SceneRecorder,
     pub effect_runner: &'a mut dyn EffectRunner,
     pub effect_log: &'a mut EffectLog,
@@ -175,7 +177,7 @@ impl FrameCtx<'_> {
             && self.recorder.commit_scrub_if_resuming(
                 self.model,
                 self.physics_rt,
-                self.physics_status,
+                self.physics_frame,
                 self.has_physics,
             )
         {
@@ -221,7 +223,7 @@ impl FrameCtx<'_> {
         // frame's steps, but also while PAUSED (frozen mid-flight, frame > 0)
         // and on a short zero-substep frame — so a raycast fired while paused
         // answers against the frozen world instead of deferring forever.
-        let world_ready = physics_steps > 0 || !self.has_physics || self.physics_status.0 > 0;
+        let world_ready = physics_steps > 0 || !self.has_physics || *self.physics_frame > 0;
         if world_ready && !self.deferred_queries.is_empty() {
             let deferred = std::mem::take(self.deferred_queries);
             let mut reports: Vec<String> = Vec::new();
@@ -274,8 +276,7 @@ impl FrameCtx<'_> {
 
     /// Record the settled model of this rendered frame (docs/time-travel.md T1)
     /// plus the physics fixed-frame the world reached, in lockstep, so a coupled
-    /// rewind can restore both. `physics_status.0` is the world's current fixed
-    /// frame.
+    /// rewind can restore both.
     ///
     /// Skip a PAUSED frame (`dts == 0`, i.e. the clock pinned): the sim hasn't
     /// advanced, so recording would only pile up frozen duplicates — inflating
@@ -289,7 +290,7 @@ impl FrameCtx<'_> {
             // both must land on the same frame (docs/time-travel.md T6b).
             self.recorder.record_inputs(std::mem::take(self.input_buf));
             self.recorder
-                .record(self.model, self.physics_status.0, frame_time.tts as f64);
+                .record(self.model, *self.physics_frame, frame_time.tts as f64);
         } else {
             // Paused frame (`dts == 0`): drain-and-drop the buffer. Paused frames
             // aren't part of the played timeline, so their buffered inputs must
@@ -534,7 +535,7 @@ to receive their messages; dropping them"
                     // through the Timeline, so pause/rewind/replay work.
                     let advanced = self.physics_rt.advance(scene, dts);
                     *self.pending_events = advanced.events;
-                    *self.physics_status = advanced.status;
+                    *self.physics_frame = advanced.frame;
                     let steps = advanced.steps;
                     let warnings = advanced.warnings;
                     // Command effects apply asynchronously (queued at perform
@@ -772,7 +773,7 @@ pub fn forward_step_scene(
         .map(|dry| physics::ActiveWorldScope::enter(dry.0));
 
     let mut model = model.clone();
-    let mut physics_status = (0u64, false, 0u64);
+    let mut physics_frame = 0u64;
     let mut recorder = SceneRecorder::new();
     let mut effect_runner = DryRunEffects::new();
     let mut effect_log = EffectLog::new();
@@ -796,7 +797,7 @@ pub fn forward_step_scene(
             session,
             model: &mut model,
             physics_rt: &mut physics_rt,
-            physics_status: &mut physics_status,
+            physics_frame: &mut physics_frame,
             recorder: &mut recorder,
             effect_runner: &mut effect_runner as &mut dyn EffectRunner,
             effect_log: &mut effect_log,
