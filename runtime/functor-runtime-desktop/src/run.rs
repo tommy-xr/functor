@@ -1274,7 +1274,10 @@ Escape again to quit"
                         xform: cgmath::Matrix4::from_translation(cgmath::vec3(6.0, 0.0, 0.0)),
                     };
                 }
-                let frames = [frame.clone(), frame_b];
+                let frames = [
+                    (frame.clone(), time.clone()),
+                    (frame_b, time.clone()),
+                ];
                 functor_runtime_common::render_composited_frames(
                     &gl,
                     shader_version,
@@ -1283,7 +1286,6 @@ Escape again to quit"
                     &shadow_map,
                     &frames,
                     &[0.5, 0.5],
-                    time.clone(),
                     viewport,
                     args.debug_render.into(),
                 );
@@ -1291,7 +1293,9 @@ Escape again to quit"
                 // Forward-ghosting (docs/time-travel.md T6d): composite the ~2s
                 // forward-stepped frames (computed above) at equal weight so moving
                 // elements strobe across their future and static geometry stays
-                // solid. Empty (→ this arm skipped) when --ghost is off or the
+                // solid. Each frame renders at ITS OWN division-boundary time, so
+                // render-time animation (the skinned pose) advances through the
+                // strobe. Empty (→ this arm skipped) when --ghost is off or the
                 // producer yields no frames, so live rendering is unchanged.
                 let weights = vec![1.0f32; ghost_frames.len()];
                 functor_runtime_common::render_composited_frames(
@@ -1302,7 +1306,6 @@ Escape again to quit"
                     &shadow_map,
                     &ghost_frames,
                     &weights,
-                    time.clone(),
                     viewport,
                     args.debug_render.into(),
                 );
