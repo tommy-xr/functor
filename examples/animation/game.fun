@@ -33,6 +33,8 @@ let input = (model, key, isDown) =>
 
 // Pointer position (window pixels) -> head aim: the pointer's offset from
 // the window center becomes yaw/pitch targets, clamped to a natural range.
+// (Assumes the default 800x600 window — there is no window-size query yet;
+// at other sizes the mapping just saturates earlier.)
 let mouseMove = (model, x, y) =>
   let yaw = (Math.clamp01(x / 800.0) - 0.5) * 1.6 in
   let pitch = (Math.clamp01(y / 600.0) - 0.5) * 0.9 in

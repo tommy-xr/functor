@@ -139,12 +139,15 @@ impl Skeleton {
         self.num_joints
     }
 
-    /// The id of the joint named `name`, if any (exact match).
+    /// The id of the joint named `name`, if any (exact match). glTF allows
+    /// duplicate node names; the smallest id wins so the choice is
+    /// deterministic across runs (HashMap iteration order is not).
     pub fn joint_id_by_name(&self, name: &str) -> Option<i32> {
         self.joint_info
             .iter()
-            .find(|(_, joint)| joint.name == name)
+            .filter(|(_, joint)| joint.name == name)
             .map(|(&id, _)| id)
+            .min()
     }
 
     /// All joint ids whose self-or-ancestor's name is in `roots` — the

@@ -46,7 +46,11 @@ pub enum AnimExpr {
     Blend(Vec<(AnimExpr, f32)>),
     /// Additive layer: `base + weight * (layer - bind)` per joint —
     /// rotations compose as `base_r * slerp(identity, bind_r⁻¹ * layer_r, w)`,
-    /// translations/scales add the weighted delta.
+    /// translations/scales add the weighted delta. The effective weight
+    /// (`weight * layer joint weight`) clamps to `[0, 1]`, and the delta
+    /// only applies where the BASE has influence — a joint the base does
+    /// not drive stays at bind (use `Rotate` for unconditional per-joint
+    /// control).
     Add {
         base: Box<AnimExpr>,
         layer: Box<AnimExpr>,
@@ -60,7 +64,9 @@ pub enum AnimExpr {
     },
     /// Post-multiply an additive local rotation (XYZ Euler, radians) onto
     /// one joint of `expr` — the programmatic per-joint control. The joint
-    /// becomes fully driven (weight 1) so the rotation survives masking.
+    /// becomes fully driven (weight 1), so the rotation survives masks and
+    /// zero-weight blends BENEATH this node (an enclosing `Mask` that
+    /// excludes the joint still drops it).
     Rotate {
         joint: String,
         /// XYZ Euler angles in radians, applied in the joint's local frame.
@@ -190,6 +196,14 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
             let mut inner = eval(model, expr, on_warning);
             match model.skeleton.joint_id_by_name(joint) {
                 Some(joint_id) => {
+                    // The inner expression may not have produced this joint
+                    // (an all-zero-weight blend evaluates empty): rotate over
+                    // the bind pose so the joint never silently snaps.
+                    if !inner.joints.contains_key(&joint_id) {
+                        if let Some(jp) = model.skeleton.base_pose().joints.get(&joint_id) {
+                            inner.joints.insert(joint_id, (*jp, 0.0));
+                        }
+                    }
                     if let Some((jp, weight)) = inner.joints.get_mut(&joint_id) {
                         let q = Quaternion::from(Euler::new(
                             Rad(euler[0]),
@@ -197,8 +211,10 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
                             Rad(euler[2]),
                         ));
                         jp.rotation = (jp.rotation * q).normalize();
-                        // The joint is explicitly driven — the rotation must
-                        // survive an enclosing mask/blend fallback.
+                        // The joint is explicitly driven — the rotation
+                        // survives a mask/blend BENEATH this node (an
+                        // enclosing Mask that excludes the joint still
+                        // zeroes it, deliberately).
                         *weight = 1.0;
                     }
                 }
@@ -222,10 +238,13 @@ fn full_weight(pose: Pose) -> WeightedPose {
 /// Per-joint weighted nlerp mixing (sign-aligned accumulation, as in Bevy's
 /// RFC-51 blending). Each input's effective weight at a joint is
 /// `input_weight * joint_weight`, so a masked input drops out of joints it
-/// does not cover. The result's joint weight is the (capped) effective
-/// total, so partial coverage blends toward bind in `finalize`. Degenerate
-/// accumulations (zero/non-finite totals, opposed rotations cancelling)
-/// fall back to the first input's joint.
+/// does not cover and the remaining inputs renormalize. The result's joint
+/// weight is the coverage-weighted average of the covering inputs' joint
+/// weights — 1 for a plain blend (weights fully normalize, whatever they
+/// sum to), and fractional only when every covering input was itself
+/// partially driven (nested masks), which `finalize` folds toward bind.
+/// Degenerate accumulations (zero/non-finite totals, opposed rotations
+/// cancelling) fall back to the first input's joint.
 fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
     let Some((first, _)) = inputs.first() else {
         return WeightedPose {
@@ -247,6 +266,10 @@ fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
         let mut scale = Vector3::zero();
         let mut rotation = Quaternion::zero();
         let mut total = 0.0_f32;
+        // The weight sum of the inputs that cover this joint at all — the
+        // denominator that renormalizes per joint (a masked-out input drops
+        // out entirely instead of diluting toward bind).
+        let mut covering = 0.0_f32;
         let mut fallback: Option<JointPose> = None;
         for (input, input_weight) in inputs {
             let Some((jp, joint_weight)) = input.joints.get(&joint_id) else {
@@ -258,6 +281,7 @@ fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
                 continue;
             }
             total += effective;
+            covering += input_weight;
             translation += jp.translation * effective;
             scale += jp.scale * effective;
             // Align hemispheres so opposite-sign encodings of the same
@@ -270,13 +294,19 @@ fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
             rotation += q * effective;
         }
         let magnitude2 = rotation.magnitude2();
-        if total > 0.0 && total.is_finite() && magnitude2.is_finite() && magnitude2 > 1e-12 {
+        if total > 0.0
+            && total.is_finite()
+            && covering > 0.0
+            && covering.is_finite()
+            && magnitude2.is_finite()
+            && magnitude2 > 1e-12
+        {
             let blended = JointPose {
                 translation: translation / total,
                 rotation: rotation.normalize(),
                 scale: scale / total,
             };
-            joints.insert(joint_id, (blended, total.min(1.0)));
+            joints.insert(joint_id, (blended, (total / covering).min(1.0)));
         } else if let Some(jp) = fallback {
             joints.insert(joint_id, (jp, 0.0));
         }
@@ -446,6 +476,52 @@ mod tests {
         // At 1s, slide is at (1,0,0) and lift at (0,2,0); weights 1:3
         // normalize to 0.25/0.75.
         assert_eq!(t, vec3(0.25, 1.5, 0.0));
+    }
+
+    #[test]
+    fn blend_weights_fully_normalize_regardless_of_total() {
+        // Weights that don't sum to 1 must NOT leak the bind pose — a
+        // single 0.5-weight input IS that pose (the #287 semantics).
+        let model = test_model();
+        let expr = AnimExpr::Blend(vec![(clip("slide", 1.0), 0.5)]);
+        let t = joint_translation(&skinning_transforms(&model, &expr, &mut no_warning), 0);
+        assert_eq!(t, vec3(1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn masked_input_drops_out_instead_of_diluting() {
+        // A sub-1 total with a mask: joints the mask excludes get the OTHER
+        // input at full strength, not a mix toward bind.
+        let model = chain_model();
+        let expr = AnimExpr::Blend(vec![
+            (clip("raise", 1.0), 0.5),
+            (
+                AnimExpr::Mask {
+                    joints: vec!["hand".to_string()],
+                    expr: Box::new(clip("raise", 1.0)),
+                },
+                0.5,
+            ),
+        ]);
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        // root is covered only by input 1 (weight 0.5): full clip pose, no
+        // bind dilution — local y=1.
+        assert_eq!(joint_translation(&transforms, 0), vec3(0.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn rotate_applies_over_an_empty_blend() {
+        // An all-zero-weight blend evaluates to nothing — Rotate must still
+        // drive its joint (over the bind pose) instead of silently no-oping.
+        let model = chain_model();
+        let expr = AnimExpr::Rotate {
+            joint: "hand".to_string(),
+            euler: [0.0, 0.0, std::f32::consts::FRAC_PI_2],
+            expr: Box::new(AnimExpr::Blend(vec![(clip("raise", 1.0), 0.0)])),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let x_axis = transforms[2].x.truncate();
+        assert!((x_axis.y - 1.0).abs() < 1e-5, "x axis: {x_axis:?}");
     }
 
     #[test]

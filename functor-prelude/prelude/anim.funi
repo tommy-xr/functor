@@ -23,6 +23,9 @@ let rest : () => t
 
 // Additive layer (base LAST, so it pipes):
 // walk |> Anim.add(Anim.clip("headShake", tts), 1.0)
+// The weight clamps to [0, 1]; the delta applies where the base has
+// influence (a joint the base doesn't drive stays at bind — use rotate for
+// unconditional per-joint control).
 let add : (t, float, t) => t
 
 // Restrict an anim's influence to the subtrees rooted at the named joints
@@ -31,4 +34,6 @@ let mask : (List<string>, t) => t
 
 // Post-multiply an additive local XYZ Euler rotation onto one joint —
 // programmatic per-joint control (head aim, finger curl). Angle values only.
+// The joint counts as fully driven: masks/zero-weight blends BENEATH this
+// node can't drop it (an enclosing mask still can).
 let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t
