@@ -1946,4 +1946,119 @@ mod tests {
             "seek must drop input orphaned by the model restore"
         );
     }
+
+    /// Ghosting a PHYSICS game end-to-end (the world-scoped host,
+    /// docs/time-travel.md T6b): the ghost's `draw` calls resolve
+    /// `Physics.transformed` against each division's PROJECTED world — the
+    /// strobe shows the ball falling through its future poses, not N copies of
+    /// the paused pose — and a scripted input whose handler issues a physics
+    /// COMMAND (`Physics.applyImpulse`) kicks the projected ball, altering the
+    /// ghost trajectory. The live world stays byte-identical throughout.
+    #[test]
+    fn ghost_frames_project_physics_poses_and_replay_commands() {
+        use functor_runtime_common::{Key, RecordedInput};
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-ghost-phys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.fun"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => m\n\
+             let input = (m, key, isDown) =>\n\
+               match key with\n\
+               | \"K\" =>\n\
+                 (match isDown with\n\
+                  | true => (m, Physics.applyImpulse(\"ball\", 6.0, 0.0, 0.0))\n\
+                  | false => m)\n\
+               | _ => m\n\
+             let physics = (m) => Physics.scene(0.0, -9.81, 0.0, [\n\
+             \x20 Physics.fixed(\"ground\", Physics.box(10.0, 0.4, 10.0)) |> Physics.at(0.0, -0.2, 0.0),\n\
+             \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(0.0, 4.0, 0.0)])\n\
+             let draw = (m, tts) => Frame.create(\n\
+               Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),\n\
+               Scene.sphere() |> Physics.transformed(\"ball\"))\n",
+        )
+        .expect("write game");
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
+
+        // Drive to a fork point mid-fall (ticks record history; render seeds
+        // `last_frame`, whose camera the ghost freezes to).
+        const SUB_DT: f32 = 1.0 / 60.0;
+        const K: usize = 10;
+        let mut tts = 0.0f32;
+        for _ in 0..K {
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+            game.render(FrameTime { tts, dts: SUB_DT });
+        }
+        let paused_y = game.last_frame.scene.xform.w.y;
+        assert!(
+            paused_y < 4.0 && paused_y > 3.0,
+            "fork mid-fall, y = {paused_y}"
+        );
+        let live_world_before = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
+
+        // The strobe over ~1s in 4 divisions: each ghost frame's draw must
+        // read that division's projected world — falling, then resting.
+        const DIVISIONS: usize = 4;
+        const DT: f32 = 0.25;
+        let ghosts = game.ghost_frames(DIVISIONS, DT, tts as f64, None);
+        assert_eq!(ghosts.len(), DIVISIONS, "one frame per division");
+        let ys: Vec<f32> = ghosts.iter().map(|f| f.scene.xform.w.y).collect();
+        assert!(
+            ys[0] < paused_y - 0.5,
+            "division 0 must have fallen past the paused pose: {ys:?} vs {paused_y}"
+        );
+        for pair in ys.windows(2) {
+            // Allow a small settle-bounce near the slab (restitution), but the
+            // strobe must never show the ball climbing back up.
+            assert!(
+                pair[1] <= pair[0] + 0.1,
+                "the ghost ball must keep falling/settling: {ys:?}"
+            );
+        }
+        let rest_y = *ys.last().unwrap();
+        assert!(
+            (0.3..0.7).contains(&rest_y),
+            "the ghost ball should come to rest on the slab: {ys:?}"
+        );
+
+        // A scripted kick (K down at the first fine step) must alter the ghost:
+        // its handler returns Physics.applyImpulse, which applies to the
+        // PROJECTED world — the kicked ghost drifts in +x, the coast ghost
+        // stays on the fall line.
+        let steps = DIVISIONS * ((DT / SUB_DT).round() as usize).max(1);
+        let mut script: Vec<Vec<RecordedInput>> = vec![Vec::new(); steps];
+        script[0].push(RecordedInput::Key {
+            code: Key::K as i32,
+            is_down: true,
+        });
+        let kicked = game.ghost_frames(DIVISIONS, DT, tts as f64, Some(&script));
+        assert_eq!(kicked.len(), DIVISIONS);
+        let coast_x = ghosts.last().unwrap().scene.xform.w.x;
+        let kicked_x = kicked.last().unwrap().scene.xform.w.x;
+        assert!(coast_x.abs() < 1e-3, "coast ghost stays centered: {coast_x}");
+        assert!(
+            kicked_x > 1.0,
+            "the replayed kick must move the projected ball: {kicked_x}"
+        );
+
+        // The live producer and world are untouched by all of the above.
+        assert_eq!(
+            physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()),
+            live_world_before,
+            "live world untouched by ghosting"
+        );
+        assert!(
+            (game.last_frame.scene.xform.w.y - paused_y).abs() < 1e-6,
+            "live frame untouched by ghosting"
+        );
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

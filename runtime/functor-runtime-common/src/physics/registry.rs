@@ -24,6 +24,38 @@ pub const DEFAULT_WORLD: WorldId = 0;
 thread_local! {
     static WORLDS: RefCell<BTreeMap<WorldId, World>> = const { RefCell::new(BTreeMap::new()) };
     static NEXT_ID: Cell<WorldId> = const { Cell::new(1) };
+    static ACTIVE_WORLD: Cell<WorldId> = const { Cell::new(DEFAULT_WORLD) };
+}
+
+/// The world game-code physics currently resolves against: readbacks
+/// (`Physics.position` / `Physics.transformed` / `Physics.raycast` /
+/// `Physics.timelineFrame`) and queued commands (`Physics.applyImpulse`, …) in
+/// the Functor Lang prelude target this world, not [`DEFAULT_WORLD`] directly. Live
+/// frames leave it at the default; the dry-run forward-step
+/// (docs/time-travel.md T6b) scopes it to a throwaway world via
+/// [`ActiveWorldScope`] so ghost frames read and command the projected world.
+pub fn active_world() -> WorldId {
+    ACTIVE_WORLD.with(|c| c.get())
+}
+
+/// RAII scope routing [`active_world`] to `id` until dropped. Nests: the guard
+/// restores whatever was active when it was entered (drop order must mirror
+/// entry order, which Rust scoping gives for free).
+pub struct ActiveWorldScope {
+    prev: WorldId,
+}
+
+impl ActiveWorldScope {
+    pub fn enter(id: WorldId) -> ActiveWorldScope {
+        let prev = ACTIVE_WORLD.with(|c| c.replace(id));
+        ActiveWorldScope { prev }
+    }
+}
+
+impl Drop for ActiveWorldScope {
+    fn drop(&mut self) {
+        ACTIVE_WORLD.with(|c| c.set(self.prev));
+    }
 }
 
 /// Create an explicit world with its own gravity, returning its id.
@@ -99,6 +131,25 @@ mod tests {
 
         remove_world(a);
         assert_eq!(with_world(a, |w| w.frame()), None);
+        remove_world(b);
+    }
+
+    #[test]
+    fn active_world_defaults_and_scopes_with_nesting() {
+        assert_eq!(active_world(), DEFAULT_WORLD);
+        let a = create_world([0.0, -9.81, 0.0]);
+        let b = create_world([0.0, 0.0, 0.0]);
+        {
+            let _outer = ActiveWorldScope::enter(a);
+            assert_eq!(active_world(), a);
+            {
+                let _inner = ActiveWorldScope::enter(b);
+                assert_eq!(active_world(), b);
+            }
+            assert_eq!(active_world(), a, "inner scope must restore the outer");
+        }
+        assert_eq!(active_world(), DEFAULT_WORLD, "scope must restore default");
+        remove_world(a);
         remove_world(b);
     }
 }
