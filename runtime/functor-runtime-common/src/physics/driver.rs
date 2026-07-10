@@ -1,5 +1,6 @@
-//! The recorded physics drive (docs/physics.md, Phase 6 — the culmination):
-//! pause / rewind / step / replay over the 1b `Timeline` seam.
+//! The recorded physics drive (docs/physics.md, Phase 6): per-fixed-frame
+//! recording over the 1b `Timeline` seam, powering the shell-owned scene
+//! rewind/seek (docs/time-travel.md T1/T3).
 //!
 //! [`SteppedPhysics`] replaces the drivers' direct `reconcile + step_frame`
 //! call with per-fixed-frame recording: each substep is recorded through
@@ -10,12 +11,11 @@
 //! byte-identical by construction (the strategy-equivalence goldens' claim,
 //! now load-bearing at runtime).
 //!
-//! Timeline CONTROLS (pause / resume / stepOnce / rewindTo) arrive as
-//! tagger-less effects, queued on a shell-side control queue (like physics
-//! commands, but targeting the recorder rather than the world) and applied
-//! at the next [`SteppedPhysics::advance`].
-
-use std::cell::RefCell;
+//! Rewind/seek is driven by the SHELL (the scrubber's coupled scene restore,
+//! via [`SteppedPhysics::rewind_to_frame`] / [`SteppedPhysics::seek_to_frame`]),
+//! not by game code — the game-authored timeline-control effects
+//! (`Physics.pause`/`rewindTo`/…) were removed when the whole-game scrubber
+//! superseded them.
 
 use super::{
     with_world, Command, PhysicsEvent, PhysicsScene, Simulatable, Timeline, TimelineLog, World,
@@ -30,78 +30,35 @@ const KEYFRAME_INTERVAL: u64 = 30;
 /// frame, so memory is bounded no matter how long the game runs.
 const HISTORY_FRAMES: u64 = 900;
 
-/// A control against the recorder (docs/physics.md Phase 6): plain data,
-/// queued by the `Physics.pause`/`resume`/`stepOnce`/`rewindTo` effects.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TimelineControl {
-    Pause,
-    Resume,
-    /// Advance exactly one fixed frame while paused.
-    StepOnce,
-    /// Restore the pre-step state of this fixed frame and truncate the
-    /// recorded future (resuming from here BRANCHES the timeline).
-    RewindTo(u64),
-}
-
-thread_local! {
-    /// Pending timeline controls (the recorder's analogue of the world's
-    /// command queue). Bounded: a game without a physics drive must not leak.
-    static CONTROLS: RefCell<Vec<TimelineControl>> = const { RefCell::new(Vec::new()) };
-}
-
-const MAX_PENDING_CONTROLS: usize = 64;
-
-/// Queue a control for the next [`SteppedPhysics::advance`] (called by the
-/// effect drain, in-process — same seam as `World::queue_command`).
-pub fn queue_timeline_control(control: TimelineControl) {
-    CONTROLS.with(|c| {
-        let mut controls = c.borrow_mut();
-        if controls.len() < MAX_PENDING_CONTROLS {
-            controls.push(control);
-        }
-    });
-}
-
-fn take_timeline_controls() -> Vec<TimelineControl> {
-    CONTROLS.with(|c| std::mem::take(&mut *c.borrow_mut()))
-}
-
 /// What one [`SteppedPhysics::advance`] did, for the driver to surface.
 pub struct Advanced {
-    /// Fixed substeps simulated this frame (0 while paused or when the
-    /// accumulator hasn't reached a full step).
+    /// Fixed substeps simulated this frame (0 when the accumulator hasn't
+    /// reached a full step).
     pub steps: u32,
-    /// The frame's contact transitions (empty while paused).
+    /// The frame's contact transitions.
     pub events: Vec<PhysicsEvent>,
-    /// Command/control problems to report (deduped by the driver).
+    /// Command problems to report (deduped by the driver).
     pub warnings: Vec<String>,
-    /// The recorder's state after this frame, for status overlays:
-    /// `(current_fixed_frame, paused, recorded_history_len)`.
-    pub status: (u64, bool, u64),
+    /// The world's current fixed frame after this advance (what the coupled
+    /// scene recorder stores per rendered frame).
+    pub frame: u64,
 }
 
-/// The per-driver recorded physics drive. Owns the pause flag, the fixed-step
-/// accumulator, and the `TimelineLog` — the `World` itself stays in the
-/// registry (shared with reads, wireframes, and hot reload).
+/// The per-driver recorded physics drive. Owns the fixed-step accumulator and
+/// the `TimelineLog` — the `World` itself stays in the registry (shared with
+/// reads, wireframes, and hot reload).
 pub struct SteppedPhysics {
     world: WorldId,
     timeline: TimelineLog<World>,
-    paused: bool,
     accumulator: f32,
-    /// Whether any frame has simulated yet. The first non-paused advance is
-    /// floored to one step, so the world is reconciled+stepped before the
-    /// first draw even when the first frame's dt is short — otherwise
-    /// draw-time reads (`Physics.position`/`transformed`) would find an empty
-    /// world. (Reconcile lives INSIDE the recorded step so replay reproduces
-    /// it byte-exact, so we can't reconcile eagerly for draw — we step once
+    /// Whether any frame has simulated yet. The first advance is floored to
+    /// one step, so the world is reconciled+stepped before the first draw
+    /// even when the first frame's dt is short — otherwise draw-time reads
+    /// (`Physics.position`/`transformed`) would find an empty world.
+    /// (Reconcile lives INSIDE the recorded step so replay reproduces it
+    /// byte-exact, so we can't reconcile eagerly for draw — we step once
     /// instead.)
     started: bool,
-    /// A throwaway dry-run driver ([`Self::for_world`], docs/time-travel.md
-    /// T6b): it must NOT touch the process-global timeline-control queue that
-    /// [`advance`](Self::advance) otherwise drains, or a forward-step would eat
-    /// a live-pending `pause`/`rewind` and the live driver would miss it. Live
-    /// drivers set this false and consume controls as usual.
-    dry_run: bool,
 }
 
 impl Default for SteppedPhysics {
@@ -115,10 +72,8 @@ impl SteppedPhysics {
         SteppedPhysics {
             world: DEFAULT_WORLD,
             timeline: TimelineLog::keyframes(KEYFRAME_INTERVAL),
-            paused: false,
             accumulator: 0.0,
             started: false,
-            dry_run: false,
         }
     }
 
@@ -126,24 +81,21 @@ impl SteppedPhysics {
     /// fresh `TimelineLog` — the dry-run forward-step (docs/time-travel.md T6b)
     /// points this at a throwaway world (a restored snapshot of
     /// [`DEFAULT_WORLD`]) so it can step the scene forward WITHOUT touching the
-    /// live world/driver/timeline or the global control queue (`dry_run`).
+    /// live world/driver/timeline.
     ///
     /// The live driver's sub-frame state is deliberately NOT forked: `started`
     /// is false (so the first division floors to one fixed step — the `new`
-    /// bootstrap), `accumulator` is 0, and `paused` is false. So the projection
-    /// matches a live continuation exactly only for an UNPAUSED fork driven at a
-    /// full `FIXED_DT` with no accumulator residue (the coast case the T6b test
-    /// covers). Forking a paused scene, a sub-`FIXED_DT` accumulator phase, or
-    /// carrying timeline history for `rewindTo` is follow-up work (alongside the
-    /// input log).
+    /// bootstrap) and `accumulator` is 0. So the projection matches a live
+    /// continuation exactly only for a fork driven at a full `FIXED_DT` with no
+    /// accumulator residue (the case the T6b test covers). Forking a
+    /// sub-`FIXED_DT` accumulator phase, or carrying timeline history so the
+    /// projection itself could be scrubbed, is follow-up work.
     pub fn for_world(world: WorldId) -> SteppedPhysics {
         SteppedPhysics {
             world,
             timeline: TimelineLog::keyframes(KEYFRAME_INTERVAL),
-            paused: false,
             accumulator: 0.0,
             started: false,
-            dry_run: true,
         }
     }
 
@@ -154,73 +106,40 @@ impl SteppedPhysics {
         with_world(self.world, |w| w.snapshot())
     }
 
-    /// One rendered frame's worth of recorded physics: apply queued controls,
-    /// then simulate whole fixed substeps from `real_dt` (unless paused),
-    /// recording each through the Timeline. The declared `scene` reconciles
-    /// on the frame's first recorded substep — identical semantics to
-    /// `World::step_frame`, but every fixed frame is now seekable.
+    /// One rendered frame's worth of recorded physics: simulate whole fixed
+    /// substeps from `real_dt`, recording each through the Timeline. The
+    /// declared `scene` reconciles on the frame's first recorded substep —
+    /// identical semantics to `World::step_frame`, but every fixed frame is
+    /// now seekable.
     pub fn advance(&mut self, scene: &PhysicsScene, real_dt: f32) -> Advanced {
         let mut out = Advanced {
             steps: 0,
             events: Vec::new(),
             warnings: Vec::new(),
-            status: (0, self.paused, 0),
+            frame: 0,
         };
 
-        // Controls first, so a pause/rewind issued last frame takes effect
-        // before this frame simulates. A dry-run driver must NOT drain the
-        // process-global queue (it would steal a live-pending control); the
-        // forward-step suppresses timeline effects anyway, so it has none.
-        let mut step_once = false;
-        let controls = if self.dry_run {
-            Vec::new()
-        } else {
-            take_timeline_controls()
-        };
-        for control in controls {
-            match control {
-                TimelineControl::Pause => self.paused = true,
-                TimelineControl::Resume => self.paused = false,
-                TimelineControl::StepOnce => step_once = true,
-                TimelineControl::RewindTo(frame) => {
-                    self.rewind_to(frame, &mut out.warnings);
-                }
-            }
+        self.accumulator += real_dt.max(0.0);
+        // Bootstrap: guarantee the very first frame simulates one step so
+        // the world exists for the first draw. Floors, never adds — a
+        // full-dt first frame (the tests) still yields exactly one step.
+        if !self.started {
+            self.accumulator = self.accumulator.max(FIXED_DT);
         }
-
-        let simulate = if self.paused {
-            // Paused: real time doesn't accumulate (resuming later must not
-            // fast-forward), but an explicit stepOnce advances one frame.
-            self.accumulator = 0.0;
-            step_once
-        } else {
-            self.accumulator += real_dt.max(0.0);
-            // Bootstrap: guarantee the very first frame simulates one step so
-            // the world exists for the first draw. Floors, never adds — a
-            // full-dt first frame (the tests) still yields exactly one step.
-            if !self.started {
-                self.accumulator = self.accumulator.max(FIXED_DT);
-            }
-            self.accumulator >= FIXED_DT
-        };
+        let simulate = self.accumulator >= FIXED_DT;
         if simulate {
             self.started = true;
         }
 
         if simulate {
-            let steps = if self.paused {
-                1
-            } else {
-                let whole = (self.accumulator / FIXED_DT) as u32;
-                let steps = whole.min(MAX_SUBSTEPS_PER_FRAME);
-                self.accumulator -= steps as f32 * FIXED_DT;
-                if whole > MAX_SUBSTEPS_PER_FRAME {
-                    // Hitch: drop the whole-step backlog, keep the phase
-                    // (the same discipline as World::step_frame).
-                    self.accumulator %= FIXED_DT;
-                }
-                steps
-            };
+            let whole = (self.accumulator / FIXED_DT) as u32;
+            let steps = whole.min(MAX_SUBSTEPS_PER_FRAME);
+            self.accumulator -= steps as f32 * FIXED_DT;
+            if whole > MAX_SUBSTEPS_PER_FRAME {
+                // Hitch: drop the whole-step backlog, keep the phase
+                // (the same discipline as World::step_frame).
+                self.accumulator %= FIXED_DT;
+            }
             let (events, warnings) = with_world(self.world, |w| {
                 let mut events = Vec::new();
                 for i in 0..steps {
@@ -248,16 +167,15 @@ impl SteppedPhysics {
                 .prune(self.current_frame().saturating_sub(HISTORY_FRAMES));
         }
 
-        out.status = (self.current_frame(), self.paused, self.history_len());
+        out.frame = self.current_frame();
         out
     }
 
-    /// Rewind the recorded world to a fixed frame directly (the coupled
-    /// scene-rewind path, docs/time-travel.md T1) — the same seek the
-    /// `RewindTo` control performs, but callable in-process by the shell
-    /// rather than only through the effect-queued control. Returns any
-    /// clamp/range warnings. The coupled caller checks [`Self::seekable_range`]
-    /// first so this only ever runs on an exactly-restorable frame.
+    /// Rewind the recorded world to a fixed frame — the coupled scene-rewind
+    /// path (docs/time-travel.md T1), called in-process by the shell when a
+    /// time-travel branch commits. Returns any clamp/range warnings. The
+    /// coupled caller checks [`Self::seekable_range`] first so this only ever
+    /// runs on an exactly-restorable frame.
     pub fn rewind_to_frame(&mut self, frame: u64) -> Vec<String> {
         let mut warnings = Vec::new();
         self.rewind_to(frame, &mut warnings);
@@ -317,7 +235,7 @@ impl SteppedPhysics {
         let (lo, hi) = match self.recorded_range() {
             Some(range) => range,
             None => {
-                warnings.push("physics rewindTo: nothing recorded yet".to_string());
+                warnings.push("physics rewind: nothing recorded yet".to_string());
                 return;
             }
         };
@@ -325,7 +243,7 @@ impl SteppedPhysics {
             // Only the empty frame-0 exists — nothing meaningful to seek to
             // (frame 0's pre-step state is the empty world, before any
             // reconcile, which draw-reads can't use).
-            warnings.push("physics rewindTo: no stepped frame recorded yet".to_string());
+            warnings.push("physics rewind: no stepped frame recorded yet".to_string());
             return;
         }
         // Pre-step of fixed frame 0 is the empty world, so the practical floor
@@ -353,10 +271,6 @@ impl SteppedPhysics {
 
     fn current_frame(&self) -> u64 {
         with_world(self.world, |w| w.frame()).unwrap_or(0)
-    }
-
-    fn history_len(&self) -> u64 {
-        self.recorded_range().map(|(lo, hi)| hi - lo + 1).unwrap_or(0)
     }
 
     /// The seekable fixed-frame range `(oldest, newest)`, if anything has
@@ -398,63 +312,7 @@ mod tests {
 
     fn fresh() -> SteppedPhysics {
         remove_world(DEFAULT_WORLD);
-        let _ = take_timeline_controls(); // hygiene: prior test leftovers
         SteppedPhysics::new()
-    }
-
-    /// A dry-run driver (docs/time-travel.md T6b, the forward-step) must NOT
-    /// drain the process-global timeline-control queue: a live-pending
-    /// `pause`/`rewind` has to survive the forward-step for the live driver to
-    /// apply it. Without the `dry_run` guard the dry `advance` would steal it.
-    #[test]
-    fn dry_run_advance_leaves_global_controls_for_the_live_driver() {
-        let mut live = fresh();
-        live.advance(&scene_at(0), FIXED_DT); // seed a world to snapshot
-        let bytes = snapshot();
-
-        // A live-pending control, queued before the forward-step runs.
-        queue_timeline_control(TimelineControl::Pause);
-
-        // A dry-run driver over a throwaway world restored from the snapshot.
-        let dry_id = crate::physics::create_world([0.0, -9.81, 0.0]);
-        with_world(dry_id, |w| {
-            let _ = w.restore(&bytes);
-        });
-        let mut dry = SteppedPhysics::for_world(dry_id);
-        dry.advance(&scene_at(1), FIXED_DT);
-
-        // The control is untouched — still pending for the live driver.
-        assert_eq!(
-            take_timeline_controls(),
-            vec![TimelineControl::Pause],
-            "dry-run advance stole a live-pending timeline control"
-        );
-        remove_world(dry_id);
-        remove_world(DEFAULT_WORLD);
-    }
-
-    #[test]
-    fn pause_freezes_and_step_once_advances_exactly_one() {
-        let mut sp = fresh();
-        for t in 0..10 {
-            sp.advance(&scene_at(t), FIXED_DT);
-        }
-        let before = snapshot();
-        queue_timeline_control(TimelineControl::Pause);
-        let out = sp.advance(&scene_at(10), FIXED_DT);
-        assert_eq!(out.steps, 0);
-        assert!(out.status.1, "should report paused");
-        assert!(snapshot() == before, "paused frame must not simulate");
-        // Wall-clock passing while paused must not fast-forward on resume.
-        for t in 11..20 {
-            sp.advance(&scene_at(t), FIXED_DT * 3.0);
-        }
-        assert!(snapshot() == before);
-        // stepOnce advances exactly one fixed frame.
-        queue_timeline_control(TimelineControl::StepOnce);
-        let out = sp.advance(&scene_at(20), FIXED_DT);
-        assert_eq!(out.steps, 1);
-        assert!(snapshot() != before);
     }
 
     #[test]
@@ -472,19 +330,17 @@ mod tests {
         let end_a = snapshot();
 
         // Rewind to fixed frame 20 (pre-step state of 20 == post-step of 19
-        // == what we snapshotted before advancing frame 20).
-        queue_timeline_control(TimelineControl::Pause);
-        queue_timeline_control(TimelineControl::RewindTo(20));
-        let out = sp.advance(&scene_at(40), FIXED_DT);
-        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+        // == what we snapshotted before advancing frame 20) — the shell's
+        // coupled scene-rewind path.
+        let warnings = sp.rewind_to_frame(20);
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(
             snapshot() == snap_20,
             "rewind must restore the recorded frame byte-exact"
         );
 
-        // Resume and replay the same declared scenes: local determinism makes
-        // the branch land byte-identical to run A.
-        queue_timeline_control(TimelineControl::Resume);
+        // Replay the same declared scenes: local determinism makes the branch
+        // land byte-identical to run A.
         for t in 20..40 {
             sp.advance(&scene_at(t), FIXED_DT);
         }
@@ -498,9 +354,8 @@ mod tests {
     fn rewind_clamps_to_recorded_history() {
         let mut sp = fresh();
         // Nothing recorded yet: rewind warns instead of panicking.
-        queue_timeline_control(TimelineControl::RewindTo(3));
-        let out = sp.advance(&scene_at(0), 0.0);
-        assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
+        let warnings = sp.rewind_to_frame(3);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
 
         for t in 0..5 {
             sp.advance(&scene_at(t), FIXED_DT);
@@ -508,12 +363,12 @@ mod tests {
         // Past the newest end: clamped, no warning. (Rewinding to the OLDEST
         // frame truncates the entire history — by design: the future is
         // discarded — so the far-future clamp is tested first.)
-        queue_timeline_control(TimelineControl::RewindTo(9_999));
-        let out = sp.advance(&scene_at(5), 0.0);
-        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
-        queue_timeline_control(TimelineControl::RewindTo(0));
-        let out = sp.advance(&scene_at(5), 0.0);
-        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+        let warnings = sp.rewind_to_frame(9_999);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // Below the recorded floor: clamped to it, no warning, no panic.
+        let warnings = sp.rewind_to_frame(0);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        remove_world(DEFAULT_WORLD);
     }
 
     #[test]
@@ -522,40 +377,22 @@ mod tests {
         for t in 0..20 {
             sp.advance(&scene_at(t), FIXED_DT);
         }
-        // Same frame: rewind to 10 AND queue an impulse. The impulse must
+        // Same frame: queue an impulse, then rewind to 10. The impulse must
         // survive the seek and apply at the branch's first step.
-        queue_timeline_control(TimelineControl::RewindTo(10));
         with_world(DEFAULT_WORLD, |w| {
             w.queue_command(crate::physics::PhysicsCommand::ApplyImpulse {
                 tag: "a".to_string(),
                 impulse: [5.0, 0.0, 0.0],
             })
         });
+        let warnings = sp.rewind_to_frame(10);
+        assert!(warnings.is_empty(), "{warnings:?}");
         let out = sp.advance(&scene_at(20), FIXED_DT);
         assert!(out.warnings.is_empty(), "{:?}", out.warnings);
         // The branch's first step applied the +x impulse.
         let vx = with_world(DEFAULT_WORLD, |w| w.body_velocity("a").unwrap()[0]).unwrap();
         assert!(vx > 0.0, "the same-frame impulse was dropped by the rewind: vx={vx}");
-    }
-
-    #[test]
-    fn scrub_below_zero_clamps_without_erroring() {
-        // The example's `rewindTo(timelineFrame() - 10.0)` goes negative in
-        // the first 10 frames; the prelude floors it to 0 and the recorder
-        // clamps to the floor — no error, no panic.
-        let mut sp = fresh();
-        for t in 0..5 {
-            sp.advance(&scene_at(t), FIXED_DT);
-        }
-        queue_timeline_control(TimelineControl::Pause);
-        queue_timeline_control(TimelineControl::RewindTo(0)); // the floored negative
-        let out = sp.advance(&scene_at(5), 0.0);
-        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
-        // And a rewind before ANY step warns rather than seeking the empty world.
-        let mut sp2 = fresh();
-        queue_timeline_control(TimelineControl::RewindTo(0));
-        let out = sp2.advance(&scene_at(0), 0.0);
-        assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
+        remove_world(DEFAULT_WORLD);
     }
 
     #[test]
@@ -582,13 +419,12 @@ mod tests {
         // byte-identical proves commands replay. (Post-rewind the future is
         // truncated — a resumed run is a BRANCH and only re-runs what the
         // game issues again; that is the design, not a loss.)
-        queue_timeline_control(TimelineControl::Pause);
-        queue_timeline_control(TimelineControl::RewindTo(20));
-        let out = sp.advance(&scene_at(30), 0.0);
-        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+        let warnings = sp.rewind_to_frame(20);
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(
             snapshot() == snap_20,
             "seek must re-apply recorded commands to land byte-exact"
         );
+        remove_world(DEFAULT_WORLD);
     }
 }

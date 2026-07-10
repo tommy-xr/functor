@@ -323,11 +323,11 @@ impl SceneRecorder {
         &mut self,
         model: &mut Value,
         physics: &mut SteppedPhysics,
-        physics_status: &mut (u64, bool, u64),
+        physics_frame: &mut u64,
         has_physics: bool,
     ) -> bool {
         if let Some(k) = self.scrub_pos.take() {
-            let _ = self.rewind_scene_to(k, model, physics, physics_status, has_physics);
+            let _ = self.rewind_scene_to(k, model, physics, physics_frame, has_physics);
             true
         } else {
             false
@@ -342,7 +342,7 @@ impl SceneRecorder {
         target: u64,
         model: &mut Value,
         physics: &mut SteppedPhysics,
-        physics_status: &mut (u64, bool, u64),
+        physics_frame: &mut u64,
         has_physics: bool,
     ) -> Result<String, String> {
         let (lo, hi) = self
@@ -356,7 +356,7 @@ impl SceneRecorder {
             // Warnings are empty on every reachable coupled seek: `physics_seek_
             // target` already validated `fixed` against the seekable range.
             let _ = physics.seek_to_frame(fixed);
-            physics_status.0 = physics.current_fixed_frame();
+            *physics_frame = physics.current_fixed_frame();
         }
         self.scrub_pos = Some(frame);
         Ok(format!("scrubbed to rendered frame {frame}"))
@@ -371,7 +371,7 @@ impl SceneRecorder {
         target: u64,
         model: &mut Value,
         physics: &mut SteppedPhysics,
-        physics_status: &mut (u64, bool, u64),
+        physics_frame: &mut u64,
         has_physics: bool,
     ) -> Result<String, String> {
         let (lo, hi) = self
@@ -383,7 +383,7 @@ impl SceneRecorder {
         *model = self.model_history.seek(frame).clone();
         if let Some(fixed) = physics_target {
             let _ = physics.rewind_to_frame(fixed);
-            physics_status.0 = physics.current_fixed_frame();
+            *physics_frame = physics.current_fixed_frame();
         }
         self.model_history.truncate_from(frame + 1);
         self.world_frame_history.truncate_from(frame + 1);
@@ -589,9 +589,9 @@ mod tests {
 
         let mut model = Value::Number(0.0);
         let mut physics = SteppedPhysics::new();
-        let mut status = (0u64, false, 0u64);
+        let mut frame = 0u64;
         // Non-destructively scrub back to frame 2 (has_physics = false).
-        rec.seek_scene_to(2, &mut model, &mut physics, &mut status, false)
+        rec.seek_scene_to(2, &mut model, &mut physics, &mut frame, false)
             .expect("seek");
         // A scrubbed frame draws at its recorded tts (2 * 10.0), and the model
         // restored in lockstep.
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(model.to_string(), Value::Number(2.0).to_string());
 
         // Scrub forward to frame 4: the override tracks the handle.
-        rec.seek_scene_to(4, &mut model, &mut physics, &mut status, false)
+        rec.seek_scene_to(4, &mut model, &mut physics, &mut frame, false)
             .expect("seek");
         assert_eq!(rec.scrub_render_tts(), Some(40.0));
     }

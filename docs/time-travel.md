@@ -192,7 +192,7 @@ the overlay defaults to visible.
         │  TimelineLog<FrameTimeline>  (keyframe + input log, bounded) │
         │  one frame clock  ·  seek(N) restores model AND world       │
         │                                                             │
-        │  egui scrubber overlay  ── drives ──►  TimelineControl      │
+        │  egui scrubber overlay ── drives ─► rewind/seek_to_frame    │
         │   (shell-owned; `~` toggle; default-on web/VSCode)          │
         └─────────────────────────────────────────────────────────────┘
             native: functor (in-process)  │   wasm: web-runtime (= VSCode preview)

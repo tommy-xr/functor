@@ -28,8 +28,8 @@ thread_local! {
 }
 
 /// The world game-code physics currently resolves against: readbacks
-/// (`Physics.position` / `Physics.transformed` / `Physics.raycast` /
-/// `Physics.timelineFrame`) and queued commands (`Physics.applyImpulse`, …) in
+/// (`Physics.position` / `Physics.transformed` / `Physics.raycast`) and queued
+/// commands (`Physics.applyImpulse`, …) in
 /// the Functor Lang prelude target this world, not [`DEFAULT_WORLD`] directly. Live
 /// frames leave it at the default; the dry-run forward-step
 /// (docs/time-travel.md T6b) scopes it to a throwaway world via

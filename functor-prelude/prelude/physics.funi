@@ -50,7 +50,6 @@ let scene : (float, float, float, List<body>) => world
 
 // Reads of the LIVE stepped world (in-process, no boundary).
 let position : (string) => position
-let timelineFrame : () => float
 
 // world LAST (subject-last), so it pipes: place a visual at a body's live pose —
 // `Scene.cube() |> Physics.transformed("crate-1")`.
@@ -67,9 +66,3 @@ let raycast : (float, float, float, float, float, float, float, (rayHit) => 'msg
 
 // Collision-event SUB (what `subscriptions` returns).
 let events : ((collisionEvent) => 'msg) => Sub.t
-
-// Timeline-control EFFECTS.
-let pause : () => Effect.t
-let resume : () => Effect.t
-let stepOnce : () => Effect.t
-let rewindTo : (float) => Effect.t
