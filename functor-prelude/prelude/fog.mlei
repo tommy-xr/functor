@@ -1,8 +1,0 @@
-// fog.mlei — the `Fog` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::mle_prelude). See docs/mlei.md.
-
-// The opaque fog handle (`Fog.t` from game code).
-type t
-
-let linear : (float, float, float, float, float) => t
-let exp : (float, float, float, float) => t

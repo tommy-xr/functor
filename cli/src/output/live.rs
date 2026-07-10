@@ -166,7 +166,7 @@ impl Renderer for LiveRenderer {
         let mut inner = self.inner.lock().unwrap();
         match event {
             // The routed commands (build/run/develop) all typecheck first: show
-            // a checking spinner that resolves on `mle_loaded`. Other commands
+            // a checking spinner that resolves on `functor_lang_loaded`. Other commands
             // (push/init) have no build phase — just commit their line.
             Event::CommandStarted {
                 command, project, ..
@@ -185,7 +185,7 @@ impl Renderer for LiveRenderer {
                 }
             }
             // Checking resolved: drop the spinner, commit the stable ✓ line.
-            Event::MleLoaded { .. } => {
+            Event::FunctorLangLoaded { .. } => {
                 Self::finish_spinner(&mut inner);
                 self.commit(event);
             }

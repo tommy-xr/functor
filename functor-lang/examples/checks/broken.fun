@@ -1,0 +1,35 @@
+// Deliberately broken — exercises the B4 checker's diagnostics. The
+// committed broken.check golden pins the full `functor-lang check` output; this file
+// is NOT covered by the parse/ir/run goldens (it never runs).
+
+type Position = { x: float, y: float }
+
+// Arithmetic and comparison operands must be float when known.
+let bad = (a: float): float => a + "one"
+
+let compare = (flag: bool): bool => flag > 1.0
+
+// Unary minus needs a float.
+let negated = (flag: bool): float => -flag
+
+// `==` across two different known types is always false.
+let never = 1.0 == "1"
+
+// A record literal checked against the return annotation: `z` is not a
+// field of Position, and `y` is missing.
+let make = (x: float): Position => { x: x, z: 0.0 }
+
+// Field access on a known record type.
+let getZ = (p: Position): float => p.z
+
+// Calls with a known signature: arity and argument types.
+let shift = (p: Position, dx: float): Position => { x: p.x + dx, y: p.y }
+let moved = shift({ x: 1.0, y: 2.0 })
+let far = shift({ x: 1.0, y: 2.0 }, "far")
+
+// Builtins have real signatures too.
+let shout = Text.concat(1.0, "!")
+
+// A known type name applied at the wrong arity (an *unknown* name would be
+// fine — it could be a generic parameter).
+let scale = (p: Position<float>): Position => p

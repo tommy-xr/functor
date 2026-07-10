@@ -5,7 +5,7 @@
 //! clients can thus be driven and asserted deterministically — no real sockets,
 //! no GL, byte-for-byte reproducible from a seed.
 //!
-//! Each instance is an in-process [`GameProducer`] (an MLE game), driven through
+//! Each instance is an in-process [`GameProducer`] (a Functor Lang game), driven through
 //! the shared runtime. All producers share this process's *process-global*
 //! net-command queue (`net::CONN_OUT`), so the harness must drain each instance's
 //! outbound commands ATOMICALLY right after running its game code (see
@@ -63,7 +63,7 @@ fn authority(endpoint: &str) -> &str {
     after_scheme.split('/').next().unwrap_or(after_scheme)
 }
 
-/// One game instance driven by the sim — an in-process [`GameProducer`] (an MLE
+/// One game instance driven by the sim — an in-process [`GameProducer`] (a Functor Lang
 /// game). Its net-command queue is PROCESS-GLOBAL and shared with every other
 /// producer instance, so the harness drains it atomically per instance (see
 /// [`NetSim::step`]).
@@ -81,7 +81,7 @@ struct Instance {
 
 impl Instance {
     fn from_producer(producer: Box<dyn GameProducer>, node: NodeId) -> Instance {
-        // The producer is already constructed (e.g. `MleGame::create` has
+        // The producer is already constructed (e.g. `FunctorLangGame::create` has
         // evaluated `init`).
         Instance {
             producer,
@@ -152,7 +152,7 @@ impl NetSim {
     }
 
     /// Add an already-constructed in-process [`GameProducer`] (e.g. an
-    /// `MleGame`) as a new instance. Returns its id.
+    /// `FunctorLangGame`) as a new instance. Returns its id.
     ///
     /// Producers share this process's runtime — including the process-global
     /// net-command queue — so [`step`](Self::step) drains each one's outbound
@@ -239,7 +239,7 @@ impl NetSim {
             dts: self.dt,
         };
         // Tick each instance and drain the commands IT produced ATOMICALLY —
-        // so a producer sharing the process-global conn queue (MLE) stays
+        // so a producer sharing the process-global conn queue (Functor Lang) stays
         // isolated: each drain reads only the instance that just ticked.
         for inst in &mut self.instances {
             inst.tick(time.clone());
@@ -343,7 +343,7 @@ impl NetSim {
                 }
             }
             // Capture any outbound commands the delivered events produced (e.g.
-            // an MLE `update` replying with `Effect.send`) BEFORE moving to the
+            // a Functor Lang `update` replying with `Effect.send`) BEFORE moving to the
             // next instance — again atomic, so the shared producer queue stays
             // attributed here. Held in this instance's outbox and routed next
             // frame.

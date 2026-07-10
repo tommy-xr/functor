@@ -1,6 +1,6 @@
 // Build the static site into site/dist: bundle the sandbox editor, copy the
 // pages, the wasm runtime (built separately by wasm-pack — see the error
-// below), and the example .mle sources. The repo examples are copied at
+// below), and the example .fun sources. The repo examples are copied at
 // build time rather than duplicated here, so the sandbox always shows the
 // same code that ships in examples/.
 //
@@ -21,12 +21,12 @@ const PAGES = ["index.html", "sandbox.html", "player.html", "docs.html", "styles
 const PKG = `${root}runtime/functor-runtime-web/pkg`;
 const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
 
-// dist/examples/<name>.mle — site-local plus the repo's MLE examples.
+// dist/examples/<name>.fun — site-local plus the repo's Functor Lang examples.
 const EXAMPLES = {
-  hero: `${site}examples/hero.mle`,
-  orbit: `${root}examples/hello-cubes/game.mle`,
-  physics: `${root}examples/physics/game.mle`,
-  monitor: `${root}examples/monitor/game.mle`,
+  hero: `${site}examples/hero.fun`,
+  orbit: `${root}examples/hello-cubes/game.fun`,
+  physics: `${root}examples/physics/game.fun`,
+  monitor: `${root}examples/monitor/game.fun`,
 };
 
 try {
@@ -50,7 +50,7 @@ for (const file of PKG_FILES) {
   await cp(`${PKG}/${file}`, `${dist}/pkg/${file}`);
 }
 for (const [name, path] of Object.entries(EXAMPLES)) {
-  await cp(path, `${dist}/examples/${name}.mle`);
+  await cp(path, `${dist}/examples/${name}.fun`);
 }
 
 await esbuild.build({

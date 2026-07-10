@@ -91,7 +91,7 @@ in `cli/src/output.rs`) that maps each `log::Record` onto `Event::Log { level, m
 typed `functor_runtime_common::events` sink — the `log` facade is only for **free-form** diagnostics.
 
 **Scoped to Functor's crates.** The logger filters on `record.target()` (which defaults to the
-module path) to Functor's own crates — `functor*` and `mle`. Transitive deps (notify, mio, tokio,
+module path) to Functor's own crates — `functor*` and `functor_lang`. Transitive deps (notify, mio, tokio,
 hyper, glow, egui, gltf, …) all use `log` too, so without this a `-v` run would drown in their
 debug/trace and any dep `warn!` would surface in normal output. Scoping keeps `-v` meaning "*Functor's*
 debug logs."
@@ -110,10 +110,10 @@ debug/info firehose. `--quiet` independently suppresses any log below `warn` in 
 so `-v --quiet` still shows only warn/error. Under `--json` the level gate still applies (a default
 `--json` run carries warn/error logs; `-v --json` carries debug/info too) — always as valid ndjson.
 
-### MLE `Debug.log` — the always-visible `trace` tier (PR-4b)
+### Functor Lang `Debug.log` — the always-visible `trace` tier (PR-4b)
 
-MLE's `Debug.log(label, value)` builtin (an Elm-style trace: logs `label: <value>`, returns
-`value` unchanged; see the `mle-language` skill) reuses this same region-aware log path — but with
+Functor Lang's `Debug.log(label, value)` builtin (an Elm-style trace: logs `label: <value>`, returns
+`value` unchanged; see the `functor-lang` skill) reuses this same region-aware log path — but with
 **one deliberate difference from the `-v`-gated `log` facade**: a `Debug.log` is *explicit user
 intent*, so it must show **by default, without `-v`**. It rides a distinct, always-visible
 `LogLevel::Trace` tier (rendered `[trace]`), so it is never subject to the `log` `max_level` gate
@@ -121,19 +121,19 @@ above. `--quiet` still suppresses it (quiet is an explicit "shut up" — `Trace`
 
 **Why it bypasses the `-v` gate cleanly.** The `-v`/`max_level` gate lives entirely in the `log`
 facade (`EventLogger` in `cli/src/output.rs`). A `Debug.log` does **not** travel that facade — it
-travels the typed `functor_runtime_common::events` sink as a new `RuntimeEvent::MleTrace { message }`
+travels the typed `functor_runtime_common::events` sink as a new `RuntimeEvent::FunctorLangTrace { message }`
 (the same structured sink as `frame_stats`/`asset_error`), which the CLI maps to
 `Event::Log { level: Trace, message }`. So it never touches `max_level`, yet lands as the same
 region-aware `Event::Log` (above the live panel via `MultiProgress::println`; one more ndjson object
 under `--json`).
 
-**The mle → host sink (dependency-clean).** The `mle` crate must not depend on the runtime/CLI, so
-it owns a process-wide, settable trace sink (`mle::set_trace_sink`, default: print `label: value` to
-stdout — plain `mle run` has no renderer of its own). The Functor host installs the sink once at
-producer startup (`functor_runtime_common::mle_prelude::install_debug_log_sink`), forwarding each
-trace into `events::emit(RuntimeEvent::MleTrace { … })`. The dependency edge stays
-`cli → functor_runtime_common → mle`, never the reverse. Because the sink lives on the *process*
-(not any interpreter `Session`), it **survives MLE hot-reload's `Session` rebuild** — a `Debug.log`
+**The functor_lang → host sink (dependency-clean).** The `functor_lang` crate must not depend on the runtime/CLI, so
+it owns a process-wide, settable trace sink (`functor_lang::set_trace_sink`, default: print `label: value` to
+stdout — plain `functor-lang run` has no renderer of its own). The Functor host installs the sink once at
+producer startup (`functor_runtime_common::functor_lang_prelude::install_debug_log_sink`), forwarding each
+trace into `events::emit(RuntimeEvent::FunctorLangTrace { … })`. The dependency edge stays
+`cli → functor_runtime_common → functor_lang`, never the reverse. Because the sink lives on the *process*
+(not any interpreter `Session`), it **survives Functor Lang hot-reload's `Session` rebuild** — a `Debug.log`
 added to a game live starts routing region-aware on the next frame, never falling back to a raw
 `println!`.
 
@@ -148,8 +148,8 @@ when absent (`skip_serializing_if`). Every line of `--json` output is one of the
 | ------------------ | ------------------------------------------------------------ | ------------ |
 | `command_started`  | `command` (string), `project` (string?), `env` (string?)     | a command begins |
 | `command_finished` | `ok` (bool), `duration_ms` (number)                          | a command ends |
-| `mle_loaded`       | `entry` (string), `sibling_count` (number)                   | `build` typecheck passes |
-| `diagnostic`       | `severity` (`"error"`\|`"warning"`), `file` (string?), `line` (number?), `col` (number?), `message` (string), `source_line` (string?) | an MLE check / load error |
+| `functor_lang_loaded`       | `entry` (string), `sibling_count` (number)                   | `build` typecheck passes |
+| `diagnostic`       | `severity` (`"error"`\|`"warning"`), `file` (string?), `line` (number?), `col` (number?), `message` (string), `source_line` (string?) | a Functor Lang check / load error |
 | `server_listening` | `url` (string)                                               | the wasm dev server binds |
 | `info`             | `message` (string)                                           | neutral status (e.g. hot-reload hint, a push ack) |
 | `warning`          | `message` (string)                                           | non-fatal issue (e.g. ignored wasm runner args) |
@@ -159,7 +159,7 @@ Example (`functor -d examples/primitives build --json`):
 
 ```json
 {"type":"command_started","command":"build","project":"examples/primitives"}
-{"type":"mle_loaded","entry":"game.mle","sibling_count":0}
+{"type":"functor_lang_loaded","entry":"game.fun","sibling_count":0}
 {"type":"command_finished","ok":true,"duration_ms":6}
 ```
 
@@ -167,8 +167,8 @@ A build with a type error:
 
 ```json
 {"type":"command_started","command":"build","project":"scratch/broken"}
-{"type":"diagnostic","severity":"error","file":"scratch/broken/game.mle","line":4,"col":11,"message":"`+` needs Float operands, got String","source_line":"  model + \"not a number\""}
-{"type":"error","message":"1 type error(s) in the scratch/broken/game.mle project"}
+{"type":"diagnostic","severity":"error","file":"scratch/broken/game.fun","line":4,"col":11,"message":"`+` needs Float operands, got String","source_line":"  model + \"not a number\""}
+{"type":"error","message":"1 type error(s) in the scratch/broken/game.fun project"}
 {"type":"command_finished","ok":false,"duration_ms":4}
 ```
 
@@ -185,7 +185,7 @@ The **human** renderer turns those fields into a rustc-style block — the locat
 source line in a numbered gutter, then a caret under `col`:
 
 ```
-error: game.mle:4:11: `+` needs Float operands, got String
+error: game.fun:4:11: `+` needs Float operands, got String
   |
 4 |   model + "not a number"
   |           ^
@@ -197,8 +197,8 @@ regardless of tab width. `col` is 1-based, counting characters from the start of
 ### Actionable error hints (PR-3)
 
 The `error` event's optional `hint` is populated for the common, recognizable CLI failures
-(`functor.json not found` → *point `-d` at an MLE project directory*; a project missing
-`"language": "mle"`; a missing `entry` file). Hints are **targeted** — most errors have no useful
+(`functor.json not found` → *point `-d` at a Functor Lang project directory*; a project missing
+`"language": "functor-lang"`; a missing `entry` file). Hints are **targeted** — most errors have no useful
 generic advice and carry none. Both renderers show the hint (human: a `hint:` line under the error;
 `--json`: the `hint` field).
 
@@ -235,11 +235,11 @@ Example tail of `functor -d examples/lighting run native --json` (frame stats + 
 
 The one free-form event — any `log::{debug,info,warn,error}!` in the CLI or the in-process runtime,
 funneled through the region-aware renderer (see [Logging & verbosity](#logging--verbosity-pr-4a)) —
-plus the always-visible `trace` tier that carries MLE `Debug.log` output (PR-4b).
+plus the always-visible `trace` tier that carries Functor Lang `Debug.log` output (PR-4b).
 
 | `type` | Fields                                                                              | Emitted when |
 | ------ | ----------------------------------------------------------------------------------- | ------------ |
-| `log`  | `level` (`"trace"`\|`"debug"`\|`"info"`\|`"warn"`\|`"error"`), `message` (string)     | a `log!` passes the active level, or an MLE `Debug.log` runs (`trace`, always shown) |
+| `log`  | `level` (`"trace"`\|`"debug"`\|`"info"`\|`"warn"`\|`"error"`), `message` (string)     | a `log!` passes the active level, or a Functor Lang `Debug.log` runs (`trace`, always shown) |
 
 ```json
 {"type":"log","level":"debug","message":"loaded asset 'grid-neon.png' (24601 bytes)"}
@@ -249,7 +249,7 @@ plus the always-visible `trace` tier that carries MLE `Debug.log` output (PR-4b)
 ## Runtime-output routing — the event sink (PR-2a)
 
 Post-#243 `functor run native` drives the desktop runtime **in the CLI's process**. That runtime
-used to `println!` its own lines (`[mle] avg over 300 frames…`, capture confirmations, asset-load
+used to `println!` its own lines (`[functor-lang] avg over 300 frames…`, capture confirmations, asset-load
 errors, hot-reload notices) straight to stdout, **bypassing the renderer** — corrupting the ndjson
 stream under `--json`. PR-2a routes them through a structured sink.
 
@@ -262,7 +262,7 @@ CLI installs an adapter:
   `OnceLock<Box<dyn Fn(RuntimeEvent) + Send + Sync>>` with `set_sink` / `emit`. It lives in the
   *common* crate (not `-desktop`) because asset-load errors are emitted from the shared asset
   pipeline, which both shells use.
-- The desktop runtime (`mle_game.rs`, `run.rs`) calls `events::emit(RuntimeEvent::…)` at each site
+- The desktop runtime (`functor_lang_game.rs`, `run.rs`) calls `events::emit(RuntimeEvent::…)` at each site
   that used to print. The frame loop's hot path (per-frame `tick`/`draw`) does **not** emit.
 - The CLI installs the sink once, right before it calls `functor_runtime_desktop::run(…)`:
   `events::set_sink(Box::new(|ev| output::emit(ev.into())))`. `impl From<RuntimeEvent> for
@@ -305,20 +305,20 @@ keypress in a focused window, never on a piped/`--json`/captured run.)
   `✓` line, and a sticky `run native` telemetry panel that consumes `frame_stats`/`hot_reload`,
   above scrollback. TTY-only; the machine paths are untouched. (A full-screen `--dashboard` is
   explicitly out of scope.)
-- **PR-3 (closes the UX pass):** rich MLE diagnostics (the `source_line` field + a human caret
+- **PR-3 (closes the UX pass):** rich Functor Lang diagnostics (the `source_line` field + a human caret
   block), actionable error `hint`s for common failures, and an ASCII glyph fallback for dumb /
   non-UTF-8 terminals (`--ascii`).
 - **PR-4a:** region-aware logging — the `log` event + a `log::Log` facade the CLI installs,
   so any `log::{debug,info,warn,error}!` (CLI or in-process runtime) renders through the same
   region-aware path; `-v/--verbose` + `RUST_LOG` set the level (quiet warn/error default). Converts
-  the runtime's informational `println!`s (asset-load debug, Xreal status). PR-4b adds the MLE
+  the runtime's informational `println!`s (asset-load debug, Xreal status). PR-4b adds the Functor Lang
   `Debug.log` builtin through the same path.
-- **PR-4b (this):** the MLE `Debug.log(label, value)` builtin — a pipe-friendly Elm-style trace
+- **PR-4b (this):** the Functor Lang `Debug.log(label, value)` builtin — a pipe-friendly Elm-style trace
   routed through the region-aware log path as the always-visible `trace` tier (shown by default, no
-  `-v`, since it's explicit user intent). The `mle` crate owns a settable trace sink (default:
-  stdout, for plain `mle run`); the host forwards it into `RuntimeEvent::MleTrace` →
-  `Event::Log { level: trace }`, keeping the `cli → runtime → mle` dependency direction clean. The
+  `-v`, since it's explicit user intent). The `functor_lang` crate owns a settable trace sink (default:
+  stdout, for plain `functor-lang run`); the host forwards it into `RuntimeEvent::FunctorLangTrace` →
+  `Event::Log { level: trace }`, keeping the `cli → runtime → functor_lang` dependency direction clean. The
   process-global sink survives hot-reload's `Session` rebuild. (See
-  [MLE `Debug.log`](#mle-debuglog--the-always-visible-trace-tier-pr-4b).)
+  [Functor Lang `Debug.log`](#functor-lang-debuglog--the-always-visible-trace-tier-pr-4b).)
 </content>
 </invoke>

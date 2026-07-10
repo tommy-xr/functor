@@ -5,7 +5,7 @@
 //! Phase 1 (this file): a complete, honest OpenXR shell that cross-compiles —
 //! android_main → EGL context → OpenXR instance/session → per-eye swapchains →
 //! frame loop rendering a `Frame` per eye with head-pose cameras. The scene is
-//! a placeholder until device bring-up wires the MLE producer + network
+//! a placeholder until device bring-up wires the Functor Lang producer + network
 //! reload (`POST /reload-source`) so games arrive over the network — the
 //! runtime APK ships once, games are text.
 //!
@@ -245,7 +245,7 @@ fn camera_from_view(view: &xr::View) -> Camera {
     }
 }
 
-/// Placeholder frame until the MLE producer is wired (device bring-up): an
+/// Placeholder frame until the Functor Lang producer is wired (device bring-up): an
 /// empty scene under a shadow-casting directional light, so `render_frame`
 /// runs the full shadow + forward pipeline every frame — the point of phase 1
 /// is proving the shared renderer's whole GLES path, not just a clear.
@@ -463,7 +463,7 @@ pub fn android_main(app: AndroidApp) {
             )
             .expect("locate views");
 
-        // Frame time from wall clock for now; the MLE producer step will own
+        // Frame time from wall clock for now; the Functor Lang producer step will own
         // this the way the desktop loop does.
         let tts = start.elapsed().as_secs_f32();
         let frame_time = FrameTime {
@@ -472,7 +472,7 @@ pub fn android_main(app: AndroidApp) {
         };
         last_tts = Some(tts);
 
-        // TODO(device bring-up): MLE producer + debug server here — the game
+        // TODO(device bring-up): Functor Lang producer + debug server here — the game
         // produces this frame; today it's the placeholder scene.
         let frame = placeholder_frame();
 

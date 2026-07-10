@@ -3,14 +3,14 @@
 The Quest (Meta Horizon OS) runtime shell: an OpenXR + EGL/GLES Android
 `cdylib` that renders through the same `functor_runtime_common::render_frame`
 path as the desktop and web shells. Like `functor-runner` on desktop, this is
-a **tool APK, built once** — games are not baked in; they arrive as MLE source
+a **tool APK, built once** — games are not baked in; they arrive as Functor Lang source
 over the network (the `POST /reload-source` remote-develop loop).
 
 ## Status
 
 Phase 1: the OpenXR shell cross-compiles (instance/session/swapchains/frame
 loop, per-eye rendering with head-pose cameras, placeholder scene). Device
-bring-up (MLE producer, network reload, controller input, asymmetric-frustum
+bring-up (Functor Lang producer, network reload, controller input, asymmetric-frustum
 projection) happens against real hardware.
 
 ## Prerequisites

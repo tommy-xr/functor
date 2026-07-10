@@ -47,12 +47,12 @@ pub enum RuntimeEvent {
         path: Option<String>,
         message: String,
     },
-    /// An MLE `Debug.log(value, label)` trace — the already-formatted
+    /// An Functor Lang `Debug.log(value, label)` trace — the already-formatted
     /// `"label: value"` line. Unlike the `-v`-gated `log` facade, this is
     /// EXPLICIT user intent, so the shell shows it by default (the CLI maps it
     /// to an always-visible `Event::Log`; see `docs/cli-output.md`). Fired only
     /// where a game places a `Debug.log`; a default game emits none.
-    MleTrace { message: String },
+    FunctorLangTrace { message: String },
 }
 
 type Sink = Box<dyn Fn(RuntimeEvent) + Send + Sync>;

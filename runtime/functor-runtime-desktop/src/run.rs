@@ -20,7 +20,7 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
-use crate::{audio, debug_server, mle_game, net_dispatch, replay_game, ws_host, xreal};
+use crate::{audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal};
 
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
@@ -178,20 +178,20 @@ pub struct Args {
     #[arg(short, long)]
     game_path: String,
 
-    /// Treat --game-path as an `.mle` source file and run it through the MLE
-    /// interpreter with the Functor prelude (docs/mle.md Track C2). This is the
+    /// Treat --game-path as an `.fun` source file and run it through the Functor Lang
+    /// interpreter with the Functor prelude (docs/functor-lang.md Track C2). This is the
     /// only game producer; the flag is retained because the CLI/SDK pass it.
     /// Prints per-frame eval cost every 300 frames.
     #[arg(long)]
-    mle: bool,
+    functor_lang: bool,
 
     /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
     /// or a JSON array of them — the exact format `GET /scene` emits) and replay
     /// it instead of loading a game dylib. A proof producer for the
-    /// producer-agnostic seam (docs/mle.md Track A3). Each producer mode
+    /// producer-agnostic seam (docs/functor-lang.md Track A3). Each producer mode
     /// reinterprets --game-path, so combining them is an error, not a silent
     /// precedence pick.
-    #[arg(long, conflicts_with_all = ["mle"])]
+    #[arg(long, conflicts_with_all = ["functor_lang"])]
     replay: bool,
 
     /// Run without a GL window: drive the game loop + debug server headlessly
@@ -251,7 +251,7 @@ pub struct Args {
 
     /// Start an HTTP control server on <--debug-bind>:<PORT> exposing
     /// POST /capture (image/png of the next frame), GET /state (runtime JSON),
-    /// and POST /reload-source (network hot-reload for MLE games).
+    /// and POST /reload-source (network hot-reload for Functor Lang games).
     /// Omit to disable the server entirely.
     #[arg(long)]
     debug_port: Option<u16>,
@@ -677,14 +677,14 @@ pub fn run(args: Args) {
 
     let mut game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
-    } else if args.mle {
-        Box::new(mle_game::MleGame::create(game_path.as_str()))
+    } else if args.functor_lang {
+        Box::new(functor_lang_game::FunctorLangGame::create(game_path.as_str()))
     } else {
-        // MLE is the only game producer now (the F#/dylib path was removed in
-        // E3). The CLI and SDK always pass --mle; a bare invocation has no
+        // Functor Lang is the only game producer now (the F#/dylib path was removed in
+        // E3). The CLI and SDK always pass --functor-lang; a bare invocation has no
         // producer to load.
         eprintln!(
-            "error: no game producer selected — pass --mle --game-path <file.mle> \
+            "error: no game producer selected — pass --functor-lang --game-path <file.fun> \
 (the F#/dylib producer was removed in E3)"
         );
         std::process::exit(1);

@@ -6,9 +6,9 @@ import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 
 // End-to-end network simulation: one mpserver + two mpclient runners,
 // each its own process on its own debug port, networked over a real WebSocket.
-// These are the MLE ports of examples/mpserver + examples/mpclient — same wire
+// These are the Functor Lang ports of examples/mpserver + examples/mpclient — same wire
 // protocol and same auto-move-on-connect, so convergence is identical. The
-// `.mle` ships as text (no dylib build), so this only needs the runner binary
+// `.fun` ships as text (no dylib build), so this only needs the runner binary
 // and a display:
 //
 //   cargo build --bin functor
@@ -16,8 +16,8 @@ import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
-// The example models are exposed only as MLE Debug text (the game model isn't
-// Serialize yet), so these read the `model` string. An MLE record renders as
+// The example models are exposed only as Functor Lang Debug text (the game model isn't
+// Serialize yet), so these read the `model` string. An Functor Lang record renders as
 // `{ field: value, ... }` and a list as `[elem, ...]` — no Fable linked list.
 //
 // The server model is `{ players: [<Player>, ...], nextPid: N }`; each Player
@@ -50,7 +50,7 @@ test(
       return FunctorRunner.launch({
         gameDir,
         repoRoot,
-        mlePath: join(gameDir, "game.mle"),
+        functorLangPath: join(gameDir, "game.fun"),
         port,
         launchTimeoutMs: 30_000,
         headless,

@@ -1,0 +1,8 @@
+// texture.funi — the `Texture` host module (interface only; implemented in Rust
+// by FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+
+// The opaque texture handle (`Texture.t` from game code).
+type t
+
+// An image texture by file path (relative to the game dir).
+let file : (string) => t

@@ -1,6 +1,6 @@
 # Physics design
 
-Status: **the core roadmap is shipped** (Phases 1a–6, on the MLE surface). This
+Status: **the core roadmap is shipped** (Phases 1a–6, on the Functor Lang surface). This
 is the design doc *and* the record of what landed; it builds on the same seams
 as `docs/multiplayer.md` (effect queue, subs, the `functor-netsim` deterministic
 harness) and supersedes the `Physics` stub in `docs/todo.md`.
@@ -9,7 +9,7 @@ harness) and supersedes the `Physics` stub in `docs/todo.md`.
 
 Rigid-body physics is live in `runtime/functor-runtime-common/src/physics/`
 (pure Rust: `scene`/`world`/`timeline`/`driver`/`registry`), driven from the
-**MLE** game surface (`mle_prelude.rs` `Physics.*`; the `mle-language` skill is
+**Functor Lang** game surface (`functor_lang_prelude.rs` `Physics.*`; the `functor-lang` skill is
 the vocabulary reference). Every phase below is annotated **Shipped** in the
 roadmap table; the highlights:
 
@@ -17,7 +17,7 @@ roadmap table; the highlights:
   divergence rule), **live reads** (`Physics.position`/`transformed`),
   **commands** (impulse/force/velocity/teleport), **raycast queries**,
   **collision events** (`Physics.events`), and **pause/rewind/replay**
-  (`Physics.pause`/`resume`/`stepOnce`/`rewindTo`) — all on the MLE prelude,
+  (`Physics.pause`/`resume`/`stepOnce`/`rewindTo`) — all on the Functor Lang prelude,
   native + wasm.
 - **Determinism goldens**, the `Simulatable`/`Timeline` rewind seam, and a
   `--debug-render physics` collider-wireframe overlay (native).
@@ -28,12 +28,12 @@ roadmap table; the highlights:
 networked physics (7a/7b — the `mpserver`/`mpclient` demo), and cross-target
 determinism (8, likely unneeded). See the roadmap table.
 
-**Design-doc note:** the surface shipped on **MLE**, so the F#-shaped API
+**Design-doc note:** the surface shipped on **Functor Lang**, so the F#-shaped API
 sketches below (`physicsScape`, `DrawContext`/`Physics.View`, the token-keyed
 query registry) are the **retained reference design**, not what runs — the
-`## Surface: MLE-first` section explains the pivot. Types and semantics map
+`## Surface: Functor Lang-first` section explains the pivot. Types and semantics map
 one-for-one to the Rust engine; an F# surface would just need the boundary
-plumbing MLE's in-process interpreter made unnecessary.
+plumbing Functor Lang's in-process interpreter made unnecessary.
 
 ## Goal
 
@@ -64,7 +64,7 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
 ## Design constraints (from the architecture)
 
 - **Physics-as-shell, model-as-truth.** A Rapier world is a large mutable bag of
-  solver state; it is *not* stored in the MLE model. It lives runtime-side in
+  solver state; it is *not* stored in the Functor Lang model. It lives runtime-side in
   `functor-runtime-common` as a cache/accelerator — exactly like the renderer and
   the audio voice registry. The model holds plain, serializable data; the live
   world is reconstructible from a snapshot or an input replay.
@@ -73,9 +73,9 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
   (impulse/force/teleport — plain data) and *queries* (raycast/shapecast, which
   carry a `tagger`) are effects, not persisted state. *(This bullet describes
   the F# design where the tagger would ride a thread-local, dylib-bound token
-  registry like HTTP. What shipped is simpler: MLE runs in-process, so a query
+  registry like HTTP. What shipped is simpler: Functor Lang runs in-process, so a query
   defers within the frame and its tagger is applied post-step directly — no
-  token registry, no cross-reload dangling. See `## Surface: MLE-first`.)*
+  token registry, no cross-reload dangling. See `## Surface: Functor Lang-first`.)*
 - **Subs are recomputed each frame and not persisted.** Collision/contact events
   and the per-frame step read-back are delivered as `Sub`s, matched across
   recomputations by their decoder identity.
@@ -114,15 +114,15 @@ Like rendering and audio, physics must be **drivable and observable headlessly**
 - **The `Simulatable` / `Timeline` seam** keeps the rewind strategy swappable and
   is the same machinery client prediction uses.
 
-## Surface: MLE-first
+## Surface: Functor Lang-first
 
-**The game-facing surface lands in MLE, not F#** (decided 2026-07-03; see
-`docs/mle.md` — MLE is now Functor's only game-logic layer). The design below is unchanged — declarative scene, divergence rule,
-commands, subs — but the shipping vocabulary is the MLE prelude
-(`functor_runtime_common::mle_prelude`, documented in the `mle-language`
+**The game-facing surface lands in Functor Lang, not F#** (decided 2026-07-03; see
+`docs/functor-lang.md` — Functor Lang is now Functor's only game-logic layer). The design below is unchanged — declarative scene, divergence rule,
+commands, subs — but the shipping vocabulary is the Functor Lang prelude
+(`functor_runtime_common::functor_lang_prelude`, documented in the `functor-lang`
 skill):
 
-```mle
+```functor
 let physics = (model) =>                       // OPTIONAL game hook
   Physics.scene(0.0, -9.81, 0.0, [
     Physics.fixed("ground", Physics.box(20.0, 0.2, 20.0)),
@@ -134,7 +134,7 @@ let draw = (model, tts) =>
     Scene.cube() |> Scene.lit(0.8, 0.5, 0.2) |> Physics.transformed("crate"))
 ```
 
-MLE dissolves the read-back boundary problem outright: the interpreter runs in
+Functor Lang dissolves the read-back boundary problem outright: the interpreter runs in
 the **shell's own process**, sharing the crate statics that hold the physics
 world — so `Physics.position(tag)` / `Physics.transformed(scene, tag)` are
 direct reads of the live stepped world (frame order: `tick` → `physics`
@@ -147,7 +147,7 @@ plumbing and is deferred indefinitely.
 
 Read semantics worth knowing: physics reads of a missing tag are **loud
 spanned errors** — games read only tags their `physics` hook declares. (An
-Option-shaped variant return is possible now that MLE has `match`; loud
+Option-shaped variant return is possible now that Functor Lang has `match`; loud
 remains the default because a missing declared body is a bug, not a case.)
 
 Capture gotcha: `--fixed-time` pins the clock with `dts = 0`, so physics never
@@ -196,7 +196,7 @@ module PhysicsScene =
     let empty  () : PhysicsScene
 ```
 
-**Commands — plain-data effects.** *Shipped (Phase 3) on the MLE surface as B6
+**Commands — plain-data effects.** *Shipped (Phase 3) on the Functor Lang surface as B6
 effect variants* — `Physics.applyImpulse("tag", x, y, z)` etc., returned beside
 the model; tagger-less (outcomes are observed via the physics reads). Commands
 queue at perform time and apply **after the frame's reconcile, before its first
@@ -213,7 +213,7 @@ module Physics =
     let teleport     (tag: string) (pos: Vector3)     : effect<'msg>
 ```
 
-**Queries — tagger effects.** *Shipped (Phase 4) on the MLE surface*:
+**Queries — tagger effects.** *Shipped (Phase 4) on the Functor Lang surface*:
 `Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)` — the tagger
 receives `{hit: Bool, x, y, z, nx, ny, nz, distance, tag}`. Queries are
 **deferred**: held through the frame's pre-step effect drains and performed
@@ -404,7 +404,7 @@ are just the two common collections; a model can carry as many as its netcode ne
   **reconcile bail-out + tag interning** (steady-state diff is near-free), and the
   **`Physics.events` sub** (despawn-on-collision).
 - **`Entities` is a recommended pattern, not a mandate.** It would ship as a
-  default MLE module, but a game can swap in its own entity model
+  default Functor Lang module, but a game can swap in its own entity model
   (ECS-ish, hierarchical) on the same primitives — Functor doesn't impose one.
 
 ## Determinism
@@ -680,14 +680,14 @@ It's worth building in two steps, because they exercise different machinery:
 | --- | --- | --- |
 | **1a. World spine** | Rapier dep (`serde-serialize`, default features), `physics` module (`PhysicsScene`/`Body`/`reconcile`/`WorldId` registry), fixed-step accumulator, snapshot + text/JSON dump. Determinism + restore-replay goldens. No game surface. **Shipped.** | native+wasm (Rust) |
 | **1b. Timeline seam** | `Simulatable` + `Timeline` traits, `TimelineLog` with the three cadences (`keyframes(n)` default / `snapshot_ring` / `replay_only`), strategy-equivalence + replay goldens. **Shipped.** | native+wasm (Rust) |
-| **2. MLE surface + read-back** | `Physics.*` prelude (shape/body/scene builders, `position`/`transformed` live reads), optional `physics` hook in the MLE driver (tick → reconcile+fixed-step → draw), prelude tests. **Shipped (MLE).** | native+wasm (MLE) |
-| **2c. `examples/physics`** | Crates settling on a ground slab, hot-reload demo, PR GIF/PNG. **Shipped (MLE).** | native (MLE) |
+| **2. Functor Lang surface + read-back** | `Physics.*` prelude (shape/body/scene builders, `position`/`transformed` live reads), optional `physics` hook in the Functor Lang driver (tick → reconcile+fixed-step → draw), prelude tests. **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
+| **2c. `examples/physics`** | Crates settling on a ground slab, hot-reload demo, PR GIF/PNG. **Shipped (Functor Lang).** | native (Functor Lang) |
 | **2b. Debug visualization** | Rapier `debug-render` feature, `World::debug_lines()`, depth-tested line pass, `--debug-render physics` mode. **Shipped.** | native |
-| **3. Commands** | `Physics.applyImpulse`/`applyForce`/`setVelocity`/`teleport` as B6 effect variants: queued at perform time, applied after the frame's reconcile before its first substep; forces last one stepped frame; recorded as `timeline::Command::Apply` in the goldens. **Shipped (MLE).** | native+wasm (MLE) |
-| **4. Queries** | `Physics.raycast` as a deferred tagger effect over the B6.5 structured-payload broker (`EffectValue`); performed post-step for same-frame freshness; fake/replay runners can raycasts. `shapeCast` deferred until a game needs it. **Shipped (MLE).** | native+wasm (MLE) |
-| **5. Collision events** | `Physics.events(tagger)` sub: contact begin/end as `{started, a, b, sensor}` records, collected per fixed substep (rapier `ActiveEvents::COLLISION_EVENTS` on every collider), delivered post-step through `update`; `Simulatable::step` now returns the frame's events (the doc's original seam). **Shipped (MLE).** | native+wasm (MLE) |
+| **3. Commands** | `Physics.applyImpulse`/`applyForce`/`setVelocity`/`teleport` as B6 effect variants: queued at perform time, applied after the frame's reconcile before its first substep; forces last one stepped frame; recorded as `timeline::Command::Apply` in the goldens. **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
+| **4. Queries** | `Physics.raycast` as a deferred tagger effect over the B6.5 structured-payload broker (`EffectValue`); performed post-step for same-frame freshness; fake/replay runners can raycasts. `shapeCast` deferred until a game needs it. **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
+| **5. Collision events** | `Physics.events(tagger)` sub: contact begin/end as `{started, a, b, sensor}` records, collected per fixed substep (rapier `ActiveEvents::COLLISION_EVENTS` on every collider), delivered post-step through `update`; `Simulatable::step` now returns the frame's events (the doc's original seam). **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
 | **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `physics` grows a bullet/debris archetype. | both |
-| **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: `Physics.pause`/`resume`/`stepOnce`/`rewindTo` control effects, `timelineFrame` read, per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history, read-only status overlay + keyboard scrub in `physics`. **Shipped (MLE).** | native+wasm (MLE) |
+| **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: `Physics.pause`/`resume`/`stepOnce`/`rewindTo` control effects, `timelineFrame` read, per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history, read-only status overlay + keyboard scrub in `physics`. **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
 | **7a. Networked physics (state-sync)** | `Authority`, `mpserver`/`mpclient` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
 | **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
 

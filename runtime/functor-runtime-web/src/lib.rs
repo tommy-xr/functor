@@ -24,7 +24,7 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 use wasm_bindgen::prelude::*;
 
-mod mle_game;
+mod functor_lang_game;
 
 fn window() -> web_sys::Window {
     web_sys::window().expect("no global `window` exists")
@@ -42,18 +42,18 @@ white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)";
 /// React's hot-reload error screen, so a failed load or a broken edit shows the
 /// message instead of a blank canvas (the desktop runner prints to stderr; the
 /// browser has no console the user is watching). Idempotent: reuses one
-/// `#mle-error` element. Best-effort — a missing document just no-ops.
+/// `#functor-lang-error` element. Best-effort — a missing document just no-ops.
 fn show_error_overlay(message: &str) {
     let Some(doc) = window().document() else {
         return;
     };
-    let el = match doc.get_element_by_id("mle-error") {
+    let el = match doc.get_element_by_id("functor-lang-error") {
         Some(el) => el,
         None => {
             let Ok(el) = doc.create_element("div") else {
                 return;
             };
-            el.set_id("mle-error");
+            el.set_id("functor-lang-error");
             if let Some(body) = doc.body() {
                 let _ = body.append_child(&el);
             }
@@ -61,14 +61,14 @@ fn show_error_overlay(message: &str) {
         }
     };
     let _ = el.set_attribute("style", ERROR_OVERLAY_STYLE);
-    el.set_text_content(Some(&format!("⛔ MLE error\n\n{message}")));
+    el.set_text_content(Some(&format!("⛔ Functor Lang error\n\n{message}")));
 }
 
 /// Hide the error overlay if present — called after a successful (re)load so a
 /// fixed edit clears the panel.
 fn hide_error_overlay() {
     if let Some(doc) = window().document() {
-        if let Some(el) = doc.get_element_by_id("mle-error") {
+        if let Some(el) = doc.get_element_by_id("functor-lang-error") {
             let _ = el.set_attribute("style", "display:none");
         }
     }
@@ -120,44 +120,44 @@ fn fixed_time_from_url() -> Option<f32> {
     None
 }
 
-/// The wasm counterpart of the desktop `--mle --game-path` flags: the page
-/// sets `window.__mleGamePath` to the entry file before initializing this
-/// module (the CLI's MLE index page substitutes the project's `functor.json`
-/// entry — see `index-mle.html` / the CLI's `wasm_dev_server.rs`), and the
+/// The wasm counterpart of the desktop `--functor-lang --game-path` flags: the page
+/// sets `window.__functorLangGamePath` to the entry file before initializing this
+/// module (the CLI's Functor Lang index page substitutes the project's `functor.json`
+/// entry — see `index-functor-lang.html` / the CLI's `wasm_dev_server.rs`), and the
 /// runtime fetches + interprets that source. Absent (the entry was not set)
 /// this returns `None` and `run_async` fails loud.
-fn mle_game_path() -> Option<String> {
-    js_sys::Reflect::get(&window(), &JsValue::from_str("__mleGamePath"))
+fn functor_lang_game_path() -> Option<String> {
+    js_sys::Reflect::get(&window(), &JsValue::from_str("__functorLangGamePath"))
         .ok()
         .and_then(|v| v.as_string())
 }
 
-/// The project's full file list (entry FIRST, then siblings), as the CLI's MLE
-/// index page injects it (`window.__mleProjectFiles`, mirroring `__mleGamePath`
+/// The project's full file list (entry FIRST, then siblings), as the CLI's Functor Lang
+/// index page injects it (`window.__functorLangProjectFiles`, mirroring `__functorLangGamePath`
 /// — see `wasm_dev_server.rs`). Absent (a page that only set the single entry,
 /// e.g. the site sandbox) → `None`, and the caller falls back to the entry
 /// alone.
-fn mle_project_files() -> Option<Vec<String>> {
+fn functor_lang_project_files() -> Option<Vec<String>> {
     use wasm_bindgen::JsCast;
-    let value = js_sys::Reflect::get(&window(), &JsValue::from_str("__mleProjectFiles")).ok()?;
+    let value = js_sys::Reflect::get(&window(), &JsValue::from_str("__functorLangProjectFiles")).ok()?;
     let array = value.dyn_into::<js_sys::Array>().ok()?;
     let files: Vec<String> = array.iter().filter_map(|v| v.as_string()).collect();
     (!files.is_empty()).then_some(files)
 }
 
-/// Fetch every project `.mle`/`.mlei` source (entry first, then siblings) and
+/// Fetch every project `.fun`/`.funi` source (entry first, then siblings) and
 /// build the interpreter producer. `file = module`, so a game split across
-/// `game.mle` + `pieces.mle` links exactly as it does natively. Failures are
+/// `game.fun` + `pieces.fun` links exactly as it does natively. Failures are
 /// rendered strings (fetch status, parse/load position, contract violation) for
 /// `run_async` to fail loud with.
-async fn create_mle_game(entry: &str) -> Result<mle_game::MleWebGame, String> {
+async fn create_functor_lang_game(entry: &str) -> Result<functor_lang_game::FunctorLangWebGame, String> {
     // The CLI injects the whole project file list; a page that set only the
     // entry (or none) falls back to loading the entry alone.
-    let paths = mle_project_files().unwrap_or_else(|| vec![entry.to_string()]);
+    let paths = functor_lang_project_files().unwrap_or_else(|| vec![entry.to_string()]);
     let mut sources: Vec<(String, String)> = Vec::with_capacity(paths.len());
     for path in &paths {
         // `no_store`: never serve project source from the browser cache — the
-        // dev server reuses `/game.mle` across samples, so a cached response
+        // dev server reuses `/game.fun` across samples, so a cached response
         // would keep showing the previous game after switching projects.
         let (status, src) = perform_fetch(HttpMethod::Get, path, &[], &[], true)
             .await
@@ -167,12 +167,12 @@ async fn create_mle_game(entry: &str) -> Result<mle_game::MleWebGame, String> {
         }
         sources.push((path.clone(), src));
     }
-    mle_game::MleWebGame::create(sources)
+    functor_lang_game::FunctorLangWebGame::create(sources)
 }
 
 thread_local! {
     /// The live producer, shared between the frame loop and the
-    /// `mle_set_source` export below (docs/mle.md D4). `None` until
+    /// `functor_lang_set_source` export below (docs/functor-lang.md D4). `None` until
     /// `run_async` has built it (still fetching, or the load failed).
     static GAME: RefCell<Option<Rc<RefCell<Box<dyn GameProducer>>>>> =
         const { RefCell::new(None) };
@@ -182,12 +182,12 @@ thread_local! {
 /// announcing readiness — a push before the producer exists would be
 /// dropped ("game is not running yet").
 #[wasm_bindgen]
-pub fn mle_is_running() -> bool {
+pub fn functor_lang_is_running() -> bool {
     GAME.with(|g| g.borrow().is_some())
 }
 
 thread_local! {
-    /// Source pushed via `mle_set_source`, waiting to be applied at a SAFE point
+    /// Source pushed via `functor_lang_set_source`, waiting to be applied at a SAFE point
     /// (the top of the frame loop, where the loop already holds the producer
     /// borrow). Deferring — rather than reloading straight from the message
     /// handler — is what keeps a push from ever colliding with the frame's
@@ -197,16 +197,16 @@ thread_local! {
     static PENDING_RELOAD: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// Post a `mle-set-source-result` back to the page (the reload's outcome). The
+/// Post a `functor-lang-set-source-result` back to the page (the reload's outcome). The
 /// pusher — the VSCode live preview, the site sandbox, a test harness — listens
 /// for this. Because the reload is applied asynchronously (next frame), the
-/// result is delivered here rather than returned from `mle_set_source`.
+/// result is delivered here rather than returned from `functor_lang_set_source`.
 fn post_reload_result(ok: bool, message: &str) {
     let obj = js_sys::Object::new();
     let set = |k: &str, v: &JsValue| {
         let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), v);
     };
-    set("type", &JsValue::from_str("mle-set-source-result"));
+    set("type", &JsValue::from_str("functor-lang-set-source-result"));
     set("ok", &JsValue::from_bool(ok));
     set("message", &JsValue::from_str(message));
     // Deliver to the PARENT — the push's original sender (the VSCode preview
@@ -231,21 +231,21 @@ fn apply_pending_reload(game: &mut dyn GameProducer) {
             post_reload_result(true, &status);
         }
         Err(message) => {
-            show_error_overlay(&format!("[mle] reload error: {message}"));
+            show_error_overlay(&format!("[functor-lang] reload error: {message}"));
             post_reload_result(false, &message);
         }
     }
 }
 
-/// Hot-swap the running game's logic from pushed `.mle` source — the wasm
-/// counterpart of the desktop runner's `POST /reload-source` (docs/mle.md D4).
+/// Hot-swap the running game's logic from pushed `.fun` source — the wasm
+/// counterpart of the desktop runner's `POST /reload-source` (docs/functor-lang.md D4).
 /// The source is QUEUED and applied at the top of the next frame (see
 /// [`apply_pending_reload`]); the outcome is delivered asynchronously as a
-/// `mle-set-source-result` message, not returned here. Model preserved
-/// (`mle::rebind_value`); a broken push keeps the old program running.
+/// `functor-lang-set-source-result` message, not returned here. Model preserved
+/// (`functor_lang::rebind_value`); a broken push keeps the old program running.
 #[wasm_bindgen]
-pub fn mle_set_source(source: String) {
-    if !mle_is_running() {
+pub fn functor_lang_set_source(source: String) {
+    if !functor_lang_is_running() {
         post_reload_result(false, "game is not running yet (still loading, or the load failed)");
         return;
     }
@@ -254,7 +254,7 @@ pub fn mle_set_source(source: String) {
 }
 
 /// Route a socket event to the LIVE producer via the shared `GAME` handle (the
-/// MLE page's `MleWebGame`) — the WebSocket twin of [`perform_and_push`]. Runs
+/// Functor Lang page's `FunctorLangWebGame`) — the WebSocket twin of [`perform_and_push`]. Runs
 /// in a socket-event microtask, never mid-frame, so the borrow can't collide
 /// with the frame loop.
 fn with_live_game(f: impl FnOnce(&mut dyn GameProducer)) {
@@ -313,9 +313,9 @@ async fn perform_and_push(cmd: NetCommand) {
     let token = token as i32;
     let result = perform_fetch(method, &url, &headers, &body, false).await;
     // Route the completion to the LIVE producer via the shared GAME handle —
-    // the MLE page's MleWebGame, which folds the response through `update`.
+    // the Functor Lang page's FunctorLangWebGame, which folds the response through `update`.
     // This runs as a fetch microtask, never mid-frame, so the borrow can't
-    // collide with the frame loop (as with `mle_set_source`).
+    // collide with the frame loop (as with `functor_lang_set_source`).
     let Some(game) = GAME.with(|g| g.borrow().clone()) else {
         return;
     };
@@ -801,7 +801,7 @@ fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>
 fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     // Idempotent by key (matches the native host); a re-declared connection
     // reattaches rather than opening a second socket. Event callbacks push into
-    // the live producer (the MLE page's MleWebGame) via `with_live_game`.
+    // the live producer (the Functor Lang page's FunctorLangWebGame) via `with_live_game`.
     if state.borrow().by_key.contains_key(&key) {
         return;
     }
@@ -882,26 +882,26 @@ impl AssetLoader for WasmAssetLoader {
 }
 
 async fn run_async() -> Result<(), JsValue> {
-    // The page's MLE entry (docs/mle.md Track C5) runs through the in-runtime
+    // The page's Functor Lang entry (docs/functor-lang.md Track C5) runs through the in-runtime
     // interpreter — the sole producer since the F#/wasm-bindgen bridge was
     // removed in E3. Async pushes (fetch results, WebSocket events) reach it
     // through the shared `GAME` handle (`perform_and_push` / `with_live_game`).
-    let Some(path) = mle_game_path() else {
-        let rendered = "[mle] error: no game entry — window.__mleGamePath is not set".to_string();
+    let Some(path) = functor_lang_game_path() else {
+        let rendered = "[functor-lang] error: no game entry — window.__functorLangGamePath is not set".to_string();
         web_sys::console::error_1(&rendered.as_str().into());
         show_error_overlay(&rendered);
         return Err(JsValue::from_str(&rendered));
     };
-    let game: Box<dyn GameProducer> = match create_mle_game(&path).await {
+    let game: Box<dyn GameProducer> = match create_functor_lang_game(&path).await {
         Ok(game) => Box::new(game),
         Err(message) => {
-            let rendered = format!("[mle] error: {message}");
+            let rendered = format!("[functor-lang] error: {message}");
             web_sys::console::error_1(&rendered.as_str().into());
             show_error_overlay(&rendered);
             return Err(JsValue::from_str(&rendered));
         }
     };
-    // Share the producer with the `mle_set_source` export (docs/mle.md D4):
+    // Share the producer with the `functor_lang_set_source` export (docs/functor-lang.md D4):
     // the frame loop below and the editor push path borrow the same instance.
     let game = Rc::new(RefCell::new(game));
     GAME.with(|g| *g.borrow_mut() = Some(game.clone()));
@@ -1039,9 +1039,9 @@ async fn run_async() -> Result<(), JsValue> {
         let mut sized = false;
 
         // Time-travel clock control (docs/time-travel.md T3). The scrubber UI is
-        // NATIVE DOM on web (index-mle.html) — outside the canvas, so no
-        // pointer-lock clash — driving the runtime through the `mle_scrub_*`
-        // exports (in mle_game.rs). This loop OWNS the shared game clock: `tts`
+        // NATIVE DOM on web (index-functor-lang.html) — outside the canvas, so no
+        // pointer-lock clash — driving the runtime through the `functor_lang_scrub_*`
+        // exports (in functor_lang_game.rs). This loop OWNS the shared game clock: `tts`
         // accumulates the real frame delta while live, freezes on pause (so a
         // scrubbed frame stays put and resume doesn't jump), and rebases on a
         // branch. `?fixed-time` seeds an unconditional pin for deterministic
@@ -1060,15 +1060,15 @@ async fn run_async() -> Result<(), JsValue> {
             let mut game = game.borrow_mut();
             let now = performance.now() as f32;
 
-            // Apply a pushed source (`mle_set_source`) here, at a safe point that
+            // Apply a pushed source (`functor_lang_set_source`) here, at a safe point that
             // already holds the borrow — so a push never collides with a frame.
             apply_pending_reload(&mut **game);
 
             // Apply scrubber controls from the DOM (pause / step / seek), which
             // drive the shared game clock BEFORE this frame's time is computed.
-            for control in mle_game::take_scrub_controls() {
+            for control in functor_lang_game::take_scrub_controls() {
                 match control {
-                    mle_game::ScrubControl::TogglePause => {
+                    functor_lang_game::ScrubControl::TogglePause => {
                         // Resuming: rebase to the scene's current time so play
                         // continues from there, not wall-clock. When scrubbed this
                         // is the scrubbed frame's recorded `tts`; on a plain
@@ -1081,8 +1081,8 @@ async fn run_async() -> Result<(), JsValue> {
                         }
                         clock.toggle_pause();
                     }
-                    mle_game::ScrubControl::Step => clock.step(1.0 / 60.0),
-                    mle_game::ScrubControl::SetGhost {
+                    functor_lang_game::ScrubControl::Step => clock.step(1.0 / 60.0),
+                    functor_lang_game::ScrubControl::SetGhost {
                         on,
                         divisions,
                         window,
@@ -1091,7 +1091,7 @@ async fn run_async() -> Result<(), JsValue> {
                         ghost_divisions = divisions;
                         ghost_window = window;
                     }
-                    mle_game::ScrubControl::SeekTo(f) => {
+                    functor_lang_game::ScrubControl::SeekTo(f) => {
                         let _ = game.seek_scene_to(f);
                         // Park on the scrubbed frame and keep the clock aligned to
                         // its time, so resuming continues from there.
@@ -1118,12 +1118,12 @@ async fn run_async() -> Result<(), JsValue> {
                 tts: clock.current_tts(),
             };
 
-            // Deliver page input queued since the last frame (the MLE path's
-            // `mle_*` exports), once per rendered frame before this frame's steps.
+            // Deliver page input queued since the last frame (the Functor Lang path's
+            // `functor_lang_*` exports), once per rendered frame before this frame's steps.
             // While paused, drain-and-discard: no input may reach the model on a
             // paused frame (the input log would otherwise diverge replay), and
             // draining stops the queue bursting on resume.
-            mle_game::drain_input(&mut **game, !clock.is_paused());
+            functor_lang_game::drain_input(&mut **game, !clock.is_paused());
 
             for sub in &sub_frames {
                 game.tick(sub.clone());
@@ -1226,8 +1226,8 @@ async fn run_async() -> Result<(), JsValue> {
             text_overlay.draw_view(canvas.width(), canvas.height(), dpr, &view);
 
             // Publish the scrubber state for the DOM slider to poll (the UI
-            // itself is native HTML in index-mle.html, outside the canvas).
-            mle_game::publish_scrub_view(
+            // itself is native HTML in index-functor-lang.html, outside the canvas).
+            functor_lang_game::publish_scrub_view(
                 game.current_scene_frame(),
                 game.scene_frame_range(),
                 clock.is_paused(),

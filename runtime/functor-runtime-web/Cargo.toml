@@ -9,8 +9,8 @@ crate-type = ["cdylib"]
 [dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
 functor-prelude = { path = "../../functor-prelude" }
-# The MLE language, for the in-runtime interpreter producer (docs/mle.md C5).
-mle = { path = "../../mle" }
+# The Functor Lang language, for the in-runtime interpreter producer (docs/functor-lang.md C5).
+functor-lang = { path = "../../functor-lang" }
 glow = "0.17"
 cgmath = "0.18.0"
 js-sys = "0.3.69"

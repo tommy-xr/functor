@@ -1,0 +1,21 @@
+// pieces.fun — the scene-piece builders for hello-cubes, split into a sibling
+// module (`file = module`, so this file IS module `Pieces`). `game.fun`
+// references these across the file boundary as `Pieces.count`,
+// `Pieces.ringCube`, `Pieces.centerpiece` — a small multi-file Functor Lang example.
+
+let count = 12.0
+let tau = 6.2831853
+
+// One gradient cube on the ring at index `i`, given the current `spin`.
+let ringCube = (spin: float, i: float) =>
+  Scene.cube()
+    |> Scene.color(0.25 + 0.75 * (i / count), 0.35, 0.95 - 0.65 * (i / count))
+    |> Scene.rotateY(Angle.radians(i * 0.7 + spin * 2.0))
+    |> Scene.translate(4.0, Math.sin(i + spin * 3.0) * 0.6, 0.0)
+    |> Scene.rotateY(Angle.radians(i * tau / count + spin))
+
+// The pulsing sphere at the center of the ring.
+let centerpiece = (spin: float, beat: float) =>
+  Scene.sphere()
+    |> Scene.color(1.0, 0.5 + 0.5 * Math.cos(beat * 2.1), 0.5 + 0.5 * Math.sin(beat * 1.3))
+    |> Scene.scale(1.1 + 0.25 * Math.sin(spin * 4.0))

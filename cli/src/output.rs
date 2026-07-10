@@ -15,7 +15,7 @@ use serde::Serialize;
 
 mod live;
 
-/// Diagnostic severity (an MLE check error is `Error`; `Warning` is reserved
+/// Diagnostic severity (a Functor Lang check error is `Error`; `Warning` is reserved
 /// for the runtime's permissive dev-loop diagnostics routed later).
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,7 +29,7 @@ pub enum Severity {
 /// The level of a free-form [`Event::Log`] line. `Debug`/`Info`/`Warn`/`Error`
 /// mirror the `log` crate's levels (its `Trace` folds into `Debug`) and are
 /// gated by verbosity (`-v`); `Trace` is a distinct, always-visible tier used
-/// only for explicit MLE `Debug.log` traces (which are user intent, so they
+/// only for explicit Functor Lang `Debug.log` traces (which are user intent, so they
 /// show by default — see `docs/cli-output.md`). Serialized snake_case.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,8 +72,8 @@ pub enum Event {
     /// A command ended (also the exit-code carrier for machine consumers).
     CommandFinished { ok: bool, duration_ms: u64 },
     /// A `build` typecheck passed (`entry` plus `sibling_count` sibling modules).
-    MleLoaded { entry: String, sibling_count: usize },
-    /// An MLE check / load error, positioned in its file. `source_line` is the
+    FunctorLangLoaded { entry: String, sibling_count: usize },
+    /// An Functor Lang check / load error, positioned in its file. `source_line` is the
     /// raw offending line (no caret baked in) so the human renderer can draw a
     /// rustc-style caret under `col`; machine consumers get the same structured
     /// fields and can render their own. Omitted from JSON when absent.
@@ -159,10 +159,10 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
             R::CaptureWritten { path } => Event::CaptureWritten { path },
             R::HotReload { ok, message } => Event::HotReload { ok, message },
             R::AssetError { path, message } => Event::AssetError { path, message },
-            // An MLE `Debug.log` trace: explicit user intent, so it's an
+            // An Functor Lang `Debug.log` trace: explicit user intent, so it's an
             // always-visible `Trace`-level log (not `-v`-gated like the `log`
             // facade). The message is already `"label: value"`.
-            R::MleTrace { message } => Event::Log {
+            R::FunctorLangTrace { message } => Event::Log {
                 level: LogLevel::Trace,
                 message,
             },
@@ -252,7 +252,7 @@ impl PlainRenderer {
                     vec![format!("{} failed {}", g_fail().red(), dur)]
                 }
             }
-            Event::MleLoaded {
+            Event::FunctorLangLoaded {
                 entry,
                 sibling_count,
             } => {
@@ -469,12 +469,12 @@ static RENDERER: OnceLock<Box<dyn Renderer>> = OnceLock::new();
 static LIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Whether a log record belongs to Functor's own crates (its `target` defaults
-/// to the module path, so `functor_runtime_common::…`, `functor_cli`, `mle::…`).
+/// to the module path, so `functor_runtime_common::…`, `functor_cli`, `functor_lang::…`).
 /// We scope to these so `-v` means "Functor's debug logs" — not the debug/trace
 /// firehose of transitive deps (notify/mio/tokio/hyper/glow/egui/gltf all use
 /// `log`), and so a noisy dependency warning never lands in normal CLI output.
 fn is_functor_target(target: &str) -> bool {
-    target.starts_with("functor") || target == "mle" || target.starts_with("mle::")
+    target.starts_with("functor") || target == "functor-lang" || target.starts_with("functor_lang::")
 }
 
 /// A `log::Log` that funnels every Functor `log::{debug,info,warn,error}!` call

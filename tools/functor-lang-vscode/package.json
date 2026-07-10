@@ -1,0 +1,60 @@
+{
+  "name": "functor-lang-vscode",
+  "displayName": "Functor Lang",
+  "description": "Language support for Functor Lang (.fun and .funi): syntax highlighting and diagnostics via the functor-lang-lsp language server, plus a live game preview panel with model-preserving hot reload.",
+  "version": "0.1.0",
+  "publisher": "functor",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./client/extension.js",
+  "activationEvents": [
+    "onLanguage:functor-lang"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "functor-lang.openLivePreview",
+        "title": "Functor Lang: Open Live Preview"
+      }
+    ],
+    "configuration": {
+      "title": "Functor Lang",
+      "properties": {
+        "functor-lang.functorPath": {
+          "type": "string",
+          "default": "functor",
+          "description": "Path to the `functor` CLI binary the live preview uses to serve the game (resolved from PATH by default)."
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "functor-lang",
+        "aliases": [
+          "Functor Lang",
+          "functor-lang"
+        ],
+        "extensions": [
+          ".fun",
+          ".funi"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "functor-lang",
+        "scopeName": "source.functor",
+        "path": "./syntaxes/functor-lang.tmLanguage.json"
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

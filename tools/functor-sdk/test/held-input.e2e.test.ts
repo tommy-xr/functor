@@ -4,14 +4,14 @@ import { test } from "node:test";
 
 import { findRepoRoot, FunctorRunner } from "../src/index.js";
 
-// End-to-end against a real functor runtime, driving the MLE port of the `hello`
+// End-to-end against a real functor runtime, driving the Functor Lang port of the `hello`
 // game (examples/hello — the WASD/arrow free-look lineup). Requires the
 // runner binary built and a display to open the GL window, so it's opt-in:
 //
 //   npm run test:e2e        (or FUNCTOR_E2E=1 node --test dist/test/)
 //
-// No dylib build is needed — the `.mle` ships as text and the runner reads it
-// via --mle.
+// No dylib build is needed — the `.fun` ships as text and the runner reads it
+// via --functor-lang.
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 // Headless (no GL window) is the CI path; capture is unavailable there.
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
@@ -21,7 +21,7 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 /** Whether the hello model shows `held.up` set. This reads the (stringly-
  * typed) Debug model on purpose — as an independent check that the injected key
  * reaches the *game*, not just the runtime's own input snapshot (which is mutated
- * in the same handler as the game key event). The MLE model renders as a plain
+ * in the same handler as the game key event). The Functor Lang model renders as a plain
  * record (`{ held: { up: false, down: false, ... }, ... }`), so `up:` names the
  * held-up flag uniquely. */
 function gameSawUp(model: string): boolean {
@@ -41,7 +41,7 @@ test(
     await using game = await FunctorRunner.launch({
       gameDir,
       repoRoot,
-      mlePath: join(gameDir, "game.mle"),
+      functorLangPath: join(gameDir, "game.fun"),
       port: Number(process.env.FUNCTOR_E2E_PORT ?? 8090),
       headless,
     });

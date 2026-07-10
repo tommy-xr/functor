@@ -53,10 +53,10 @@ jobs:
 
       # Run the unit tests here (rather than a standalone job) to get coverage
       # across the whole OS matrix for free: this job already has the common
-      # runtime compiled. The mle suite runs on the default test-thread stack —
+      # runtime compiled. The functor-lang suite runs on the default test-thread stack —
       # that is deliberate: it guards the MAX_EVAL_DEPTH-fits-2-MiB budget (#221).
       - name: Run tests
-        run: cargo test -p functor_runtime_common -p mle
+        run: cargo test -p functor_runtime_common -p functor-lang
 
       # Building the web bundle is necessary for the CLI,
       # since the cli includes the web bundle for dev server

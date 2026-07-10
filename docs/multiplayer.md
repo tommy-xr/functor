@@ -21,7 +21,7 @@ not part of it.
 
 The MVU loop's hot-reload behavior shapes the API:
 
-- **The effect queue is not persisted across hot reload.** MLE reload preserves
+- **The effect queue is not persisted across hot reload.** Functor Lang reload preserves
   **only the model** (a plain value the host holds); the queue is reset to empty.
   An `Effect` may carry a closure — which is what lets HTTP use the Elm `expect`
   shape (the request carries a `tagger : Result -> Msg`).
@@ -42,11 +42,11 @@ Elm-style; persistent connections are a `Sub` (inbound/identity) + `Effect`
 ## Architecture
 
 ```
-        ┌──────────────────────── MLE functional core ───────────────────────┐
+        ┌──────────────────────── Functor Lang functional core ───────────────────────┐
         │  subscriptions: model -> Sub   (inbound + connection lifecycle)     │
         │  update/tick   -> effect       (outbound, PLAIN DATA only)          │
         └─────────────────────────────────┬───────────────────────────────────┘
-                                           │  (the MLE producer + prelude)
+                                           │  (the Functor Lang producer + prelude)
         ┌──────────────────────────────────▼──────────────── imperative shell ─┐
         │  ConnectionManager  — owns live connections, keyed by sub identity     │
         │  AsyncInbox         — thread-safe queue; drained ONCE per frame        │
@@ -69,13 +69,13 @@ Elm-style; persistent connections are a `Sub` (inbound/identity) + `Effect`
   each frame: open newly-declared connections, tear down removed ones, keyed by a
   stable identity (endpoint / user key), not the generic msg.
 
-## API (MLE)
+## API (Functor Lang)
 
 **HTTP — Elm `Http.get { expect = ... }` style (shipped).** A single `Effect`
 carries the tagger; the response comes back as a message through `update`. No
 subscription.
 
-```mle
+```functor
 Effect.httpGet(url, tagger)        // tagger: (HttpResponse) => Msg
 Effect.httpPost(url, body, tagger) // the response record is handed to the tagger
 ```
@@ -88,7 +88,7 @@ when the response lands, the broker applies the tagger and delivers the message.
 **Persistent connections — `Sub` (inbound/identity) + `Effect` (send)**
 (WebSockets shipped):
 
-```mle
+```functor
 // client: declares a desired connection; runtime keeps it open + reconnects
 Sub.connect(url, tagger)   // tagger: (Net.NetEvent) => Msg
 // server: accepts many; yields per-client events (native only for TCP/UDP/WS)
@@ -123,9 +123,9 @@ sim.kill(clientB); ...; sim.restart(clientB)
 assert_eq!(sim.state(clientA).entities, sim.state(server).entities)
 ```
 
-This shipped as the `functor-netsim` crate: many `mle::Session`-backed game
+This shipped as the `functor-netsim` crate: many `functor_lang::Session`-backed game
 instances share a `VirtualTransport` bus in one process, stepped in lockstep. (An
-`mle::Session` is a plain owned value, so hosting a server + many clients in one
+`functor_lang::Session` is a plain owned value, so hosting a server + many clients in one
 process is natural — there is no per-process global runner to work around.)
 
 **B. Multi-process integration harness.** Real `functor` game processes driven

@@ -1,8 +1,8 @@
-// Docs page enhancement: syntax-highlight the <pre class="mle"> blocks and
+// Docs page enhancement: syntax-highlight the <pre class="functor-lang"> blocks and
 // give the runnable ones (class "runnable") a "▶ try it" button that opens
 // the program in the sandbox via the #src= fragment (see sandbox.js).
 //
-// The tokenizer mirrors src/mle.js's CodeMirror StreamLanguage; it's a few
+// The tokenizer mirrors src/functor-lang.js's CodeMirror StreamLanguage; it's a few
 // regexes, so a static-HTML variant beats dragging CodeMirror onto the docs
 // page. Keep the two classifications in sync.
 
@@ -45,7 +45,7 @@ const toBase64Url = (s) =>
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-for (const pre of document.querySelectorAll("pre.mle")) {
+for (const pre of document.querySelectorAll("pre.functor-lang")) {
   const source = pre.textContent;
   pre.innerHTML = highlight(source);
   if (pre.classList.contains("runnable")) {

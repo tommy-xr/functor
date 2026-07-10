@@ -1,7 +1,7 @@
 //! The model half of the time-travel Timeline (docs/time-travel.md, T1).
 //!
 //! [`History`] is a bounded, per-frame snapshot ring of a cheaply-cloneable
-//! state — in Functor that state is the MLE `model` (`mle::Value`). It is the
+//! state — in Functor that state is the Functor Lang `model` (`functor_lang::Value`). It is the
 //! counterpart of the physics [`crate::physics::timeline::TimelineLog`], but
 //! deliberately simpler:
 //!
@@ -9,7 +9,7 @@
 //!   whole serialized Rapier world) is expensive, so it stores one every N
 //!   frames and re-steps forward to reconstruct the rest. That leans on
 //!   determinism.
-//! - **`History` snapshots every frame directly.** The MLE model is `Rc`-shared
+//! - **`History` snapshots every frame directly.** The Functor Lang model is `Rc`-shared
 //!   and immutable, so a clone is a handful of refcount bumps and adjacent
 //!   frames structurally share every unchanged sub-tree (the
 //!   `structural_sharing_*` test proves it). Because a scrub-back is a plain
@@ -30,7 +30,7 @@
 
 use std::collections::VecDeque;
 
-use mle::Value;
+use functor_lang::Value;
 
 use crate::input::RecordedInput;
 use crate::physics::SteppedPhysics;
@@ -168,7 +168,7 @@ impl<T: Clone> History<T> {
     }
 }
 
-/// The coupled time-travel recorder shared by both MLE shells (docs/time-travel.md
+/// The coupled time-travel recorder shared by both Functor Lang shells (docs/time-travel.md
 /// T1–T3): records the MVU `model` and the physics fixed-frame in lockstep each
 /// rendered frame, and seeks/rewinds them together. It owns the recording rings
 /// and the scrub state; the producer keeps ownership of the `model` and the
@@ -540,7 +540,7 @@ mod tests {
         h.record(2, &2);
     }
 
-    // --- the real payload: an mle::Value model ---
+    // --- the real payload: an functor_lang::Value model ---
 
     fn field<'a>(v: &'a Value, name: &str) -> &'a Value {
         match v {
@@ -653,7 +653,7 @@ mod tests {
 
         // The stored snapshots hold the *same* allocation for `shared`, not a
         // deep copy — this is why a 900-frame ring of a large model stays cheap
-        // (docs/time-travel.md, "Why MLE makes this nearly free").
+        // (docs/time-travel.md, "Why Functor Lang makes this nearly free").
         let s0 = field(h.seek(0), "shared");
         let s1 = field(h.seek(1), "shared");
         match (s0, s1) {

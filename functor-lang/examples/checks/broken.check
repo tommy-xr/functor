@@ -1,0 +1,10 @@
+broken.fun:8:36: error: `+` needs float operands, got string
+broken.fun:10:37: error: `>` needs float operands, got bool
+broken.fun:13:39: error: unary `-` needs a float operand, got bool
+broken.fun:16:13: error: `==` compares different types float and string (always false)
+broken.fun:20:36: error: record literal for `Position` is missing field `y`
+broken.fun:20:44: error: `Position` has no field `z`
+broken.fun:23:36: error: `Position` has no field `z`
+broken.fun:28:37: error: argument 2 of `shift`: expected float, got string
+broken.fun:31:25: error: argument 1 of `Text.concat`: expected string, got float
+broken.fun:35:17: error: `Position` takes 0 type argument(s), got 1

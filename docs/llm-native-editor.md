@@ -11,7 +11,7 @@ A traditional engine ships a heavyweight editor (Unity/Unreal/Godot) as the
 primary authoring surface. Functor's bet is different: **the LLM plus a fast
 iteration loop becomes the editor** — the same way an agentic coding tool displaces
 much of what an IDE used to do. You don't click panels to build the game; you
-direct an LLM that authors the game's pure MLE data and functions, runs it, looks at
+direct an LLM that authors the game's pure Functor Lang data and functions, runs it, looks at
 the result, and iterates.
 
 This is **load-bearing strategy, not a feature.** A full editor is one of the
@@ -29,7 +29,7 @@ work:
 
 - **LLM-subsumable (~80%):** scene composition, entity wiring, game rules, spawn
   logic, component/material config, netcode plumbing, bulk edits ("20 crates in a
-  grid", "add a patrol AI"), refactors. Functor's serializable-MLE-data surface is
+  grid", "add a patrol AI"), refactors. Functor's serializable-Functor Lang-data surface is
   the LLM's home turf.
 - **Stays human — perceptual / feel judgment:** does the jump *feel* right, is the
   light too harsh, does the camera shake read, is the animation timed well. A
@@ -47,7 +47,7 @@ being able to **see results and iterate without a human relaying them.** Closing
 that loop is exactly what principle #2 provides:
 
 - headless frame capture (already shipped — `--capture-frame` / `--fixed-time`),
-- serializable / inspectable state (the MLE model is a plain value, surfaced at the debug
+- serializable / inspectable state (the Functor Lang model is a plain value, surfaced at the debug
   server's `GET /state`),
 - the debug runtime on the backlog (`/state`, `/scene`, raycast — see
   `docs/todo.md`),

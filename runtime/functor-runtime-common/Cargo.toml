@@ -12,10 +12,10 @@ strict = []
 [dependencies]
 cgmath = "0.18.0"
 glow = "0.17"
-# The MLE language (parser/IR/interpreter). This crate provides the Functor
-# prelude — the mle::Host giving MLE programs Scene3D/Camera/Frame builtins
-# (docs/mle.md Track C1) — shared by both shells.
-mle = { path = "../../mle" }
+# The Functor Lang language (parser/IR/interpreter). This crate provides the Functor
+# prelude — the functor-lang::Host giving Functor Lang programs Scene3D/Camera/Frame builtins
+# (docs/functor-lang.md Track C1) — shared by both shells.
+functor-lang = { path = "../../functor-lang" }
 # In-game text/UI overlay. egui is the immediate-mode backend living entirely in
 # this shell; `egui_glow` paints through the same glow::Context the runtime owns.
 # `default-features = false` drops egui_glow's winit/clipboard glue we don't use;
@@ -41,7 +41,7 @@ log = "0.4"
 gltf = { version = "1.4.1", features = ["names", "KHR_materials_pbrSpecularGlossiness"] }
 
 [dev-dependencies]
-# The host prelude `.mlei` interface text, for the drift test that keeps the
+# The host prelude `.funi` interface text, for the drift test that keeps the
 # declared Scene.* signatures in sync with the `PATHS` host registry.
 functor-prelude = { path = "../../functor-prelude" }
 

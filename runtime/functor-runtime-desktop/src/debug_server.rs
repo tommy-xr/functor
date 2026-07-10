@@ -114,7 +114,7 @@ pub enum DebugRequest {
     /// `POST /time` — set/advance/resume the clock; reply once applied.
     Time(TimeCommand, Sender<()>),
     /// `POST /reload-source` — swap the game's logic from the pushed source
-    /// (body = the raw `.mle` text), preserving the model. Ok carries a status
+    /// (body = the raw `.fun` text), preserving the model. Ok carries a status
     /// line; Err the load error (400) — a broken push keeps the old program.
     ReloadSource(String, Sender<Result<String, String>>),
     /// `POST /rewind` — coupled scene rewind to a rendered frame. Ok carries a
@@ -405,7 +405,7 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                             "GET /scene": "current frame as JSON: camera + scene + lights",
                             "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1}",
                             "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}",
-                            "POST /reload-source": "swap game logic from the request body (raw .mle source), model preserved — 400 with the load error on a broken push",
+                            "POST /reload-source": "swap game logic from the request body (raw .fun source), model preserved — 400 with the load error on a broken push",
                             "POST /rewind": "coupled scene rewind — {\"frame\":42} restores model + physics to that rendered frame (pin the clock first); 400 if unrecorded/pruned"
                         }
                     })

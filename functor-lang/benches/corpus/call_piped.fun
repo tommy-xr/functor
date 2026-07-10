@@ -1,0 +1,11 @@
+// BENCH: piped calls that lower to a saturated call (the pipe hot path).
+// Shape: same 1,000,000-element fold, but each step threads x through a pipe:
+//   x |> f(x, 2.0)
+// A pipe is pure syntax, so it lowers DIRECTLY to a single saturated call --
+// no intermediate partial-application value is materialized. This confirms
+// scene-building pipes (`scene |> Scene.color(..) |> ..`) stay free.
+//
+// Convention: `main` is the timed unit of work. Also: `functor-lang run call_piped.fun`.
+let f = (a, b, c) => a + b * c
+let step = (acc, x) => acc + (x |> f(x, 2.0))
+let main = () => List.fold(step, 0.0, List.range(1000000))

@@ -70,9 +70,9 @@ export interface LaunchOptions {
   port?: number;
   /** Path to the `functor` CLI binary (default `<repoRoot>/target/debug/functor`). */
   runnerBin?: string;
-  /** Path to the `.mle` game source: launches the runner with `--mle` (the MLE
-   * interpreter — docs/mle.md Track C2/C3). `gameDir` stays the runner's cwd. */
-  mlePath: string;
+  /** Path to the `.fun` game source: launches the runner with `--functor-lang` (the Functor Lang
+   * interpreter — docs/functor-lang.md Track C2/C3). `gameDir` stays the runner's cwd. */
+  functorLangPath: string;
   /** Cargo workspace root (default: walk up from `gameDir`). */
   repoRoot?: string;
   /** Max time to wait for the runtime to be ready, ms (default 60_000). */
