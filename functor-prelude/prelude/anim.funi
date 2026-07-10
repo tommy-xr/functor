@@ -1,0 +1,18 @@
+// anim.funi — the `Anim` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude).
+//
+// An Anim is a declarative pose expression a scene model renders with
+// (`scene |> Scene.animate(anim)`). Playheads and blend weights are explicit
+// values the game derives (typically from `tts` and model state) — the engine
+// owns no animation clock, so poses rewind and replay exactly.
+
+// The opaque animation-expression handle, referred to as `Anim.t`.
+type t
+
+// Sample the named glTF clip at a playhead in seconds (loops by the clip's
+// duration; negative playheads wrap backwards from the end).
+let clip : (string, float) => t
+
+// A weighted mix: [(anim, weight), …]. Weights are normalized; non-positive
+// weights drop their entry.
+let blend : (List<(t, float)>) => t

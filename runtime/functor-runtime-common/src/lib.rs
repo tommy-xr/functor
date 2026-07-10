@@ -48,6 +48,7 @@ impl OpaqueState {
     }
 }
 
+pub mod anim;
 pub mod animation;
 pub mod asset;
 pub mod audio;

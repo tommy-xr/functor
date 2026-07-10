@@ -543,6 +543,33 @@ impl Scene3D {
         }
     }
 
+    /// Set the animation expression on every `Model` node in this subtree —
+    /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
+    /// that one model; applying over a group animates each model in it.
+    pub fn with_animation(self, expr: crate::anim::AnimExpr) -> Self {
+        let obj = match self.obj {
+            SceneObject::Model(mut description) => {
+                description.animation = Some(expr);
+                SceneObject::Model(description)
+            }
+            SceneObject::Group(items) => SceneObject::Group(
+                items
+                    .into_iter()
+                    .map(|item| item.with_animation(expr.clone()))
+                    .collect(),
+            ),
+            SceneObject::Material(material, items) => SceneObject::Material(
+                material,
+                items
+                    .into_iter()
+                    .map(|item| item.with_animation(expr.clone()))
+                    .collect(),
+            ),
+            geometry @ SceneObject::Geometry(_) => geometry,
+        };
+        Scene3D { obj, ..self }
+    }
+
     pub fn transform(self, xform: Matrix4<f32>) -> Self {
         Scene3D {
             xform: self.xform * xform,
@@ -675,6 +702,48 @@ impl Scene3D {
 
                         let animation_index = 0;
 
+                        // The pose depends only on the model + expression, so
+                        // evaluate it once per model (a blend samples every
+                        // clip in the expression) and share it across meshes.
+                        let joints = if is_skinned {
+                            match &model_description.animation {
+                                // The declarative path: game code chose the
+                                // pose (clip playheads, blend weights) —
+                                // evaluate it. A clip name the model lacks
+                                // warns once and contributes the bind pose.
+                                Some(expr) => crate::anim::skinning_transforms(
+                                    &hydrated_model,
+                                    expr,
+                                    &mut |clip| {
+                                        scene_context.warn_once(
+                                            &format!("anim-clip:{str}:{clip}"),
+                                            &format!(
+                                                "[anim] model \"{str}\" has no \
+clip named \"{clip}\" — rendering the bind pose (functor inspect lists a model's clips)"
+                                            ),
+                                        );
+                                    },
+                                ),
+                                // Zero-config default: the first clip
+                                // auto-plays, looping on the game clock.
+                                None => match hydrated_model.animations.get(animation_index) {
+                                    Some(animation) => {
+                                        let time =
+                                            render_context.frame_time.tts % animation.duration;
+                                        let animated_skeleton = Skeleton::animate(
+                                            &hydrated_model.skeleton,
+                                            animation,
+                                            time,
+                                        );
+                                        animated_skeleton.get_skinning_transforms()
+                                    }
+                                    None => vec![Matrix4::identity(); 50],
+                                },
+                            }
+                        } else {
+                            vec![]
+                        };
+
                         for mesh in hydrated_model.meshes.iter() {
                             // Go through selectors, and adjust
                             // let override_material_description = Some(MaterialDescription::Texture(
@@ -716,24 +785,6 @@ impl Scene3D {
                                     &[],
                                 );
                             } else {
-                                let joints = if is_skinned {
-                                    match hydrated_model.animations.get(animation_index) {
-                                        Some(animation) => {
-                                            let time = render_context.frame_time.tts
-                                                % animation.duration;
-                                            let animated_skeleton = Skeleton::animate(
-                                                &hydrated_model.skeleton,
-                                                animation,
-                                                time,
-                                            );
-                                            animated_skeleton.get_skinning_transforms()
-                                        }
-                                        None => vec![Matrix4::identity(); 50],
-                                    }
-                                } else {
-                                    vec![]
-                                };
-
                                 // Bind textures
                                 mesh.base_color_texture.bind(0, &render_context);
                                 model_material.draw_opaque(

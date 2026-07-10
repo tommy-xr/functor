@@ -1,8 +1,80 @@
 use std::collections::{HashMap, HashSet};
 
-use cgmath::{InnerSpace, Matrix3, Matrix4, Quaternion, SquareMatrix, Vector3, VectorSpace};
+use cgmath::{InnerSpace, Matrix3, Matrix4, Quaternion, SquareMatrix, Vector3, VectorSpace, Zero};
 
 use crate::animation::{Animation, AnimationValue, Keyframe};
+
+/// One joint's local transform, decomposed — the unit poses are made of.
+#[derive(Clone, Copy, Debug)]
+pub struct JointPose {
+    pub translation: Vector3<f32>,
+    pub rotation: Quaternion<f32>,
+    pub scale: Vector3<f32>,
+}
+
+/// A skeleton-shaped set of local joint transforms in TRS form — what clip
+/// sampling produces and blending combines, before being applied back onto a
+/// [`Skeleton`] for skinning. Keyed by joint id (sparse, like `joint_info`).
+#[derive(Clone, Debug)]
+pub struct Pose {
+    joints: HashMap<i32, JointPose>,
+}
+
+impl Pose {
+    /// Weighted combine of poses (all sampled from the same skeleton).
+    /// Translation/scale are weighted averages; rotations accumulate as a
+    /// sign-aligned weighted quaternion sum, normalized (nlerp-style mixing,
+    /// as in Bevy's RFC-51 blending). The hemisphere reference is the FIRST
+    /// input's rotation, so blends of near-opposed rotations resolve toward
+    /// the first entry — locomotion-style blends of similar poses are
+    /// unaffected. Weights must be positive (the caller filters out
+    /// non-positive entries); a degenerate joint (zero/non-finite weight
+    /// total, or opposed rotations cancelling) falls back to the first
+    /// pose's joint rather than emitting NaNs.
+    pub fn blend(inputs: &[(Pose, f32)]) -> Pose {
+        debug_assert!(!inputs.is_empty(), "Pose::blend needs at least one input");
+        let mut joints = HashMap::new();
+        for (&joint_id, first_jp) in &inputs[0].0.joints {
+            let mut translation = Vector3::zero();
+            let mut scale = Vector3::zero();
+            let mut rotation = Quaternion::zero();
+            let mut total = 0.0_f32;
+            let reference = first_jp.rotation;
+            for (pose, weight) in inputs {
+                let Some(jp) = pose.joints.get(&joint_id) else {
+                    continue;
+                };
+                total += weight;
+                translation += jp.translation * *weight;
+                scale += jp.scale * *weight;
+                // Align hemispheres so opposite-sign encodings of the same
+                // rotation reinforce instead of cancelling.
+                let q = if reference.dot(jp.rotation) < 0.0 {
+                    -jp.rotation
+                } else {
+                    jp.rotation
+                };
+                rotation += q * *weight;
+            }
+            let magnitude2 = rotation.magnitude2();
+            let blended = if total > 0.0
+                && total.is_finite()
+                && magnitude2.is_finite()
+                && magnitude2 > 1e-12
+            {
+                JointPose {
+                    translation: translation / total,
+                    rotation: rotation.normalize(),
+                    scale: scale / total,
+                }
+            } else {
+                *first_jp
+            };
+            joints.insert(joint_id, blended);
+        }
+        Pose { joints }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Joint {
@@ -36,17 +108,15 @@ impl Skeleton {
     }
 
     pub fn animate(skeleton: &Skeleton, animation: &Animation, time: f32) -> Skeleton {
-        // Start by cloning the existing skeleton
-        let mut new_skeleton = skeleton.clone();
+        skeleton.apply_pose(&skeleton.sample_pose(animation, time))
+    }
 
-        // For each joint, store the base T, R, S, and the animated T, R, S
-        let mut joint_base_trs = HashMap::new();
-        let mut joint_animated_trs = HashMap::new();
-
-        // First, for each joint, extract base T, R, S
-        for (&joint_index, joint) in &skeleton.joint_info {
-            // Extract translation
-            let base_t = joint.transform.w.truncate(); // last column
+    /// The bind pose: every joint's local transform, decomposed to TRS.
+    pub fn base_pose(&self) -> Pose {
+        let mut joints = HashMap::new();
+        for (&joint_index, joint) in &self.joint_info {
+            // Extract translation (last column)
+            let translation = joint.transform.w.truncate();
 
             // Extract the upper-left 3x3 matrix
             let m = Matrix3::from_cols(
@@ -59,61 +129,64 @@ impl Skeleton {
             let scale_x = m.x.magnitude();
             let scale_y = m.y.magnitude();
             let scale_z = m.z.magnitude();
-            let base_s = Vector3::new(scale_x, scale_y, scale_z);
+            let scale = Vector3::new(scale_x, scale_y, scale_z);
 
-            // Normalize the columns to get the rotation matrix
+            // Normalize the columns to get the rotation matrix, then a quaternion
             let rotation_matrix = Matrix3::from_cols(m.x / scale_x, m.y / scale_y, m.z / scale_z);
+            let rotation = Quaternion::from(rotation_matrix);
 
-            // Convert rotation matrix to Quaternion
-            let base_r = Quaternion::from(rotation_matrix);
-
-            joint_base_trs.insert(joint_index, (base_t, base_r, base_s));
-            // Initialize animated T, R, S to base T, R, S
-            joint_animated_trs.insert(joint_index, (base_t, base_r, base_s));
+            joints.insert(
+                joint_index,
+                JointPose {
+                    translation,
+                    rotation,
+                    scale,
+                },
+            );
         }
+        Pose { joints }
+    }
 
-        // For each animation channel
+    /// Sample one clip at `time`: the bind pose with each animated channel's
+    /// interpolated value overriding that joint's T, R, or S.
+    pub fn sample_pose(&self, animation: &Animation, time: f32) -> Pose {
+        let mut pose = self.base_pose();
         for channel in &animation.channels {
             let target_node_index = channel.target_node_index as i32;
-            // Get the animated value at time t
             if let Some(value) = interpolate_keyframes(&channel.keyframes, time) {
-                // Update the animated T, R, S for the joint
-                if let Some((animated_t, animated_r, animated_s)) =
-                    joint_animated_trs.get_mut(&target_node_index)
-                {
+                if let Some(jp) = pose.joints.get_mut(&target_node_index) {
                     match value {
                         AnimationValue::Translation(translation) => {
-                            *animated_t = translation;
+                            jp.translation = translation;
                         }
                         AnimationValue::Rotation(rotation) => {
-                            *animated_r = rotation;
+                            jp.rotation = rotation;
                         }
                         AnimationValue::Scale(scale) => {
-                            *animated_s = scale;
+                            jp.scale = scale;
                         }
                         _ => {}
                     }
                 }
             }
         }
+        pose
+    }
 
-        // For each joint, reconstruct the animated transform
+    /// Rebuild a skeleton with each joint's local transform replaced by the
+    /// pose's TRS, and absolute transforms recomputed — the step between a
+    /// (possibly blended) pose and `get_skinning_transforms`.
+    pub fn apply_pose(&self, pose: &Pose) -> Skeleton {
+        let mut new_skeleton = self.clone();
         for (&joint_index, joint) in new_skeleton.joint_info.iter_mut() {
-            if let Some((animated_t, animated_r, animated_s)) = joint_animated_trs.get(&joint_index)
-            {
-                // Construct the transform from animated_T, animated_R, animated_S
-                let transform = Matrix4::from_translation(*animated_t)
-                    * Matrix4::from(*animated_r)
-                    * Matrix4::from_nonuniform_scale(animated_s.x, animated_s.y, animated_s.z);
-                joint.transform = transform;
+            if let Some(jp) = pose.joints.get(&joint_index) {
+                joint.transform = Matrix4::from_translation(jp.translation)
+                    * Matrix4::from(jp.rotation)
+                    * Matrix4::from_nonuniform_scale(jp.scale.x, jp.scale.y, jp.scale.z);
             }
         }
-
-        // Recompute absolute transforms
         new_skeleton.joint_absolute_transform =
             compute_absolute_transforms(&new_skeleton.joint_info);
-
-        // Return the new skeleton
         new_skeleton
     }
 

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::MaterialDescription;
 
+use crate::anim::AnimExpr;
 use crate::scene3d::deserialize_matrix;
 use crate::scene3d::serialize_matrix;
 
@@ -34,4 +35,9 @@ pub enum MeshOverride {
 pub struct ModelDescription {
     pub handle: ModelHandle,
     pub overrides: Vec<(MeshSelector, MeshOverride)>,
+    /// The pose to render — `Scene.animate`'s expression. `None` keeps the
+    /// legacy zero-config behavior: the first clip auto-plays on the game
+    /// clock.
+    #[serde(default)]
+    pub animation: Option<AnimExpr>,
 }

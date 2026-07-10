@@ -299,6 +299,7 @@ mod tests {
                 Scene3D::model(ModelDescription {
                     handle: ModelHandle::File("barrel.glb".to_string()),
                     overrides: vec![],
+                    animation: None,
                 }),
                 // A monitor: samples the "feed" render target declared below.
                 Scene3D {
