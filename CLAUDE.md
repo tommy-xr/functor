@@ -123,6 +123,13 @@ npm run build:cli   # the wasm bundle, then the functor CLI
 
 Produces `target/debug/functor` — a single binary with the desktop runtime built in.
 
+**Scaffold a game.** `init` creates an embedded MLE starter without overwriting an existing
+`functor.json` or `game.mle`; `3d` is the default template:
+
+```sh
+./target/debug/functor -d my-game init [3d|fps]
+```
+
 **Run / build a game.** The CLI operates on a directory with a `functor.json`
 (`{"language": "mle", "entry": "game.mle"}`); `-d` points to it:
 
@@ -199,7 +206,6 @@ main context.
   etc. resolve only in runner-hosted MLE (and tests via `functor_runtime_common::mle_prelude`), NOT
   in a plain `cargo run -p mle -- run`. Branded values (`Angle`, `Time`/`Duration`, `Fog`, render
   targets) refuse bare numbers/strings with a teaching error — pass `Angle.degrees(60.0)`, not `60`.
-- `cli/src/main.rs`'s `Init` command is currently a TODO stub.
 - **`functor run` does not rebuild the runtimes.** It only (re)loads the *game* `.mle`, which the
   runner interprets. The asset pipeline and rendering execute in the shells, which are prebuilt:
   natively in the desktop runtime built into the `functor` binary, and on wasm in the web-runtime

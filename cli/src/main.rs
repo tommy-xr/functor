@@ -68,10 +68,10 @@ impl Environment {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Scaffold a new project from a template (not yet implemented).
+    /// Scaffold a new MLE project (defaults to the 3d template).
     Init {
-        #[arg()]
-        template: String,
+        #[arg(value_enum, default_value = "3d")]
+        template: commands::init::Template,
     },
     /// Typecheck the MLE project (the strict build gate — diagnostics are
     /// errors). Target-independent. E.g. `functor -d examples/primitives build`.
@@ -218,11 +218,25 @@ async fn run(args: &Args) -> io::Result<()> {
         env: command_env(&args.command),
     });
 
+    // `init` creates the metadata file, so it is the one project command that
+    // must run before functor.json validation.
+    if let Command::Init { template } = &args.command {
+        commands::init::execute(&working_directory, template)?;
+        emit(Event::Info {
+            message: format!(
+                "initialized {} MLE project in {} (functor.json, game.mle)",
+                template.as_str(),
+                working_directory.display()
+            ),
+        });
+        return Ok(());
+    }
+
     validate_metadata_path(&working_directory)?;
 
     // An MLE project (functor.json: `"language": "mle"`) routes build/run/
     // develop/push to the interpreter — no Fable, no cargo, hot reload built
-    // in. Only those are language-routed; Init falls through below.
+    // in. Only those are language-routed; Init was handled above.
     let is_routed = matches!(
         &args.command,
         Command::Build { .. }
@@ -274,15 +288,7 @@ async fn run(args: &Args) -> io::Result<()> {
     }
 
     match &args.command {
-        Command::Init { template } => {
-            // TODO: Handle init (currently a stub — see docs/todo.md).
-            emit(Event::Info {
-                message: format!(
-                    "init is not yet implemented (template '{template}', directory {working_directory_str})"
-                ),
-            });
-            Ok(())
-        }
+        Command::Init { .. } => unreachable!("init is handled before metadata validation"),
         // The F#/Fable pipeline was removed in E3: every Functor project is now
         // MLE (functor.json `"language": "mle"`), routed above. A project that
         // isn't MLE has no build/run/develop/push path.
@@ -392,4 +398,29 @@ fn get_working_directory(args: &Args) -> PathBuf {
     args.dir
         .clone()
         .unwrap_or_else(|| env::current_dir().expect("Failed to get current directory"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{run, Args};
+    use clap::Parser;
+    use std::fs;
+
+    #[tokio::test]
+    async fn init_dispatches_before_metadata_validation_and_defaults_to_3d() {
+        let directory =
+            std::env::temp_dir().join(format!("functor-init-dispatch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let args = Args::try_parse_from(["functor", "--dir", directory.to_str().unwrap(), "init"])
+            .unwrap();
+
+        let result = run(&args).await;
+
+        assert!(result.is_ok(), "init failed: {result:?}");
+        assert!(directory.join("functor.json").is_file());
+        assert!(fs::read_to_string(directory.join("game.mle"))
+            .unwrap()
+            .contains("A small Functor scene"));
+        let _ = fs::remove_dir_all(directory);
+    }
 }

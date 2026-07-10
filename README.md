@@ -64,7 +64,7 @@ are documented in the `mle-language` skill (`.claude/skills/mle-language/`) and
 | `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the MLE prelude (`FunctorHost`) |
 | `runtime/functor-runtime-desktop/` | Desktop runtime (native/GLFW), including the MLE producer — a library the `functor` CLI links in and runs in-process |
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.mle` in the browser |
-| `cli/` | The `functor` CLI (`build` / `run` / `develop`; `init` is not yet implemented) |
+| `cli/` | The `functor` CLI (`init` / `build` / `run` / `develop`) |
 | `tools/` | Editor tooling: `mle-vscode` (extension), `mle-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
 | `examples/*/` | Sample games — e.g. `hello` (a lineup of glTF sample models with a WASD + mouse free-look camera), `primitives`, `lighting` |
 
@@ -133,6 +133,7 @@ The `run` command interprets the game's `.mle` and launches it — no build step
 
 | Command | Description |
 | --- | --- |
+| `functor -d <dir> init [3d\|fps]` | Scaffold a new MLE project (`3d` is the default) |
 | `functor -d <dir> build [native\|wasm]` | Typecheck the `.mle` project (diagnostics are errors) |
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
 | `functor -d <dir> develop [native\|wasm]` | Same as `run` — MLE hot-reload is built into the runtime |
