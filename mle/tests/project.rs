@@ -32,6 +32,13 @@ impl Scratch {
     fn load(&self) -> Result<mle::project::Project, mle::project::ProjectError> {
         mle::project::load(&self.entry)
     }
+
+    /// Strip this scratch dir's prefix (with the platform's separator — `\`
+    /// on Windows) from a rendered `path:line:col` diagnostic.
+    fn strip_dir(&self, rendered: &str) -> String {
+        let prefix = format!("{}{}", self.dir.display(), std::path::MAIN_SEPARATOR);
+        rendered.replace(&prefix, "")
+    }
 }
 
 impl Drop for Scratch {
@@ -56,9 +63,7 @@ fn load_err(name: &str, files: &[(&str, &str)]) -> String {
         Err(err) => err,
         Ok(_) => panic!("project should fail to load"),
     };
-    let rendered = err.render();
-    let prefix = format!("{}/", scratch.dir.display());
-    rendered.replace(&prefix, "")
+    scratch.strip_dir(&err.render())
 }
 
 /// Run a scratch project's `main`.
@@ -493,7 +498,7 @@ fn unreferenced_sibling_diagnostics_surface_with_their_file() {
     let rendered = project
         .sources
         .render(diags[0].span.start, &diags[0].message);
-    let rendered = rendered.replace(&format!("{}/", scratch.dir.display()), "");
+    let rendered = scratch.strip_dir(&rendered);
     assert_eq!(err_line(&rendered), "util.mle:2:36");
 }
 

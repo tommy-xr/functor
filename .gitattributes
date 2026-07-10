@@ -1,0 +1,9 @@
+# MLE sources and the mle crate's golden files (.ast/.ir/.run/.trace/.check)
+# are byte-compared against LF-rendered output in tests — never CRLF-normalize
+# them on checkout, or the goldens diverge on Windows.
+*.mle text eol=lf
+*.ast text eol=lf
+*.check text eol=lf
+*.ir text eol=lf
+*.run text eol=lf
+*.trace text eol=lf
