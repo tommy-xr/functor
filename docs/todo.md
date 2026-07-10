@@ -70,8 +70,6 @@ The networking design + phased roadmap that drives these items lives in
 
 ## CLI
 
-- [ ] `functor init [3d|fps]` — scaffold a new game (rust-embed a template folder;
-      `init` is currently a stub).
 - [ ] `functor develop wasm` — hot-reload over a websocket: push changes, save
       state, reload, rehydrate (native `develop` hot-reload already works).
 
