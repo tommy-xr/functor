@@ -398,7 +398,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
                 defs.push(Def {
                     id,
                     name: lowerer.self_qualify(&decl.name),
-                    ty: decl.ty,
+                    ty: decl.ty.map(|ty| lowerer.canon_type(ty)).transpose()?,
                     value: lowerer.expr(decl.value)?,
                     span: decl.span,
                 });
@@ -719,6 +719,7 @@ impl Lowerer<'_> {
             } => {
                 // The value is evaluated outside the binding's scope
                 // (`let x = x in …` refers to the outer `x`).
+                let ty = ty.map(|ty| self.canon_type(ty)).transpose()?;
                 let value = Box::new(self.expr(*value)?);
                 let binding = BindingId(self.next_binding);
                 self.next_binding += 1;
