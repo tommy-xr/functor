@@ -786,6 +786,10 @@ pub fn run(args: Args) {
 
             window.make_current();
             window.set_key_polling(true);
+            // Printable characters for a focused `Ui.textInput`
+            // (docs/ui-interaction.md U4) — GLFW delivers text as separate
+            // Char events beside the Key stream.
+            window.set_char_polling(true);
             window.set_cursor_pos_polling(true);
             window.set_scroll_polling(true);
             window.set_mouse_button_polling(true);
@@ -830,6 +834,11 @@ pub fn run(args: Args) {
         // click on a `Ui.button` must drive the widget, not recapture the
         // cursor for free-look (the scrubber rule, docs/ui-interaction.md).
         let mut ui_wants_pointer = false;
+        // Whether it wanted the KEYBOARD last frame (a `Ui.textInput` is
+        // focused): keys then route to the overlay instead of the game's
+        // `input` hook, and Escape defocuses the field instead of releasing
+        // the cursor (docs/ui-interaction.md U4).
+        let mut ui_wants_keyboard = false;
         // The time-travel console (`~`): HIDDEN by default in the native game
         // (it's a dev tool you summon with `~`, which also frees the cursor so
         // you can scrub right away). The wasm/vscode preview shows it always.
@@ -970,9 +979,34 @@ pub fn run(args: Args) {
             // capture can't turn the camera). Window close/escape and the debug
             // server's /input still work.
             let ignore_user_input = clock.is_pinned();
+            // Keyboard events for a focused `Ui.textInput` this frame,
+            // collected from the GLFW stream while the overlay wants the
+            // keyboard and handed to `draw_view` below. While the clock is
+            // pinned nothing is collected — typing is inert like all other
+            // window input.
+            let mut ui_keyboard: Vec<functor_runtime_common::ui::UiKeyboardEvent> = Vec::new();
             for (_, event) in glfw::flush_messages(&events) {
                 match event {
                     glfw::WindowEvent::Close => window.set_should_close(true),
+                    // Printable text for a focused field. Only meaningful
+                    // while the overlay wants the keyboard; otherwise Char
+                    // events are dropped (the game hears keys, not text).
+                    glfw::WindowEvent::Char(c)
+                        if ui_wants_keyboard && !ignore_user_input =>
+                    {
+                        ui_keyboard
+                            .push(functor_runtime_common::ui::UiKeyboardEvent::Char(c));
+                    }
+                    // While a field is focused, Escape DEFOCUSES it (egui's
+                    // built-in) instead of releasing the cursor — the next
+                    // Escape then falls through to the arm below.
+                    glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _)
+                        if ui_wants_keyboard && !ignore_user_input =>
+                    {
+                        ui_keyboard.push(functor_runtime_common::ui::UiKeyboardEvent::Edit(
+                            functor_runtime_common::ui::UiEditKey::Escape,
+                        ));
+                    }
                     // First Escape releases the cursor (edit code while the
                     // game runs — the hot-reload workflow); Escape again while
                     // released quits, preserving the Esc-Esc exit.
@@ -992,8 +1026,12 @@ Escape again to quit"
                     // cursor (so you can scrub immediately); closing returns to
                     // free-look. Before the `ignore_user_input` catch-all so it
                     // works while the clock is pinned (paused). Never grabs the
-                    // pointer on a hidden window.
-                    glfw::WindowEvent::Key(Key::GraveAccent, _, Action::Press, _) => {
+                    // pointer on a hidden window. Guarded off while a text
+                    // field is focused — typing '`' must insert, not toggle
+                    // (the char arrives via the Char arm above).
+                    glfw::WindowEvent::Key(Key::GraveAccent, _, Action::Press, _)
+                        if !ui_wants_keyboard =>
+                    {
                         scrubber_visible = !scrubber_visible;
                         if !hidden {
                             if scrubber_visible {
@@ -1058,10 +1096,18 @@ Escape again to quit"
                     // !ignore_user_input while keeping held_keys/cursor bookkeeping.
                     glfw::WindowEvent::Key(key, _, Action::Release, _) => {
                         let k = map_key(key);
-                        if !ignore_user_input {
+                        // Deliver the release only if the game SAW the press
+                        // (it's in held_keys) — a press swallowed by a focused
+                        // text field must not leak a phantom release edge to
+                        // the game's `input` hook (xreview). Unknown keys are
+                        // never tracked; keep their pre-existing passthrough,
+                        // but not while a field is focused.
+                        let was_held = held_keys.remove(&k);
+                        if !ignore_user_input
+                            && (was_held || (k == InputKey::Unknown && !ui_wants_keyboard))
+                        {
                             game.key_event(k as i32, false);
                         }
-                        held_keys.remove(&k);
                     }
                     glfw::WindowEvent::Focus(false) => {
                         for k in std::mem::take(&mut held_keys) {
@@ -1080,6 +1126,31 @@ Escape again to quit"
                         mouse_primary_clicked = false;
                     }
                     _ if ignore_user_input => {}
+                    // While a field is focused, key presses drive the OVERLAY:
+                    // the editing subset maps across (press+release pairs are
+                    // synthesized by the lowering, so Repeat works), printable
+                    // keys arrive via the Char arm, and the game's `input`
+                    // hook hears none of it (the focus gate). Releases still
+                    // reach the game below — a key held from before focus
+                    // must not stick.
+                    glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _)
+                        if ui_wants_keyboard =>
+                    {
+                        use functor_runtime_common::ui::{UiEditKey, UiKeyboardEvent};
+                        let edit = match key {
+                            Key::Backspace => Some(UiEditKey::Backspace),
+                            Key::Delete => Some(UiEditKey::Delete),
+                            Key::Left => Some(UiEditKey::Left),
+                            Key::Right => Some(UiEditKey::Right),
+                            Key::Home => Some(UiEditKey::Home),
+                            Key::End => Some(UiEditKey::End),
+                            Key::Enter => Some(UiEditKey::Enter),
+                            _ => None,
+                        };
+                        if let Some(edit) = edit {
+                            ui_keyboard.push(UiKeyboardEvent::Edit(edit));
+                        }
+                    }
                     glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
                         let k = map_key(key);
                         game.key_event(k as i32, true);
@@ -1422,9 +1493,11 @@ Escape again to quit"
                 fb_height as u32,
                 1.0,
                 ui_pointer,
+                &ui_keyboard,
                 &ui_view,
             );
             ui_wants_pointer = ui_out.wants_pointer;
+            ui_wants_keyboard = ui_out.wants_keyboard;
             if !ignore_user_input {
                 for event in ui_out.events {
                     game.ui_event(event);

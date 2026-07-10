@@ -904,6 +904,82 @@ pub fn ui_pointer_state(dpr: f32) -> functor_runtime_common::ui::PointerState {
     })
 }
 
+thread_local! {
+    /// Keyboard events queued for a focused `Ui.textInput`
+    /// (docs/ui-interaction.md U4). The page routes keydowns here (instead
+    /// of the game key path) while [`functor_lang_ui_wants_keyboard`] reports
+    /// true; the frame loop drains it into the overlay pass. Same cap
+    /// rationale as [`INPUT_QUEUE`].
+    static UI_KEY_QUEUE: RefCell<Vec<functor_runtime_common::ui::UiKeyboardEvent>> =
+        const { RefCell::new(Vec::new()) };
+    /// Whether the overlay wanted the keyboard after the LAST frame's pass —
+    /// what the page's keydown handler polls to pick a route.
+    static UI_WANTS_KEYBOARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Deliver a keydown for a focused text field. `key` is the DOM
+/// `KeyboardEvent.key`: a single-char string is printable text; the named
+/// editing keys map across; anything else is dropped (F-keys, media keys).
+/// Returns whether the key was CONSUMED — the page only `preventDefault()`s
+/// then, so browser chrome (F5, DevTools) keeps working while typing.
+#[wasm_bindgen]
+pub fn functor_lang_ui_key(key: &str) -> bool {
+    use functor_runtime_common::ui::{UiEditKey, UiKeyboardEvent};
+    let mut chars = key.chars();
+    let event = match (chars.next(), chars.next()) {
+        // Exactly one char → printable text ("a", "3", "`", …).
+        (Some(c), None) => Some(UiKeyboardEvent::Char(c)),
+        _ => match key {
+            "Backspace" => Some(UiKeyboardEvent::Edit(UiEditKey::Backspace)),
+            "Delete" => Some(UiKeyboardEvent::Edit(UiEditKey::Delete)),
+            "ArrowLeft" => Some(UiKeyboardEvent::Edit(UiEditKey::Left)),
+            "ArrowRight" => Some(UiKeyboardEvent::Edit(UiEditKey::Right)),
+            "Home" => Some(UiKeyboardEvent::Edit(UiEditKey::Home)),
+            "End" => Some(UiKeyboardEvent::Edit(UiEditKey::End)),
+            "Enter" => Some(UiKeyboardEvent::Edit(UiEditKey::Enter)),
+            "Escape" => Some(UiKeyboardEvent::Edit(UiEditKey::Escape)),
+            _ => None,
+        },
+    };
+    match event {
+        Some(event) => {
+            UI_KEY_QUEUE.with(|q| {
+                let mut q = q.borrow_mut();
+                if q.len() < INPUT_QUEUE_CAP {
+                    q.push(event);
+                }
+            });
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether a `Ui.textInput` is focused — the page's keydown handler routes
+/// keys to [`functor_lang_ui_key`] while this is true, and to the game's
+/// key path otherwise (the focus gate, docs/ui-interaction.md U4).
+#[wasm_bindgen]
+pub fn functor_lang_ui_wants_keyboard() -> bool {
+    UI_WANTS_KEYBOARD.with(|w| w.get())
+}
+
+/// Drain the focused-field key queue (the frame loop, before the overlay
+/// pass). `deliver: false` (pinned clock) discards — typing is inert while
+/// pinned, like all other window input.
+pub fn drain_ui_keys(deliver: bool) -> Vec<functor_runtime_common::ui::UiKeyboardEvent> {
+    let events = UI_KEY_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    if deliver {
+        events
+    } else {
+        Vec::new()
+    }
+}
+
+/// Publish this frame's `wants_keyboard` for the page's keydown routing.
+pub fn set_ui_wants_keyboard(wants: bool) {
+    UI_WANTS_KEYBOARD.with(|w| w.set(wants));
+}
+
 /// Drain the queued page input into the producer, in arrival order. Called by
 /// the frame loop before `tick`. Empty (and free) on the F# path — its page
 /// never calls the `functor_lang_*` exports.

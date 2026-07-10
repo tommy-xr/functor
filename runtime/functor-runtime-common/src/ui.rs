@@ -97,6 +97,12 @@ pub enum View {
         max: f64,
         value: f64,
     },
+    /// An interactive single-line text input (docs/ui-interaction.md U4).
+    /// `value` is the model's CONTROLLED text; an edit comes back as
+    /// `UiEvent { slot, TextChanged(s) }` per change. The overlay keeps the
+    /// live editing buffer (see `TextBuffer`) — egui owns cursor/selection
+    /// state, the model owns the canonical text.
+    TextInput { slot: u32, value: String },
 }
 
 /// 0..1 float components -> 8-bit color, clamped. Shared by the F#-facing
@@ -151,7 +157,70 @@ fn contains_interactive(view: &View) -> bool {
         View::Empty | View::Text { .. } => false,
         View::Column(items) | View::Row(items) => items.iter().any(contains_interactive),
         View::Panel { child, .. } => contains_interactive(child),
-        View::Button { .. } | View::Slider { .. } => true,
+        View::Button { .. } | View::Slider { .. } | View::TextInput { .. } => true,
+    }
+}
+
+/// A keyboard event for the game-UI pass, in shell-neutral vocabulary — the
+/// shells collect these while egui wants the keyboard (a text input is
+/// focused) and [`TextOverlay::draw_view`] lowers them to egui events. `Char`
+/// is printable input (desktop: GLFW char events; web: single-char `e.key`);
+/// `Edit` is the editing-key subset egui's `TextEdit` needs. No modifier
+/// combos yet (no shift-selection / cmd-shortcuts) — v1 is basic editing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UiKeyboardEvent {
+    Char(char),
+    Edit(UiEditKey),
+}
+
+/// The editing keys a focused text input consumes (see [`UiKeyboardEvent`]).
+/// `Escape` releases focus (egui's built-in behavior) — shells route Escape
+/// here INSTEAD of their own Escape handling while a field is focused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UiEditKey {
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
+    Enter,
+    Escape,
+}
+
+/// Lower a [`UiKeyboardEvent`] to the egui event(s) it means. An edit key
+/// arrives as a full press+release pair so egui's key-repeat bookkeeping
+/// stays consistent frame to frame.
+fn keyboard_to_egui(event: UiKeyboardEvent, out: &mut Vec<egui::Event>) {
+    match event {
+        UiKeyboardEvent::Char(c) => {
+            // egui ignores control characters in Text events; filter the
+            // obvious ones so a stray '\r' from a shell can't sneak in.
+            if !c.is_control() {
+                out.push(egui::Event::Text(c.to_string()));
+            }
+        }
+        UiKeyboardEvent::Edit(key) => {
+            let key = match key {
+                UiEditKey::Backspace => egui::Key::Backspace,
+                UiEditKey::Delete => egui::Key::Delete,
+                UiEditKey::Left => egui::Key::ArrowLeft,
+                UiEditKey::Right => egui::Key::ArrowRight,
+                UiEditKey::Home => egui::Key::Home,
+                UiEditKey::End => egui::Key::End,
+                UiEditKey::Enter => egui::Key::Enter,
+                UiEditKey::Escape => egui::Key::Escape,
+            };
+            for pressed in [true, false] {
+                out.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+        }
     }
 }
 
@@ -170,6 +239,19 @@ struct SliderBuffer {
     last_emitted: f64,
 }
 
+/// Per-slot text-input reconciliation (docs/ui-interaction.md U4) — the
+/// text analogue of [`SliderBuffer`], with the same echo rule: the model's
+/// incoming value overwrites the live editing buffer only when it differs
+/// from `last_emitted`. Comparing against the BUFFER instead would clobber
+/// every keystroke (the model echo is one frame behind while typing) — the
+/// comparison target is load-bearing. A transform in `update` (uppercase,
+/// clamp-length) reads as programmatic: the field resets to it with the
+/// cursor moved to the end — the React-parity wart, accepted.
+struct TextBuffer {
+    live: String,
+    last_emitted: String,
+}
+
 /// The mutable per-frame state a [`View`] render threads through the tree:
 /// the slot-stamped interactions egui detected, plus the stateful widgets'
 /// reconciliation buffers (owned by [`TextOverlay`], keyed by slot; `seen`
@@ -178,6 +260,8 @@ struct UiFrameState<'a> {
     events: &'a mut Vec<UiEvent>,
     sliders: &'a mut std::collections::HashMap<u32, SliderBuffer>,
     seen_sliders: &'a mut std::collections::HashSet<u32>,
+    texts: &'a mut std::collections::HashMap<u32, TextBuffer>,
+    seen_texts: &'a mut std::collections::HashSet<u32>,
 }
 
 /// Render a declarative [`View`] into `ui` using egui's own layout (vertical /
@@ -257,6 +341,31 @@ fn render_view(ui: &mut egui::Ui, view: &View, state: &mut UiFrameState) {
                 });
             }
         }
+        View::TextInput { slot, value } => {
+            state.seen_texts.insert(*slot);
+            let buf = state.texts.entry(*slot).or_insert_with(|| TextBuffer {
+                live: value.clone(),
+                last_emitted: value.clone(),
+            });
+            // Echo vs programmatic: see `TextBuffer`.
+            if *value != buf.last_emitted {
+                buf.live = value.clone();
+                buf.last_emitted = value.clone();
+            }
+            let changed = ui
+                .add(
+                    egui::TextEdit::singleline(&mut buf.live)
+                        .font(egui::FontId::monospace(UI_FONT_SIZE)),
+                )
+                .changed();
+            if changed {
+                buf.last_emitted = buf.live.clone();
+                state.events.push(UiEvent {
+                    slot: *slot,
+                    kind: UiEventKind::TextChanged(buf.live.clone()),
+                });
+            }
+        }
     }
 }
 
@@ -306,6 +415,10 @@ pub struct UiOutput {
     /// egui is using the pointer (hovering/clicking a widget), so the shell
     /// must NOT treat a click as a free-look recapture (the scrubber rule).
     pub wants_pointer: bool,
+    /// egui wants the keyboard (a text input is focused): the shell routes
+    /// keys to the overlay as [`UiKeyboardEvent`]s and suppresses the game's
+    /// `input` hook (docs/ui-interaction.md U4).
+    pub wants_keyboard: bool,
 }
 
 pub struct TextOverlay {
@@ -316,6 +429,8 @@ pub struct TextOverlay {
     /// Per-slot slider reconciliation state, kept across frames (see
     /// [`SliderBuffer`]); entries whose slot leaves the view are dropped.
     sliders: std::collections::HashMap<u32, SliderBuffer>,
+    /// Per-slot text-input editing buffers (see [`TextBuffer`]), same rules.
+    texts: std::collections::HashMap<u32, TextBuffer>,
 }
 
 impl TextOverlay {
@@ -331,6 +446,7 @@ impl TextOverlay {
             gl,
             pointer: PointerBridge::default(),
             sliders: std::collections::HashMap::new(),
+            texts: std::collections::HashMap::new(),
         }
     }
 
@@ -369,43 +485,53 @@ impl TextOverlay {
     /// height and spacing come from the rendered font (no manual metrics, no
     /// overlap). `width`/`height` are physical framebuffer pixels. `pointer`
     /// drives the view's interactive widgets ([`PointerState::default`] for a
-    /// display-only pass); interactions come back slot-stamped in the
-    /// [`UiOutput`] for the shell to forward to `GameProducer::ui_event`.
+    /// display-only pass) and `keyboard` feeds a focused text input (empty
+    /// unless the shell saw `wants_keyboard` last frame); interactions come
+    /// back slot-stamped in the [`UiOutput`] for the shell to forward to
+    /// `GameProducer::ui_event`.
     pub fn draw_view(
         &mut self,
         width: u32,
         height: u32,
         pixels_per_point: f32,
         pointer: PointerState,
+        keyboard: &[UiKeyboardEvent],
         view: &View,
     ) -> UiOutput {
         // Tick the bridge even when nothing draws, so button edges spanning
         // an Empty frame don't replay as phantom clicks later.
-        let pointer_events = self.pointer.events(pointer, pixels_per_point);
+        let mut input_events = self.pointer.events(pointer, pixels_per_point);
+        for event in keyboard {
+            keyboard_to_egui(*event, &mut input_events);
+        }
         if matches!(view, View::Empty) {
             // Still feed egui any release/PointerGone the bridge synthesized:
             // a view hidden mid-press must not leave the context holding a
             // stuck press for the view's return. [xreview]
-            if !pointer_events.is_empty() {
-                self.run_and_paint(width, height, pixels_per_point, pointer_events, |_| {});
+            if !input_events.is_empty() {
+                self.run_and_paint(width, height, pixels_per_point, input_events, |_| {});
             }
             return UiOutput::default();
         }
         // A zero-size frame never runs the build (`run_and_paint` bails), so
         // bail BEFORE the buffer sweep below — a minimized window must not
-        // wipe every slider buffer via an all-unseen retain. [xreview]
+        // wipe every widget buffer via an all-unseen retain. [xreview]
         if width == 0 || height == 0 {
             return UiOutput::default();
         }
         let mut events = Vec::new();
         let mut seen_sliders = std::collections::HashSet::new();
+        let mut seen_texts = std::collections::HashSet::new();
         // Moved out for the pass — `run_and_paint` borrows self mutably too.
         let mut sliders = std::mem::take(&mut self.sliders);
-        self.run_and_paint(width, height, pixels_per_point, pointer_events, |ui| {
+        let mut texts = std::mem::take(&mut self.texts);
+        self.run_and_paint(width, height, pixels_per_point, input_events, |ui| {
             let mut state = UiFrameState {
                 events: &mut events,
                 sliders: &mut sliders,
                 seen_sliders: &mut seen_sliders,
+                texts: &mut texts,
+                seen_texts: &mut seen_texts,
             };
             match view {
                 // A panel anchors itself; a bare root sits at the top-left with a margin.
@@ -422,10 +548,13 @@ impl TextOverlay {
         // A slot that left the view is a different widget if it ever returns
         // (positional identity) — drop its buffer rather than resurrect it.
         sliders.retain(|slot, _| seen_sliders.contains(slot));
+        texts.retain(|slot, _| seen_texts.contains(slot));
         self.sliders = sliders;
+        self.texts = texts;
         UiOutput {
             events,
             wants_pointer: self.ctx.egui_wants_pointer_input(),
+            wants_keyboard: self.ctx.egui_wants_keyboard_input(),
         }
     }
 
@@ -831,4 +960,144 @@ mod tests {
         let events = bridge.events(on(200.0, 100.0, false), 2.0);
         assert!(matches!(events[0], egui::Event::PointerMoved(p) if p == egui::pos2(100.0, 50.0)));
     }
+
+    /// Run one HEADLESS egui frame (no painter/GL — only painting needs a
+    /// context) over a view, returning the widget events it produced.
+    fn run_widget_frame(
+        ctx: &egui::Context,
+        input: Vec<egui::Event>,
+        texts: &mut std::collections::HashMap<u32, TextBuffer>,
+        view: &View,
+    ) -> Vec<UiEvent> {
+        let mut events = Vec::new();
+        let mut sliders = std::collections::HashMap::new();
+        let mut seen_sliders = std::collections::HashSet::new();
+        let mut seen_texts = std::collections::HashSet::new();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events: input,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| {
+            let mut state = UiFrameState {
+                events: &mut events,
+                sliders: &mut sliders,
+                seen_sliders: &mut seen_sliders,
+                texts,
+                seen_texts: &mut seen_texts,
+            };
+            render_view(ui, view, &mut state);
+        });
+        events
+    }
+
+    /// The risky U4 path, exercised headlessly end to end: click to focus the
+    /// field, type through egui's `TextEdit`, and check both reconciliation
+    /// rules — the emitted echo leaves the buffer alone, a programmatic model
+    /// change resets it.
+    #[test]
+    fn typing_into_a_focused_text_input_emits_and_reconciles() {
+        let ctx = egui::Context::default();
+        let mut texts = std::collections::HashMap::new();
+        let view = |value: &str| View::TextInput {
+            slot: 0,
+            value: value.to_string(),
+        };
+
+        // Warmup: egui hit-tests input against the PREVIOUS frame's widget
+        // rects, so the field must exist for a frame before a click can land.
+        assert!(run_widget_frame(&ctx, Vec::new(), &mut texts, &view("cube")).is_empty());
+
+        // Then click inside the field (it renders at the top-left of the
+        // root Ui, rect ~280x19) to focus it. egui needs both button edges.
+        let click_pos = egui::pos2(30.0, 12.0);
+        let press = vec![
+            egui::Event::PointerMoved(click_pos),
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+        ];
+        assert!(run_widget_frame(&ctx, press, &mut texts, &view("cube")).is_empty());
+        let release = vec![egui::Event::PointerButton {
+            pos: click_pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        }];
+        assert!(run_widget_frame(&ctx, release, &mut texts, &view("cube")).is_empty());
+        assert!(ctx.egui_wants_keyboard_input(), "click should focus the field");
+
+        // Frame 3: a typed character (the shell's Char event, lowered the
+        // same way draw_view lowers it) must emit exactly one TextChanged.
+        let mut typed = Vec::new();
+        keyboard_to_egui(UiKeyboardEvent::Char('s'), &mut typed);
+        let events = run_widget_frame(&ctx, typed, &mut texts, &view("cube"));
+        assert_eq!(events.len(), 1);
+        let UiEventKind::TextChanged(new_text) = &events[0].kind else {
+            panic!("expected TextChanged, got {:?}", events[0].kind);
+        };
+        assert!(new_text.contains('s'), "typed char should land: {new_text:?}");
+        let emitted = new_text.clone();
+
+        // Frame 4 — the ECHO: the model comes back equal to what we emitted;
+        // the buffer must be left alone and nothing re-emitted.
+        assert!(run_widget_frame(&ctx, Vec::new(), &mut texts, &view(&emitted)).is_empty());
+        assert_eq!(texts.get(&0).unwrap().live, emitted);
+
+        // Frame 5 — PROGRAMMATIC: a model value that isn't our echo (a game
+        // reset) snaps the buffer to it.
+        assert!(run_widget_frame(&ctx, Vec::new(), &mut texts, &view("reset")).is_empty());
+        assert_eq!(texts.get(&0).unwrap().live, "reset");
+        assert_eq!(texts.get(&0).unwrap().last_emitted, "reset");
+    }
+
+    /// Backspace through the synthesized edit-key pair deletes in a focused
+    /// field — the editing-key half of the keyboard path.
+    #[test]
+    fn backspace_edits_a_focused_text_input() {
+        let ctx = egui::Context::default();
+        let mut texts = std::collections::HashMap::new();
+        let view = View::TextInput {
+            slot: 0,
+            value: "ab".to_string(),
+        };
+
+        // Warmup so the click can hit (see the sibling test), then focus
+        // with a click; End pins the cursor after the last char.
+        let _ = run_widget_frame(&ctx, Vec::new(), &mut texts, &view);
+        let click_pos = egui::pos2(30.0, 12.0);
+        let mut input = vec![
+            egui::Event::PointerMoved(click_pos),
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ];
+        keyboard_to_egui(UiKeyboardEvent::Edit(UiEditKey::End), &mut input);
+        let _ = run_widget_frame(&ctx, input, &mut texts, &view);
+
+        let mut backspace = Vec::new();
+        keyboard_to_egui(UiKeyboardEvent::Edit(UiEditKey::Backspace), &mut backspace);
+        let events = run_widget_frame(&ctx, backspace, &mut texts, &view);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].kind,
+            UiEventKind::TextChanged(s) if s == "a"
+        ));
+    }
+
 }

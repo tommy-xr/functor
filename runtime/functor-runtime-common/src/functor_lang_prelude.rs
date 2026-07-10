@@ -62,11 +62,12 @@
 //! Ui.topLeft() / topRight() / bottomLeft() / bottomRight()  -> Anchor
 //! Ui.button(label, msg)                                     -> View
 //! Ui.slider(min, max, value, tagger)                        -> View
+//! Ui.textInput(value, tagger)                               -> View
 //!   (the optional `ui = (model) => …` hook's tree. `Ui.panel` takes the
 //!    view LAST, so it pipes. The interactive widgets fold through
 //!    `update` — docs/ui-interaction.md: a button click delivers `msg`
-//!    verbatim (the Sub.every shape); a slider drag applies `tagger` to
-//!    the new value (the Effect.now shape).)
+//!    verbatim (the Sub.every shape); a slider drag / text edit applies
+//!    `tagger` to the new value (the Effect.now shape).)
 //! Skybox.files(px, nx, py, ny, pz, nz)                       -> Skybox
 //! Frame.withSkybox(sky, frame)                               -> Frame
 //!   (a cubemap sky drawn behind everything; while the six faces load the
@@ -906,6 +907,7 @@ const PATHS: &[&str] = &[
     "Ui.bottomRight",
     "Ui.button",
     "Ui.slider",
+    "Ui.textInput",
     "Time.seconds",
     "Time.millis",
     "Sub.none",
@@ -2168,6 +2170,24 @@ the new value, got {}",
                     other.kind_name()
                 )),
                 _ => usage("Ui.slider(min, max, value, tagger) — tagger: (newValue) => msg"),
+            },
+            // A single-line text input showing the MODEL's text (controlled,
+            // docs/ui-interaction.md U4). The tagger is applied to the new
+            // text on each edit — the `Effect.now` tagger shape.
+            "Ui.textInput" => match args.as_slice() {
+                [Value::String(value), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
+                    let slot = push_ui_handler(UiHandler::Tagger(tagger.clone()));
+                    Ok(host(FunctorLangView(View::TextInput {
+                        slot,
+                        value: value.to_string(),
+                    })))
+                }
+                [_, other] => err(format!(
+                    "Ui.textInput(value, tagger): the tagger must be a function of \
+the new text, got {}",
+                    other.kind_name()
+                )),
+                _ => usage("Ui.textInput(value, tagger) — tagger: (newText) => msg"),
             },
             "Time.seconds" => match args.as_slice() {
                 [n] => Ok(host(FunctorLangDuration(num(n, span)?))),
@@ -5114,6 +5134,33 @@ the new value, got a number"
         assert_eq!(
             run_fail("let main = () => Ui.slider(5.0, 5.0, 5.0, (v) => v)"),
             "Ui.slider: max (5) must be greater than min (5)"
+        );
+        let _ = take_ui_handlers();
+    }
+
+    // Ui.textInput (docs/ui-interaction.md U4): the text sibling of the
+    // slider — registers its tagger, carries the model's value, rejects a
+    // non-function tagger.
+    #[test]
+    fn ui_text_input_registers_its_tagger_and_validates() {
+        let _ = take_ui_handlers();
+        let value = eval(
+            "type Msg = | SetName(s: String)\n\
+             let main = () => Ui.textInput(\"functor\", SetName)",
+        );
+        let view = view_value(&value).expect("main should return a View");
+        assert_eq!(
+            serde_json::to_string(view).unwrap(),
+            r#"{"TextInput":{"slot":0,"value":"functor"}}"#
+        );
+        let handlers = take_ui_handlers();
+        assert_eq!(handlers.len(), 1);
+        assert!(matches!(&handlers[0], UiHandler::Tagger(_)));
+
+        assert_eq!(
+            run_fail("let main = () => Ui.textInput(\"x\", 42.0)"),
+            "Ui.textInput(value, tagger): the tagger must be a function of \
+the new text, got a number"
         );
         let _ = take_ui_handlers();
     }

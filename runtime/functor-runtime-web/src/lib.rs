@@ -1235,18 +1235,22 @@ async fn run_async() -> Result<(), JsValue> {
             // While the clock is pinned, events would be dropped anyway (the
             // window-input rule) — hide the pointer from egui entirely so a
             // paused interaction can't visually engage widgets or fight the
-            // slider reconciliation (the desktop rule). [xreview]
+            // slider reconciliation (the desktop rule), and discard queued
+            // focused-field keys the same way. [xreview]
             let mut ui_pointer = functor_lang_game::ui_pointer_state(dpr);
             if clock.is_pinned() {
                 ui_pointer.pos = None;
             }
+            let ui_keys = functor_lang_game::drain_ui_keys(!clock.is_pinned());
             let ui_out = text_overlay.draw_view(
                 canvas.width(),
                 canvas.height(),
                 dpr,
                 ui_pointer,
+                &ui_keys,
                 &view,
             );
+            functor_lang_game::set_ui_wants_keyboard(ui_out.wants_keyboard);
             if !clock.is_pinned() {
                 for event in ui_out.events {
                     game.ui_event(event);
