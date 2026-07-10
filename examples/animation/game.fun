@@ -66,11 +66,13 @@ let idleWeight = (s: float): float => Math.clamp01(1.0 - s * 2.0)
 let walkWeight = (s: float): float => Math.clamp01(1.0 - absF(s - 0.5) * 2.0)
 let runWeight = (s: float): float => Math.clamp01(s * 2.0 - 1.0)
 
+// Clip names come from the generated `assets.fun` (`functor import`) — a typo
+// in a typed constant is a check-time error, not a silent bind pose.
 let locomotion = (s: float, tts: float): Anim.t =>
   Anim.blend([
-    (Anim.clip("idle", tts), idleWeight(s)),
-    (Anim.clip("walk", tts), walkWeight(s)),
-    (Anim.clip("run", tts), runWeight(s)),
+    (Anim.clip(Assets.xbot.idle.name, tts), idleWeight(s)),
+    (Anim.clip(Assets.xbot.walk.name, tts), walkWeight(s)),
+    (Anim.clip(Assets.xbot.run.name, tts), runWeight(s)),
   ])
 
 // The full pose: the locomotion blend with the head aimed on top — an

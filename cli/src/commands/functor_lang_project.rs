@@ -400,7 +400,9 @@ fn entry_escapes_project(entry: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{entry_escapes_project, nth_line};
+    #[cfg(feature = "web")]
+    use super::entry_escapes_project;
+    use super::nth_line;
 
     #[test]
     fn nth_line_returns_the_1_based_line_without_newline() {
@@ -417,12 +419,14 @@ mod tests {
         assert_eq!(nth_line("", 1), None);
     }
 
+    #[cfg(feature = "web")]
     #[test]
     fn entries_inside_the_project_are_servable() {
         assert!(!entry_escapes_project("game.fun"));
         assert!(!entry_escapes_project("src/game.fun"));
     }
 
+    #[cfg(feature = "web")]
     #[test]
     fn escaping_entries_are_rejected() {
         assert!(entry_escapes_project("../shared/game.fun"));

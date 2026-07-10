@@ -146,6 +146,17 @@ drives the built-in desktop runtime in-process from the game dir; it **interpret
 text and is interpreted by the embedded web runtime. `develop` is `run` (hot-reload is built in; on
 wasm, reload the page).
 
+**Generate typed asset names.** `import` scans the project dir's `*.glb`/`*.gltf` (headless, no
+GPU) and writes a generated `assets.fun` module of typed clip constants — one record per model,
+one `{ name, duration }` field per animation clip — so `Anim.clip(Assets.xbot.walk.name, tts)`
+is a check-time error when the clip doesn't exist (a bare string typo silently renders the bind
+pose). Rerun it after models change and check the generated file in (it typechecks without the
+gitignored models):
+
+```sh
+./target/debug/functor -d examples/animation import   # writes examples/animation/assets.fun
+```
+
 **Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|parse|ir <file.fun>`
 drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the
 `functor-lang` skill.
