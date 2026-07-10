@@ -89,15 +89,11 @@ let draw = (model, tts) =>
     Camera.lookAt(0.0, 1.4, -3.2, 0.0, 0.9, 0.0),
     Scene.group([
       Scene.plane() |> Scene.scale(10.0) |> Scene.lit(0.42, 0.47, 0.55),
-      // Xbot's skinned pose comes out in raw Mixamo rig space (cm, lying
-      // along -Z): the loader drops the Armature node's transform (a known
-      // skinning bug — see docs/todo.md). Compensate: stand it up, face the
-      // camera, meter scale.
+      // Xbot stands ~1.8 units tall, Y-up, at authored scale; glTF forward
+      // is +Z, so turn it to face the camera.
       Scene.model("Xbot.glb")
         |> Scene.animate(pose(model, tts))
-        |> Scene.rotateX(Angle.degrees(90.0))
-        |> Scene.rotateY(Angle.degrees(180.0))
-        |> Scene.scale(0.01),
+        |> Scene.rotateY(Angle.degrees(180.0)),
     ]),
     [
       Light.ambient(0.25, 0.25, 0.3),

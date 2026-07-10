@@ -769,7 +769,19 @@ named \"{name}\" — {hint}"
                             let mut override_material_description: Option<&MaterialDescription> =
                                 None;
 
-                            let mut matrix = matrix * mesh.transform;
+                            // glTF 2.0: "When a mesh is skinned, the transform
+                            // of the node that references the mesh MUST be
+                            // ignored; only the joint transforms apply." The
+                            // skeleton already carries the full chain up to
+                            // the scene root, so a skinned mesh takes only the
+                            // Scene-graph transform; static meshes keep their
+                            // node transform. This matrix also feeds the
+                            // depth/shadow pass (the material choice above),
+                            // so shadows agree with the main pass.
+                            let mut matrix = match is_skinned {
+                                true => matrix,
+                                false => matrix * mesh.transform,
+                            };
 
                             for (_selector, override_) in &model_description.overrides {
                                 match override_ {

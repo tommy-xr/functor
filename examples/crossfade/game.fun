@@ -69,14 +69,12 @@ let tick = (model, dt, tts) =>
            anim: Animator.play(clipOf(index), tts, m.anim) }
      | false => { m with timer: timer })
 
-// Xbot's skinned pose comes out in raw Mixamo rig space (a known skinning
-// bug — see docs/todo.md): stand it up, face the camera, meter scale.
+// Xbot stands ~1.8 units tall, Y-up, at authored scale; glTF forward is +Z,
+// so turn each figure to face the camera.
 let figure = (anim: Anim.t, x: float): Scene.t =>
   Scene.model("Xbot.glb")
     |> Scene.animate(anim)
-    |> Scene.rotateX(Angle.degrees(90.0))
     |> Scene.rotateY(Angle.degrees(180.0))
-    |> Scene.scale(0.01)
     |> Scene.translate(x, 0.0, 0.0)
 
 let draw = (model, tts) =>

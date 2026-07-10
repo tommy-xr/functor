@@ -142,21 +142,22 @@ let terrain = () =>
     |> Scene.litTexture(dirtTexture)
 
 // A lineup of glTF samples from BabylonJS/Assets exercising the model
-// pipeline. Skinned + animated: shark, fish, Xbot. Non-skinned:
-// ExplodingBarrel. Raw model units vary wildly (the barrel is ~72 units
-// tall, Xbot is Mixamo-style cm scale), hence the per-model scales.
+// pipeline. Skinned + animated: shark, fish, Xbot — these render at their
+// skeletons' authored world scale (Xbot stands ~1.8 units tall). Raw units
+// still vary between assets (fish.glb is a whole multi-fish scene ~45
+// units across), hence the per-model scales.
 let models = () =>
   Scene.group([
     Scene.model("shark.glb")
-      |> Scene.scale(0.002)
+      |> Scene.scale(0.2)
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.translate(3.0, 1.0, 3.0),
     Scene.model("fish.glb")
-      |> Scene.scale(0.002)
-      |> Scene.translate(-3.0, 1.0, 3.0),
+      |> Scene.scale(0.06)
+      |> Scene.translate(-4.5, 0.8, 4.0),
     Scene.model("Xbot.glb")
-      |> Scene.scale(0.015)
-      |> Scene.translate(1.5, -1.0, 3.0),
+      |> Scene.rotateY(Angle.degrees(180.0))
+      |> Scene.translate(0.9, -0.2, 3.0),
     Scene.model("ExplodingBarrel.glb")
       |> Scene.scale(0.02)
       |> Scene.translate(0.0, -1.5, 3.0),

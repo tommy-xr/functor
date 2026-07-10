@@ -24,20 +24,14 @@ golden tests), see `CLAUDE.md` and `git log`.
 
 ## Rendering
 
-- [ ] Skinning-space bug: the loader builds the skeleton from `skin.joints()`
-      only, dropping the transform of ancestor nodes above the skin root (the
-      Mixamo Armature's cm→m scale + orientation), and the renderer multiplies
-      the skinned mesh's own node transform (the glTF spec says to IGNORE it
-      for skinned meshes). Net effect: Xbot's skinned pose renders cm-scale
-      lying along -Z (`functor inspect model Xbot.glb --time 0.8` shows the
-      skinned AABB), and every skinned example compensates with eyeballed
-      scales/rotations (`examples/animation` documents the workaround).
-      Fixing this changes the rendered size of every skinned model — its own
-      PR, with all examples re-verified and goldens regenerated.
 - [ ] Skinned-material cleanup: select the material per-mesh by skin presence
       instead of forcing `SkinnedMaterial` on every model; move the green joint
       debug-markers and per-frame `Animating` println off the render path;
       revisit `MAX_JOINTS 200` (800 uniform vec4s) vs the WebGL2 minimum guarantee.
+      (Skinning-space bug fixed 2026-07-10 — the skeleton now includes the
+      ancestor chain above the skin root and the renderer ignores a skinned
+      mesh's node transform per the glTF spec, so skinned models render at
+      authored world scale.)
 - [ ] Dynamic mesh (+ emissive texture material).
 - [ ] Lighting: ambient, point, directional, ambient/positional fog, spot →
       shadow mapping. (Distance fog done 2026-07-04 — `Frame.withFog`,

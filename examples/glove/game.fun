@@ -96,11 +96,12 @@ let draw = (model, tts) =>
     Scene.group([
       Scene.plane() |> Scene.scale(6.0) |> Scene.translate(0.0, -0.25, 0.0)
         |> Scene.lit(0.42, 0.47, 0.55),
+      // The glove renders at its authored size (~0.2 units — a real hand):
+      // authored palm-down with the fingers along +Z, so tip it up to show
+      // the back of the hand (and the finger curls) to the camera.
       Scene.model("vr_glove_model.glb")
         |> Scene.animate(handPose(model.curls))
-        |> Scene.rotateX(Angle.degrees(-60.0))
-        |> Scene.rotateY(Angle.degrees(180.0))
-        |> Scene.scale(0.02),
+        |> Scene.rotateX(Angle.degrees(-70.0)),
     ]),
     [
       Light.ambient(0.45, 0.45, 0.5),

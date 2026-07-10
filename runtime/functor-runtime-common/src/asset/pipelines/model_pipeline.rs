@@ -5,7 +5,9 @@ use cgmath::{vec2, vec3, vec4, Matrix4, Quaternion};
 use gltf::{buffer::Source as BufferSource, image::Source as ImageSource};
 
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
-use crate::model::{Model, ModelMesh, Skeleton, SkeletonBuilder};
+use crate::model::{
+    build_skeleton_from_skin, document_hierarchy, HierarchyNode, Model, ModelMesh, Skeleton,
+};
 use crate::render::VertexPositionTextureSkinned;
 use crate::{
     asset::{AssetCache, AssetPipeline},
@@ -69,12 +71,17 @@ impl AssetPipeline<Model> for ModelPipeline {
 
         let mut maybe_skeleton: Option<Skeleton> = None;
 
+        // The full node hierarchy, so the skeleton can include ancestor
+        // nodes above the skin root (see `build_skeleton_from_skin`).
+        let hierarchy = document_hierarchy(&document);
+
         for scene in document.scenes() {
             for node in scene.nodes() {
                 process_node(
                     &node,
                     &buffers_data,
                     &images_data,
+                    &hierarchy,
                     &mut meshes,
                     &mut maybe_skeleton,
                 );
@@ -105,6 +112,7 @@ fn process_node(
     node: &gltf::Node,
     buffers: &[gltf::buffer::Data],
     images: &[TextureData],
+    hierarchy: &HashMap<usize, HierarchyNode>,
     meshes: &mut Vec<ModelMesh>,
     maybe_skeleton: &mut Option<Skeleton>,
 ) {
@@ -260,40 +268,18 @@ fn process_node(
             })
             .unwrap_or_default();
 
-        let joints = skin.joints().collect::<Vec<_>>();
+        let joint_node_indices = skin.joints().map(|j| j.index()).collect::<Vec<_>>();
 
-        // Figure out the parent index from joint index
-        let mut joint_index_to_parent_index: HashMap<usize, usize> = HashMap::new();
-        for joint in joints.iter() {
-            for children in joint.children() {
-                joint_index_to_parent_index.insert(children.index(), joint.index());
-            }
-        }
-
-        let mut skeleton_builder = SkeletonBuilder::create(inverse_bind_matrices);
-
-        for (i, joint) in joints.iter().enumerate() {
-            let name = joint.name().unwrap_or("None");
-            let transform = joint.transform().matrix().into();
-
-            let parent_index_i32 = joint_index_to_parent_index
-                .get(&joint.index())
-                .map(|u| *u as i32);
-
-            skeleton_builder.add_joint(
-                i,
-                joint.index() as i32,
-                name.to_owned(),
-                parent_index_i32,
-                transform,
-            );
-        }
-
-        *maybe_skeleton = Some(skeleton_builder.build());
+        // NOTE: multiple skins still last-wins into the single model skeleton.
+        *maybe_skeleton = Some(build_skeleton_from_skin(
+            inverse_bind_matrices,
+            &joint_node_indices,
+            hierarchy,
+        ));
     }
 
     for child in node.children() {
-        process_node(&child, buffers, images, meshes, maybe_skeleton);
+        process_node(&child, buffers, images, hierarchy, meshes, maybe_skeleton);
     }
 }
 
