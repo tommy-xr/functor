@@ -33,7 +33,7 @@ use crate::functor_lang_prelude::{
     contains_effect, deliver_physics_events, drain_effects, frame_value, http_response_value,
     needs_update, net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
     physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
-    take_http_tagger, EffectLog, EffectRunner, EffectTree, FakeEffects, FunctorHost, NetEventKind,
+    take_http_tagger, DryRunEffects, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind,
 };
 use crate::input::{Key, RecordedInput};
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
@@ -325,20 +325,16 @@ impl FrameCtx<'_> {
     ///
     /// The determinism boundary — where the projected model diverges from a
     /// live continuation (the physics WORLD snapshot is always exact):
-    /// - wall-clock `Now` / unseeded `Random` reads (the runner is deterministic
-    ///   here, so a game reading real time/entropy in the frame body won't
-    ///   match); a `tts`-driven / seeded game DOES match, since `tts` is
-    ///   supplied and the runner is deterministic.
-    /// - physics READBACK in the frame body (`Physics.position` /
-    ///   `Physics.transformed` / `Physics.raycast` / `Physics.timelineFrame`)
-    ///   resolves against the LIVE `DEFAULT_WORLD`, not this throwaway world, and
-    ///   physics COMMANDS (`applyImpulse` / `teleport` / …) are suppressed rather
-    ///   than applied to the throwaway world — so a game that reads physics state
-    ///   or issues physics commands from `tick` / `update` / `subscriptions`
-    ///   projects only approximately. Closing this needs a world-scoped host
-    ///   (follow-up, alongside the input log). The coast case the T6b test covers
-    ///   — a frame body that neither reads physics nor commands it — matches
-    ///   exactly, model AND world.
+    /// wall-clock `Now` / unseeded `Random` reads (the runner is deterministic
+    /// here, so a game reading real time/entropy in the frame body won't
+    /// match); a `tts`-driven / seeded game DOES match, since `tts` is
+    /// supplied and the runner is deterministic. Physics is NOT a boundary:
+    /// the caller scopes the throwaway world active
+    /// ([`physics::ActiveWorldScope`]), so readback in the frame body
+    /// (`Physics.position` / `Physics.transformed` / `Physics.raycast`)
+    /// answers against the projected world and physics COMMANDS
+    /// (`applyImpulse` / `teleport` / …) apply to it — a replayed kick kicks
+    /// the ghost.
     ///
     /// `inputs` is the recorded input log, now indexed per FINE step (not per
     /// division): index `s` = fine step `s`'s events, i.e. fork frame
@@ -716,13 +712,15 @@ impl Drop for DryWorld {
 /// The producer entry the shell / T6d call to run a deterministic headless
 /// forward-step (docs/time-travel.md T6b, forward-ghosting). It assembles a
 /// DRY-RUN [`FrameCtx`] over entirely THROWAWAY state — a cloned model, a
-/// silencing reporter, fresh logs/queues, a deterministic [`FakeEffects`]
+/// silencing reporter, fresh logs/queues, a deterministic [`DryRunEffects`]
 /// runner, `suppress_outbound = true`, and (when the game has physics) a
 /// throwaway physics world seeded from a snapshot of the live
-/// [`physics::DEFAULT_WORLD`] driven by a fresh [`SteppedPhysics::for_world`]
-/// — then steps the scene forward at the fine `sub_dt` (`steps_per_division`
-/// sub-ticks per snapshot), returning the stepped `(model, world-snapshot)` at
-/// each of the `divisions` division boundaries.
+/// [`physics::DEFAULT_WORLD`], driven by a fresh [`SteppedPhysics::for_world`]
+/// and scoped ACTIVE ([`physics::ActiveWorldScope`]) so game-code physics
+/// readback and commands resolve against it — then steps the scene forward at
+/// the fine `sub_dt` (`steps_per_division` sub-ticks per snapshot), returning
+/// the stepped `(model, world-snapshot)` at each of the `divisions` division
+/// boundaries.
 ///
 /// The live producer state (model, world, recorder, clock, and the global
 /// effect / net / audio queues) is COMPLETELY untouched: the throwaway world
@@ -765,11 +763,18 @@ pub fn forward_step_scene(
         Some(dry) => SteppedPhysics::for_world(dry.0),
         None => SteppedPhysics::new(),
     };
+    // Scope game-code physics to the throwaway world for the whole step:
+    // readbacks (`Physics.position` / `Physics.transformed` / `Physics.raycast`)
+    // in the stepped frame bodies answer against the PROJECTED world, and
+    // replayed commands (a recorded kick) apply to it — never the live world.
+    let _world_scope = dry_world
+        .as_ref()
+        .map(|dry| physics::ActiveWorldScope::enter(dry.0));
 
     let mut model = model.clone();
     let mut physics_status = (0u64, false, 0u64);
     let mut recorder = SceneRecorder::new();
-    let mut effect_runner = FakeEffects::new(0.0, vec![0.0]);
+    let mut effect_runner = DryRunEffects::new();
     let mut effect_log = EffectLog::new();
     let mut deferred_queries: Vec<EffectTree> = Vec::new();
     let mut pending_events: Vec<PhysicsEvent> = Vec::new();
@@ -808,9 +813,9 @@ pub fn forward_step_scene(
         ctx.step_scene_forward(divisions, steps_per_division, sub_dt, start_tts, inputs)
     };
 
-    // `dry_world`'s `Drop` removes the throwaway world here (and on any unwind
-    // from the step above), leaving the registry as found.
-    drop(dry_world);
+    // Natural drop order (declaration-reverse, also on unwind) restores the
+    // world scope FIRST, then `dry_world`'s `Drop` removes the throwaway world
+    // — so `active_world()` never points at a removed world.
     result
 }
 
@@ -818,8 +823,10 @@ pub fn forward_step_scene(
 /// both shells' `GameProducer::ghost_frames`. Step the scene forward over a
 /// window of `divisions` divisions, each `dt` wide, from `start_tts` (a dry run
 /// over throwaway state via [`forward_step_scene`] — the live producer is
-/// untouched), then `draw` each stepped model at its division-boundary time and
-/// return the frames for the shell to composite. To keep velocity-integrated
+/// untouched), then `draw` each stepped model at its division-boundary time —
+/// with that division's stepped WORLD snapshot scoped active, so
+/// `Physics.transformed` / `Physics.position` in `draw` render the projected
+/// poses — and return the frames for the shell to composite. To keep velocity-integrated
 /// motion (mario's jump) faithful, each division is advanced in FINE
 /// `sub_dt = 1/60` sub-steps (`steps_per_division ≈ dt / sub_dt`) and sampled
 /// only at the boundary, so the strobe still has `divisions` frames but each is
@@ -883,8 +890,28 @@ pub fn ghost_frames(
         steps_per_division,
         inputs,
     );
+    // Ghost draws must read the PROJECTED world: `Physics.transformed` /
+    // `Physics.position` in `draw` resolve against the active world, so each
+    // division's stepped world snapshot is restored into a throwaway world
+    // scoped active for that division's draw — otherwise every ghost frame
+    // would render physics bodies at the paused LIVE pose. One throwaway world
+    // is reused across divisions (each restore overwrites it); the `DryWorld`
+    // guard removes it on every exit path.
+    let draw_world = stepped
+        .iter()
+        .any(|(_, w)| w.is_some())
+        .then(|| DryWorld(physics::create_world([0.0, -9.81, 0.0])));
     let mut frames = Vec::with_capacity(stepped.len());
-    for (i, (model_i, _world)) in stepped.iter().enumerate() {
+    for (i, (model_i, world_i)) in stepped.iter().enumerate() {
+        let _world_scope = match (&draw_world, world_i) {
+            (Some(dry), Some(bytes)) => {
+                physics::with_world(dry.0, |w| {
+                    let _ = w.restore(bytes);
+                });
+                Some(physics::ActiveWorldScope::enter(dry.0))
+            }
+            _ => None,
+        };
         // Match forward_step_scene's f32 division-boundary tts exactly, so
         // each redrawn frame's tts equals the tts its model was stepped at.
         let tts = (start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt) as f64;

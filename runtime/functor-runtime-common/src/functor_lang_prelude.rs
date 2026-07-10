@@ -313,6 +313,16 @@ pub fn ray_result_value(hit: Option<physics::RayHit>) -> EffectValue {
     ])
 }
 
+/// A raycast against the ACTIVE world (a world read, not an environment read)
+/// — shared by the live and dry-run runners, so both answer against whatever
+/// world is scoped (the live singleton, or a forward-step's throwaway world).
+fn active_world_raycast(origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
+    ray_result_value(
+        physics::with_world(physics::active_world(), |w| w.raycast(origin, dir, max_dist))
+            .flatten(),
+    )
+}
+
 /// The structured effect log keeps this many most-recent records — enforced
 /// INSIDE the drain, so the bound holds even mid-frame.
 pub const EFFECT_LOG_CAP: usize = 256;
@@ -413,10 +423,7 @@ impl EffectRunner for RealEffects {
         epoch_seconds()
     }
     fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
-        ray_result_value(
-            physics::with_world(physics::DEFAULT_WORLD, |w| w.raycast(origin, dir, max_dist))
-                .flatten(),
-        )
+        active_world_raycast(origin, dir, max_dist)
     }
     fn random(&mut self) -> f64 {
         // xorshift64*; map the top 53 bits into [0, 1).
@@ -474,6 +481,32 @@ impl EffectRunner for FakeEffects {
         let v = self.ray_hits[self.next_ray % self.ray_hits.len()].clone();
         self.next_ray += 1;
         v
+    }
+}
+
+/// The dry-run forward-step's runner (docs/time-travel.md T6b): ENVIRONMENT
+/// reads (`now`/`random`) are deterministic — the projection must not depend
+/// on wall clock or entropy — but a raycast is a WORLD read, not an
+/// environment read, so it answers against the ACTIVE world (the forward-step
+/// scopes that to its throwaway projected world) exactly like the live runner.
+pub struct DryRunEffects(FakeEffects);
+
+impl DryRunEffects {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> DryRunEffects {
+        DryRunEffects(FakeEffects::new(0.0, vec![0.0]))
+    }
+}
+
+impl EffectRunner for DryRunEffects {
+    fn now(&mut self) -> f64 {
+        self.0.now()
+    }
+    fn random(&mut self) -> f64 {
+        self.0.random()
+    }
+    fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
+        active_world_raycast(origin, dir, max_dist)
     }
 }
 
@@ -1534,7 +1567,7 @@ the game dir",
             // (reads like Physics.position — the live world, in-process).
             "Physics.timelineFrame" => match args.as_slice() {
                 [] => {
-                    let frame = physics::with_world(physics::DEFAULT_WORLD, |w| w.frame())
+                    let frame = physics::with_world(physics::active_world(), |w| w.frame())
                         .unwrap_or(0);
                     Ok(Value::Number(frame as f64))
                 }
@@ -2627,8 +2660,13 @@ dropping the rest"
                     physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
                 };
                 let tag = command.tag_and_kind().0.to_string();
-                if !suppress_outbound {
-                    physics::with_world(physics::DEFAULT_WORLD, |w| w.queue_command(command));
+                // Outbound suppression protects the LIVE world (a dry run must
+                // not kick real bodies) — but a dry-run world SCOPE routes
+                // commands to its own throwaway world, which is exactly where a
+                // replayed kick belongs (docs/time-travel.md T6b).
+                let target = physics::active_world();
+                if !suppress_outbound || target != physics::DEFAULT_WORLD {
+                    physics::with_world(target, |w| w.queue_command(command));
                 }
                 log.push(EffectRecord {
                     kind,
@@ -3000,10 +3038,12 @@ fn body_of(value: &Value) -> Option<&physics::Body> {
     }
 }
 
-/// Live pose of a body in the singleton world (the world the shell steps —
-/// same process, same crate statics as this prelude).
+/// Live pose of a body in the ACTIVE world (normally the singleton world the
+/// shell steps — same process, same crate statics as this prelude; under a
+/// dry-run forward-step scope, the throwaway projected world, so ghost draws
+/// read the stepped poses — docs/time-travel.md T6b).
 fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
-    physics::with_world(physics::DEFAULT_WORLD, |w| w.body_transform(tag)).flatten()
+    physics::with_world(physics::active_world(), |w| w.body_transform(tag)).flatten()
 }
 
 fn no_body(tag: &str) -> String {
@@ -3666,6 +3706,84 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         let scene3d = scene_of(&drawn).expect("a Scene");
         assert!((scene3d.xform.w.y as f64 - y).abs() < 1e-6);
 
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+    }
+
+    // The dry-run world scope (docs/time-travel.md T6b): under an
+    // ActiveWorldScope, game-code physics readback answers against the SCOPED world
+    // (the ghost's projected world), and a suppressed-outbound drain routes
+    // commands to it — a replayed kick belongs to the throwaway world. Outside
+    // the scope everything resolves to the default world, and a suppressed
+    // drain with NO scope still queues nothing
+    // (`suppress_outbound_logs_but_queues_nothing`).
+    #[test]
+    fn physics_reads_and_commands_follow_the_active_world_scope() {
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let ball_at = |y: f32| {
+            crate::physics::PhysicsScene::create(
+                [0.0, 0.0, 0.0],
+                vec![crate::physics::Body::dynamic(
+                    "ball".to_string(),
+                    crate::physics::Shape::Sphere { radius: 0.5 },
+                )
+                .at([0.0, y, 0.0])],
+            )
+        };
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.reconcile(&ball_at(5.0)));
+        let scoped = crate::physics::create_world([0.0, 0.0, 0.0]);
+        crate::physics::with_world(scoped, |w| w.reconcile(&ball_at(9.0)));
+
+        let ball_y = || {
+            let drawn = eval("let main = () => Scene.sphere() |> Physics.transformed(\"ball\")");
+            scene_of(&drawn).expect("a Scene").xform.w.y
+        };
+        assert!((ball_y() - 5.0).abs() < 1e-6, "unscoped read = default world");
+        {
+            let _scope = crate::physics::ActiveWorldScope::enter(scoped);
+            assert!((ball_y() - 9.0).abs() < 1e-6, "scoped read = scoped world");
+
+            // A suppressed drain (the dry-run forward-step) under the scope
+            // queues the command on the SCOPED world…
+            let effect = eval("let main = () => Physics.applyImpulse(\"ball\", 2.0, 0.0, 0.0)");
+            let Value::HostData(data) = &effect else {
+                panic!("expected an Effect");
+            };
+            let tree = &data
+                .as_any()
+                .downcast_ref::<FunctorLangEffect>()
+                .expect("Effect")
+                .0;
+            let module =
+                functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap())
+                    .unwrap();
+            let session = functor_lang::Session::load(&module, &mut FunctorHost)
+                .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
+            let mut model = Value::Number(0.0);
+            let mut log = EffectLog::new();
+            let mut runner = FakeEffects::new(0.0, vec![]);
+            let deferred = drain_effects(
+                &session,
+                &mut model,
+                tree.clone(),
+                &mut runner,
+                &mut log,
+                &mut |m| panic!("unexpected report: {m}"),
+                true, // suppress_outbound
+            );
+            assert!(deferred.is_empty(), "nothing should defer here");
+        }
+        crate::physics::with_world(scoped, |w| {
+            w.step_frame(1.0 / 60.0);
+            let v = w.body_velocity("ball").unwrap();
+            assert!(v[0] > 0.0, "impulse should land on the scoped world: {v:?}");
+        });
+        // …and the DEFAULT world got nothing.
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.step_frame(1.0 / 60.0);
+            let v = w.body_velocity("ball").unwrap();
+            assert_eq!(v[0], 0.0, "default world must be untouched: {v:?}");
+        });
+        crate::physics::remove_world(scoped);
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 
