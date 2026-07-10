@@ -57,16 +57,16 @@
 //!   (frame-level distance fog on every forward material, emissive included —
 //!    fog occludes glow; the fog color is also the pass's clear color)
 //! Ui.text(s) / Ui.textColor(r, g, b, s)                     -> View
-//! Ui.column([view, …])                                      -> View
+//! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
-//! Ui.topLeft()                                              -> Anchor
+//! Ui.topLeft() / topRight() / bottomLeft() / bottomRight()  -> Anchor
 //! Ui.button(label, msg)                                     -> View
-//!   (the optional `ui = (model) => …` hook's tree — hello's HUD shape:
-//!    text lines stacked in a column, pinned to a screen corner. Only the
-//!    corner the port needed exists; the rest arrive with a port that
-//!    needs them. `Ui.panel` takes the view LAST, so it pipes. `Ui.button`
-//!    is interactive: a click delivers `msg` verbatim through `update` —
-//!    docs/ui-interaction.md.)
+//! Ui.slider(min, max, value, tagger)                        -> View
+//!   (the optional `ui = (model) => …` hook's tree. `Ui.panel` takes the
+//!    view LAST, so it pipes. The interactive widgets fold through
+//!    `update` — docs/ui-interaction.md: a button click delivers `msg`
+//!    verbatim (the Sub.every shape); a slider drag applies `tagger` to
+//!    the new value (the Effect.now shape).)
 //! Skybox.files(px, nx, py, ny, pz, nz)                       -> Skybox
 //! Frame.withSkybox(sky, frame)                               -> Frame
 //!   (a cubemap sky drawn behind everything; while the six faces load the
@@ -898,9 +898,14 @@ const PATHS: &[&str] = &[
     "Ui.text",
     "Ui.textColor",
     "Ui.column",
+    "Ui.row",
     "Ui.panel",
     "Ui.topLeft",
+    "Ui.topRight",
+    "Ui.bottomLeft",
+    "Ui.bottomRight",
     "Ui.button",
+    "Ui.slider",
     "Time.seconds",
     "Time.millis",
     "Sub.none",
@@ -2091,6 +2096,36 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                 [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::TopLeft))),
                 _ => usage("Ui.topLeft()"),
             },
+            "Ui.topRight" => match args.as_slice() {
+                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::TopRight))),
+                _ => usage("Ui.topRight()"),
+            },
+            "Ui.bottomLeft" => match args.as_slice() {
+                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::BottomLeft))),
+                _ => usage("Ui.bottomLeft()"),
+            },
+            "Ui.bottomRight" => match args.as_slice() {
+                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::BottomRight))),
+                _ => usage("Ui.bottomRight()"),
+            },
+            "Ui.row" => match args.as_slice() {
+                [Value::List(items)] => {
+                    let mut views = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        match view_value(item) {
+                            Some(view) => views.push(view.clone()),
+                            None => {
+                                return err(format!(
+                                    "Ui.row items must be Views, got {}",
+                                    item.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(host(FunctorLangView(View::Row(views))))
+                }
+                _ => usage("Ui.row([view, …])"),
+            },
             // The first interactive widget (docs/ui-interaction.md U3). The
             // msg is any Functor Lang value (typically an ADT variant), registered in
             // the frame's handler table and delivered VERBATIM through
@@ -2105,6 +2140,34 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                     })))
                 }
                 _ => usage("Ui.button(\"label\", msg) — msg is delivered to update on click"),
+            },
+            // A slider over min..=max showing the MODEL's value (a controlled
+            // widget, docs/ui-interaction.md U4). The tagger is applied to
+            // the dragged value and the message folds through `update` — the
+            // `Effect.now` tagger shape.
+            "Ui.slider" => match args.as_slice() {
+                [min, max, value, tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
+                    let min = num(min, span)?;
+                    let max = num(max, span)?;
+                    if max <= min {
+                        return err(format!(
+                            "Ui.slider: max ({max}) must be greater than min ({min})"
+                        ));
+                    }
+                    let slot = push_ui_handler(UiHandler::Tagger(tagger.clone()));
+                    Ok(host(FunctorLangView(View::Slider {
+                        slot,
+                        min,
+                        max,
+                        value: num(value, span)?,
+                    })))
+                }
+                [_, _, _, other] => err(format!(
+                    "Ui.slider(min, max, value, tagger): the tagger must be a function of \
+the new value, got {}",
+                    other.kind_name()
+                )),
+                _ => usage("Ui.slider(min, max, value, tagger) — tagger: (newValue) => msg"),
             },
             "Time.seconds" => match args.as_slice() {
                 [n] => Ok(host(FunctorLangDuration(num(n, span)?))),
@@ -5018,6 +5081,41 @@ the game dir"
             }
             _ => panic!("both handlers should be verbatim msgs"),
         }
+    }
+
+    // Ui.slider (docs/ui-interaction.md U4): registers its tagger (the
+    // Effect.now shape), carries min/max/value in the node, and rejects a
+    // non-function tagger and an empty range with teaching errors.
+    #[test]
+    fn ui_slider_registers_its_tagger_and_validates() {
+        let _ = take_ui_handlers();
+        let value = eval(
+            "type Msg = | SetSpeed(v: Float)\n\
+             let main = () => Ui.row([\n\
+               Ui.slider(0.0, 10.0, 2.5, SetSpeed),\n\
+             ])",
+        );
+        let view = view_value(&value).expect("main should return a View");
+        assert_eq!(
+            serde_json::to_string(view).unwrap(),
+            r#"{"Row":[{"Slider":{"slot":0,"min":0.0,"max":10.0,"value":2.5}}]}"#
+        );
+        let handlers = take_ui_handlers();
+        assert_eq!(handlers.len(), 1);
+        assert!(matches!(&handlers[0], UiHandler::Tagger(_)));
+
+        assert_eq!(
+            run_fail("let main = () => Ui.slider(0.0, 10.0, 2.5, 42.0)"),
+            "Ui.slider(min, max, value, tagger): the tagger must be a function of \
+the new value, got a number"
+        );
+        let _ = take_ui_handlers();
+
+        assert_eq!(
+            run_fail("let main = () => Ui.slider(5.0, 5.0, 5.0, (v) => v)"),
+            "Ui.slider: max (5) must be greater than min (5)"
+        );
+        let _ = take_ui_handlers();
     }
 
     // --- Networking (Sub.connect/listen, Effect.send, NetEvent) ---

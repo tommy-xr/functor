@@ -589,14 +589,25 @@ mod tests {
             serde_json::from_str(r#"{"Text":{"text":"hi","color":[1,2,3]}}"#).unwrap();
         assert_json_stable(&legacy);
 
-        // The interactive button (docs/ui-interaction.md U3): slot-stamped,
-        // handler kept producer-side so the tree stays serializable.
+        // The interactive widgets (docs/ui-interaction.md U3/U4): slot-stamped,
+        // handlers kept producer-side so the tree stays serializable.
         let button = View::Button {
             slot: 0,
             label: "Reset".to_string(),
         };
         let expected = r#"{"Button":{"slot":0,"label":"Reset"}}"#;
         assert_eq!(serde_json::to_string(&button).unwrap(), expected);
+        let back: View = serde_json::from_str(expected).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), expected);
+
+        let slider = View::Slider {
+            slot: 1,
+            min: 0.0,
+            max: 10.0,
+            value: 2.5,
+        };
+        let expected = r#"{"Slider":{"slot":1,"min":0.0,"max":10.0,"value":2.5}}"#;
+        assert_eq!(serde_json::to_string(&slider).unwrap(), expected);
         let back: View = serde_json::from_str(expected).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), expected);
     }

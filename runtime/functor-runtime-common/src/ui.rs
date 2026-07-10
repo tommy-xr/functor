@@ -86,6 +86,17 @@ pub enum View {
     /// handler itself (a msg `Value`) never crosses: the tree stays
     /// serializable.
     Button { slot: u32, label: String },
+    /// An interactive slider over `min..=max` (docs/ui-interaction.md U4).
+    /// `value` is the model's CONTROLLED value; a drag comes back as
+    /// `UiEvent { slot, SliderChanged(v) }` per change, and the overlay keeps
+    /// a small per-slot buffer so the one-frame model echo never rubber-bands
+    /// the handle (see `SliderBuffer`).
+    Slider {
+        slot: u32,
+        min: f64,
+        max: f64,
+        value: f64,
+    },
 }
 
 /// 0..1 float components -> 8-bit color, clamped. Shared by the F#-facing
@@ -140,15 +151,40 @@ fn contains_interactive(view: &View) -> bool {
         View::Empty | View::Text { .. } => false,
         View::Column(items) | View::Row(items) => items.iter().any(contains_interactive),
         View::Panel { child, .. } => contains_interactive(child),
-        View::Button { .. } => true,
+        View::Button { .. } | View::Slider { .. } => true,
     }
+}
+
+/// Per-slot slider reconciliation (docs/ui-interaction.md U4): `live` is the
+/// value egui's handle edits; `last_emitted` is the last value sent up as a
+/// `SliderChanged` msg. The model's incoming value overwrites `live` only
+/// when it differs from `last_emitted`: our own edit echoing back one frame
+/// late leaves the handle alone (no rubber-banding mid-drag), while a change
+/// we did NOT cause — game logic, a Reset button, an `update` that clamps —
+/// is programmatic and snaps the handle to it. (Corollary: an `update` that
+/// clamps NARROWER than the slider's own range churns per frame while a drag
+/// is held past the cap — the snap and the pointer fight. Prefer matching
+/// the slider's min/max to the accepted range.)
+struct SliderBuffer {
+    live: f64,
+    last_emitted: f64,
+}
+
+/// The mutable per-frame state a [`View`] render threads through the tree:
+/// the slot-stamped interactions egui detected, plus the stateful widgets'
+/// reconciliation buffers (owned by [`TextOverlay`], keyed by slot; `seen`
+/// collects this frame's live slots so stale buffers drop after the pass).
+struct UiFrameState<'a> {
+    events: &'a mut Vec<UiEvent>,
+    sliders: &'a mut std::collections::HashMap<u32, SliderBuffer>,
+    seen_sliders: &'a mut std::collections::HashSet<u32>,
 }
 
 /// Render a declarative [`View`] into `ui` using egui's own layout (vertical /
 /// horizontal / anchored `Area`), so line height and spacing come from the font
 /// being rendered — no manual metrics, and lines never overlap. Interactions
-/// egui detects on the view's widgets land in `events`, slot-stamped.
-fn render_view(ui: &mut egui::Ui, view: &View, events: &mut Vec<UiEvent>) {
+/// egui detects on the view's widgets land in `state.events`, slot-stamped.
+fn render_view(ui: &mut egui::Ui, view: &View, state: &mut UiFrameState) {
     match view {
         View::Empty => {}
         View::Text { text, color, .. } => {
@@ -162,14 +198,14 @@ fn render_view(ui: &mut egui::Ui, view: &View, events: &mut Vec<UiEvent>) {
         View::Column(items) => {
             ui.vertical(|ui| {
                 for item in items {
-                    render_view(ui, item, events);
+                    render_view(ui, item, state);
                 }
             });
         }
         View::Row(items) => {
             ui.horizontal(|ui| {
                 for item in items {
-                    render_view(ui, item, events);
+                    render_view(ui, item, state);
                 }
             });
         }
@@ -179,16 +215,45 @@ fn render_view(ui: &mut egui::Ui, view: &View, events: &mut Vec<UiEvent>) {
             egui::Area::new(egui::Id::new(("functor_ui_panel", anchor_id(*anchor))))
                 .anchor(align, offset)
                 .interactable(contains_interactive(child))
-                .show(&ctx, |ui| render_view(ui, child, events));
+                .show(&ctx, |ui| render_view(ui, child, state));
         }
         View::Button { slot, label } => {
             let clicked = ui
                 .button(egui::RichText::new(label).font(egui::FontId::monospace(UI_FONT_SIZE)))
                 .clicked();
             if clicked {
-                events.push(UiEvent {
+                state.events.push(UiEvent {
                     slot: *slot,
                     kind: UiEventKind::Clicked,
+                });
+            }
+        }
+        View::Slider {
+            slot,
+            min,
+            max,
+            value,
+        } => {
+            state.seen_sliders.insert(*slot);
+            let buf = state.sliders.entry(*slot).or_insert(SliderBuffer {
+                live: *value,
+                last_emitted: *value,
+            });
+            // Echo vs programmatic: see `SliderBuffer`. (Exact f64 equality
+            // is right here — the echo is the emitted value round-tripped
+            // through the interpreter unchanged.)
+            if *value != buf.last_emitted {
+                buf.live = *value;
+                buf.last_emitted = *value;
+            }
+            let mut v = buf.live;
+            let changed = ui.add(egui::Slider::new(&mut v, *min..=*max)).changed();
+            buf.live = v;
+            if changed {
+                buf.last_emitted = v;
+                state.events.push(UiEvent {
+                    slot: *slot,
+                    kind: UiEventKind::SliderChanged(v),
                 });
             }
         }
@@ -248,6 +313,9 @@ pub struct TextOverlay {
     painter: egui_glow::Painter,
     gl: Arc<glow::Context>,
     pointer: PointerBridge,
+    /// Per-slot slider reconciliation state, kept across frames (see
+    /// [`SliderBuffer`]); entries whose slot leaves the view are dropped.
+    sliders: std::collections::HashMap<u32, SliderBuffer>,
 }
 
 impl TextOverlay {
@@ -262,6 +330,7 @@ impl TextOverlay {
             painter,
             gl,
             pointer: PointerBridge::default(),
+            sliders: std::collections::HashMap::new(),
         }
     }
 
@@ -322,20 +391,38 @@ impl TextOverlay {
             }
             return UiOutput::default();
         }
+        // A zero-size frame never runs the build (`run_and_paint` bails), so
+        // bail BEFORE the buffer sweep below — a minimized window must not
+        // wipe every slider buffer via an all-unseen retain. [xreview]
+        if width == 0 || height == 0 {
+            return UiOutput::default();
+        }
         let mut events = Vec::new();
+        let mut seen_sliders = std::collections::HashSet::new();
+        // Moved out for the pass — `run_and_paint` borrows self mutably too.
+        let mut sliders = std::mem::take(&mut self.sliders);
         self.run_and_paint(width, height, pixels_per_point, pointer_events, |ui| {
+            let mut state = UiFrameState {
+                events: &mut events,
+                sliders: &mut sliders,
+                seen_sliders: &mut seen_sliders,
+            };
             match view {
                 // A panel anchors itself; a bare root sits at the top-left with a margin.
-                View::Panel { .. } => render_view(ui, view, &mut events),
+                View::Panel { .. } => render_view(ui, view, &mut state),
                 other => {
                     let ctx = ui.ctx().clone();
                     egui::Area::new(egui::Id::new("functor_ui_root"))
                         .anchor(egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN))
                         .interactable(contains_interactive(other))
-                        .show(&ctx, |ui| render_view(ui, other, &mut events));
+                        .show(&ctx, |ui| render_view(ui, other, &mut state));
                 }
             }
         });
+        // A slot that left the view is a different widget if it ever returns
+        // (positional identity) — drop its buffer rather than resurrect it.
+        sliders.retain(|slot, _| seen_sliders.contains(slot));
+        self.sliders = sliders;
         UiOutput {
             events,
             wants_pointer: self.ctx.egui_wants_pointer_input(),

@@ -1232,7 +1232,14 @@ async fn run_async() -> Result<(), JsValue> {
             let view: functor_runtime_common::ui::View = game.ui();
             let dpr = web_sys::window().unwrap().device_pixel_ratio() as f32;
             let dpr = dpr.max(1.0);
-            let ui_pointer = functor_lang_game::ui_pointer_state(dpr);
+            // While the clock is pinned, events would be dropped anyway (the
+            // window-input rule) — hide the pointer from egui entirely so a
+            // paused interaction can't visually engage widgets or fight the
+            // slider reconciliation (the desktop rule). [xreview]
+            let mut ui_pointer = functor_lang_game::ui_pointer_state(dpr);
+            if clock.is_pinned() {
+                ui_pointer.pos = None;
+            }
             let ui_out = text_overlay.draw_view(
                 canvas.width(),
                 canvas.height(),

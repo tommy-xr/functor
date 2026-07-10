@@ -1402,8 +1402,13 @@ Escape again to quit"
             // an overlapping region fires a game button AND a scrubber
             // control (each pass is its own egui context; there is no shared
             // hit-test). `pos: None` makes the game UI's bridge release any
-            // held press and clear hover. [xreview]
-            let ui_pointer = if scrubber_visible && scrubber_wants_pointer {
+            // held press and clear hover. Same while the clock is pinned:
+            // the events would be dropped anyway (the window-input rule), so
+            // don't let egui process the interaction at all — a paused
+            // button must not visually depress, and a paused slider drag
+            // must not fight its own reconciliation. [xreview]
+            let ui_pointer = if (scrubber_visible && scrubber_wants_pointer) || ignore_user_input
+            {
                 functor_runtime_common::ui::PointerState {
                     pos: None,
                     primary_down: pointer.primary_down,
