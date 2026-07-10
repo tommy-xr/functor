@@ -131,10 +131,14 @@ pub trait GameProducer {
     }
 
     /// Forward-step the scene `divisions` fixed frames of `dt` seconds from
-    /// `start_tts` and return the drawn [`crate::Frame`] for each — the
+    /// `start_tts` and return the drawn [`crate::Frame`] for each, PAIRED with
+    /// the division-boundary [`crate::FrameTime`] the frame was drawn at — the
     /// forward-ghosting trajectory preview (docs/time-travel.md T6d). The shell
     /// composites the returned frames into one image (chronophotography), so
-    /// moving elements smear into a strobe of their future positions. Each frame
+    /// moving elements smear into a strobe of their future positions, and must
+    /// render EACH frame at ITS paired time so render-time animation (the
+    /// skinned-skeleton pose, sampled from the render pass's `tts`) advances
+    /// through the strobe instead of freezing at the paused pose. Each frame
     /// carries the *paused* camera so only world motion smears, not the view.
     ///
     /// `script_inputs` is the F2 forward-ghost-a-script mode (docs/time-travel.md
@@ -151,7 +155,7 @@ pub trait GameProducer {
         _dt: f32,
         _start_tts: f64,
         _script_inputs: Option<&[Vec<crate::RecordedInput>]>,
-    ) -> Vec<crate::Frame> {
+    ) -> Vec<(crate::Frame, crate::FrameTime)> {
         Vec::new()
     }
 

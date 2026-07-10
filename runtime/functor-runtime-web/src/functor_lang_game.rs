@@ -501,7 +501,7 @@ impl GameProducer for FunctorLangWebGame {
         dt: f32,
         start_tts: f64,
         script_inputs: Option<&[Vec<functor_runtime_common::RecordedInput>]>,
-    ) -> Vec<Frame> {
+    ) -> Vec<(Frame, FrameTime)> {
         functor_runtime_common::functor_lang_producer::ghost_frames(
             &self.session,
             &self.model,

@@ -639,7 +639,7 @@ impl Game for FunctorLangGame {
         dt: f32,
         start_tts: f64,
         script_inputs: Option<&[Vec<functor_runtime_common::RecordedInput>]>,
-    ) -> Vec<Frame> {
+    ) -> Vec<(Frame, FrameTime)> {
         // The body is shared (`functor_lang_producer::ghost_frames`) so both shells ghost
         // through one impl; this just hands it the producer's state.
         functor_runtime_common::functor_lang_producer::ghost_frames(
@@ -2008,7 +2008,18 @@ mod tests {
         const DT: f32 = 0.25;
         let ghosts = game.ghost_frames(DIVISIONS, DT, tts as f64, None);
         assert_eq!(ghosts.len(), DIVISIONS, "one frame per division");
-        let ys: Vec<f32> = ghosts.iter().map(|f| f.scene.xform.w.y).collect();
+        // Each frame is paired with its division-boundary time (the compositor
+        // renders it at that time, so render-time animation advances).
+        for (i, (_, ft)) in ghosts.iter().enumerate() {
+            let expected = tts + (i as f32 + 1.0) * DT;
+            assert!(
+                (ft.tts - expected).abs() < 1e-4,
+                "division {i} time: {} vs {expected}",
+                ft.tts
+            );
+            assert_eq!(ft.dts, 0.0, "a ghost frame is a still of the future");
+        }
+        let ys: Vec<f32> = ghosts.iter().map(|(f, _)| f.scene.xform.w.y).collect();
         assert!(
             ys[0] < paused_y - 0.5,
             "division 0 must have fallen past the paused pose: {ys:?} vs {paused_y}"
@@ -2039,8 +2050,8 @@ mod tests {
         });
         let kicked = game.ghost_frames(DIVISIONS, DT, tts as f64, Some(&script));
         assert_eq!(kicked.len(), DIVISIONS);
-        let coast_x = ghosts.last().unwrap().scene.xform.w.x;
-        let kicked_x = kicked.last().unwrap().scene.xform.w.x;
+        let coast_x = ghosts.last().unwrap().0.scene.xform.w.x;
+        let kicked_x = kicked.last().unwrap().0.scene.xform.w.x;
         assert!(coast_x.abs() < 1e-3, "coast ghost stays centered: {coast_x}");
         assert!(
             kicked_x > 1.0,

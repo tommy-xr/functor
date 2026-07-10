@@ -196,11 +196,15 @@ target frame are ignored (depth 1 only)",
 /// framebuffer as a weighted average — the screen-space compositor (T5, the
 /// shared foundation for fork+overlay and forward-ghosting, docs/time-travel.md).
 ///
-/// Each frame renders through the same shadow + forward path as a normal frame,
-/// into its own full-viewport-sized RGBA8 target (keyed `__composite_{i}`, reused
-/// across frames), then `SceneContext::draw_composite` sums them in-shader. The
-/// composite lands in the default framebuffer *after* the forward work and before
-/// any UI overlay, so it shows up in `--capture-frame` PNGs.
+/// Each frame renders through the same shadow + forward path as a normal frame
+/// AT ITS OWN paired [`FrameTime`], into its own full-viewport-sized RGBA8
+/// target (keyed `__composite_{i}`, reused across frames), then
+/// `SceneContext::draw_composite` sums them in-shader. Per-frame time is what
+/// lets render-time animation (the skinned-skeleton pose, sampled from the
+/// render pass's `tts`) advance across a ghost strobe instead of freezing every
+/// division at the paused pose. The composite lands in the default framebuffer
+/// *after* the forward work and before any UI overlay, so it shows up in
+/// `--capture-frame` PNGs.
 ///
 /// Inputs beyond `MAX_COMPOSITE` are dropped; `weights` is truncated/normalized
 /// to the retained count (so equal weights average). Nested render targets inside
@@ -212,9 +216,8 @@ pub fn render_composited_frames(
     asset_cache: Arc<AssetCache>,
     scene_context: &SceneContext,
     shadow_map: &ShadowMap,
-    frames: &[Frame],
+    frames: &[(Frame, FrameTime)],
     weights: &[f32],
-    frame_time: FrameTime,
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
 ) {
@@ -227,9 +230,10 @@ pub fn render_composited_frames(
     }
     let weights = normalize_weights(&weights[..n]);
 
-    // 1. Render each input frame into its own full-viewport offscreen target.
+    // 1. Render each input frame into its own full-viewport offscreen target,
+    //    at its own frame time.
     let mut textures: Vec<glow::Texture> = Vec::with_capacity(n);
-    for (i, frame) in frames[..n].iter().enumerate() {
+    for (i, (frame, frame_time)) in frames[..n].iter().enumerate() {
         let id = format!("__composite_{i}");
         let clear = crate::fog::clear_color(frame.fog.as_ref());
         let desc = RenderTargetDescriptor {

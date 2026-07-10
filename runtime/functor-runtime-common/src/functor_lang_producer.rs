@@ -826,7 +826,10 @@ pub fn forward_step_scene(
 /// untouched), then `draw` each stepped model at its division-boundary time —
 /// with that division's stepped WORLD snapshot scoped active, so
 /// `Physics.transformed` / `Physics.position` in `draw` render the projected
-/// poses — and return the frames for the shell to composite. To keep velocity-integrated
+/// poses — and return the frames, each PAIRED with the division-boundary
+/// [`FrameTime`] it was drawn at (`dts = 0`: a still of the future), for the
+/// shell to composite — each at its own time, so render-time animation (the
+/// skinned-skeleton pose) advances through the strobe. To keep velocity-integrated
 /// motion (mario's jump) faithful, each division is advanced in FINE
 /// `sub_dt = 1/60` sub-steps (`steps_per_division ≈ dt / sub_dt`) and sampled
 /// only at the boundary, so the strobe still has `divisions` frames but each is
@@ -855,7 +858,7 @@ pub fn ghost_frames(
     dt: f32,
     start_tts: f64,
     script_inputs: Option<&[Vec<RecordedInput>]>,
-) -> Vec<Frame> {
+) -> Vec<(Frame, FrameTime)> {
     // Replay the recorded inputs for the frames AFTER the fork point K, so a
     // recorded jump/run ghosts (docs/time-travel.md T6b). The input log is
     // per-rendered-frame = per-fine-step (both 1/60), so it feeds the fine
@@ -914,15 +917,15 @@ pub fn ghost_frames(
         };
         // Match forward_step_scene's f32 division-boundary tts exactly, so
         // each redrawn frame's tts equals the tts its model was stepped at.
-        let tts = (start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt) as f64;
-        let args = vec![model_i.clone(), Value::Number(tts)];
+        let tts = start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt;
+        let args = vec![model_i.clone(), Value::Number(tts as f64)];
         // A draw error or non-Frame return for a division is skipped, not fatal.
         if let Ok(value) = session.call("draw", args, &mut FunctorHost) {
             if let Some(frame) = frame_value(&value) {
                 let mut frame = frame.clone();
                 // Freeze the view: composite only world motion, not the camera.
                 frame.camera = last_frame.camera.clone();
-                frames.push(frame);
+                frames.push((frame, FrameTime { dts: 0.0, tts }));
             }
         }
     }

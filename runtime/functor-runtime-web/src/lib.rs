@@ -1189,7 +1189,10 @@ async fn run_async() -> Result<(), JsValue> {
                 Vec::new()
             };
 
-            // Shadow + forward passes, shared with the desktop runtime.
+            // Shadow + forward passes, shared with the desktop runtime. Each
+            // ghost frame renders at ITS OWN division-boundary time, so
+            // render-time animation (the skinned pose) advances through the
+            // strobe instead of freezing at the paused pose.
             if !ghosts.is_empty() {
                 functor_runtime_common::render_composited_frames(
                     &gl,
@@ -1199,7 +1202,6 @@ async fn run_async() -> Result<(), JsValue> {
                     &shadow_map,
                     &ghosts,
                     &vec![1.0f32; ghosts.len()],
-                    frame_time.clone(),
                     viewport,
                     debug_render_mode,
                 );
