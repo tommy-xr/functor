@@ -30,6 +30,11 @@ const TARGETS = [
     assets: ["Xbot.glb"],
   },
   {
+    dir: "examples/crossfade",
+    baseUrl: MESHES_BASE,
+    assets: ["Xbot.glb"],
+  },
+  {
     dir: "examples/atmosphere",
     baseUrl: SKYBOX_BASE,
     assets: [
