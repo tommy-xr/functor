@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use cgmath::{InnerSpace, Matrix3, Matrix4, Quaternion, SquareMatrix, Vector3, VectorSpace, Zero};
+use cgmath::{InnerSpace, Matrix3, Matrix4, Quaternion, SquareMatrix, Vector3, VectorSpace};
 
 use crate::animation::{Animation, AnimationValue, Keyframe};
 
@@ -15,65 +15,10 @@ pub struct JointPose {
 /// A skeleton-shaped set of local joint transforms in TRS form — what clip
 /// sampling produces and blending combines, before being applied back onto a
 /// [`Skeleton`] for skinning. Keyed by joint id (sparse, like `joint_info`).
+/// The blending/masking math over poses lives in [`crate::anim`].
 #[derive(Clone, Debug)]
 pub struct Pose {
-    joints: HashMap<i32, JointPose>,
-}
-
-impl Pose {
-    /// Weighted combine of poses (all sampled from the same skeleton).
-    /// Translation/scale are weighted averages; rotations accumulate as a
-    /// sign-aligned weighted quaternion sum, normalized (nlerp-style mixing,
-    /// as in Bevy's RFC-51 blending). The hemisphere reference is the FIRST
-    /// input's rotation, so blends of near-opposed rotations resolve toward
-    /// the first entry — locomotion-style blends of similar poses are
-    /// unaffected. Weights must be positive (the caller filters out
-    /// non-positive entries); a degenerate joint (zero/non-finite weight
-    /// total, or opposed rotations cancelling) falls back to the first
-    /// pose's joint rather than emitting NaNs.
-    pub fn blend(inputs: &[(Pose, f32)]) -> Pose {
-        debug_assert!(!inputs.is_empty(), "Pose::blend needs at least one input");
-        let mut joints = HashMap::new();
-        for (&joint_id, first_jp) in &inputs[0].0.joints {
-            let mut translation = Vector3::zero();
-            let mut scale = Vector3::zero();
-            let mut rotation = Quaternion::zero();
-            let mut total = 0.0_f32;
-            let reference = first_jp.rotation;
-            for (pose, weight) in inputs {
-                let Some(jp) = pose.joints.get(&joint_id) else {
-                    continue;
-                };
-                total += weight;
-                translation += jp.translation * *weight;
-                scale += jp.scale * *weight;
-                // Align hemispheres so opposite-sign encodings of the same
-                // rotation reinforce instead of cancelling.
-                let q = if reference.dot(jp.rotation) < 0.0 {
-                    -jp.rotation
-                } else {
-                    jp.rotation
-                };
-                rotation += q * *weight;
-            }
-            let magnitude2 = rotation.magnitude2();
-            let blended = if total > 0.0
-                && total.is_finite()
-                && magnitude2.is_finite()
-                && magnitude2 > 1e-12
-            {
-                JointPose {
-                    translation: translation / total,
-                    rotation: rotation.normalize(),
-                    scale: scale / total,
-                }
-            } else {
-                *first_jp
-            };
-            joints.insert(joint_id, blended);
-        }
-        Pose { joints }
-    }
+    pub(crate) joints: HashMap<i32, JointPose>,
 }
 
 #[derive(Clone, Debug)]
@@ -192,6 +137,34 @@ impl Skeleton {
 
     pub fn get_joint_count(&self) -> i32 {
         self.num_joints
+    }
+
+    /// The id of the joint named `name`, if any (exact match).
+    pub fn joint_id_by_name(&self, name: &str) -> Option<i32> {
+        self.joint_info
+            .iter()
+            .find(|(_, joint)| joint.name == name)
+            .map(|(&id, _)| id)
+    }
+
+    /// All joint ids whose self-or-ancestor's name is in `roots` — the
+    /// subtree semantics `Anim.mask` uses (naming a hand masks its fingers).
+    pub fn subtree_joint_ids(&self, roots: &[String]) -> HashSet<i32> {
+        let mut ids = HashSet::new();
+        for &joint_id in self.joint_info.keys() {
+            let mut current = Some(joint_id);
+            while let Some(id) = current {
+                let Some(joint) = self.joint_info.get(&id) else {
+                    break;
+                };
+                if roots.iter().any(|root| *root == joint.name) {
+                    ids.insert(joint_id);
+                    break;
+                }
+                current = joint.parent;
+            }
+        }
+        ids
     }
 
     pub fn get_joint_name(&self, idx: i32) -> Option<&str> {

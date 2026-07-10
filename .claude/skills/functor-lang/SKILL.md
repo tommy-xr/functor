@@ -349,6 +349,25 @@ Anim.blend([(anim, weight), …])                            // weighted pose mi
                                                            //   Weights normalize; non-
                                                            //   positive entries drop;
                                                            //   entries may nest blends
+Anim.rest()                                                // the bind pose — the base for
+                                                           //   purely programmatic posing
+                                                           //   (a model with no clips)
+anim |> Anim.add(layerAnim, weight)                        // additive layer: the layer's
+                                                           //   delta-from-bind on top of
+                                                           //   anim (headShake over walk)
+anim |> Anim.mask(["jointName", …])                        // restrict anim's influence to
+                                                           //   the named joints' SUBTREES;
+                                                           //   uncovered joints fall out
+                                                           //   (bind pose, or the other
+                                                           //   inputs of an enclosing
+                                                           //   blend). Unknown names warn
+                                                           //   once
+anim |> Anim.rotate("jointName", ax, ay, az)               // additive local XYZ rotation
+                                                           //   on ONE joint (head aim,
+                                                           //   finger curl) — Angle VALUES
+                                                           //   only; the joint counts as
+                                                           //   fully driven (survives
+                                                           //   masking)
 Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
 Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)           // all three: Angles
 Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)

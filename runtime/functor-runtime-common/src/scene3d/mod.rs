@@ -708,18 +708,34 @@ impl Scene3D {
                         let joints = if is_skinned {
                             match &model_description.animation {
                                 // The declarative path: game code chose the
-                                // pose (clip playheads, blend weights) —
-                                // evaluate it. A clip name the model lacks
-                                // warns once and contributes the bind pose.
+                                // pose (clip playheads, blend weights,
+                                // per-joint rotations) — evaluate it. An
+                                // unknown clip/joint name warns once; a
+                                // missing clip contributes the bind pose, a
+                                // missing joint is ignored.
                                 Some(expr) => crate::anim::skinning_transforms(
                                     &hydrated_model,
                                     expr,
-                                    &mut |clip| {
+                                    &mut |warning| {
+                                        let (kind, name, hint) = match warning {
+                                            crate::anim::AnimWarning::MissingClip(name) => (
+                                                "clip",
+                                                name,
+                                                "rendering the bind pose (functor inspect \
+lists a model's clips)",
+                                            ),
+                                            crate::anim::AnimWarning::MissingJoint(name) => (
+                                                "joint",
+                                                name,
+                                                "ignoring it (functor inspect lists a \
+model's joints)",
+                                            ),
+                                        };
                                         scene_context.warn_once(
-                                            &format!("anim-clip:{str}:{clip}"),
+                                            &format!("anim-{kind}:{str}:{name}"),
                                             &format!(
-                                                "[anim] model \"{str}\" has no \
-clip named \"{clip}\" — rendering the bind pose (functor inspect lists a model's clips)"
+                                                "[anim] model \"{str}\" has no {kind} \
+named \"{name}\" — {hint}"
                                             ),
                                         );
                                     },
