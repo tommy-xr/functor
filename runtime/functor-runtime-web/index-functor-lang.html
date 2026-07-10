@@ -76,6 +76,8 @@
         functor_lang_mouse_wheel,
         functor_lang_ui_pointer,
         functor_lang_ui_pointer_leave,
+        functor_lang_ui_key,
+        functor_lang_ui_wants_keyboard,
         functor_lang_is_running,
         functor_lang_set_source,
         functor_lang_scene_frame,
@@ -135,16 +137,33 @@
 
         // Keyboard. Ignore auto-repeat (the game tracks held state itself), and
         // swallow keys we handle so Space/arrows don't scroll the page.
+        // While a Ui.textInput is focused (the runtime reports it after each
+        // frame), keydowns route to the OVERLAY instead — the game's input
+        // hook is suppressed (docs/ui-interaction.md U4; repeats pass
+        // through so held backspace repeats). Modifier combos (Cmd+R,
+        // Ctrl+…) and unconsumed keys (F5) keep their browser behavior.
+        // `gameHeld` tracks the presses the GAME actually received, so a
+        // release whose press was swallowed by a focused field never leaks
+        // a phantom release edge.
+        const gameHeld = new Set();
         window.addEventListener("keydown", (e) => {
+          if (functor_lang_ui_wants_keyboard()) {
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
+            if (functor_lang_ui_key(e.key)) e.preventDefault();
+            return;
+          }
           const code = keyCode(e.code);
           if (code === 0) return;
           e.preventDefault();
-          if (!e.repeat) functor_lang_key_event(code, true);
+          if (!e.repeat) {
+            functor_lang_key_event(code, true);
+            gameHeld.add(code);
+          }
         });
         window.addEventListener("keyup", (e) => {
           const code = keyCode(e.code);
           if (code === 0) return;
-          functor_lang_key_event(code, false);
+          if (gameHeld.delete(code)) functor_lang_key_event(code, false);
         });
 
         // Mouse free-look. Pointer Lock is the browser equivalent of the

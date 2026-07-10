@@ -610,5 +610,14 @@ mod tests {
         assert_eq!(serde_json::to_string(&slider).unwrap(), expected);
         let back: View = serde_json::from_str(expected).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), expected);
+
+        let text_input = View::TextInput {
+            slot: 2,
+            value: "hi".to_string(),
+        };
+        let expected = r#"{"TextInput":{"slot":2,"value":"hi"}}"#;
+        assert_eq!(serde_json::to_string(&text_input).unwrap(), expected);
+        let back: View = serde_json::from_str(expected).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), expected);
     }
 }

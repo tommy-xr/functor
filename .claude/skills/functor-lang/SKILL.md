@@ -465,6 +465,18 @@ Ui.slider(min, max, value, tagger)                         // INTERACTIVE contro
                                                            //   max must exceed min; tagger must
                                                            //   be a function/ctor. Headless:
                                                            //   {"kind":{"SliderChanged":0.5}}
+Ui.textInput(value, tagger)                                // INTERACTIVE controlled single-line
+                                                           //   text input: shows the MODEL's
+                                                           //   text; each edit applies tagger to
+                                                           //   the new text. While a field is
+                                                           //   FOCUSED the game's `input` hook
+                                                           //   is suppressed (keys type into the
+                                                           //   field; Escape defocuses first,
+                                                           //   releases the cursor second). An
+                                                           //   `update` that transforms the text
+                                                           //   resets the cursor to the end.
+                                                           //   Headless:
+                                                           //   {"kind":{"TextChanged":"hi"}}
 
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body

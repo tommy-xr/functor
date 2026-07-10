@@ -28,3 +28,6 @@ let button : (string, 'msg) => view
 // (Function-typed params can't be written in signatures yet, so the tagger
 // is typed by inference at the call site.)
 let slider : (float, float, float, 'tagger) => view
+// A controlled single-line text input: shows `value` (from the model); an
+// edit applies the tagger to the new text.
+let textInput : (string, 'tagger) => view
