@@ -437,7 +437,7 @@ impl FrameCtx<'_> {
                     "input",
                     vec![
                         self.model.clone(),
-                        Value::String(std::rc::Rc::from(format!("{key:?}").as_str())),
+                        Value::String(std::rc::Rc::from(key.name().as_str())),
                         Value::Bool(is_down),
                     ],
                 )

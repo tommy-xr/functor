@@ -43,7 +43,7 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 
 - `init` — the initial model, a plain Functor Lang value
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as canonical names
-  ("W", "Up", "Space"). `mouseMove`/`mouseWheel` are the analogous optional entry points
+  ("W", "Up", "Space", "0".."9"). `mouseMove`/`mouseWheel` are the analogous optional entry points
 - `tick = (model, dt, tts) => model'` — per-frame simulation step
 - `update = (model, msg) => model'` — OPTIONAL; handles messages (ADT variants) from subscriptions/effects
 - `subscriptions = (model) => Sub.every(...)` — OPTIONAL declarative timers, polled each frame (requires `update`)

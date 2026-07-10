@@ -49,9 +49,13 @@ let smoothstep = (t: float): float =>
   c * c * (3.0 - 2.0 * c)
 
 // The derived pose: a smoothstep crossfade from `prev` to `current` over
-// `fade` seconds, collapsing to the bare current clip once settled.
+// `fade` seconds, collapsing to the bare current clip once settled. A
+// non-positive fade is a hard cut (guards the divide).
 let pose = (st, fade: float, tts: float): Anim.t =>
-  let w = smoothstep((tts - st.fadeStart) / fade) in
+  let w =
+    (match fade > 0.0 with
+     | true => smoothstep((tts - st.fadeStart) / fade)
+     | false => 1.0) in
   match w < 1.0 with
   | true =>
     Anim.blend([

@@ -62,6 +62,17 @@ fn map_key(key: Key) -> InputKey {
         Key::Space => InputKey::Space,
         Key::Enter => InputKey::Enter,
         Key::Escape => InputKey::Escape,
+        // Digit row and numpad both fold into the canonical digits.
+        Key::Num0 | Key::Kp0 => InputKey::Num0,
+        Key::Num1 | Key::Kp1 => InputKey::Num1,
+        Key::Num2 | Key::Kp2 => InputKey::Num2,
+        Key::Num3 | Key::Kp3 => InputKey::Num3,
+        Key::Num4 | Key::Kp4 => InputKey::Num4,
+        Key::Num5 | Key::Kp5 => InputKey::Num5,
+        Key::Num6 | Key::Kp6 => InputKey::Num6,
+        Key::Num7 | Key::Kp7 => InputKey::Num7,
+        Key::Num8 | Key::Kp8 => InputKey::Num8,
+        Key::Num9 | Key::Kp9 => InputKey::Num9,
         _ => InputKey::Unknown,
     }
 }
@@ -75,6 +86,9 @@ fn key_from_str(name: &str) -> Option<InputKey> {
         let c = name.as_bytes()[0];
         if c.is_ascii_lowercase() {
             return InputKey::from_i32((c - b'a') as i32 + InputKey::A as i32);
+        }
+        if c.is_ascii_digit() {
+            return InputKey::from_i32((c - b'0') as i32 + InputKey::Num0 as i32);
         }
     }
     match name.as_str() {

@@ -42,7 +42,7 @@ let input = (model, key, isDown) =>
   | false => model
   | true =>
     match key with
-    | "0" => { model with auto: true }
+    | "0" => { model with auto: true, timer: 2.5 }
     | "1" => trigger(model, "idle")
     | "2" => trigger(model, "agree")
     | "3" => trigger(model, "headShake")
@@ -60,7 +60,11 @@ let tick = (model, dt, tts) =>
      | true =>
        let index = (match m.index == 4.0 with | true => 0.0 | false => m.index + 1.0) in
        { m with
-           timer: timer + 2.5,
+           // Reset to the full period (not `timer + 2.5`): a long frame
+           // collapses to ONE transition instead of burst-firing a
+           // transition per frame until the deficit clears (the Sub.every
+           // missed-boundary rule, hand-rolled).
+           timer: 2.5,
            index: index,
            anim: Animator.play(clipOf(index), tts, m.anim) }
      | false => { m with timer: timer })

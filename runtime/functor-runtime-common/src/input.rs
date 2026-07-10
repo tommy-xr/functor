@@ -43,6 +43,19 @@ pub enum Key {
     Space,
     Enter,
     Escape,
+    // The digit row (and numpad, which the shells fold into these). APPENDED
+    // — the `as i32` discriminants are the wire representation, so new keys
+    // only ever go at the end.
+    Num0,
+    Num1,
+    Num2,
+    Num3,
+    Num4,
+    Num5,
+    Num6,
+    Num7,
+    Num8,
+    Num9,
 }
 
 /// One recorded input event at the raw boundary scalars — pre-`Key::from_i32`,
@@ -73,13 +86,15 @@ pub enum RecordedInput {
 impl Key {
     /// All key variants in discriminant order. Keep in sync with the enum above
     /// (guarded by `from_i32_round_trips`).
-    pub const ALL: [Key; 34] = [
+    pub const ALL: [Key; 44] = [
         Key::Unknown,
         Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I,
         Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R,
         Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z,
         Key::Up, Key::Down, Key::Left, Key::Right, Key::Space, Key::Enter,
         Key::Escape,
+        Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5,
+        Key::Num6, Key::Num7, Key::Num8, Key::Num9,
     ];
 
     /// The key whose `as i32` discriminant equals `value`, if any. The inverse
@@ -87,11 +102,32 @@ impl Key {
     pub fn from_i32(value: i32) -> Option<Key> {
         Key::ALL.into_iter().find(|k| *k as i32 == value)
     }
+
+    /// The canonical name a game's `input` hook receives: `"W"`, `"Up"`,
+    /// `"Space"` — and bare digits (`"1"`, not `"Num1"`) for the digit row.
+    pub fn name(self) -> String {
+        let digit = self as i32 - Key::Num0 as i32;
+        if (0..=9).contains(&digit) {
+            digit.to_string()
+        } else {
+            format!("{self:?}")
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Key;
+
+    #[test]
+    fn names_are_canonical() {
+        assert_eq!(Key::W.name(), "W");
+        assert_eq!(Key::Up.name(), "Up");
+        assert_eq!(Key::Space.name(), "Space");
+        // Digits are bare — the name a game's `input` hook matches on.
+        assert_eq!(Key::Num0.name(), "0");
+        assert_eq!(Key::Num9.name(), "9");
+    }
 
     #[test]
     fn from_i32_round_trips() {
