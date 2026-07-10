@@ -9,14 +9,14 @@ Rapier world to the entire MVU model.
 
 ## What shipped (as of 2026-07-05)
 
-You can pause a running MLE game and **drag a timeline scrubber to any recorded
+You can pause a running Functor Lang game and **drag a timeline scrubber to any recorded
 frame** — the whole scene (MVU `model` *and* physics world) restores together —
 on both the desktop runner and the web/VSCode preview. Exercised by
 `examples/physics`.
 
 - **The coupled recorder** (`functor_runtime_common::timetravel`): a bounded
   per-frame snapshot ring `History<T>` and a `SceneRecorder` over it. Each
-  rendered frame it records the settled `model` (an `Rc`-cheap `mle::Value`
+  rendered frame it records the settled `model` (an `Rc`-cheap `functor_lang::Value`
   clone) and, in lockstep, the physics fixed-frame the world reached. **Shared
   by both shells** — one tested impl; the producer hands in its `model` /
   `SteppedPhysics` / status.
@@ -27,7 +27,7 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   you drag back *and* forth; the future is branched only when play resumes.
 - **Live triggers.** Desktop debug server `POST /rewind {"frame":N}` (#225); an
   egui scrubber overlay on desktop (`~` console toggle, hidden by default); a
-  **native DOM** scrubber on web (index-mle.html, outside the canvas — see the
+  **native DOM** scrubber on web (index-functor-lang.html, outside the canvas — see the
   design note below).
 - **PRs:** `History` primitive #218, per-frame model recording #219, coupled
   seek #222, `POST /rewind` #225, the scrubber + web parity #226.
@@ -62,7 +62,7 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   accumulation, pause, and rebase — the deterministic golden-capture path.
 - **Shared logic, platform-native UI.** The `SceneRecorder` (the hard part) is
   shared; the *UI surface* is per-platform: egui-in-canvas on desktop (no DOM
-  there), **native DOM on web** (`mle_scrub_*` wasm exports drive it). The web
+  there), **native DOM on web** (`functor_lang_scrub_*` wasm exports drive it). The web
   DOM scrubber sits *outside* the game canvas, so its widgets never fight the
   canvas's pointer-lock — a cleaner fit than mirroring desktop's egui onto web.
 
@@ -70,8 +70,8 @@ It builds directly on three existing threads and should be read alongside them:
 `docs/physics.md` (the `Simulatable`/`Timeline` seam this generalizes),
 `docs/llm-native-editor.md` (which already frames rewind as an *authoring*
 primitive, not just a debugging one), and `docs/debug-runtime.md` (the
-frame-clock control that already exists). The surface is **MLE-only** — the
-F#/Fable pipeline has been removed (`docs/mle.md`).
+frame-clock control that already exists). The surface is **Functor Lang-only** — the
+F#/Fable pipeline has been removed (`docs/functor-lang.md`).
 
 Inspiration: the [Tomorrow Corporation tech
 demo](https://www.youtube.com/watch?v=72y2EC5fkcE) (whole-program time travel as
@@ -96,11 +96,11 @@ entire `Timeline` / `TimelineLog` / hybrid-keyframe machinery is already generic
 over `S: Simulatable`. The only coupling to physics is the single `impl
 Simulatable for World` plus `SteppedPhysics` being hard-typed to it.
 
-### Why MLE makes this nearly free
+### Why Functor Lang makes this nearly free
 
-The MLE model is an `mle::Value` that derives `Clone`, is `Rc`-shared, and is
+The Functor Lang model is an `functor_lang::Value` that derives `Clone`, is `Rc`-shared, and is
 cheap to clone. Snapshotting the entire model every frame is `model.clone()`
-into a ring buffer — and because MLE values are immutable and structurally
+into a ring buffer — and because Functor Lang values are immutable and structurally
 shared, adjacent frames share every unchanged sub-tree, so the memory cost is
 close to "what changed this frame," not "the whole model, 900 times."
 
@@ -108,8 +108,8 @@ The F#/Fable path could never do this cleanly: its hot-reload state is a `Box<dy
 Any>` (`OpaqueState`) bound to one dylib generation, opaque to the runtime and
 not clonable-as-data from the shell. The in-process interpreter is the enabling
 fact — the shell *owns* the model value and can version it directly. Whole-game
-rewind is one of the concrete payoffs of the MLE pivot
-(`docs/mle.md`).
+rewind is one of the concrete payoffs of the Functor Lang pivot
+(`docs/functor-lang.md`).
 
 ### One frame, one clock
 
@@ -164,7 +164,7 @@ capability. Instead:
   exposed in the browser / VSCode plugin" comes for free: the VSCode live preview
   is just `functor run wasm` in a webview, so a shell-owned overlay in the web
   runtime *is* the VSCode overlay — one implementation, both surfaces.
-- **Interactive MLE UI (buttons with actions) is a separate feature.** MLE
+- **Interactive Functor Lang UI (buttons with actions) is a separate feature.** Functor Lang
   closures are storable, so a `Button { label, onClick }` `View` variant is
   natural; it needs egui fed real pointer input and a return channel into
   `update`. It is independently valuable and the scrubber is a good *second*
@@ -180,7 +180,7 @@ convention devs already expect; TAB stays free for in-game use. On web / VSCode
 the overlay defaults to visible.
 
 ```
-        ┌───────────── MLE game (functional core) ─────────────┐
+        ┌───────────── Functor Lang game (functional core) ─────────────┐
         │  init / update / tick / draw / physics / ui  (pure)   │
         └───────────────────────────┬───────────────────────────┘
                                      │  inputs (Command)  +  Value model
@@ -304,7 +304,7 @@ Two implementation points decide whether it looks right:
   all divisions render with the *paused* camera so only world motion smears, not
   the view.
 
-The "tweak a constant" half rides existing hot-reload: swap the `.mle` with the
+The "tweak a constant" half rides existing hot-reload: swap the `.fun` with the
 model preserved, re-run the window, the ghost redraws — so you can tweak a jump
 impulse until the arc clears a chasm and *see* it clear before you resume. This is
 the single most compelling demo in the set and it is within reach.
@@ -323,7 +323,7 @@ toy — `docs/llm-native-editor.md` already makes this argument. Capture a sessi
 rewind to frame K, change game logic, replay, and diff the outcome is
 *time-travel authoring / what-if iteration*; the golden-image tests are the
 regression half of the same loop. Every phase below is buildable and verifiable
-headlessly (pure Rust + MLE, no GPU window) up to the point where pixels are
+headlessly (pure Rust + Functor Lang, no GPU window) up to the point where pixels are
 actually required (the overlay render and the screen-space compositor pass) — matching
 the project's "design for agent verifiability" rule.
 
@@ -334,7 +334,7 @@ the project's "design for agent verifiability" rule.
 | **T1. Coupled model+world recorder** | `History<T>` snapshot ring + `SceneRecorder`; per-frame model + physics-fixed-frame recording; `rewind_scene_to`/`seek_scene_to` exact-or-refused; live `POST /rewind`. Landed as a snapshot-ring + shared rendered-frame clock rather than a single frame `Simulatable` (see the design note). Headless integration tests. | **Shipped** (#218/#219/#222/#225) |
 | **T2. Pointer/click input plumbing** | Feed real pointer `RawInput` to egui (desktop); DOM mouse for the web scrubber. `.interactable(false)` dropped for the scrubber panel. | **Shipped** (#226) |
 | **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** native DOM outside the canvas + "🖱 mouse look" button. | **Shipped** (#226) |
-| **T4. Interactive MLE `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable MLE closure); egui hit-tests and dispatches back into `update`. Independent of the scrubber (which is shell-owned) — a general game-UI capability. | Not started |
+| **T4. Interactive Functor Lang `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable Functor Lang closure); egui hit-tests and dispatches back into `update`. Independent of the scrubber (which is shell-owned) — a general game-UI capability. | Not started |
 | **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; a **screen-space compositor** (new fullscreen average pass at the tail of `render_frame`, reusing the double-buffered `RenderTargetBuffers`) renders each scene to its own target and averages them (K=2, weights 0.5/0.5). Shares its whole implementation with T6. | Not started |
 | **T6. Forward-ghosting (trajectory preview)** | A frame-indexed **input log** in the recorder (plain data, survives reload) + a headless deterministic forward-step (replay inputs, suppress effects) + the T5 compositor at K=N, `1/N` weights; wire to hot-reload for the tweak-a-constant loop; slider once T4 lands. The *Inventing on Principle* demo — no trail primitive needed. | Not started |
 | **T7. Event timeline** | Record inputs *and* effects as one plain-data event log keyed by frame (inputs in / effects out); render them as markers on the scrubber; use the log to suppress-on-replay. The event-sourcing spine the earlier phases already imply. | Not started |

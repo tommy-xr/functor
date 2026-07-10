@@ -1,0 +1,10 @@
+// camera.funi — the `Camera` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+
+// The opaque camera handle (`Camera.t` from game code).
+type t
+
+// Eye + target (Y-up, right-handed), a fixed 45° fov.
+let lookAt : (float, float, float, float, float, float) => t
+// Eye + yaw/pitch/fov Angles: yaw = 0 / pitch = 0 looks down +Z.
+let firstPerson : (float, float, float, Angle.t, Angle.t, Angle.t) => t

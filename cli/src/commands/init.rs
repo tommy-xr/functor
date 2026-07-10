@@ -1,4 +1,4 @@
-//! MLE-native project scaffolding for `functor init`.
+//! Functor Lang-native project scaffolding for `functor init`.
 
 use clap::ValueEnum;
 use std::fs::{self, OpenOptions};
@@ -6,8 +6,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const MANIFEST: &str = include_str!("../../templates/functor.json");
-const GAME_3D: &str = include_str!("../../templates/3d/game.mle");
-const GAME_FPS: &str = include_str!("../../templates/fps/game.mle");
+const GAME_3D: &str = include_str!("../../templates/3d/game.fun");
+const GAME_FPS: &str = include_str!("../../templates/fps/game.fun");
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum Template {
@@ -38,7 +38,7 @@ impl Template {
                 contents: MANIFEST,
             },
             TemplateFile {
-                name: "game.mle",
+                name: "game.fun",
                 contents: game,
             },
         ]
@@ -154,8 +154,8 @@ mod tests {
     }
 
     fn assert_project_typechecks(directory: &Path) {
-        let project = mle::project::load_with_prelude(
-            &directory.join("game.mle"),
+        let project = functor_lang::project::load_with_prelude(
+            &directory.join("game.fun"),
             &HashMap::new(),
             &functor_prelude::modules(),
         )
@@ -174,7 +174,7 @@ mod tests {
             MANIFEST
         );
         assert_eq!(
-            fs::read_to_string(directory.0.join("game.mle")).unwrap(),
+            fs::read_to_string(directory.0.join("game.fun")).unwrap(),
             GAME_3D
         );
         assert_project_typechecks(&directory.0);
@@ -186,7 +186,7 @@ mod tests {
         execute(&directory.0, &Template::Fps).unwrap();
 
         assert_eq!(
-            fs::read_to_string(directory.0.join("game.mle")).unwrap(),
+            fs::read_to_string(directory.0.join("game.fun")).unwrap(),
             GAME_FPS
         );
         assert_project_typechecks(&directory.0);
@@ -205,21 +205,21 @@ mod tests {
             "keep me\n"
         );
         assert!(directory.0.join("functor.json").is_file());
-        assert!(directory.0.join("game.mle").is_file());
+        assert!(directory.0.join("game.fun").is_file());
     }
 
     #[test]
     fn a_conflict_does_not_overwrite_or_partially_initialize() {
         let directory = TestDir::new("conflict");
         fs::create_dir_all(&directory.0).unwrap();
-        fs::write(directory.0.join("game.mle"), "user source\n").unwrap();
+        fs::write(directory.0.join("game.fun"), "user source\n").unwrap();
 
         let error = execute(&directory.0, &Template::Fps).unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-        assert!(error.to_string().contains("game.mle"));
+        assert!(error.to_string().contains("game.fun"));
         assert_eq!(
-            fs::read_to_string(directory.0.join("game.mle")).unwrap(),
+            fs::read_to_string(directory.0.join("game.fun")).unwrap(),
             "user source\n"
         );
         assert!(!directory.0.join("functor.json").exists());

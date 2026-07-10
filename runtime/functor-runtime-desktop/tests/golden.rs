@@ -9,9 +9,9 @@
 //! with a small tolerance. This test runs every scenario whose `targets`
 //! includes `"native"`.
 //!
-//! Each sample is an MLE project (`functor.json` with `"language": "mle"`) and
-//! renders via `--mle --game-path <entry>`; MLE needs no build step (the runner
-//! interprets the `.mle` in place).
+//! Each sample is a Functor Lang project (`functor.json` with `"language": "functor-lang"`) and
+//! renders via `--functor-lang --game-path <entry>`; Functor Lang needs no build step (the runner
+//! interprets the `.fun` in place).
 //!
 //! Ignored by default: it needs a GL display. Run it with:
 //!
@@ -105,7 +105,7 @@ fn assert_scenario_matches(scenario: &Scenario) {
     let out = std::env::temp_dir().join(format!("functor-golden-{}.png", scenario.name));
     let _ = std::fs::remove_file(&out);
 
-    // `functor -d <sample_dir> run native` interprets the sample's MLE entry
+    // `functor -d <sample_dir> run native` interprets the sample's Functor Lang entry
     // (from its functor.json) in place — no build step — and forwards the
     // capture flags after `--` to the in-process desktop run loop.
     let fixed_time = scenario.fixed_time.to_string();

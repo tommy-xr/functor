@@ -14,7 +14,7 @@ pub enum ModelHandle {
 // Per-mesh selectors/overrides remain part of the serialized `ModelDescription`
 // shape the renderer consumes; the F#-era authoring constructors
 // (`MeshSelector::all` / `MeshOverride::material` / `ModelDescription::modify`)
-// were removed with the F# framework — MLE builds models with empty `overrides`.
+// were removed with the F# framework — Functor Lang builds models with empty `overrides`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MeshSelector {
     All,

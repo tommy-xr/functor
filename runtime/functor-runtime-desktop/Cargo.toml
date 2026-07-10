@@ -15,10 +15,10 @@ path = "src/bin/netsim_viz.rs"
 required-features = []
 
 [dependencies]
-# The MLE language, for the --mle producer (docs/mle.md Track C2).
-mle = { path = "../../mle" }
-# The host prelude `.mlei` interfaces — injected at load time so a game's
-# `Scene.*` calls typecheck against real types (docs/mlei.md).
+# The Functor Lang language, for the --functor-lang producer (docs/functor-lang.md Track C2).
+functor-lang = { path = "../../functor-lang" }
+# The host prelude `.funi` interfaces — injected at load time so a game's
+# `Scene.*` calls typecheck against real types (docs/functor-lang-interfaces.md).
 functor-prelude = { path = "../../functor-prelude" }
 functor_runtime_common = { path = "./../functor-runtime-common" }
 glow = "0.17"

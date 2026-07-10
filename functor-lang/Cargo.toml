@@ -1,0 +1,13 @@
+[package]
+name = "functor-lang"
+version = "0.1.0"
+edition = "2021"
+
+# Zero dependencies by design (docs/functor-lang.md Track B): the lexer/parser are
+# hand-rolled so the language crate stays trivially portable (native + wasm)
+# and free of parser-generator toolchains.
+[dependencies]
+
+[[bin]]
+name = "functor-lang"
+path = "src/main.rs"

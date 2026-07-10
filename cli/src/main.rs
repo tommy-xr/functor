@@ -10,10 +10,10 @@ pub mod util;
 
 use output::{emit, Event};
 
-/// Functor — a functional toolkit for building 3D games in MLE.
+/// Functor — a functional toolkit for building 3D games in Functor Lang.
 ///
 /// Operates on a project directory (a `functor.json` with
-/// `"language": "mle"`). Add `--json` to any command for a newline-delimited
+/// `"language": "functor-lang"`). Add `--json` to any command for a newline-delimited
 /// JSON event stream instead of human text (see `docs/cli-output.md`).
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -68,12 +68,12 @@ impl Environment {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Scaffold a new MLE project (defaults to the 3d template).
+    /// Scaffold a new Functor Lang project (defaults to the 3d template).
     Init {
         #[arg(value_enum, default_value = "3d")]
         template: commands::init::Template,
     },
-    /// Typecheck the MLE project (the strict build gate — diagnostics are
+    /// Typecheck the Functor Lang project (the strict build gate — diagnostics are
     /// errors). Target-independent. E.g. `functor -d examples/primitives build`.
     Build {
         #[arg(value_enum)]
@@ -92,7 +92,7 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },
-    /// Run with hot-reload (same as `run`; MLE reloads on save). E.g.
+    /// Run with hot-reload (same as `run`; Functor Lang reloads on save). E.g.
     /// `functor -d examples/lighting develop native`.
     Develop {
         #[arg(value_enum)]
@@ -109,10 +109,10 @@ enum Command {
         #[command(subcommand)]
         target: InspectTarget,
     },
-    /// Push the game's MLE source to a running runtime over the network
+    /// Push the game's Functor Lang source to a running runtime over the network
     /// (POST /reload-source on its debug server) — the remote develop loop.
     /// The runtime can be on another machine or device; reloads preserve the
-    /// model. MLE projects only.
+    /// model. Functor Lang projects only.
     Push {
         /// The runtime's debug server, host:port. Start it with
         /// `--debug-port <PORT>` (plus `--debug-bind 0.0.0.0` when remote).
@@ -224,7 +224,7 @@ async fn run(args: &Args) -> io::Result<()> {
         commands::init::execute(&working_directory, template)?;
         emit(Event::Info {
             message: format!(
-                "initialized {} MLE project in {} (functor.json, game.mle)",
+                "initialized {} Functor Lang project in {} (functor.json, game.fun)",
                 template.as_str(),
                 working_directory.display()
             ),
@@ -234,7 +234,7 @@ async fn run(args: &Args) -> io::Result<()> {
 
     validate_metadata_path(&working_directory)?;
 
-    // An MLE project (functor.json: `"language": "mle"`) routes build/run/
+    // An Functor Lang project (functor.json: `"language": "functor-lang"`) routes build/run/
     // develop/push to the interpreter — no Fable, no cargo, hot reload built
     // in. Only those are language-routed; Init was handled above.
     let is_routed = matches!(
@@ -245,11 +245,11 @@ async fn run(args: &Args) -> io::Result<()> {
             | Command::Push { .. }
     );
     if let Some(project) =
-        commands::mle_project::detect(&working_directory_str).filter(|_| is_routed)
+        commands::functor_lang_project::detect(&working_directory_str).filter(|_| is_routed)
     {
         return match &args.command {
             Command::Init { .. } | Command::Inspect { .. } => unreachable!("is_routed excludes"),
-            // `build` is target-independent for MLE: the strict typecheck
+            // `build` is target-independent for Functor Lang: the strict typecheck
             // gate is the whole build — nothing compiles for either target
             // (native interprets the file; wasm serves it as text).
             Command::Build { .. } => project.build(&working_directory_str),
@@ -290,16 +290,16 @@ async fn run(args: &Args) -> io::Result<()> {
     match &args.command {
         Command::Init { .. } => unreachable!("init is handled before metadata validation"),
         // The F#/Fable pipeline was removed in E3: every Functor project is now
-        // MLE (functor.json `"language": "mle"`), routed above. A project that
-        // isn't MLE has no build/run/develop/push path.
+        // Functor Lang (functor.json `"language": "functor-lang"`), routed above. A project that
+        // isn't Functor Lang has no build/run/develop/push path.
         Command::Build { .. } | Command::Run { .. } | Command::Develop { .. } => {
             Err(io::Error::other(
-                "not an MLE project: functor.json needs \"language\": \"mle\" \
+                "not a Functor Lang project: functor.json needs \"language\": \"functor-lang\" \
 (the F#/Fable pipeline was removed in E3)",
             ))
         }
         Command::Push { .. } => Err(io::Error::other(
-            "push requires an MLE project (functor.json with \"language\": \"mle\")",
+            "push requires a Functor Lang project (functor.json with \"language\": \"functor-lang\")",
         )),
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
@@ -357,14 +357,14 @@ fn finish(res: io::Result<()>, started: Instant) -> tokio::io::Result<()> {
 fn hint_for(message: &str) -> Option<String> {
     if message.contains("functor.json not found") {
         Some(
-            "point -d at an MLE project directory (one containing a functor.json), \
+            "point -d at a Functor Lang project directory (one containing a functor.json), \
 e.g. `functor -d examples/primitives build`"
                 .to_string(),
         )
-    } else if message.contains("not an MLE project") {
-        Some("add `\"language\": \"mle\"` to the project's functor.json".to_string())
-    } else if message.contains("mle entry not found") {
-        Some("check the `entry` field in functor.json (defaults to game.mle)".to_string())
+    } else if message.contains("not a Functor Lang project") {
+        Some("add `\"language\": \"functor-lang\"` to the project's functor.json".to_string())
+    } else if message.contains("functor-lang entry not found") {
+        Some("check the `entry` field in functor.json (defaults to game.fun)".to_string())
     } else {
         None
     }
@@ -418,7 +418,7 @@ mod tests {
 
         assert!(result.is_ok(), "init failed: {result:?}");
         assert!(directory.join("functor.json").is_file());
-        assert!(fs::read_to_string(directory.join("game.mle"))
+        assert!(fs::read_to_string(directory.join("game.fun"))
             .unwrap()
             .contains("A small Functor scene"));
         let _ = fs::remove_dir_all(directory);

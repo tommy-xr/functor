@@ -2,8 +2,8 @@
 //!
 //! An HTTP request correlates with its later response by a `token` chosen when
 //! the request is made and echoed back on the result. This module mints those
-//! tokens. The MLE producer holds the in-flight taggers keyed by token in its
-//! own per-session registry (see `mle_prelude`), so nothing type-erased lives
+//! tokens. The Functor Lang producer holds the in-flight taggers keyed by token in its
+//! own per-session registry (see `functor_lang_prelude`), so nothing type-erased lives
 //! here — just a monotonic counter.
 
 use std::cell::Cell;

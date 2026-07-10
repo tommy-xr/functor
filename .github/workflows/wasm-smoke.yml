@@ -1,6 +1,6 @@
 name: WASM smoke
 
-# Loads every self-contained MLE sample in the real web runtime (headless
+# Loads every self-contained Functor Lang sample in the real web runtime (headless
 # Chromium) and asserts it LOADS → survives a pushed reload → ticks a few frames
 # without a persistent error overlay. This is the guard for "works native,
 # broken in wasm" divergence — a missing sibling module, a dropped record field,

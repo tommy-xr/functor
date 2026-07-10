@@ -1,0 +1,101 @@
+// synthwave — the Functor Lang port of examples/synthwave (roadmap E2, docs/functor-lang.md).
+//
+// A retro-synthwave scene: a neon grid terrain of rolling hills receding toward
+// the horizon and rolling toward the camera over time, a glowing sun low on the
+// horizon, and a dark gradient sky. The whole scene is a pure function of time
+// (tts) — there is no per-frame model state.
+//
+//   functor -d examples/synthwave run native
+//
+// Port notes: F#'s procedural `heightmapFn rows cols fn` becomes
+// `Scene.heightmap(List.grid(fn, rows, cols))` — `List.grid` tabulates the grid
+// by calling the closure per cell in the engine's loop. The heightmap is a
+// unit square centered on origin, so F#'s non-uniform `Transform.scaleX/Z`
+// becomes `Scene.scaleXYZ` (sizing XZ to terrainSize while leaving Y at author
+// hill scale). Every surface is emissive, so no lights are needed.
+
+// Mesh resolution. One emissive texture cell tiles per grid quad, so this also
+// sets how many neon grid lines you see. F# uses 80×80, but Functor Lang regenerates the
+// whole heightmap every frame (List.grid interprets the height closure per cell
+// AND the mesh is rebuilt), so 80² = 6400 cells cost ~27ms/draw (162% of a 60fps
+// budget) in the tree-walker. 40×40 keeps the draw at ~42%. Crucially, the
+// height field below is sampled in a resolution-INDEPENDENT space (see refRes),
+// so the ONLY thing this changes vs F# is the grid-line density — the hill
+// wavelength and scroll speed stay identical to the 80×80 original.
+let rows = 40.0
+let cols = 40.0
+
+// The reference grid the height field is authored against (F#'s 80×80). Sampling
+// at `index * (refRes / rows)` makes the terrain shape and motion the same at
+// any mesh resolution — only the sample density (grid lines) changes. The ratios
+// are hoisted to constants (evaluated once) so the per-cell height closure does
+// one multiply, not a divide, in the hot regeneration loop.
+let refRes = 80.0
+let rowScale = refRes / rows
+let colScale = refRes / cols
+
+// World footprint of the terrain (the heightmap spans the unit square, so this
+// stretches XZ wide while leaving Y at author scale for the hill heights).
+let terrainSize = 160.0
+
+// How fast the hills roll toward the camera (reference-grid units / second of
+// phase; resolution-independent because the field is sampled in refRes space).
+let scrollSpeed = 4.0
+
+// Terrain height at grid coords (row, col), scrolled by `phase`. The indices are
+// mapped into the reference (80×80) sample space, so the sine ridges keep F#'s
+// wavelength regardless of `rows`/`cols`. Rows run along +Z (into the distance);
+// cols run along X. A couple of sine ridges in depth give rolling hills, gently
+// modulated across X; the lift keeps valleys mostly at/above y = 0.
+let terrainHeight = (phase: float, r: float, c: float): float =>
+  let z = r * rowScale + phase in
+  let x = c * colScale in
+  Math.sin(z * 0.35) * 1.6
+    + Math.sin(z * 0.16 + x * 0.10) * 1.1
+    + Math.sin(x * 0.22) * 0.5
+    + 2.0
+
+// Texture values (branded like Angles — declare once, pass the value): the
+// neon grid-cell texture (dark interior, hot-magenta edges) and the gradient
+// sky (dark indigo up top -> warm magenta at the horizon).
+let gridTexture = Texture.file("grid-neon.png")
+let skyTexture = Texture.file("sky.png")
+
+// No per-frame state: the scene is a pure function of time.
+let init = 0.0
+
+let tick = (m: float, dt: float, tts: float) => m
+
+let draw = (m: float, tts: float) =>
+  let phase = tts * scrollSpeed in
+  // The neon grid terrain: an emissive grid-cell texture (dark interior,
+  // hot-magenta edges) tiled one cell per quad, so the glowing lines align with
+  // the mesh grid. Emissive = self-lit, so it glows in the dark.
+  let terrain =
+    Scene.heightmap(List.grid((r, c) => terrainHeight(phase, r, c), rows, cols))
+    |> Scene.scaleXYZ(terrainSize, 1.0, terrainSize)
+    |> Scene.translate(0.0, -2.0, 0.0)
+    |> Scene.emissiveTexture(gridTexture) in
+  // The glowing sun, low on the horizon down +Z — a bright, warm emissive
+  // sphere that pops against the warm horizon glow of the sky behind it.
+  let sun =
+    Scene.sphere()
+    |> Scene.scale(16.0)
+    |> Scene.translate(0.0, 9.0, 78.0)
+    |> Scene.emissive(1.0, 0.82, 0.6) in
+  // A gradient sky backdrop (dark indigo up top -> warm magenta at the horizon)
+  // on a large emissive quad just behind the sun. The quad lies in the XY plane
+  // facing the camera; emissive so it ignores scene lighting.
+  let sky =
+    Scene.quad()
+    |> Scene.scaleXYZ(500.0, 280.0, 1.0)
+    |> Scene.translate(0.0, 60.0, 84.0)
+    |> Scene.emissiveTexture(skyTexture) in
+  let scene = Scene.group([sky, sun, terrain]) in
+  // Low camera near the front edge, looking down +Z across the hills to the sun
+  // on the horizon. A hair of downward pitch frames the grid.
+  Frame.create(
+    Camera.firstPerson(
+      0.0, 5.0, -12.0,
+      Angle.radians(0.0), Angle.radians(-0.05), Angle.degrees(70.0)),
+    scene)

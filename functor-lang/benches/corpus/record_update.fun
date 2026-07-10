@@ -1,0 +1,10 @@
+// BENCH: record update `{ r with ... }` -- a 100k fold that threads a record
+// accumulator, updating two fields each step. Measures record clone + field
+// update per iteration.
+//
+// Convention: `main` is the timed unit of work. Also: `functor-lang run record_update.fun`.
+type Acc = { sum: float, count: float }
+let step = (r: Acc, x: float): Acc => { r with sum: r.sum + x, count: r.count + 1.0 }
+let main = () =>
+  let final = List.fold(step, { sum: 0.0, count: 0.0 }, List.range(100000)) in
+  final.sum + final.count

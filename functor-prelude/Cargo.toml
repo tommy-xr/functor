@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 # Zero dependencies by design: this crate is a thin holder of the host prelude
-# `.mlei` interface text so it can be depended on by BOTH the runtime
-# (functor_runtime_common) and the editor tooling (tools/mle-lsp) without
+# `.funi` interface text so it can be depended on by BOTH the runtime
+# (functor_runtime_common) and the editor tooling (tools/functor-lang-lsp) without
 # dragging in either's dependency graph.
 [dependencies]

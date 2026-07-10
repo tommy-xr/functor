@@ -1,0 +1,35 @@
+// hello-cubes — the first real-language Functor game (docs/functor-lang.md Track C2).
+// A ring of gradient cubes orbits a pulsing sphere. Run with:
+//
+//   functor -d examples/hello-cubes run native
+//
+// The producer contract: `init` is the initial model value; `tick` steps it;
+// `draw` returns a Frame; `subscriptions` declares timers whose messages
+// fold through `update` (the full MVU loop — here, a once-per-second Beat
+// cycles the centerpiece's color).
+//
+// The scene-piece builders live in the sibling module `Pieces` (pieces.fun);
+// this file drives the MVU loop and composes them as `Pieces.ringCube` /
+// `Pieces.centerpiece`. Transforms apply outermost-last, so on the ring a
+// cube is `|> Scene.translate(radius…) |> Scene.rotateY(angle)`.
+
+type Msg =
+  | Beat
+
+let init = { spin: 0.0, beat: 0.0 }
+
+let tick = (model, dt: float, tts: float) => { model with spin: model.spin + dt * 0.5 }
+
+let update = (model, msg) =>
+  match msg with
+  | Beat => { model with beat: model.beat + 1.0 }
+
+let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
+
+let draw = (model, tts: float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 3.5, -9.0, 0.0, 0.0, 0.0),
+    Scene.group([
+      Pieces.centerpiece(model.spin, model.beat),
+      Scene.group(List.range(Pieces.count) |> List.map((i) => Pieces.ringCube(model.spin, i))),
+    ]))

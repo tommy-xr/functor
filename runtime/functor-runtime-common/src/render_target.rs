@@ -26,7 +26,7 @@ impl RenderTargetDescriptor {
     }
 
     /// Subject-first so it pipes (`rt |> RenderTarget.sized(w, h)`); sizes are
-    /// f32 at the boundary (MLE numbers are floats), clamped to at least 1.
+    /// f32 at the boundary (Functor Lang numbers are floats), clamped to at least 1.
     pub fn sized(self, width: f32, height: f32) -> RenderTargetDescriptor {
         RenderTargetDescriptor {
             width: width.max(1.0) as u32,

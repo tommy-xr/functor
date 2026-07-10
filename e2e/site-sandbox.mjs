@@ -1,9 +1,9 @@
 // Site e2e: the sandbox's editor → runtime live-reload loop, headless — the
-// site-shaped sibling of mle-preview-reload.mjs (which drives the CLI dev
+// site-shaped sibling of functor-lang-preview-reload.mjs (which drives the CLI dev
 // server directly). Builds the site, serves dist with site/serve.mjs, then
 // drives headless Chromium through:
 //
-//   1. the landing page's hero iframe renders (a live MLE scene);
+//   1. the landing page's hero iframe renders (a live Functor Lang scene);
 //   2. the sandbox loads its default example and reports "live";
 //   3. an edit via the editor seam hot-swaps the scene (pixels change to the
 //      pushed unmistakable green) and the status stays "live";
@@ -13,7 +13,7 @@
 //   6. every example in the picker loads to "live" and ticks cleanly (the
 //      repo examples are copied in at build time — this catches one breaking
 //      on wasm);
-//   7. the docs page highlights its MLE blocks, and a "try it" button's
+//   7. the docs page highlights its Functor Lang blocks, and a "try it" button's
 //      program loads live in the sandbox (the #src= → player ?src= data-URL
 //      path, fresh init).
 //
@@ -107,7 +107,7 @@ const playerFrame = (page) => {
   const consoleLog = [];
   page.on("console", (m) => consoleLog.push(m.text()));
   await page.goto(BASE);
-  for (let i = 0; !consoleLog.some((m) => m.includes("[mle] loaded")); i++) {
+  for (let i = 0; !consoleLog.some((m) => m.includes("[functor-lang] loaded")); i++) {
     if (i > 100) throw new Error(`hero never loaded:\n${consoleLog.join("\n")}`);
     await sleep(200);
   }
@@ -174,7 +174,7 @@ for (const example of ["hero", "orbit", "physics", "monitor"]) {
       { timeout: 30000 }
     );
     await sleep(700);
-    const errors = consoleLog.filter((m) => m.includes("[mle]") && m.includes("error"));
+    const errors = consoleLog.filter((m) => m.includes("[functor-lang]") && m.includes("error"));
     check(`example '${example}' loads live and ticks cleanly`, errors.length === 0, errors.join("\n"));
   } catch {
     check(`example '${example}' loads live and ticks cleanly`, false, consoleLog.slice(-5).join("\n"));
@@ -186,9 +186,9 @@ for (const example of ["hero", "orbit", "physics", "monitor"]) {
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(`${BASE}/docs.html`);
-  const highlighted = await page.locator("pre.mle span.tok-k").count();
+  const highlighted = await page.locator("pre.functor-lang span.tok-k").count();
   const tryButtons = await page.locator("a.try-button").count();
-  check("docs page highlights MLE blocks", highlighted > 10, `${highlighted} keyword spans`);
+  check("docs page highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
   check("docs page offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
 
   // Follow the first try-it link in THIS page (target=_blank would detach).

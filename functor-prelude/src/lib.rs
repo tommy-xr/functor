@@ -1,37 +1,37 @@
-//! The Functor host prelude as MLE interface files (`.mlei`).
+//! The Functor host prelude as Functor Lang interface files (`.funi`).
 //!
-//! The MLE typechecker resolves host externals (`Scene.cube`, …) against
+//! The Functor Lang typechecker resolves host externals (`Scene.cube`, …) against
 //! interface-only modules injected at load time (see
-//! [`mle::project::load_with_prelude`] and `docs/mlei.md`). This crate holds the
-//! authoritative `.mlei` text for those modules and exposes it as
+//! [`functor_lang::project::load_with_prelude`] and `docs/functor-lang-interfaces.md`). This crate holds the
+//! authoritative `.funi` text for those modules and exposes it as
 //! `(module name, source)` pairs — the exact shape the loader wants.
 //!
-//! The `.mlei` here declares only TYPES; the Rust implementations live in
-//! `functor_runtime_common::mle_prelude::FunctorHost`. A drift test in that
+//! The `.funi` here declares only TYPES; the Rust implementations live in
+//! `functor_runtime_common::functor_lang_prelude::FunctorHost`. A drift test in that
 //! crate keeps the two in sync.
 
-/// The host prelude interface modules, as `(module name, .mlei source)` pairs.
+/// The host prelude interface modules, as `(module name, .funi source)` pairs.
 ///
 /// The module name is what qualified access uses (`Scene.cube`); it is derived
 /// here explicitly rather than from a file name so the loader gets it verbatim.
 pub fn modules() -> Vec<(String, String)> {
     vec![
-        module("Scene", include_str!("../prelude/scene.mlei")),
-        module("Angle", include_str!("../prelude/angle.mlei")),
-        module("Camera", include_str!("../prelude/camera.mlei")),
-        module("Frame", include_str!("../prelude/frame.mlei")),
-        module("Light", include_str!("../prelude/light.mlei")),
-        module("Fog", include_str!("../prelude/fog.mlei")),
-        module("Skybox", include_str!("../prelude/skybox.mlei")),
-        module("RenderTarget", include_str!("../prelude/render_target.mlei")),
-        module("Texture", include_str!("../prelude/texture.mlei")),
-        module("Time", include_str!("../prelude/time.mlei")),
-        module("Sub", include_str!("../prelude/sub.mlei")),
-        module("Effect", include_str!("../prelude/effect.mlei")),
-        module("Physics", include_str!("../prelude/physics.mlei")),
-        module("Ui", include_str!("../prelude/ui.mlei")),
-        module("AudioSource", include_str!("../prelude/audio_source.mlei")),
-        module("AudioScene", include_str!("../prelude/audio_scene.mlei")),
+        module("Scene", include_str!("../prelude/scene.funi")),
+        module("Angle", include_str!("../prelude/angle.funi")),
+        module("Camera", include_str!("../prelude/camera.funi")),
+        module("Frame", include_str!("../prelude/frame.funi")),
+        module("Light", include_str!("../prelude/light.funi")),
+        module("Fog", include_str!("../prelude/fog.funi")),
+        module("Skybox", include_str!("../prelude/skybox.funi")),
+        module("RenderTarget", include_str!("../prelude/render_target.funi")),
+        module("Texture", include_str!("../prelude/texture.funi")),
+        module("Time", include_str!("../prelude/time.funi")),
+        module("Sub", include_str!("../prelude/sub.funi")),
+        module("Effect", include_str!("../prelude/effect.funi")),
+        module("Physics", include_str!("../prelude/physics.funi")),
+        module("Ui", include_str!("../prelude/ui.funi")),
+        module("AudioSource", include_str!("../prelude/audio_source.funi")),
+        module("AudioScene", include_str!("../prelude/audio_scene.funi")),
     ]
 }
 

@@ -4,7 +4,7 @@
 //
 // Builds the CLI WITHOUT the wasm bundle (`--no-default-features`, seconds, no
 // `npm run build:cli` needed), then:
-//   1. typechecks every `examples/*/game.mle` under the host prelude (catches
+//   1. typechecks every `examples/*/game.fun` under the host prelude (catches
 //      load / type breaks — no GPU, no assets),
 //   2. captures a frame from a couple of procedural (asset-free) scenes
 //      (catches render breaks — needs a GL display; skip with `--no-render`).
@@ -23,7 +23,7 @@ console.log("▸ building native-only CLI (no wasm bundle)…");
 execSync("cargo build -q -p functor-cli --no-default-features", { stdio: "inherit" });
 
 const examples = readdirSync("examples", { withFileTypes: true })
-  .filter((d) => d.isDirectory() && existsSync(`examples/${d.name}/game.mle`))
+  .filter((d) => d.isDirectory() && existsSync(`examples/${d.name}/game.fun`))
   .map((d) => d.name)
   .sort();
 

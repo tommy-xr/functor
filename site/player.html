@@ -1,10 +1,10 @@
 <html>
   <!-- The site's runtime host page: the sibling of the CLI dev server's
-       index-mle.html (runtime/functor-runtime-web/index-mle.html), except the
-       .mle entry comes from the `?game=` query instead of being substituted
+       index-functor-lang.html (runtime/functor-runtime-web/index-functor-lang.html), except the
+       .fun entry comes from the `?game=` query instead of being substituted
        server-side — so one static page can host every example. The input
        mapping and the postMessage set-source seam are copied from that page;
-       keep them in sync when the runtime's mle_* exports change. -->
+       keep them in sync when the runtime's functor_lang_* exports change. -->
   <head>
     <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
     <style>
@@ -19,20 +19,20 @@
     <script type="module">
 
       import init, {
-        mle_key_event,
-        mle_mouse_move,
-        mle_mouse_wheel,
-        mle_is_running,
-        mle_set_source,
+        functor_lang_key_event,
+        functor_lang_mouse_move,
+        functor_lang_mouse_wheel,
+        functor_lang_is_running,
+        functor_lang_set_source,
       } from "./pkg/functor_runtime_web.js";
 
-      // The MLE entry, from `?game=<path>` (a path relative to this page).
+      // The Functor Lang entry, from `?game=<path>` (a path relative to this page).
       // Must be set before init(): the runtime reads it at start to choose the
       // interpreter producer. The runtime fetches it as a URL, so encode each
       // path segment while keeping subdirectories.
       const params = new URLSearchParams(window.location.search);
       // ?src=<base64url> carries an inline program (the docs' "try it"
-      // buttons): the runtime fetches __mleGamePath as a URL, and a data:
+      // buttons): the runtime fetches __functorLangGamePath as a URL, and a data:
       // URL delivers the source with a fresh init — unlike a set-source
       // push, which deliberately preserves the running model.
       const src = params.get("src");
@@ -42,14 +42,14 @@
       const game =
         requested && !requested.startsWith("/") && !requested.includes(":")
           ? requested
-          : "examples/hero.mle";
-      window.__mleGamePath = src
+          : "examples/hero.fun";
+      window.__functorLangGamePath = src
         ? "data:text/plain;base64," + src.replace(/-/g, "+").replace(/_/g, "/")
         : game.split("/").map(encodeURIComponent).join("/");
 
       // Map a browser KeyboardEvent.code to the canonical key code expected by
       // the game (functor_runtime_common::Key as i32). Keep in sync with
-      // index-mle.html / index.html: A=1..Z=26, then the entries below.
+      // index-functor-lang.html / index.html: A=1..Z=26, then the entries below.
       const keyCode = (code) => {
         if (code.length === 4 && code.startsWith("Key")) {
           return code.charCodeAt(3) - 64;
@@ -73,12 +73,12 @@
           const code = keyCode(e.code);
           if (code === 0) return;
           e.preventDefault();
-          if (!e.repeat) mle_key_event(code, true);
+          if (!e.repeat) functor_lang_key_event(code, true);
         });
         window.addEventListener("keyup", (e) => {
           const code = keyCode(e.code);
           if (code === 0) return;
-          mle_key_event(code, false);
+          functor_lang_key_event(code, false);
         });
 
         // Mouse free-look: click the canvas to pointer-lock, accumulate
@@ -89,34 +89,34 @@
         document.addEventListener("mousemove", (e) => {
           ax += e.movementX;
           ay += e.movementY;
-          mle_mouse_move(ax, ay);
+          functor_lang_mouse_move(ax, ay);
         });
 
         canvas.addEventListener("wheel", (e) => {
           e.preventDefault();
-          mle_mouse_wheel(Math.sign(e.deltaY));
+          functor_lang_mouse_wheel(Math.sign(e.deltaY));
         });
       };
 
       // The live-edit seam: the hosting page (the sandbox) posts the full
-      // .mle source and the runtime hot-swaps it, model preserved. Pushes are
+      // .fun source and the runtime hot-swaps it, model preserved. Pushes are
       // accepted only from the HOSTING frame; replies go only to the sender.
       const setupSetSource = () => {
         window.addEventListener("message", (event) => {
           if (event.source !== window.parent) return;
           const data = event.data;
-          if (!data || data.type !== "mle-set-source" || typeof data.source !== "string") return;
+          if (!data || data.type !== "functor-lang-set-source" || typeof data.source !== "string") return;
           // Queue the source; the wasm frame loop applies it at a safe point
-          // (never mid-frame) and posts an `mle-set-source-result` back to the
+          // (never mid-frame) and posts an `functor-lang-set-source-result` back to the
           // hosting frame with the outcome (a broken push keeps the old program).
-          mle_set_source(data.source);
+          functor_lang_set_source(data.source);
         });
         // Announce once the PRODUCER is installed (not just the wasm module):
-        // run_async still has to fetch the source, so poll mle_is_running().
+        // run_async still has to fetch the source, so poll functor_lang_is_running().
         if (window.parent !== window) {
           const announce = () => {
-            if (mle_is_running()) {
-              window.parent.postMessage({ type: "mle-preview-ready" }, "*");
+            if (functor_lang_is_running()) {
+              window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
             } else {
               setTimeout(announce, 50);
             }

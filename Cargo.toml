@@ -4,12 +4,12 @@ resolver = "1"
 members = [
     "cli",
     "functor-prelude",
-    "mle",
+    "functor-lang",
     "runtime/functor-netsim",
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
-    "tools/mle-lsp",
+    "tools/functor-lang-lsp",
 ]
 
 # Debug info dominated target/ size (it was repeatedly filling the disk during

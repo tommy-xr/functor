@@ -17,10 +17,10 @@ default = ["web"]
 web = []
 
 [dependencies]
-# The MLE language, for `language: "mle"` projects (docs/mle.md Track C4).
-mle = { path = "../mle" }
-# The host prelude `.mlei` interfaces — injected at load time so a game's
-# `Scene.*` calls typecheck against real types (docs/mlei.md).
+# The Functor Lang language, for `language: "functor-lang"` projects (docs/functor-lang.md Track C4).
+functor-lang = { path = "../functor-lang" }
+# The host prelude `.funi` interfaces — injected at load time so a game's
+# `Scene.*` calls typecheck against real types (docs/functor-lang-interfaces.md).
 functor-prelude = { path = "../functor-prelude" }
 clap = { version = "4.5.6", features = ["derive"] }
 colored = "2.1.0"

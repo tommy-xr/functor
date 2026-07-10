@@ -1,0 +1,43 @@
+// Highlighting sample — exercises every Functor Lang construct the grammar knows.
+// Kept valid (parse + lower) by the `vscode_extension_assets_are_well_formed`
+// test in tools/functor-lang-lsp/tests/e2e.rs.
+
+// Type declarations: record types, generic annotations.
+type Position = { x: float, y: float }
+type Player = { name: string, scores: List<float> }
+
+// Literals: numbers, booleans, strings with escapes.
+let debug = false
+let enabled = true
+let threshold = 10
+let pi = 3.14
+let banner = "scores:\n\t\"final\" \\ report"
+
+// Lambdas with and without annotations; arithmetic and unary minus.
+let add = (a: float, b: float): float => a + b
+let average = (a, b) => (a + b) / 2.0
+let negate = (n) => -n
+let scaled = (n) => n * 100.0 - threshold
+
+// Records, field access, comparisons.
+let origin = { x: 0.0, y: 0.0 }
+let mirror = (p: Position): Position => { x: -p.x, y: p.y }
+let isOrigin = (p: Position): bool => p.x == 0.0
+let isHigh = (score: float): bool => score > threshold
+let isLow = (score: float): bool => score < threshold
+
+// Pipelines and qualified names (trailing commas allowed in lists/records).
+let total = (p: Player): float => p.scores |> List.fold(add, 0.0)
+let normalized = (score) => score / 100.0 |> Math.clamp01
+let report = (scores) =>
+  scores
+    |> List.filter(isHigh)
+    |> List.map((s) => Text.concat("score: ", Text.fromFloat(s)))
+    |> Text.toBullets
+
+let main = () =>
+  report([
+    12.0,
+    3.5,
+    40.0,
+  ])

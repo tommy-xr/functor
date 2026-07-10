@@ -1,4 +1,4 @@
-//! A frame-replay producer (docs/mle.md Track A3): plays back recorded
+//! A frame-replay producer (docs/functor-lang.md Track A3): plays back recorded
 //! [`Frame`]s from a JSON file instead of running any game logic. The file is
 //! either a single serialized `Frame` or a JSON array of them — the exact wire
 //! format `GET /scene` emits — so a `/scene` capture can be replayed verbatim.

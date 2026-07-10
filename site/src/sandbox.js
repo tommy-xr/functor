@@ -1,13 +1,13 @@
 // The sandbox page: a CodeMirror editor wired to the runtime iframe over the
 // same postMessage seam the VSCode live-preview panel uses
-// (tools/mle-vscode/client/extension.js is the reference implementation):
-// edits are debounced and pushed as `mle-set-source`; the runtime hot-swaps
-// the program with the model preserved and replies `mle-set-source-result`.
+// (tools/functor-lang-vscode/client/extension.js is the reference implementation):
+// edits are debounced and pushed as `functor-lang-set-source`; the runtime hot-swaps
+// the program with the model preserved and replies `functor-lang-set-source-result`.
 
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
-import { mleLanguage, synthwaveEditorTheme } from "./mle.js";
+import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 
 const EXAMPLES = [
   { id: "hero", label: "Neon grid" },
@@ -48,7 +48,7 @@ const pushSource = () => {
   dirty = false;
   setStatus("busy", "◌ reloading…");
   frame.contentWindow.postMessage(
-    { type: "mle-set-source", source: view.state.doc.toString() },
+    { type: "functor-lang-set-source", source: view.state.doc.toString() },
     "*"
   );
 };
@@ -68,7 +68,7 @@ const view = new EditorView({
   extensions: [
     basicSetup,
     keymap.of([indentWithTab]),
-    mleLanguage,
+    functorLangLanguage,
     synthwaveEditorTheme,
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !programmaticEdit) schedulePush();
@@ -82,12 +82,12 @@ window.addEventListener("message", (event) => {
   if (event.source !== frame.contentWindow) return;
   const data = event.data;
   if (!data) return;
-  if (data.type === "mle-preview-ready") {
+  if (data.type === "functor-lang-preview-ready") {
     previewReady = true;
     // Flush edits made while the runtime was still starting.
     if (dirty) pushSource();
     else setStatus("live", "● live");
-  } else if (data.type === "mle-set-source-result") {
+  } else if (data.type === "functor-lang-set-source-result") {
     // A reply from the outgoing document (its WindowProxy survives the src
     // swap) must not overwrite the "loading…" status of the incoming one.
     if (!previewReady) return;
@@ -146,7 +146,7 @@ const loadInline = (b64u) => {
 };
 
 const loadExample = async (id) => {
-  const url = `examples/${encodeURIComponent(id)}.mle`;
+  const url = `examples/${encodeURIComponent(id)}.fun`;
   const response = await fetch(url);
   if (!response.ok) {
     setStatus("error", "✖ error", `cannot fetch ${url}: HTTP ${response.status}`);

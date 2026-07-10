@@ -1,6 +1,6 @@
 //! The logic↔runtime protocol: the versioned contract between a game's pure
 //! logic (today the Fable-generated F# dylib/wasm module; later any producer —
-//! see `docs/mle.md`, Track A) and the imperative runtime shells.
+//! see `docs/functor-lang.md`, Track A) and the imperative runtime shells.
 //!
 //! Everything that crosses the boundary is enumerated here, split by whether it
 //! crosses **as serializable data** (the protocol proper — language-neutral,
@@ -51,10 +51,10 @@
 //!   deliberately dropped on reload (an `Http` effect's tagger is a closure
 //!   into the old dylib and would dangle — see `getState` in
 //!   `src/Functor.Game/Runtime.fs`). A data-native state representation is
-//!   what makes state durable/inspectable across producers (`docs/mle.md`,
+//!   what makes state durable/inspectable across producers (`docs/functor-lang.md`,
 //!   Track C).
 //! - Effect *commands* cross as data (above); the producer holds any per-effect
-//!   tagger/closure on its own side (the MLE producer keeps them per session),
+//!   tagger/closure on its own side (the Functor Lang producer keeps them per session),
 //!   so nothing closure-shaped crosses the boundary.
 //! - Control signals with no payload: `init` and `quit`.
 
@@ -69,10 +69,10 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// this module's boundary doc (drains return JSON arrays, pushes take the
 /// inbox scalars, `render` returns the [`crate::Frame`]).
 ///
-/// Impls: the MLE interpreter producers `MleGame` / `ReplayGame` (desktop)
-/// and `MleWebGame` (web). The seam exists so a producer can be swapped
+/// Impls: the Functor Lang interpreter producers `FunctorLangGame` / `ReplayGame` (desktop)
+/// and `FunctorLangWebGame` (web). The seam exists so a producer can be swapped
 /// without the shells knowing what language or pipeline produced the logic —
-/// see `docs/mle.md`, Track A2.
+/// see `docs/functor-lang.md`, Track A2.
 ///
 /// Some capabilities are shell-specific; producers for shells that lack them
 /// implement the honest no-op (e.g. the web producer's `check_hot_reload` —
@@ -93,7 +93,7 @@ pub trait GameProducer {
     /// honest refusal for producers whose logic isn't source-shaped
     /// (compiled dylibs, replays).
     fn reload_source(&mut self, _source: &str) -> Result<String, String> {
-        Err("this producer does not support source reload (not an .mle game)".to_string())
+        Err("this producer does not support source reload (not an .fun game)".to_string())
     }
 
     /// Rewind the whole scene — model AND physics world — to an earlier

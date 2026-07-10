@@ -1,0 +1,19 @@
+// Multi-file Functor Lang (B8): file = module (vec.fun -> Vec, shapes.fun -> Shapes),
+// qualified access needs no import, `open` brings a module in unqualified.
+open Vec
+
+type Ship = { pos: V2, hull: float }
+
+let steer = (ship: Ship, d: V2): Ship =>
+  { ship with pos: add(ship.pos, d) }
+
+let cargo = (ship: Ship): Shapes.Box<float> =>
+  match ship.hull > 0.5 with
+  | true => Shapes.Full(ship.hull)
+  | false => Shapes.Empty
+
+let main = () =>
+  let ship = steer({ pos: origin, hull: 0.75 }, Vec.make(3.0, 4.0)) in
+  match cargo(ship) with
+  | Shapes.Full(h) => ship.pos.x + ship.pos.y + h
+  | Shapes.Empty => 0.0

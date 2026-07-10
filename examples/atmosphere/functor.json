@@ -1,4 +1,4 @@
 {
-  "language": "mle",
-  "entry": "game.mle"
+  "language": "functor-lang",
+  "entry": "game.fun"
 }

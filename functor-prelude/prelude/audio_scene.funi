@@ -1,0 +1,10 @@
+// audio_scene.funi — the `AudioScene` host module (interface only; implemented
+// in Rust by FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//
+// The audio scene the optional `soundScape = (model) => …` hook returns.
+
+// The opaque audio-scene handle (`AudioScene.t` from game code).
+type t
+
+let create : (List<AudioSource.t>) => t
+let empty : () => t

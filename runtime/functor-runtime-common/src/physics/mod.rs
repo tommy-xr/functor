@@ -29,7 +29,7 @@ mod world;
 mod goldens;
 
 // `driver::SteppedPhysics` is the production drive: the recorded wrapper the
-// MLE shells call instead of `World::step_frame` directly (Phase 6).
+// Functor Lang shells call instead of `World::step_frame` directly (Phase 6).
 pub use driver::*;
 pub use registry::*;
 pub use scene::*;

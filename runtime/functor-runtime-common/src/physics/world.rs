@@ -441,7 +441,7 @@ impl World {
     /// units); a zero direction yields `None`.
     ///
     /// Answers against the broad phase **as of the last step** — a world that
-    /// has never stepped misses everything (the MLE drivers hold deferred
+    /// has never stepped misses everything (the Functor Lang drivers hold deferred
     /// queries until a frame that actually substepped, so game code only sees
     /// answers from a simulated world; direct callers should step first).
     /// Sensor colliders are hittable like any other (rapier's default query
