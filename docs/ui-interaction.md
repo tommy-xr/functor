@@ -114,17 +114,22 @@ game's perspective this is fully Elm-controlled.
 
 ## Roadmap
 
-- [ ] **U1 — pointer plumbing (= todo T2).** Mouse buttons + free-cursor
-      position into egui as `RawInput` on both shells; unify the scrubber's
-      `PointerState` bridge. No game-facing change. *Verify:* the scrubber
-      becomes a normally-interactive egui widget.
+- [ ] **U1 — pointer plumbing (= todo T2).** Extract the scrubber's
+      hand-rolled `PointerState` → egui-event synthesis into a shared,
+      unit-tested `PointerBridge` — the piece the interactive game-UI pass
+      reuses. Desktop-only: the web shell has no egui input consumer yet, so
+      its pointer wiring lands with U3 where it's observable. No game-facing
+      change. *Verify:* bridge unit tests; the scrubber behaves identically
+      through the shared path.
 - [ ] **U2 — the seam.** `UiEvent`, `GameProducer::ui_event`, the slot table,
       `FrameCtx::deliver_ui_event`, the `RecordedInput` variant, debug-server
       injection. *Verify:* headless unit tests (inject event → `update` ran),
       before any widget renders.
 - [ ] **U3 — `Ui.button` (= todo T4) + counter example.** Prelude ctor,
-      interactable egui rendering, click → msg. *Verify:* debug-server e2e
-      clicks the button and reads the count; functor-lang skill updated.
+      interactable egui rendering (the `TextOverlay` pass gains pointer input
+      via the U1 bridge, on both shells — web adds its unlocked-pointer canvas
+      listeners here), click → msg. *Verify:* debug-server e2e clicks the
+      button and reads the count; functor-lang skill updated.
 - [ ] **U4 — `Ui.slider` + `Ui.textInput`.** Tagger-carrying, with the
       reconciliation algorithm above and the keyboard-focus gate; plus the
       missing basics (`Ui.row`, remaining anchors). *Verify:* typing-fast and
