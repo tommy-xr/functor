@@ -36,6 +36,10 @@ let emissiveTexture : (Texture.t, t) => t
 let litNormalMapped : (float, float, float, Texture.t, t) => t
 let screen : (RenderTarget.t, t) => t
 
+// Animation (subject-last): attach an Anim expression to the Model node(s)
+// in the scene. Without it a skinned model auto-plays its first clip.
+let animate : (Anim.t, t) => t
+
 // Transforms.
 let translate : (float, float, float, t) => t
 let scale : (float, t) => t

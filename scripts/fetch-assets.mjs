@@ -25,6 +25,11 @@ const TARGETS = [
     assets: ["shark.glb"],
   },
   {
+    dir: "examples/animation",
+    baseUrl: MESHES_BASE,
+    assets: ["Xbot.glb"],
+  },
+  {
     dir: "examples/atmosphere",
     baseUrl: SKYBOX_BASE,
     assets: [

@@ -165,7 +165,7 @@ let grab = (s) =>
   (they evaluate first); siblings may reference the entry (`Game.foo`) if
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
-  builtin/prelude namespace (Net, List, Text, Math, Debug, Scene, Camera,
+  builtin/prelude namespace (Net, List, Text, Math, Debug, Scene, Anim, Camera,
   Frame, Light, Fog, Skybox, Angle, Texture, Time, Sub, Effect, Physics,
   RenderTarget, Ui, AudioSource, AudioScene) is a load error — rename the file.
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -323,6 +323,32 @@ scene |> Scene.scaleXYZ(x, y, z)                            // non-uniform (F#
                                                            //   in XZ with Y
                                                            //   left at author
                                                            //   scale
+scene |> Scene.animate(anim)                               // set the pose on the Model
+                                                           //   node(s) in the subtree;
+                                                           //   Anim VALUES only (the
+                                                           //   Angle rule — never a bare
+                                                           //   clip-name string). Without
+                                                           //   it a skinned model auto-
+                                                           //   plays its FIRST clip on
+                                                           //   the game clock
+Anim.clip("walk", playheadSeconds)                         // a named glTF clip at an
+                                                           //   EXPLICIT playhead (loops by
+                                                           //   the clip's duration;
+                                                           //   negative wraps backwards).
+                                                           //   The engine owns no
+                                                           //   animation clock — derive
+                                                           //   the playhead from tts /
+                                                           //   model state, so poses
+                                                           //   rewind/replay exactly. An
+                                                           //   unknown clip name warns
+                                                           //   once + renders the bind
+                                                           //   pose (`functor inspect`
+                                                           //   lists a model's clips)
+Anim.blend([(anim, weight), …])                            // weighted pose mix (lerp T/S,
+                                                           //   normalized quat mix for R).
+                                                           //   Weights normalize; non-
+                                                           //   positive entries drop;
+                                                           //   entries may nest blends
 Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
 Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)           // all three: Angles
 Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)

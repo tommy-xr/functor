@@ -126,6 +126,7 @@ use functor_lang::value::HostData;
 use functor_lang::{Host, RunError, Span, Value};
 use std::rc::Rc;
 
+use crate::anim::AnimExpr;
 use crate::fog::Fog;
 use crate::math::Angle;
 use crate::physics;
@@ -558,6 +559,21 @@ impl EffectRunner for ReplayEffects {
     }
 }
 
+/// An [`AnimExpr`] as an opaque Functor Lang value — `Anim.clip(…)`/`Anim.blend(…)`.
+/// `Scene.animate` accepts ONLY this, never a bare clip-name string (the
+/// Angle rule, applied to animations): the playhead/weights are explicit in
+/// the value, so the pose stays a pure function of what the game derived.
+pub struct FunctorLangAnim(pub AnimExpr);
+
+impl HostData for FunctorLangAnim {
+    fn type_name(&self) -> &'static str {
+        "Anim"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// An [`Angle`] as an opaque Functor Lang value — `Angle.degrees(…)`/`Angle.radians(…)`.
 /// Rotation/camera functions accept ONLY this, never a bare number, making
 /// degree/radian confusion unrepresentable (the F# side's `Math.Angle`
@@ -852,6 +868,9 @@ const PATHS: &[&str] = &[
     "Scene.litTexture",
     "Scene.litNormalMapped",
     "Scene.emissiveTexture",
+    "Scene.animate",
+    "Anim.clip",
+    "Anim.blend",
     "Texture.file",
     "Angle.degrees",
     "Angle.radians",
@@ -965,11 +984,79 @@ impl Host for FunctorHost {
                     scene_value(Scene3D::model(ModelDescription {
                         handle: ModelHandle::File(path.to_string()),
                         overrides: Vec::new(),
+                        animation: None,
                     }))
                 }
                 _ => usage(
                     "Scene.model(\"file.glb\") — a non-empty glTF path relative to \
 the game dir",
+                ),
+            },
+            // Attach an animation expression to the Model node(s) in a scene
+            // (scene-last, so it pipes right after `Scene.model`). Without it
+            // a skinned model keeps the zero-config default: its first clip
+            // auto-plays on the game clock.
+            "Scene.animate" => match args.as_slice() {
+                [anim, scene] => {
+                    let expr = anim_of(anim, "Scene.animate", span)?.clone();
+                    match scene_of(scene) {
+                        Some(inner) => scene_value(inner.clone().with_animation(expr)),
+                        None => err(format!(
+                            "Scene.animate: expected a Scene to animate, got {}",
+                            scene.kind_name()
+                        )),
+                    }
+                }
+                _ => usage("scene |> Scene.animate(Anim.clip(\"walk\", tts))"),
+            },
+            // A clip sample as a value: the named glTF clip at a playhead in
+            // seconds (looping by the clip's duration). The playhead is
+            // explicit — derive it from `tts` / model state — so the pose is
+            // a pure function of the frame's inputs and time-travel replays
+            // it exactly.
+            "Anim.clip" => match args.as_slice() {
+                [Value::String(name), playhead] if !name.is_empty() => {
+                    let playhead = num(playhead, span)? as f32;
+                    Ok(host(FunctorLangAnim(AnimExpr::Clip {
+                        name: name.to_string(),
+                        playhead,
+                    })))
+                }
+                _ => usage(
+                    "Anim.clip(\"walk\", playheadSeconds) — a non-empty clip name \
+(functor inspect lists a model's clips) and a playhead in seconds (loops)",
+                ),
+            },
+            // A weighted mix of animations: [(anim, weight), …]. Weights are
+            // normalized; a non-positive weight drops its entry (so driving a
+            // weight to 0.0 in game code cleanly silences that clip).
+            "Anim.blend" => match args.as_slice() {
+                [Value::List(items)] if !items.is_empty() => {
+                    let mut blended = Vec::with_capacity(items.len());
+                    for item in items.iter() {
+                        let Value::Tuple(pair) = item else {
+                            return err(format!(
+                                "Anim.blend entries must be (anim, weight) tuples, got {}",
+                                item.kind_name()
+                            ));
+                        };
+                        let [anim, weight] = pair.as_slice() else {
+                            return err(format!(
+                                "Anim.blend entries must be (anim, weight) pairs, got a \
+{}-tuple",
+                                pair.len()
+                            ));
+                        };
+                        let anim = anim_of(anim, "Anim.blend", span)?.clone();
+                        let weight = num(weight, span)? as f32;
+                        blended.push((anim, weight));
+                    }
+                    Ok(host(FunctorLangAnim(AnimExpr::Blend(blended))))
+                }
+                _ => usage(
+                    "Anim.blend([(anim, weight), …]) — a non-empty list of \
+(Anim, weight) pairs, e.g. Anim.blend([(Anim.clip(\"walk\", tts), 0.7), \
+(Anim.clip(\"run\", tts), 0.3)])",
                 ),
             },
             // A subdivided XZ grid displaced by per-vertex heights — the Functor Lang
@@ -2860,6 +2947,36 @@ fn scene_of(value: &Value) -> Option<&Scene3D> {
     }
 }
 
+/// Extract an [`AnimExpr`] — animation-consuming functions accept ONLY the
+/// branded value, so the predictable mistake (a bare clip-name string) gets a
+/// teaching error pointing at `Anim.clip` (the [`angle_of`] rule).
+fn anim_of<'a>(value: &'a Value, what: &str, span: Span) -> Result<&'a AnimExpr, RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<FunctorLangAnim>()
+            .map(|a| &a.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected an Anim, got {}", value.kind_name()),
+                span,
+            }),
+        Value::String(_) => Err(RunError {
+            message: format!(
+                "{what}: got a bare clip name — wrap it with a playhead: \
+Anim.clip(\"walk\", tts)"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!(
+                "{what}: expected an Anim (Anim.clip / Anim.blend), got {}",
+                other.kind_name()
+            ),
+            span,
+        }),
+    }
+}
+
 fn audio_source_of(value: &Value) -> Option<&crate::audio::AudioSource> {
     match value {
         Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangAudioSource>().map(|s| &s.0),
@@ -3397,6 +3514,104 @@ the game dir"
             failure.error.message,
             "Scene.rotateY: expected an Angle, got a bare number — say which unit: \
 Angle.degrees(…) or Angle.radians(…)"
+        );
+    }
+
+    // Scene.animate pipes after Scene.model and lands the expression on the
+    // Model node — the declarative "what pose" seam the renderer evaluates.
+    #[test]
+    fn scene_animate_sets_clip_on_model() {
+        let value = eval(
+            "let main = () => Scene.model(\"Xbot.glb\") |> Scene.animate(Anim.clip(\"walk\", 1.5))",
+        );
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::Model(description) = &scene.obj else {
+            panic!("expected a Model node, got {:?}", scene.obj);
+        };
+        match &description.animation {
+            Some(AnimExpr::Clip { name, playhead }) => {
+                assert_eq!(name, "walk");
+                assert_eq!(*playhead, 1.5);
+            }
+            other => panic!("expected a Clip animation, got {other:?}"),
+        }
+    }
+
+    // Applied over a group, Scene.animate reaches the Model nodes inside it
+    // (geometry is untouched), and Anim.blend carries its (clip, weight) pairs.
+    #[test]
+    fn scene_animate_reaches_models_in_groups() {
+        let value = eval(
+            "let main = () =>\n\
+             Scene.group([Scene.model(\"Xbot.glb\"), Scene.cube()])\n\
+               |> Scene.animate(Anim.blend([\n\
+                    (Anim.clip(\"idle\", 0.0), 0.25),\n\
+                    (Anim.clip(\"run\", 2.0), 0.75),\n\
+                  ]))",
+        );
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::Group(children) = &scene.obj else {
+            panic!("expected a Group, got {:?}", scene.obj);
+        };
+        let SceneObject::Model(description) = &children[0].obj else {
+            panic!("expected a Model child, got {:?}", children[0].obj);
+        };
+        match &description.animation {
+            Some(AnimExpr::Blend(entries)) => {
+                assert_eq!(entries.len(), 2);
+                assert!(
+                    matches!(&entries[1], (AnimExpr::Clip { name, playhead }, weight)
+                        if name == "run" && *playhead == 2.0 && *weight == 0.75),
+                    "entries: {entries:?}"
+                );
+            }
+            other => panic!("expected a Blend animation, got {other:?}"),
+        }
+        assert!(
+            matches!(&children[1].obj, SceneObject::Geometry(Shape::Cube)),
+            "the cube is untouched"
+        );
+        // The animated scene serializes through the protocol.
+        let json = serde_json::to_string(&scene).expect("serialize");
+        assert!(json.contains("\"Blend\""), "json: {json}");
+        let back: Scene3D = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // The Angle rule for animations: a bare clip name teaches Anim.clip.
+    #[test]
+    fn bare_strings_are_not_anims() {
+        let module = functor_lang::lower(
+            functor_lang::parse(
+                "let main = () => Scene.model(\"Xbot.glb\") |> Scene.animate(\"walk\")",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert_eq!(
+            failure.error.message,
+            "Scene.animate: got a bare clip name — wrap it with a playhead: \
+Anim.clip(\"walk\", tts)"
+        );
+    }
+
+    // Blend entries must be (anim, weight) pairs.
+    #[test]
+    fn anim_blend_requires_pairs() {
+        let module = functor_lang::lower(
+            functor_lang::parse("let main = () => Anim.blend([Anim.clip(\"walk\", 0.0)])").unwrap(),
+        )
+        .unwrap();
+        let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert!(
+            failure.error.message.contains("(anim, weight)"),
+            "message: {}",
+            failure.error.message
         );
     }
 
