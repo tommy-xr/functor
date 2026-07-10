@@ -1,11 +1,8 @@
 use cgmath::Matrix4;
-use cgmath::SquareMatrix;
-use cgmath::Vector3;
 use cgmath::Vector4;
-use glow::HasContext;
 
 use crate::fog::{FogUniforms, FOG_GLSL};
-use crate::light::{pack_lights, MAX_LIGHTS};
+use crate::light::{lighting_glsl, LightingUniforms};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -15,8 +12,9 @@ use super::Material;
 // Diffuse-lit surface: albedo (a color, optionally modulated by a texture) shaded
 // by a bounded array of lights (ambient / directional / point / spot) via Lambert
 // plus distance + cone falloff. Reads the frame's lights from `RenderContext`.
-// Needs the vertex normal (attribute location 2). `MAX_LIGHTS` must match the
-// `pack_lights` cap.
+// Needs the vertex normal (attribute location 2). The light loop + shadow
+// sampling live in the shared `lighting_glsl` snippet (also used by the skinned
+// lit shader).
 const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
@@ -47,11 +45,9 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         }
 "#;
 
-// `__MAX_LIGHTS__` is substituted at build time so the GLSL array size matches
-// the Rust cap.
-const FRAGMENT_SHADER_TEMPLATE: &str = r#"
-        #define MAX_LIGHTS __MAX_LIGHTS__
-
+// Concatenated after `FOG_GLSL` + `lighting_glsl()` (the shared light loop /
+// shadow sampling / specular uniforms).
+const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
         in vec2 texCoord;
@@ -69,55 +65,6 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
         uniform sampler2D normalMap;
         uniform int useNormalMap;
 
-        uniform int numLights;
-        uniform int lightType[MAX_LIGHTS];      // 0=ambient 1=directional 2=point 3=spot
-        uniform vec3 lightColor[MAX_LIGHTS];     // already * intensity
-        uniform vec3 lightPosition[MAX_LIGHTS];  // point / spot
-        uniform vec3 lightDirection[MAX_LIGHTS]; // directional / spot (travel dir)
-        uniform float lightRange[MAX_LIGHTS];    // point / spot falloff distance
-        uniform float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
-
-        // Camera world position, for the Blinn-Phong specular view direction.
-        uniform vec3 viewPos;
-        const float shininess = 32.0;
-        const float specularStrength = 0.4;
-
-        // Shadow map of the single casting light (directional or spot for now).
-        // `shadowLightIndex` is which light it belongs to, so only that light's
-        // contribution is shadowed.
-        uniform sampler2D shadowMap;
-        uniform mat4 lightSpaceMatrix;
-        uniform int shadowEnabled;
-        uniform int shadowLightIndex;
-
-        // Inverse of the depth material's packDepth (RGBA8 -> [0,1] depth).
-        float unpackDepth(vec4 rgba) {
-            return dot(rgba, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
-        }
-
-        // 0 = fully lit, 1 = fully shadowed. 3x3 PCF; out-of-frustum reads as lit.
-        // Works for ortho (directional) and perspective (spot) light matrices —
-        // the divide by w handles the perspective case.
-        float sampleShadow(float ndotl) {
-            vec4 lightSpacePos = lightSpaceMatrix * vec4(worldPos, 1.0);
-            vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
-            proj = proj * 0.5 + 0.5;
-            if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
-                return 0.0;
-            }
-            // Slope-scaled bias to fight shadow acne on grazing surfaces.
-            float bias = max(0.0015 * (1.0 - ndotl), 0.0008);
-            vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
-            float shadow = 0.0;
-            for (int x = -1; x <= 1; x++) {
-                for (int y = -1; y <= 1; y++) {
-                    float closest = unpackDepth(texture(shadowMap, proj.xy + vec2(x, y) * texelSize));
-                    shadow += (proj.z - bias > closest) ? 1.0 : 0.0;
-                }
-            }
-            return shadow / 9.0;
-        }
-
         void main() {
             vec3 n = normalize(worldNormal);
             // Perturb the surface normal by the tangent-space normal map.
@@ -129,60 +76,9 @@ const FRAGMENT_SHADER_TEMPLATE: &str = r#"
                     n);
                 n = normalize(tbn * tn);
             }
-            vec3 viewDir = normalize(viewPos - worldPos);
-            // Kept separate so specular highlights are the light's color, not
-            // tinted by albedo (only the diffuse term is multiplied by albedo).
-            vec3 diffuseLight = vec3(0.0);
-            vec3 specularLight = vec3(0.0);
-
-            for (int i = 0; i < numLights; i++) {
-                int t = lightType[i];
-                if (t == 0) {
-                    diffuseLight += lightColor[i]; // ambient: never shadowed
-                    continue;
-                }
-
-                // Unit vector toward the light, and an attenuation factor.
-                vec3 l;
-                float atten = 1.0;
-                if (t == 1) {
-                    l = -normalize(lightDirection[i]);
-                } else {
-                    // Point (t == 2) or spot (t == 3): both attenuate by distance.
-                    vec3 toLight = lightPosition[i] - worldPos;
-                    float dist = length(toLight);
-                    l = toLight / max(dist, 1e-4);
-
-                    float range = max(lightRange[i], 1e-4);
-                    float a = clamp(1.0 - (dist * dist) / (range * range), 0.0, 1.0);
-                    atten = a * a;
-
-                    if (t == 3) {
-                        float cosAngle = dot(-l, normalize(lightDirection[i]));
-                        // Soft edge over a small band inside the cone.
-                        float outer = lightConeCos[i];
-                        float inner = mix(1.0, outer, 0.85);
-                        atten *= clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
-                    }
-                }
-
-                float ndotl = max(dot(n, l), 0.0);
-                vec3 diffuse = lightColor[i] * ndotl * atten;
-                // Blinn-Phong specular, only where the surface faces the light.
-                float spec = (ndotl > 0.0)
-                    ? pow(max(dot(n, normalize(l + viewDir)), 0.0), shininess)
-                    : 0.0;
-                vec3 specular = lightColor[i] * spec * specularStrength * atten;
-
-                // Shadow only the casting light's contribution (diffuse + spec).
-                if (shadowEnabled == 1 && i == shadowLightIndex) {
-                    float lit = 1.0 - sampleShadow(ndotl);
-                    diffuse *= lit;
-                    specular *= lit;
-                }
-                diffuseLight += diffuse;
-                specularLight += specular;
-            }
+            vec3 diffuseLight;
+            vec3 specularLight;
+            accumulateLights(n, worldPos, diffuseLight, specularLight);
 
             vec4 albedo = baseColor;
             if (useTexture == 1) {
@@ -199,20 +95,9 @@ struct Uniforms {
     base_color_loc: UniformLocation,
     texture_loc: UniformLocation,
     use_texture_loc: UniformLocation,
-    num_lights_loc: UniformLocation,
-    light_type_loc: UniformLocation,
-    light_color_loc: UniformLocation,
-    light_position_loc: UniformLocation,
-    light_direction_loc: UniformLocation,
-    light_range_loc: UniformLocation,
-    light_cone_cos_loc: UniformLocation,
-    shadow_map_loc: UniformLocation,
-    light_space_matrix_loc: UniformLocation,
-    shadow_enabled_loc: UniformLocation,
-    shadow_light_index_loc: UniformLocation,
-    view_pos_loc: UniformLocation,
     normal_map_loc: UniformLocation,
     use_normal_map_loc: UniformLocation,
+    lighting: LightingUniforms,
     fog: FogUniforms,
 }
 
@@ -239,8 +124,8 @@ impl Material for LitMaterial {
                     ctx.shader_version,
                 );
 
-                let fragment_source = format!("{}\n{}", FOG_GLSL, FRAGMENT_SHADER_TEMPLATE)
-                    .replace("__MAX_LIGHTS__", &MAX_LIGHTS.to_string());
+                let fragment_source =
+                    format!("{}\n{}\n{}", FOG_GLSL, lighting_glsl(), FRAGMENT_SHADER_SOURCE);
                 let fragment_shader =
                     Shader::build(ctx.gl, ShaderType::Fragment, &fragment_source, ctx.shader_version);
 
@@ -257,22 +142,9 @@ impl Material for LitMaterial {
                     base_color_loc: shader.get_uniform_location(ctx.gl, "baseColor"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     use_texture_loc: shader.get_uniform_location(ctx.gl, "useTexture"),
-                    num_lights_loc: shader.get_uniform_location(ctx.gl, "numLights"),
-                    light_type_loc: shader.get_uniform_location(ctx.gl, "lightType"),
-                    light_color_loc: shader.get_uniform_location(ctx.gl, "lightColor"),
-                    light_position_loc: shader.get_uniform_location(ctx.gl, "lightPosition"),
-                    light_direction_loc: shader.get_uniform_location(ctx.gl, "lightDirection"),
-                    light_range_loc: shader.get_uniform_location(ctx.gl, "lightRange"),
-                    light_cone_cos_loc: shader.get_uniform_location(ctx.gl, "lightConeCos"),
-                    shadow_map_loc: shader.get_uniform_location(ctx.gl, "shadowMap"),
-                    light_space_matrix_loc: shader
-                        .get_uniform_location(ctx.gl, "lightSpaceMatrix"),
-                    shadow_enabled_loc: shader.get_uniform_location(ctx.gl, "shadowEnabled"),
-                    shadow_light_index_loc: shader
-                        .get_uniform_location(ctx.gl, "shadowLightIndex"),
-                    view_pos_loc: shader.get_uniform_location(ctx.gl, "viewPos"),
                     normal_map_loc: shader.get_uniform_location(ctx.gl, "normalMap"),
                     use_normal_map_loc: shader.get_uniform_location(ctx.gl, "useNormalMap"),
+                    lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
@@ -289,7 +161,6 @@ impl Material for LitMaterial {
         world_matrix: &Matrix4<f32>,
         _skinning_data: &[Matrix4<f32>],
     ) -> bool {
-        let lights = pack_lights(ctx.lights);
         unsafe {
             #[allow(static_mut_refs)]
             if let Some((shader, uniforms)) = &SHADER_PROGRAM {
@@ -299,14 +170,6 @@ impl Material for LitMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-
-                // Camera world position (inverse-view translation) for the
-                // specular view direction.
-                let view_pos = view_matrix
-                    .invert()
-                    .map(|inv| inv.w.truncate())
-                    .unwrap_or(Vector3::new(0.0, 0.0, 0.0));
-                p.set_uniform_vec3(ctx.gl, &uniforms.view_pos_loc, &view_pos);
 
                 p.set_uniform_vec4(ctx.gl, &uniforms.base_color_loc, &self.color);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
@@ -321,39 +184,7 @@ impl Material for LitMaterial {
                     self.use_normal_map as i32,
                 );
 
-                p.set_uniform_1i(ctx.gl, &uniforms.num_lights_loc, lights.count);
-                p.set_uniform_1iv(ctx.gl, &uniforms.light_type_loc, &lights.types);
-                p.set_uniform_vec3v(ctx.gl, &uniforms.light_color_loc, &lights.colors);
-                p.set_uniform_vec3v(ctx.gl, &uniforms.light_position_loc, &lights.positions);
-                p.set_uniform_vec3v(ctx.gl, &uniforms.light_direction_loc, &lights.directions);
-                p.set_uniform_1fv(ctx.gl, &uniforms.light_range_loc, &lights.ranges);
-                p.set_uniform_1fv(ctx.gl, &uniforms.light_cone_cos_loc, &lights.cone_cos);
-
-                // Directional shadow map on texture unit 1 (unit 0 is albedo).
-                p.set_uniform_1i(ctx.gl, &uniforms.shadow_map_loc, 1);
-                match ctx.shadow {
-                    Some(shadow) => {
-                        p.set_uniform_1i(ctx.gl, &uniforms.shadow_enabled_loc, 1);
-                        p.set_uniform_1i(
-                            ctx.gl,
-                            &uniforms.shadow_light_index_loc,
-                            shadow.light_index,
-                        );
-                        p.set_uniform_matrix4(
-                            ctx.gl,
-                            &uniforms.light_space_matrix_loc,
-                            &shadow.light_space_matrix,
-                        );
-                        ctx.gl.active_texture(glow::TEXTURE0 + 1);
-                        ctx.gl
-                            .bind_texture(glow::TEXTURE_2D, Some(shadow.depth_texture));
-                        ctx.gl.active_texture(glow::TEXTURE0);
-                    }
-                    None => {
-                        p.set_uniform_1i(ctx.gl, &uniforms.shadow_enabled_loc, 0);
-                    }
-                }
-
+                uniforms.lighting.set(p, ctx, view_matrix);
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }

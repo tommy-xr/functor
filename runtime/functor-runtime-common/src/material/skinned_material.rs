@@ -1,12 +1,19 @@
 use cgmath::Matrix4;
 
 use crate::fog::{FogUniforms, FOG_GLSL};
+use crate::light::{lighting_glsl, LightingUniforms};
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
 
 use super::Material;
 
+// The skinned counterpart of `LitMaterial`: position AND normal deform by the
+// same joint blend (the normal rotation-only, via `mat3` — the
+// `SkinnedNormalDebugMaterial` convention), then the fragment shades with the
+// shared lighting GLSL, so skinned glTF models are lit (and receive shadows)
+// exactly like lit static geometry. Albedo is the mesh's base-color texture
+// (unit 0, bound by the model draw path).
 const VERTEX_SHADER_SOURCE: &str = r#"
         #define MAX_JOINTS 200
 
@@ -22,7 +29,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 projection;
 
         out vec2 texCoord;
-        out vec3 weights;
+        out vec3 worldNormal;
         out vec3 worldPos;
 
         void main() {
@@ -35,7 +42,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
                 inWeights.w * jointTransforms[int(inJointIndices.w)];
 
             texCoord = inTex;
-            weights = inJointIndices.xyz;
+            worldNormal = mat3(world) * mat3(skinMatrix) * inNormal;
 
             // Apply the skinning transformation
             vec4 skinnedPos = skinMatrix * vec4(inPos, 1.0);
@@ -45,18 +52,26 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         }
 "#;
 
+// Concatenated after `FOG_GLSL` + `lighting_glsl()` (the shared light loop /
+// shadow sampling / specular uniforms) — the same shading as `LitMaterial`
+// with the sampled texel as albedo.
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
         in vec2 texCoord;
-        in vec3 weights;
+        in vec3 worldNormal;
         in vec3 worldPos;
 
         uniform sampler2D texture1;
 
         void main() {
-            vec4 c = texture(texture1, texCoord);
-            fragColor = vec4(applyFog(c.rgb, worldPos), c.a);
+            vec3 n = normalize(worldNormal);
+            vec3 diffuseLight;
+            vec3 specularLight;
+            accumulateLights(n, worldPos, diffuseLight, specularLight);
+
+            vec4 albedo = texture(texture1, texCoord);
+            fragColor = vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a);
         }
 "#;
 
@@ -66,6 +81,7 @@ struct Uniforms {
     projection_loc: UniformLocation,
     texture_loc: UniformLocation,
     joint_transforms_loc: UniformLocation,
+    lighting: LightingUniforms,
     fog: FogUniforms,
 }
 
@@ -91,7 +107,8 @@ impl Material for SkinnedMaterial {
                 );
 
                 // fragment shader
-                let fragment_source = format!("{}\n{}", FOG_GLSL, FRAGMENT_SHADER_SOURCE);
+                let fragment_source =
+                    format!("{}\n{}\n{}", FOG_GLSL, lighting_glsl(), FRAGMENT_SHADER_SOURCE);
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
@@ -112,6 +129,7 @@ impl Material for SkinnedMaterial {
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
+                    lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
@@ -148,6 +166,7 @@ impl Material for SkinnedMaterial {
                 }
 
                 p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);
+                uniforms.lighting.set(p, ctx, view_matrix);
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }
