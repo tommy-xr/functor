@@ -80,6 +80,12 @@ pub enum View {
     Row(Vec<View>),
     /// Pin a subtree to a screen corner.
     Panel { anchor: Anchor, child: Box<View> },
+    /// An interactive button (docs/ui-interaction.md U3). `slot` indexes the
+    /// per-frame handler table the producer kept from this tree's `ui(model)`
+    /// evaluation — a click comes back as `UiEvent { slot, Clicked }`. The
+    /// handler itself (a msg `Value`) never crosses: the tree stays
+    /// serializable.
+    Button { slot: u32, label: String },
 }
 
 /// 0..1 float components -> 8-bit color, clamped. Shared by the F#-facing
@@ -126,10 +132,23 @@ const UI_FONT_SIZE: f32 = 14.0;
 /// Inset of an anchored panel from the screen edge, in points.
 const MARGIN: f32 = 10.0;
 
+/// Whether the subtree holds any interactive widget — a Panel's egui `Area`
+/// is interactable only then, so a pure-text HUD keeps letting clicks
+/// through (a click over it still recaptures the cursor for free-look).
+fn contains_interactive(view: &View) -> bool {
+    match view {
+        View::Empty | View::Text { .. } => false,
+        View::Column(items) | View::Row(items) => items.iter().any(contains_interactive),
+        View::Panel { child, .. } => contains_interactive(child),
+        View::Button { .. } => true,
+    }
+}
+
 /// Render a declarative [`View`] into `ui` using egui's own layout (vertical /
 /// horizontal / anchored `Area`), so line height and spacing come from the font
-/// being rendered — no manual metrics, and lines never overlap.
-fn render_view(ui: &mut egui::Ui, view: &View) {
+/// being rendered — no manual metrics, and lines never overlap. Interactions
+/// egui detects on the view's widgets land in `events`, slot-stamped.
+fn render_view(ui: &mut egui::Ui, view: &View, events: &mut Vec<UiEvent>) {
     match view {
         View::Empty => {}
         View::Text { text, color, .. } => {
@@ -143,14 +162,14 @@ fn render_view(ui: &mut egui::Ui, view: &View) {
         View::Column(items) => {
             ui.vertical(|ui| {
                 for item in items {
-                    render_view(ui, item);
+                    render_view(ui, item, events);
                 }
             });
         }
         View::Row(items) => {
             ui.horizontal(|ui| {
                 for item in items {
-                    render_view(ui, item);
+                    render_view(ui, item, events);
                 }
             });
         }
@@ -159,8 +178,19 @@ fn render_view(ui: &mut egui::Ui, view: &View) {
             let ctx = ui.ctx().clone();
             egui::Area::new(egui::Id::new(("functor_ui_panel", anchor_id(*anchor))))
                 .anchor(align, offset)
-                .interactable(false)
-                .show(&ctx, |ui| render_view(ui, child));
+                .interactable(contains_interactive(child))
+                .show(&ctx, |ui| render_view(ui, child, events));
+        }
+        View::Button { slot, label } => {
+            let clicked = ui
+                .button(egui::RichText::new(label).font(egui::FontId::monospace(UI_FONT_SIZE)))
+                .clicked();
+            if clicked {
+                events.push(UiEvent {
+                    slot: *slot,
+                    kind: UiEventKind::Clicked,
+                });
+            }
         }
     }
 }
@@ -202,10 +232,22 @@ fn restore_gl_after_egui(gl: &glow::Context) {
     }
 }
 
+/// The game-UI pass's output for one frame (docs/ui-interaction.md U3).
+#[derive(Default)]
+pub struct UiOutput {
+    /// Interactions egui detected on the view's widgets, slot-stamped — the
+    /// shell forwards each to `GameProducer::ui_event`.
+    pub events: Vec<UiEvent>,
+    /// egui is using the pointer (hovering/clicking a widget), so the shell
+    /// must NOT treat a click as a free-look recapture (the scrubber rule).
+    pub wants_pointer: bool,
+}
+
 pub struct TextOverlay {
     ctx: egui::Context,
     painter: egui_glow::Painter,
     gl: Arc<glow::Context>,
+    pointer: PointerBridge,
 }
 
 impl TextOverlay {
@@ -219,6 +261,7 @@ impl TextOverlay {
             ctx: egui::Context::default(),
             painter,
             gl,
+            pointer: PointerBridge::default(),
         }
     }
 
@@ -230,7 +273,8 @@ impl TextOverlay {
         if labels.is_empty() {
             return;
         }
-        self.run_and_paint(width, height, pixels_per_point, |ui| {
+        // Label overlays (netsim, the F# path) are display-only: no pointer.
+        self.run_and_paint(width, height, pixels_per_point, Vec::new(), |ui| {
             // Labels are floating, Context-attached Areas rather than children of
             // the root Ui, so pull the context back out of the supplied `ui`.
             let ctx = ui.ctx().clone();
@@ -254,22 +298,48 @@ impl TextOverlay {
 
     /// Paint a declarative [`View`], laid out with egui's own containers so line
     /// height and spacing come from the rendered font (no manual metrics, no
-    /// overlap). `width`/`height` are physical framebuffer pixels.
-    pub fn draw_view(&mut self, width: u32, height: u32, pixels_per_point: f32, view: &View) {
+    /// overlap). `width`/`height` are physical framebuffer pixels. `pointer`
+    /// drives the view's interactive widgets ([`PointerState::default`] for a
+    /// display-only pass); interactions come back slot-stamped in the
+    /// [`UiOutput`] for the shell to forward to `GameProducer::ui_event`.
+    pub fn draw_view(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels_per_point: f32,
+        pointer: PointerState,
+        view: &View,
+    ) -> UiOutput {
+        // Tick the bridge even when nothing draws, so button edges spanning
+        // an Empty frame don't replay as phantom clicks later.
+        let pointer_events = self.pointer.events(pointer, pixels_per_point);
         if matches!(view, View::Empty) {
-            return;
+            // Still feed egui any release/PointerGone the bridge synthesized:
+            // a view hidden mid-press must not leave the context holding a
+            // stuck press for the view's return. [xreview]
+            if !pointer_events.is_empty() {
+                self.run_and_paint(width, height, pixels_per_point, pointer_events, |_| {});
+            }
+            return UiOutput::default();
         }
-        self.run_and_paint(width, height, pixels_per_point, |ui| match view {
-            // A panel anchors itself; a bare root sits at the top-left with a margin.
-            View::Panel { .. } => render_view(ui, view),
-            other => {
-                let ctx = ui.ctx().clone();
-                egui::Area::new(egui::Id::new("functor_ui_root"))
-                    .anchor(egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN))
-                    .interactable(false)
-                    .show(&ctx, |ui| render_view(ui, other));
+        let mut events = Vec::new();
+        self.run_and_paint(width, height, pixels_per_point, pointer_events, |ui| {
+            match view {
+                // A panel anchors itself; a bare root sits at the top-left with a margin.
+                View::Panel { .. } => render_view(ui, view, &mut events),
+                other => {
+                    let ctx = ui.ctx().clone();
+                    egui::Area::new(egui::Id::new("functor_ui_root"))
+                        .anchor(egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN))
+                        .interactable(contains_interactive(other))
+                        .show(&ctx, |ui| render_view(ui, other, &mut events));
+                }
             }
         });
+        UiOutput {
+            events,
+            wants_pointer: self.ctx.egui_wants_pointer_input(),
+        }
     }
 
     /// Run one egui frame (building the UI with `build`), tessellate, paint to the
@@ -280,6 +350,7 @@ impl TextOverlay {
         width: u32,
         height: u32,
         pixels_per_point: f32,
+        events: Vec<egui::Event>,
         build: impl FnMut(&mut egui::Ui),
     ) {
         if width == 0 || height == 0 {
@@ -292,6 +363,7 @@ impl TextOverlay {
         );
         let raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_points)),
+            events,
             ..Default::default()
         };
 
@@ -326,33 +398,54 @@ pub struct PointerState {
 /// whenever the pointer is on the overlay, and a primary-button event on the
 /// press/release EDGE (egui needs both edges to register a click). One bridge
 /// per egui context — it holds the previous button state to find the edges, so
-/// every interactive pass (the scrubber today, the game UI next) synthesizes
-/// identical input from the same shell state.
+/// every interactive pass (the scrubber, the game UI) synthesizes identical
+/// input from the same shell state.
 #[derive(Default)]
 pub struct PointerBridge {
     last_primary_down: bool,
+    /// Last on-overlay position (points) — where a press is released if the
+    /// pointer leaves the overlay while held.
+    last_pos: Option<egui::Pos2>,
 }
 
 impl PointerBridge {
     /// This frame's egui events. `pixels_per_point` maps the snapshot's
     /// physical-pixel position into egui's point space. While `pos` is `None`
-    /// (cursor captured) no events are emitted, but button state is still
-    /// tracked — a press begun off-overlay is swallowed, never replayed (its
-    /// release, if it lands on-overlay, is delivered unmatched, which egui
-    /// tolerates; symmetrically, a release that happens off-overlay is never
-    /// delivered, so egui holds the press until the next on-overlay edge).
+    /// (cursor captured / off-canvas) button state is still tracked — a press
+    /// begun off-overlay is swallowed, never replayed. On the transition OFF
+    /// the overlay, a press still held from on-overlay is RELEASED at its
+    /// last position (egui must not hold a stuck press), followed by
+    /// `PointerGone` so hover state clears.
     pub fn events(&mut self, pointer: PointerState, pixels_per_point: f32) -> Vec<egui::Event> {
         let mut events = Vec::new();
-        if let Some((px, py)) = pointer.pos {
-            let pos = egui::pos2(px / pixels_per_point, py / pixels_per_point);
-            events.push(egui::Event::PointerMoved(pos));
-            if pointer.primary_down != self.last_primary_down {
-                events.push(egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: pointer.primary_down,
-                    modifiers: egui::Modifiers::default(),
-                });
+        match pointer.pos {
+            Some((px, py)) => {
+                let pos = egui::pos2(px / pixels_per_point, py / pixels_per_point);
+                events.push(egui::Event::PointerMoved(pos));
+                if pointer.primary_down != self.last_primary_down {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: pointer.primary_down,
+                        modifiers: egui::Modifiers::default(),
+                    });
+                }
+                self.last_pos = Some(pos);
+            }
+            None => {
+                if let Some(pos) = self.last_pos.take() {
+                    // Leaving the overlay: flush a held press, then the
+                    // pointer is gone.
+                    if self.last_primary_down {
+                        events.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: egui::Modifiers::default(),
+                        });
+                    }
+                    events.push(egui::Event::PointerGone);
+                }
             }
         }
         self.last_primary_down = pointer.primary_down;
@@ -622,6 +715,27 @@ mod tests {
             release[1],
             egui::Event::PointerButton { pressed: false, .. }
         ));
+    }
+
+    #[test]
+    fn leaving_the_overlay_mid_press_releases_at_the_last_position() {
+        let mut bridge = PointerBridge::default();
+        bridge.events(on(5.0, 5.0, true), 1.0); // press on-overlay
+
+        // Pointer leaves (cursor captured / off-canvas) while still held:
+        // egui must not keep a stuck press — release where it last was,
+        // then the pointer is gone.
+        let leave = bridge.events(off(true), 1.0);
+        assert_eq!(leave.len(), 2);
+        assert!(matches!(
+            leave[0],
+            egui::Event::PointerButton { pressed: false, pos, .. } if pos == egui::pos2(5.0, 5.0)
+        ));
+        assert!(matches!(leave[1], egui::Event::PointerGone));
+
+        // Staying off-overlay emits nothing further.
+        assert!(bridge.events(off(true), 1.0).is_empty());
+        assert!(bridge.events(off(false), 1.0).is_empty());
     }
 
     #[test]

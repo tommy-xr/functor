@@ -847,6 +847,63 @@ pub fn functor_lang_mouse_wheel(delta: i32) {
     push_input(InputEvent::MouseWheel { delta });
 }
 
+thread_local! {
+    /// The page's UNLOCKED pointer over the canvas — `(pos in CSS px,
+    /// primary button down, press latched since last sample)` — for the
+    /// interactive game-UI overlay (docs/ui-interaction.md U3). Separate from
+    /// the pointer-lock mouse-look path above: while locked there is no
+    /// cursor to point at widgets with (`pos` is `None`). Level state plus a
+    /// press LATCH: a mousedown+mouseup landing between two rAF frames would
+    /// otherwise sample as never-pressed and the click would be lost — the
+    /// latch keeps the sampled level down for one frame so egui sees the
+    /// press edge (the release follows next frame).
+    static UI_POINTER: std::cell::Cell<(Option<(f32, f32)>, bool, bool)> =
+        const { std::cell::Cell::new((None, false, false)) };
+}
+
+/// Deliver the unlocked pointer's canvas position (CSS px, e.g. `offsetX/Y`)
+/// and primary-button state. Called by the page's mousemove/mousedown/mouseup
+/// handlers while pointer lock is NOT engaged.
+#[wasm_bindgen]
+pub fn functor_lang_ui_pointer(x: f32, y: f32, primary_down: bool) {
+    UI_POINTER.with(|p| {
+        let (_, was_down, clicked) = p.get();
+        // Latch the press EDGE (not the held level) so a sub-frame click
+        // survives to the next sample without pinning held state forever.
+        p.set((
+            Some((x, y)),
+            primary_down,
+            clicked || (primary_down && !was_down),
+        ));
+    });
+}
+
+/// The pointer left the canvas (or pointer lock engaged). The page clears its
+/// own button state on leave, so mirror it — a press begun off-canvas must
+/// not replay as a click on re-entry (the bridge's swallow rule; a press held
+/// across the leave is released by the bridge at its last position).
+#[wasm_bindgen]
+pub fn functor_lang_ui_pointer_leave() {
+    UI_POINTER.with(|p| {
+        let (_, _, clicked) = p.get();
+        p.set((None, false, clicked));
+    });
+}
+
+/// This frame's pointer for the overlay pass, scaled from the page's CSS px
+/// to framebuffer px (`dpr` — the overlay runs at the device pixel ratio).
+/// Consumes the press latch: a latched sub-frame click samples as down once.
+pub fn ui_pointer_state(dpr: f32) -> functor_runtime_common::ui::PointerState {
+    UI_POINTER.with(|p| {
+        let (pos, primary_down, clicked) = p.get();
+        p.set((pos, primary_down, false));
+        functor_runtime_common::ui::PointerState {
+            pos: pos.map(|(x, y)| (x * dpr, y * dpr)),
+            primary_down: primary_down || clicked,
+        }
+    })
+}
+
 /// Drain the queued page input into the producer, in arrival order. Called by
 /// the frame loop before `tick`. Empty (and free) on the F# path — its page
 /// never calls the `functor_lang_*` exports.

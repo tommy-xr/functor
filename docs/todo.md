@@ -108,10 +108,13 @@ iteration" item below (T6, trajectory preview).
 
 - [ ] T1: model as a `Simulatable` (snapshot = `Value` clone, command = frame
       inputs) + a unified frame clock seeking model and physics together; goldens.
-- [ ] T2: pointer/click input plumbing (real `RawInput` to egui; deliver mouse
-      buttons to the runtime) — unblocks the scrubber and interactive UI.
+- [x] T2: pointer/click input plumbing (real `RawInput` to egui; deliver mouse
+      buttons to the runtime) — shipped across docs/ui-interaction.md U1–U3
+      (`PointerBridge`, both shells' pointer wiring).
 - [ ] T3: shell-owned egui scrubber overlay; `~` toggle (native), default-on (web/VSCode).
-- [ ] T4: interactive Functor Lang `View` (`Button { label, onClick }`, storable closure).
+- [x] T4: interactive Functor Lang `View` — shipped as `Ui.button(label, msg)` (a verbatim
+      msg through `update`, not a stored closure; docs/ui-interaction.md), with
+      `examples/counter`. Sliders/text inputs follow (U4).
 - [ ] T5: forked timelines + ~50%-opacity render composite.
 - [ ] T6: trajectory preview (deterministic forward-sim + trail draw) — the
       *Inventing on Principle* demo.

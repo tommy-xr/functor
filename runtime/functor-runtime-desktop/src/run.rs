@@ -819,7 +819,17 @@ pub fn run(args: Args) {
         // the pointer last frame (so a click on a control doesn't recapture the
         // cursor for free-look).
         let mut mouse_primary_down = false;
+        // Press-latch for the frame's pointer SAMPLE: a click whose press and
+        // release both land in one poll batch (a fast tap, a slow frame)
+        // leaves `mouse_primary_down` false by sample time — the latch keeps
+        // the sampled level true for that frame so egui still sees the press
+        // edge (the release follows next frame). Cleared after each sample.
+        let mut mouse_primary_clicked = false;
         let mut scrubber_wants_pointer = false;
+        // Whether the game UI's egui pass wanted the pointer last frame — a
+        // click on a `Ui.button` must drive the widget, not recapture the
+        // cursor for free-look (the scrubber rule, docs/ui-interaction.md).
+        let mut ui_wants_pointer = false;
         // The time-travel console (`~`): HIDDEN by default in the native game
         // (it's a dev tool you summon with `~`, which also frees the cursor so
         // you can scrub right away). The wasm/vscode preview shows it always.
@@ -1007,8 +1017,12 @@ Escape again to quit"
                     {
                         match action {
                             Action::Press => {
-                                if scrubber_wants_pointer {
+                                // Either overlay wanting the pointer — the
+                                // scrubber or the game UI's widgets — means
+                                // the click is for it, not a recapture.
+                                if scrubber_wants_pointer || ui_wants_pointer {
                                     mouse_primary_down = true;
+                                    mouse_primary_clicked = true;
                                 } else {
                                     window.set_cursor_mode(glfw::CursorMode::Disabled);
                                     cursor_captured = true;
@@ -1063,6 +1077,7 @@ Escape again to quit"
                         // (alt-tab), which would leave egui holding a stuck
                         // press — clear it so the scrubber stays live. [xreview]
                         mouse_primary_down = false;
+                        mouse_primary_clicked = false;
                     }
                     _ if ignore_user_input => {}
                     glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
@@ -1351,37 +1366,75 @@ Escape again to quit"
                 }
             }
 
-            // 2D UI overlay: the game's declarative `ui model` View, lowered to a
-            // text overlay on top of the 3D frame. Drawn before capture so it
-            // appears in --capture-frame PNGs.
-            let ui_view = game.ui();
-            text_overlay.draw_view(fb_width as u32, fb_height as u32, 1.0, &ui_view);
-
-            // The shell-owned time-travel scrubber (docs/time-travel.md T3),
-            // drawn over the frame (so it shows in captures) and interactive
-            // when the cursor is released.
-            // The cursor (GLFW window/logical coords) must be scaled to
-            // framebuffer pixels to line up with egui's layout space (which we
-            // drive in physical pixels, ppp = 1.0) — otherwise the panel is
-            // unclickable on a HiDPI/retina display (fb = 2× window). [xreview]
+            // The pointer, in framebuffer pixels, for BOTH interactive egui
+            // passes (the game UI and the scrubber). The cursor (GLFW window/
+            // logical coords) must be scaled to framebuffer pixels to line up
+            // with egui's layout space (which we drive in physical pixels,
+            // ppp = 1.0) — otherwise widgets are unclickable on a HiDPI/
+            // retina display (fb = 2× window). [xreview] `pos` is None while
+            // the cursor is captured for free-look (you're not pointing at
+            // the overlay).
             let (win_w, _) = window.get_size();
             let dpi_scale = if win_w > 0 {
                 fb_width as f32 / win_w as f32
             } else {
                 1.0
             };
+            let pointer = functor_runtime_common::ui::PointerState {
+                pos: (!cursor_captured && !hidden).then_some((
+                    mouse_pos.0 as f32 * dpi_scale,
+                    mouse_pos.1 as f32 * dpi_scale,
+                )),
+                // `|| clicked`: a press+release inside one poll batch still
+                // samples as down this frame (see the latch's declaration).
+                primary_down: mouse_primary_down || mouse_primary_clicked,
+            };
+            mouse_primary_clicked = false;
+
+            // 2D UI overlay: the game's declarative `ui model` View, lowered to a
+            // text overlay on top of the 3D frame. Drawn before capture so it
+            // appears in --capture-frame PNGs. Widget interactions come back
+            // slot-stamped and fold through the game's `update` — except while
+            // the clock is pinned, when window input must not reach the model
+            // (the `ignore_user_input` rule; injected `/input` still applies).
+            // The scrubber draws ON TOP of the game UI, so while it wants the
+            // pointer the game UI must not see it — otherwise one click over
+            // an overlapping region fires a game button AND a scrubber
+            // control (each pass is its own egui context; there is no shared
+            // hit-test). `pos: None` makes the game UI's bridge release any
+            // held press and clear hover. [xreview]
+            let ui_pointer = if scrubber_visible && scrubber_wants_pointer {
+                functor_runtime_common::ui::PointerState {
+                    pos: None,
+                    primary_down: pointer.primary_down,
+                }
+            } else {
+                pointer
+            };
+            let ui_view = game.ui();
+            let ui_out = text_overlay.draw_view(
+                fb_width as u32,
+                fb_height as u32,
+                1.0,
+                ui_pointer,
+                &ui_view,
+            );
+            ui_wants_pointer = ui_out.wants_pointer;
+            if !ignore_user_input {
+                for event in ui_out.events {
+                    game.ui_event(event);
+                }
+            }
+
+            // The shell-owned time-travel scrubber (docs/time-travel.md T3),
+            // drawn over the frame (so it shows in captures) and interactive
+            // when the cursor is released.
             let scrubber_out = if scrubber_visible {
                 scrubber.draw(
                     fb_width as u32,
                     fb_height as u32,
                     1.0,
-                    functor_runtime_common::ui::PointerState {
-                        pos: (!cursor_captured && !hidden).then_some((
-                            mouse_pos.0 as f32 * dpi_scale,
-                            mouse_pos.1 as f32 * dpi_scale,
-                        )),
-                        primary_down: mouse_primary_down,
-                    },
+                    pointer,
                     functor_runtime_common::ui::ScrubberState {
                         frame: game.current_scene_frame().unwrap_or(0),
                         range: game.scene_frame_range(),

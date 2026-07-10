@@ -60,10 +60,13 @@
 //! Ui.column([view, …])                                      -> View
 //! Ui.panel(anchor, view)                                    -> View
 //! Ui.topLeft()                                              -> Anchor
+//! Ui.button(label, msg)                                     -> View
 //!   (the optional `ui = (model) => …` hook's tree — hello's HUD shape:
 //!    text lines stacked in a column, pinned to a screen corner. Only the
 //!    corner the port needed exists; the rest arrive with a port that
-//!    needs them. `Ui.panel` takes the view LAST, so it pipes.)
+//!    needs them. `Ui.panel` takes the view LAST, so it pipes. `Ui.button`
+//!    is interactive: a click delivers `msg` verbatim through `update` —
+//!    docs/ui-interaction.md.)
 //! Skybox.files(px, nx, py, ny, pz, nz)                       -> Skybox
 //! Frame.withSkybox(sky, frame)                               -> Frame
 //!   (a cubemap sky drawn behind everything; while the six faces load the
@@ -897,6 +900,7 @@ const PATHS: &[&str] = &[
     "Ui.column",
     "Ui.panel",
     "Ui.topLeft",
+    "Ui.button",
     "Time.seconds",
     "Time.millis",
     "Sub.none",
@@ -2086,6 +2090,21 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
             "Ui.topLeft" => match args.as_slice() {
                 [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::TopLeft))),
                 _ => usage("Ui.topLeft()"),
+            },
+            // The first interactive widget (docs/ui-interaction.md U3). The
+            // msg is any Functor Lang value (typically an ADT variant), registered in
+            // the frame's handler table and delivered VERBATIM through
+            // `update` when the shell reports a click on the stamped slot —
+            // the `Sub.every` message shape.
+            "Ui.button" => match args.as_slice() {
+                [Value::String(label), msg] => {
+                    let slot = push_ui_handler(UiHandler::Msg(msg.clone()));
+                    Ok(host(FunctorLangView(View::Button {
+                        slot,
+                        label: label.to_string(),
+                    })))
+                }
+                _ => usage("Ui.button(\"label\", msg) — msg is delivered to update on click"),
             },
             "Time.seconds" => match args.as_slice() {
                 [n] => Ok(host(FunctorLangDuration(num(n, span)?))),
@@ -4968,6 +4987,37 @@ the game dir"
         // And it round-trips (the wasm boundary ships Views as JSON).
         let back: View = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // Ui.button (docs/ui-interaction.md U3): each button registers its msg in
+    // the frame's handler table and the node carries the slot, in
+    // construction order — the serializable tree never holds the msg itself.
+    #[test]
+    fn ui_button_registers_its_msg_and_stamps_the_slot() {
+        let _ = take_ui_handlers(); // isolate from other tests on this thread
+        let value = eval(
+            "type Msg = | Inc | Reset\n\
+             let main = () =>\n\
+             Ui.column([\n\
+               Ui.button(\"+1\", Inc),\n\
+               Ui.button(\"Reset\", Reset),\n\
+             ])",
+        );
+        let view = view_value(&value).expect("main should return a View");
+        assert_eq!(
+            serde_json::to_string(view).unwrap(),
+            r#"{"Column":[{"Button":{"slot":0,"label":"+1"}},{"Button":{"slot":1,"label":"Reset"}}]}"#
+        );
+        let handlers = take_ui_handlers();
+        assert_eq!(handlers.len(), 2);
+        // Construction order: slot 0 carries Inc, slot 1 carries Reset.
+        match (&handlers[0], &handlers[1]) {
+            (UiHandler::Msg(inc), UiHandler::Msg(reset)) => {
+                assert_eq!(inc.to_string(), "Inc");
+                assert_eq!(reset.to_string(), "Reset");
+            }
+            _ => panic!("both handlers should be verbatim msgs"),
+        }
     }
 
     // --- Networking (Sub.connect/listen, Effect.send, NetEvent) ---
