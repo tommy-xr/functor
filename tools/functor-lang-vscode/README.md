@@ -32,10 +32,11 @@ Without it, highlighting still works but diagnostics are silently absent
 
 ```sh
 cd tools/functor-lang-vscode
-npm install                      # fetches vscode-languageclient
-npx @vscode/vsce package         # produces functor-lang-vscode-0.1.0.vsix
-code --install-extension functor-lang-vscode-0.1.0.vsix
+npm install              # fetches the extension dependencies
+npm run install:vsix     # packages with pinned vsce, then installs the VSIX
 ```
+
+Run `npm run package:vsix` instead when you only want to build the VSIX.
 
 ## Develop (F5 dev host)
 

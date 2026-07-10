@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "functor",
   "license": "MIT",
+  "icon": "images/functor-lang-extension.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -43,6 +44,10 @@
           ".fun",
           ".funi"
         ],
+        "icon": {
+          "light": "./images/functor-lang-file.png",
+          "dark": "./images/functor-lang-file.png"
+        },
         "configuration": "./language-configuration.json"
       }
     ],
@@ -53,6 +58,10 @@
         "path": "./syntaxes/functor-lang.tmLanguage.json"
       }
     ]
+  },
+  "scripts": {
+    "package:vsix": "npx --yes @vscode/vsce@3.9.2 package --out functor-lang-vscode.vsix",
+    "install:vsix": "npm run package:vsix && code --install-extension functor-lang-vscode.vsix --force"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
