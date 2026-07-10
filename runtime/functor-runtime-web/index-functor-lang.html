@@ -109,6 +109,13 @@
         if (code.length === 4 && code.startsWith("Key")) {
           return code.charCodeAt(3) - 64;
         }
+        // "Digit0".."Digit9" / "Numpad0".."Numpad9" -> Num0=34..Num9=43.
+        if (code.startsWith("Digit") && code.length === 6) {
+          return code.charCodeAt(5) - 48 + 34;
+        }
+        if (code.startsWith("Numpad") && code.length === 7) {
+          return code.charCodeAt(6) - 48 + 34;
+        }
         switch (code) {
           case "ArrowUp": return 27;
           case "ArrowDown": return 28;

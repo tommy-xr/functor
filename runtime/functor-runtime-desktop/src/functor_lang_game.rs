@@ -718,7 +718,7 @@ impl Game for FunctorLangGame {
         };
         let args = vec![
             self.model.clone(),
-            Value::String(std::rc::Rc::from(format!("{key:?}").as_str())),
+            Value::String(std::rc::Rc::from(key.name().as_str())),
             Value::Bool(is_down),
         ];
         match self.session.call("input", args, &mut FunctorHost) {

@@ -523,7 +523,7 @@ A runner-hosted game (`functor -d <project-dir> run native`, with
 let init = { … }                       // the initial model (a value)
 let tick = (model, dt, tts) => model'  // per-frame step
 let draw = (model, tts) => Frame.create(camera, scene)
-let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"
+let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"/"0".."9"
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
 let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
