@@ -152,6 +152,12 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 ## Credits
 
 - Demo 3D assets are from [BabylonJS Assets](https://github.com/BabylonJS/Assets/)
+  (CC-BY 4.0). `Xbot.glb` (`examples/hello`, `examples/animation`) is Adobe
+  Mixamo's "X Bot" character, distributed via BabylonJS Assets.
+- The hand model in `examples/glove` (`vr_glove_model.glb`) is from Valve's
+  [SteamVR Unity Plugin](https://github.com/ValveSoftware/steamvr_unity_plugin)
+  (© Valve Corporation, BSD-3-Clause — notice at `examples/glove/LICENSE.steamvr`),
+  converted to glTF with FBX2glTF.
 - Demo audio (`examples/*/*.wav`) is procedurally synthesized — original/CC0, no
   third-party samples. Regenerate with `npm run generate:audio`
   (`scripts/generate-audio.mjs`).

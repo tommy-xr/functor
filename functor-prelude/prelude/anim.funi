@@ -16,3 +16,24 @@ let clip : (string, float) => t
 // A weighted mix: [(anim, weight), …]. Weights are normalized; non-positive
 // weights drop their entry.
 let blend : (List<(t, float)>) => t
+
+// The bind (rest) pose — the base for purely programmatic posing
+// (Anim.rotate on a model with no authored clips, e.g. a hand).
+let rest : () => t
+
+// Additive layer (base LAST, so it pipes):
+// walk |> Anim.add(Anim.clip("headShake", tts), 1.0)
+// The weight clamps to [0, 1]; the delta applies where the base has
+// influence (a joint the base doesn't drive stays at bind — use rotate for
+// unconditional per-joint control).
+let add : (t, float, t) => t
+
+// Restrict an anim's influence to the subtrees rooted at the named joints
+// (a name covers itself and every descendant).
+let mask : (List<string>, t) => t
+
+// Post-multiply an additive local XYZ Euler rotation onto one joint —
+// programmatic per-joint control (head aim, finger curl). Angle values only.
+// The joint counts as fully driven: masks/zero-weight blends BENEATH this
+// node can't drop it (an enclosing mask still can).
+let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t

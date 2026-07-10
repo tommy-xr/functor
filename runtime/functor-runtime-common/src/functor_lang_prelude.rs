@@ -867,6 +867,10 @@ const PATHS: &[&str] = &[
     "Scene.animate",
     "Anim.clip",
     "Anim.blend",
+    "Anim.rest",
+    "Anim.add",
+    "Anim.mask",
+    "Anim.rotate",
     "Texture.file",
     "Angle.degrees",
     "Angle.radians",
@@ -1048,6 +1052,79 @@ the game dir",
                     "Anim.blend([(anim, weight), …]) — a non-empty list of \
 (Anim, weight) pairs, e.g. Anim.blend([(Anim.clip(\"walk\", tts), 0.7), \
 (Anim.clip(\"run\", tts), 0.3)])",
+                ),
+            },
+            // The bind (rest) pose — the base for purely programmatic posing
+            // (Anim.rotate on a model with no authored clips, e.g. a hand).
+            "Anim.rest" => match args.as_slice() {
+                [] => Ok(host(FunctorLangAnim(AnimExpr::Rest))),
+                _ => usage("Anim.rest()"),
+            },
+            // Additive layer (anim-last so the BASE pipes):
+            // walk |> Anim.add(Anim.clip("headShake", tts), 1.0) layers the
+            // shake's delta-from-bind on top of the walk.
+            "Anim.add" => match args.as_slice() {
+                [layer, weight, base] => {
+                    let layer = anim_of(layer, "Anim.add", span)?.clone();
+                    let base = anim_of(base, "Anim.add", span)?.clone();
+                    let weight = num(weight, span)? as f32;
+                    Ok(host(FunctorLangAnim(AnimExpr::Add {
+                        base: Box::new(base),
+                        layer: Box::new(layer),
+                        weight,
+                    })))
+                }
+                _ => usage("base |> Anim.add(layerAnim, weight) — layer the anim's \
+delta-from-bind on top, scaled by weight"),
+            },
+            // Restrict an anim's influence to the subtrees rooted at the
+            // named joints (a name covers itself and every descendant).
+            "Anim.mask" => match args.as_slice() {
+                [Value::List(names), anim] if !names.is_empty() => {
+                    let mut joints = Vec::with_capacity(names.len());
+                    for name in names.iter() {
+                        match name {
+                            Value::String(name) if !name.is_empty() => {
+                                joints.push(name.to_string())
+                            }
+                            other => {
+                                return err(format!(
+                                    "Anim.mask joint names must be non-empty strings, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    let expr = anim_of(anim, "Anim.mask", span)?.clone();
+                    Ok(host(FunctorLangAnim(AnimExpr::Mask {
+                        joints,
+                        expr: Box::new(expr),
+                    })))
+                }
+                _ => usage(
+                    "anim |> Anim.mask([\"jointName\", …]) — a non-empty list of joint \
+names; each covers its whole subtree (functor inspect lists a model's joints)",
+                ),
+            },
+            // Post-multiply an additive local rotation onto one joint —
+            // programmatic per-joint control (head aim, finger curl). Angles
+            // are branded values (the Angle rule): XYZ Euler, local frame.
+            "Anim.rotate" => match args.as_slice() {
+                [Value::String(joint), x, y, z, anim] if !joint.is_empty() => {
+                    let x: cgmath::Rad<f32> = angle_of(x, path, span)?.into();
+                    let y: cgmath::Rad<f32> = angle_of(y, path, span)?.into();
+                    let z: cgmath::Rad<f32> = angle_of(z, path, span)?.into();
+                    let expr = anim_of(anim, "Anim.rotate", span)?.clone();
+                    Ok(host(FunctorLangAnim(AnimExpr::Rotate {
+                        joint: joint.to_string(),
+                        euler: [x.0, y.0, z.0],
+                        expr: Box::new(expr),
+                    })))
+                }
+                _ => usage(
+                    "anim |> Anim.rotate(\"jointName\", xAngle, yAngle, zAngle) — a \
+non-empty joint name and three Angle values (Angle.degrees/radians), applied as an \
+additive local XYZ rotation",
                 ),
             },
             // A subdivided XZ grid displaced by per-vertex heights — the Functor Lang
@@ -3542,6 +3619,72 @@ Anim.clip(\"walk\", tts)"
             .expect("should fail");
         assert!(
             failure.error.message.contains("(anim, weight)"),
+            "message: {}",
+            failure.error.message
+        );
+    }
+
+    // The full pose algebra composes through pipes and lands on the Model
+    // node as nested AnimExpr data: rest |> rotate, masked blends, additive
+    // layers.
+    #[test]
+    fn anim_algebra_composes_and_serializes() {
+        let value = eval(
+            "let main = () =>\n\
+             Scene.model(\"glove.glb\") |> Scene.animate(\n\
+               Anim.rest()\n\
+                 |> Anim.rotate(\"finger_index_0_r\", Angle.degrees(45.0), Angle.degrees(0.0), Angle.degrees(0.0))\n\
+                 |> Anim.mask([\"wrist_r\"])\n\
+                 |> Anim.add(Anim.clip(\"wave\", 1.0), 0.5))",
+        );
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::Model(description) = &scene.obj else {
+            panic!("expected a Model node, got {:?}", scene.obj);
+        };
+        let Some(AnimExpr::Add {
+            base,
+            layer,
+            weight,
+        }) = &description.animation
+        else {
+            panic!("expected an Add at the root, got {:?}", description.animation);
+        };
+        assert_eq!(*weight, 0.5);
+        assert!(
+            matches!(&**layer, AnimExpr::Clip { name, .. } if name == "wave"),
+            "layer: {layer:?}"
+        );
+        let AnimExpr::Mask { joints, expr } = &**base else {
+            panic!("expected a Mask base, got {base:?}");
+        };
+        assert_eq!(joints, &vec!["wrist_r".to_string()]);
+        let AnimExpr::Rotate { joint, euler, expr } = &**expr else {
+            panic!("expected a Rotate inside the mask, got {expr:?}");
+        };
+        assert_eq!(joint, "finger_index_0_r");
+        assert!((euler[0] - 45.0_f32.to_radians()).abs() < 1e-6);
+        assert!(matches!(&**expr, AnimExpr::Rest));
+        // And the whole expression round-trips through the protocol.
+        let json = serde_json::to_string(&scene).expect("serialize");
+        let back: Scene3D = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // The Angle rule applies to Anim.rotate: bare numbers are refused.
+    #[test]
+    fn anim_rotate_refuses_bare_numbers() {
+        let module = functor_lang::lower(
+            functor_lang::parse(
+                "let main = () => Anim.rest() |> Anim.rotate(\"head\", 0.5, 0.0, 0.0)",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
+        assert!(
+            failure.error.message.contains("Angle"),
             "message: {}",
             failure.error.message
         );
