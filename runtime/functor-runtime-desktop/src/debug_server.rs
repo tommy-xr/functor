@@ -61,13 +61,21 @@ impl RuntimeState {
 /// An input event to inject via `POST /input`. JSON is tagged by `type`:
 /// `{"type":"key","key":"w","down":true}`,
 /// `{"type":"mouse_move","x":10,"y":20}`,
-/// `{"type":"mouse_wheel","delta":1}`.
+/// `{"type":"mouse_wheel","delta":1}`,
+/// `{"type":"ui_event","slot":0,"kind":"Clicked"}` (kind also
+/// `{"SliderChanged":0.5}` / `{"TextChanged":"hi"}` — the
+/// [`functor_runtime_common::ui::UiEventKind`] wire shape), so an agent can
+/// drive interactive UI widgets headlessly (docs/ui-interaction.md U2).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputCommand {
     Key { key: String, down: bool },
     MouseMove { x: i32, y: i32 },
     MouseWheel { delta: i32 },
+    UiEvent {
+        slot: u32,
+        kind: functor_runtime_common::ui::UiEventKind,
+    },
 }
 
 /// A clock command via `POST /time`: `{"type":"set","tts":2.0}` pins the frame
@@ -403,7 +411,7 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                             "POST /capture": "PNG (image/png) of the next rendered frame",
                             "GET /state": "runtime state JSON: frame, tts, viewport, input (held_keys + mouse), model (Debug text)",
                             "GET /scene": "current frame as JSON: camera + scene + lights",
-                            "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1}",
+                            "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"}",
                             "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}",
                             "POST /reload-source": "swap game logic from the request body (raw .fun source), model preserved — 400 with the load error on a broken push",
                             "POST /rewind": "coupled scene rewind — {\"frame\":42} restores model + physics to that rendered frame (pin the clock first); 400 if unrecorded/pruned"

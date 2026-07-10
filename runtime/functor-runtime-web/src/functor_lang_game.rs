@@ -23,7 +23,8 @@ use std::cell::RefCell;
 
 use functor_runtime_common::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, contains_effect, frame_value,
-    view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
+    take_ui_handlers, view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind,
+    RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{FrameCtx, Reporter, SpanSource};
 use functor_runtime_common::physics;
@@ -73,6 +74,10 @@ pub struct FunctorLangWebGame {
     /// `&self` accessor — evaluated beside `draw` each frame (the desktop
     /// producer's rule: a bad `ui` keeps the last good view).
     last_view: View,
+    /// The interactive-widget handler table registered by the `ui(model)`
+    /// evaluation that built `last_view` (docs/ui-interaction.md U2), kept in
+    /// lockstep with it — same rules as the desktop producer.
+    ui_handlers: Vec<UiHandler>,
     /// Performs `Effect.*` commands (B6). `RealEffects` is wasm-safe: its
     /// clock is `Date.now()` on this target.
     effect_runner: RealEffects,
@@ -304,6 +309,7 @@ impl FunctorLangWebGame {
             last_soundscape_json: empty_soundscape_json(),
             has_ui: loaded.has_ui,
             last_view: View::Empty,
+            ui_handlers: Vec::new(),
             last_frame: empty_frame(),
         })
     }
@@ -348,6 +354,9 @@ impl FunctorLangWebGame {
         self.pending_events.clear();
         clear_http_taggers();
         clear_audio_completions();
+        // The widget handler table holds msgs/taggers into the OLD session;
+        // the next render's `ui(model)` rebuilds it against the new one.
+        self.ui_handlers.clear();
         // Reload is a model-history BOUNDARY (see the desktop producer): the
         // retained snapshots can hold old-module closures, so they can't cross
         // a reload; the recorder keeps its rendered-frame clock monotonic so
@@ -580,6 +589,23 @@ impl GameProducer for FunctorLangWebGame {
             .push(functor_runtime_common::RecordedInput::MouseWheel { delta });
     }
 
+    fn ui_event(&mut self, event: functor_runtime_common::ui::UiEvent) {
+        // No `ui` hook → no widgets to have interacted with; drop silently
+        // (mirrors the has_input gates above).
+        if !self.has_ui {
+            return;
+        }
+        // The table is moved out for the call — `ctx()` borrows every other
+        // producer field mutably — and restored after.
+        let handlers = std::mem::take(&mut self.ui_handlers);
+        self.ctx().deliver_ui_event(&handlers, &event);
+        self.ui_handlers = handlers;
+        // Buffer for the frame-indexed input log (T6b), like key events, so a
+        // replay re-delivers the interaction.
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::UiEvent(event));
+    }
+
     fn render(&mut self, frame_time: FrameTime) -> Frame {
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
         // `tts`-driven visuals (orbiting lights, `sin(tts)` motion) rewind with
@@ -621,13 +647,26 @@ impl GameProducer for FunctorLangWebGame {
                 .call("ui", vec![self.model.clone()], &mut FunctorHost)
             {
                 Ok(value) => match view_value(&value) {
-                    Some(view) => self.last_view = view.clone(),
-                    None => self.reporter.report_once(format!(
-                        "[functor-lang] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
-                        value.kind_name()
-                    )),
+                    Some(view) => {
+                        self.last_view = view.clone();
+                        // The evaluation registered this tree's widget handlers
+                        // — adopt them in lockstep with the view they address.
+                        self.ui_handlers = take_ui_handlers();
+                    }
+                    None => {
+                        let _ = take_ui_handlers();
+                        self.reporter.report_once(format!(
+                            "[functor-lang] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                            value.kind_name()
+                        ))
+                    }
                 },
-                Err(err) => self.reporter.frame_error("ui", &err),
+                Err(err) => {
+                    // A failed evaluation keeps the last good view AND its
+                    // handlers; drop the partial table it registered.
+                    let _ = take_ui_handlers();
+                    self.reporter.frame_error("ui", &err)
+                }
             }
         }
         // The optional soundscape, evaluated beside `draw` (same settled model)
@@ -827,6 +866,7 @@ pub fn drain_input(game: &mut dyn GameProducer, deliver: bool) {
             InputEvent::Key { code, is_down } => game.key_event(code, is_down),
             InputEvent::MouseMove { x, y } => game.mouse_move(x, y),
             InputEvent::MouseWheel { delta } => game.mouse_wheel(delta),
+            InputEvent::UiEvent(event) => game.ui_event(event),
         }
     }
 }

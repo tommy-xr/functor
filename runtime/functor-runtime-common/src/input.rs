@@ -54,7 +54,8 @@ pub enum Key {
 /// `key_event`/`mouse_move`/`mouse_wheel` and flush a frame's worth into the
 /// recorder; the forward-step replays them. (`Serialize`/`Deserialize` are for
 /// the future on-disk/wire event log, T7 — unused by the in-session replay.)
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+/// (Not `Copy`: `UiEvent` can carry a text payload.)
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RecordedInput {
     /// A keyboard event carrying the raw `Key as i32` code (not the resolved
     /// `Key`), so replay re-runs `Key::from_i32` exactly as the live path does.
@@ -63,6 +64,10 @@ pub enum RecordedInput {
     MouseMove { x: i32, y: i32 },
     /// A wheel notch (±1 per notch).
     MouseWheel { delta: i32 },
+    /// An interaction on an interactive UI widget (slot-addressed — see
+    /// [`crate::ui::UiEvent`]). Replay rebuilds the frame's handler table from
+    /// `ui(model)` and re-delivers, so UI-driven model changes replay too.
+    UiEvent(crate::ui::UiEvent),
 }
 
 impl Key {
