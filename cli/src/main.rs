@@ -109,6 +109,13 @@ enum Command {
         #[command(subcommand)]
         target: InspectTarget,
     },
+    /// Generate typed clip constants from the project's glTF models: scans the
+    /// project dir for `*.glb`/`*.gltf` and writes `assets.fun` (module
+    /// `Assets`), one record per model with a `{ name, duration }` field per
+    /// animation clip — so `Anim.clip(Assets.xbot.walk.name, tts)` can't
+    /// silently drift from the asset. Rerun after models change; check the
+    /// generated file in. E.g. `functor -d examples/animation import`.
+    Import,
     /// Push the game's Functor Lang source to a running runtime over the network
     /// (POST /reload-source on its debug server) — the remote develop loop.
     /// The runtime can be on another machine or device; reloads preserve the
@@ -234,6 +241,12 @@ async fn run(args: &Args) -> io::Result<()> {
 
     validate_metadata_path(&working_directory)?;
 
+    // `import` is language-independent codegen over the project's model files
+    // (headless, like `inspect`), so it dispatches before language routing.
+    if let Command::Import = &args.command {
+        return commands::import::execute(&working_directory);
+    }
+
     // An Functor Lang project (functor.json: `"language": "functor-lang"`) routes build/run/
     // develop/push to the interpreter — no Fable, no cargo, hot reload built
     // in. Only those are language-routed; Init was handled above.
@@ -248,7 +261,9 @@ async fn run(args: &Args) -> io::Result<()> {
         commands::functor_lang_project::detect(&working_directory_str).filter(|_| is_routed)
     {
         return match &args.command {
-            Command::Init { .. } | Command::Inspect { .. } => unreachable!("is_routed excludes"),
+            Command::Init { .. } | Command::Inspect { .. } | Command::Import => {
+                unreachable!("is_routed excludes")
+            }
             // `build` is target-independent for Functor Lang: the strict typecheck
             // gate is the whole build — nothing compiles for either target
             // (native interprets the file; wasm serves it as text).
@@ -303,6 +318,8 @@ async fn run(args: &Args) -> io::Result<()> {
         )),
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
+        // Handled earlier (right after functor.json validation).
+        Command::Import => unreachable!(),
     }
 }
 
@@ -313,6 +330,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Run { .. } => "run",
         Command::Develop { .. } => "develop",
         Command::Inspect { .. } => "inspect",
+        Command::Import => "import",
         Command::Push { .. } => "push",
     }
 }
