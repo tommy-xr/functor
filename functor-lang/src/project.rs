@@ -1,8 +1,8 @@
 //! Multi-file Functor Lang projects — B8 part 1 (docs/functor-lang.md).
 //!
-//! **File = module.** Every `.functor` file in the entry file's directory IS a
+//! **File = module.** Every `.fun` file in the entry file's directory IS a
 //! module, named by its filename stem with the first letter capitalized
-//! (`utils.functor` → `Utils`); the entry file is the program root. Loading is
+//! (`utils.fun` → `Utils`); the entry file is the program root. Loading is
 //! **eager**: all files parse, lower, and (via [`crate::check`] on the
 //! result) typecheck together — unreferenced modules still get diagnostics,
 //! because whole-program checking is the point.
@@ -72,7 +72,7 @@ pub struct Project {
     /// The merged, name-canonicalized module (defs in dependency order).
     pub module: Module,
     pub sources: SourceMap,
-    /// The entry file's module name (`game.functor` → `Game`).
+    /// The entry file's module name (`game.fun` → `Game`).
     pub entry: String,
     /// Per-module record-literal visibility (own + `open`ed types) —
     /// [`Project::check`] hands it to the checker so a bare literal never
@@ -119,13 +119,13 @@ pub struct SourceFile {
     pub module: String,
     pub src: String,
     pub base: usize,
-    /// A `.functori` interface file (bodyless signatures), vs a `.functor`.
+    /// A `.funi` interface file (bodyless signatures), vs a `.fun`.
     pub interface: bool,
 }
 
-/// Whether a path is an interface file (`.functori`).
+/// Whether a path is an interface file (`.funi`).
 fn is_interface(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("functori")
+    path.extension().and_then(|e| e.to_str()) == Some("funi")
 }
 
 /// Renders project-wide span offsets back to `file:line:col`.
@@ -203,11 +203,11 @@ impl ProjectError {
     }
 }
 
-/// The `.functor` files of the project rooted at `entry_path`: the entry first,
-/// then its sibling `.functor` files in name order. (Subdirectories are not
+/// The `.fun` files of the project rooted at `entry_path`: the entry first,
+/// then its sibling `.fun` files in name order. (Subdirectories are not
 /// scanned — a directory is one flat module space.)
 pub fn project_files(entry_path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    // A bare relative entry ("game.functor") has an EMPTY parent — that still
+    // A bare relative entry ("game.fun") has an EMPTY parent — that still
     // means the current directory, not "no siblings".
     let dir = match entry_path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -217,10 +217,10 @@ pub fn project_files(entry_path: &Path) -> std::io::Result<Vec<PathBuf>> {
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
-            // `.functor` implementations and `.functori` interface files both load.
+            // `.fun` implementations and `.funi` interface files both load.
             matches!(
                 path.extension().and_then(|e| e.to_str()),
-                Some("functor" | "functori")
+                Some("fun" | "funi")
             ) && path.is_file()
                 && path.file_name() != entry_path.file_name()
         })
@@ -263,7 +263,7 @@ pub fn load_with_overrides(
 }
 
 /// [`load_with_overrides`], plus a set of injected PRELUDE interface modules —
-/// `(module name, .functori source)` pairs describing host-provided values
+/// `(module name, .funi source)` pairs describing host-provided values
 /// (`Scene.*`, `Camera.*`, …). Unlike project files they are not read from the
 /// directory and are EXEMPT from the protected-namespace check: they are
 /// precisely what defines those namespaces. This is the host's seam to give
@@ -370,7 +370,7 @@ fn push_prelude(files: &mut Vec<SourceFile>, prelude: &[(String, String)]) {
     for (module, src) in prelude {
         files.push(SourceFile {
             interface: true,
-            path: PathBuf::from(format!("<prelude>/{module}.functori")),
+            path: PathBuf::from(format!("<prelude>/{module}.funi")),
             module: module.clone(),
             src: src.clone(),
             base,
@@ -391,7 +391,7 @@ fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
     files.push(SourceFile {
         interface: false,
-        path: PathBuf::from("<builtin>/Net.functor"),
+        path: PathBuf::from("<builtin>/Net.fun"),
         module: "Net".to_string(),
         src: NET_MODULE_SRC.to_string(),
         base,
@@ -542,7 +542,7 @@ allowed (within one file, definitions may still be mutually recursive)",
 pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectError> {
     let files = vec![SourceFile {
         interface: false,
-        path: PathBuf::from(format!("{module}.functor")),
+        path: PathBuf::from(format!("{module}.fun")),
         module: module.to_string(),
         src: src.to_string(),
         base: 0,
@@ -552,7 +552,7 @@ pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectErr
 
 /// Load ONE in-memory file as a single-file project, keeping its real path in
 /// the [`SourceMap`] (so [`SourceMap::file_by_path`] resolves it) — the LSP's
-/// path for a `.functor` with no `functor.json`: check just this buffer, never
+/// path for a `.fun` with no `functor.json`: check just this buffer, never
 /// scanning the directory for unrelated siblings. Module name is the file's
 /// (`Main` if the stem isn't an identifier); a single file is its own bare
 /// entry, so the name only labels it.
@@ -562,7 +562,7 @@ pub fn load_single_file(
     prelude: &[(String, String)],
 ) -> Result<Project, ProjectError> {
     // Fall back to `Main` for a non-identifier stem OR one that capitalizes to
-    // a protected namespace (`net.functor` → `Net`), which would otherwise collide
+    // a protected namespace (`net.fun` → `Net`), which would otherwise collide
     // with the builtin module `link` injects and silently fail the load.
     let module = match module_name(path) {
         Ok(name) if !PROTECTED_NAMESPACES.contains(&name.as_str()) => name,
@@ -580,7 +580,7 @@ pub fn load_single_file(
 }
 
 /// The module name a file provides: its stem, first letter capitalized
-/// (`utils.functor` → `Utils`). The stem must be a valid identifier — module
+/// (`utils.fun` → `Utils`). The stem must be a valid identifier — module
 /// names appear in source (`Utils.clamp`).
 fn module_name(path: &Path) -> Result<String, String> {
     let stem = path
@@ -593,7 +593,7 @@ fn module_name(path: &Path) -> Result<String, String> {
     if !valid {
         return Err(format!(
             "cannot derive a module name from `{}` — file stems must be identifiers \
-(letters, digits, `_`; starting with a letter), like `utils.functor` → `Utils`",
+(letters, digits, `_`; starting with a letter), like `utils.fun` → `Utils`",
             file_name(path)
         ));
     }

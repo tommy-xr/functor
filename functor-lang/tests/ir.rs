@@ -18,12 +18,12 @@ fn lower_src(src: &str) -> Module {
     }
 }
 
-/// Lower `examples/{name}.functor` and compare the pretty-Debug IR against the
+/// Lower `examples/{name}.fun` and compare the pretty-Debug IR against the
 /// committed `examples/{name}.ir` golden.
 /// Regenerate with `UPDATE_GOLDENS=1 cargo test -p functor-lang`.
 fn check_golden(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let src = fs::read_to_string(dir.join(format!("{name}.functor"))).unwrap();
+    let src = fs::read_to_string(dir.join(format!("{name}.fun"))).unwrap();
     let golden_path = dir.join(format!("{name}.ir"));
     let actual = format!("{:#?}\n", lower_src(&src));
     if std::env::var_os("UPDATE_GOLDENS").is_some() {
@@ -38,7 +38,7 @@ fn check_golden(name: &str) {
     });
     assert_eq!(
         actual, expected,
-        "IR for {name}.functor diverged from {name}.ir — if intended, \
+        "IR for {name}.fun diverged from {name}.ir — if intended, \
          regenerate with UPDATE_GOLDENS=1 cargo test -p functor-lang"
     );
 }
@@ -83,7 +83,7 @@ fn golden_strings() {
 #[test]
 fn lowering_is_deterministic() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let src = fs::read_to_string(dir.join("functions.functor")).unwrap();
+    let src = fs::read_to_string(dir.join("functions.fun")).unwrap();
     let first = format!("{:#?}", lower_src(&src));
     let second = format!("{:#?}", lower_src(&src));
     assert_eq!(first, second);

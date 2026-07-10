@@ -1,9 +1,10 @@
-//! `functor-lang-lsp` — a minimal Language Server for `.functor` files (docs/functor-lang.md
-//! Track D).
+//! `functor-lang-lsp` — a minimal Language Server for `.fun` source and `.funi`
+//! interface files (docs/functor-lang.md Track D).
 //!
 //! Hand-rolled LSP over stdio: a blocking read loop with `Content-Length`
 //! framing and `serde_json` dispatch — no async runtime, no LSP framework.
-//! On `didOpen`/`didChange` the buffer is fed through [`functor_lang::parse`],
+//! On `didOpen`/`didChange` the buffer is fed through [`functor_lang::parse`] or
+//! [`functor_lang::parse_interface`],
 //! [`functor_lang::lower`], and [`functor_lang::check`]; the first parse/lower error, or ALL
 //! type diagnostics, publish via `textDocument/publishDiagnostics`.
 //!
@@ -192,7 +193,15 @@ fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
     };
     // Parse and lowering stop at the first error; a clean module then gets
     // ALL of the gradual checker's type diagnostics.
-    let diagnostics = match functor_lang::parse(text) {
+    let parsed = if uri_to_path(uri)
+        .and_then(|path| path.extension().map(|extension| extension == "funi"))
+        .unwrap_or(false)
+    {
+        functor_lang::parse_interface(text)
+    } else {
+        functor_lang::parse(text)
+    };
+    let diagnostics = match parsed {
         Err(err) => vec![diagnostic(&err.message, err.span)],
         Ok(program) => match functor_lang::lower(program) {
             Err(err) => vec![diagnostic(&err.message, err.span)],
@@ -209,14 +218,14 @@ fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
 /// above it, that's the whole multi-file project — every open buffer stands
 /// in for its on-disk file (unsaved edits count), siblings load from disk.
 /// With no `functor.json`, it's just this buffer as a single-file project
-/// (the directory is NOT scanned — unrelated `.functor` files nearby must not
+/// (the directory is NOT scanned — unrelated `.fun` files nearby must not
 /// leak in). `None` on a non-`file:` URI or a load failure.
 fn load_project(uri: &str, documents: &HashMap<String, String>) -> Option<functor_lang::project::Project> {
     let path = uri_to_path(uri)?;
     // The engine prelude (`Scene.*`, `Camera.*`, …) as a check-time overlay, so
     // the editor shows real host types (`Scene.cube() : Scene.t`) instead of
     // `Unknown`. This is what makes the LSP host-aware; the runtime injects the
-    // same set (functori 2e).
+    // same set (funi 2e).
     let prelude = functor_prelude::modules();
     let single_file = || functor_lang::project::load_single_file(&path, documents.get(uri)?, &prelude).ok();
     match discover_entry(&path) {
@@ -549,6 +558,18 @@ mod tests {
     fn read_message_returns_none_on_eof() {
         assert!(read_message(&mut &b""[..]).is_none());
     }
+
+    #[test]
+    fn interface_diagnostics_use_interface_parser() {
+        let mut output = Vec::new();
+        publish_diagnostics(
+            &mut output,
+            "file:///project/widget.funi",
+            "type Handle\nlet size : (Handle) => float",
+        );
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(r#""diagnostics":[]"#), "{output}");
+    }
 }
 
 #[cfg(test)]
@@ -589,7 +610,7 @@ mod review_tests {
     // byte escaped, not widened to a char), so cross-file goto URIs resolve.
     #[test]
     fn path_to_uri_round_trips_non_ascii() {
-        let path = std::path::Path::new("/Users/café/game.functor");
+        let path = std::path::Path::new("/Users/café/game.fun");
         let uri = path_to_uri(path);
         assert!(!uri.contains('é'), "non-ascii must be percent-escaped: {uri}");
         assert_eq!(uri_to_path(&uri).as_deref(), Some(path));
@@ -625,7 +646,7 @@ mod codex_review_tests {
     // (no diagnostics published) and requests get InvalidRequest.
     #[test]
     fn post_shutdown_traffic_is_refused() {
-        let open = r#"{"method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///x.functor","text":"let = 3"}}}"#;
+        let open = r#"{"method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///x.fun","text":"let = 3"}}}"#;
         let req = r#"{"id":2,"method":"initialize","params":{}}"#;
         let shutdown = r#"{"id":1,"method":"shutdown"}"#;
         let mut input = Vec::new();

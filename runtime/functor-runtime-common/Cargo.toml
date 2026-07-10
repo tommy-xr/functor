@@ -41,7 +41,7 @@ log = "0.4"
 gltf = { version = "1.4.1", features = ["names", "KHR_materials_pbrSpecularGlossiness"] }
 
 [dev-dependencies]
-# The host prelude `.functori` interface text, for the drift test that keeps the
+# The host prelude `.funi` interface text, for the drift test that keeps the
 # declared Scene.* signatures in sync with the `PATHS` host registry.
 functor-prelude = { path = "../../functor-prelude" }
 

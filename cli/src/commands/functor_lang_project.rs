@@ -11,7 +11,7 @@
 //! - `develop` is `run`: the Functor Lang producer hot-reloads on save by itself — no
 //!   watchexec loop, no rebuild. State is preserved across edits.
 //! - `run wasm` serves the project with the Functor Lang index page (docs/functor-lang.md C5):
-//!   nothing compiles — the `.functor` source ships as text, fetched and
+//!   nothing compiles — the `.fun` source ships as text, fetched and
 //!   interpreted by the embedded web runtime. Hot reload is native-only;
 //!   reload the page to pick up edits.
 
@@ -29,7 +29,7 @@ use crate::Environment;
 
 /// The Functor Lang project settings read from `functor.json`.
 pub struct FunctorLangProject {
-    /// The game source, relative to the project dir (default `game.functor`).
+    /// The game source, relative to the project dir (default `game.fun`).
     pub entry: String,
 }
 
@@ -46,7 +46,7 @@ pub fn detect(working_directory: &str) -> Option<FunctorLangProject> {
     let entry = json
         .get("entry")
         .and_then(|v| v.as_str())
-        .unwrap_or("game.functor")
+        .unwrap_or("game.fun")
         .to_string();
     Some(FunctorLangProject { entry })
 }
@@ -63,7 +63,7 @@ impl FunctorLangProject {
         Ok(path)
     }
 
-    /// Load the project (B8: the entry plus every sibling `.functor` file —
+    /// Load the project (B8: the entry plus every sibling `.fun` file —
     /// file = module) and typecheck the whole program; `functor-lang check`
     /// diagnostics are build errors here (see the module doc).
     pub fn build(&self, working_directory: &str) -> Result<(), Error> {
@@ -72,7 +72,7 @@ impl FunctorLangProject {
         // A load failure (parse error, bad module name, cycle) is a positioned
         // diagnostic too — surface its file:line:col structurally, like a check
         // error, rather than flattening it into the final text-only error.
-        // Inject the host prelude `.functori` interfaces so the game's `Scene.*`
+        // Inject the host prelude `.funi` interfaces so the game's `Scene.*`
         // (etc.) externals typecheck against real types instead of `Unknown`
         // (docs/functor-lang-interfaces.md). Check-time only — runtime evaluation is unchanged
         // (the host provides the actual values).
@@ -115,8 +115,8 @@ impl FunctorLangProject {
             });
         }
         if diags.is_empty() {
-            // The user's own sibling `.functor` files: exclude the entry and the
-            // prelude-injected builtin (`<builtin>/Net.functor`).
+            // The user's own sibling `.fun` files: exclude the entry and the
+            // prelude-injected builtin (`<builtin>/Net.fun`).
             let sibling_count = project
                 .sources
                 .files()
@@ -267,7 +267,7 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
     }
 
     /// Serve the project at 127.0.0.1:8080 with the Functor Lang index page (docs/
-    /// docs/functor-lang.md C5). The `.functor` entry ships as text — the dev server's
+    /// docs/functor-lang.md C5). The `.fun` entry ships as text — the dev server's
     /// filesystem route serves it from the project dir and the embedded web
     /// runtime fetches + interprets it. Mirrors the F# wasm arm of
     /// `commands::run` (`--no-open` handling included).
@@ -419,14 +419,14 @@ mod tests {
 
     #[test]
     fn entries_inside_the_project_are_servable() {
-        assert!(!entry_escapes_project("game.functor"));
-        assert!(!entry_escapes_project("src/game.functor"));
+        assert!(!entry_escapes_project("game.fun"));
+        assert!(!entry_escapes_project("src/game.fun"));
     }
 
     #[test]
     fn escaping_entries_are_rejected() {
-        assert!(entry_escapes_project("../shared/game.functor"));
-        assert!(entry_escapes_project("src/../../game.functor"));
-        assert!(entry_escapes_project("/tmp/game.functor"));
+        assert!(entry_escapes_project("../shared/game.fun"));
+        assert!(entry_escapes_project("src/../../game.fun"));
+        assert!(entry_escapes_project("/tmp/game.fun"));
     }
 }

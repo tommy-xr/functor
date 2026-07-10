@@ -94,7 +94,7 @@ fn fixture_runs_and_checks_clean() {
     let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
         .join("project")
-        .join("game.functor");
+        .join("game.fun");
     let project = functor_lang::project::load(&entry).unwrap_or_else(|e| panic!("{}", e.render()));
     let diags = project.check();
     assert!(diags.is_empty(), "fixture should check clean: {diags:?}");
@@ -117,13 +117,13 @@ fn qualified_values_and_ctors_work_without_open() {
         "qualified",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "let main = () =>\n\
                  match Util.wrap(4.0) with\n\
                  | Util.Wrapped(n) => n + Util.base\n",
             ),
             (
-                "util.functor",
+                "util.fun",
                 "type Carton = | Wrapped(value: float)\n\
                  let base = 10.0\n\
                  let wrap = (n: float): Carton => Wrapped(n)\n",
@@ -140,12 +140,12 @@ fn qualified_ctor_is_first_class() {
         "ctor-value",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "let main = () =>\n\
                  [1.0, 2.0] |> List.map(Util.Wrapped) |> List.map(Util.unwrap) |> List.maximum\n",
             ),
             (
-                "util.functor",
+                "util.fun",
                 "type Carton = | Wrapped(value: float)\n\
                  let unwrap = (c) => match c with | Wrapped(n) => n\n",
             ),
@@ -161,8 +161,8 @@ fn sibling_may_reference_the_entry() {
     let project = load(
         "entry-ref",
         &[
-            ("game.functor", "let base = 32.0\n"),
-            ("util.functor", "let above = (x) => x + Game.base\n"),
+            ("game.fun", "let base = 32.0\n"),
+            ("util.fun", "let above = (x) => x + Game.base\n"),
         ],
     );
     let session = functor_lang::Session::load(&project.module, &mut functor_lang::NoHost)
@@ -181,10 +181,10 @@ fn entry_initializer_may_demand_sibling_globals() {
         "eager-order",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "let start = Config.speed * 2.0\nlet main = () => start\n",
             ),
-            ("config.functor", "let speed = 21.0\n"),
+            ("config.fun", "let speed = 21.0\n"),
         ],
     );
     assert_eq!(number(&value), 42.0);
@@ -196,13 +196,13 @@ fn bare_module_name_hints() {
     let err = load_err(
         "bare-module",
         &[
-            ("game.functor", "let main = () => Util\n"),
-            ("util.functor", "let x = 1.0\n"),
+            ("game.fun", "let main = () => Util\n"),
+            ("util.fun", "let x = 1.0\n"),
         ],
     );
     assert_eq!(
         err,
-        "game.functor:1:18: unknown name `Util` — `Util` is a module; reference a member (`Util.name`)"
+        "game.fun:1:18: unknown name `Util` — `Util` is a module; reference a member (`Util.name`)"
     );
 }
 
@@ -211,11 +211,11 @@ fn unknown_member_is_a_load_error() {
     let err = load_err(
         "unknown-member",
         &[
-            ("game.functor", "let main = () => Util.nope(1.0)\n"),
-            ("util.functor", "let x = 1.0\n"),
+            ("game.fun", "let main = () => Util.nope(1.0)\n"),
+            ("util.fun", "let x = 1.0\n"),
         ],
     );
-    assert_eq!(err, "game.functor:1:18: module `Util` has no `nope`");
+    assert_eq!(err, "game.fun:1:18: module `Util` has no `nope`");
 }
 
 #[test]
@@ -223,11 +223,11 @@ fn unknown_member_type_is_a_load_error() {
     let err = load_err(
         "unknown-type",
         &[
-            ("game.functor", "let f = (x: Util.Nope) => x\n"),
-            ("util.functor", "let x = 1.0\n"),
+            ("game.fun", "let f = (x: Util.Nope) => x\n"),
+            ("util.fun", "let x = 1.0\n"),
         ],
     );
-    assert_eq!(err, "game.functor:1:13: module `Util` has no type `Nope`");
+    assert_eq!(err, "game.fun:1:13: module `Util` has no type `Nope`");
 }
 
 #[test]
@@ -236,15 +236,15 @@ fn unknown_ctor_in_pattern_is_a_load_error() {
         "unknown-pattern-ctor",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "let f = (x) => match x with | Util.Nope => 1.0\n",
             ),
-            ("util.functor", "let x = 1.0\n"),
+            ("util.fun", "let x = 1.0\n"),
         ],
     );
     assert_eq!(
         err,
-        "game.functor:1:31: module `Util` has no constructor `Nope`"
+        "game.fun:1:31: module `Util` has no constructor `Nope`"
     );
 }
 
@@ -255,8 +255,8 @@ fn non_module_qualified_names_stay_external() {
     let value = run_main(
         "external-seam",
         &[
-            ("game.functor", "let main = () => Math.clamp01(3.0) + Util.x\n"),
-            ("util.functor", "let x = 1.0\n"),
+            ("game.fun", "let main = () => Math.clamp01(3.0) + Util.x\n"),
+            ("util.fun", "let x = 1.0\n"),
         ],
     );
     assert_eq!(number(&value), 2.0);
@@ -270,13 +270,13 @@ fn open_brings_defs_ctors_and_types_into_scope() {
         "open-basic",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "open Util\n\
                  let grab = (c: Carton): float => match c with | Wrapped(n) => n\n\
                  let main = () => grab(Wrapped(base))\n",
             ),
             (
-                "util.functor",
+                "util.fun",
                 "type Carton = | Wrapped(value: float)\nlet base = 42.0\n",
             ),
         ],
@@ -289,13 +289,13 @@ fn open_collision_with_own_name_names_both_sides() {
     let err = load_err(
         "open-own-collision",
         &[
-            ("game.functor", "open Util\nlet base = 1.0\n"),
-            ("util.functor", "let base = 2.0\n"),
+            ("game.fun", "open Util\nlet base = 1.0\n"),
+            ("util.fun", "let base = 2.0\n"),
         ],
     );
     assert_eq!(
         err,
-        "game.functor:1:1: open Util: `base` collides with this module's own `base` — qualify uses \
+        "game.fun:1:1: open Util: `base` collides with this module's own `base` — qualify uses \
 as `Util.base` instead of opening"
     );
 }
@@ -305,14 +305,14 @@ fn open_collision_between_opens_names_both_modules() {
     let err = load_err(
         "open-open-collision",
         &[
-            ("game.functor", "open Alpha\nopen Beta\nlet main = () => 0.0\n"),
-            ("alpha.functor", "let shared = 1.0\n"),
-            ("beta.functor", "let shared = 2.0\n"),
+            ("game.fun", "open Alpha\nopen Beta\nlet main = () => 0.0\n"),
+            ("alpha.fun", "let shared = 1.0\n"),
+            ("beta.fun", "let shared = 2.0\n"),
         ],
     );
     assert_eq!(
         err,
-        "game.functor:2:1: open Beta: `shared` is already in scope from `open Alpha` — qualify uses \
+        "game.fun:2:1: open Beta: `shared` is already in scope from `open Alpha` — qualify uses \
 (`Alpha.shared` / `Beta.shared`)"
     );
 }
@@ -323,15 +323,15 @@ fn open_type_collision_is_an_error() {
         "open-type-collision",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "open Util\ntype Carton = { x: float }\nlet main = () => 0.0\n",
             ),
-            ("util.functor", "type Carton = | Wrapped(value: float)\n"),
+            ("util.fun", "type Carton = | Wrapped(value: float)\n"),
         ],
     );
     assert_eq!(
         err,
-        "game.functor:1:1: open Util: type `Carton` collides with this module's own `Carton` — \
+        "game.fun:1:1: open Util: type `Carton` collides with this module's own `Carton` — \
 qualify uses as `Util.Carton` instead of opening"
     );
 }
@@ -340,11 +340,11 @@ qualify uses as `Util.Carton` instead of opening"
 fn open_unknown_module_is_an_error() {
     let err = load_err(
         "open-unknown",
-        &[("game.functor", "open Nowhere\nlet main = () => 0.0\n")],
+        &[("game.fun", "open Nowhere\nlet main = () => 0.0\n")],
     );
     assert_eq!(
         err,
-        "game.functor:1:1: unknown module `Nowhere` — modules are the sibling `.functor` files next to \
+        "game.fun:1:1: unknown module `Nowhere` — modules are the sibling `.fun` files next to \
 the entry"
     );
 }
@@ -353,11 +353,11 @@ the entry"
 fn open_self_is_an_error() {
     let err = load_err(
         "open-self",
-        &[("game.functor", "open Game\nlet main = () => 0.0\n")],
+        &[("game.fun", "open Game\nlet main = () => 0.0\n")],
     );
     assert_eq!(
         err,
-        "game.functor:1:1: `open Game` in module `Game` itself — a module's own names are already \
+        "game.fun:1:1: `open Game` in module `Game` itself — a module's own names are already \
 in scope"
     );
 }
@@ -368,7 +368,7 @@ fn open_remains_usable_as_a_name() {
     let value = run_main(
         "open-as-name",
         &[(
-            "game.functor",
+            "game.fun",
             "let open = 40.0\nlet f = (open) => open + 2.0\nlet main = () => f(open)\n",
         )],
     );
@@ -382,8 +382,8 @@ fn dependency_cycles_are_refused_with_the_path() {
     let err = load_err(
         "cycle",
         &[
-            ("game.functor", "let a = () => Util.b()\n"),
-            ("util.functor", "let b = () => Game.a()\n"),
+            ("game.fun", "let a = () => Util.b()\n"),
+            ("util.fun", "let b = () => Game.a()\n"),
         ],
     );
     assert!(
@@ -399,8 +399,8 @@ fn open_counts_as_a_dependency_edge() {
     let err = load_err(
         "open-cycle",
         &[
-            ("game.functor", "open Util\nlet a = 1.0\n"),
-            ("util.functor", "open Game\nlet b = 2.0\n"),
+            ("game.fun", "open Util\nlet a = 1.0\n"),
+            ("util.fun", "open Game\nlet b = 2.0\n"),
         ],
     );
     assert!(
@@ -414,31 +414,31 @@ fn protected_namespace_module_names_are_refused() {
     let err = load_err(
         "protected",
         &[
-            ("game.functor", "let main = () => 0.0\n"),
-            ("scene.functor", "let cube = 1.0\n"),
+            ("game.fun", "let main = () => 0.0\n"),
+            ("scene.fun", "let cube = 1.0\n"),
         ],
     );
     assert_eq!(
         err,
-        "scene.functor:1:1: module name `Scene` (from scene.functor) collides with the builtin/prelude \
+        "scene.fun:1:1: module name `Scene` (from scene.fun) collides with the builtin/prelude \
 namespace `Scene` — rename the file"
     );
 }
 
 /// `Debug` is protected (the `Debug.log` builtin's namespace), so a sibling
-/// `debug.functor` can't shadow it — a load error names the collision.
+/// `debug.fun` can't shadow it — a load error names the collision.
 #[test]
 fn debug_namespace_module_name_is_refused() {
     let err = load_err(
         "protected-debug",
         &[
-            ("game.functor", "let main = () => 0.0\n"),
-            ("debug.functor", "let log = 1.0\n"),
+            ("game.fun", "let main = () => 0.0\n"),
+            ("debug.fun", "let log = 1.0\n"),
         ],
     );
     assert_eq!(
         err,
-        "debug.functor:1:1: module name `Debug` (from debug.functor) collides with the builtin/prelude \
+        "debug.fun:1:1: module name `Debug` (from debug.fun) collides with the builtin/prelude \
 namespace `Debug` — rename the file"
     );
 }
@@ -448,12 +448,12 @@ fn non_identifier_file_stems_are_refused() {
     let err = load_err(
         "bad-stem",
         &[
-            ("game.functor", "let main = () => 0.0\n"),
-            ("my-utils.functor", "let x = 1.0\n"),
+            ("game.fun", "let main = () => 0.0\n"),
+            ("my-utils.fun", "let x = 1.0\n"),
         ],
     );
     assert!(
-        err.contains("cannot derive a module name from `my-utils.functor`"),
+        err.contains("cannot derive a module name from `my-utils.fun`"),
         "unexpected error: {err}"
     );
 }
@@ -480,9 +480,9 @@ fn unreferenced_sibling_diagnostics_surface_with_their_file() {
     let scratch = Scratch::new(
         "sibling-diags",
         &[
-            ("game.functor", "let main = () => 0.0\n"),
+            ("game.fun", "let main = () => 0.0\n"),
             (
-                "util.functor",
+                "util.fun",
                 "// an unreferenced module with a type error\nlet bad = (a: float): float => a + \"one\"\n",
             ),
         ],
@@ -494,7 +494,7 @@ fn unreferenced_sibling_diagnostics_surface_with_their_file() {
         .sources
         .render(diags[0].span.start, &diags[0].message);
     let rendered = rendered.replace(&format!("{}/", scratch.dir.display()), "");
-    assert_eq!(err_line(&rendered), "util.functor:2:36");
+    assert_eq!(err_line(&rendered), "util.fun:2:36");
 }
 
 fn err_line(rendered: &str) -> &str {
@@ -509,13 +509,13 @@ fn cross_module_generics_check() {
         "cross-generics",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "open Boxes\n\
                  let good = (b: Box<float>): float =>\n\
                  match b with | Full(v) => v + 1.0 | Empty => 0.0\n\
                  let bad = () => good(Full(\"nope\"))\n",
             ),
-            ("boxes.functor", "type Box<'v> = | Full(value: 'v) | Empty\n"),
+            ("boxes.fun", "type Box<'v> = | Full(value: 'v) | Empty\n"),
         ],
     );
     let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
@@ -540,7 +540,7 @@ fn stray_sibling_type_does_not_capture_bare_literals() {
         "literal-scope",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "type Position = { x: float, y: float }
                  let p = { x: 1.0, y: 2.0 }
 let main = () => p.x
@@ -548,7 +548,7 @@ let main = () => p.x
             ),
             // Same field shape, never referenced, never opened.
             (
-                "extra.functor",
+                "extra.fun",
                 "type Point = { x: float, y: float }
 ",
             ),
@@ -570,14 +570,14 @@ fn opened_types_are_literal_visible() {
         "literal-open",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "open Vec
 let f = () => { x: 1.0, y: 2.0 }
 let bad = f() + 1.0
 ",
             ),
             (
-                "vec.functor",
+                "vec.fun",
                 "type V2 = { x: float, y: float }
 ",
             ),
@@ -601,13 +601,13 @@ fn unopened_sibling_literals_stay_gradual() {
         "literal-no-open",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "let f = () => { x: 1.0, y: 2.0 }
 let bad = f() + 1.0
 ",
             ),
             (
-                "vec.functor",
+                "vec.fun",
                 "type V2 = { x: float, y: float }
 ",
             ),
@@ -633,7 +633,7 @@ fn single_file_project_adds_only_the_builtin_net_module() {
                let area = (s: Shape): float =>\n\
                match s with | Circle(r) => 3.14 * r * r | Point => 0.0\n\
                let main = () => area(Circle(2.0))\n";
-    let project = load("single-file", &[("game.functor", src)]);
+    let project = load("single-file", &[("game.fun", src)]);
     let plain = functor_lang::lower(functor_lang::parse(src).expect("parses")).expect("lowers");
 
     let proj_defs: Vec<&str> = project.module.defs.iter().map(|d| d.name.as_str()).collect();
@@ -672,8 +672,8 @@ fn stored_closures_from_siblings_rebind_across_reload() {
     let old = load(
         "rebind-old",
         &[
-            ("game.functor", game),
-            ("util.functor", "let makeSpring = (k) => (x) => x * k\n"),
+            ("game.fun", game),
+            ("util.fun", "let makeSpring = (k) => (x) => x * k\n"),
         ],
     );
     let record = functor_lang::run(&old.module, Tracing::Off)
@@ -687,8 +687,8 @@ fn stored_closures_from_siblings_rebind_across_reload() {
     let new = load(
         "rebind-new",
         &[
-            ("game.functor", game),
-            ("util.functor", "let makeSpring = (k) => (x) => x * k + 1.0\n"),
+            ("game.fun", game),
+            ("util.fun", "let makeSpring = (k) => (x) => x * k + 1.0\n"),
         ],
     );
     let (rebound, report) = functor_lang::rebind_value(&stored, &old.module, &new.module);
@@ -715,11 +715,11 @@ fn same_named_defs_in_different_modules_do_not_cross_rebind() {
     let files = |a_body: &str| {
         [
             (
-                "game.functor",
+                "game.fun",
                 "let main = () => (Alpha.make(1.0), Beta.make(1.0))\n".to_string(),
             ),
-            ("alpha.functor", format!("let make = (k) => (x) => {a_body}\n")),
-            ("beta.functor", "let make = (k) => (x) => x - k\n".to_string()),
+            ("alpha.fun", format!("let make = (k) => (x) => {a_body}\n")),
+            ("beta.fun", "let make = (k) => (x) => x - k\n".to_string()),
         ]
     };
     let old_files = files("x + k");
@@ -774,8 +774,8 @@ fn project_typed_check_infers_across_files() {
         "typed-xfile",
         &[
             // Entry calls Utils.double with no annotations anywhere.
-            ("game.functor", "let apply = (n) => Utils.double(n)\n"),
-            ("utils.functor", "let double = (x: float): float => x * 2.0\n"),
+            ("game.fun", "let apply = (n) => Utils.double(n)\n"),
+            ("utils.fun", "let double = (x: float): float => x * 2.0\n"),
         ],
     );
     let (diags, types) = project.check_with_types();
@@ -794,7 +794,7 @@ fn project_typed_check_infers_across_files() {
 
     // The sibling's def is canonicalized to `Utils.double` in a project.
     // Its signature lens carries a project-wide span; it must resolve to
-    // utils.functor, not the entry.
+    // utils.fun, not the entry.
     let double = functor_lang::codelens::signatures(&project.module, &types)
         .into_iter()
         .find(|s| s.title.starts_with("Utils.double :"))
@@ -802,7 +802,7 @@ fn project_typed_check_infers_across_files() {
     let (file, _line, _col) = project.sources.resolve(double.span.start);
     assert_eq!(
         file.path.file_name().unwrap().to_str().unwrap(),
-        "utils.functor",
+        "utils.fun",
         "double should resolve to its own file"
     );
 }
@@ -815,9 +815,9 @@ fn overrides_replace_a_sibling_buffer() {
     let scratch = Scratch::new(
         "override-sibling",
         &[
-            ("game.functor", "let apply = (n) => Utils.tripled(n)\n"),
-            // On disk `utils.functor` has no `tripled` — loading from disk fails.
-            ("utils.functor", "let double = (x: float): float => x * 2.0\n"),
+            ("game.fun", "let apply = (n) => Utils.tripled(n)\n"),
+            // On disk `utils.fun` has no `tripled` — loading from disk fails.
+            ("utils.fun", "let double = (x: float): float => x * 2.0\n"),
         ],
     );
     // Disk-only load: `Utils.tripled` is unresolved (load or check fails).
@@ -830,7 +830,7 @@ fn overrides_replace_a_sibling_buffer() {
     // Override the sibling buffer with a version that defines `tripled`.
     let mut overrides = std::collections::HashMap::new();
     overrides.insert(
-        scratch.dir.join("utils.functor"),
+        scratch.dir.join("utils.fun"),
         "let tripled = (x: float): float => x * 3.0\n".to_string(),
     );
     let project = functor_lang::project::load_with_overrides(&scratch.entry, &overrides)
@@ -841,13 +841,13 @@ fn overrides_replace_a_sibling_buffer() {
     // carries the overridden source).
     let file = project
         .sources
-        .file_by_path(&scratch.dir.join("utils.functor"))
-        .expect("utils.functor is a project file");
+        .file_by_path(&scratch.dir.join("utils.fun"))
+        .expect("utils.fun is a project file");
     assert!(file.src.contains("tripled"), "override source is in the map");
 }
 
-/// The shipped multi-file example (`examples/hello-cubes` = game.functor +
-/// pieces.functor) must keep loading as a project and checking clean, so the
+/// The shipped multi-file example (`examples/hello-cubes` = game.fun +
+/// pieces.fun) must keep loading as a project and checking clean, so the
 /// split sample can't silently bit-rot.
 #[test]
 fn shipped_hello_cubes_multifile_checks_clean() {
@@ -855,34 +855,34 @@ fn shipped_hello_cubes_multifile_checks_clean() {
         .join("..")
         .join("examples")
         .join("hello-cubes")
-        .join("game.functor");
+        .join("game.fun");
     let project = functor_lang::project::load(&entry)
         .unwrap_or_else(|e| panic!("hello-cubes should load: {}", e.render()));
     assert!(
         project.sources.files().iter().any(|f| f.module == "Pieces"),
-        "pieces.functor loads as module Pieces"
+        "pieces.fun loads as module Pieces"
     );
     let diags = project.check();
     assert!(diags.is_empty(), "hello-cubes checks clean: {diags:?}");
 }
 
-// ── interface files (.functori) — functori slice 2d ──────────────────────────────
+// ── interface files (.funi) — funi slice 2d ──────────────────────────────
 
-/// A `.functori` gives host-implemented values real types: a sibling `.functor`'s
-/// `Widget.make()` / `Widget.size(h)` type against `widget.functori` and check
+/// A `.funi` gives host-implemented values real types: a sibling `.fun`'s
+/// `Widget.make()` / `Widget.size(h)` type against `widget.funi` and check
 /// clean.
 #[test]
 fn interface_file_types_externals() {
     let project = load(
-        "functori-basic",
+        "funi-basic",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "let build = (): Widget.Handle => Widget.make()\n\
                  let area = (h: Widget.Handle): float => Widget.size(h)",
             ),
             (
-                "widget.functori",
+                "widget.funi",
                 "type Handle\n\
                  let make : () => Handle\n\
                  let size : (Handle) => float",
@@ -898,11 +898,11 @@ fn interface_file_types_externals() {
 #[test]
 fn interface_signature_mismatch_is_flagged() {
     let project = load(
-        "functori-mismatch",
+        "funi-mismatch",
         &[
-            ("game.functor", "let bad = (): float => Widget.size(3.0)"),
+            ("game.fun", "let bad = (): float => Widget.size(3.0)"),
             (
-                "widget.functori",
+                "widget.funi",
                 "type Handle\nlet size : (Handle) => float",
             ),
         ],
@@ -920,11 +920,11 @@ fn interface_signature_mismatch_is_flagged() {
 #[test]
 fn open_brings_interface_signatures() {
     let project = load(
-        "functori-open",
+        "funi-open",
         &[
-            ("game.functor", "open Widget\nlet f = (): float => size(make())"),
+            ("game.fun", "open Widget\nlet f = (): float => size(make())"),
             (
-                "widget.functori",
+                "widget.funi",
                 "type Handle\n\
                  let make : () => Handle\n\
                  let size : (Handle) => float",
@@ -935,15 +935,15 @@ fn open_brings_interface_signatures() {
     assert!(diags.is_empty(), "should check clean: {diags:?}");
 }
 
-/// A body in a `.functori` is a load error with a clear message — interface files
+/// A body in a `.funi` is a load error with a clear message — interface files
 /// declare, not define.
 #[test]
 fn body_in_interface_file_is_rejected() {
     let err = load_err(
-        "functori-body",
+        "funi-body",
         &[
-            ("game.functor", "let main = () => 1.0"),
-            ("widget.functori", "let make : float = 3.0"),
+            ("game.fun", "let main = () => 1.0"),
+            ("widget.funi", "let make : float = 3.0"),
         ],
     );
     assert!(
@@ -954,19 +954,19 @@ fn body_in_interface_file_is_rejected() {
 
 /// An interface signature may reference a type in the module that USES it (a
 /// host callback typed against the app's own `Model`). Interface modules have
-/// no runtime initializers, so this is NOT a real cycle (functori 2d review).
+/// no runtime initializers, so this is NOT a real cycle (funi 2d review).
 #[test]
 fn interface_signature_may_reference_a_consumer_type() {
     let project = load(
-        "functori-consumer-type",
+        "funi-consumer-type",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "type Model = { n: float }\n\
                  let sc = (m: Model): Widget.Handle => Widget.render(m)",
             ),
             (
-                "widget.functori",
+                "widget.funi",
                 "type Handle\nlet render : (Game.Model) => Handle",
             ),
         ],
@@ -976,26 +976,26 @@ fn interface_signature_may_reference_a_consumer_type() {
 }
 
 /// An interface member still resolves as an External at runtime (host-backed),
-/// so a `.functor`-only project keeps running unchanged.
+/// so a `.fun`-only project keeps running unchanged.
 #[test]
 fn interface_member_lowers_to_external() {
     // The game references Widget.make but never calls it; run `main`, which is
-    // pure — proving the .functori presence doesn't disturb evaluation.
+    // pure — proving the .funi presence doesn't disturb evaluation.
     let value = run_main(
-        "functori-runtime",
+        "funi-runtime",
         &[
             (
-                "game.functor",
+                "game.fun",
                 "let unused = (): Widget.Handle => Widget.make()\n\
                  let main = () => 40.0 + 2.0",
             ),
-            ("widget.functori", "type Handle\nlet make : () => Handle"),
+            ("widget.funi", "type Handle\nlet make : () => Handle"),
         ],
     );
     assert_eq!(number(&value), 42.0);
 }
 
-/// Injected prelude interface modules (functori 2e) give the checker real types
+/// Injected prelude interface modules (funi 2e) give the checker real types
 /// for host externals — exempt from the protected-namespace check, since they
 /// OWN those namespaces. `Scene.*` types against the injected `Scene` module.
 #[test]
@@ -1003,7 +1003,7 @@ fn injected_prelude_types_host_externals() {
     let scratch = Scratch::new(
         "prelude-inject",
         &[(
-            "game.functor",
+            "game.fun",
             "let ok = () => Scene.color(1.0, 0.0, 0.0, Scene.cube())\n\
              let bad = () => Scene.color(1.0, 0.0, 0.0, 3.0)",
         )],

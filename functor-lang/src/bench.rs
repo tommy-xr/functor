@@ -3,7 +3,7 @@
 //! # What it measures
 //!
 //! The Functor Lang *interpreter*, isolated from parsing and lowering. A benchmark file
-//! is an ordinary `.functor` project whose entry defines a zero-arg `let main`; the
+//! is an ordinary `.fun` project whose entry defines a zero-arg `let main`; the
 //! harness parses + lowers + loads it **once** (untimed), then times *repeated
 //! evaluation of `main()`*. So the reported number is per-`main()`-evaluation
 //! cost — the tree-walking interpreter's hot path — not startup, parse, or
@@ -47,7 +47,7 @@ pub struct BenchResult {
     pub max_ns: f64,
 }
 
-/// CLI entry: `functor-lang bench [--all] [--json] [<file.functor> | <dir>]`.
+/// CLI entry: `functor-lang bench [--all] [--json] [<file.fun> | <dir>]`.
 pub fn main(args: &[String]) -> ! {
     let mut json = false;
     let mut all = false;
@@ -87,7 +87,7 @@ pub fn main(args: &[String]) -> ! {
         exit(1);
     });
     if files.is_empty() {
-        eprintln!("functor-lang bench: no .functor benchmarks found");
+        eprintln!("functor-lang bench: no .fun benchmarks found");
         exit(1);
     }
 
@@ -194,12 +194,12 @@ fn default_corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/corpus")
 }
 
-/// All `*.functor` files in `dir`, sorted by name (stable table order).
+/// All `*.fun` files in `dir`, sorted by name (stable table order).
 fn collect_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|err| format!("cannot read {}: {err}", dir.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|ext| ext == "functor"))
+        .filter(|p| p.extension().is_some_and(|ext| ext == "fun"))
         .collect();
     files.sort();
     Ok(files)

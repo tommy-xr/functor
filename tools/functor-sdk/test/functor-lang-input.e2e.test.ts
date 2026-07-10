@@ -26,7 +26,7 @@ test(
     assert.ok(repoRoot, "must run from within the functor workspace");
 
     const dir = mkdtempSync(join(tmpdir(), "functor-lang-input-"));
-    const functorLangPath = join(dir, "game.functor");
+    const functorLangPath = join(dir, "game.fun");
     writeFileSync(functorLangPath, GAME);
 
     await using runner = await FunctorRunner.launch({

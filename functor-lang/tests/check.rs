@@ -1,4 +1,4 @@
-//! B4 verification (docs/functor-lang.md): the `broken.functor` diagnostic golden, the
+//! B4 verification (docs/functor-lang.md): the `broken.fun` diagnostic golden, the
 //! shipped examples checking clean, individual diagnostic message + position
 //! assertions, and gradual-typing cases that must NOT error.
 
@@ -31,24 +31,24 @@ fn assert_clean(src: &str) {
     assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
 }
 
-/// The `functor-lang check` diagnostics for `examples/checks/broken.functor`, compared
+/// The `functor-lang check` diagnostics for `examples/checks/broken.fun`, compared
 /// against the committed `broken.check` golden (rendered exactly as the CLI
 /// prints them). Regenerate with `UPDATE_GOLDENS=1 cargo test -p functor-lang`.
 /// (The file lives in its own subdirectory: with B8's file=module project
-/// loading, every `.functor` in a directory loads together, and a deliberately
+/// loading, every `.fun` in a directory loads together, and a deliberately
 /// broken sibling would fail `functor-lang run` on the clean examples.)
 #[test]
 fn golden_check_broken() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
         .join("checks");
-    let src = fs::read_to_string(dir.join("broken.functor")).unwrap();
+    let src = fs::read_to_string(dir.join("broken.fun")).unwrap();
     let golden_path = dir.join("broken.check");
     let actual: String = check_src(&src)
         .into_iter()
-        .map(|(message, line, col)| format!("broken.functor:{line}:{col}: error: {message}\n"))
+        .map(|(message, line, col)| format!("broken.fun:{line}:{col}: error: {message}\n"))
         .collect();
-    assert!(!actual.is_empty(), "broken.functor should produce diagnostics");
+    assert!(!actual.is_empty(), "broken.fun should produce diagnostics");
     if std::env::var_os("UPDATE_GOLDENS").is_some() {
         fs::write(&golden_path, &actual).unwrap();
         return;
@@ -61,7 +61,7 @@ fn golden_check_broken() {
     });
     assert_eq!(
         actual, expected,
-        "diagnostics for broken.functor diverged from broken.check — if intended, \
+        "diagnostics for broken.fun diverged from broken.check — if intended, \
          regenerate with UPDATE_GOLDENS=1 cargo test -p functor-lang"
     );
 }
@@ -105,11 +105,11 @@ fn example_strings_checks_clean() {
 
 fn example_checks_clean(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let src = fs::read_to_string(dir.join(format!("{name}.functor"))).unwrap();
+    let src = fs::read_to_string(dir.join(format!("{name}.fun"))).unwrap();
     let diags = check_src(&src);
     assert!(
         diags.is_empty(),
-        "{name}.functor should check clean, got {diags:?}"
+        "{name}.fun should check clean, got {diags:?}"
     );
 }
 
@@ -358,7 +358,7 @@ fn error_filter_predicate_must_return_bool() {
         // B7: the element type flows from `xs` into the predicate's
         // signature — float, not Unknown. The expected function type flows
         // INTO the predicate, so the mismatch localizes to its return value
-        // rather than the whole callback (functori 2b `(Lambda, Fn)` checking).
+        // rather than the whole callback (funi 2b `(Lambda, Fn)` checking).
         "return value: expected bool, got float"
     );
 }
@@ -1242,7 +1242,7 @@ fn list_pattern_against_non_list() {
     );
 }
 
-// ── Function & tuple type syntax (functori slice 2a) ─────────────────────────
+// ── Function & tuple type syntax (funi slice 2a) ─────────────────────────
 
 /// A higher-order parameter annotated with a function type checks clean and
 /// its type flows: `apply` applies `f` to `x`.
@@ -1313,7 +1313,7 @@ fn empty_parens_require_an_arrow() {
     );
 }
 
-// ── let-binding type annotations (functori slice 2b) ─────────────────────────
+// ── let-binding type annotations (funi slice 2b) ─────────────────────────
 
 /// A top-level binding annotation checks against the value and flows into an
 /// unannotated body: `let f: (float) => float = (x) => …` gives `x: float`.
@@ -1355,7 +1355,7 @@ fn annotated_mut_binding() {
 }
 
 /// An invalid binding annotation (here a `List` arity error) reports at the
-/// top level — not only inside `let … in` (functori 2b review: was swallowed
+/// top level — not only inside `let … in` (funi 2b review: was swallowed
 /// because a top-level `def.ty` is resolved just once, silently).
 #[test]
 fn invalid_top_level_annotation_reports() {
@@ -1367,7 +1367,7 @@ fn invalid_top_level_annotation_reports() {
 }
 
 /// A binding annotation's param types flow into an unannotated lambda body,
-/// so a bad field access against the declared param type is caught (functori 2b
+/// so a bad field access against the declared param type is caught (funi 2b
 /// review Finding 2 — the `(Lambda, Fn)` checking path).
 #[test]
 fn binding_annotation_flows_into_body() {
@@ -1378,7 +1378,7 @@ fn binding_annotation_flows_into_body() {
     assert_eq!(message, "`Position` has no field `z`");
 }
 
-// ── abstract (opaque) types (functori slice 2c) ──────────────────────────────
+// ── abstract (opaque) types (funi slice 2c) ──────────────────────────────
 
 /// A `type Name` with no body is an opaque nominal: it resolves in
 /// annotations and unifies with itself.
@@ -1428,7 +1428,7 @@ fn generic_abstract_type() {
 }
 
 /// Forgetting `=` on a type decl keeps its targeted diagnostic — it is NOT
-/// silently swallowed as an abstract type (functori 2c review, Finding 1).
+/// silently swallowed as an abstract type (funi 2c review, Finding 1).
 #[test]
 fn forgotten_type_equals_is_diagnosed() {
     for src in ["type Point { x: float }", "type Shape | Circle(r: float)"] {

@@ -6,7 +6,7 @@
 //! keeps the last good model/frame, per-frame errors dedupe — but adapted to
 //! the browser:
 //!
-//! - the `.functor` source arrives over HTTP (fetched by `run_async` from the dev
+//! - the `.fun` source arrives over HTTP (fetched by `run_async` from the dev
 //!   server, which serves the project directory) instead of the filesystem;
 //! - no file-watch hot reload (there is no filesystem to watch), but the
 //!   PUSH path exists (docs/functor-lang.md D4): `reload_source` mirrors the desktop
@@ -137,18 +137,18 @@ struct Loaded {
 /// the desktop `load_source`, shared by the page-load path (`create`) and the
 /// editor push path (`reload_source`). `sources` is every fetched project file
 /// as `(path, source)`, the ENTRY first, then siblings (`file = module`, so
-/// `pieces.functor` is module `Pieces`). Errors come back as fully rendered strings
+/// `pieces.fun` is module `Pieces`). Errors come back as fully rendered strings
 /// (`path:line:col: message`).
 fn load_source(sources: &[(String, String)]) -> Result<Loaded, String> {
     let path = sources
         .first()
         .map(|(p, _)| p.clone())
-        .unwrap_or_else(|| "game.functor".to_string());
+        .unwrap_or_else(|| "game.fun".to_string());
     let pairs: Vec<(std::path::PathBuf, String)> = sources
         .iter()
         .map(|(p, s)| (std::path::PathBuf::from(p), s.clone()))
         .collect();
-    // Link the entry with its siblings, injecting the host prelude `.functori`
+    // Link the entry with its siblings, injecting the host prelude `.funi`
     // interfaces so `Scene.*` (etc.) typecheck against real types — the exact
     // path the desktop producer runs (docs/functor-lang-interfaces.md). Check-time only; the
     // FunctorHost still provides the actual runtime values.
@@ -273,7 +273,7 @@ impl FunctorLangWebGame {
         let path = sources
             .first()
             .map(|(p, _)| p.clone())
-            .unwrap_or_else(|| "game.functor".to_string());
+            .unwrap_or_else(|| "game.fun".to_string());
         let loaded = load_source(&sources)?;
         web_sys::console::log_1(&format!("[functor-lang] loaded {path}").into());
         Ok(FunctorLangWebGame {

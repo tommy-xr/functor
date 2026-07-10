@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Functor is a functional toolkit for building 3D games in **Functor Lang** — Functor's own interpreted,
 F#-inspired game-logic language (roadmap and design: `docs/functor-lang.md`; syntax/semantics source of
-truth: the **`functor-lang` skill**, `.claude/skills/functor-lang/`). You write a game as a `.functor`
+truth: the **`functor-lang` skill**, `.claude/skills/functor-lang/`). You write a game as a `.fun`
 file. There is **no transpile or compile step for game logic**: the Rust runtime *interprets* the
-`.functor` directly, on one of two targets:
+`.fun` directly, on one of two targets:
 
 - **native** — the desktop runtime (GLFW + OpenGL), now built into the single `functor` binary
-  (the desktop crate is a library the CLI drives in-process), loads and runs your `.functor`,
+  (the desktop crate is a library the CLI drives in-process), loads and runs your `.fun`,
   with hot-reloading on save.
-- **wasm** — the web runtime (WebGL2) ships the `.functor` source as text and interprets it in the
+- **wasm** — the web runtime (WebGL2) ships the `.fun` source as text and interprets it in the
   browser.
 
 The same tree-walking interpreter runs everywhere Rust runs. (Functor formerly used F# + Fable →
@@ -39,7 +39,7 @@ These shape how features should be built. Weigh changes against them.
 ## Architecture
 
 **The MVU loop (Elm-style).** A game is a set of top-level Functor Lang bindings the runner looks up by
-name (contract in the `functor-lang` skill; reference: `examples/hello/game.functor`):
+name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`):
 
 - `init` — the initial model, a plain Functor Lang value
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as canonical names
@@ -73,7 +73,7 @@ effect lands in a structured log, so under a fake/replay runner the same program
 deterministic (the test seam).
 
 **The Functor Lang producer is the seam between game logic and the shells.** `functor_lang_game.rs` (desktop) and
-its wasm sibling in `runtime/functor-runtime-web/` run `.functor` logic through an `functor_lang::Session` with
+its wasm sibling in `runtime/functor-runtime-web/` run `.fun` logic through an `functor_lang::Session` with
 the **Functor prelude** (`FunctorHost` in `functor_runtime_common::functor_lang_prelude`): the host-provided
 externals that make `Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*` / `Effect.*` /
 `Sub.*` resolve to real protocol values. Both producers implement the shared
@@ -88,7 +88,7 @@ rebind to the edited code, carrying their captured values over (matched by the e
 name; a renamed/deleted def keeps its old body with a loud `[functor-lang]` warning). A broken edit prints
 once and keeps the old program running. The physics world (like the model) survives reload. Pending
 effects are reset on reload (an in-flight HTTP tagger would dangle). Native watches every project
-`.functor`; on wasm, hot-reload is native-only (reload the page, or push source via a
+`.fun`; on wasm, hot-reload is native-only (reload the page, or push source via a
 `{ type: "functor-lang-set-source", source }` postMessage). See the `functor-lang` skill for the exact rules.
 
 ### Layout
@@ -101,10 +101,10 @@ effects are reset on reload (an in-flight HTTP tagger would dangle). Native watc
 | `runtime/functor-runtime-web/` | Web runtime (WebGL2) → wasm bundle; the wasm Functor Lang producer (`functor_lang_game.rs`) |
 | `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`); Functor Lang projects route through `cli/src/commands/functor_lang_project.rs` |
 | `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
-| `examples/*/` | Sample games (each a dir with `functor.json` + `game.functor`) — e.g. `hello`, `primitives`, `lighting`, `physics` |
+| `examples/*/` | Sample games (each a dir with `functor.json` + `game.fun`) — e.g. `hello`, `primitives`, `lighting`, `physics` |
 | `docs/todo.md` | The backlog — incomplete work only |
 
-Functor Lang files use `file = module`: every sibling `.functor` in the entry's directory loads with it. The
+Functor Lang files use `file = module`: every sibling `.fun` in the entry's directory loads with it. The
 language, prelude, and semantics are documented in the **`functor-lang` skill** — treat it and
 `docs/functor-lang.md` as the source of truth, and keep the skill in sync when you change the language.
 
@@ -124,29 +124,29 @@ npm run build:cli   # the wasm bundle, then the functor CLI
 Produces `target/debug/functor` — a single binary with the desktop runtime built in.
 
 **Scaffold a game.** `init` creates an embedded Functor Lang starter without overwriting an existing
-`functor.json` or `game.functor`; `3d` is the default template:
+`functor.json` or `game.fun`; `3d` is the default template:
 
 ```sh
 ./target/debug/functor -d my-game init [3d|fps]
 ```
 
 **Run / build a game.** The CLI operates on a directory with a `functor.json`
-(`{"language": "functor-lang", "entry": "game.functor"}`); `-d` points to it:
+(`{"language": "functor-lang", "entry": "game.fun"}`); `-d` points to it:
 
 ```sh
 ./target/debug/functor -d examples/primitives run native   # opens a window (native is the default env)
-./target/debug/functor -d examples/primitives run wasm      # serves the .functor + wasm at http://127.0.0.1:8080
+./target/debug/functor -d examples/primitives run wasm      # serves the .fun + wasm at http://127.0.0.1:8080
 ./target/debug/functor -d examples/primitives build [native|wasm]
 ./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; Functor Lang hot-reload is built in
 ```
 
-Under the hood: `build` typechecks the whole `.functor` project (diagnostics are errors). `run native`
+Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors). `run native`
 drives the built-in desktop runtime in-process from the game dir; it **interprets** the
-`.functor` each frame — nothing compiles. `run wasm` serves the project directory: the `.functor` ships as
+`.fun` each frame — nothing compiles. `run wasm` serves the project directory: the `.fun` ships as
 text and is interpreted by the embedded web runtime. `develop` is `run` (hot-reload is built in; on
 wasm, reload the page).
 
-**Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|parse|ir <file.functor>`
+**Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|parse|ir <file.fun>`
 drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the
 `functor-lang` skill.
 
@@ -199,14 +199,14 @@ main context.
   conditional is a bool-literal `match`; assignment is `:=`; pipelines *append* the subject
   (thread-last: `x |> f(a)` == `f(a, x)`)).
   When a change touches the language or the prelude, update the skill in the same PR.
-- **`file = module`.** Every `.functor` in the entry's directory loads with the project — an
-  unreferenced (or stray scratch) sibling still parses, checks, and evaluates. Keep scratch `.functor`
+- **`file = module`.** Every `.fun` in the entry's directory loads with the project — an
+  unreferenced (or stray scratch) sibling still parses, checks, and evaluates. Keep scratch `.fun`
   files in their own directory, and don't leave a broken sibling next to a game.
 - **The engine prelude only exists under the host.** `Scene.*`/`Camera.*`/`Frame.*`/`Physics.*`
   etc. resolve only in runner-hosted Functor Lang (and tests via `functor_runtime_common::functor_lang_prelude`), NOT
   in a plain `cargo run -p functor-lang -- run`. Branded values (`Angle`, `Time`/`Duration`, `Fog`, render
   targets) refuse bare numbers/strings with a teaching error — pass `Angle.degrees(60.0)`, not `60`.
-- **`functor run` does not rebuild the runtimes.** It only (re)loads the *game* `.functor`, which the
+- **`functor run` does not rebuild the runtimes.** It only (re)loads the *game* `.fun`, which the
   runner interprets. The asset pipeline and rendering execute in the shells, which are prebuilt:
   natively in the desktop runtime built into the `functor` binary, and on wasm in the web-runtime
   bundle that is `include_bytes!`-embedded into the `functor` CLI. After changing `runtime/` crates (including the

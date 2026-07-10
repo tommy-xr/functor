@@ -45,7 +45,7 @@ const toBase64Url = (s) =>
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-for (const pre of document.querySelectorAll("pre.functor")) {
+for (const pre of document.querySelectorAll("pre.functor-lang")) {
   const source = pre.textContent;
   pre.innerHTML = highlight(source);
   if (pre.classList.contains("runnable")) {

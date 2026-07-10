@@ -105,7 +105,7 @@ pub(crate) struct Exports {
     pub defs: HashSet<String>,
     pub ctors: HashMap<String, usize>,
     pub types: HashSet<String>,
-    /// Interface (`.functori`) value signature names — a qualified reference to one
+    /// Interface (`.funi`) value signature names — a qualified reference to one
     /// stays an [`ExprKind::External`] (host-resolved at runtime), unlike a
     /// `def` which becomes a [`ExprKind::Global`].
     pub signatures: HashSet<String>,
@@ -184,7 +184,7 @@ fn lower_module(
             ast::Item::Open(_) => {}
             // A signature shares the value namespace with `let`s for DUPLICATE
             // DETECTION only — it is never lowered to a `Global` (references
-            // stay `External`; `.functori` files have no value expressions, so
+            // stay `External`; `.funi` files have no value expressions, so
             // `globals` is only read for defs). Grouped here purely to reuse
             // the collision checks.
             ast::Item::Let(ast::LetDecl { name, span, .. })
@@ -259,7 +259,7 @@ namespace)",
         let Some(env) = project else {
             return Err(LowerError {
                 message: format!(
-                    "unknown module `{}` — modules are sibling `.functor` files loaded through the \
+                    "unknown module `{}` — modules are sibling `.fun` files loaded through the \
 project entry (this file is being lowered on its own)",
                     decl.module
                 ),
@@ -278,7 +278,7 @@ project entry (this file is being lowered on its own)",
         let Some(exports) = env.modules.get(&decl.module) else {
             return Err(LowerError {
                 message: format!(
-                    "unknown module `{}` — modules are the sibling `.functor` files next to the entry",
+                    "unknown module `{}` — modules are the sibling `.fun` files next to the entry",
                     decl.module
                 ),
                 span: decl.span,
@@ -437,7 +437,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
 enum OpenedName {
     Def(String),
     Ctor(String, usize),
-    /// An interface (`.functori`) signature — a bare use resolves to an
+    /// An interface (`.funi`) signature — a bare use resolves to an
     /// [`ExprKind::External`], like a qualified one.
     Signature(String),
 }
@@ -1071,7 +1071,7 @@ impl Lowerer<'_> {
                         arity,
                     }
                 } else if exports.signatures.contains(member) {
-                    // An interface (`.functori`) signature: keep it EXTERNAL so the
+                    // An interface (`.funi`) signature: keep it EXTERNAL so the
                     // host resolves the value at runtime (like an unknown
                     // qualified name) — the checker types it from the signature.
                     ExprKind::External(vec![module.clone(), member.clone()])

@@ -56,7 +56,7 @@ impl Server {
     }
 }
 
-const URI: &str = "file:///tmp/e2e.functor";
+const URI: &str = "file:///tmp/e2e.fun";
 
 #[test]
 fn diagnostics_over_real_stdio() {
@@ -265,24 +265,24 @@ fn diagnostics_over_real_stdio() {
 /// sibling file — the two headline multi-file wins, over the real binary.
 #[test]
 fn project_aware_hover_and_cross_file_definition() {
-    // A scratch project: game.functor (entry) calls Utils.double from utils.functor.
+    // A scratch project: game.fun (entry) calls Utils.double from utils.fun.
     let dir = std::env::temp_dir().join(format!("functor-lang-lsp-e2e-project-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     std::fs::write(
         dir.join("functor.json"),
-        r#"{"language": "functor-lang","entry":"game.functor"}"#,
+        r#"{"language": "functor-lang","entry":"game.fun"}"#,
     )
     .unwrap();
     let game = "let apply = (n) => Utils.double(n)\n";
-    std::fs::write(dir.join("game.functor"), game).unwrap();
+    std::fs::write(dir.join("game.fun"), game).unwrap();
     std::fs::write(
-        dir.join("utils.functor"),
+        dir.join("utils.fun"),
         "let double = (x: float): float => x * 2.0\n",
     )
     .unwrap();
-    let game_uri = format!("file://{}/game.functor", dir.display());
-    let utils_uri = format!("file://{}/utils.functor", dir.display());
+    let game_uri = format!("file://{}/game.fun", dir.display());
+    let utils_uri = format!("file://{}/utils.fun", dir.display());
 
     let mut server = Server::spawn();
     server.send(json!({
@@ -315,7 +315,7 @@ fn project_aware_hover_and_cross_file_definition() {
         "cross-file hover: {response}"
     );
 
-    // Go-to-definition on the same reference → a Location in utils.functor, NOT
+    // Go-to-definition on the same reference → a Location in utils.fun, NOT
     // the entry: cross-file navigation.
     server.send(json!({
         "jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
@@ -328,7 +328,7 @@ fn project_aware_hover_and_cross_file_definition() {
     assert_eq!(response["result"]["uri"], utils_uri, "cross-file goto: {response}");
     assert_eq!(
         response["result"]["range"]["start"]["line"], 0,
-        "double is on line 0 of utils.functor: {response}"
+        "double is on line 0 of utils.fun: {response}"
     );
 
     server.send(json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
@@ -355,12 +355,12 @@ fn vscode_extension_assets_are_well_formed() {
         serde_json::from_str::<Value>(&text).unwrap_or_else(|e| panic!("parse {path}: {e}"));
     }
 
-    let sample = std::fs::read_to_string(format!("{extension_dir}/test/sample.functor")).unwrap();
-    let program = functor_lang::parse(&sample).expect("sample.functor parses");
-    functor_lang::lower(program).expect("sample.functor lowers");
+    let sample = std::fs::read_to_string(format!("{extension_dir}/test/sample.fun")).unwrap();
+    let program = functor_lang::parse(&sample).expect("sample.fun parses");
+    functor_lang::lower(program).expect("sample.fun lowers");
 }
 
-/// The engine prelude is injected as a check-time overlay (functori 2e-iii), so a
+/// The engine prelude is injected as a check-time overlay (funi 2e-iii), so a
 /// host call hovers with its real type — `Scene.cube : () => Scene.t` — not
 /// `Unknown`. Single-file (no functor.json) still gets the prelude.
 #[test]

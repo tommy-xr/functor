@@ -1,6 +1,7 @@
 # Functor Lang for VSCode
 
-Language support for `.functor` files (docs/functor-lang.md Track D):
+Language support for `.fun` source files and `.funi` interface files
+(docs/functor-lang.md Track D):
 
 - **Syntax highlighting** — TextMate grammar (`syntaxes/functor-lang.tmLanguage.json`).
 - **Diagnostics** — parse/lower errors as you type, via the `functor-lang-lsp` language
@@ -40,8 +41,8 @@ code --install-extension functor-lang-vscode-0.1.0.vsix
 
 Open `tools/functor-lang-vscode/` as the workspace folder in VSCode, run `npm install`
 once, then press **F5** ("Run Extension") to launch an Extension Development
-Host with the extension loaded. Open any `.functor` file — e.g.
-`test/sample.functor` or `functor-lang/examples/*.functor`.
+Host with the extension loaded. Open any `.fun` or `.funi` file — e.g.
+`test/sample.fun`, `functor-lang/examples/*.fun`, or `functor-prelude/prelude/*.funi`.
 
 ## Grammar: regenerate and test
 
@@ -50,8 +51,8 @@ directly (there is no generation step). Two levels of verification:
 
 - **Automated sanity:** `cargo test -p functor-lang-lsp` checks the grammar,
   `language-configuration.json`, and `package.json` are valid JSON, and that
-  `test/sample.functor` (which exercises every construct) still parses and lowers
+  `test/sample.fun` (which exercises every construct) still parses and lowers
   with the current `functor_lang` crate.
-- **Visual verification happens in the editor:** open `test/sample.functor` in the
+- **Visual verification happens in the editor:** open `test/sample.fun` in the
   dev host and eyeball the scopes with
   `Developer: Inspect Editor Tokens and Scopes`.

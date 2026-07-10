@@ -1,4 +1,4 @@
-// frame.functori — the `Frame` host module (interface only; implemented in Rust by
+// frame.funi — the `Frame` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 
 // The opaque frame handle (`Frame.t` from game code) — what `draw` returns.

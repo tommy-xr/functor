@@ -224,7 +224,7 @@ async fn run(args: &Args) -> io::Result<()> {
         commands::init::execute(&working_directory, template)?;
         emit(Event::Info {
             message: format!(
-                "initialized {} Functor Lang project in {} (functor.json, game.functor)",
+                "initialized {} Functor Lang project in {} (functor.json, game.fun)",
                 template.as_str(),
                 working_directory.display()
             ),
@@ -364,7 +364,7 @@ e.g. `functor -d examples/primitives build`"
     } else if message.contains("not a Functor Lang project") {
         Some("add `\"language\": \"functor-lang\"` to the project's functor.json".to_string())
     } else if message.contains("functor-lang entry not found") {
-        Some("check the `entry` field in functor.json (defaults to game.functor)".to_string())
+        Some("check the `entry` field in functor.json (defaults to game.fun)".to_string())
     } else {
         None
     }
@@ -418,7 +418,7 @@ mod tests {
 
         assert!(result.is_ok(), "init failed: {result:?}");
         assert!(directory.join("functor.json").is_file());
-        assert!(fs::read_to_string(directory.join("game.functor"))
+        assert!(fs::read_to_string(directory.join("game.fun"))
             .unwrap()
             .contains("A small Functor scene"));
         let _ = fs::remove_dir_all(directory);

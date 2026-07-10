@@ -59,7 +59,7 @@ pub fn parse(src: &str) -> Result<Program, ParseError> {
     parse_with_base(src, 0)
 }
 
-/// Parse an INTERFACE file (`.functori`): top-level `let name : Type` is a bodyless
+/// Parse an INTERFACE file (`.funi`): top-level `let name : Type` is a bodyless
 /// signature (not a definition), and a `let … = …` with a body is an error.
 /// `type` declarations (including abstract) and `open` are unchanged.
 pub fn parse_interface(src: &str) -> Result<Program, ParseError> {
@@ -73,7 +73,7 @@ pub(crate) fn parse_with_base(src: &str, base: usize) -> Result<Program, ParseEr
     parse_impl(src, base, false)
 }
 
-/// [`parse_interface`] with a span base (the `.functori` sibling of
+/// [`parse_interface`] with a span base (the `.funi` sibling of
 /// [`parse_with_base`]).
 pub(crate) fn parse_interface_with_base(src: &str, base: usize) -> Result<Program, ParseError> {
     parse_impl(src, base, true)
@@ -100,7 +100,7 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     depth: usize,
-    /// Parsing a `.functori` interface file: `let` is a bodyless signature.
+    /// Parsing a `.funi` interface file: `let` is a bodyless signature.
     interface: bool,
 }
 
@@ -203,7 +203,7 @@ impl Parser {
     }
 
     /// A top-level `let` item — a definition (`let name [: T] = value`) in a
-    /// `.functor`, or a bodyless signature (`let name : T`) in a `.functori`.
+    /// `.fun`, or a bodyless signature (`let name : T`) in a `.funi`.
     fn let_item(&mut self) -> Result<Item, ParseError> {
         let kw = self.bump();
         if self.peek_kind() == &TokenKind::Mut {
@@ -217,7 +217,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         let (name, name_span) = self.expect_ident("a name after `let`")?;
         let ty = self.opt_binding_annotation()?;
         if self.interface {
-            // `.functori`: a bodyless signature `let name : Type`.
+            // `.funi`: a bodyless signature `let name : Type`.
             let ty = ty.ok_or_else(|| ParseError {
                 message: "a signature needs a type: `let name : Type`".to_string(),
                 span: name_span,
@@ -227,7 +227,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 // than routing through `error()`'s "expected …, found …" shape.
                 return Err(ParseError {
                     message:
-                        "interface files (.functori) declare signatures, not definitions — drop the `= …`"
+                        "interface files (.funi) declare signatures, not definitions — drop the `= …`"
                             .to_string(),
                     span: self.peek().span,
                 });

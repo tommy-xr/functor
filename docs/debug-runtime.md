@@ -10,7 +10,7 @@ localhost socket.
 Start it by passing `--debug-port <PORT>`:
 
 ```sh
-# the CLI runs the game in-process and interprets the .functor
+# the CLI runs the game in-process and interprets the .fun
 ./target/debug/functor -d examples/hello run native --debug-port 8077
 ```
 
@@ -90,7 +90,7 @@ injected `/input` still applies — so an external driver has deterministic cont
 
 ### `POST /reload-source` — network hot-reload (Functor Lang)
 
-The body is the raw `.functor` source. The runner validates it and swaps the session with
+The body is the raw `.fun` source. The runner validates it and swaps the session with
 **the model preserved** — the same semantics as the file-watch reload. A broken push
 returns **400** with the rendered load error and keeps the old program running; producers
 whose logic isn't source-shaped (e.g. the `--replay` producer) also return 400. This is the
@@ -102,7 +102,7 @@ functor -d mygame push <host>:<port>          # push once
 functor -d mygame push <host>:<port> --watch  # re-push on every save
 ```
 
-(`curl --data-binary @game.functor http://<host>:<port>/reload-source` works too.)
+(`curl --data-binary @game.fun http://<host>:<port>/reload-source` works too.)
 
 ## Two workflows
 

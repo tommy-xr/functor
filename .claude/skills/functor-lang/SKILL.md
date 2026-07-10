@@ -1,6 +1,6 @@
 ---
 name: functor-lang
-description: Write, run, and debug Functor Lang (.functor) — Functor's F#-inspired game-logic language. Use whenever creating or editing .functor files, answering Functor Lang syntax/semantics questions, or debugging Functor Lang parse/run/check errors. Functor Lang is a custom language — do NOT guess from F#/OCaml intuition; this skill is the source of truth for the current subset.
+description: Write, run, and debug Functor Lang (.fun) — Functor's F#-inspired game-logic language. Use whenever creating or editing .fun files, answering Functor Lang syntax/semantics questions, or debugging Functor Lang parse/run/check errors. Functor Lang is a custom language — do NOT guess from F#/OCaml intuition; this skill is the source of truth for the current subset.
 ---
 
 # Functor Lang — the current language, exactly
@@ -13,15 +13,15 @@ it doesn't parse — do not invent syntax from F#/OCaml habits.
 ## Verification loop (always available, no GPU)
 
 ```sh
-cargo run -q -p functor-lang -- parse file.functor    # surface AST (spans on every node; this file only)
-cargo run -q -p functor-lang -- ir file.functor      # name-resolved core IR (merged project)
-cargo run -q -p functor-lang -- run file.functor     # evaluate: main()'s result, or the entry's bindings
-cargo run -q -p functor-lang -- trace file.functor   # enter/exit call story with values (kept on failure)
-cargo run -q -p functor-lang -- check file.functor   # typechecker: ALL diagnostics, exit 1
+cargo run -q -p functor-lang -- parse file.fun    # surface AST (spans on every node; this file only)
+cargo run -q -p functor-lang -- ir file.fun      # name-resolved core IR (merged project)
+cargo run -q -p functor-lang -- run file.fun     # evaluate: main()'s result, or the entry's bindings
+cargo run -q -p functor-lang -- trace file.fun   # enter/exit call story with values (kept on failure)
+cargo run -q -p functor-lang -- check file.fun   # typechecker: ALL diagnostics, exit 1
 ```
 
 `ir`/`check`/`run`/`trace` treat the file as a PROJECT ENTRY: every sibling
-`.functor` in its directory loads with it (file = module — see Modules below),
+`.fun` in its directory loads with it (file = module — see Modules below),
 so scratch files must live in their own directory, not a shared one.
 
 Errors are always `file:line:col: error: message`. Tests live in `functor-lang/tests/`
@@ -118,17 +118,17 @@ multiple returns.
 
 ## Modules (multi-file projects)
 
-**File = module.** Every `.functor` file in the entry file's directory IS a
+**File = module.** Every `.fun` file in the entry file's directory IS a
 module, named by its filename stem with the first letter capitalized
-(`utils.functor` → `Utils`); the entry file (functor.json `entry`, default
-`game.functor`; the file you hand the CLI) is the program root. Loading is
-EAGER and whole-program: ALL sibling `.functor` files load, check, and
+(`utils.fun` → `Utils`); the entry file (functor.json `entry`, default
+`game.fun`; the file you hand the CLI) is the program root. Loading is
+EAGER and whole-program: ALL sibling `.fun` files load, check, and
 evaluate together — an unreferenced (or broken, or stray scratch) sibling
-still counts. File stems must be identifiers (`pure_pipeline.functor`, not
-`pure-pipeline.functor` — that's a load error).
+still counts. File stems must be identifiers (`pure_pipeline.fun`, not
+`pure-pipeline.fun` — that's a load error).
 
 ```functor
-// utils.functor                                  // → module Utils
+// utils.fun                                  // → module Utils
 type Shape = | Circle(radius: float) | Point
 let tau = 6.28
 let area = (s: Shape): float =>
@@ -138,7 +138,7 @@ let area = (s: Shape): float =>
 ```
 
 ```functor
-// game.functor (the entry)
+// game.fun (the entry)
 open Utils                                    // bring Utils in unqualified
 
 let a = area(Circle(2.0)) + tau               // via the open…
@@ -178,30 +178,30 @@ let grab = (s) =>
   (`Utils.Circle(2)` in run/trace/`/state` output). The entry's own names
   stay bare — a single-file project behaves exactly as before.
 - **Hot reload watches every project file**: editing, adding, or removing
-  ANY `.functor` in the directory reloads with the model preserved (stored
+  ANY `.fun` in the directory reloads with the model preserved (stored
   closures rebind per module — a def moved between files is a rename and
   keeps its old body with a warning).
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).
 
-### Interface files (`.functori`)
+### Interface files (`.funi`)
 
-A sibling `.functori` is an INTERFACE module: it declares **types** and **bodyless
+A sibling `.funi` is an INTERFACE module: it declares **types** and **bodyless
 value signatures** for values the **host runtime** implements. (A module is
-either a `.functor` or a `.functori`, never both — same-stem files are a load error —
-so there is no paired-`.functor` implementation.) Bodies are forbidden in a
-`.functori`; a bodyless `let` is forbidden in a `.functor`.
+either a `.fun` or a `.funi`, never both — same-stem files are a load error —
+so there is no paired-`.fun` implementation.) Bodies are forbidden in a
+`.funi`; a bodyless `let` is forbidden in a `.fun`.
 
 ```functor
-// widget.functori                              → interface module Widget
+// widget.funi                              → interface module Widget
 type Handle                                 // abstract type (opaque; host-made)
 let make : () => Handle                     // bodyless SIGNATURE (the chosen form —
 let size : (Handle) => float                //   `let name : Type`, no `= body`)
 ```
 
 ```functor
-// game.functor
-let area = (h: Widget.Handle): float => Widget.size(h)   // qualified; typed by widget.functori
+// game.fun
+let area = (h: Widget.Handle): float => Widget.size(h)   // qualified; typed by widget.funi
 open Widget                                              // …or open, bringing make/size/Handle bare
 ```
 
@@ -209,9 +209,9 @@ open Widget                                              // …or open, bringing
   (`Widget.make()` is `Widget.Handle`, not `Unknown`), and mismatches are
   caught. They surface in hover / inlay / codelens like any type.
 - **Runtime is unchanged**: an interface member stays an `External` (the host
-  provides its value at run time), so `.functori` is a pure check-time overlay.
+  provides its value at run time), so `.funi` is a pure check-time overlay.
 - This is how the **engine prelude's types are declared**: the `functor-prelude`
-  crate ships a `.functori` for every host namespace (`Scene`, `Camera`, `Frame`,
+  crate ships a `.funi` for every host namespace (`Scene`, `Camera`, `Frame`,
   `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`, `Sub`,
   `Effect`, `Physics`, `Ui`, `AudioSource`, `AudioScene`), loaded by the runner
   so engine calls carry real types (no longer `Unknown`). Each module's primary
@@ -470,7 +470,7 @@ replaying identical inputs from a rewind reproduces the run byte-for-byte.
 
 
 A runner-hosted game (`functor -d <project-dir> run native`, with
-`functor.json` selecting `game.functor`) defines:
+`functor.json` selecting `game.fun`) defines:
 
 ```functor
 let init = { … }                       // the initial model (a value)
@@ -522,21 +522,21 @@ debug server's `/time` advance. To *see* colliders, run with
 `--debug-render physics`: normal shading plus the live world's wireframes
 (collider outlines, contacts, body frames).
 
-A project dir with `functor.json` `{"language": "functor-lang", "entry": "game.functor"}`
+A project dir with `functor.json` `{"language": "functor-lang", "entry": "game.fun"}`
 works with the CLI: `functor -d dir build` (typecheck, diagnostics are
 errors), `run native`, `develop` (hot reload is built in), and `run wasm`
-(the `.functor` ships as text and is interpreted in the browser; file-watch hot
+(the `.fun` ships as text and is interpreted in the browser; file-watch hot
 reload is native-only — reload the page to pick up saved edits, or push
 source with a `{ type: "functor-lang-set-source", source }` postMessage to the page
 for a model-preserving in-place reload; the VSCode **"Functor Lang: Open Live
 Preview"** command does exactly that from the live buffer as you type).
 
-`examples/hello/game.functor` is the reference
-(`examples/physics/game.functor` for the physics hook, including the
+`examples/hello/game.fun` is the reference
+(`examples/physics/game.fun` for the physics hook, including the
 rising-edge input latch — GLFW key repeats arrive as `isDown = true`).
 The model shows live at the
 debug server's `GET /state`. **Hot reload is on by default**: saving the
-`.functor` file reloads it in ~1 frame with the model preserved (a broken edit
+`.fun` file reloads it in ~1 frame with the model preserved (a broken edit
 keeps the old program running; an edited `init` takes effect on restart).
 Closures **stored in the model** rebind too: they adopt the edited code
 with their captured values carried over (matched by the enclosing def's

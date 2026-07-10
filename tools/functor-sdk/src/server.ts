@@ -84,7 +84,7 @@ export function formatCrashOutput(logLines: string[]): string {
  * ```ts
  * await using game = await FunctorRunner.launch({
  *   gameDir: "examples/hello",
- *   functorLangPath: "examples/hello/game.functor",
+ *   functorLangPath: "examples/hello/game.fun",
  * });
  * ```
  */
@@ -136,8 +136,8 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     if (options.headless && options.visible) {
       throw new Error("headless and visible are mutually exclusive");
     }
-    // The game is an `.functor` source; `functor run native` reads the entry from
-    // the project's functor.json (which the sample games set to game.functor).
+    // The game is an `.fun` source; `functor run native` reads the entry from
+    // the project's functor.json (which the sample games set to game.fun).
     const gamePath = isAbsolute(options.functorLangPath)
       ? options.functorLangPath
       : resolve(options.functorLangPath);
@@ -158,17 +158,17 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     // the Functor Lang language) from a `functor.json` in the game dir, NOT from an
     // explicit game-path — so the launched source is the functor.json entry.
     // Real games ship one; synthetic/temp game dirs (tests that just write a
-    // bare `.functor`) may not — write a minimal config pointing at the entry so the
+    // bare `.fun`) may not — write a minimal config pointing at the entry so the
     // single `functor` binary can run them, matching what `functor-runner --functor-lang`
     // did directly pre-consolidation.
     const functorJson = join(gameDir, "functor.json");
-    const wantEntry = relative(gameDir, gamePath) || "game.functor";
+    const wantEntry = relative(gameDir, gamePath) || "game.fun";
     if (existsSync(functorJson)) {
       // Don't clobber a real project's config — but since the CLI launches its
       // entry (not `functorLangPath`), verify they agree, or the SDK would silently run
       // a DIFFERENT game than the caller asked for.
       const cfg = JSON.parse(readFileSync(functorJson, "utf8"));
-      const cfgEntry: string = cfg.entry ?? "game.functor";
+      const cfgEntry: string = cfg.entry ?? "game.fun";
       if (resolve(gameDir, cfgEntry) !== gamePath) {
         throw new Error(
           `functor.json in ${gameDir} points at entry "${cfgEntry}", but launch ` +

@@ -1,7 +1,7 @@
 {
   "name": "functor-lang-vscode",
   "displayName": "Functor Lang",
-  "description": "Language support for Functor Lang (.functor): syntax highlighting and diagnostics via the functor-lang-lsp language server, plus a live game preview panel with model-preserving hot reload.",
+  "description": "Language support for Functor Lang (.fun and .funi): syntax highlighting and diagnostics via the functor-lang-lsp language server, plus a live game preview panel with model-preserving hot reload.",
   "version": "0.1.0",
   "publisher": "functor",
   "license": "MIT",
@@ -40,7 +40,8 @@
           "functor-lang"
         ],
         "extensions": [
-          ".functor"
+          ".fun",
+          ".funi"
         ],
         "configuration": "./language-configuration.json"
       }

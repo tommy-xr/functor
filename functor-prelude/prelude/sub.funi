@@ -1,4 +1,4 @@
-// sub.functori — the `Sub` host module (interface only; implemented in Rust by
+// sub.funi — the `Sub` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 //
 // Subscriptions: what the optional `subscriptions = (model) => …` hook returns.

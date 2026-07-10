@@ -2,7 +2,7 @@
 // element and matches it to compute an area. Measures constructor allocation
 // and variant-pattern dispatch together.
 //
-// Convention: `main` is the timed unit of work. Also: `functor-lang run adt.functor`.
+// Convention: `main` is the timed unit of work. Also: `functor-lang run adt.fun`.
 type Shape =
   | Circle(radius: float)
   | Rect(w: float, h: float)

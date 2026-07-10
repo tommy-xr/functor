@@ -1,7 +1,7 @@
 # Functor Lang interpreter benchmarks
 
 A dependency-light, headless harness for timing the **Functor Lang interpreter** on a
-corpus of `.functor` micro-benchmarks. It exists to validate interpreter
+corpus of `.fun` micro-benchmarks. It exists to validate interpreter
 performance across current and future language features — e.g. to confirm the
 pending currying spike doesn't regress the call hot path.
 
@@ -15,8 +15,8 @@ pending currying spike doesn't regress the call hot path.
 ```sh
 npm run bench                                   # the whole corpus, human table
 cargo run -q --release -p functor-lang -- bench --all    # same thing, directly
-cargo run -q --release -p functor-lang -- bench functor-lang/benches/corpus/call_saturated.functor   # one file
-cargo run -q --release -p functor-lang -- bench <dir>    # every *.functor in a directory
+cargo run -q --release -p functor-lang -- bench functor-lang/benches/corpus/call_saturated.fun   # one file
+cargo run -q --release -p functor-lang -- bench <dir>    # every *.fun in a directory
 cargo run -q --release -p functor-lang -- bench --all --json    # machine-readable output
 ```
 
@@ -48,7 +48,7 @@ large on your machine, close background load and re-run.
 
 ## The benchmark-file convention
 
-A benchmark is an ordinary `.functor` project whose entry defines a **zero-arg
+A benchmark is an ordinary `.fun` project whose entry defines a **zero-arg
 `let main`** that performs the unit of work to be timed:
 
 ```functor
@@ -63,12 +63,12 @@ Rules:
   calls), not in a top-level `let` initializer — initializers run once at load
   (untimed), so work there is invisible to the harness.
 - Every benchmark file is therefore also a normal program:
-  `functor-lang run corpus/<file>.functor` prints `main()`'s result. Handy for verifying a
+  `functor-lang run corpus/<file>.fun` prints `main()`'s result. Handy for verifying a
   benchmark is correct before trusting its timing.
 - The harness uses the plain-`functor_lang` prelude (no engine host), so benchmarks may
   use only core builtins (`List.*`, `Text.*`, `Math.*`, user code) — **not**
   `Scene.*`/`Camera.*`/etc., which resolve only under the runtime host.
-- Because a directory is one Functor Lang project (`file = module`), every `.functor` in
+- Because a directory is one Functor Lang project (`file = module`), every `.fun` in
   `corpus/` loads together. Keep each self-contained; sibling `main`/helper
   names don't collide (they are per-module).
 
@@ -95,14 +95,14 @@ call benches to isolate per-call cost from range-building + fold overhead.
 
 ## Adding a benchmark
 
-1. Drop a `corpus/<name>.functor` with a `// BENCH:` header naming what it measures
+1. Drop a `corpus/<name>.fun` with a `// BENCH:` header naming what it measures
    and a zero-arg `let main`.
 2. Size the work so one `main()` call is at least a few hundred microseconds
    (fold/map over a range) — sub-microsecond benches are mostly noise.
-3. Verify it: `cargo run -q --release -p functor-lang -- run functor-lang/benches/corpus/<name>.functor`.
+3. Verify it: `cargo run -q --release -p functor-lang -- run functor-lang/benches/corpus/<name>.fun`.
 4. It joins the table automatically (`--all` globs the directory).
 
-Note: `call_partial.functor` (partial application / currying overhead) is **not**
+Note: `call_partial.fun` (partial application / currying overhead) is **not**
 included — it requires currying, which is not in `main`. It joins the corpus
 when the currying spike lands.
 
@@ -110,15 +110,15 @@ when the currying spike lands.
 
 | file | measures |
 | --- | --- |
-| `call_saturated.functor` | saturated multi-arg closure calls (~2M/eval) — the call hot path |
-| `call_piped.functor` | piped calls that lower to a saturated call (the pipe hot path) |
-| `fold_floor.functor` | the baseline: `List.range(1M)` + a 1M no-op fold (subtract to isolate call cost) |
-| `list_map.functor` | `List.map` + `List.filter` pipeline over 100k, with intermediate allocations |
-| `arith_loop.functor` | arithmetic-heavy fold (mul/add/div + `Math.sin`) over 500k |
-| `recursion.functor` | self-recursion at volume (~1.5M shallow recursive calls) |
-| `pattern_match.functor` | nested bool-literal `match` dispatch over 200k |
-| `adt.functor` | ADT construct + variant-pattern match over 100k |
-| `record_update.functor` | `{ r with … }` record update threaded through a 100k fold |
+| `call_saturated.fun` | saturated multi-arg closure calls (~2M/eval) — the call hot path |
+| `call_piped.fun` | piped calls that lower to a saturated call (the pipe hot path) |
+| `fold_floor.fun` | the baseline: `List.range(1M)` + a 1M no-op fold (subtract to isolate call cost) |
+| `list_map.fun` | `List.map` + `List.filter` pipeline over 100k, with intermediate allocations |
+| `arith_loop.fun` | arithmetic-heavy fold (mul/add/div + `Math.sin`) over 500k |
+| `recursion.fun` | self-recursion at volume (~1.5M shallow recursive calls) |
+| `pattern_match.fun` | nested bool-literal `match` dispatch over 200k |
+| `adt.fun` | ADT construct + variant-pattern match over 100k |
+| `record_update.fun` | `{ r with … }` record update threaded through a 100k fold |
 
 ## Baseline (for orientation only — your numbers will differ)
 

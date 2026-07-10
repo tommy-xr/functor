@@ -70,7 +70,7 @@ export interface LaunchOptions {
   port?: number;
   /** Path to the `functor` CLI binary (default `<repoRoot>/target/debug/functor`). */
   runnerBin?: string;
-  /** Path to the `.functor` game source: launches the runner with `--functor-lang` (the Functor Lang
+  /** Path to the `.fun` game source: launches the runner with `--functor-lang` (the Functor Lang
    * interpreter — docs/functor-lang.md Track C2/C3). `gameDir` stays the runner's cwd. */
   functorLangPath: string;
   /** Cargo workspace root (default: walk up from `gameDir`). */

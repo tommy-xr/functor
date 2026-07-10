@@ -30,14 +30,14 @@ function spinOf(model: string): number {
 }
 
 test(
-  "editing a running .functor game preserves the model and rebinds behavior",
+  "editing a running .fun game preserves the model and rebinds behavior",
   { skip: !e2eEnabled, timeout: 120_000 },
   async () => {
     const repoRoot = findRepoRoot(process.cwd());
     assert.ok(repoRoot, "must run from within the functor workspace");
 
     const dir = mkdtempSync(join(tmpdir(), "functor-lang-reload-"));
-    const functorLangPath = join(dir, "game.functor");
+    const functorLangPath = join(dir, "game.fun");
     writeFileSync(functorLangPath, game("1.0"));
 
     await using runner = await FunctorRunner.launch({

@@ -6,8 +6,8 @@
 //! samples. Their authorities match (127.0.0.1:9001) so the harness routes the
 //! client to the server.
 //!
-//! The instances are `.functor` games (E3 phase 0b): no dylib build is needed, only
-//! the committed `examples/*/game.functor` sources. Still `#[ignore]`d by
+//! The instances are `.fun` games (E3 phase 0b): no dylib build is needed, only
+//! the committed `examples/*/game.fun` sources. Still `#[ignore]`d by
 //! default (they pull in the full desktop runtime as a dev-dependency); run
 //! with:
 //!
@@ -26,7 +26,7 @@ static NET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn functor_lang_path(sample: &str) -> String {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join(format!("examples/{sample}/game.functor"))
+        .join(format!("examples/{sample}/game.fun"))
         .to_str()
         .unwrap()
         .to_string()

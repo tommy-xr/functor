@@ -1,4 +1,4 @@
-// time.functori — the `Time` host module (interface only; implemented in Rust by
+// time.funi — the `Time` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 //
 // A branded duration (seconds): timing functions (`Sub.every`) accept ONLY

@@ -2,7 +2,7 @@
 // accumulator, updating two fields each step. Measures record clone + field
 // update per iteration.
 //
-// Convention: `main` is the timed unit of work. Also: `functor-lang run record_update.functor`.
+// Convention: `main` is the timed unit of work. Also: `functor-lang run record_update.fun`.
 type Acc = { sum: float, count: float }
 let step = (r: Acc, x: float): Acc => { r with sum: r.sum + x, count: r.count + 1.0 }
 let main = () =>

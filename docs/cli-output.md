@@ -159,7 +159,7 @@ Example (`functor -d examples/primitives build --json`):
 
 ```json
 {"type":"command_started","command":"build","project":"examples/primitives"}
-{"type":"functor_lang_loaded","entry":"game.functor","sibling_count":0}
+{"type":"functor_lang_loaded","entry":"game.fun","sibling_count":0}
 {"type":"command_finished","ok":true,"duration_ms":6}
 ```
 
@@ -167,8 +167,8 @@ A build with a type error:
 
 ```json
 {"type":"command_started","command":"build","project":"scratch/broken"}
-{"type":"diagnostic","severity":"error","file":"scratch/broken/game.functor","line":4,"col":11,"message":"`+` needs Float operands, got String","source_line":"  model + \"not a number\""}
-{"type":"error","message":"1 type error(s) in the scratch/broken/game.functor project"}
+{"type":"diagnostic","severity":"error","file":"scratch/broken/game.fun","line":4,"col":11,"message":"`+` needs Float operands, got String","source_line":"  model + \"not a number\""}
+{"type":"error","message":"1 type error(s) in the scratch/broken/game.fun project"}
 {"type":"command_finished","ok":false,"duration_ms":4}
 ```
 
@@ -185,7 +185,7 @@ The **human** renderer turns those fields into a rustc-style block — the locat
 source line in a numbered gutter, then a caret under `col`:
 
 ```
-error: game.functor:4:11: `+` needs Float operands, got String
+error: game.fun:4:11: `+` needs Float operands, got String
   |
 4 |   model + "not a number"
   |           ^

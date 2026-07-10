@@ -1,5 +1,5 @@
-// pieces.functor — the scene-piece builders for hello-cubes, split into a sibling
-// module (`file = module`, so this file IS module `Pieces`). `game.functor`
+// pieces.fun — the scene-piece builders for hello-cubes, split into a sibling
+// module (`file = module`, so this file IS module `Pieces`). `game.fun`
 // references these across the file boundary as `Pieces.count`,
 // `Pieces.ringCube`, `Pieces.centerpiece` — a small multi-file Functor Lang example.
 

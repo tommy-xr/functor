@@ -141,7 +141,7 @@ Roadmap phases from `~/notes/ideas/functor-lang/roadmap.md`, scoped to what
 Functor needs (notebook features deferred). Every step is `cargo test` +
 snapshots — no GPU, fully agent-verifiable.
 
-- [x] **B1. Examples + parser → AST.** (the `functor-lang/` crate) `.functor` subset: `let`,
+- [x] **B1. Examples + parser → AST.** (the `functor-lang/` crate) `.fun` subset: `let`,
       functions, records, field access, literals, pipelines, type annotations;
       source spans. *Verify:* AST snapshots per example (`UPDATE_GOLDENS=1` to
       regenerate); `functor-lang parse`; errors point at spans. (done)
@@ -171,7 +171,7 @@ snapshots — no GPU, fully agent-verifiable.
       field access against declared record types, call arity + argument
       types (builtins carry real signatures with generic slots as Unknown),
       return-annotation mismatches, and type-argument arity. `functor-lang run` stays
-      check-free (integration comes later). *Verify:* `examples/broken.functor`
+      check-free (integration comes later). *Verify:* `examples/broken.fun`
       + committed `broken.check` diagnostic golden (all diagnostics, sorted,
       `file:line:col`); per-diagnostic message/span unit tests; the three
       examples check clean. (done)
@@ -187,7 +187,7 @@ snapshots — no GPU, fully agent-verifiable.
       equality; gradual checking with exhaustiveness (missing ctors named),
       foreign-ctor/literal-compatibility diagnostics, typed pattern
       variables, and arm-result joins; hover for ctor signatures and pattern
-      vars; `examples/shapes.functor` + goldens.
+      vars; `examples/shapes.fun` + goldens.
       **Part 2 — storable closures — done (2026-07-03):** closures stored
       in the model rebind across a hot reload (`functor_lang::rebind`; design:
       `closures.md` — rebind not content-address, ids by stable name,
@@ -217,7 +217,7 @@ snapshots — no GPU, fully agent-verifiable.
       records stay the LLM-native default for anything that outlives an
       expression). Skill updated in the same PR. *Verify:* semantics +
       error + checker tests, goldens, an example using a
-      multiple-return function. *Verify (done):* `functor-lang/examples/tuples.functor`
+      multiple-return function. *Verify (done):* `functor-lang/examples/tuples.fun`
       + full goldens; parser/run/check/rebind pin tests (arity-mismatch =
       non-match, structural equality, `(e)` stays grouping, 1-tuple and
       mut-destructure teaching errors, element types flow through
@@ -294,7 +294,7 @@ snapshots — no GPU, fully agent-verifiable.
       `["s", ..floats]` errors); proper exhaustiveness — `[] | [h, ..t]`
       IS exhaustive, `[a, b]` alone needs a catch-all. Full stack: lexer
       (`..`), parser, lower, eval, HM types, hover/goto/rebind. Verify:
-      `functor-lang/examples/lists.functor` + goldens; run/parser/check pin tests.
+      `functor-lang/examples/lists.fun` + goldens; run/parser/check pin tests.
 - [x] **Language: currying migration — call-site currying + thread-LAST piping**
       (2026-07-07). Two steps landed. **Step 1** (#264): application curries at
       the *call site* — `f(a, b)` is sugar for `((f a) b)`, so `f(a)` on a 2-arg
@@ -351,11 +351,11 @@ snapshots — no GPU, fully agent-verifiable.
       vars inside `Box<'a>` never substituted. *Verify:* Box/Pair at two
       types in one module; instantiation constrains; pattern-field types
       flow; erased-runtime pin; goldens.
-- [ ] **B8. Multi-file modules + `.functori` interface files** (added
+- [ ] **B8. Multi-file modules + `.funi` interface files** (added
       2026-07-02; design in `~/notes` `syntax.md` — the OCaml `.mli` split).
       **Part 1 — multi-file modules — done (2026-07-04):** file = module —
-      every `.functor` in the entry file's directory IS a module named by its
-      capitalized filename stem (`utils.functor` → `Utils`; stems must be
+      every `.fun` in the entry file's directory IS a module named by its
+      capitalized filename stem (`utils.fun` → `Utils`; stems must be
       identifiers); loading is EAGER (whole-program: unreferenced siblings
       still load, check, and evaluate). Qualified access needs NO import
       (`Utils.clamp(x)`, `Utils.Circle(…)` in expressions AND patterns,
@@ -375,7 +375,7 @@ snapshots — no GPU, fully agent-verifiable.
       rebind stored closures correctly, same-named defs in different
       modules stay distinct). `functor-lang ir/check/run/trace` load the project;
       `functor build` checks the whole program; the native producer watches
-      EVERY project file (edit/add/remove any `.functor` → hot reload, model
+      EVERY project file (edit/add/remove any `.fun` → hot reload, model
       preserved). *Verify (done):* `examples/project/` fixture + 27 project
       tests (collisions, cycle paths, protected names, per-file
       diagnostics, byte-identity pin, cross-file rebind); SDK e2e — editing
@@ -386,12 +386,12 @@ snapshots — no GPU, fully agent-verifiable.
       buffer's siblings), wasm/live-preview multi-file (the web producer
       and `reload-source` interpret ONE source text; native-first), and
       `functor push --watch` watching only the entry file.
-      **Part 2 — `.functori` interface files** (next): a module's public
+      **Part 2 — `.funi` interface files** (next): a module's public
       contract as a checked file: exported types (including **abstract**
       types that hide their representation), function signatures, and —
       now that B6 landed — effect requirements. `functor-lang check` verifies the
       implementation satisfies its interface; consumers typecheck against
-      the `.functori` alone. The LLM payoff is the point: an interface file is
+      the `.funi` alone. The LLM payoff is the point: an interface file is
       the concise, load-into-context summary of a module.
 
 ## Track C — Functor Lang as a second producer behind the seam
@@ -406,10 +406,10 @@ Starts once A2 + B3 exist.
       Transforms wrap in `Group` nodes, which makes them immune to the
       Material-drops-its-xform quirk AND apply outermost-last (the order the
       source reads) — both pinned by test.
-      *Verify (done):* unit tests assert the protocol data `.functor` snippets
+      *Verify (done):* unit tests assert the protocol data `.fun` snippets
       emit, incl. wire round-trip and the hello-cubes mapped-group shape;
       prelude + functor_lang crate build for wasm32 (ready for C5). (done)
-- [x] **C2. `FunctorLangGame` — the real producer.** `functor_lang_game.rs` runs `.functor` logic
+- [x] **C2. `FunctorLangGame` — the real producer.** `functor_lang_game.rs` runs `.fun` logic
       through `functor_lang::Session` + the C1 prelude behind the existing `--functor-lang`
       flag, **deleting the Milestone-0 spike**. Contract: `init` value,
       `tick(model, dt, tts)`, `draw(model, tts) -> Frame`; the model is a
@@ -445,7 +445,7 @@ Starts once A2 + B3 exist.
         `(model, key, isDown) => model`, keys as canonical names ("W",
         "Up") — validated at load when present, reload-aware. And
         `functor.json` grows `"language": "functor-lang"` (+ optional `entry`,
-        default `game.functor`): `functor build` = parse+lower+**check as
+        default `game.fun`): `functor build` = parse+lower+**check as
         errors** (the strict gate; the runner keeps them warnings),
         `run native` spawns the interpreter (proven byte-identical to a
         direct runner invocation), `develop` = `run` (hot reload is built
@@ -525,7 +525,7 @@ Starts once A2 + B3 exist.
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,
       physics hook (rapier is pure Rust — the world steps in the browser),
-      per-frame error dedupe + last-good-frame. Nothing compiles: the `.functor`
+      per-frame error dedupe + last-good-frame. Nothing compiles: the `.fun`
       source ships as TEXT — `functor run wasm` serves the project dir with
       a Functor Lang index page (`index-functor-lang.html`, entry substituted in by the dev
       server), the page sets `window.__functorLangGamePath`, and the runtime fetches
@@ -535,7 +535,7 @@ Starts once A2 + B3 exist.
       fetch, so edits are one refresh away).
       *Verify (done):* functor_lang + web runtime build clean for wasm32; CLI
       build/run wasm probes on `examples/hello-cubes` — the served index page,
-      wasm bundle, and `.functor` source all curl back correctly; entry
+      wasm bundle, and `.fun` source all curl back correctly; entry
       substitution unit-tested; headless-Chromium probe renders the game
       (ring + sphere) AND proves the Beat subscription folded through
       `update` (sphere center yellow → magenta across a 1s boundary, the
@@ -563,13 +563,13 @@ Starts once A2 + B3 exist.
 
 ## Track D — IDE tooling
 
-First-class `.functor` editor support, built on the `functor_lang` crate's front-end
+First-class `.fun` editor support, built on the `functor_lang` crate's front-end
 (`parse`/`lower`/`line_col`) — independent of the runtime tracks.
 
 - [x] **D1. TextMate grammar + VSCode extension.** `tools/functor-lang-vscode/`:
       grammar, language configuration (comments/brackets/auto-close), and a
       plain-JS LSP client launching `functor-lang-lsp` from PATH. *Verify:* grammar +
-      manifests JSON-checked and `test/sample.functor` (every construct) kept
+      manifests JSON-checked and `test/sample.fun` (every construct) kept
       parse/lower-clean by `cargo test -p functor-lang-lsp`; visual check in the editor.
 - [x] **D2. LSP diagnostics.** `tools/functor-lang-lsp/`: hand-rolled stdio LSP server
       (blocking loop + serde_json, no async framework) publishing parse/lower
@@ -638,7 +638,7 @@ Pull-based: port examples as Functor Lang proves itself; no flag-day.
       wall-clock ticks even under `--fixed-time`, so it differs between
       any two runs — F#-vs-F# included); every scene pixel is identical
       at tolerance 16, and the 0.44%-at-tol-0 is sub-visual f32/f64
-      heightmap-shading (documented in the game.functor header). Camera,
+      heightmap-shading (documented in the game.fun header). Camera,
       input math, model lineup, lit primitives, neon sphere, and lights
       were already byte-identical from E1a.
 - [x] **E2.** Port remaining examples, one PR each (done 2026-07-05 — every

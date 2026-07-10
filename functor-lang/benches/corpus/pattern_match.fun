@@ -2,7 +2,7 @@
 // with nested bool-literal matches (Functor Lang's only conditional). Measures match
 // evaluation and arm selection, with no deep recursion.
 //
-// Convention: `main` is the timed unit of work. Also: `functor-lang run pattern_match.functor`.
+// Convention: `main` is the timed unit of work. Also: `functor-lang run pattern_match.fun`.
 let classify = (x) =>
   match x > 150000.0 with
   | true => 3.0

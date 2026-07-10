@@ -178,7 +178,7 @@ pub struct Args {
     #[arg(short, long)]
     game_path: String,
 
-    /// Treat --game-path as an `.functor` source file and run it through the Functor Lang
+    /// Treat --game-path as an `.fun` source file and run it through the Functor Lang
     /// interpreter with the Functor prelude (docs/functor-lang.md Track C2). This is the
     /// only game producer; the flag is retained because the CLI/SDK pass it.
     /// Prints per-frame eval cost every 300 frames.
@@ -684,7 +684,7 @@ pub fn run(args: Args) {
         // E3). The CLI and SDK always pass --functor-lang; a bare invocation has no
         // producer to load.
         eprintln!(
-            "error: no game producer selected — pass --functor-lang --game-path <file.functor> \
+            "error: no game producer selected — pass --functor-lang --game-path <file.fun> \
 (the F#/dylib producer was removed in E3)"
         );
         std::process::exit(1);

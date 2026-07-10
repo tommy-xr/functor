@@ -18,12 +18,12 @@ pub enum Item {
     Type(TypeDecl),
     Open(OpenDecl),
     /// A bodyless value SIGNATURE (`let name : Type`), only in interface files
-    /// (`.functori`): the type of a value the host implements (a module is either a
-    /// `.functor` or a `.functori`, never both, so there is no paired implementation).
+    /// (`.funi`): the type of a value the host implements (a module is either a
+    /// `.fun` or a `.funi`, never both, so there is no paired implementation).
     Sig(SigDecl),
 }
 
-/// `let name : Type` in a `.functori` — a value signature with no body.
+/// `let name : Type` in a `.funi` — a value signature with no body.
 #[derive(Debug)]
 pub struct SigDecl {
     pub name: String,

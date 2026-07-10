@@ -1,7 +1,7 @@
 <html>
   <!-- The site's runtime host page: the sibling of the CLI dev server's
        index-functor-lang.html (runtime/functor-runtime-web/index-functor-lang.html), except the
-       .functor entry comes from the `?game=` query instead of being substituted
+       .fun entry comes from the `?game=` query instead of being substituted
        server-side — so one static page can host every example. The input
        mapping and the postMessage set-source seam are copied from that page;
        keep them in sync when the runtime's functor_lang_* exports change. -->
@@ -42,7 +42,7 @@
       const game =
         requested && !requested.startsWith("/") && !requested.includes(":")
           ? requested
-          : "examples/hero.functor";
+          : "examples/hero.fun";
       window.__functorLangGamePath = src
         ? "data:text/plain;base64," + src.replace(/-/g, "+").replace(/_/g, "/")
         : game.split("/").map(encodeURIComponent).join("/");
@@ -99,7 +99,7 @@
       };
 
       // The live-edit seam: the hosting page (the sandbox) posts the full
-      // .functor source and the runtime hot-swaps it, model preserved. Pushes are
+      // .fun source and the runtime hot-swaps it, model preserved. Pushes are
       // accepted only from the HOSTING frame; replies go only to the sender.
       const setupSetSource = () => {
         window.addEventListener("message", (event) => {

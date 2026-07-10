@@ -1,4 +1,4 @@
-// scene.functori — the `Scene` host module (interface only; implemented in Rust by
+// scene.funi — the `Scene` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 //
 // It is authored in FULL — every `Scene.*` the host provides — because an

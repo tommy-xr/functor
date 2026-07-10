@@ -1,4 +1,4 @@
-// hero.functor — the synthwave scene running live behind the functor.dev landing
+// hero.fun — the synthwave scene running live behind the functor.dev landing
 // page (and the sandbox's opening example). A neon dot-grid rolls toward a
 // glowing sun on the horizon. Animation is driven by the model's own clock
 // (not tts), so a live edit in the sandbox keeps the wave rolling exactly

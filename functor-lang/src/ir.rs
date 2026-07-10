@@ -68,15 +68,15 @@ impl fmt::Debug for ExprId {
 pub struct Module {
     pub types: Vec<TypeDef>,
     pub defs: Vec<Def>,
-    /// Bodyless value signatures from interface (`.functori`) modules: the
+    /// Bodyless value signatures from interface (`.funi`) modules: the
     /// declared type of a HOST-implemented value (`Scene.cube : () =>
     /// SceneNode`). They give the checker types for otherwise-`Unknown`
     /// externals; they have no body, so evaluation never sees them (the host
-    /// provides the value at runtime — there is no paired `.functor`).
+    /// provides the value at runtime — there is no paired `.fun`).
     pub signatures: Vec<Signature>,
 }
 
-/// One `.functori` value signature: a canonical name (`Scene.cube`) and its
+/// One `.funi` value signature: a canonical name (`Scene.cube`) and its
 /// declared type (carried symbolically, like a def annotation).
 #[derive(Debug)]
 pub struct Signature {

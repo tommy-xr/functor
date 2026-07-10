@@ -8,7 +8,7 @@
 // deep iteration belongs in List.fold. Here recursion is exercised at volume
 // (many shallow recursions) rather than one deep one.
 //
-// Convention: `main` is the timed unit of work. Also: `functor-lang run recursion.functor`.
+// Convention: `main` is the timed unit of work. Also: `functor-lang run recursion.fun`.
 let sumTo = (n, acc) =>
   match n < 1.0 with
   | true => acc

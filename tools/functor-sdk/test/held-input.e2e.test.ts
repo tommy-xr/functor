@@ -10,7 +10,7 @@ import { findRepoRoot, FunctorRunner } from "../src/index.js";
 //
 //   npm run test:e2e        (or FUNCTOR_E2E=1 node --test dist/test/)
 //
-// No dylib build is needed — the `.functor` ships as text and the runner reads it
+// No dylib build is needed — the `.fun` ships as text and the runner reads it
 // via --functor-lang.
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 // Headless (no GL window) is the CI path; capture is unavailable there.
@@ -41,7 +41,7 @@ test(
     await using game = await FunctorRunner.launch({
       gameDir,
       repoRoot,
-      functorLangPath: join(gameDir, "game.functor"),
+      functorLangPath: join(gameDir, "game.fun"),
       port: Number(process.env.FUNCTOR_E2E_PORT ?? 8090),
       headless,
     });

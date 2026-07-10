@@ -186,7 +186,7 @@ for (const example of ["hero", "orbit", "physics", "monitor"]) {
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(`${BASE}/docs.html`);
-  const highlighted = await page.locator("pre.functor span.tok-k").count();
+  const highlighted = await page.locator("pre.functor-lang span.tok-k").count();
   const tryButtons = await page.locator("a.try-button").count();
   check("docs page highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
   check("docs page offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);

@@ -2,6 +2,6 @@
 // List.fold whose step does no work. Subtract this from the other 1M-fold
 // benches to isolate the per-call cost from range building + fold overhead.
 //
-// Convention: `main` is the timed unit of work. Also: `functor-lang run fold_floor.functor`.
+// Convention: `main` is the timed unit of work. Also: `functor-lang run fold_floor.fun`.
 let step = (acc, x) => acc
 let main = () => List.fold(step, 0.0, List.range(1000000))

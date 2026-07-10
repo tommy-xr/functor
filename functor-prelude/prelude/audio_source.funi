@@ -1,4 +1,4 @@
-// audio_source.functori — the `AudioSource` host module (interface only; implemented
+// audio_source.funi — the `AudioSource` host module (interface only; implemented
 // in Rust by FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 //
 // Soundscape voices (the continuous, reconciled half of audio). Keyed for

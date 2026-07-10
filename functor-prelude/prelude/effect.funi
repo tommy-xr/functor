@@ -1,4 +1,4 @@
-// effect.functori — the `Effect` host module (interface only; implemented in Rust by
+// effect.funi — the `Effect` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 //
 // Effects: fire-and-forget commands returned beside the model, folded back

@@ -111,7 +111,7 @@ iteration" item below (T6, trajectory preview).
 **SHIPPED** — Functor Lang is now Functor's only game-logic language; the F#/Fable
 pipeline was deleted (roadmap E3). The full history and design record is in
 `docs/functor-lang.md` (all tracks/checkboxes done); the live language reference is the
-`functor-lang` skill. Remaining language follow-ups tracked there: `.functori`
+`functor-lang` skill. Remaining language follow-ups tracked there: `.funi`
 interface files (B8 part 2), LSP cross-file support, and wasm/live-preview
 multi-file.
 

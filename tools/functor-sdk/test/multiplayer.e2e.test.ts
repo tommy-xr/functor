@@ -8,7 +8,7 @@ import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 // each its own process on its own debug port, networked over a real WebSocket.
 // These are the Functor Lang ports of examples/mpserver + examples/mpclient — same wire
 // protocol and same auto-move-on-connect, so convergence is identical. The
-// `.functor` ships as text (no dylib build), so this only needs the runner binary
+// `.fun` ships as text (no dylib build), so this only needs the runner binary
 // and a display:
 //
 //   cargo build --bin functor
@@ -50,7 +50,7 @@ test(
       return FunctorRunner.launch({
         gameDir,
         repoRoot,
-        functorLangPath: join(gameDir, "game.functor"),
+        functorLangPath: join(gameDir, "game.fun"),
         port,
         launchTimeoutMs: 30_000,
         headless,

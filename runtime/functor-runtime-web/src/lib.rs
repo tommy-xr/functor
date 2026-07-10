@@ -145,9 +145,9 @@ fn functor_lang_project_files() -> Option<Vec<String>> {
     (!files.is_empty()).then_some(files)
 }
 
-/// Fetch every project `.functor`/`.functori` source (entry first, then siblings) and
+/// Fetch every project `.fun`/`.funi` source (entry first, then siblings) and
 /// build the interpreter producer. `file = module`, so a game split across
-/// `game.functor` + `pieces.functor` links exactly as it does natively. Failures are
+/// `game.fun` + `pieces.fun` links exactly as it does natively. Failures are
 /// rendered strings (fetch status, parse/load position, contract violation) for
 /// `run_async` to fail loud with.
 async fn create_functor_lang_game(entry: &str) -> Result<functor_lang_game::FunctorLangWebGame, String> {
@@ -157,7 +157,7 @@ async fn create_functor_lang_game(entry: &str) -> Result<functor_lang_game::Func
     let mut sources: Vec<(String, String)> = Vec::with_capacity(paths.len());
     for path in &paths {
         // `no_store`: never serve project source from the browser cache — the
-        // dev server reuses `/game.functor` across samples, so a cached response
+        // dev server reuses `/game.fun` across samples, so a cached response
         // would keep showing the previous game after switching projects.
         let (status, src) = perform_fetch(HttpMethod::Get, path, &[], &[], true)
             .await
@@ -237,7 +237,7 @@ fn apply_pending_reload(game: &mut dyn GameProducer) {
     }
 }
 
-/// Hot-swap the running game's logic from pushed `.functor` source — the wasm
+/// Hot-swap the running game's logic from pushed `.fun` source — the wasm
 /// counterpart of the desktop runner's `POST /reload-source` (docs/functor-lang.md D4).
 /// The source is QUEUED and applied at the top of the next frame (see
 /// [`apply_pending_reload`]); the outcome is delivered asynchronously as a

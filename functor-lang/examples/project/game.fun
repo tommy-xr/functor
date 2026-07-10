@@ -1,4 +1,4 @@
-// Multi-file Functor Lang (B8): file = module (vec.functor -> Vec, shapes.functor -> Shapes),
+// Multi-file Functor Lang (B8): file = module (vec.fun -> Vec, shapes.fun -> Shapes),
 // qualified access needs no import, `open` brings a module in unqualified.
 open Vec
 

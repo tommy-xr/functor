@@ -1,4 +1,4 @@
-// Functor Lang extension entry point: an LSP client for `.functor` documents (launching
+// Functor Lang extension entry point: an LSP client for `.fun` documents (launching
 // the `functor-lang-lsp` binary from PATH — see ../README.md for how to get it there)
 // and the live game preview panel (docs/functor-lang.md D4). Plain JS on purpose — no
 // bundler or TS build step; the only runtime dependency is
@@ -60,7 +60,7 @@ function deactivate() {
   return client ? client.stop() : undefined;
 }
 
-// Walk up from an .functor file to the functor.json declaring a Functor Lang project —
+// Walk up from an .fun file to the functor.json declaring a Functor Lang project —
 // the directory `functor -d <dir>` operates on. Returns { dir, entry } or
 // null. A functor.json for another language (or an unreadable one) is
 // skipped and the walk continues, so nested projects resolve correctly.
@@ -111,7 +111,7 @@ function waitForServer(timeoutMs) {
 async function openLivePreview() {
   const editor = vscode.window.activeTextEditor;
   const project =
-    editor && editor.document.fileName.endsWith(".functor")
+    editor && editor.document.fileName.endsWith(".fun")
       ? findFunctorLangProject(editor.document.fileName)
       : null;
 
@@ -139,16 +139,16 @@ async function openLivePreview() {
     }
   }
 
-  if (!editor || !editor.document.fileName.endsWith(".functor")) {
+  if (!editor || !editor.document.fileName.endsWith(".fun")) {
     vscode.window.showErrorMessage(
-      "Functor Lang: open the project's .functor file first — the preview serves the project it belongs to."
+      "Functor Lang: open the project's .fun file first — the preview serves the project it belongs to."
     );
     return;
   }
   if (!project) {
     vscode.window.showErrorMessage(
       `Functor Lang: no functor.json with "language": "functor-lang" found in any directory above ` +
-        `${editor.document.fileName} — create one ({"language": "functor-lang", "entry": "game.functor"}) ` +
+        `${editor.document.fileName} — create one ({"language": "functor-lang", "entry": "game.fun"}) ` +
         "in the project directory."
     );
     return;

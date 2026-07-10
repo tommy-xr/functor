@@ -3068,11 +3068,11 @@ mod tests {
             .clone()
     }
 
-    // Drift guard: a HARD BIJECTION between the `functor-prelude` `.functori`
-    // signatures and the host `PATHS`. Every `.functori` `val`/`let` signature must
+    // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`
+    // signatures and the host `PATHS`. Every `.funi` `val`/`let` signature must
     // name a real host external, AND every host external must have exactly one
     // signature — so the declared types and the Rust implementations cannot
-    // silently diverge in either direction. We parse the `.functori` sources to
+    // silently diverge in either direction. We parse the `.funi` sources to
     // extract `Module.name` signatures and compare the two sets.
     #[test]
     fn prelude_signatures_map_to_host_paths() {
@@ -3104,12 +3104,12 @@ mod tests {
         let missing: Vec<&String> = paths.difference(&signatures).collect();
         assert!(
             missing.is_empty(),
-            "host externals in PATHS with no `.functori` signature — an interface-only \
+            "host externals in PATHS with no `.funi` signature — an interface-only \
 module is CLOSED, so games referencing these break at load: {missing:?}"
         );
     }
 
-    // The C1 verify criterion (docs/functor-lang.md): an .functor snippet emits exactly
+    // The C1 verify criterion (docs/functor-lang.md): an .fun snippet emits exactly
     // the protocol data the shells consume — pinned as the serialized wire
     // form the protocol tests use.
     #[test]
@@ -4925,7 +4925,7 @@ the game dir"
     }
 
     /// Headless server-lifecycle test for the `mpserver` port (roadmap E2),
-    /// with no socket. Loads the SHIPPED `game.functor` so this tracks the example,
+    /// with no socket. Loads the SHIPPED `game.fun` so this tracks the example,
     /// and exercises the whole server spine — `toMsg` decoding, the
     /// join/move/left `update` logic, `wrapAxis` integration, the `Text.*` wire
     /// encoding, and the broadcast-the-whole-world-to-every-client `Effect.send`
@@ -4934,7 +4934,7 @@ the game dir"
     #[test]
     fn mpserver_broadcasts_the_world_to_every_client() {
         // load_single_source injects the built-in Net module, like the runner.
-        let src = include_str!("../../../examples/mpserver/game.functor");
+        let src = include_str!("../../../examples/mpserver/game.fun");
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load mpserver: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
@@ -5027,14 +5027,14 @@ the game dir"
     }
 
     /// Headless client-lifecycle test for the `mpclient` port (roadmap E2),
-    /// with no socket. Loads the SHIPPED `game.functor` and drives connect (auto-move
+    /// with no socket. Loads the SHIPPED `game.fun` and drives connect (auto-move
     /// sent), a snapshot decoded into the world, WASD `input` producing sends,
     /// and a disconnect. The snapshot fed in is the exact wire string the
     /// `mpserver` port broadcasts, so this doubles as a wire round-trip check
     /// between the two ports.
     #[test]
     fn mpclient_decodes_snapshots_and_sends_input() {
-        let src = include_str!("../../../examples/mpclient/game.functor");
+        let src = include_str!("../../../examples/mpclient/game.fun");
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load mpclient: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)

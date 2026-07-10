@@ -44,12 +44,12 @@ fn main_result(src: &str) -> String {
     }
 }
 
-/// The `functor-lang run` / `functor-lang trace` output for `examples/{name}.functor`, compared
+/// The `functor-lang run` / `functor-lang trace` output for `examples/{name}.fun`, compared
 /// against the committed `{name}.run` / `{name}.trace` golden.
 /// Regenerate with `UPDATE_GOLDENS=1 cargo test -p functor-lang`.
 fn check_golden(name: &str, extension: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let src = fs::read_to_string(dir.join(format!("{name}.functor"))).unwrap();
+    let src = fs::read_to_string(dir.join(format!("{name}.fun"))).unwrap();
     let golden_path = dir.join(format!("{name}.{extension}"));
     let tracing = if extension == "trace" {
         Tracing::On
@@ -80,7 +80,7 @@ fn check_golden(name: &str, extension: &str) {
     });
     assert_eq!(
         actual, expected,
-        "output for {name}.functor diverged from {name}.{extension} — if intended, \
+        "output for {name}.fun diverged from {name}.{extension} — if intended, \
          regenerate with UPDATE_GOLDENS=1 cargo test -p functor-lang"
     );
 }

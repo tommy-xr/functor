@@ -2,7 +2,7 @@
 // builtin map/filter hot path plus one closure dispatch per element, and the
 // intermediate list allocations between stages.
 //
-// Convention: `main` is the timed unit of work. Also: `functor-lang run list_map.functor`.
+// Convention: `main` is the timed unit of work. Also: `functor-lang run list_map.fun`.
 let double = (x) => x * 2.0
 let isBig = (x) => x > 100000.0
 let main = () =>

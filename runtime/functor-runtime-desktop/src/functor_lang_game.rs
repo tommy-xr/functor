@@ -1,4 +1,4 @@
-//! The Functor Lang producer (docs/functor-lang.md Track C2): game logic written in `.functor`,
+//! The Functor Lang producer (docs/functor-lang.md Track C2): game logic written in `.fun`,
 //! run by the real interpreter (`functor_lang::Session`) with the Functor prelude
 //! (`Scene.*` / `Camera.*` / `Frame.*` — see
 //! `functor_runtime_common::functor_lang_prelude`). This replaces the Milestone-0
@@ -48,7 +48,7 @@ use crate::game::Game;
 
 pub struct FunctorLangGame {
     path: String,
-    /// Per-file mtimes of the WHOLE project (every sibling `.functor` — B8:
+    /// Per-file mtimes of the WHOLE project (every sibling `.fun` — B8:
     /// file = module), so editing a non-entry module hot-reloads too; a
     /// file appearing or disappearing changes the stamp as well.
     stamp: Vec<(PathBuf, SystemTime)>,
@@ -168,7 +168,7 @@ struct Loaded {
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
-/// every sibling `.functor` file — file = module). Errors come back as fully
+/// every sibling `.fun` file — file = module). Errors come back as fully
 /// rendered strings (`path:line:col: message`) so `create` can exit loud with
 /// them and hot-reload can print-and-keep-running with the same text.
 fn load_game(path: &str) -> Result<Loaded, String> {
@@ -190,7 +190,7 @@ fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String>
         Some(src) => std::collections::HashMap::from([(entry.to_path_buf(), src)]),
         None => std::collections::HashMap::new(),
     };
-    // Inject the host prelude `.functori` interfaces so `Scene.*` (etc.) typecheck
+    // Inject the host prelude `.funi` interfaces so `Scene.*` (etc.) typecheck
     // against real types (docs/functor-lang-interfaces.md). Check-time only — the FunctorHost still
     // provides the actual runtime values.
     let project = functor_lang::project::load_with_prelude(entry, &overrides, &functor_prelude::modules())
@@ -299,7 +299,7 @@ return them beside the model as `(model, effect)`"
     })
 }
 
-/// Per-file mtimes of every `.functor` file in the entry's project, sorted by
+/// Per-file mtimes of every `.fun` file in the entry's project, sorted by
 /// path — the hot-reload change stamp. Any edited, added, or removed file
 /// changes the stamp (a file we cannot stat contributes UNIX_EPOCH, so a
 /// mid-save disappearing file still registers as a change).
@@ -956,7 +956,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "type Conn = | NoConn | Conn(id: Float)\n\
              type Model = { conn: Conn, last: String }\n\
              type Msg = | Ws(ev: Net.NetEvent)\n\
@@ -977,7 +977,7 @@ mod tests {
         .unwrap();
         let _ = drain_conn_commands(); // clear the shared queue
 
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().unwrap());
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().unwrap());
 
         // 1. Declaring the connection queues a Connect on the first frame.
         game.tick(FrameTime {
@@ -1023,7 +1023,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "type Model = { clients: Float, last: String }\n\
              type Msg = | Joined(id: Float) | Got(id: Float, text: String) | Left(id: Float)\n\
              let toMsg = (ev: Net.NetEvent): Msg =>\n\
@@ -1045,7 +1045,7 @@ mod tests {
         )
         .unwrap();
         let _ = drain_conn_commands();
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().unwrap());
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().unwrap());
 
         game.tick(FrameTime {
             tts: 0.0,
@@ -1082,14 +1082,14 @@ mod tests {
             .any(|c| matches!(c, ConnCommand::Send { conn: 22, payload } if payload == b"ping")));
     }
 
-    /// Write `src` as `game.functor` in its own temp directory (a directory is
-    /// a whole project since B8 — a shared temp dir would drag stray `.functor`
+    /// Write `src` as `game.fun` in its own temp directory (a directory is
+    /// a whole project since B8 — a shared temp dir would drag stray `.fun`
     /// files in as sibling modules) and return `load_game`'s error.
     fn load_err(name: &str, src: &str) -> String {
         let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
-        let path = dir.join("game.functor");
+        let path = dir.join("game.fun");
         std::fs::write(&path, src).expect("write temp game");
         let err = load_game(path.to_str().expect("utf-8 temp path"))
             .err()
@@ -1134,7 +1134,7 @@ mod tests {
     }
 
     /// A pushed entry buffer survives a SIBLING-file reload: editing
-    /// `config.functor` must reload around the pushed `game.functor`, and only an
+    /// `config.fun` must reload around the pushed `game.fun`, and only an
     /// on-disk edit of the entry itself reverts to disk (last-write-wins,
     /// per file). [Codex Medium — B8 review]
     #[test]
@@ -1142,10 +1142,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-push", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
-        let entry = dir.join("game.functor");
+        let entry = dir.join("game.fun");
         let disk_game = format!("{BASE}let probe = 1.0\n");
         std::fs::write(&entry, &disk_game).expect("write entry");
-        std::fs::write(dir.join("config.functor"), "let k = 1.0\n").expect("write sibling");
+        std::fs::write(dir.join("config.fun"), "let k = 1.0\n").expect("write sibling");
         let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
 
         // Push an entry variant distinguishable from the disk one.
@@ -1158,7 +1158,7 @@ mod tests {
 
         // Edit the SIBLING: the reload must keep the pushed entry.
         std::thread::sleep(std::time::Duration::from_millis(20)); // distinct mtime
-        std::fs::write(dir.join("config.functor"), "let k = 5.0\n").expect("edit sibling");
+        std::fs::write(dir.join("config.fun"), "let k = 5.0\n").expect("edit sibling");
         game.check_hot_reload(FrameTime { tts: 0.0, dts: 0.0 });
         assert_eq!(
             game.session.global("probe").expect("probe").to_string(),
@@ -1237,13 +1237,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
         )
         .expect("write game");
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().expect("utf-8 path"));
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         // Nothing recorded until the first frame runs.
         assert_eq!(game.recorder.scene_frame_range(), None);
@@ -1278,8 +1278,8 @@ mod tests {
         let src = "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n";
-        std::fs::write(dir.join("game.functor"), src).expect("write game");
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().expect("utf-8 path"));
+        std::fs::write(dir.join("game.fun"), src).expect("write game");
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         for _ in 0..3 {
             game.tick(FrameTime { tts: 0.0, dts: 0.016 });
@@ -1334,7 +1334,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let physics = (m) => Physics.scene(0.0, -9.81, 0.0, [\n\
@@ -1343,7 +1343,7 @@ mod tests {
              let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
         )
         .expect("write game");
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().expect("utf-8 path"));
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
         // Frames 0..3 (4 ticks): the ball falls under gravity, n counts up.
@@ -1398,13 +1398,13 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         // eye.x == tts, so the drawn Frame reveals the tts `draw` ran at.
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let draw = (m, tts) => Frame.create(Camera.lookAt(tts, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
         )
         .expect("write game");
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().expect("utf-8 path"));
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         // Five frames with an advancing render clock: frame i records tts = i+1.
         for i in 0..5u64 {
@@ -1453,7 +1453,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let physics = (m) => Physics.scene(0.0, -9.81, 0.0, [\n\
@@ -1461,7 +1461,7 @@ mod tests {
              let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
         )
         .expect("write game");
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().expect("utf-8 path"));
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
         for _ in 0..10 {
@@ -1513,7 +1513,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let physics = (m) => Physics.scene(0.0, -9.81, 0.0, [\n\
@@ -1521,7 +1521,7 @@ mod tests {
              let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
         )
         .expect("write game");
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().expect("utf-8 path"));
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
         for _ in 0..8 {
@@ -1562,7 +1562,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
-            dir.join("game.functor"),
+            dir.join("game.fun"),
             "type Msg = | Contact(ev: e)\n\
              let init = { n: 0.0, hits: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
@@ -1576,7 +1576,7 @@ mod tests {
              let draw = (m, tts) => Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n",
         )
         .expect("write game");
-        let mut game = FunctorLangGame::create(dir.join("game.functor").to_str().expect("utf-8 path"));
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         // Fine sub-step at 1/60 (= FIXED_DT, so each fine tick is one physics
         // step); the forward-step snapshots every STEPS_PER_DIV fine ticks.
@@ -1689,7 +1689,7 @@ mod tests {
             }
         }
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.functor");
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
         let mut game = FunctorLangGame::create(mario);
         assert!(!game.has_physics, "mario must have no physics hook");
 
@@ -1824,7 +1824,7 @@ mod tests {
             }
         }
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.functor");
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
         let mut game = FunctorLangGame::create(mario);
 
         const SUB_DT: f32 = 1.0 / 60.0;
@@ -1918,7 +1918,7 @@ mod tests {
     fn scrub_drops_input_buffered_on_a_zero_substep_frame() {
         use functor_runtime_common::Key;
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.functor");
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
         let mut game = FunctorLangGame::create(mario);
 
         // Record a few frames of history at the fixed step (each tick records).

@@ -146,7 +146,7 @@ const loadInline = (b64u) => {
 };
 
 const loadExample = async (id) => {
-  const url = `examples/${encodeURIComponent(id)}.functor`;
+  const url = `examples/${encodeURIComponent(id)}.fun`;
   const response = await fetch(url);
   if (!response.ok) {
     setStatus("error", "✖ error", `cannot fetch ${url}: HTTP ${response.status}`);

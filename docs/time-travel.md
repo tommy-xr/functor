@@ -304,7 +304,7 @@ Two implementation points decide whether it looks right:
   all divisions render with the *paused* camera so only world motion smears, not
   the view.
 
-The "tweak a constant" half rides existing hot-reload: swap the `.functor` with the
+The "tweak a constant" half rides existing hot-reload: swap the `.fun` with the
 model preserved, re-run the window, the ghost redraws — so you can tweak a jump
 impulse until the arc clears a chasm and *see* it clear before you resume. This is
 the single most compelling demo in the set and it is within reach.

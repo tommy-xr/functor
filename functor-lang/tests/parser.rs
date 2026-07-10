@@ -6,12 +6,12 @@ use functor_lang::Span;
 use std::fs;
 use std::path::Path;
 
-/// Parse `examples/{name}.functor` and compare the pretty-Debug AST against the
+/// Parse `examples/{name}.fun` and compare the pretty-Debug AST against the
 /// committed `examples/{name}.ast` golden.
 /// Regenerate with `UPDATE_GOLDENS=1 cargo test -p functor-lang`.
 fn check_golden(name: &str) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let src_path = dir.join(format!("{name}.functor"));
+    let src_path = dir.join(format!("{name}.fun"));
     let golden_path = dir.join(format!("{name}.ast"));
     let src = fs::read_to_string(&src_path).unwrap();
     let program = match functor_lang::parse(&src) {
@@ -38,7 +38,7 @@ fn check_golden(name: &str) {
     });
     assert_eq!(
         actual, expected,
-        "AST for {name}.functor diverged from {name}.ast — if intended, \
+        "AST for {name}.fun diverged from {name}.ast — if intended, \
          regenerate with UPDATE_GOLDENS=1 cargo test -p functor-lang"
     );
 }

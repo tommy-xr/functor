@@ -43,8 +43,8 @@ test(
     assert.ok(repoRoot, "must run from within the functor workspace");
 
     const dir = mkdtempSync(join(tmpdir(), "functor-lang-modules-"));
-    const entryPath = join(dir, "game.functor");
-    const configPath = join(dir, "config.functor");
+    const entryPath = join(dir, "game.fun");
+    const configPath = join(dir, "config.fun");
     writeFileSync(entryPath, game);
     writeFileSync(configPath, config("1.0"));
 

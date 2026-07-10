@@ -1,4 +1,4 @@
-// ui.functori — the `Ui` host module (interface only; implemented in Rust by
+// ui.funi — the `Ui` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 //
 // The optional `ui = (model) => …` hook's vocabulary: text lines stacked in a

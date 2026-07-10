@@ -1,4 +1,4 @@
-# Functor Lang interface files (`.functori`) — design
+# Functor Lang interface files (`.funi`) — design
 
 **Status:** design / not yet implemented. **Owner:** language.
 **Related:** `docs/functor-lang.md` (roadmap), the `functor-lang` skill (syntax source of
@@ -14,13 +14,13 @@ code instead of collapsing to `Unknown`.
 
 Today the engine API resolves to `ExprKind::External` → `Type::Unknown`, so a
 signature like `ringCube` shows `(float, float) => 'i` in hover/codelens instead
-of `(float, float) => SceneNode`. The vehicle is **interface files**: a `.functori`
+of `(float, float) => SceneNode`. The vehicle is **interface files**: a `.funi`
 declares *types without implementations*, the way OCaml `.mli` / TypeScript
 `.d.ts` do.
 
 Why a real language feature (not a Rust signature table): **LLM-native.** A text
 file listing the whole engine API is introspectable and self-documenting — an
-agent that can read `scene.functori` knows the signatures. That is worth more than a
+agent that can read `scene.funi` knows the signatures. That is worth more than a
 hidden Rust `match`, and it makes interfaces a reusable capability (user FFI,
 and later module encapsulation).
 
@@ -77,7 +77,7 @@ if `=>` follows it was a **function parameter list**; otherwise it's a **tuple**
 
 **Migration (same slice — the corpus is small):** rewrite the ~8 `*`-tuple
 annotations in the codebase (`examples/lighting`, `mpclient`, `mpserver`,
-`functor-lang/examples/{tuples,lists,strings}.functor`) to `(A, B)`, remove `*` from the type
+`functor-lang/examples/{tuples,lists,strings}.fun`) to `(A, B)`, remove `*` from the type
 grammar (it stays a value-level multiply operator), and switch the type
 **Display** (`types.rs` `Type::Tuple`, `hover.rs::type_name_text`) to render
 `(A, B)` so hover/codelens output matches the input spelling.
@@ -129,12 +129,12 @@ type SceneNode           // abstract: no constructors, no fields
 *Verify:* `type T` + a function passing a `T` through checks; constructing a `T`
 (no ctor exists) errors; cross-module `Mod.T` resolves to the same nominal.
 
-### 2d — `val` signatures + `.functori` grammar + interface-only modules
+### 2d — `val` signatures + `.funi` grammar + interface-only modules
 
-The interface file itself. A `.functori` contains **only** declarations — no bodies:
+The interface file itself. A `.funi` contains **only** declarations — no bodies:
 
 ```
-// scene.functori  →  module `Scene`
+// scene.funi  →  module `Scene`
 type SceneNode
 type Color = { r: float, g: float, b: float }   // concrete types allowed too
 
@@ -145,11 +145,11 @@ val rotateY : (Angle, SceneNode) => SceneNode
 ```
 
 - **`val name : Type`** — a name bound to a type, no body; the implementation
-  lives elsewhere (the Rust host, or — later — a paired `.functor`).
-- **`.functori` grammar** is the `.functor` grammar restricted to `type` (concrete or
-  abstract) and `val` items — a `let` with a body in a `.functori` is an error.
+  lives elsewhere (the Rust host, or — later — a paired `.fun`).
+- **`.funi` grammar** is the `.fun` grammar restricted to `type` (concrete or
+  abstract) and `val` items — a `let` with a body in a `.funi` is an error.
 - **Interface-only modules (the key module enhancement):** the project loader
-  accepts a module defined *solely* by a `.functori` (no `.functor`). Its `type`/`val`
+  accepts a module defined *solely* by a `.funi` (no `.fun`). Its `type`/`val`
   declarations feed the **same exports map** (`exports_of`) and typing
   environment as any other module, so:
   - qualified access (`Scene.cube`, `Scene.SceneNode`) resolves through the
@@ -158,24 +158,24 @@ val rotateY : (Angle, SceneNode) => SceneNode
   - the checker resolves what were `External`/`Unknown` refs against the loaded
     `val` signatures.
 - **Runtime is unchanged:** host-module `val`s still resolve to host values via
-  the existing External→host path at run time; `.functori` is a *check-time overlay*.
-  A user `.functori` `val` with no host backing and no `.functor` body is a runtime
+  the existing External→host path at run time; `.funi` is a *check-time overlay*.
+  A user `.funi` `val` with no host backing and no `.fun` body is a runtime
   "unknown external" if actually called (existing error) — acceptable.
 
-*Verify:* a scratch project with a hand-written `foo.functori` (no `foo.functor`) gives
-`Foo.bar` a real type in `check`/hover; a `let … = …` body in a `.functori` is a load
+*Verify:* a scratch project with a hand-written `foo.funi` (no `foo.fun`) gives
+`Foo.bar` a real type in `check`/hover; a `let … = …` body in a `.funi` is a load
 error; `open` and qualified access both resolve.
 
-### 2e — Ship the host prelude `.functori` + drift test
+### 2e — Ship the host prelude `.funi` + drift test
 
-Author the FunctorHost surface as `.functori` files (`scene.functori`, `camera.functori`,
-`physics.functori`, …), **bundle them into the `functor_lang` crate** (`include_str!`), and
+Author the FunctorHost surface as `.funi` files (`scene.funi`, `camera.funi`,
+`physics.funi`, …), **bundle them into the `functor_lang` crate** (`include_str!`), and
 load them by default whenever the checker runs — so host-awareness works
 everywhere (`functor-lang check`, the LSP) with **no config**. This flips the
 `PROTECTED_NAMESPACES` hack: `Scene` etc. stop being magic `Unknown` externals
 and become ordinary interface-only modules owned by the bundled prelude.
 
-- **Drift test:** a Rust test asserting every `val` in the bundled `.functori` maps
+- **Drift test:** a Rust test asserting every `val` in the bundled `.funi` maps
   to a real entry in the host registry (`functor_lang_prelude.rs`) and vice versa, so the
   declared types and the Rust implementations cannot silently diverge.
 - Result: `ringCube : (float, float) => SceneNode` in hover/codelens; inlay/
@@ -184,24 +184,24 @@ and become ordinary interface-only modules owned by the bundled prelude.
 ## Module semantics summary
 
 The one real module enhancement is **interface-only modules** (a module backed
-by a `.functori` with no `.functor`). Everything else reuses existing machinery:
+by a `.funi` with no `.fun`). Everything else reuses existing machinery:
 `file = module` naming, qualified-by-default access, `open`, cross-module type
 resolution (`Mod.T`), and cycle refusal. The protected-namespace special case
 is *replaced* by real interface-only modules for the host.
 
 ## Deferred / explicitly out of scope
 
-- **Interface *checking* of a paired `.functor`** (OCaml `.mli` model: the impl must
+- **Interface *checking* of a paired `.fun`** (OCaml `.mli` model: the impl must
   satisfy the interface; non-`val` names are hidden). This is module
   *encapsulation* — valuable, but not needed for host types (host modules have no
-  `.functor`). Design `.functori` so it slots in later; don't build it now.
+  `.fun`). Design `.funi` so it slots in later; don't build it now.
 - **Scope ergonomics for host types** — whether common prelude types
   (`SceneNode`, `Camera`) are always written qualified (`Scene.SceneNode`) or a
   curated set is bare-in-scope like builtins. Decide before 2e; not a blocker for
   the grammar work.
-- **Unifying builtins into `.functori`** — the 17 builtins (`List.map`, …) get types
-  from Rust `builtin_signature` today. Once `.functori` exists they *could* move to a
-  bundled `builtins.functori` for one declarative mechanism. A nice follow-up, not
+- **Unifying builtins into `.funi`** — the 17 builtins (`List.map`, …) get types
+  from Rust `builtin_signature` today. Once `.funi` exists they *could* move to a
+  bundled `builtins.funi` for one declarative mechanism. A nice follow-up, not
   required.
 
 ## Open questions
@@ -213,15 +213,15 @@ is *replaced* by real interface-only modules for the host.
    position. See slice 2a.
 2. **Signature form: `val` vs bodyless `let`.** **LEANING: bodyless `let`** — since
    2b adds `let name : Type = value`, an interface signature is just that with the
-   `= value` dropped (`let cube : () => SceneNode`), so a `.functori` is "the `.functor`
-   with bodies erased" — no new keyword. Bodies are required in `.functor`, forbidden
-   in `.functori`. (Alternative: explicit `val`, clearer decl-vs-def, matches
+   `= value` dropped (`let cube : () => SceneNode`), so a `.funi` is "the `.fun`
+   with bodies erased" — no new keyword. Bodies are required in `.fun`, forbidden
+   in `.funi`. (Alternative: explicit `val`, clearer decl-vs-def, matches
    OCaml/SML.) Decide at 2d.
 3. **Host-type scope.** **RESOLVED via existing `open`:** default qualified
    (`Scene.cube`), `open Scene` brings members bare (like OCaml). Optional later
    polish: implicitly `open` one core prelude module. Not a blocker.
 4. **Abstract type representation** — new `Type::Opaque(name, args)` vs reusing
    `Type::Record(name, args)` with an empty/hidden field list.
-5. **`.functori` beside `.functor`** — for host modules there's only `.functori`. If a user
-   ships both `foo.functor` and `foo.functori`, that's the deferred encapsulation feature;
-   until then, define the loader behavior (ignore the `.functori`, or error).
+5. **`.funi` beside `.fun`** — for host modules there's only `.funi`. If a user
+   ships both `foo.fun` and `foo.funi`, that's the deferred encapsulation feature;
+   until then, define the loader behavior (ignore the `.funi`, or error).

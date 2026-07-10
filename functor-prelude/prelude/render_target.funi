@@ -1,4 +1,4 @@
-// render_target.functori — the `RenderTarget` host module (interface only;
+// render_target.funi — the `RenderTarget` host module (interface only;
 // implemented in Rust by FunctorHost in functor_runtime_common::functor_lang_prelude).
 // See docs/functor-lang-interfaces.md.
 

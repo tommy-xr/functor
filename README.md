@@ -5,12 +5,12 @@
 Functor: A functional toolkit for building 3D games in **Functor Lang**, Functor's own
 interpreted, F#-inspired game-logic language.
 
-You write your game as a `.functor` file. There is **no transpile or compile step for
-game logic** — the Rust runtime *interprets* the `.functor` directly:
+You write your game as a `.fun` file. There is **no transpile or compile step for
+game logic** — the Rust runtime *interprets* the `.fun` directly:
 
 - **native** — the `functor` desktop runtime (GLFW + OpenGL), run in-process by the
-  `functor` CLI, loads and runs your `.functor`, with hot-reloading on save for fast iteration.
-- **wasm** — the web runtime (WebGL2) ships the `.functor` source as text and
+  `functor` CLI, loads and runs your `.fun`, with hot-reloading on save for fast iteration.
+- **wasm** — the web runtime (WebGL2) ships the `.fun` source as text and
   interprets it in the browser.
 
 The same interpreter runs everywhere Rust runs. The heavy per-frame work
@@ -43,8 +43,8 @@ effect; `draw`/`physics`/`soundScape`/`ui`/`subscriptions` return their own
 specific values.) The full language and prelude
 (`Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*` / …)
 are documented in the `functor-lang` skill (`.claude/skills/functor-lang/`) and
-`docs/functor-lang.md`. See `examples/hello/game.functor` or
-`examples/primitives/game.functor` for complete games.
+`docs/functor-lang.md`. See `examples/hello/game.fun` or
+`examples/primitives/game.fun` for complete games.
 
 ## Design principles
 
@@ -63,7 +63,7 @@ are documented in the `functor-lang` skill (`.claude/skills/functor-lang/`) and
 | `functor-lang/` | The Functor Lang language crate — parser, IR, interpreter, typechecker (`functor-lang parse`/`ir`/`run`/`trace`/`check`) |
 | `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the Functor Lang prelude (`FunctorHost`) |
 | `runtime/functor-runtime-desktop/` | Desktop runtime (native/GLFW), including the Functor Lang producer — a library the `functor` CLI links in and runs in-process |
-| `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.functor` in the browser |
+| `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.fun` in the browser |
 | `cli/` | The `functor` CLI (`init` / `build` / `run` / `develop`) |
 | `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
 | `examples/*/` | Sample games — e.g. `hello` (a lineup of glTF sample models with a WASD + mouse free-look camera), `primitives`, `lighting` |
@@ -113,8 +113,8 @@ npm run fetch:assets
 ```
 
 The CLI operates on a directory containing a `functor.json`
-(`{"language": "functor-lang", "entry": "game.functor"}`). Point it at the example with `-d`.
-The `run` command interprets the game's `.functor` and launches it — no build step:
+(`{"language": "functor-lang", "entry": "game.fun"}`). Point it at the example with `-d`.
+The `run` command interprets the game's `.fun` and launches it — no build step:
 
 ```sh
 # Native — opens a window
@@ -123,7 +123,7 @@ The `run` command interprets the game's `.functor` and launches it — no build 
 # A primitives-only sample (no assets needed)
 ./target/debug/functor -d examples/primitives run native
 
-# Web — serves the .functor + wasm bundle at http://127.0.0.1:8080
+# Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
 ./target/debug/functor -d examples/primitives run wasm
 ```
 
@@ -134,18 +134,18 @@ The `run` command interprets the game's `.functor` and launches it — no build 
 | Command | Description |
 | --- | --- |
 | `functor -d <dir> init [3d\|fps]` | Scaffold a new Functor Lang project (`3d` is the default) |
-| `functor -d <dir> build [native\|wasm]` | Typecheck the `.functor` project (diagnostics are errors) |
+| `functor -d <dir> build [native\|wasm]` | Typecheck the `.fun` project (diagnostics are errors) |
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
 | `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime |
 
 ### What `build`/`run` do under the hood
 
-1. `build` loads the project (the entry `.functor` plus every sibling `.functor` — file = module)
+1. `build` loads the project (the entry `.fun` plus every sibling `.fun` — file = module)
    and typechecks the whole program; diagnostics are errors here.
-2. (native) `run` runs the desktop runtime in-process on the entry `.functor` (no separate
-   process); it **interprets** the `.functor` each frame and hot-reloads it on save,
+2. (native) `run` runs the desktop runtime in-process on the entry `.fun` (no separate
+   process); it **interprets** the `.fun` each frame and hot-reloads it on save,
    preserving the model.
-3. (wasm) `run` serves the project directory — the `.functor` ships as text; the embedded
+3. (wasm) `run` serves the project directory — the `.fun` ships as text; the embedded
    web runtime fetches and interprets it. (File-watch hot-reload is native-only;
    reload the page to pick up saved edits.)
 

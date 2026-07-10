@@ -11,7 +11,7 @@
 //!
 //! Each sample is a Functor Lang project (`functor.json` with `"language": "functor-lang"`) and
 //! renders via `--functor-lang --game-path <entry>`; Functor Lang needs no build step (the runner
-//! interprets the `.functor` in place).
+//! interprets the `.fun` in place).
 //!
 //! Ignored by default: it needs a GL display. Run it with:
 //!

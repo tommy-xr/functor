@@ -5,7 +5,7 @@
 // currying costs anything on the hot path: it is a pure call-overhead loop.
 //
 // Convention: `main` is the unit of work the bench harness times (see
-// functor-lang/benches/README.md). Also runnable directly: `functor-lang run call_saturated.functor`
+// functor-lang/benches/README.md). Also runnable directly: `functor-lang run call_saturated.fun`
 // (result: 1499998500000).
 let f = (a, b, c) => a + b * c
 let step = (acc, x) => acc + f(x, x, 2.0)

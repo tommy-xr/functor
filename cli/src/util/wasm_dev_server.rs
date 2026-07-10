@@ -38,7 +38,7 @@ fn render_functor_lang_index(entry: &str, files: &[String]) -> String {
 }
 
 /// The project's file list as URLs relative to the served directory (entry
-/// first, then sibling `.functor`/`.functori` files) — the same set the desktop
+/// first, then sibling `.fun`/`.funi` files) — the same set the desktop
 /// producer links (`functor_lang::project::project_files`), made relative so the web
 /// runtime fetches each from the dev server's filesystem route. Falls back to
 /// just the entry if the directory can't be scanned.
@@ -105,9 +105,9 @@ impl WasmDevServer {
         let route_filesystem = warp::fs::dir(wd);
 
         // Combine all routes. `no-store` on everything: this is a dev server,
-        // and the index page + `.functor` source are re-generated per run — without
+        // and the index page + `.fun` source are re-generated per run — without
         // it, switching samples (each serving its source at the same
-        // `/game.functor` URL) can show a stale game from the browser cache.
+        // `/game.fun` URL) can show a stale game from the browser cache.
         let static_routes = route_index.or(route_js1).or(route_wasm);
         let routes = static_routes
             .or(route_filesystem)
@@ -135,31 +135,31 @@ mod tests {
 
     #[test]
     fn substitutes_the_entry_as_a_js_string() {
-        let html = render_functor_lang_index("game.functor", &["game.functor".to_string()]);
-        assert!(html.contains("window.__functorLangGamePath = \"game.functor\""));
+        let html = render_functor_lang_index("game.fun", &["game.fun".to_string()]);
+        assert!(html.contains("window.__functorLangGamePath = \"game.fun\""));
         assert!(!html.contains("__FUNCTOR_LANG_ENTRY__"));
     }
 
     #[test]
     fn substitutes_the_project_file_list_as_a_js_array() {
         let html = render_functor_lang_index(
-            "game.functor",
-            &["game.functor".to_string(), "pieces.functor".to_string()],
+            "game.fun",
+            &["game.fun".to_string(), "pieces.fun".to_string()],
         );
         assert!(html.contains("(["));
-        assert!(html.contains("\"game.functor\",\"pieces.functor\""));
+        assert!(html.contains("\"game.fun\",\"pieces.fun\""));
         assert!(!html.contains("__FUNCTOR_LANG_PROJECT_FILES__"));
     }
 
     #[test]
     fn escapes_entries_that_would_break_the_script() {
-        let html = render_functor_lang_index("we\"ird\\name.functor", &["we\"ird\\name.functor".to_string()]);
-        assert!(html.contains("we\\\"ird\\\\name.functor"));
+        let html = render_functor_lang_index("we\"ird\\name.fun", &["we\"ird\\name.fun".to_string()]);
+        assert!(html.contains("we\\\"ird\\\\name.fun"));
     }
 
     #[test]
     fn escapes_a_script_terminator_in_the_entry() {
-        let html = render_functor_lang_index("bad</script>.functor", &["bad</script>.functor".to_string()]);
-        assert!(html.contains("bad<\\/script>.functor"));
+        let html = render_functor_lang_index("bad</script>.fun", &["bad</script>.fun".to_string()]);
+        assert!(html.contains("bad<\\/script>.fun"));
     }
 }

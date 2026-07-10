@@ -93,7 +93,7 @@ pub trait GameProducer {
     /// honest refusal for producers whose logic isn't source-shaped
     /// (compiled dylibs, replays).
     fn reload_source(&mut self, _source: &str) -> Result<String, String> {
-        Err("this producer does not support source reload (not an .functor game)".to_string())
+        Err("this producer does not support source reload (not an .fun game)".to_string())
     }
 
     /// Rewind the whole scene — model AND physics world — to an earlier

@@ -8,7 +8,7 @@
 // fold through `update` (the full MVU loop — here, a once-per-second Beat
 // cycles the centerpiece's color).
 //
-// The scene-piece builders live in the sibling module `Pieces` (pieces.functor);
+// The scene-piece builders live in the sibling module `Pieces` (pieces.fun);
 // this file drives the MVU loop and composes them as `Pieces.ringCube` /
 // `Pieces.centerpiece`. Transforms apply outermost-last, so on the ring a
 // cube is `|> Scene.translate(radius…) |> Scene.rotateY(angle)`.

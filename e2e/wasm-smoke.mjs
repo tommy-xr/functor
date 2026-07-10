@@ -101,7 +101,7 @@ function entrySource(sample) {
   const cfg = JSON.parse(
     readFileSync(`${ROOT}/examples/${sample}/functor.json`, "utf8"),
   );
-  const entry = cfg.entry || "game.functor";
+  const entry = cfg.entry || "game.fun";
   return readFileSync(`${ROOT}/examples/${sample}/${entry}`, "utf8");
 }
 

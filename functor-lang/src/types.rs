@@ -558,7 +558,7 @@ fn check_impl(
     checker.in_type_decl = false;
     checker.annot_vars.clear();
 
-    // Interface (`.functori`) value signatures: resolve each declared type now that
+    // Interface (`.funi`) value signatures: resolve each declared type now that
     // all types (including the interfaces' own) are registered, and generalize
     // it — an `External` reference then instantiates it fresh (like a builtin).
     for sig in &module.signatures {
@@ -782,7 +782,7 @@ struct Checker<'s> {
     /// Generalized top-level defs (populated as each dependency group
     /// finishes inference); instantiated fresh at every later use.
     schemes: HashMap<String, Scheme>,
-    /// Interface (`.functori`) value signatures, keyed by canonical name
+    /// Interface (`.funi`) value signatures, keyed by canonical name
     /// (`Scene.cube`); an `External` reference to one is typed from here
     /// instead of `Unknown`, instantiated fresh per use.
     signatures: HashMap<String, Scheme>,
@@ -1015,7 +1015,7 @@ impl Checker<'_> {
         // builtin signature's literal Var(0)/Var(1) ids DO collide with
         // live checker variables — the no-zonk rule is exactly what keeps
         // that collision inert (zonking here read unrelated solutions: the
-        // var-collision bug the `functions.functor` golden caught, List.map's
+        // var-collision bug the `functions.fun` golden caught, List.map's
         // 'a arriving pre-solved as Float).
         walk(&scheme.ty, &mapping)
     }
@@ -1451,7 +1451,7 @@ missing {missing}. Did you forget an argument?"
                     free_vars_of(&sig, &mut vars);
                     self.instantiate(&Scheme { vars, ty: sig })
                 }
-                // An interface (`.functori`) signature gives a host external a real
+                // An interface (`.funi`) signature gives a host external a real
                 // type; otherwise it stays the gradual seam (`Unknown`).
                 None => match self.signatures.get(&path.join(".")).cloned() {
                     Some(scheme) => self.instantiate(&scheme),

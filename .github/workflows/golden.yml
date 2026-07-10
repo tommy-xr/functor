@@ -6,7 +6,7 @@ name: Golden (wasm)
 # `primitives-t2` scenario in golden-scenarios.json, driven by
 # e2e/golden-wasm.spec.mjs.
 #
-# The sample is Functor Lang (functor.json `"language": "functor-lang"`): its `.functor` source ships
+# The sample is Functor Lang (functor.json `"language": "functor-lang"`): its `.fun` source ships
 # as text and is interpreted by the embedded web runtime, so there is no Fable
 # transpile and no .NET toolchain — the CLI + web-runtime bundle is all that's
 # needed to serve it.
@@ -86,7 +86,7 @@ jobs:
       - name: Build functor CLI
         run: cargo build --bin functor
 
-      # No per-sample wasm build: the Functor Lang sample ships its `.functor` as text and is
+      # No per-sample wasm build: the Functor Lang sample ships its `.fun` as text and is
       # interpreted by the embedded web runtime, so `functor run wasm` just
       # serves the project directory (no Fable, no wasm-pack per game).
       - name: Run wasm golden (asset-free primitives scene)

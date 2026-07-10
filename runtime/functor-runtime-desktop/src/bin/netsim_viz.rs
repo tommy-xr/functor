@@ -6,7 +6,7 @@
 //! server's authoritative world next to each client's (slightly lagging) view.
 //!
 //! ```sh
-//! functor-netsim-viz <game.functor> [<game.functor> ...]
+//! functor-netsim-viz <game.fun> [<game.fun> ...]
 //! # e.g. the multiplayer prototype (server + two clients), run from the repo root:
 //! functor-netsim-viz mpserver mpclient mpclient
 //! ```
@@ -28,14 +28,14 @@ use functor_runtime_desktop::functor_lang_game::FunctorLangGame;
 use glfw::Context;
 use glow::*;
 
-/// Accept either a `.functor` path or a sample name (resolved to
-/// `examples/<name>/game.functor`, run from the repo root) — so
+/// Accept either a `.fun` path or a sample name (resolved to
+/// `examples/<name>/game.fun`, run from the repo root) — so
 /// `functor-netsim-viz mpserver mpclient mpclient` works.
 fn resolve(arg: &str) -> String {
     if std::path::Path::new(arg).exists() {
         return arg.to_string();
     }
-    format!("examples/{arg}/game.functor")
+    format!("examples/{arg}/game.fun")
 }
 
 /// Read back the default framebuffer and encode it as a PNG. GL rows are
@@ -88,7 +88,7 @@ fn main() {
     }
     if paths.is_empty() {
         eprintln!(
-            "usage: functor-netsim-viz [--capture <png> [--capture-after <n>]] <game.functor|sample> ..."
+            "usage: functor-netsim-viz [--capture <png> [--capture-after <n>]] <game.fun|sample> ..."
         );
         eprintln!("   e.g. functor-netsim-viz mpserver mpclient mpclient");
         std::process::exit(2);
@@ -99,7 +99,7 @@ fn main() {
         let path = resolve(arg);
         assert!(
             std::path::Path::new(&path).exists(),
-            "not found: {path} (expected a committed Functor Lang example at examples/{arg}/game.functor)"
+            "not found: {path} (expected a committed Functor Lang example at examples/{arg}/game.fun)"
         );
         sim.add_producer(Box::new(FunctorLangGame::create(&path)));
     }

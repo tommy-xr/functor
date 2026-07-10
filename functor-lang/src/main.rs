@@ -1,16 +1,16 @@
 //! The `functor_lang` CLI. Six subcommands:
 //!
 //! ```text
-//! functor-lang parse <file.functor>   # print the surface AST (pretty-Debug; this file only)
-//! functor-lang ir <file.functor>      # load the project; print the merged core IR
-//! functor-lang check <file.functor>   # typecheck the project; all diagnostics, exit 1
-//! functor-lang run <file.functor>     # evaluate; print main's result, or the entry's bindings
-//! functor-lang trace <file.functor>   # evaluate with the call trace; print the trace
-//! functor-lang bench [--all] [--json] [<file.functor>|<dir>]  # time interpreter eval (see bench.rs)
+//! functor-lang parse <file.fun>   # print the surface AST (pretty-Debug; this file only)
+//! functor-lang ir <file.fun>      # load the project; print the merged core IR
+//! functor-lang check <file.fun>   # typecheck the project; all diagnostics, exit 1
+//! functor-lang run <file.fun>     # evaluate; print main's result, or the entry's bindings
+//! functor-lang trace <file.fun>   # evaluate with the call trace; print the trace
+//! functor-lang bench [--all] [--json] [<file.fun>|<dir>]  # time interpreter eval (see bench.rs)
 //! ```
 //!
 //! `ir`/`check`/`run`/`trace` treat the file as a project entry (B8): every
-//! sibling `.functor` file in its directory loads with it — file = module,
+//! sibling `.fun` file in its directory loads with it — file = module,
 //! whole-program checking. `parse` stays single-file (it shows one file's
 //! surface syntax).
 //!
@@ -36,7 +36,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: functor-lang <parse|ir|check|run|trace> <file.functor>\n       functor-lang bench [--all] [--json] [<file.functor>|<dir>]"
+                "usage: functor-lang <parse|ir|check|run|trace> <file.fun>\n       functor-lang bench [--all] [--json] [<file.fun>|<dir>]"
             );
             exit(2);
         }

@@ -1,4 +1,4 @@
-// skybox.functori — the `Skybox` host module (interface only; implemented in Rust by
+// skybox.funi — the `Skybox` host module (interface only; implemented in Rust by
 // FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
 
 // The opaque skybox handle (`Skybox.t` from game code).
