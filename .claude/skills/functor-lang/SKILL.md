@@ -440,9 +440,9 @@ source |> AudioSource.gain(g)                              // source-last: linea
 AudioScene.create([source, …]) / AudioScene.empty()       // what `soundScape` returns
 
 Ui.text("line") / Ui.textColor(r, g, b, "line")            // HUD text (monospace, 14pt)
-Ui.column([view, …])                                       // stack top-to-bottom
-view |> Ui.panel(Ui.topLeft())                             // pin to a corner (view-LAST: pipes;
-                                                           //   only topLeft exists so far)
+Ui.column([view, …]) / Ui.row([view, …])                   // stack top-to-bottom / left-to-right
+view |> Ui.panel(Ui.topLeft())                             // pin to a corner (view-LAST: pipes);
+Ui.topLeft() / topRight() / bottomLeft() / bottomRight()   //   Anchor VALUES (the Angle rule)
 Ui.button("label", msg)                                    // INTERACTIVE (docs/ui-interaction.md):
                                                            //   a click delivers msg VERBATIM
                                                            //   through `update` (the Sub.every
@@ -457,6 +457,14 @@ Ui.button("label", msg)                                    // INTERACTIVE (docs/
                                                            //   type link is a runtime check.
                                                            //   `examples/counter` is the
                                                            //   reference
+Ui.slider(min, max, value, tagger)                         // INTERACTIVE controlled slider:
+                                                           //   shows the MODEL's value; a drag
+                                                           //   applies tagger to the new value
+                                                           //   (the Effect.now tagger shape) and
+                                                           //   the msg folds through `update`.
+                                                           //   max must exceed min; tagger must
+                                                           //   be a function/ctor. Headless:
+                                                           //   {"kind":{"SliderChanged":0.5}}
 
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body
