@@ -43,15 +43,17 @@ use std::rc::Rc;
 /// host stack usage directly. Deep iteration belongs in the iterative builtins
 /// (`List.map`/`fold`), not user-level recursion.
 ///
-/// Kept at 200 through the currying migration (measured, debug build,
-/// Apple Silicon): 200 levels of the deepest recursion need ≈2.24 MiB of stack
-/// on this branch vs ≈2.18 MiB pre-currying — the call-site arity gate adds
-/// only ~320 bytes/level because the partial/over-application logic lives in an
-/// out-of-line `#[cold]` helper ([`Interp::call_curried`]), not `call`'s hot
-/// frame. Both already exceed a 2 MiB test-thread stack, so the suite runs with
-/// a bumped `RUST_MIN_STACK` regardless; the ~64 KiB currying delta is well
-/// within that and the 8 MiB release stack, so the cap need not drop.
-const MAX_EVAL_DEPTH: usize = 200;
+/// INVARIANT: the cap must trip *before* a default 2 MiB test-thread stack is
+/// exhausted in a debug build, so `cargo test -p mle` needs no `RUST_MIN_STACK`
+/// bump and the infinite-recursion test is a live guard on this budget
+/// (`error_infinite_recursion_is_a_clean_error` runs on the default stack; a
+/// per-frame regression shows up there as a stack overflow, not silently).
+///
+/// Measured 2026-07 (debug build, Apple Silicon): the deepest recursion costs
+/// ≈11.8 KiB of stack per eval level — 128 levels need ≈1.35 MiB, leaving ~50%
+/// frame-growth headroom under 2 MiB. 200 levels had grown past the budget
+/// (≈2.2 MiB), aborting the whole test binary on a clean tree (#221).
+const MAX_EVAL_DEPTH: usize = 128;
 
 /// Trace-event cap; see the module doc.
 pub const MAX_TRACE_EVENTS: usize = 10_000;
