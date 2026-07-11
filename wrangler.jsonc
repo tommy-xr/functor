@@ -1,0 +1,11 @@
+{
+  // Static-assets-only Worker that serves the built site (site/dist) at
+  // functor.games. There is no Worker script — `assets.directory` alone makes
+  // Cloudflare serve the prebuilt files directly. Build the site first:
+  //   npm run build:cli   (or: wasm-pack build runtime/functor-runtime-web --target=web)
+  //   npm run site:build  -> site/dist
+  // Deploy: `npx wrangler deploy` (CI does this on push to main).
+  "name": "functor",
+  "compatibility_date": "2026-07-11",
+  "assets": { "directory": "./site/dist" }
+}
