@@ -312,6 +312,14 @@ pub struct Args {
     #[arg(long, default_value_t = 8)]
     ghost_divisions: usize,
 
+    /// Scene-diff trajectory preview (docs/time-travel.md T6, scene-diff
+    /// variant): forward-simulate the model and draw a clean dotted trail
+    /// tracing ONLY the scene nodes that move — derived by the runtime from
+    /// `draw`, with no game logic. Unlike --ghost's whole-scene strobe, static
+    /// geometry contributes nothing. Capturable under --fixed-time.
+    #[arg(long)]
+    trajectory: bool,
+
     /// Narrate the game clock + time-travel seams to stderr: pause/resume/seek
     /// rebases (with the tts they land on), ghost on/off, and per-frame HITCH
     /// warnings when a rendered frame's dt blows past 33ms (the tell-tale of the
@@ -1219,7 +1227,40 @@ Escape again to quit"
             let viewport = functor_runtime_common::Viewport::new(fb_width as u32, fb_height as u32);
 
             // The game supplies the camera/scene/lights as part of its frame.
-            let frame = game.render(time.clone());
+            let mut frame = game.render(time.clone());
+
+            // Scene-diff trajectory preview (docs/time-travel.md T6, scene-diff
+            // variant): forward-simulate the model (physics included, via the
+            // shared ghost_frames) and diff the rendered scenes' node world
+            // positions, then overlay a dotted trail on just the movers — the
+            // clean-lines COMPLEMENT to --ghost's whole-scene strobe. Same gating
+            // as ghost (interactive only while the scrubber is paused; headless
+            // via the flag, so it's deterministically capturable). Renders on the
+            // normal path — the trail is ordinary emissive geometry, no
+            // compositor.
+            let trajectory_active = if scrubber_visible {
+                args.trajectory && clock.is_paused()
+            } else {
+                args.trajectory
+            };
+            if trajectory_active {
+                // Not bound by the 8-target compositor cap — this only reads node
+                // positions — so sample finely for a smooth arc.
+                let divisions = 32usize;
+                let window = 1.6f32;
+                let dt = window / divisions as f32;
+                let futures = game.ghost_frames(divisions, dt, time.tts as f64, None);
+                let trail = {
+                    let mut scenes: Vec<&functor_runtime_common::Scene3D> = vec![&frame.scene];
+                    scenes.extend(futures.iter().map(|(f, _)| &f.scene));
+                    // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut respawn
+                    // teleports (a reset covers many units in one sample).
+                    functor_runtime_common::trajectory_trail(&scenes, 0.04, 3.0)
+                };
+                if let Some(trail) = trail {
+                    frame.scene = functor_runtime_common::overlay(frame.scene.clone(), trail);
+                }
+            }
 
             // Forward-ghosting (docs/time-travel.md T6d): when --ghost is on, step
             // the scene forward over a ~2s window and collect a Frame per division

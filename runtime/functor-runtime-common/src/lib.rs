@@ -83,6 +83,7 @@ pub mod skybox;
 mod shader_program;
 pub mod texture;
 pub mod timetravel;
+pub mod trajectory;
 pub mod ui;
 mod viewport;
 
@@ -98,6 +99,7 @@ pub use render_target::RenderTargetDescriptor;
 pub use renderer::*;
 pub use skybox::SkyboxDescription;
 pub use scene3d::*;
+pub use trajectory::{overlay, trajectory_trail};
 pub use viewport::*;
 
 #[cfg(test)]
