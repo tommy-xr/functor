@@ -11,8 +11,8 @@ import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 
 const EXAMPLES = [
   { id: "hero", label: "Neon grid" },
-  { id: "orbit", label: "Orbit (MVU)" },
-  { id: "physics", label: "Physics" },
+  { id: "primitives", label: "Primitives" },
+  { id: "bounce", label: "Physics" },
   { id: "monitor", label: "Render targets" },
 ];
 
@@ -140,8 +140,14 @@ const loadInline = (b64u) => {
   }
   picker.value = "__inline";
   setDoc(source);
+  // Deliver the inline program through the set-source push seam (like a live
+  // edit), not a player `?src=` data: URL: the runtime derives a module name
+  // from the entry path (`file = module`), and a data: URL has no valid
+  // identifier stem. The player loads its default entry, then this push (armed
+  // via `dirty`, flushed on `functor-lang-preview-ready`) swaps in the program.
+  dirty = true;
   setStatus("busy", "◌ loading…");
-  frame.src = `player.html?src=${b64u}`;
+  frame.src = "player.html";
   return true;
 };
 

@@ -147,7 +147,7 @@ const playerFrame = (page) => {
     timeout: 5000,
   });
   const status = await page.evaluate(() => window.__sandbox.status());
-  check("broken edit surfaces the parse error", status.detail.includes("cannot parse"), status.detail);
+  check("broken edit surfaces the parse error", /cannot .*:\d+:\d+/.test(status.detail), status.detail);
   await sleep(400);
   const still = await centerPixel(playerFrame(page));
   check("old program keeps rendering after a broken edit", still[1] > 150 && still[0] < 100, `center = rgb(${still})`);
@@ -163,7 +163,7 @@ const playerFrame = (page) => {
 }
 
 // --- 6. Every example loads and ticks cleanly. ---------------------------------
-for (const example of ["hero", "orbit", "physics", "monitor"]) {
+for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const consoleLog = [];
   page.on("console", (m) => consoleLog.push(m.text()));
