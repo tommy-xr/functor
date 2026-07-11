@@ -487,6 +487,9 @@ impl FunctorLangGame {
             let render_us = self.render_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let swap_us = self.swap_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let frame_us = tick_us + physics_us + draw_us;
+            let counters = functor_runtime_common::gpu_counters::gpu_counters();
+            let live = counters.live();
+            let window = counters.take_window();
             events::emit(RuntimeEvent::FrameStats {
                 tick_us: round1(tick_us),
                 draw_us: round1(draw_us),
@@ -495,6 +498,12 @@ impl FunctorLangGame {
                 frame_us: round1(frame_us),
                 budget_pct: round1(frame_us / 16_666.0 * 100.0),
                 over_n_frames: STATS_EVERY as u32,
+                gpu_live_vaos: live.vaos,
+                gpu_live_buffers: live.buffers,
+                gpu_live_textures: live.textures,
+                gpu_bytes_per_frame: round1(window.bytes_uploaded as f64 / STATS_EVERY as f64),
+                gpu_cache_hits: window.cache_hits,
+                gpu_cache_misses: window.cache_misses,
             });
             self.tick_ns = 0;
             self.physics_ns = 0;

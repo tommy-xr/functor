@@ -47,15 +47,21 @@ impl<T: Vertex> RenderableAsset for IndexedMeshData<T> {
                 self.indices.as_ptr() as *const u8,
                 self.indices.len() * core::mem::size_of::<u32>(),
             );
+            let counters = crate::gpu_counters::gpu_counters();
             let ebo = gl.create_buffer().unwrap();
+            counters.buffer_created();
             gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
             gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, indices_u8, glow::STATIC_DRAW);
+            counters.uploaded(indices_u8.len());
 
             let vbo = gl.create_buffer().unwrap();
+            counters.buffer_created();
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::STATIC_DRAW);
+            counters.uploaded(vertices_u8.len());
 
             let vao = gl.create_vertex_array().unwrap();
+            counters.vao_created();
             gl.bind_vertex_array(Some(vao));
 
             let attributes = <T>::get_vertex_attributes();

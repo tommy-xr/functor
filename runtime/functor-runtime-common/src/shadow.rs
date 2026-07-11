@@ -24,6 +24,7 @@ impl ShadowMap {
     pub fn new(gl: &glow::Context, size: u32) -> ShadowMap {
         unsafe {
             let depth_texture = gl.create_texture().expect("shadow depth texture");
+            crate::gpu_counters::gpu_counters().texture_created();
             gl.bind_texture(glow::TEXTURE_2D, Some(depth_texture));
             gl.tex_image_2d(
                 glow::TEXTURE_2D,

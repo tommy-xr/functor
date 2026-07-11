@@ -56,6 +56,7 @@ mod camera;
 pub mod composite;
 pub mod events;
 pub mod fog;
+pub mod gpu_counters;
 mod frame;
 mod frame_time;
 pub mod game_clock;

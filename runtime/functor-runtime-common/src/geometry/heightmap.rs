@@ -54,21 +54,24 @@ impl HeightmapMesh {
                 indices.as_ptr() as *const u8,
                 indices.len() * core::mem::size_of::<u32>(),
             );
+            let counters = crate::gpu_counters::gpu_counters();
             let ebo = gl.create_buffer().unwrap();
+            counters.buffer_created();
             gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
             gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, indices_u8, glow::STATIC_DRAW);
+            counters.uploaded(indices_u8.len());
 
             // DYNAMIC_DRAW: the vertex buffer is re-uploaded in place whenever the
             // heights change (see `update`).
             let vbo = gl.create_buffer().unwrap();
+            counters.buffer_created();
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            gl.buffer_data_u8_slice(
-                glow::ARRAY_BUFFER,
-                vertices_bytes(&vertices),
-                glow::DYNAMIC_DRAW,
-            );
+            let vertices_u8 = vertices_bytes(&vertices);
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::DYNAMIC_DRAW);
+            counters.uploaded(vertices_u8.len());
 
             let vao = gl.create_vertex_array().unwrap();
+            counters.vao_created();
             gl.bind_vertex_array(Some(vao));
 
             let attributes = <VertexPositionTexture>::get_vertex_attributes();
@@ -116,9 +119,11 @@ impl HeightmapMesh {
         let rows = self.vertices.len() / self.cols;
         fill_vertices(&mut self.vertices, rows, self.cols, heights, &self.indices);
         unsafe {
+            let vertices_u8 = vertices_bytes(&self.vertices);
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, vertices_bytes(&self.vertices));
+            gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, vertices_u8);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            crate::gpu_counters::gpu_counters().uploaded(vertices_u8.len());
         }
         self.heights_hash = hash;
     }

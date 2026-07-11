@@ -160,6 +160,7 @@ impl SceneContext {
         let mut fallback = self.fallback_texture.borrow_mut();
         *fallback.get_or_insert_with(|| unsafe {
             let texture = gl.create_texture().expect("fallback texture");
+            crate::gpu_counters::gpu_counters().texture_created();
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
@@ -172,6 +173,7 @@ impl SceneContext {
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&[255, 0, 255, 255])),
             );
+            crate::gpu_counters::gpu_counters().uploaded(4);
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
@@ -266,6 +268,7 @@ skybox disabled for this set",
                 }
                 let texture = unsafe {
                     let texture = gl.create_texture().expect("skybox cubemap");
+                    crate::gpu_counters::gpu_counters().texture_created();
                     gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(texture));
                     for (i, face) in faces.iter().enumerate() {
                         gl.tex_image_2d(
@@ -279,6 +282,7 @@ skybox disabled for this set",
                             glow::UNSIGNED_BYTE,
                             glow::PixelUnpackData::Slice(Some(&face.bytes)),
                         );
+                        crate::gpu_counters::gpu_counters().uploaded(face.bytes.len());
                     }
                     gl.tex_parameter_i32(
                         glow::TEXTURE_CUBE_MAP,
@@ -930,14 +934,22 @@ named \"{name}\" — {hint}"
                 // then re-upload its vertices in place only when the heights change
                 // (a no-op for static terrain). No per-frame VAO/VBO/EBO churn.
                 let mut heightmaps = scene_context.heightmaps.borrow_mut();
-                let mesh = heightmaps.entry((*rows, *cols)).or_insert_with(|| {
-                    geometry::HeightmapMesh::create(
-                        &render_context.gl,
-                        *rows as usize,
-                        *cols as usize,
-                        heights,
-                    )
-                });
+                let counters = crate::gpu_counters::gpu_counters();
+                let mesh = match heightmaps.entry((*rows, *cols)) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        counters.cache_hit();
+                        e.into_mut()
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        counters.cache_miss();
+                        e.insert(geometry::HeightmapMesh::create(
+                            &render_context.gl,
+                            *rows as usize,
+                            *cols as usize,
+                            heights,
+                        ))
+                    }
+                };
                 mesh.update(&render_context.gl, heights);
                 mesh.draw(&render_context.gl);
             }
