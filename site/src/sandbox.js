@@ -83,6 +83,11 @@ const fromBase64Url = (b64u) =>
 
 let inlineB64 = null;
 
+// A monotonically increasing load token: each picker change / reset / inline
+// load claims a new one, and a fetch that finishes after a newer load started
+// is ignored — a slow earlier response must not overwrite a newer selection.
+let loadToken = 0;
+
 const loadInline = (b64u) => {
   let source;
   try {
@@ -101,26 +106,27 @@ const loadInline = (b64u) => {
     picker.appendChild(option);
   }
   picker.value = "__inline";
+  loadToken += 1; // supersede any in-flight example fetch
   setDoc(source);
-  // Deliver the inline program through the set-source push seam (like a live
-  // edit), not a player `?src=` data: URL: the runtime derives a module name
-  // from the entry path (`file = module`), and a data: URL has no valid
-  // identifier stem. The player loads its default entry, then this armed push
-  // swaps in the program once `functor-lang-preview-ready` arrives.
-  bridge.armPush(source);
   setStatus("busy", "◌ loading…");
-  frame.src = "player.html";
+  // A fresh iframe on a `?src=` data: URL, so the inline program runs its OWN
+  // `init` (a set-source push would preserve the default entry's model). The
+  // loader derives module `Main` for a non-identifier entry label.
+  frame.src = `player.html?src=${b64u}`;
   return true;
 };
 
 const loadExample = async (id) => {
+  const token = ++loadToken;
   const url = `examples/${encodeURIComponent(id)}.fun`;
   const response = await fetch(url);
+  if (token !== loadToken) return; // a newer load superseded this one
   if (!response.ok) {
     setStatus("error", "✖ error", `cannot fetch ${url}: HTTP ${response.status}`);
     return;
   }
   const source = await response.text();
+  if (token !== loadToken) return;
   // A fresh iframe (fresh model: init runs) rather than a source push, so
   // switching examples resets state; the ready announcement re-arms pushes.
   setDoc(source);

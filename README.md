@@ -197,4 +197,3 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 - Demo audio (`examples/*/*.wav`) is procedurally synthesized — original/CC0, no
   third-party samples. Regenerate with `npm run generate:audio`
   (`scripts/generate-audio.mjs`).
-</content>

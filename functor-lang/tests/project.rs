@@ -463,6 +463,35 @@ fn non_identifier_file_stems_are_refused() {
     );
 }
 
+/// A SINGLE inline source (the wasm single-entry / docs "try it" path) whose
+/// path is a non-identifier label — a `data:` URL — loads as module `Main`
+/// rather than hard-erroring on module-name derivation. Multi-file projects
+/// keep the loud errors (see `non_identifier_file_stems_are_refused`).
+#[test]
+fn single_source_with_non_identifier_path_loads_as_main() {
+    let sources = vec![(
+        PathBuf::from("data:text/plain;base64,bGV0IHg="),
+        "let main = () => 0.0\n".to_string(),
+    )];
+    let project = functor_lang::project::load_sources_with_prelude(sources, &[])
+        .unwrap_or_else(|e| panic!("single inline source should load: {}", e.render()));
+    assert_eq!(project.entry, "Main");
+}
+
+/// A single `physics.fun` source (stem capitalizes to the protected `Physics`
+/// namespace) also falls back to `Main` rather than colliding with the
+/// builtin/prelude namespace the loader injects.
+#[test]
+fn single_source_with_protected_stem_loads_as_main() {
+    let sources = vec![(
+        PathBuf::from("physics.fun"),
+        "let main = () => 0.0\n".to_string(),
+    )];
+    let project = functor_lang::project::load_sources_with_prelude(sources, &[])
+        .unwrap_or_else(|e| panic!("single protected-stem source should load: {}", e.render()));
+    assert_eq!(project.entry, "Main");
+}
+
 /// In single-file (non-project) lowering, `open` is an unknown module —
 /// the honest answer for the LSP's per-file view too.
 #[test]

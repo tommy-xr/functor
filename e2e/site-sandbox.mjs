@@ -15,7 +15,10 @@
 //      on wasm);
 //   7. the docs page highlights its Functor Lang blocks, and a "try it" button's
 //      program loads live in the sandbox (the #src= → player ?src= data-URL
-//      path, fresh init).
+//      path, fresh init);
+//   8. an inline #src= program with its OWN model shape truly fresh-inits (its
+//      init runs — no model carried over from the default example) and ticks
+//      cleanly.
 //
 // Run manually (needs the wasm bundle):
 //
@@ -37,6 +40,17 @@ let draw = (model, tts: Float) =>
     Scene.sphere() |> Scene.emissive(0.1, 1.0, 0.2) |> Scene.scale(2.0))
 `;
 const BROKEN = "let init = {\n";
+
+// An inline program whose model shape matches NO served example (`spin` —
+// read in both tick and draw): only a fresh `init` runs it cleanly, so this
+// catches the sandbox hot-swapping an inline program onto a foreign model.
+const INLINE_SPIN = `let init = { spin: 0.0 }
+let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt }
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(1.0, 0.2, 0.8))
+`;
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -332,7 +346,31 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   await page.close();
 }
 
-// --- 8. Time-travel scrubber drives/observes the player via __scrub. ----------
+// --- 8. Inline #src= program with its OWN model shape fresh-inits. -------------
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const consoleLog = [];
+  page.on("console", (m) => consoleLog.push(m.text()));
+  const b64u = Buffer.from(INLINE_SPIN).toString("base64url");
+  await page.goto(`${BASE}/sandbox.html#src=${b64u}`);
+  const name = "inline program with its own model shape fresh-inits and ticks cleanly";
+  try {
+    await page.waitForFunction(
+      () => window.__sandbox && window.__sandbox.status().state === "live",
+      { timeout: 30000 }
+    );
+    await sleep(700);
+    // A hot-swap onto the default example's model would blow up on
+    // `model.spin` every frame; a fresh init ticks with no runtime errors.
+    const errors = consoleLog.filter((m) => m.includes("[functor-lang]") && m.includes("error"));
+    check(name, errors.length === 0, errors.join("\n"));
+  } catch {
+    check(name, false, consoleLog.slice(-5).join("\n"));
+  }
+  await page.close();
+}
+
+// --- 9. Time-travel scrubber drives/observes the player via __scrub. ----------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(`${BASE}/sandbox.html`);

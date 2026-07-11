@@ -32,6 +32,9 @@ const setStatus = (state, message = "") => {
   dot.dataset.state = state;
   dot.title = message || state;
 };
+// Busy until the player's ready handshake: the bridge's onLive (or a
+// successful onResult) is what turns the dot green, never the mount itself.
+setStatus("busy", "loading…");
 
 // The file split around the editable region. prefix + region + suffix always
 // reconstructs the exact served source, so a push preserves the sentinels
@@ -55,10 +58,14 @@ const boot = async () => {
   let source;
   try {
     const response = await fetch(HERO_URL);
-    if (!response.ok) return;
+    if (!response.ok) {
+      setStatus("error", `cannot fetch ${HERO_URL}: HTTP ${response.status}`);
+      return; // No editor panel; the scene may still run on its own.
+    }
     source = await response.text();
-  } catch {
-    return; // Fail soft: no panel, the scene still runs on its own.
+  } catch (err) {
+    setStatus("error", `cannot fetch ${HERO_URL}: ${err}`);
+    return;
   }
 
   const open = source.indexOf(OPEN);
@@ -86,7 +93,8 @@ const boot = async () => {
       bridge.push(fullProgram());
     },
   });
-  setStatus("live", "live");
+  // No setStatus here: the dot stays busy until the player announces ready
+  // (bridge onLive) or the first push result comes back.
 };
 
 boot();

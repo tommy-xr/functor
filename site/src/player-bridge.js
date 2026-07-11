@@ -27,6 +27,11 @@ export class PlayerBridge {
     this.dirty = false;
     this.pushTimer = null;
     this.lastSource = "";
+    // Correlates results with pushes: each posted push gets a fresh id, the
+    // runtime echoes it in the result, and a result for anything but the
+    // LATEST push is stale — ignore it, its reply is coming. Results with no
+    // id (an older runtime) are accepted as before.
+    this.pushId = 0;
 
     // Replies and readiness from the player iframe. Only trust the iframe we
     // created (same-origin, but be explicit about the source anyway).
@@ -48,14 +53,6 @@ export class PlayerBridge {
     this.dirty = false;
   }
 
-  // Arm an immediate push of `source` for when the player next signals ready —
-  // the inline-load path: the player boots its default entry, then we swap in
-  // this program. No debounce; the flush happens on the ready handshake.
-  armPush(source) {
-    this.lastSource = source;
-    this.dirty = true;
-  }
-
   #post() {
     if (!this.previewReady || !this.iframe.contentWindow) {
       this.dirty = true;
@@ -63,8 +60,9 @@ export class PlayerBridge {
     }
     this.dirty = false;
     this.onReloading();
+    this.pushId += 1;
     this.iframe.contentWindow.postMessage(
-      { type: "functor-lang-set-source", source: this.lastSource },
+      { type: "functor-lang-set-source", source: this.lastSource, id: this.pushId },
       "*"
     );
   }
@@ -82,6 +80,9 @@ export class PlayerBridge {
       // A reply from the outgoing document (its WindowProxy survives the src
       // swap) must not overwrite the "loading…" status of the incoming one.
       if (!this.previewReady) return;
+      // A result carrying an id that isn't the latest push's is stale — a
+      // newer push is already in flight; its reply supersedes this one.
+      if (data.id !== undefined && data.id !== this.pushId) return;
       this.onResult(data.ok, data.message);
     }
   }

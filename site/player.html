@@ -53,6 +53,18 @@
       #scrubber button:hover { border-color: var(--scrub-accent); }
       #scrub-slider { flex: 1; min-width: 80px; accent-color: var(--scrub-accent); }
       #scrub-label { color: var(--scrub-dim); min-width: 118px; text-align: right; }
+      /* Narrow hosts (the ~350px hero card on a phone). This page is an
+         iframe, so the parent's media queries can't reach in — this query runs
+         against the iframe's own viewport. Drop the "time-travel · " prefix,
+         tighten gaps/padding, and let the slider flex smaller so the whole
+         strip (buttons + slider + counter) fits without clipping. */
+      @media (max-width: 480px) {
+        #scrubber { gap: 6px; padding: 6px 8px; }
+        #scrubber button { padding: 5px 7px; }
+        #scrub-prefix { display: none; }
+        #scrub-label { min-width: 0; }
+        #scrub-slider { min-width: 40px; }
+      }
     </style>
   </head>
   <body>
@@ -62,7 +74,7 @@
       <button id="scrub-pause">Pause</button>
       <button id="scrub-step">Step ▸</button>
       <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
-      <span id="scrub-label">time-travel</span>
+      <span id="scrub-label"><span id="scrub-prefix">time-travel · </span><span id="scrub-count"></span></span>
     </div>
     <script type="module">
 
@@ -169,7 +181,7 @@
       // it. (Ghost controls are deliberately out of scope here.)
       const setupScrubber = () => {
         const el = document.getElementById("scrubber");
-        const label = document.getElementById("scrub-label");
+        const count = document.getElementById("scrub-count");
         const pause = document.getElementById("scrub-pause");
         const slider = document.getElementById("scrub-slider");
         const step = document.getElementById("scrub-step");
@@ -206,7 +218,9 @@
             slider.max = hi;
             const frame = functor_lang_scene_frame();
             if (!scrubbing) slider.value = frame; // don't tug the handle mid-drag
-            label.textContent = `time-travel · ${frame | 0} / ${hi | 0}`;
+            // The "time-travel · " prefix is static markup (#scrub-prefix),
+            // hidden on narrow viewports; only the counter updates here.
+            count.textContent = `${frame | 0} / ${hi | 0}`;
             pause.textContent = functor_lang_scrub_paused() ? "Resume" : "Pause";
           } else {
             el.style.display = "none"; // nothing recorded yet
@@ -227,7 +241,9 @@
           // Queue the source; the wasm frame loop applies it at a safe point
           // (never mid-frame) and posts an `functor-lang-set-source-result` back to the
           // hosting frame with the outcome (a broken push keeps the old program).
-          functor_lang_set_source(data.source);
+          // The push's optional correlation id is echoed in the result so the
+          // sender can discard stale replies; id-less pushes work as before.
+          functor_lang_set_source(data.source, typeof data.id === "number" ? data.id : undefined);
         });
         // Announce once the PRODUCER is installed (not just the wasm module):
         // run_async still has to fetch the source, so poll functor_lang_is_running().
