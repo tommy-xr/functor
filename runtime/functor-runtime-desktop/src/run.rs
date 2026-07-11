@@ -785,6 +785,15 @@ pub fn run(args: Args) {
                 .expect("Failed to create GLFW window");
 
             window.make_current();
+            // Cap the live windowed loop at the display's refresh with vsync, so
+            // a cheap scene doesn't spin uncapped and pin the GPU. GATED OFF for
+            // hidden/capture and deterministic (`--fixed-time`) runs, which must
+            // keep their current timing behavior — a golden capture or the debug
+            // server's /capture must never block on the compositor's swap. Applies
+            // to the current context, so it must follow `make_current`.
+            if !hidden && args.fixed_time.is_none() {
+                glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
+            }
             window.set_key_polling(true);
             // Printable characters for a focused `Ui.textInput`
             // (docs/ui-interaction.md U4) — GLFW delivers text as separate
