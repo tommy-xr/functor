@@ -443,6 +443,42 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   await page.close();
 }
 
+// --- 10. The editor language-intelligence wasm analyzes source in-browser. -----
+// Commits 7-8 wire this into the CodeMirror editor (diagnostics/hover); here we
+// just smoke-test the bundle loads and `functor_lang_analyze` reports errors on
+// a bad source and none on a clean one.
+{
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  await page.goto(BASE); // any same-origin page; we only need /pkg/ reachable
+  const result = await page.evaluate(async () => {
+    const mod = await import("/pkg/functor_lang_wasm.js");
+    await mod.default(); // init the wasm
+    // A type error: adding a string to a float.
+    const bad = JSON.parse(mod.functor_lang_analyze('let bad = 1.0 + "x"\n'));
+    // A clean program using prelude names.
+    const clean = JSON.parse(
+      mod.functor_lang_analyze(
+        "let draw = (model, tts: Float) =>\n" +
+          "  Frame.create(Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n"
+      )
+    );
+    return { bad, clean };
+  });
+  const d = result.bad.diagnostics;
+  const sane =
+    Array.isArray(d) &&
+    d.length >= 1 &&
+    Number.isInteger(d[0].from) &&
+    Number.isInteger(d[0].to) &&
+    d[0].from < d[0].to;
+  check(
+    "language wasm analyzes source in-browser (error on bad, none on clean)",
+    sane && result.clean.diagnostics.length === 0,
+    `bad=${JSON.stringify(d)} clean=${result.clean.diagnostics.length}`
+  );
+  await page.close();
+}
+
 await browser.close();
 server.kill();
 console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

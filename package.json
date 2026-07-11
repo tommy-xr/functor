@@ -4,6 +4,7 @@
   "scripts": {
     "clean": "git clean -fdX",
     "build:cli": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
+    "build:lang-wasm": "wasm-pack build tools/functor-lang-wasm --target=web",
     "build:lsp": "cargo install --path tools/functor-lang-lsp --force && (pkill -x functor-lang-lsp || true)",
     "install:vsix": "npm run install:vsix --prefix tools/functor-lang-vscode",
     "build:oculus": "ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-sdk} CARGO_TARGET_DIR=target-android cargo ndk -t arm64-v8a build --manifest-path runtime/functor-runtime-oculus/Cargo.toml",
