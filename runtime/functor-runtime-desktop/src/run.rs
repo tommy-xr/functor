@@ -1329,8 +1329,13 @@ Escape again to quit"
             } else {
                 (32usize, 1.6f32)
             };
+            // While a drag-into-the-future catch-up is draining, skip the
+            // preview recompute (the anchor moves every frame, so it would be
+            // a full forward-sim per frame and throttle the catch-up to a
+            // crawl) — it snaps back in on arrival.
             let preview_active = (trail_wanted || strobe_wanted)
-                && args.composite_demo == CompositeDemoArg::Off;
+                && args.composite_demo == CompositeDemoArg::Off
+                && clock.pending_frames() == 0;
             let preview: Option<functor_runtime_common::ScenePreview> = if preview_active {
                 // Not bound by the 8-target compositor cap — this only reads node
                 // transforms — so sample finely for a smooth arc.
@@ -1428,6 +1433,8 @@ Escape again to quit"
             let ghost_frames = if ghost_active
                 && !args.stereo_sbs
                 && args.composite_demo == CompositeDemoArg::Off
+                // Skipped during a catch-up drain, like the scene-diff preview.
+                && clock.pending_frames() == 0
             {
                 const MAX_GHOST: usize = 8;
                 // Interactive: the ⚙ popover's shared window/samples (clamped
@@ -1781,21 +1788,48 @@ Escape again to quit"
                     clock.toggle_pause();
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SeekTo(f)) => {
-                    // Dragging the timeline: non-destructive seek, and park the
-                    // clock on the scrubbed frame (resuming from there is what
-                    // commits the branch). Keep the clock's time aligned to the
-                    // scrubbed frame so a resume continues from it.
-                    match game.seek_scene_to(f) {
-                        Ok(_) => {}
-                        Err(e) => eprintln!("[scrubber] {e}"),
-                    }
-                    if let Some(tts) = game.current_scene_tts() {
-                        if args.debug_clock {
-                            eprintln!("[clock] seek frame={f}: rebase tts={tts:.3}");
+                    let newest = game.scene_frame_range().map(|(_, h)| h);
+                    match newest {
+                        Some(h) if f > h => {
+                            // Dragged INTO the rail's cyan future segment:
+                            // pass through the recorded end, then step the
+                            // game forward input-free — the clock animates
+                            // the catch-up (≤8 fixed frames per rendered
+                            // frame). Stepping from the newest frame commits
+                            // nothing away, so this is branch-safe.
+                            if args.debug_clock {
+                                eprintln!(
+                                    "[clock] seek frame={f}: {} beyond newest {h} — stepping forward",
+                                    f - h
+                                );
+                            }
+                            if let Err(e) = game.seek_scene_to(h) {
+                                eprintln!("[scrubber] {e}");
+                            }
+                            if let Some(tts) = game.current_scene_tts() {
+                                clock.rebase(tts as f32);
+                            }
+                            clock.step_frames((f - h) as u32);
                         }
-                        clock.rebase(tts as f32);
+                        _ => {
+                            // Dragging the recorded window: non-destructive
+                            // seek, and park the clock on the scrubbed frame
+                            // (resuming from there is what commits the
+                            // branch). Keep the clock's time aligned to the
+                            // scrubbed frame so a resume continues from it.
+                            match game.seek_scene_to(f) {
+                                Ok(_) => {}
+                                Err(e) => eprintln!("[scrubber] {e}"),
+                            }
+                            if let Some(tts) = game.current_scene_tts() {
+                                if args.debug_clock {
+                                    eprintln!("[clock] seek frame={f}: rebase tts={tts:.3}");
+                                }
+                                clock.rebase(tts as f32);
+                            }
+                            clock.pause();
+                        }
                     }
-                    clock.pause();
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::Step) => {
                     // Step implies pause: advance exactly one frame, then hold.

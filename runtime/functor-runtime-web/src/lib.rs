@@ -1108,13 +1108,30 @@ async fn run_async() -> Result<(), JsValue> {
                         preview_samples = samples.clamp(1, 64);
                     }
                     functor_lang_game::ScrubControl::SeekTo(f) => {
-                        let _ = game.seek_scene_to(f);
-                        // Park on the scrubbed frame and keep the clock aligned to
-                        // its time, so resuming continues from there.
-                        if let Some(tts) = game.current_scene_tts() {
-                            clock.rebase(tts as f32);
+                        let newest = game.scene_frame_range().map(|(_, h)| h);
+                        match newest {
+                            Some(h) if f > h => {
+                                // Dragged INTO the rail's cyan future segment:
+                                // pass through the recorded end, then step the
+                                // game forward input-free (the clock animates
+                                // the catch-up — mirrors the desktop shell).
+                                let _ = game.seek_scene_to(h);
+                                if let Some(tts) = game.current_scene_tts() {
+                                    clock.rebase(tts as f32);
+                                }
+                                clock.step_frames((f - h) as u32);
+                            }
+                            _ => {
+                                let _ = game.seek_scene_to(f);
+                                // Park on the scrubbed frame and keep the clock
+                                // aligned to its time, so resuming continues
+                                // from there.
+                                if let Some(tts) = game.current_scene_tts() {
+                                    clock.rebase(tts as f32);
+                                }
+                                clock.pause();
+                            }
                         }
-                        clock.pause();
                     }
                 }
             }
@@ -1167,7 +1184,12 @@ async fn run_async() -> Result<(), JsValue> {
             // `scene_preview`, the same step the desktop shell runs. The web
             // scrubber is always visible, so like the ghost it renders only
             // while PAUSED. Script inputs are `None`: web has no --input-script.
-            let paused = clock.is_paused();
+            // While a drag-into-the-future catch-up is draining, skip preview
+            // and ghost recomputes (the anchor moves every frame — a full
+            // forward-sim per frame would throttle the catch-up to a crawl);
+            // they snap back in on arrival.
+            let catching_up = clock.pending_frames() > 0;
+            let paused = clock.is_paused() && !catching_up;
             let trail_wanted = preview_mode.wants_trail() && paused;
             // The selector is single-valued, so a strobe mode and the ghost
             // compositor can never be on together (the double-ghost hazard the
@@ -1251,7 +1273,7 @@ async fn run_async() -> Result<(), JsValue> {
             // times every LIVE rAF frame would starve the wasm render loop (the
             // interpreter forward-step is costly on WebGL2). Pause via the DOM
             // scrubber to see it.
-            let ghosts = if preview_mode.wants_ghost() && clock.is_paused() {
+            let ghosts = if preview_mode.wants_ghost() && clock.is_paused() && !catching_up {
                 // The ⚙ popover's shared window/samples, clamped to the
                 // compositor's 8-target cap.
                 let divisions = preview_samples.clamp(1, 8);

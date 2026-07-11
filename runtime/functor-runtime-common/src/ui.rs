@@ -787,11 +787,17 @@ impl Scrubber {
                 .show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.vertical(|ui| {
-                            // The timeline rail's horizontal extent (slider +
-                            // future segment), captured from inside the row so
-                            // the frame counter below can center on the BAR
-                            // rather than the whole panel.
+                            // The timeline rail's horizontal extent, captured
+                            // from inside the row so the frame counter below
+                            // can center on the BAR rather than the panel.
                             let mut rail: Option<(f32, f32)> = None;
+                            // The preview window in fixed frames — sizes the
+                            // rail's cyan segment and the counter's `+N`.
+                            let future_frames = if state.preview_mode.is_on() {
+                                (state.preview_window * 60.0).round().max(0.0) as u64
+                            } else {
+                                0
+                            };
                             ui.horizontal(|ui| {
                                 if ui
                                     .button(if state.paused { "Resume" } else { "Pause" })
@@ -799,29 +805,24 @@ impl Scrubber {
                                 {
                                     action = Some(ScrubberAction::TogglePause);
                                 }
-                                // The draggable timeline: drag anywhere in the
-                                // recorded window to scrub (non-destructive).
-                                // Only shown once there's a range to drag
-                                // across. When a preview is on, the rail's
-                                // DOMAIN extends past the recorded end by the
-                                // preview window (60 fixed frames/sec): the
-                                // slider spans the recorded part and a
-                                // translucent strip marks [handle, handle +
-                                // window] — how far ahead the preview looks.
+                                // The draggable timeline. When a preview is
+                                // on, the rail's DOMAIN includes the preview
+                                // window (60 fixed frames/sec past the
+                                // recorded end): the cyan segment marks
+                                // [handle, handle + window], and the handle
+                                // can be dragged INTO it — a seek beyond the
+                                // recorded end steps the game forward,
+                                // input-free (the clock animates the
+                                // catch-up). The segment's end cap drags to
+                                // resize the window in place.
                                 if let Some((lo, hi)) = state.range {
                                     if hi > lo {
                                         const RAIL_W: f32 = 300.0;
-                                        let span = (hi - lo) as f32;
-                                        let future = if state.preview_mode.is_on() {
-                                            (state.preview_window * 60.0).max(0.0)
-                                        } else {
-                                            0.0
-                                        };
-                                        let px_per_frame = RAIL_W / (span + future);
+                                        let max = hi + future_frames;
                                         let mut f = state.frame.clamp(lo, hi);
-                                        ui.spacing_mut().slider_width = px_per_frame * span;
+                                        ui.spacing_mut().slider_width = RAIL_W;
                                         let slider = ui.add(
-                                            egui::Slider::new(&mut f, lo..=hi)
+                                            egui::Slider::new(&mut f, lo..=max)
                                                 .show_value(false)
                                                 .handle_shape(egui::style::HandleShape::Rect {
                                                     aspect_ratio: 0.5,
@@ -831,42 +832,30 @@ impl Scrubber {
                                             action = Some(ScrubberAction::SeekTo(f));
                                         }
                                         rail = Some((slider.rect.left(), slider.rect.right()));
-                                        if future > 0.0 {
-                                            // The future segment sits flush
-                                            // against the rail: drop the item
-                                            // gap only BETWEEN the slider and
-                                            // this allocation (set after the
-                                            // slider, so the Pause↔slider gap
-                                            // is untouched).
-                                            let old_spacing = ui.spacing().item_spacing;
-                                            ui.spacing_mut().item_spacing.x = 0.0;
-                                            let (ext, _) = ui.allocate_exact_size(
-                                                egui::vec2(
-                                                    px_per_frame * future,
-                                                    slider.rect.height(),
-                                                ),
-                                                egui::Sense::hover(),
-                                            );
-                                            ui.spacing_mut().item_spacing = old_spacing;
-                                            rail = Some((slider.rect.left(), ext.right()));
-                                            // Paint the future segment ON the
-                                            // rail line at track height —
-                                            // trail-cyan, so it reads as "the
-                                            // preview's part of the bar", not
-                                            // a hint. The handle's center
+                                        if future_frames > 0 {
+                                            // The cyan future segment, painted
+                                            // ON the rail at track height
+                                            // (trail-cyan: it IS the preview's
+                                            // future). The handle's center
                                             // travels an INSET range (≈ its
                                             // half-size) inside the slider
-                                            // rect — start from that, not the
-                                            // box edge, so it meets the handle.
+                                            // rect — map through that so the
+                                            // segment meets the handle.
                                             let y = slider.rect.center().y;
                                             let inset = slider.rect.height() * 0.5;
                                             let travel =
                                                 (slider.rect.width() - 2.0 * inset).max(1.0);
-                                            let x0 = slider.rect.left()
-                                                + inset
-                                                + (f - lo) as f32 / span * travel;
-                                            let x1 = (x0 + px_per_frame * future)
-                                                .min(ext.right());
+                                            let domain = (max - lo) as f32;
+                                            let x_of = |frame: u64| {
+                                                slider.rect.left()
+                                                    + inset
+                                                    + (frame - lo) as f32 / domain * travel
+                                            };
+                                            // Start at the handle's RIGHT edge
+                                            // so the cyan never paints over the
+                                            // handle or the traversed track.
+                                            let x0 = x_of(f) + 5.0;
+                                            let x1 = x_of((f + future_frames).min(max)).max(x0);
                                             ui.painter().rect_filled(
                                                 egui::Rect::from_min_max(
                                                     egui::pos2(x0, y - 2.5),
@@ -877,6 +866,44 @@ impl Scrubber {
                                                     64, 217, 255, 200,
                                                 ),
                                             );
+                                            // The segment's END CAP: a small
+                                            // grabber hanging under the window
+                                            // end — drag to resize the forward
+                                            // window in place (the ⚙ slider's
+                                            // direct-manipulation twin).
+                                            // Offset BELOW the track so it
+                                            // never fights the seek handle.
+                                            let cap = egui::Rect::from_min_max(
+                                                egui::pos2(x1 - 4.0, y + 3.0),
+                                                egui::pos2(x1 + 4.0, y + 11.0),
+                                            );
+                                            let cap_resp = ui.interact(
+                                                cap,
+                                                ui.id().with("preview_window_cap"),
+                                                egui::Sense::drag(),
+                                            );
+                                            let cap_color =
+                                                if cap_resp.hovered() || cap_resp.dragged() {
+                                                    egui::Color32::from_rgb(150, 236, 255)
+                                                } else {
+                                                    egui::Color32::from_rgba_unmultiplied(
+                                                        64, 217, 255, 230,
+                                                    )
+                                                };
+                                            ui.painter().rect_filled(cap, 1.5, cap_color);
+                                            if cap_resp.dragged() {
+                                                let frames_per_px = domain / travel;
+                                                let dw = cap_resp.drag_delta().x
+                                                    * frames_per_px
+                                                    / 60.0;
+                                                let w = (state.preview_window + dw)
+                                                    .clamp(0.5, 5.0);
+                                                if (w - state.preview_window).abs() > 1e-4 {
+                                                    action = Some(
+                                                        ScrubberAction::SetPreviewWindow(w),
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -925,11 +952,9 @@ impl Scrubber {
                             // The frame counter: tiny, faded, PAINTED just
                             // under the timeline rail and centered on IT (not
                             // the panel) — positioned text, so digit growth
-                            // never reflows anything.
-                            let label = match state.range {
-                                Some((_, hi)) => format!("{} / {hi}", state.frame),
-                                None => format!("frame {}", state.frame),
-                            };
+                            // never reflows anything. The predicted-frames
+                            // count (the rail's cyan segment, numerically)
+                            // sits WITH the current frame: `227 +120 / 227`.
                             let (strip, _) = ui.allocate_exact_size(
                                 egui::vec2(ui.available_width().max(1.0), 8.0),
                                 egui::Sense::hover(),
@@ -937,13 +962,35 @@ impl Scrubber {
                             let center_x = rail
                                 .map(|(l, r)| (l + r) * 0.5)
                                 .unwrap_or_else(|| strip.center().x);
-                            ui.painter().text(
-                                egui::pos2(center_x, strip.top() - 3.0),
-                                egui::Align2::CENTER_TOP,
-                                label,
-                                egui::FontId::monospace(UI_FONT_SIZE - 6.0),
-                                ui.visuals().weak_text_color(),
-                            );
+                            let font = egui::FontId::monospace(UI_FONT_SIZE - 6.0);
+                            let weak = ui.visuals().weak_text_color();
+                            let cyan =
+                                egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
+                            let mut segments: Vec<(String, egui::Color32)> = Vec::new();
+                            match state.range {
+                                Some((_, hi)) => {
+                                    segments.push((format!("{}", state.frame), weak));
+                                    if future_frames > 0 {
+                                        segments.push((format!(" +{future_frames}"), cyan));
+                                    }
+                                    segments.push((format!(" / {hi}"), weak));
+                                }
+                                None => segments.push((format!("frame {}", state.frame), weak)),
+                            }
+                            let galleys: Vec<_> = segments
+                                .into_iter()
+                                .map(|(text, color)| {
+                                    ui.painter().layout_no_wrap(text, font.clone(), color)
+                                })
+                                .collect();
+                            let total: f32 = galleys.iter().map(|g| g.size().x).sum();
+                            let mut x = center_x - total * 0.5;
+                            for galley in galleys {
+                                let w = galley.size().x;
+                                ui.painter()
+                                    .galley(egui::pos2(x, strip.top() - 3.0), galley, weak);
+                                x += w;
+                            }
                         });
                     });
                 });

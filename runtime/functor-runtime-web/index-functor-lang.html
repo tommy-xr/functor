@@ -55,6 +55,16 @@
         border-radius: 2px; background: rgba(64,217,255,0.8);
         pointer-events: none; display: none;
       }
+      /* The future segment's end cap: drag to resize the forward window in
+         place. Hangs BELOW the track so it never fights the seek thumb. */
+      #scrub-future-cap {
+        position: absolute; width: 8px; height: 14px; top: 50%;
+        transform: translateY(-50%);
+        border-radius: 2px; background: rgba(64,217,255,0.95);
+        cursor: ew-resize; display: none; touch-action: none;
+      }
+      #scrub-future-cap:hover { background: rgba(150,236,255,1); }
+      #scrub-label .fut { color: rgba(64,217,255,0.85); }
       #scrubber label { display: flex; align-items: center; gap: 4px; }
       #scrubber input[type="number"] {
         width: 42px; font: 12px/1 monospace; color: #eee;
@@ -92,6 +102,7 @@
       <span id="scrub-rail">
         <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
         <span id="scrub-future"></span>
+        <span id="scrub-future-cap" title="Drag to resize the preview window"></span>
         <span id="scrub-label">time-travel</span>
       </span>
       <button id="scrub-step">Step ▸</button>
@@ -282,6 +293,7 @@
         const slider = document.getElementById("scrub-slider");
         const step = document.getElementById("scrub-step");
         const future = document.getElementById("scrub-future");
+        const futureCap = document.getElementById("scrub-future-cap");
 
         let scrubbing = false;
         let pendingSeek = null;
@@ -308,6 +320,30 @@
         pushPreview();
         pushConfig();
 
+        // Drag the cyan segment's end cap to resize the forward window in
+        // place — the ⚙ window input's direct-manipulation twin.
+        let capDrag = null; // { x: pointerdown clientX, w: window at start }
+        futureCap.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          futureCap.setPointerCapture(e.pointerId);
+          capDrag = { x: e.clientX, w: +win.value };
+        });
+        futureCap.addEventListener("pointermove", (e) => {
+          if (!capDrag) return;
+          const inset = 7;
+          const travel = slider.offsetWidth - 2 * inset;
+          const domain = +slider.max - +slider.min;
+          if (travel <= 0 || domain <= 0) return;
+          const framesPerPx = domain / travel;
+          const w = Math.min(
+            5,
+            Math.max(0.5, capDrag.w + ((e.clientX - capDrag.x) * framesPerPx) / 60)
+          );
+          win.value = w.toFixed(1);
+          pushConfig();
+        });
+        futureCap.addEventListener("pointerup", () => (capDrag = null));
+
         const update = () => {
           if (pendingSeek !== null) {
             functor_lang_seek_scene(pendingSeek);
@@ -321,35 +357,45 @@
             slider.max = hi;
             const frame = functor_lang_scene_frame();
             if (!scrubbing) slider.value = frame; // don't tug the handle mid-drag
-            label.textContent = `${frame | 0} / ${hi | 0}`;
-            pause.textContent = functor_lang_scrub_paused() ? "Resume" : "Pause";
-            // Future pseudo-bar: while a preview mode is on, the rail's domain
-            // extends past the recorded end by the preview window (60 fixed
-            // frames/sec) — the slider spans the recorded part and the strip
-            // marks [handle, handle + window], showing how far ahead the
-            // preview looks.
+            // The rail's domain includes the preview window: the handle can be
+            // dragged INTO the cyan segment — a seek beyond the recorded end
+            // steps the game forward, input-free (the runtime animates the
+            // catch-up). The counter's cyan `+N` is the numeric twin.
             const span = hi - lo;
-            const futureFrames = +preview.value !== 0 ? +win.value * 60 : 0;
+            const futureFrames =
+              +preview.value !== 0 ? Math.round(+win.value * 60) : 0;
+            slider.max = hi + futureFrames;
+            // The predicted-frames count sits WITH the current frame:
+            // `227 +120 / 227`.
+            label.innerHTML =
+              `${frame | 0}` +
+              (futureFrames > 0 ? ` <span class="fut">+${futureFrames}</span>` : "") +
+              ` / ${hi | 0}`;
+            pause.textContent = functor_lang_scrub_paused() ? "Resume" : "Pause";
             if (futureFrames > 0 && span > 0) {
-              const total = span + futureFrames;
-              slider.style.width = `${(span / total) * 100}%`;
-              // The thumb's CENTER travels an inset range inside the input
-              // (≈ half the thumb), so start the strip there — not at the
-              // input's box edge — to meet the handle.
-              const railW = slider.parentElement.offsetWidth;
+              // The cyan segment [handle, handle + window] plus its draggable
+              // end cap. Anchored to the THUMB (the visual handle, including
+              // mid-drag) and starting at its right edge, so the cyan never
+              // paints over the orange traversed track or the thumb itself.
               const inset = 7;
-              const leftPx =
-                inset + ((frame - lo) / span) * (slider.offsetWidth - 2 * inset);
-              const widthPx = Math.min(
-                (futureFrames / total) * railW,
-                railW - leftPx
+              const travel = slider.offsetWidth - 2 * inset;
+              const domain = hi + futureFrames - lo;
+              const thumb = +slider.value;
+              const thumbPx = inset + ((thumb - lo) / domain) * travel;
+              const leftPx = thumbPx + inset;
+              const endPx = Math.min(
+                thumbPx + (futureFrames / domain) * travel,
+                inset + travel
               );
+              const widthPx = Math.max(endPx - leftPx, 0);
               future.style.left = `${leftPx}px`;
               future.style.width = `${widthPx}px`;
               future.style.display = "block";
+              futureCap.style.left = `${endPx - 4}px`;
+              futureCap.style.display = "block";
             } else {
-              slider.style.width = "100%";
               future.style.display = "none";
+              futureCap.style.display = "none";
             }
           } else {
             el.style.display = "none"; // nothing recorded yet
