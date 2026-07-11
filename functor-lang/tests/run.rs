@@ -404,6 +404,44 @@ fn list_builtins_do_not_consume_eval_depth() {
     );
 }
 
+#[test]
+fn math_builtins_evaluate() {
+    assert_eq!(main_result("let main = () => Math.sqrt(9.0)"), "3");
+    assert_eq!(main_result("let main = () => Math.abs(0.0 - 4.0)"), "4");
+    assert_eq!(main_result("let main = () => Math.floor(3.7)"), "3");
+    // atan2(y, x): straight up the +Y axis is a quarter turn (pi/2 ≈ 1.5708).
+    assert_eq!(
+        main_result("let main = () => Math.floor(Math.atan2(1.0, 0.0) * 1000.0)"),
+        "1570"
+    );
+    assert_eq!(main_result("let main = () => Math.min(2.0, 5.0)"), "2");
+    assert_eq!(main_result("let main = () => Math.max(2.0, 5.0)"), "5");
+    assert_eq!(main_result("let main = () => Math.pow(2.0, 10.0)"), "1024");
+    // Math.pi is a constant value (not a callable).
+    assert_eq!(
+        main_result("let main = () => Math.floor(Math.pi * 100.0)"),
+        "314"
+    );
+}
+
+// Euclidean mod: the result takes the sign of the DIVISOR, so negative inputs
+// wrap positively — the wraparound games want.
+#[test]
+fn math_mod_is_euclidean() {
+    assert_eq!(main_result("let main = () => Math.mod(9.0, 8.0)"), "1");
+    assert_eq!(main_result("let main = () => Math.mod(0.0 - 1.0, 8.0)"), "7");
+    assert_eq!(main_result("let main = () => Math.mod(0.0 - 3.0, 8.0)"), "5");
+    // Always non-negative, even with a negative divisor.
+    assert_eq!(main_result("let main = () => Math.mod(0.0 - 1.0, 0.0 - 8.0)"), "7");
+}
+
+// `Math.pi` is a value, so applying it as a function is a runtime error.
+#[test]
+fn error_calling_math_pi() {
+    let (message, _, _) = run_err("let main = () => Math.pi(1.0)");
+    assert_eq!(message, "cannot call a number");
+}
+
 // NaN follows f64::max (IEEE maximumNumber): ignored unless all-NaN.
 #[test]
 fn maximum_ignores_nan_unless_all_nan() {

@@ -292,7 +292,14 @@ any-false) · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
 empty `sep` is an error; `Text.split(sep, "")` = `[""]`) · `Text.join(sep, list)`
 (strings only) · `Text.parseFloat(s)` (trims; unparseable → `0.0`, the F#
 `unwrap_or(0)` shape) · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)` ·
-`Debug.log(label, value)` — `(string, 'a) => 'a`: an Elm-style trace. Logs
+`Math.sqrt(n)` · `Math.abs(n)` · `Math.floor(n)` · `Math.atan2(y, x)`
+(standard math arg order, y first) · `Math.mod(a, b)` (**Euclidean** — the
+result is always NON-NEGATIVE (in `[0, abs(b))`), so negatives wrap
+positively: `Math.mod(-1.0, 8.0)` == `7.0`, the wraparound games want;
+`b == 0.0` → NaN) ·
+`Math.min(a, b)` · `Math.max(a, b)` · `Math.pow(base, exp)` (`base ^ exp`) ·
+`Math.pi` (a constant `float` VALUE, not a call — write `Math.pi`, never
+`Math.pi()`) · `Debug.log(label, value)` — `(string, 'a) => 'a`: an Elm-style trace. Logs
 `label: <value>` (the value rendered exactly as `functor-lang run`/`trace` displays it —
 any type) and returns `value` **unchanged**, so it's pure to the program
 result and safe to drop into a pipe: `m.x |> Debug.log("x") |> clamp(0.0, 1.0)`

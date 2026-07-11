@@ -340,6 +340,9 @@ evaluation depth."
             ExprKind::External(path) => {
                 let joined = path.join(".");
                 match builtin(path) {
+                    // `Math.pi` is a constant, not a callable — resolve it
+                    // straight to its value (every other builtin is a function).
+                    Some(Builtin::MathPi) => Ok(Value::Number(std::f64::consts::PI)),
                     Some(b) => Ok(Value::Builtin(b)),
                     None if self.host.provides(&joined) => {
                         Ok(Value::HostFn(Rc::from(joined.as_str())))
@@ -1195,6 +1198,49 @@ most 1000000 cells"
                 [Value::Number(n)] => Ok(Value::Number(n.cos())),
                 _ => err("Math.cos(n) expects one number".to_string()),
             },
+            Builtin::MathSqrt => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(n.sqrt())),
+                _ => err("Math.sqrt(n) expects one number".to_string()),
+            },
+            Builtin::MathAbs => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(n.abs())),
+                _ => err("Math.abs(n) expects one number".to_string()),
+            },
+            Builtin::MathFloor => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(n.floor())),
+                _ => err("Math.floor(n) expects one number".to_string()),
+            },
+            // atan2(y, x) — the full-circle angle, following the standard
+            // math argument order (y first).
+            Builtin::MathAtan2 => match args.as_slice() {
+                [Value::Number(y), Value::Number(x)] => Ok(Value::Number(y.atan2(*x))),
+                _ => err("Math.atan2(y, x) expects two numbers".to_string()),
+            },
+            // Euclidean remainder: the result is always NON-NEGATIVE (in
+            // `[0, abs(b))`), so negative inputs wrap positively
+            // (`Math.mod(-1.0, 8.0)` == 7.0) — the wraparound games want.
+            // `b == 0.0` yields NaN (IEEE); the engine boundary rejects
+            // non-finite numbers.
+            Builtin::MathMod => match args.as_slice() {
+                [Value::Number(a), Value::Number(b)] => Ok(Value::Number(a.rem_euclid(*b))),
+                _ => err("Math.mod(a, b) expects two numbers".to_string()),
+            },
+            Builtin::MathMin => match args.as_slice() {
+                [Value::Number(a), Value::Number(b)] => Ok(Value::Number(a.min(*b))),
+                _ => err("Math.min(a, b) expects two numbers".to_string()),
+            },
+            Builtin::MathMax => match args.as_slice() {
+                [Value::Number(a), Value::Number(b)] => Ok(Value::Number(a.max(*b))),
+                _ => err("Math.max(a, b) expects two numbers".to_string()),
+            },
+            // pow(base, exp) == base ^ exp (standard math argument order).
+            Builtin::MathPow => match args.as_slice() {
+                [Value::Number(base), Value::Number(exp)] => Ok(Value::Number(base.powf(*exp))),
+                _ => err("Math.pow(base, exp) expects two numbers".to_string()),
+            },
+            // `Math.pi` is a constant resolved directly to its value in `eval`;
+            // it is never a callable, so reaching here means it was applied.
+            Builtin::MathPi => err("Math.pi is a constant, not a function".to_string()),
             // Elm-style trace (`Debug.log : String -> a -> a`): log
             // `label: <subject>` through the process-wide trace sink and return
             // the SUBJECT unchanged — an impure observability escape hatch that
@@ -1450,6 +1496,11 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::TextFixed
         | Builtin::TextSplit
         | Builtin::TextJoin
+        | Builtin::MathAtan2
+        | Builtin::MathMod
+        | Builtin::MathMin
+        | Builtin::MathMax
+        | Builtin::MathPow
         | Builtin::DebugLog => 2,
         Builtin::ListRange
         | Builtin::ListMaximum
@@ -1462,7 +1513,13 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::TextParseFloat
         | Builtin::MathClamp01
         | Builtin::MathSin
-        | Builtin::MathCos => 1,
+        | Builtin::MathCos
+        | Builtin::MathSqrt
+        | Builtin::MathAbs
+        | Builtin::MathFloor => 1,
+        // `Math.pi` resolves straight to a number in `eval` (it's a constant,
+        // never a callable value), so this arity is never consulted.
+        Builtin::MathPi => 0,
     }
 }
 
@@ -1475,6 +1532,15 @@ pub enum Builtin {
     ListGrid,
     MathSin,
     MathCos,
+    MathSqrt,
+    MathAbs,
+    MathFloor,
+    MathAtan2,
+    MathMod,
+    MathMin,
+    MathMax,
+    MathPow,
+    MathPi,
     ListMaximum,
     ListLength,
     ListAppend,
@@ -1521,6 +1587,15 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Math.clamp01" => Builtin::MathClamp01,
         "Math.sin" => Builtin::MathSin,
         "Math.cos" => Builtin::MathCos,
+        "Math.sqrt" => Builtin::MathSqrt,
+        "Math.abs" => Builtin::MathAbs,
+        "Math.floor" => Builtin::MathFloor,
+        "Math.atan2" => Builtin::MathAtan2,
+        "Math.mod" => Builtin::MathMod,
+        "Math.min" => Builtin::MathMin,
+        "Math.max" => Builtin::MathMax,
+        "Math.pow" => Builtin::MathPow,
+        "Math.pi" => Builtin::MathPi,
         "Debug.log" => Builtin::DebugLog,
         _ => return None,
     })
@@ -1552,6 +1627,15 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::MathClamp01 => "Math.clamp01",
         Builtin::MathSin => "Math.sin",
         Builtin::MathCos => "Math.cos",
+        Builtin::MathSqrt => "Math.sqrt",
+        Builtin::MathAbs => "Math.abs",
+        Builtin::MathFloor => "Math.floor",
+        Builtin::MathAtan2 => "Math.atan2",
+        Builtin::MathMod => "Math.mod",
+        Builtin::MathMin => "Math.min",
+        Builtin::MathMax => "Math.max",
+        Builtin::MathPow => "Math.pow",
+        Builtin::MathPi => "Math.pi",
         Builtin::DebugLog => "Debug.log",
     }
 }
