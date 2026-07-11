@@ -6,8 +6,10 @@
 
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
+import { StateEffect } from "@codemirror/state";
 import { indentWithTab } from "@codemirror/commands";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
+import { setupLangIntel, analyzeCached } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 
 const EXAMPLES = [
@@ -65,6 +67,21 @@ const view = new EditorView({
     }),
   ],
 });
+
+// Live type diagnostics: load the analysis wasm lazily and, once ready, append
+// the CodeMirror linter to the already-constructed editor. Degrades silently —
+// if the pkg is absent the promise resolves to no extensions and the sandbox is
+// unchanged. `ready` resolves to whether analysis is available so e2e can await
+// it; `analyze` exposes the same cached pass the linter uses.
+const langReady = setupLangIntel().then((extensions) => {
+  if (extensions.length) view.dispatch({ effects: StateEffect.appendConfig.of(extensions) });
+  return extensions.length > 0;
+});
+
+window.__lang = {
+  ready: langReady,
+  analyze: (source) => analyzeCached(source),
+};
 
 const setDoc = (source) => {
   bridge.reset();

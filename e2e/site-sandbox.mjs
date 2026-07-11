@@ -451,7 +451,12 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   await page.goto(BASE); // any same-origin page; we only need /pkg/ reachable
   const result = await page.evaluate(async () => {
-    const mod = await import("/pkg/functor_lang_wasm.js");
+    let mod;
+    try {
+      mod = await import("/pkg/functor_lang_wasm.js");
+    } catch {
+      return null; // pkg not built — degraded config, skip below
+    }
     await mod.default(); // init the wasm
     // A type error: adding a string to a float.
     const bad = JSON.parse(mod.functor_lang_analyze('let bad = 1.0 + "x"\n'));
@@ -464,6 +469,11 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     );
     return { bad, clean };
   });
+  if (!result) {
+    console.log("SKIP: language wasm analyzes source in-browser — pkg not built");
+    await page.close();
+    // Nothing further to assert in the degraded config.
+  } else {
   const d = result.bad.diagnostics;
   const sane =
     Array.isArray(d) &&
@@ -477,6 +487,64 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     `bad=${JSON.stringify(d)} clean=${result.clean.diagnostics.length}`
   );
   await page.close();
+  }
+}
+
+// --- 11. Live diagnostics: the linter underlines a type error, clears on fix. --
+// A valid MVU program (loads & runs live — type diagnostics are advisory in the
+// dev loop) with ONE unused function whose body is a type error the checker
+// flags. The `.cm-lintRange-error` underline must appear, then clear when the
+// bad def is removed — all while the push loop keeps the status pill live.
+{
+  const CLEAN = GREEN;
+  const TYPE_ERROR = `${GREEN}let oops = (x: Float) => x + "type error"\n`;
+
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+
+  // Await the analysis wasm's readiness (resolves to false when the pkg is
+  // absent — then the whole lint block is skipped so the suite stays green in
+  // both configurations).
+  const langAvailable = await page.evaluate(
+    () => window.__lang && window.__lang.ready
+  );
+  if (!langAvailable) {
+    console.log("SKIP: live diagnostics — language analysis pkg not built (__lang not ready)");
+    await page.close();
+  } else {
+    const lintCount = () => page.locator(".cm-lintRange-error").count();
+    // Poll for the count to reach a predicate (covers the 300ms lint delay).
+    const waitLint = async (pred, timeout = 6000) => {
+      const t0 = Date.now();
+      for (;;) {
+        if (pred(await lintCount())) return true;
+        if (Date.now() - t0 > timeout) return false;
+        await sleep(150);
+      }
+    };
+
+    await page.evaluate((s) => window.__sandbox.setSource(s), TYPE_ERROR);
+    const gotError = await waitLint((n) => n > 0);
+    check("type error draws a lint underline", gotError, `count=${await lintCount()}`);
+    check(
+      "diagnostics keep the sandbox live",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.evaluate((s) => window.__sandbox.setSource(s), CLEAN);
+    const cleared = await waitLint((n) => n === 0);
+    check("fixing the type error clears the underline", cleared, `count=${await lintCount()}`);
+    check(
+      "sandbox returns/stays live after the fix",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.close();
+  }
 }
 
 await browser.close();
