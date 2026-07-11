@@ -685,35 +685,39 @@ pub struct ScrubberState {
     /// until something is recorded (the slider is then hidden).
     pub range: Option<(u64, u64)>,
     pub paused: bool,
-    /// Forward-ghosting (docs/time-travel.md T6d) toggle: composite the ~window-s
-    /// future into a strobe. Interactive companion to the `--ghost` launch flag.
-    pub ghost_on: bool,
-    /// Divisions composited by the ghost (1..=8, the compositor `MAX_GHOST` cap).
-    pub ghost_divisions: usize,
-    /// The forward window in seconds; `dt = ghost_window / ghost_divisions`.
-    pub ghost_window: f32,
-    /// Scene-diff preview mode (docs/time-travel.md T6): trail dots and/or
-    /// scene-space strobe copies. Interactive companion to the
-    /// `--trajectory`/`--strobe` launch flags.
+    /// The bar's single future-preview switch (docs/time-travel.md T6/T6d):
+    /// "extrapolate" on/off. What it SHOWS when on is `preview_mode`,
+    /// configured in the ⚙ popover. Interactive companion to the
+    /// `--trajectory`/`--strobe`/`--ghost` launch flags.
+    pub extrapolate: bool,
+    /// The preview family shown while extrapolating (never `Off` here — the
+    /// checkbox is the off switch): trail / strobe / both / ghost.
     pub preview_mode: crate::trajectory::PreviewMode,
+    /// The forward window in seconds, shared by every preview mode; also sizes
+    /// the timeline's translucent future segment.
+    pub preview_window: f32,
+    /// Forward samples PER SECOND — density stays constant as the window is
+    /// resized (total samples = rate × window, clamped; the ghost compositor
+    /// further clamps to its 8-target cap at use).
+    pub preview_rate: usize,
 }
 
 /// A control the user activated in the scrubber this frame.
-// No `Eq`: `SetGhostWindow` carries an `f32`.
+// No `Eq`: `SetPreviewWindow` carries an `f32`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ScrubberAction {
     TogglePause,
     /// Non-destructive scrub to a rendered frame (dragging the timeline).
     SeekTo(u64),
     Step,
-    /// Toggle forward-ghosting on/off (the `ghost` checkbox).
-    SetGhost(bool),
-    /// Set the ghost's forward divisions (clamped 1..=8 by the shell).
-    SetGhostDivisions(usize),
-    /// Set the ghost's forward window in seconds.
-    SetGhostWindow(f32),
-    /// Set the scene-diff preview mode (the `preview:` cycle button).
+    /// Toggle the bar's "extrapolate" switch.
+    SetExtrapolate(bool),
+    /// Set the preview family shown while extrapolating (the ⚙ popover).
     SetPreviewMode(crate::trajectory::PreviewMode),
+    /// Set the preview's forward window in seconds (the ⚙ popover).
+    SetPreviewWindow(f32),
+    /// Set the preview's forward samples per second (the ⚙ popover).
+    SetPreviewRate(usize),
 }
 
 /// The scrubber's output for one frame.
@@ -787,82 +791,227 @@ impl Scrubber {
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -MARGIN))
                 .show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let label = match state.range {
-                                Some((_, hi)) => format!("time-travel · {} / {hi}", state.frame),
-                                None => format!("time-travel · frame {}", state.frame),
+                        ui.vertical(|ui| {
+                            // The timeline rail's horizontal extent, captured
+                            // from inside the row so the frame counter below
+                            // can center on the BAR rather than the panel.
+                            let mut rail: Option<(f32, f32)> = None;
+                            // The preview window in fixed frames — sizes the
+                            // rail's cyan segment and the counter's `+N`.
+                            let future_frames = if state.extrapolate {
+                                (state.preview_window * 60.0).round().max(0.0) as u64
+                            } else {
+                                0
                             };
-                            ui.label(
-                                egui::RichText::new(label).font(egui::FontId::monospace(UI_FONT_SIZE)),
-                            );
-                            if ui.button(if state.paused { "Resume" } else { "Pause" }).clicked() {
-                                action = Some(ScrubberAction::TogglePause);
-                            }
-                            // The draggable timeline: drag anywhere in the
-                            // recorded window to scrub (non-destructive). Only
-                            // shown once there's a range to drag across.
-                            if let Some((lo, hi)) = state.range {
-                                if hi > lo {
-                                    let mut f = state.frame.clamp(lo, hi);
-                                    ui.spacing_mut().slider_width = 260.0;
-                                    let slider = ui.add(
-                                        egui::Slider::new(&mut f, lo..=hi)
-                                            .show_value(false)
-                                            .handle_shape(egui::style::HandleShape::Rect {
-                                                aspect_ratio: 0.5,
-                                            }),
-                                    );
-                                    if slider.changed() {
-                                        action = Some(ScrubberAction::SeekTo(f));
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(if state.paused { "Resume" } else { "Pause" })
+                                    .clicked()
+                                {
+                                    action = Some(ScrubberAction::TogglePause);
+                                }
+                                // The draggable timeline. When a preview is
+                                // on, the rail's DOMAIN includes the preview
+                                // window (60 fixed frames/sec past the
+                                // recorded end): the cyan segment marks
+                                // [handle, handle + window], and the handle
+                                // can be dragged INTO it — a seek beyond the
+                                // recorded end steps the game forward,
+                                // input-free (the clock animates the
+                                // catch-up). The segment's end cap drags to
+                                // resize the window in place.
+                                if let Some((lo, hi)) = state.range {
+                                    if hi > lo {
+                                        const RAIL_W: f32 = 300.0;
+                                        let max = hi + future_frames;
+                                        let mut f = state.frame.clamp(lo, hi);
+                                        ui.spacing_mut().slider_width = RAIL_W;
+                                        let slider = ui.add(
+                                            egui::Slider::new(&mut f, lo..=max)
+                                                .show_value(false)
+                                                .handle_shape(egui::style::HandleShape::Rect {
+                                                    aspect_ratio: 0.5,
+                                                }),
+                                        );
+                                        if slider.changed() {
+                                            action = Some(ScrubberAction::SeekTo(f));
+                                        }
+                                        rail = Some((slider.rect.left(), slider.rect.right()));
+                                        if future_frames > 0 {
+                                            // The cyan future segment, painted
+                                            // ON the rail at track height
+                                            // (trail-cyan: it IS the preview's
+                                            // future). The handle's center
+                                            // travels an INSET range (≈ its
+                                            // half-size) inside the slider
+                                            // rect — map through that so the
+                                            // segment meets the handle.
+                                            let y = slider.rect.center().y;
+                                            let inset = slider.rect.height() * 0.5;
+                                            let travel =
+                                                (slider.rect.width() - 2.0 * inset).max(1.0);
+                                            let domain = (max - lo) as f32;
+                                            let x_of = |frame: u64| {
+                                                slider.rect.left()
+                                                    + inset
+                                                    + (frame - lo) as f32 / domain * travel
+                                            };
+                                            // Start at the handle's RIGHT edge
+                                            // so the cyan never paints over the
+                                            // handle or the traversed track.
+                                            let x0 = x_of(f) + 5.0;
+                                            let x1 = x_of((f + future_frames).min(max)).max(x0);
+                                            ui.painter().rect_filled(
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(x0, y - 2.5),
+                                                    egui::pos2(x1, y + 2.5),
+                                                ),
+                                                2.0,
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    64, 217, 255, 200,
+                                                ),
+                                            );
+                                            // The segment's END CAP: a small
+                                            // grabber hanging under the window
+                                            // end — drag to resize the forward
+                                            // window in place (the ⚙ slider's
+                                            // direct-manipulation twin).
+                                            // Offset BELOW the track so it
+                                            // never fights the seek handle.
+                                            let cap = egui::Rect::from_min_max(
+                                                egui::pos2(x1 - 4.0, y + 3.0),
+                                                egui::pos2(x1 + 4.0, y + 11.0),
+                                            );
+                                            let cap_resp = ui.interact(
+                                                cap,
+                                                ui.id().with("preview_window_cap"),
+                                                egui::Sense::drag(),
+                                            );
+                                            let cap_color =
+                                                if cap_resp.hovered() || cap_resp.dragged() {
+                                                    egui::Color32::from_rgb(150, 236, 255)
+                                                } else {
+                                                    egui::Color32::from_rgba_unmultiplied(
+                                                        64, 217, 255, 230,
+                                                    )
+                                                };
+                                            ui.painter().rect_filled(cap, 1.5, cap_color);
+                                            if cap_resp.dragged() {
+                                                let frames_per_px = domain / travel;
+                                                let dw = cap_resp.drag_delta().x
+                                                    * frames_per_px
+                                                    / 60.0;
+                                                let w = (state.preview_window + dw)
+                                                    .clamp(0.5, 5.0);
+                                                if (w - state.preview_window).abs() > 1e-4 {
+                                                    action = Some(
+                                                        ScrubberAction::SetPreviewWindow(w),
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                            if ui.button("Step >").clicked() {
-                                action = Some(ScrubberAction::Step);
-                            }
+                                if ui.button("Step >").clicked() {
+                                    action = Some(ScrubberAction::Step);
+                                }
 
-                            // Forward-ghosting controls (docs/time-travel.md T6d):
-                            // an in-app companion to the `--ghost` launch flag.
-                            ui.separator();
-                            let mut ghost_on = state.ghost_on;
-                            if ui.checkbox(&mut ghost_on, "ghost").changed() {
-                                action = Some(ScrubberAction::SetGhost(ghost_on));
+                                // Future preview (docs/time-travel.md T6/T6d):
+                                // ONE switch on the bar; the mode /
+                                // window / rate knobs live in the ⚙ popover.
+                                ui.separator();
+                                let mut on = state.extrapolate;
+                                if ui.checkbox(&mut on, "extrapolate").changed() {
+                                    action = Some(ScrubberAction::SetExtrapolate(on));
+                                }
+                                ui.menu_button("⚙", |ui| {
+                                    ui.label("show");
+                                    ui.horizontal(|ui| {
+                                        use crate::trajectory::PreviewMode as PM;
+                                        for mode in [PM::Trail, PM::Strobe, PM::Both, PM::Ghost]
+                                        {
+                                            if ui
+                                                .selectable_label(
+                                                    state.preview_mode == mode,
+                                                    mode.label(),
+                                                )
+                                                .clicked()
+                                            {
+                                                action =
+                                                    Some(ScrubberAction::SetPreviewMode(mode));
+                                            }
+                                        }
+                                    });
+                                    ui.label("forward window");
+                                    let mut window = state.preview_window;
+                                    if ui
+                                        .add(egui::Slider::new(&mut window, 0.5..=5.0).suffix("s"))
+                                        .changed()
+                                    {
+                                        action = Some(ScrubberAction::SetPreviewWindow(window));
+                                    }
+                                    ui.label("rate");
+                                    let mut rate = state.preview_rate.clamp(1, 30);
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut rate)
+                                                .range(1..=30)
+                                                .suffix("/s"),
+                                        )
+                                        .changed()
+                                    {
+                                        action = Some(ScrubberAction::SetPreviewRate(rate));
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "strobe copies per second — the trail samples\nfiner; ghost composites ≤8 total",
+                                        )
+                                        .weak()
+                                        .size(10.0),
+                                    );
+                                });
+                            });
+                            // The frame counter: tiny, faded, PAINTED just
+                            // under the timeline rail and centered on IT (not
+                            // the panel) — positioned text, so digit growth
+                            // never reflows anything. The predicted-frames
+                            // count (the rail's cyan segment, numerically)
+                            // sits WITH the current frame: `227 +120 / 227`.
+                            let (strip, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width().max(1.0), 8.0),
+                                egui::Sense::hover(),
+                            );
+                            let center_x = rail
+                                .map(|(l, r)| (l + r) * 0.5)
+                                .unwrap_or_else(|| strip.center().x);
+                            let font = egui::FontId::monospace(UI_FONT_SIZE - 6.0);
+                            let weak = ui.visuals().weak_text_color();
+                            let cyan =
+                                egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
+                            let mut segments: Vec<(String, egui::Color32)> = Vec::new();
+                            match state.range {
+                                Some((_, hi)) => {
+                                    segments.push((format!("{}", state.frame), weak));
+                                    if future_frames > 0 {
+                                        segments.push((format!(" +{future_frames}"), cyan));
+                                    }
+                                    segments.push((format!(" / {hi}"), weak));
+                                }
+                                None => segments.push((format!("frame {}", state.frame), weak)),
                             }
-                            // Divisions (1..=8, the compositor MAX_GHOST cap) and
-                            // the forward window in seconds (dt = window / divisions).
-                            let mut divisions = state.ghost_divisions.clamp(1, 8);
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut divisions)
-                                        .range(1..=8)
-                                        .prefix("÷"),
-                                )
-                                .changed()
-                            {
-                                action = Some(ScrubberAction::SetGhostDivisions(divisions));
-                            }
-                            let mut window = state.ghost_window;
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut window, 0.5..=5.0).suffix("s"),
-                                )
-                                .changed()
-                            {
-                                action = Some(ScrubberAction::SetGhostWindow(window));
-                            }
-
-                            // Scene-diff preview (docs/time-travel.md T6): a
-                            // compact cycle button (off → trail → strobe → both)
-                            // — one widget until the scrubber declutter pass
-                            // gives previews a proper popover.
-                            ui.separator();
-                            if ui
-                                .button(format!("preview: {}", state.preview_mode.label()))
-                                .clicked()
-                            {
-                                action = Some(ScrubberAction::SetPreviewMode(
-                                    state.preview_mode.next(),
-                                ));
+                            let galleys: Vec<_> = segments
+                                .into_iter()
+                                .map(|(text, color)| {
+                                    ui.painter().layout_no_wrap(text, font.clone(), color)
+                                })
+                                .collect();
+                            let total: f32 = galleys.iter().map(|g| g.size().x).sum();
+                            let mut x = center_x - total * 0.5;
+                            for galley in galleys {
+                                let w = galley.size().x;
+                                ui.painter()
+                                    .galley(egui::pos2(x, strip.top() - 3.0), galley, weak);
+                                x += w;
                             }
                         });
                     });

@@ -55,6 +55,12 @@ pub struct GameClock {
     /// A one-shot step (seconds) that advances `game_time` on the next frame,
     /// then holds. Set by Step / debug Advance (both imply pause).
     pending_step: Option<f32>,
+    /// Queued FIXED-frame steps (the scrubber's drag-into-the-future
+    /// catch-up): consumed up to [`MAX_SUBSTEPS`] whole `FIXED_DT` sub-frames
+    /// per rendered frame — never one fat tick, preserving the fixed-timestep
+    /// invariant (`FIXED_DT` == the forward-step `sub_dt`) that keeps the
+    /// recording/replay seams sound. Implies pause; holds when drained.
+    pending_frames: u32,
     /// Unconditional pin (`--fixed-time` / `?fixed-time`). When set, every frame
     /// is `{ dts: 0, tts: <const> }` — no accumulation, no pause, no rebase.
     fixed_time: Option<f32>,
@@ -77,6 +83,7 @@ impl GameClock {
             accumulator: 0.0,
             paused: false,
             pending_step: None,
+            pending_frames: 0,
             fixed_time,
             started: false,
         }
@@ -140,6 +147,22 @@ impl GameClock {
                 tts: self.game_time,
             }];
         }
+        if self.pending_frames > 0 {
+            // Catch-up: whole FIXED_DT sub-frames, at most MAX_SUBSTEPS per
+            // rendered frame, so a long drag into the future animates over a
+            // few frames instead of hitching one frame with a giant backlog.
+            let k = self.pending_frames.min(MAX_SUBSTEPS as u32);
+            self.pending_frames -= k;
+            let mut frames = Vec::with_capacity(k as usize);
+            for _ in 0..k {
+                self.game_time += FIXED_DT;
+                frames.push(FrameTime {
+                    dts: FIXED_DT,
+                    tts: self.game_time,
+                });
+            }
+            return frames;
+        }
         if self.paused {
             return Vec::new();
         }
@@ -198,6 +221,7 @@ impl GameClock {
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
         self.pending_step = None;
+        self.pending_frames = 0;
     }
 
     /// Engage the pause (idempotent), dropping any queued step. Used by the
@@ -205,6 +229,7 @@ impl GameClock {
     pub fn pause(&mut self) {
         self.paused = true;
         self.pending_step = None;
+        self.pending_frames = 0;
     }
 
     /// Return to live wall-clock accumulation, continuing from the current
@@ -212,6 +237,7 @@ impl GameClock {
     pub fn resume(&mut self) {
         self.paused = false;
         self.pending_step = None;
+        self.pending_frames = 0;
     }
 
     /// Pause and queue a one-frame step of `dt` seconds (Step / debug Advance).
@@ -220,10 +246,25 @@ impl GameClock {
         self.pending_step = Some(dt);
     }
 
+    /// Pause and queue `n` whole FIXED-frame steps — the scrubber's
+    /// drag-into-the-future catch-up. Consumed at most [`MAX_SUBSTEPS`] per
+    /// rendered frame (see [`Self::fixed_frames`]), so long drags animate.
+    /// Queuing again REPLACES the backlog (the newest drag wins).
+    pub fn step_frames(&mut self, n: u32) {
+        self.paused = true;
+        self.pending_frames = n;
+    }
+
+    /// Fixed-frame steps still queued from [`Self::step_frames`].
+    pub fn pending_frames(&self) -> u32 {
+        self.pending_frames
+    }
+
     /// Debug `POST /time` Set: pin the clock to `tts` (pause + rebase).
     pub fn set(&mut self, tts: f32) {
         self.paused = true;
         self.pending_step = None;
+        self.pending_frames = 0;
         self.game_time = tts;
     }
 
@@ -242,6 +283,23 @@ impl GameClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_frames_drains_in_fixed_chunks_and_holds() {
+        let mut clock = GameClock::new(None);
+        clock.step_frames(11);
+        let a = clock.fixed_frames(0.0);
+        assert_eq!(a.len(), MAX_SUBSTEPS, "first chunk capped at MAX_SUBSTEPS");
+        assert!(a.iter().all(|f| (f.dts - FIXED_DT).abs() < 1e-6));
+        let b = clock.fixed_frames(0.0);
+        assert_eq!(b.len(), 11 - MAX_SUBSTEPS, "remainder drains next frame");
+        assert!(clock.fixed_frames(0.0).is_empty(), "drained → holds paused");
+        assert!(clock.is_paused());
+        // Any pause-state transition clears the backlog.
+        clock.step_frames(5);
+        clock.toggle_pause();
+        assert_eq!(clock.pending_frames(), 0);
+    }
 
     #[test]
     fn live_accumulates_real_delta() {
