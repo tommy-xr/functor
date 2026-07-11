@@ -1065,7 +1065,7 @@ async fn run_async() -> Result<(), JsValue> {
         // within ~half a second.
         let mut preview_mode = functor_runtime_common::PreviewMode::Off;
         let mut preview_window: f32 = 2.0;
-        let mut preview_samples: usize = 32;
+        let mut preview_rate: usize = 5;
         const PREVIEW_REFRESH_FRAMES: u32 = 30;
         let mut preview_cache: Option<(
             (Option<u64>, u32, bool, bool, usize, u32),
@@ -1103,9 +1103,9 @@ async fn run_async() -> Result<(), JsValue> {
                     functor_lang_game::ScrubControl::SetPreview(mode) => {
                         preview_mode = functor_runtime_common::PreviewMode::from_index(mode);
                     }
-                    functor_lang_game::ScrubControl::SetPreviewConfig { window, samples } => {
+                    functor_lang_game::ScrubControl::SetPreviewConfig { window, rate } => {
                         preview_window = window.clamp(0.5, 5.0);
-                        preview_samples = samples.clamp(1, 64);
+                        preview_rate = rate.clamp(1, 30);
                     }
                     functor_lang_game::ScrubControl::SeekTo(f) => {
                         let newest = game.scene_frame_range().map(|(_, h)| h);
@@ -1201,7 +1201,7 @@ async fn run_async() -> Result<(), JsValue> {
                     frame_time.tts.to_bits(),
                     trail_wanted,
                     strobe_wanted,
-                    preview_samples,
+                    preview_rate,
                     preview_window.to_bits(),
                 );
                 let cache_hit = preview_refresh > 0
@@ -1210,21 +1210,34 @@ async fn run_async() -> Result<(), JsValue> {
                     preview_refresh -= 1;
                     preview_cache.as_ref().map(|(_, p)| p.clone())
                 } else {
+                    // The SIM samples fine (~20/s — the trail's smooth-arc
+                    // rate) while the ⚙ rate governs STROBE COPIES per second,
+                    // so dots stay visible between copies and both hold their
+                    // density as the window resizes.
+                    const TRAIL_RATE: f32 = 20.0;
+                    let divisions =
+                        ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
+                    let copies = ((preview_rate as f32 * preview_window).round() as usize)
+                        .clamp(1, divisions);
                     let p = functor_runtime_common::scene_preview(
                         &**game,
                         &frame.scene,
                         frame_time.tts as f64,
                         None,
                         &functor_runtime_common::PreviewOptions {
-                            divisions: preview_samples.clamp(1, 64),
+                            divisions,
                             window: preview_window,
                             // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut
                             // respawn teleports.
                             eps: 0.04,
                             max_step: 3.0,
                             trail: trail_wanted,
-                            strobe: strobe_wanted
-                                .then(functor_runtime_common::StrobeOptions::default),
+                            strobe: strobe_wanted.then(|| {
+                                functor_runtime_common::StrobeOptions {
+                                    copies,
+                                    ..Default::default()
+                                }
+                            }),
                         },
                     );
                     preview_refresh = PREVIEW_REFRESH_FRAMES;
@@ -1274,9 +1287,10 @@ async fn run_async() -> Result<(), JsValue> {
             // interpreter forward-step is costly on WebGL2). Pause via the DOM
             // scrubber to see it.
             let ghosts = if preview_mode.wants_ghost() && clock.is_paused() && !catching_up {
-                // The ⚙ popover's shared window/samples, clamped to the
-                // compositor's 8-target cap.
-                let divisions = preview_samples.clamp(1, 8);
+                // The ⚙ popover's rate × window, clamped to the compositor's
+                // 8-target cap.
+                let divisions = ((preview_rate as f32 * preview_window).round() as usize)
+                    .clamp(1, 8);
                 let dt = preview_window / divisions as f32;
                 game.ghost_frames(divisions, dt, frame_time.tts as f64, None)
             } else {

@@ -685,17 +685,21 @@ pub struct ScrubberState {
     /// until something is recorded (the slider is then hidden).
     pub range: Option<(u64, u64)>,
     pub paused: bool,
-    /// Future-preview mode (docs/time-travel.md T6/T6d): the scene-diff trail /
-    /// strobe overlays, or the screen-space ghost compositor — one selector,
-    /// with the per-family knobs collapsed into the ⚙ popover. Interactive
-    /// companion to the `--trajectory`/`--strobe`/`--ghost` launch flags.
+    /// The bar's single future-preview switch (docs/time-travel.md T6/T6d):
+    /// "extrapolate" on/off. What it SHOWS when on is `preview_mode`,
+    /// configured in the ⚙ popover. Interactive companion to the
+    /// `--trajectory`/`--strobe`/`--ghost` launch flags.
+    pub extrapolate: bool,
+    /// The preview family shown while extrapolating (never `Off` here — the
+    /// checkbox is the off switch): trail / strobe / both / ghost.
     pub preview_mode: crate::trajectory::PreviewMode,
     /// The forward window in seconds, shared by every preview mode; also sizes
     /// the timeline's translucent future segment.
     pub preview_window: f32,
-    /// Forward samples across the window (the ghost compositor clamps to its
-    /// 8-target cap at use).
-    pub preview_samples: usize,
+    /// Forward samples PER SECOND — density stays constant as the window is
+    /// resized (total samples = rate × window, clamped; the ghost compositor
+    /// further clamps to its 8-target cap at use).
+    pub preview_rate: usize,
 }
 
 /// A control the user activated in the scrubber this frame.
@@ -706,13 +710,14 @@ pub enum ScrubberAction {
     /// Non-destructive scrub to a rendered frame (dragging the timeline).
     SeekTo(u64),
     Step,
-    /// Set the future-preview mode (the `preview:` cycle button).
+    /// Toggle the bar's "extrapolate" switch.
+    SetExtrapolate(bool),
+    /// Set the preview family shown while extrapolating (the ⚙ popover).
     SetPreviewMode(crate::trajectory::PreviewMode),
     /// Set the preview's forward window in seconds (the ⚙ popover).
     SetPreviewWindow(f32),
-    /// Set the preview's forward samples (the ⚙ popover; the ghost compositor
-    /// clamps to 8 at use).
-    SetPreviewSamples(usize),
+    /// Set the preview's forward samples per second (the ⚙ popover).
+    SetPreviewRate(usize),
 }
 
 /// The scrubber's output for one frame.
@@ -793,7 +798,7 @@ impl Scrubber {
                             let mut rail: Option<(f32, f32)> = None;
                             // The preview window in fixed frames — sizes the
                             // rail's cyan segment and the counter's `+N`.
-                            let future_frames = if state.preview_mode.is_on() {
+                            let future_frames = if state.extrapolate {
                                 (state.preview_window * 60.0).round().max(0.0) as u64
                             } else {
                                 0
@@ -912,18 +917,31 @@ impl Scrubber {
                                 }
 
                                 // Future preview (docs/time-travel.md T6/T6d):
-                                // one cycle button for the mode; the shared
-                                // window/samples knobs live in the ⚙ popover.
+                                // ONE switch on the bar; the mode /
+                                // window / rate knobs live in the ⚙ popover.
                                 ui.separator();
-                                if ui
-                                    .button(format!("preview: {}", state.preview_mode.label()))
-                                    .clicked()
-                                {
-                                    action = Some(ScrubberAction::SetPreviewMode(
-                                        state.preview_mode.next(),
-                                    ));
+                                let mut on = state.extrapolate;
+                                if ui.checkbox(&mut on, "extrapolate").changed() {
+                                    action = Some(ScrubberAction::SetExtrapolate(on));
                                 }
                                 ui.menu_button("⚙", |ui| {
+                                    ui.label("show");
+                                    ui.horizontal(|ui| {
+                                        use crate::trajectory::PreviewMode as PM;
+                                        for mode in [PM::Trail, PM::Strobe, PM::Both, PM::Ghost]
+                                        {
+                                            if ui
+                                                .selectable_label(
+                                                    state.preview_mode == mode,
+                                                    mode.label(),
+                                                )
+                                                .clicked()
+                                            {
+                                                action =
+                                                    Some(ScrubberAction::SetPreviewMode(mode));
+                                            }
+                                        }
+                                    });
                                     ui.label("forward window");
                                     let mut window = state.preview_window;
                                     if ui
@@ -932,17 +950,21 @@ impl Scrubber {
                                     {
                                         action = Some(ScrubberAction::SetPreviewWindow(window));
                                     }
-                                    ui.label("samples");
-                                    let mut samples = state.preview_samples.clamp(1, 64);
+                                    ui.label("rate");
+                                    let mut rate = state.preview_rate.clamp(1, 30);
                                     if ui
-                                        .add(egui::DragValue::new(&mut samples).range(1..=64))
+                                        .add(
+                                            egui::DragValue::new(&mut rate)
+                                                .range(1..=30)
+                                                .suffix("/s"),
+                                        )
                                         .changed()
                                     {
-                                        action = Some(ScrubberAction::SetPreviewSamples(samples));
+                                        action = Some(ScrubberAction::SetPreviewRate(rate));
                                     }
                                     ui.label(
                                         egui::RichText::new(
-                                            "ghost composites at most 8 samples",
+                                            "strobe copies per second — the trail samples\nfiner; ghost composites ≤8 total",
                                         )
                                         .weak()
                                         .size(10.0),

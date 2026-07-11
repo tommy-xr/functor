@@ -1023,9 +1023,9 @@ pub enum ScrubControl {
     /// preview `<select>` (PreviewMode wire index: 0 off / 1 trail / 2 strobe /
     /// 3 both / 4 ghost). The frame loop owns the preview state.
     SetPreview(u32),
-    /// The ⚙ popover's shared forward window (seconds) + samples, pushed by
-    /// the DOM inputs on change.
-    SetPreviewConfig { window: f32, samples: usize },
+    /// The ⚙ popover's shared forward window (seconds) + samples-per-second
+    /// rate, pushed by the DOM inputs on change.
+    SetPreviewConfig { window: f32, rate: usize },
 }
 
 thread_local! {
@@ -1082,10 +1082,11 @@ pub fn functor_lang_scrub_set_preview(mode: u32) {
 }
 
 /// Page → runtime: set the preview's shared forward window (seconds) and
-/// sample count (the ⚙ popover; JS owns the inputs and pushes on change).
+/// samples-per-second rate (the ⚙ popover; JS owns the inputs and pushes on
+/// change).
 #[wasm_bindgen]
-pub fn functor_lang_scrub_set_preview_config(window: f32, samples: usize) {
-    push_scrub(ScrubControl::SetPreviewConfig { window, samples });
+pub fn functor_lang_scrub_set_preview_config(window: f32, rate: usize) {
+    push_scrub(ScrubControl::SetPreviewConfig { window, rate });
 }
 
 /// Page → runtime: non-destructively scrub to a rendered frame (slider drag).

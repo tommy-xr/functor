@@ -238,7 +238,15 @@ fn trail_dot(p: Vector3<f32>) -> Scene3D {
     }
 }
 
-fn trail_from_tracks(tracks: &[MoverTrack]) -> Option<Scene3D> {
+/// The 1-based future-sample index the strobe's `c`-th copy stands on, for a
+/// track with `n_future` future samples and `count` copies: evenly spread,
+/// always including the window's end. Shared by the strobe (to place copies)
+/// and the trail (to stay OFF the strobe's cadence).
+fn strobe_idx(c: usize, count: usize, n_future: usize) -> usize {
+    (((c + 1) as f32 * n_future as f32 / count as f32).round() as usize).clamp(1, n_future)
+}
+
+fn trail_from_tracks(tracks: &[MoverTrack], strobe: Option<&StrobeOptions>) -> Option<Scene3D> {
     let mut dots = Vec::new();
     for track in tracks {
         // A pure in-place spinner has a track (for the strobe) but no path to
@@ -246,7 +254,20 @@ fn trail_from_tracks(tracks: &[MoverTrack]) -> Option<Scene3D> {
         if !track.translated {
             continue;
         }
-        for w in &track.worlds {
+        // Off-cadence with the strobe: skip the samples where a copy stands,
+        // so dots fill the gaps BETWEEN copies instead of hiding under them.
+        let n_future = track.worlds.len() - 1;
+        let skip: Vec<usize> = match strobe {
+            Some(s) if n_future > 0 && s.copies > 0 => {
+                let count = s.copies.min(n_future);
+                (0..count).map(|c| strobe_idx(c, count, n_future)).collect()
+            }
+            _ => Vec::new(),
+        };
+        for (i, w) in track.worlds.iter().enumerate() {
+            if skip.contains(&i) {
+                continue;
+            }
             dots.push(trail_dot(world_pos(w)));
         }
     }
@@ -263,7 +284,7 @@ fn trail_from_tracks(tracks: &[MoverTrack]) -> Option<Scene3D> {
 /// Build a dotted-trail scene from a scene sequence. Returns `None` when
 /// nothing moved. (The trail consumer of [`mover_tracks`].)
 pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<Scene3D> {
-    trail_from_tracks(&mover_tracks(scenes, eps, max_step))
+    trail_from_tracks(&mover_tracks(scenes, eps, max_step), None)
 }
 
 /// Scene-space strobe options.
@@ -373,8 +394,7 @@ pub fn strobe_overlay(tracks: &[MoverTrack], opts: &StrobeOptions) -> Option<Sce
         let count = opts.copies.min(n_future);
         for c in 0..count {
             // Evenly sample the future, always including the window's end.
-            let idx = ((c + 1) as f32 * n_future as f32 / count as f32).round() as usize;
-            let idx = idx.clamp(1, n_future);
+            let idx = strobe_idx(c, count, n_future);
             // Age by TIME along the track (not copy index), so sparse strobes
             // fade the same way dense ones do. Normalized over the inclusive
             // endpoints so the nearest possible future really gets `fade.0`; a
@@ -447,16 +467,6 @@ impl PreviewMode {
     pub fn is_on(self) -> bool {
         self != PreviewMode::Off
     }
-    /// Cycle order for a one-button UI: off → trail → strobe → both → ghost.
-    pub fn next(self) -> PreviewMode {
-        match self {
-            PreviewMode::Off => PreviewMode::Trail,
-            PreviewMode::Trail => PreviewMode::Strobe,
-            PreviewMode::Strobe => PreviewMode::Both,
-            PreviewMode::Both => PreviewMode::Ghost,
-            PreviewMode::Ghost => PreviewMode::Off,
-        }
-    }
     pub fn label(self) -> &'static str {
         match self {
             PreviewMode::Off => "off",
@@ -525,7 +535,8 @@ pub fn scene_preview(
     let tracks = mover_tracks(&scenes, opts.eps, opts.max_step);
     ScenePreview {
         trail: if opts.trail {
-            trail_from_tracks(&tracks)
+            // When the strobe draws too, the trail stays off its cadence.
+            trail_from_tracks(&tracks, opts.strobe.as_ref())
         } else {
             None
         },
@@ -697,6 +708,27 @@ mod tests {
     }
 
     #[test]
+    fn both_mode_dots_stay_off_the_strobe_cadence() {
+        // 4 future samples, 2 copies → copies stand on samples 2 and 4; the
+        // trail must drop those and keep the anchor plus samples 1 and 3, so
+        // dots fill the gaps between copies instead of hiding under them.
+        let frames: Vec<Scene3D> = (0..=4).map(|i| frame(i as f32, 0.0)).collect();
+        let refs: Vec<&Scene3D> = frames.iter().collect();
+        let tracks = mover_tracks(&refs, 0.05, 9.0);
+        let opts = StrobeOptions {
+            copies: 2,
+            ..Default::default()
+        };
+        let trail = trail_from_tracks(&tracks, Some(&opts)).expect("a trail");
+        match trail.obj {
+            SceneObject::Group(dots) => {
+                assert_eq!(dots.len(), 3, "anchor + the two non-copy samples")
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
     fn in_place_rotation_strobes_but_leaves_no_trail() {
         // A cube spinning in place: its world POSITION never changes, but its
         // basis vectors do. It must earn strobe copies (which can depict the
@@ -713,7 +745,10 @@ mod tests {
         assert_eq!(tracks.len(), 1, "a spinner is a mover");
         assert!(!tracks[0].translated);
         assert!(strobe_overlay(&tracks, &StrobeOptions::default()).is_some());
-        assert!(trail_from_tracks(&tracks).is_none(), "no dots for pure rotation");
+        assert!(
+            trail_from_tracks(&tracks, None).is_none(),
+            "no dots for pure rotation"
+        );
     }
 
     #[test]

@@ -106,23 +106,25 @@
         <span id="scrub-label">time-travel</span>
       </span>
       <button id="scrub-step">Step ▸</button>
-      <label title="Future preview while paused: trail dots, scene-space strobe copies, or the screen-space ghost compositor (docs/time-travel.md T6)">
-        <select id="scrub-preview">
-          <option value="0" selected>preview: off</option>
-          <option value="1">preview: trail</option>
-          <option value="2">preview: strobe</option>
-          <option value="3">preview: both</option>
-          <option value="4">preview: ghost</option>
-        </select>
+      <label title="Extrapolate the future while paused: forward-simulate the game and overlay where everything is headed (docs/time-travel.md T6)">
+        <input id="scrub-extrapolate" type="checkbox" checked />extrapolate
       </label>
       <details id="scrub-adv">
-        <summary title="Preview settings">⚙</summary>
+        <summary title="Extrapolation settings">⚙</summary>
         <div id="scrub-adv-pop">
+          <label title="What the extrapolation shows: trail dots, scene-space strobe copies, both, or the screen-space ghost compositor">show
+            <select id="scrub-mode">
+              <option value="1">trail</option>
+              <option value="2">strobe</option>
+              <option value="3" selected>both</option>
+              <option value="4">ghost</option>
+            </select>
+          </label>
           <label title="How far ahead the preview projects">window
             <input id="scrub-win" type="number" step="0.5" min="0.5" max="5" value="2" />s
           </label>
-          <label title="Forward samples across the window (ghost composites at most 8)">samples
-            <input id="scrub-samples" type="number" min="1" max="64" value="32" />
+          <label title="Strobe copies per second — the trail samples finer; density holds as the window resizes (ghost composites at most 8 total)">rate
+            <input id="scrub-rate" type="number" min="1" max="30" value="5" />/s
           </label>
         </div>
       </details>
@@ -303,20 +305,24 @@
         pause.addEventListener("click", () => functor_lang_scrub_toggle_pause());
         step.addEventListener("click", () => functor_lang_scrub_step());
 
-        // Future preview (docs/time-travel.md T6/T6d): JS owns the selector +
-        // the ⚙ popover state and pushes on change; the frame loop overlays /
-        // composites while paused. Pushed once at setup too: the browser may
-        // restore form state across a reload while the fresh runtime starts at
-        // Off / the defaults.
-        const preview = document.getElementById("scrub-preview");
+        // Future extrapolation (docs/time-travel.md T6/T6d): ONE switch on the
+        // bar (default ON — pausing shows trail+strobe out of the box); the
+        // mode / window / rate live in the ⚙ popover. JS owns the UI state and
+        // pushes the EFFECTIVE mode (0 while unchecked). Pushed once at setup
+        // too: the browser may restore form state across a reload while the
+        // fresh runtime starts at the defaults.
+        const extrapolate = document.getElementById("scrub-extrapolate");
+        const mode = document.getElementById("scrub-mode");
         const win = document.getElementById("scrub-win");
-        const samples = document.getElementById("scrub-samples");
-        const pushPreview = () => functor_lang_scrub_set_preview(+preview.value);
+        const rate = document.getElementById("scrub-rate");
+        const pushPreview = () =>
+          functor_lang_scrub_set_preview(extrapolate.checked ? +mode.value : 0);
         const pushConfig = () =>
-          functor_lang_scrub_set_preview_config(+win.value, +samples.value);
-        preview.addEventListener("change", pushPreview);
+          functor_lang_scrub_set_preview_config(+win.value, +rate.value);
+        extrapolate.addEventListener("change", pushPreview);
+        mode.addEventListener("change", pushPreview);
         win.addEventListener("input", pushConfig);
-        samples.addEventListener("input", pushConfig);
+        rate.addEventListener("input", pushConfig);
         pushPreview();
         pushConfig();
 
@@ -362,8 +368,9 @@
             // steps the game forward, input-free (the runtime animates the
             // catch-up). The counter's cyan `+N` is the numeric twin.
             const span = hi - lo;
-            const futureFrames =
-              +preview.value !== 0 ? Math.round(+win.value * 60) : 0;
+            const futureFrames = extrapolate.checked
+              ? Math.round(+win.value * 60)
+              : 0;
             slider.max = hi + futureFrames;
             // The predicted-frames count sits WITH the current frame:
             // `227 +120 / 227`.

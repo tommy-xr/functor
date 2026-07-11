@@ -880,23 +880,23 @@ pub fn run(args: Args) {
         // captures). The wasm/vscode preview shows it always.
         let mut scrubber_visible = args.scrubber;
         // Future-preview (docs/time-travel.md T6/T6d) state, driven
-        // interactively from the scrubber's `preview:` selector and ⚙ popover.
-        // Seeded from the launch flags — which stay authoritative while the
-        // overlay is hidden (the headless-capture escape hatch), where they may
-        // also COMBINE (--ghost --trajectory composes the trail into the
-        // strobe; the selector picks one mode at a time).
+        // interactively from the scrubber's "extrapolate" switch and ⚙ popover
+        // (mode / window / rate). Extrapolation defaults ON — pausing shows
+        // trail+strobe out of the box (the demo default) — and the launch
+        // flags pick the mode; they stay authoritative while the overlay is
+        // hidden (the headless-capture escape hatch), where they may also
+        // COMBINE (--ghost --trajectory composes the trail into the strobe).
+        let mut extrapolate_on = true;
         let mut preview_mode = match (args.ghost, args.trajectory, args.strobe) {
             (true, _, _) => functor_runtime_common::PreviewMode::Ghost,
-            (false, true, true) => functor_runtime_common::PreviewMode::Both,
             (false, true, false) => functor_runtime_common::PreviewMode::Trail,
             (false, false, true) => functor_runtime_common::PreviewMode::Strobe,
-            (false, false, false) => functor_runtime_common::PreviewMode::Off,
+            _ => functor_runtime_common::PreviewMode::Both,
         };
-        // The ⚙ popover's shared forward window/samples. Ghost seeds samples
-        // from its historical flag so `--ghost --ghost-divisions N` still tunes
-        // the interactive strobe.
+        // The ⚙ popover's shared forward window and samples-per-second rate
+        // (density holds as the window resizes: total samples = rate × window).
         let mut preview_window: f32 = 2.0;
-        let mut preview_samples: usize = if args.ghost { args.ghost_divisions } else { 32 };
+        let mut preview_rate: usize = 5;
         // --trajectory/--strobe preview cache. The 32-division forward-sim is
         // the expensive part, and while PAUSED its anchor (scene frame + tts) is
         // frozen — so reuse the computed preview while the anchor key matches,
@@ -1303,7 +1303,7 @@ Escape again to quit"
             // there (--ghost --trajectory composes the trail into the strobe) —
             // so headless captures are byte-for-byte unchanged.
             let (trail_wanted, strobe_wanted, ghost_active) = if scrubber_visible {
-                if clock.is_paused() {
+                if clock.is_paused() && extrapolate_on {
                     (
                         preview_mode.wants_trail(),
                         preview_mode.wants_strobe(),
@@ -1321,13 +1321,21 @@ Escape again to quit"
             // (the trail still shows: it rides IN the composited frames), and
             // it must not silently burn a forward-sim it can't display.
             let strobe_wanted = strobe_wanted && !ghost_active;
-            // Forward window/samples: the ⚙ popover's shared values
-            // interactively; the historical constants on the flag path (32
-            // samples over 1.6s), keeping captures byte-identical.
-            let (preview_divisions, preview_window_s) = if scrubber_visible {
-                (preview_samples.clamp(1, 64), preview_window)
+            // Forward window/densities. The SIM samples fine (~20/s — the
+            // trail's smooth-arc rate) while the ⚙ rate governs STROBE COPIES
+            // per second, so dots stay visible between copies and both hold
+            // their density as the window resizes. The flag path keeps its
+            // historical constants (32 samples over 1.6s, 8 copies), keeping
+            // captures byte-identical.
+            const TRAIL_RATE: f32 = 20.0;
+            let (preview_divisions, preview_window_s, strobe_copies) = if scrubber_visible {
+                let divisions =
+                    ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
+                let copies = ((preview_rate as f32 * preview_window).round() as usize)
+                    .clamp(1, divisions);
+                (divisions, preview_window, copies)
             } else {
-                (32usize, 1.6f32)
+                (32usize, 1.6f32, 8usize)
             };
             // While a drag-into-the-future catch-up is draining, skip the
             // preview recompute (the anchor moves every frame, so it would be
@@ -1406,8 +1414,10 @@ Escape again to quit"
                             eps: 0.04,
                             max_step: 3.0,
                             trail: trail_wanted,
-                            strobe: strobe_wanted
-                                .then(functor_runtime_common::StrobeOptions::default),
+                            strobe: strobe_wanted.then(|| functor_runtime_common::StrobeOptions {
+                                copies: strobe_copies,
+                                ..Default::default()
+                            }),
                         },
                     );
                     trail_refresh = TRAIL_REFRESH_FRAMES;
@@ -1437,11 +1447,15 @@ Escape again to quit"
                 && clock.pending_frames() == 0
             {
                 const MAX_GHOST: usize = 8;
-                // Interactive: the ⚙ popover's shared window/samples (clamped
-                // to the compositor's 8-target cap). Flag path: the historical
+                // Interactive: the ⚙ popover's rate × window (clamped to the
+                // compositor's 8-target cap). Flag path: the historical
                 // --ghost-divisions over a 2s window, byte-identical captures.
                 let (divisions, ghost_window) = if scrubber_visible {
-                    (preview_samples.clamp(1, MAX_GHOST), preview_window)
+                    (
+                        ((preview_rate as f32 * preview_window).round() as usize)
+                            .clamp(1, MAX_GHOST),
+                        preview_window,
+                    )
                 } else {
                     (args.ghost_divisions.clamp(1, MAX_GHOST), 2.0f32)
                 };
@@ -1748,9 +1762,10 @@ Escape again to quit"
                         frame: game.current_scene_frame().unwrap_or(0),
                         range: game.scene_frame_range(),
                         paused: clock.is_paused(),
+                        extrapolate: extrapolate_on,
                         preview_mode,
                         preview_window,
-                        preview_samples,
+                        preview_rate,
                     },
                 )
             } else {
@@ -1835,6 +1850,12 @@ Escape again to quit"
                     // Step implies pause: advance exactly one frame, then hold.
                     clock.step(1.0 / 60.0);
                 }
+                Some(functor_runtime_common::ui::ScrubberAction::SetExtrapolate(on)) => {
+                    if args.debug_clock {
+                        eprintln!("[clock] extrapolate {}", if on { "on" } else { "off" });
+                    }
+                    extrapolate_on = on;
+                }
                 Some(functor_runtime_common::ui::ScrubberAction::SetPreviewMode(m)) => {
                     if args.debug_clock {
                         eprintln!("[clock] preview {}", m.label());
@@ -1844,8 +1865,8 @@ Escape again to quit"
                 Some(functor_runtime_common::ui::ScrubberAction::SetPreviewWindow(w)) => {
                     preview_window = w.clamp(0.5, 5.0);
                 }
-                Some(functor_runtime_common::ui::ScrubberAction::SetPreviewSamples(n)) => {
-                    preview_samples = n.clamp(1, 64);
+                Some(functor_runtime_common::ui::ScrubberAction::SetPreviewRate(n)) => {
+                    preview_rate = n.clamp(1, 30);
                 }
                 None => {}
             }
