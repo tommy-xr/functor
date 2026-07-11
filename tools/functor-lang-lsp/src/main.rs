@@ -18,22 +18,71 @@
 //! `functor_lang::inlay`), and `textDocument/codeLens` (each top-level def's inferred
 //! signature above it, via `functor_lang::codelens`). Diagnostics cover parse,
 //! lowering, and every `functor_lang::check` type diagnostic.
+//!
+//! On top of that it hosts the **paused-scene inspector** (see [`inspector`]):
+//! it ingests a runtime trace document — pushed via the custom notification
+//! `functor/inspector/trace`, or pulled by polling `GET /trace` after
+//! `functor/inspector/attach {port}` — and overlays live binding values as
+//! inlay hints plus a click-to-cycle execution-picker code lens (command
+//! `functor.inspector.cycleExecution`), gated on a per-file source-hash match so
+//! stale buffers never show values on the wrong lines. Any trace or selection
+//! change triggers server-initiated `workspace/inlayHint/refresh` and
+//! `workspace/codeLens/refresh` requests.
+
+mod inspector;
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 use serde_json::{json, Value};
+
+use inspector::TraceDoc;
 
 /// JSON-RPC "method not found" (LSP inherits JSON-RPC 2.0 error codes).
 const METHOD_NOT_FOUND: i64 = -32601;
 /// JSON-RPC "invalid request" — requests after `shutdown`.
 const INVALID_REQUEST: i64 = -32600;
 
+/// A message arriving on the multiplexed channel: a framed message (from stdin
+/// or an attach-poll thread), or the stdin reader hitting EOF. `Eof` ends the
+/// loop even though attach-poll senders (which never close on their own) keep
+/// the channel otherwise alive.
+enum Incoming {
+    Msg(Value),
+    Eof,
+}
+
 fn main() {
-    let stdin = std::io::stdin();
+    // Multiplex two message sources into one queue: stdin (the LSP client) and
+    // background attach-poll threads (which inject `functor/inspector/trace`
+    // notifications). A dedicated thread reads framed stdin messages so the main
+    // loop can block on the shared channel.
+    let (tx, rx) = std::sync::mpsc::channel::<Incoming>();
+    let stdin_tx = tx.clone();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut reader = BufReader::new(stdin.lock());
+        while let Some(message) = read_message(&mut reader) {
+            if stdin_tx.send(Incoming::Msg(message)).is_err() {
+                return;
+            }
+        }
+        let _ = stdin_tx.send(Incoming::Eof); // client vanished — stop the loop
+    });
     let stdout = std::io::stdout();
-    let code = serve(&mut BufReader::new(stdin.lock()), &mut stdout.lock());
+    let mut writer = stdout.lock();
+    let code = run(
+        &mut || match rx.recv() {
+            Ok(Incoming::Msg(message)) => Some(message),
+            Ok(Incoming::Eof) | Err(_) => None,
+        },
+        &mut writer,
+        tx,
+    );
     std::process::exit(code);
 }
 
@@ -41,7 +90,25 @@ fn main() {
 /// requests (messages with an `id`) and notifications. Returns the process
 /// exit code: per the LSP spec, `exit` after `shutdown` is 0, `exit` without
 /// it is 1 (EOF — the client vanished — is a quiet 0).
+#[cfg(test)]
 fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
+    // The synchronous single-source loop used by the tests: stdin only. Attach
+    // polling is a `main`-only concern (its trace notifications arrive on the
+    // channel `main` drains), so the receiver is dropped here.
+    let (trace_tx, _trace_rx) = std::sync::mpsc::channel::<Incoming>();
+    run(&mut || read_message(reader), writer, trace_tx)
+}
+
+/// The server core: pull messages from `next` (stdin in tests; a stdin+attach
+/// multiplexed channel in `main`) and dispatch them, writing replies and
+/// server-initiated requests to `writer`. `trace_tx` is handed to attach-poll
+/// threads so a fetched trace re-enters here as a `functor/inspector/trace`
+/// notification.
+fn run(
+    next: &mut dyn FnMut() -> Option<Value>,
+    writer: &mut impl Write,
+    trace_tx: Sender<Incoming>,
+) -> i32 {
     let mut shutdown_seen = false;
     let mut documents: HashMap<String, String> = HashMap::new();
     // The last-good parsed project per URI, for completion. Completion fires on
@@ -49,7 +116,22 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
     // `None`; keeping the previous good load lets us still answer. A failed
     // refresh retains the previous entry — that IS "last good".
     let mut projects: HashMap<String, functor_lang::project::Project> = HashMap::new();
-    while let Some(message) = read_message(reader) {
+    // Inspector overlay state: the latest trace (parsed + its raw params, for
+    // change detection), the per-entry selected execution index (raw; reduced
+    // mod count at display), a monotonic id for server→client requests, and
+    // the live attach poller's cancel flag.
+    let mut trace: Option<TraceDoc> = None;
+    let mut last_trace_params: Option<Value> = None;
+    let mut selected: HashMap<String, usize> = HashMap::new();
+    let mut next_request_id: i64 = 1;
+    let mut attach_stop: Option<Arc<AtomicBool>> = None;
+    while let Some(message) = next() {
+        // A message with an `id` but no `method` is the client's response to one
+        // of our server-initiated refresh requests: fire-and-forget, so tolerate
+        // the reply arriving whenever and never try to "answer" it.
+        if message.get("method").is_none() {
+            continue;
+        }
         let method = message["method"].as_str().unwrap_or("").to_string();
         let id = message.get("id").cloned();
         let params = &message["params"];
@@ -79,6 +161,9 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                         "inlayHintProvider": true,
                         "codeLensProvider": { "resolveProvider": false },
                         "completionProvider": { "triggerCharacters": ["."] },
+                        "executeCommandProvider": {
+                            "commands": ["functor.inspector.cycleExecution"],
+                        },
                     },
                     "serverInfo": { "name": "functor-lang-lsp" },
                 });
@@ -120,26 +205,55 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
             }
             ("textDocument/inlayHint", Some(id)) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-                let result = documents
+                // Type hints (project-derived) merged with live-value hints
+                // (trace-derived, hash-gated) — the two are independent so live
+                // values still show even when the buffer fails to check.
+                let mut hints = documents
                     .contains_key(uri)
                     .then(|| inlay_hints(uri, &documents, &params["range"]))
                     .flatten()
-                    .unwrap_or_else(|| json!([]));
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                hints.extend(live_inlay_hints(
+                    uri,
+                    &documents,
+                    trace.as_ref(),
+                    &selected,
+                    &params["range"],
+                ));
                 write_message(
                     writer,
-                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": Value::Array(hints) }),
                 );
             }
             ("textDocument/codeLens", Some(id)) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-                let result = documents
+                // Signature lenses merged with the execution-picker lens.
+                let mut lenses = documents
                     .contains_key(uri)
                     .then(|| code_lenses(uri, &documents))
                     .flatten()
-                    .unwrap_or_else(|| json!([]));
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                lenses.extend(picker_code_lenses(
+                    uri,
+                    &documents,
+                    trace.as_ref(),
+                    &selected,
+                ));
                 write_message(
                     writer,
-                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": Value::Array(lenses) }),
+                );
+            }
+            ("workspace/executeCommand", Some(id)) => {
+                if params["command"].as_str() == Some("functor.inspector.cycleExecution") {
+                    cycle_execution(&params["arguments"], trace.as_ref(), &mut selected);
+                    refresh_overlays(writer, &mut next_request_id);
+                }
+                write_message(
+                    writer,
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }),
                 );
             }
             ("textDocument/completion", Some(id)) => {
@@ -200,6 +314,34 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                 projects.remove(uri);
                 // Clear stale squiggles for the closed file.
                 write_diagnostics(writer, uri, vec![]);
+            }
+            // A pushed trace (extension relay, wasm postMessage, tests, or the
+            // attach poller re-entering): replace the overlay and refresh.
+            // Refresh is event-driven — a document identical to the last one
+            // (e.g. an idle unpaused poll returning the same tiny `paused:false`
+            // JSON) causes no rebuild and no refresh.
+            ("functor/inspector/trace", None) => {
+                if last_trace_params.as_ref() == Some(params) {
+                    continue;
+                }
+                if let Some(doc) = TraceDoc::from_json(params) {
+                    last_trace_params = Some(params.clone());
+                    trace = Some(doc);
+                    refresh_overlays(writer, &mut next_request_id);
+                }
+            }
+            // Native refresh: poll `GET /trace` on a background thread. Attach
+            // persists until `{"port": null}` (or any non-number) detaches.
+            ("functor/inspector/attach", None) => {
+                if let Some(stop) = attach_stop.take() {
+                    stop.store(true, Ordering::SeqCst);
+                }
+                if let Some(port) = params["port"].as_u64() {
+                    let stop = Arc::new(AtomicBool::new(false));
+                    attach_stop = Some(stop.clone());
+                    let tx = trace_tx.clone();
+                    std::thread::spawn(move || poll_attached(port as u16, tx, stop));
+                }
             }
             // initialized, $/… and any other notification: deliberately ignored.
             (_, None) => {}
@@ -325,6 +467,227 @@ fn code_lenses(uri: &str, documents: &HashMap<String, String>) -> Option<Value> 
         })
         .collect();
     Some(Value::Array(lenses))
+}
+
+/// The live-value inlay hints for `uri` as LSP hints. Independent of the
+/// project load — it needs only the open-buffer (or on-disk) source text and
+/// the hash-gated trace — so live values still show when the buffer fails to
+/// check. Merged with the type hints by the caller.
+fn live_inlay_hints(
+    uri: &str,
+    documents: &HashMap<String, String>,
+    trace: Option<&TraceDoc>,
+    selected: &HashMap<String, usize>,
+    range: &Value,
+) -> Vec<Value> {
+    let Some(trace) = trace else {
+        return Vec::new();
+    };
+    let Some(path) = uri_to_path(uri) else {
+        return Vec::new();
+    };
+    let Some(file_name) = match_trace_file(trace, &path) else {
+        return Vec::new();
+    };
+    let source = source_text(uri, documents, &path);
+    let select = |entry: &str| selected.get(entry).copied().unwrap_or(0);
+    // The client's range is local to the file; live-hint offsets are already
+    // file-local trace byte offsets, so both compare directly (no `base`).
+    let start = position_to_offset(&source, &range["start"]);
+    let end = position_to_offset(&source, &range["end"]);
+    let in_range = |offset: usize| match (start, end) {
+        (Some(s), Some(e)) => s <= offset && offset < e,
+        _ => true,
+    };
+    inspector::live_hints(trace, &file_name, &source, &select)
+        .into_iter()
+        .filter(|hint| in_range(hint.offset))
+        .map(|hint| {
+            json!({
+                "position": lsp_position(&source, hint.offset),
+                "label": hint.label,
+                "paddingLeft": true,
+                "paddingRight": false,
+            })
+        })
+        .collect()
+}
+
+/// The execution-picker lenses for `uri`: one clickable lens per entry-point
+/// def whose name the trace recorded, cycling executions via
+/// `functor.inspector.cycleExecution`. The source-hash gate lives in the pure
+/// half; on a mismatch (or no trace) this is empty.
+fn picker_code_lenses(
+    uri: &str,
+    documents: &HashMap<String, String>,
+    trace: Option<&TraceDoc>,
+    selected: &HashMap<String, usize>,
+) -> Vec<Value> {
+    let Some(trace) = trace else {
+        return Vec::new();
+    };
+    let Some(project) = load_project(uri, documents) else {
+        return Vec::new();
+    };
+    let Some(path) = uri_to_path(uri) else {
+        return Vec::new();
+    };
+    let Some(file) = project.sources.file_by_path(&path) else {
+        return Vec::new();
+    };
+    let Some(file_name) = match_trace_file(trace, &path) else {
+        return Vec::new();
+    };
+    // Every top-level def in this file (project-wide span); the pure half keeps
+    // only those the trace has an invocation for.
+    let entry_defs: Vec<(String, functor_lang::Span)> = project
+        .module
+        .defs
+        .iter()
+        .filter(|def| owns(file, def.span.start))
+        .map(|def| (def.name.clone(), def.span))
+        .collect();
+    let select = |entry: &str| selected.get(entry).copied().unwrap_or(0);
+    inspector::picker_lenses(trace, &file_name, &file.src, &entry_defs, &select)
+        .into_iter()
+        .map(|lens| {
+            json!({
+                "range": local_range(file, lens.span),
+                "command": {
+                    "title": lens.title,
+                    "command": "functor.inspector.cycleExecution",
+                    "arguments": [lens.file, lens.entry, lens.current_index],
+                },
+            })
+        })
+        .collect()
+}
+
+/// Advance the selected execution for a `cycleExecution` command by one (mod
+/// the entry's execution count). Args are `[file, entry, currentIndex]`; the
+/// clicked lens's `currentIndex` is authoritative.
+fn cycle_execution(
+    arguments: &Value,
+    trace: Option<&TraceDoc>,
+    selected: &mut HashMap<String, usize>,
+) {
+    let Some(args) = arguments.as_array() else {
+        return;
+    };
+    let Some(entry) = args.get(1).and_then(|v| v.as_str()) else {
+        return;
+    };
+    let current = args.get(2).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let count = trace
+        .map(|t| inspector::execution_count(t, entry))
+        .unwrap_or(0);
+    if count > 0 {
+        selected.insert(entry.to_string(), (current + 1) % count);
+    }
+}
+
+/// Ask the client to re-pull inlay hints and code lenses — server-initiated
+/// requests with ids from the server counter. Fire-and-forget: the client's
+/// responses are tolerated whenever (and ignored on arrival).
+fn refresh_overlays(writer: &mut impl Write, next_request_id: &mut i64) {
+    for method in ["workspace/inlayHint/refresh", "workspace/codeLens/refresh"] {
+        let id = *next_request_id;
+        *next_request_id += 1;
+        write_message(
+            writer,
+            &json!({ "jsonrpc": "2.0", "id": id, "method": method }),
+        );
+    }
+}
+
+/// The server's current text for a file: the open buffer wins over disk, so
+/// unsaved edits participate in the source-hash gate.
+fn source_text(uri: &str, documents: &HashMap<String, String>, path: &Path) -> String {
+    documents
+        .get(uri)
+        .cloned()
+        .unwrap_or_else(|| std::fs::read_to_string(path).unwrap_or_default())
+}
+
+/// The trace-relative file name (e.g. `game.fun`) whose path suffix matches
+/// `path`. The wire contract keys sources/bindings by project-relative name;
+/// the LSP holds absolute paths, so we match on a `/`-boundary suffix.
+fn match_trace_file(trace: &TraceDoc, path: &Path) -> Option<String> {
+    let path = path.to_string_lossy();
+    trace
+        .sources
+        .iter()
+        .find(|source| {
+            let file = source.file.as_str();
+            path == file || path.ends_with(&format!("/{file}"))
+        })
+        .map(|source| source.file.clone())
+}
+
+/// Fetch and parse `GET http://<addr>/trace`. Hand-rolled HTTP/1.1 over TCP
+/// (`Connection: close`, so read-to-EOF yields the whole body) to avoid an
+/// HTTP-client dependency — the endpoint is always the localhost debug server,
+/// whose tiny_http responses always carry a Content-Length body (never
+/// chunked), so the bytes after the header block are the JSON. `None` on any
+/// connection/read/parse failure.
+fn fetch_trace(addr: &str) -> Option<Value> {
+    let mut stream = std::net::TcpStream::connect(addr).ok()?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok()?;
+    let request = format!("GET /trace HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).ok()?;
+    let split = find_subslice(&response, b"\r\n\r\n")?;
+    serde_json::from_slice(&response[split + 4..]).ok()
+}
+
+/// The index of the first occurrence of `needle` in `haystack`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Poll `GET /trace` on `127.0.0.1:<port>`, re-injecting each *changed* trace
+/// as a `functor/inspector/trace` notification on `tx`. Attach **persists
+/// until explicit detach** (`stop`, or a dropped receiver): it fetches once on
+/// attach, polls ~2Hz while the last response said `paused: true`, and idles
+/// ~1Hz when unpaused (or unreachable) — never self-stopping, so a fresh pause
+/// is discovered without any extension-side signal. Event-driven-ness governs
+/// *refresh*, not discovery: a response identical to the last one is not
+/// re-sent (and the trace handler dedupes again for the push path), so an idle
+/// unpaused poll of the tiny `paused:false` JSON causes no downstream work.
+fn poll_attached(port: u16, tx: Sender<Incoming>, stop: Arc<AtomicBool>) {
+    let addr = format!("127.0.0.1:{port}");
+    let mut paused = false;
+    let mut last_sent: Option<Value> = None;
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Some(doc) = fetch_trace(&addr) {
+            paused = doc["paused"].as_bool().unwrap_or(false);
+            if last_sent.as_ref() != Some(&doc) {
+                let message = json!({
+                    "jsonrpc": "2.0",
+                    "method": "functor/inspector/trace",
+                    "params": doc.clone(),
+                });
+                if tx.send(Incoming::Msg(message)).is_err() {
+                    return;
+                }
+                last_sent = Some(doc);
+            }
+        }
+        // ~2Hz paused, ~1Hz idle; wake promptly on detach.
+        let ticks = if paused { 5 } else { 10 };
+        for _ in 0..ticks {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
 }
 
 /// Answer an inlay-hint request: load the project and return an inferred-type
@@ -741,5 +1104,332 @@ mod codex_review_tests {
         let out = String::from_utf8(out).unwrap();
         assert!(!out.contains("publishDiagnostics"), "out: {out}");
         assert!(out.contains("-32600"), "out: {out}");
+    }
+}
+
+#[cfg(test)]
+mod inspector_server_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    // The entry-point fixture: a `let` binder inside `update` whose recorded
+    // value the inspector renders inline.
+    const FIXTURE: &str = "let update = (model, msg) =>\n  let velocity = model in\n  velocity\n";
+    const URI: &str = "file:///tmp/functor_lsp_inspector_test_xyz/game.fun";
+
+    // Drive `run` to completion over a fixed message queue, returning every
+    // message the server wrote (responses, notifications, and its own
+    // server→client requests), in order.
+    fn drive(messages: Vec<Value>) -> Vec<Value> {
+        let mut queue: VecDeque<Value> = messages.into();
+        let mut out: Vec<u8> = Vec::new();
+        let (trace_tx, _rx) = std::sync::mpsc::channel::<Incoming>();
+        run(&mut || queue.pop_front(), &mut out, trace_tx);
+        let mut reader: &[u8] = &out;
+        let mut parsed = Vec::new();
+        while let Some(message) = read_message(&mut reader) {
+            parsed.push(message);
+        }
+        parsed
+    }
+
+    // The `velocity` let-binder as a REGION span (start of the inner `let`
+    // through the value expr's start) — the PR1 convention.
+    fn velocity_region() -> (usize, usize, usize) {
+        let region_start = FIXTURE.match_indices("let").nth(1).unwrap().0;
+        let name_pos = region_start + FIXTURE[region_start..].find("velocity").unwrap();
+        let value_pos = name_pos + FIXTURE[name_pos..].find("model").unwrap();
+        (region_start, value_pos, name_pos + "velocity".len())
+    }
+
+    // A 5-execution `update` trace whose hash matches `text`; execution 0 binds
+    // `velocity`, the rest carry only distinct provenance for the picker.
+    fn trace_message(text: &str) -> Value {
+        let (start, end, _) = velocity_region();
+        let mut invocations = vec![json!({
+            "entry": "update", "index": 0, "count": 5, "provenance": "subscription: Tick",
+            "ghost": false, "result": "0",
+            "bindings": [{
+                "name": "velocity", "file": "game.fun",
+                "start": start, "end": end,
+                "value": "{ x = 0.0, y = -9.8 }", "count": 1
+            }]
+        })];
+        for (i, prov) in ["effect result: Pong", "input: Space down", "mouseMove", "collision: ground"]
+            .iter()
+            .enumerate()
+        {
+            invocations.push(json!({
+                "entry": "update", "index": i + 1, "count": 5, "provenance": prov,
+                "ghost": false, "result": "0", "bindings": []
+            }));
+        }
+        json!({
+            "jsonrpc": "2.0", "method": "functor/inspector/trace",
+            "params": {
+                "paused": true,
+                "sources": [ { "file": "game.fun", "hash": inspector::sha256_hex(text.as_bytes()) } ],
+                "invocations": invocations,
+            }
+        })
+    }
+
+    fn open(uri: &str, text: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": uri, "languageId": "functor-lang", "version": 1, "text": text } }
+        })
+    }
+
+    fn change(uri: &str, version: i64, text: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri, "version": version },
+                "contentChanges": [ { "text": text } ]
+            }
+        })
+    }
+
+    fn inlay_req(id: i64, uri: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0", "id": id, "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 100, "character": 0 } }
+            }
+        })
+    }
+
+    fn codelens_req(id: i64, uri: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0", "id": id, "method": "textDocument/codeLens",
+            "params": { "textDocument": { "uri": uri } }
+        })
+    }
+
+    fn response(messages: &[Value], id: i64) -> Value {
+        messages
+            .iter()
+            .find(|m| m["id"] == json!(id) && m.get("result").is_some())
+            .unwrap_or_else(|| panic!("no response for id {id} in {messages:#?}"))
+            .clone()
+    }
+
+    // Does a code-lens result carry a picker lens with this execution string?
+    fn has_picker(result: &Value, needle: &str) -> bool {
+        result.as_array().is_some_and(|lenses| {
+            lenses.iter().any(|lens| {
+                lens["command"]["command"] == json!("functor.inspector.cycleExecution")
+                    && lens["command"]["title"].as_str().is_some_and(|t| t.contains(needle))
+            })
+        })
+    }
+
+    fn has_live_value(result: &Value) -> bool {
+        result.as_array().is_some_and(|hints| {
+            hints
+                .iter()
+                .any(|h| h["label"].as_str().is_some_and(|l| l.starts_with("= ")))
+        })
+    }
+
+    #[test]
+    fn initialize_advertises_the_cycle_command() {
+        let out = drive(vec![json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} }
+        })]);
+        assert_eq!(
+            response(&out, 1)["result"]["capabilities"]["executeCommandProvider"]["commands"],
+            json!(["functor.inspector.cycleExecution"])
+        );
+    }
+
+    #[test]
+    fn trace_yields_live_hints_and_a_picker_that_cycles_and_gates_on_edit() {
+        let mutated = format!("{FIXTURE}\n"); // hash-breaking edit
+        let out = drive(vec![
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+            open(URI, FIXTURE),
+            trace_message(FIXTURE),
+            inlay_req(2, URI),
+            codelens_req(3, URI),
+            // Cycle update's execution 0 → 1.
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "workspace/executeCommand",
+                "params": { "command": "functor.inspector.cycleExecution", "arguments": ["game.fun", "update", 0] }
+            }),
+            codelens_req(5, URI),
+            change(URI, 2, &mutated),
+            inlay_req(6, URI),
+            codelens_req(7, URI),
+        ]);
+
+        // Live value hint appears at the binder name, hash-gated open.
+        let inlay2 = response(&out, 2)["result"].clone();
+        assert!(has_live_value(&inlay2), "expected a live value hint: {inlay2}");
+        let (_, _, name_end) = velocity_region();
+        let hit = inlay2
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["label"] == json!("= { x = 0.0, y = -9.8 }"))
+            .expect("velocity hint");
+        assert_eq!(hit["position"], lsp_position(FIXTURE, name_end));
+
+        // Picker lens starts at execution 1/5 with execution 0's provenance.
+        assert!(
+            has_picker(&response(&out, 3)["result"], "update — execution 1/5 ▸ [subscription: Tick]"),
+            "codeLens id 3: {:?}", response(&out, 3)["result"]
+        );
+
+        // After the cycle, the lens advances to 2/5 with execution 1's provenance.
+        assert!(
+            has_picker(&response(&out, 5)["result"], "update — execution 2/5 ▸ [effect result: Pong]"),
+            "codeLens id 5: {:?}", response(&out, 5)["result"]
+        );
+
+        // A trace change AND the executeCommand each pushed a codeLens refresh.
+        let refreshes = out
+            .iter()
+            .filter(|m| m["method"] == json!("workspace/codeLens/refresh"))
+            .count();
+        assert!(refreshes >= 2, "expected >=2 codeLens refreshes, got {refreshes}");
+        assert!(
+            out.iter().any(|m| m["method"] == json!("workspace/inlayHint/refresh")),
+            "expected an inlayHint refresh"
+        );
+
+        // The hash-breaking edit closes the gate: no live hints, no picker.
+        assert!(!has_live_value(&response(&out, 6)["result"]), "live hints must vanish on edit");
+        assert!(
+            !has_picker(&response(&out, 7)["result"], "execution"),
+            "picker must vanish on edit"
+        );
+    }
+
+    #[test]
+    fn client_response_to_a_refresh_is_tolerated() {
+        // A message with an `id` but no `method` is the client's reply to our
+        // refresh request; it must be ignored, not answered with an error.
+        let out = drive(vec![
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+            json!({ "jsonrpc": "2.0", "id": 42, "result": null }),
+        ]);
+        assert!(
+            !out.iter().any(|m| m["id"] == json!(42)),
+            "a client response must not be answered: {out:#?}"
+        );
+    }
+
+    // A minimal one-shot HTTP server that replies with `body` and closes.
+    fn stub_server(body: String) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut scratch = [0u8; 1024];
+            let _ = sock.read(&mut scratch);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(response.as_bytes()).unwrap();
+        });
+        (addr, handle)
+    }
+
+    #[test]
+    fn fetch_trace_reads_and_parses_a_stub_server() {
+        let (addr, handle) = stub_server(
+            r#"{"paused":true,"sources":[],"invocations":[]}"#.to_string(),
+        );
+        let trace = fetch_trace(&addr).expect("fetch");
+        assert_eq!(trace["paused"], json!(true));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn poll_attached_idles_slowly_while_unpaused_and_discovers_the_next_pause() {
+        // A server that answers unpaused, unpaused (identical — must be
+        // deduplicated, not re-delivered), then paused; then it goes away
+        // (the poller must survive that too — attach persists until detach).
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for paused in ["false", "false", "true"] {
+                let (mut sock, _) = listener.accept().unwrap();
+                let mut scratch = [0u8; 512];
+                let _ = sock.read(&mut scratch);
+                let body = format!(r#"{{"paused":{paused},"sources":[],"invocations":[]}}"#);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                sock.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel::<Incoming>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let poller_stop = stop.clone();
+        let poller = std::thread::spawn(move || poll_attached(port, tx, poller_stop));
+        let recv_msg = |rx: &std::sync::mpsc::Receiver<Incoming>, secs: u64| match rx
+            .recv_timeout(Duration::from_secs(secs))
+        {
+            Ok(Incoming::Msg(v)) => Some(v),
+            _ => None,
+        };
+
+        // Fetch-once-on-attach delivers the unpaused doc.
+        let started = std::time::Instant::now();
+        let first = recv_msg(&rx, 3).expect("first trace");
+        assert_eq!(first["method"], json!("functor/inspector/trace"));
+        assert_eq!(first["params"]["paused"], json!(false));
+        // The identical second response is deduplicated; the NEXT delivery is
+        // the discovered pause — after two ~1s idle waits, never self-stopped.
+        let second = recv_msg(&rx, 6).expect("the discovered pause");
+        assert_eq!(second["params"]["paused"], json!(true));
+        assert!(
+            started.elapsed() >= Duration::from_millis(1500),
+            "unpaused polling must idle ~1Hz, got {:?}",
+            started.elapsed()
+        );
+
+        // Only explicit detach ends the poller (the server is already gone).
+        stop.store(true, Ordering::SeqCst);
+        poller.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn unchanged_trace_emits_no_refresh() {
+        // Event-driven refresh: a repeated identical trace document (the idle
+        // unpaused poll case) must cause no refresh; a changed one must.
+        let unpaused = json!({
+            "jsonrpc": "2.0", "method": "functor/inspector/trace",
+            "params": { "paused": false, "sources": [], "invocations": [] }
+        });
+        let out = drive(vec![
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }),
+            unpaused.clone(),
+            unpaused.clone(), // identical — no refresh, no work
+            trace_message(FIXTURE), // changed — refresh again
+        ]);
+        let count = |method: &str| {
+            out.iter()
+                .filter(|m| m["method"] == json!(method))
+                .count()
+        };
+        assert_eq!(
+            count("workspace/inlayHint/refresh"),
+            2,
+            "one refresh per CHANGED trace: {out:#?}"
+        );
+        assert_eq!(count("workspace/codeLens/refresh"), 2);
     }
 }
