@@ -5,6 +5,34 @@ model loading + skinning/animation, effects/`EffectQueue`, subscriptions seam +
 `Sub.every`, input plumbing native + web, hot reload, the CLI, frame capture +
 golden tests), see `CLAUDE.md` and `git log`.
 
+## Asteroids exercise (2026-07-11)
+
+Gaps hit building `examples/asteroids` end-to-end (full report:
+`~/notes/projects/functor/asteroids-exercise.md`). The ogg-container audio
+bug found in the same exercise was fixed on the spot
+(`functor-runtime-desktop/Cargo.toml`).
+
+- [ ] Math builtins: `sqrt`, `atan2`, `abs`, `floor`/`mod`, `min`/`max`,
+      `pi`, `pow` (today: only `sin`/`cos`/`clamp01` — every game hits these).
+- [ ] Pure seeded randomness (`Random.step(seed) -> (value, seed)` or
+      `Effect.randomList`) — `Effect.random`'s one-float-per-update forces
+      sin-hash noise, whose correlated streams caused a real visual bug.
+- [ ] Boolean operators `&&` / `||` / `not` (compound predicates are
+      match-pyramids / hand-rolled helpers today).
+- [ ] List builtins: `length`, `append`, `flatten`, `any`/`all`, `reverse`,
+      `isEmpty` — naive recursive versions blow the eval-depth cap at n≈60;
+      the depth error should name the cap and hint at `List.fold`.
+- [ ] Literals inside tuple/ctor patterns (`| ("Enter", true) =>`) for
+      input mapping.
+- [ ] `Frame.withClearColor` (today: distant-fog trick doubles as clear color).
+- [ ] `Ui.center()` anchor (+ eventually font size / spacer) for menus.
+- [ ] Soundscape missing-asset error should warn once, not every frame.
+- [ ] Project loader/watcher: ignore non-identifier / dot-prefixed `*.fun`
+      stems (editor temp files fail hot reload today).
+- [ ] Asset introspection: `functor inspect` should print per-node
+      translations + bbox (Kenney glbs carry baked placement offsets that
+      render displaced and look like renderer bugs).
+
 ## Validation tooling
 
 - Debug runtime: the `--debug-port` HTTP control server exists (`/capture`,

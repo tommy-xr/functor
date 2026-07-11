@@ -161,3 +161,8 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 - Demo audio (`examples/*/*.wav`) is procedurally synthesized — original/CC0, no
   third-party samples. Regenerate with `npm run generate:audio`
   (`scripts/generate-audio.mjs`).
+- `examples/asteroids` uses [Kenney](https://kenney.nl) assets (CC0): sounds from
+  the [Sci-Fi Sounds](https://kenney.nl/assets/sci-fi-sounds) pack and the ship
+  model (`craft_racer`) from the [Space Kit](https://kenney.nl/assets/space-kit)
+  (fetched by `npm run fetch:assets`, not checked in). Thanks, Kenney! Details
+  per file in `examples/asteroids/ASSETS.md`.
