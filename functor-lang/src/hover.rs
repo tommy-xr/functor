@@ -179,7 +179,7 @@ pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
 
 /// Render a surface annotation (`List<Float>`) for param hovers, which have
 /// no expression node of their own.
-fn type_name_text(ty: &TypeName) -> String {
+pub(crate) fn type_name_text(ty: &TypeName) -> String {
     if ty.args.is_empty() {
         return ty.name.clone();
     }
