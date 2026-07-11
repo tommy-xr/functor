@@ -1,13 +1,14 @@
 // The sandbox page: a CodeMirror editor wired to the runtime iframe over the
-// same postMessage seam the VSCode live-preview panel uses
-// (tools/functor-lang-vscode/client/extension.js is the reference implementation):
-// edits are debounced and pushed as `functor-lang-set-source`; the runtime hot-swaps
-// the program with the model preserved and replies `functor-lang-set-source-result`.
+// editor↔player postMessage seam (player-bridge.js — the same protocol the
+// VSCode live-preview panel uses). Edits are debounced and pushed as
+// `functor-lang-set-source`; the runtime hot-swaps the program with the model
+// preserved and replies `functor-lang-set-source-result`.
 
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
+import { PlayerBridge } from "./player-bridge.js";
 
 const EXAMPLES = [
   { id: "hero", label: "Neon grid" },
@@ -16,19 +17,11 @@ const EXAMPLES = [
   { id: "monitor", label: "Render targets" },
 ];
 
-// Same cadence as the VSCode extension: fast enough to feel live, slow
-// enough not to push a reload per keystroke.
-const PUSH_DEBOUNCE_MS = 300;
-
 const frame = document.getElementById("player");
 const statusPill = document.getElementById("status");
 const statusLog = document.getElementById("status-log");
 const picker = document.getElementById("example-picker");
 const resetButton = document.getElementById("reset");
-
-let previewReady = false;
-let dirty = false;
-let pushTimer = null;
 
 const setStatus = (state, text, detail = "") => {
   statusPill.dataset.state = state;
@@ -40,23 +33,20 @@ const setStatus = (state, text, detail = "") => {
   statusLog.hidden = detail === "";
 };
 
-const pushSource = () => {
-  if (!previewReady || !frame.contentWindow) {
-    dirty = true;
-    return;
-  }
-  dirty = false;
-  setStatus("busy", "◌ reloading…");
-  frame.contentWindow.postMessage(
-    { type: "functor-lang-set-source", source: view.state.doc.toString() },
-    "*"
-  );
-};
-
-const schedulePush = () => {
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(pushSource, PUSH_DEBOUNCE_MS);
-};
+const bridge = new PlayerBridge(frame, {
+  onReloading: () => setStatus("busy", "◌ reloading…"),
+  onLive: () => setStatus("live", "● live"),
+  onResult: (ok, message) => {
+    if (ok) {
+      setStatus("live", "● live");
+      // The runtime's status line ("reloaded … model preserved") stays
+      // reachable — hover the pill, or the e2e's status() seam below.
+      statusPill.title = message;
+    } else {
+      setStatus("error", "✖ error", message);
+    }
+  },
+});
 
 // Set while loadExample replaces the buffer programmatically: that content is
 // exactly what the fresh iframe is about to fetch, so pushing it back would
@@ -71,41 +61,13 @@ const view = new EditorView({
     functorLangLanguage,
     synthwaveEditorTheme,
     EditorView.updateListener.of((update) => {
-      if (update.docChanged && !programmaticEdit) schedulePush();
+      if (update.docChanged && !programmaticEdit) bridge.push(view.state.doc.toString());
     }),
   ],
 });
 
-// Replies and readiness from the player iframe. Only trust the iframe we
-// created (same-origin, but be explicit about the source anyway).
-window.addEventListener("message", (event) => {
-  if (event.source !== frame.contentWindow) return;
-  const data = event.data;
-  if (!data) return;
-  if (data.type === "functor-lang-preview-ready") {
-    previewReady = true;
-    // Flush edits made while the runtime was still starting.
-    if (dirty) pushSource();
-    else setStatus("live", "● live");
-  } else if (data.type === "functor-lang-set-source-result") {
-    // A reply from the outgoing document (its WindowProxy survives the src
-    // swap) must not overwrite the "loading…" status of the incoming one.
-    if (!previewReady) return;
-    if (data.ok) {
-      setStatus("live", "● live");
-      // The runtime's status line ("reloaded … model preserved") stays
-      // reachable — hover the pill, or the e2e's status() seam below.
-      statusPill.title = data.message;
-    } else {
-      setStatus("error", "✖ error", data.message);
-    }
-  }
-});
-
 const setDoc = (source) => {
-  clearTimeout(pushTimer);
-  previewReady = false;
-  dirty = false;
+  bridge.reset();
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
@@ -143,9 +105,9 @@ const loadInline = (b64u) => {
   // Deliver the inline program through the set-source push seam (like a live
   // edit), not a player `?src=` data: URL: the runtime derives a module name
   // from the entry path (`file = module`), and a data: URL has no valid
-  // identifier stem. The player loads its default entry, then this push (armed
-  // via `dirty`, flushed on `functor-lang-preview-ready`) swaps in the program.
-  dirty = true;
+  // identifier stem. The player loads its default entry, then this armed push
+  // swaps in the program once `functor-lang-preview-ready` arrives.
+  bridge.armPush(source);
   setStatus("busy", "◌ loading…");
   frame.src = "player.html";
   return true;

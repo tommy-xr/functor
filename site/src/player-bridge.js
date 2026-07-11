@@ -1,0 +1,88 @@
+// The editor ↔ player postMessage protocol, factored out of sandbox.js so the
+// landing hero can drive the same live-reload loop. Dependency-free (no
+// CodeMirror): the consumer owns the editor and hands source strings in.
+//
+// The seam is the one the VSCode live-preview panel uses: edits are debounced
+// and pushed as `functor-lang-set-source`; the runtime hot-swaps the program
+// with the model preserved and replies `functor-lang-set-source-result`. The
+// player announces itself with `functor-lang-preview-ready` after it boots.
+
+// Same cadence as the VSCode extension: fast enough to feel live, slow enough
+// not to push a reload per keystroke.
+const PUSH_DEBOUNCE_MS = 300;
+
+export class PlayerBridge {
+  // iframe: the player element. Callbacks map protocol events to UI:
+  //   onReloading()          — a push was sent (busy)
+  //   onLive()               — the player is ready with nothing pending
+  //   onResult(ok, message)  — a hot-swap reply came back
+  constructor(iframe, { onReloading, onLive, onResult, debounceMs = PUSH_DEBOUNCE_MS }) {
+    this.iframe = iframe;
+    this.onReloading = onReloading;
+    this.onLive = onLive;
+    this.onResult = onResult;
+    this.debounceMs = debounceMs;
+
+    this.previewReady = false;
+    this.dirty = false;
+    this.pushTimer = null;
+    this.lastSource = "";
+
+    // Replies and readiness from the player iframe. Only trust the iframe we
+    // created (same-origin, but be explicit about the source anyway).
+    window.addEventListener("message", (event) => this.#onMessage(event));
+  }
+
+  // Debounced live edit: swap in `source` once the buffer settles.
+  push(source) {
+    this.lastSource = source;
+    clearTimeout(this.pushTimer);
+    this.pushTimer = setTimeout(() => this.#post(), this.debounceMs);
+  }
+
+  // Reset for a fresh iframe load (fresh model: init runs). Cancels any pending
+  // push and drops readiness until the next `functor-lang-preview-ready`.
+  reset() {
+    clearTimeout(this.pushTimer);
+    this.previewReady = false;
+    this.dirty = false;
+  }
+
+  // Arm an immediate push of `source` for when the player next signals ready —
+  // the inline-load path: the player boots its default entry, then we swap in
+  // this program. No debounce; the flush happens on the ready handshake.
+  armPush(source) {
+    this.lastSource = source;
+    this.dirty = true;
+  }
+
+  #post() {
+    if (!this.previewReady || !this.iframe.contentWindow) {
+      this.dirty = true;
+      return;
+    }
+    this.dirty = false;
+    this.onReloading();
+    this.iframe.contentWindow.postMessage(
+      { type: "functor-lang-set-source", source: this.lastSource },
+      "*"
+    );
+  }
+
+  #onMessage(event) {
+    if (event.source !== this.iframe.contentWindow) return;
+    const data = event.data;
+    if (!data) return;
+    if (data.type === "functor-lang-preview-ready") {
+      this.previewReady = true;
+      // Flush edits made while the runtime was still starting.
+      if (this.dirty) this.#post();
+      else this.onLive();
+    } else if (data.type === "functor-lang-set-source-result") {
+      // A reply from the outgoing document (its WindowProxy survives the src
+      // swap) must not overwrite the "loading…" status of the incoming one.
+      if (!this.previewReady) return;
+      this.onResult(data.ok, data.message);
+    }
+  }
+}
