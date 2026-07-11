@@ -1341,6 +1341,9 @@ Escape again to quit"
             // half of the window. (The shadow pass runs per eye; it must start
             // unscissored, so scissor is reset before each call — same contract
             // as the netsim viewer's panes.)
+            // Time the whole scene render (all arms) for FrameStats.render_us —
+            // the GL-submission cost, distinct from the interpreter's draw cost.
+            let render_started = Instant::now();
             if args.stereo_sbs {
                 let (left_cam, right_cam) = view_camera.stereo_eyes(args.stereo_ipd);
                 // Odd widths: the right eye absorbs the extra column, so the
@@ -1445,6 +1448,7 @@ Escape again to quit"
                     );
                 }
             }
+            let render_ns = render_started.elapsed().as_nanos() as u64;
 
             // The pointer, in framebuffer pixels, for BOTH interactive egui
             // passes (the game UI and the scrubber). The cursor (GLFW window/
@@ -1645,7 +1649,15 @@ Escape again to quit"
                 }
             }
 
+            // Time the buffer swap separately: it blocks on vsync, so
+            // FrameStats.swap_us captures presentation/vsync cost, not GL work.
+            let swap_started = Instant::now();
             window.swap_buffers();
+            let swap_ns = swap_started.elapsed().as_nanos() as u64;
+
+            // Hand this frame's shell-measured GL cost to the producer, which
+            // folds it into the same rolling window it averages tick/draw over.
+            game.record_gl_timing(render_ns, swap_ns);
         }
     }
 

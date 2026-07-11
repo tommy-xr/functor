@@ -35,6 +35,8 @@ use super::{Event, PlainRenderer, Renderer};
 struct Stats {
     tick_us: f64,
     draw_us: f64,
+    render_us: Option<f64>,
+    swap_us: Option<f64>,
     frame_us: Option<f64>,
     budget_pct: Option<f64>,
 }
@@ -66,6 +68,12 @@ impl Panel {
                     format!("{:.0}µs", s.tick_us).cyan(),
                     format!("{:.0}µs", s.draw_us).cyan(),
                 );
+                if let Some(render_us) = s.render_us {
+                    row.push_str(&format!(" · render {}", format!("{render_us:.0}µs").cyan()));
+                }
+                if let Some(swap_us) = s.swap_us {
+                    row.push_str(&format!(" · swap {}", format!("{swap_us:.0}µs").cyan()));
+                }
                 if let Some(frame_us) = s.frame_us {
                     row.push_str(&format!(" · frame {}", format!("{frame_us:.0}µs").cyan()));
                 }
@@ -209,6 +217,8 @@ impl Renderer for LiveRenderer {
             Event::FrameStats {
                 tick_us,
                 draw_us,
+                render_us,
+                swap_us,
                 frame_us,
                 budget_pct,
                 over_n_frames,
@@ -225,6 +235,8 @@ impl Renderer for LiveRenderer {
                     panel.stats = Some(Stats {
                         tick_us: *tick_us,
                         draw_us: *draw_us,
+                        render_us: *render_us,
+                        swap_us: *swap_us,
                         frame_us: *frame_us,
                         budget_pct: *budget_pct,
                     });

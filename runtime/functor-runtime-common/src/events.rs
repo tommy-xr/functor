@@ -29,10 +29,16 @@ pub enum RuntimeEvent {
     Ready,
     /// A periodic frame-cost sample, averaged over `over_n_frames` frames.
     /// `frame_us` is the total (`tick + physics + draw`); `budget_pct` is that
-    /// total against a 60 fps (16.666 ms) budget.
+    /// total against a 60 fps (16.666 ms) budget. `render_us` / `swap_us` are the
+    /// shell-measured GL cost — the scene render pass and the buffer swap (vsync
+    /// blocking) — reported alongside `draw_us` so interpreter cost and GL cost
+    /// can be told apart. They are not folded into `frame_us` (swap's vsync block
+    /// would peg `budget_pct`).
     FrameStats {
         tick_us: f64,
         draw_us: f64,
+        render_us: f64,
+        swap_us: f64,
         frame_us: f64,
         budget_pct: f64,
         over_n_frames: u32,
