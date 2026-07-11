@@ -44,6 +44,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Audio playback (the host owns the device so it survives hot reload). cpal needs
 # ALSA dev headers on Linux (libasound2-dev) — installed in the Build Native CI.
 rodio = { version = "0.19", default-features = false, features = ["symphonia-wav", "symphonia-vorbis"] }
+# rodio's `symphonia-vorbis` enables only the vorbis CODEC — without the OGG
+# container demuxer every .ogg fails with "Unrecognized format". rodio 0.19
+# exposes no feature for it, so enable symphonia's `ogg` directly (feature
+# unification turns it on inside rodio's decoder).
+symphonia = { version = "0.5", default-features = false, features = ["ogg"] }
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
 

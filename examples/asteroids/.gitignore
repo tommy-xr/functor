@@ -1,0 +1,3 @@
+# The ship model is fetched, not checked in (npm run fetch:assets); the
+# CC0 sounds are small and committed like examples/lighting's wavs.
+*.glb
