@@ -140,7 +140,11 @@ Produces `target/debug/functor` — a single binary with the desktop runtime bui
 ./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; Functor Lang hot-reload is built in
 ```
 
-Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors). `run native`
+Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors); `build wasm`
+then also exports a **self-contained static web bundle** to `<project>/dist/web` — the rendered
+host page + the embedded web runtime + a copy of the project directory (hidden files and `dist/`
+excluded), with a warn-only lint for string-literal asset references that won't be in the bundle.
+Zip that folder for itch.io (HTML5) or serve it from any static host. `run native`
 drives the built-in desktop runtime in-process from the game dir; it **interprets** the
 `.fun` each frame — nothing compiles. `run wasm` serves the project directory: the `.fun` ships as
 text and is interpreted by the embedded web runtime. `develop` is `run` (hot-reload is built in; on

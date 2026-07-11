@@ -82,7 +82,9 @@ enum Command {
         template: commands::init::Template,
     },
     /// Typecheck the Functor Lang project (the strict build gate — diagnostics are
-    /// errors). Target-independent. E.g. `functor -d examples/primitives build`.
+    /// errors). `build wasm` also exports a self-contained static web bundle
+    /// to `dist/web/` (zip it for itch.io, or serve from any static host).
+    /// E.g. `functor -d examples/primitives build`.
     Build {
         #[arg(value_enum)]
         environment: Option<Environment>,
@@ -272,10 +274,16 @@ async fn run(args: &Args) -> io::Result<()> {
             Command::Init { .. } | Command::Inspect { .. } | Command::Import => {
                 unreachable!("is_routed excludes")
             }
-            // `build` is target-independent for Functor Lang: the strict typecheck
-            // gate is the whole build — nothing compiles for either target
-            // (native interprets the file; wasm serves it as text).
-            Command::Build { .. } => project.build(&working_directory_str),
+            // `build` is the strict typecheck gate — nothing compiles for
+            // either target (native interprets the file; wasm ships it as
+            // text). `build wasm` then also writes the static web bundle.
+            Command::Build { environment } => {
+                project.build(&working_directory_str)?;
+                match environment {
+                    Some(Environment::Wasm) => project.export_wasm(&working_directory_str),
+                    _ => Ok(()),
+                }
+            }
             Command::Run {
                 environment,
                 runner_args,
