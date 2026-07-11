@@ -39,6 +39,11 @@ struct Stats {
     swap_us: Option<f64>,
     frame_us: Option<f64>,
     budget_pct: Option<f64>,
+    /// GPU-resource counters (native): (live vaos, buffers, textures). A leak
+    /// shows as these climbing across samples.
+    gpu_live: Option<(u64, u64, u64)>,
+    gpu_bytes_per_frame: Option<f64>,
+    gpu_cache: Option<(u64, u64)>,
 }
 
 /// The sticky `run native` telemetry panel.
@@ -80,6 +85,27 @@ impl Panel {
                 lines.push(row);
                 if let Some(pct) = s.budget_pct {
                     lines.push(format!("  {}", budget_bar(pct)));
+                }
+                if let Some((vaos, buffers, textures)) = s.gpu_live {
+                    let mut gpu = format!(
+                        "  gpu vao {} · buf {} · tex {}",
+                        format!("{vaos}").cyan(),
+                        format!("{buffers}").cyan(),
+                        format!("{textures}").cyan(),
+                    );
+                    if let Some(bytes) = s.gpu_bytes_per_frame {
+                        gpu.push_str(&format!(
+                            " · up {}",
+                            format!("{bytes:.0}B/f").cyan()
+                        ));
+                    }
+                    if let Some((hits, misses)) = s.gpu_cache {
+                        gpu.push_str(&format!(
+                            " · cache {}",
+                            format!("{hits}/{}", hits + misses).cyan()
+                        ));
+                    }
+                    lines.push(gpu);
                 }
             }
             None => lines.push(format!("  {}", "warming up…".dimmed())),
@@ -222,6 +248,12 @@ impl Renderer for LiveRenderer {
                 frame_us,
                 budget_pct,
                 over_n_frames,
+                gpu_live_vaos,
+                gpu_live_buffers,
+                gpu_live_textures,
+                gpu_bytes_per_frame,
+                gpu_cache_hits,
+                gpu_cache_misses,
             } => {
                 if let Some(panel) = inner.panel.as_mut() {
                     let now = Instant::now();
@@ -232,6 +264,14 @@ impl Renderer for LiveRenderer {
                         }
                     }
                     panel.last_stats_at = Some(now);
+                    let gpu_live = match (gpu_live_vaos, gpu_live_buffers, gpu_live_textures) {
+                        (Some(v), Some(b), Some(t)) => Some((*v, *b, *t)),
+                        _ => None,
+                    };
+                    let gpu_cache = match (gpu_cache_hits, gpu_cache_misses) {
+                        (Some(h), Some(m)) => Some((*h, *m)),
+                        _ => None,
+                    };
                     panel.stats = Some(Stats {
                         tick_us: *tick_us,
                         draw_us: *draw_us,
@@ -239,6 +279,9 @@ impl Renderer for LiveRenderer {
                         swap_us: *swap_us,
                         frame_us: *frame_us,
                         budget_pct: *budget_pct,
+                        gpu_live,
+                        gpu_bytes_per_frame: *gpu_bytes_per_frame,
+                        gpu_cache,
                     });
                     panel.refresh();
                 } else {

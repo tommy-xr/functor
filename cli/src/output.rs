@@ -119,6 +119,22 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         budget_pct: Option<f64>,
         over_n_frames: u32,
+        /// GPU-resource counters (native only): instantaneous live counts, plus
+        /// per-window upload bytes/frame and heightmap-cache hit/miss totals. A
+        /// leak shows as a climbing `gpu_live_*`. `None` on paths that don't
+        /// carry them (none today; reserved for a non-native emitter).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_live_vaos: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_live_buffers: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_live_textures: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_bytes_per_frame: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_cache_hits: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_cache_misses: Option<u64>,
     },
     /// A `--capture-frame` PNG was written.
     CaptureWritten { path: String },
@@ -155,6 +171,12 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 frame_us,
                 budget_pct,
                 over_n_frames,
+                gpu_live_vaos,
+                gpu_live_buffers,
+                gpu_live_textures,
+                gpu_bytes_per_frame,
+                gpu_cache_hits,
+                gpu_cache_misses,
             } => Event::FrameStats {
                 tick_us,
                 draw_us,
@@ -163,6 +185,12 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 frame_us: Some(frame_us),
                 budget_pct: Some(budget_pct),
                 over_n_frames,
+                gpu_live_vaos: Some(gpu_live_vaos),
+                gpu_live_buffers: Some(gpu_live_buffers),
+                gpu_live_textures: Some(gpu_live_textures),
+                gpu_bytes_per_frame: Some(gpu_bytes_per_frame),
+                gpu_cache_hits: Some(gpu_cache_hits),
+                gpu_cache_misses: Some(gpu_cache_misses),
             },
             R::CaptureWritten { path } => Event::CaptureWritten { path },
             R::HotReload { ok, message } => Event::HotReload { ok, message },
@@ -324,6 +352,12 @@ impl PlainRenderer {
                 frame_us,
                 budget_pct,
                 over_n_frames,
+                gpu_live_vaos,
+                gpu_live_buffers,
+                gpu_live_textures,
+                gpu_bytes_per_frame,
+                gpu_cache_hits,
+                gpu_cache_misses,
             } => {
                 let mut s = format!("tick {tick_us:.1}µs, draw {draw_us:.1}µs");
                 if let Some(render_us) = render_us {
@@ -337,6 +371,19 @@ impl PlainRenderer {
                 }
                 if let Some(budget_pct) = budget_pct {
                     s.push_str(&format!(" ({budget_pct:.1}% of 60fps)"));
+                }
+                if let (Some(vaos), Some(buffers), Some(textures)) =
+                    (gpu_live_vaos, gpu_live_buffers, gpu_live_textures)
+                {
+                    s.push_str(&format!(
+                        ", gpu vao {vaos}/buf {buffers}/tex {textures}"
+                    ));
+                }
+                if let Some(bytes) = gpu_bytes_per_frame {
+                    s.push_str(&format!(", up {bytes:.0}B/frame"));
+                }
+                if let (Some(hits), Some(misses)) = (gpu_cache_hits, gpu_cache_misses) {
+                    s.push_str(&format!(", cache {hits}hit/{misses}miss"));
                 }
                 vec![format!(
                     "{} {}",

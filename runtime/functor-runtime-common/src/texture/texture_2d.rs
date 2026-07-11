@@ -48,6 +48,7 @@ impl RenderableAsset for TextureData {
         unsafe {
             let gl = gl_context;
             let texture = gl.create_texture().expect("Texture to be created");
+            crate::gpu_counters::gpu_counters().texture_created();
             gl.bind_texture(glow::TEXTURE_2D, Some(texture));
 
             // Set texture parameters
@@ -84,6 +85,7 @@ impl RenderableAsset for TextureData {
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&self.bytes)),
             );
+            crate::gpu_counters::gpu_counters().uploaded(self.bytes.len());
 
             gl.bind_texture(glow::TEXTURE_2D, None);
             texture

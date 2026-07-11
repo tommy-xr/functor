@@ -75,6 +75,7 @@ impl RenderTargetBuffers {
             let mut textures = [None; 2];
             for i in 0..2 {
                 let texture = gl.create_texture().expect("render target texture");
+                crate::gpu_counters::gpu_counters().texture_created();
                 gl.bind_texture(glow::TEXTURE_2D, Some(texture));
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
@@ -177,6 +178,7 @@ impl RenderTargetBuffers {
             }
             for texture in self.textures {
                 gl.delete_texture(texture);
+                crate::gpu_counters::gpu_counters().texture_deleted();
             }
             gl.delete_renderbuffer(self.depth_rbo);
         }

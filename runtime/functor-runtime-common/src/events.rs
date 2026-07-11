@@ -34,6 +34,12 @@ pub enum RuntimeEvent {
     /// blocking) — reported alongside `draw_us` so interpreter cost and GL cost
     /// can be told apart. They are not folded into `frame_us` (swap's vsync block
     /// would peg `budget_pct`).
+    ///
+    /// The `gpu_*` fields are the GPU-resource counters (`gpu_counters`): the
+    /// `gpu_live_*` counts are instantaneous (latest snapshot) and stay flat when
+    /// nothing leaks; `gpu_bytes_per_frame` is the average bytes uploaded per
+    /// frame over the window; `gpu_cache_hits`/`gpu_cache_misses` are the
+    /// heightmap-mesh cache's window totals.
     FrameStats {
         tick_us: f64,
         draw_us: f64,
@@ -42,6 +48,12 @@ pub enum RuntimeEvent {
         frame_us: f64,
         budget_pct: f64,
         over_n_frames: u32,
+        gpu_live_vaos: u64,
+        gpu_live_buffers: u64,
+        gpu_live_textures: u64,
+        gpu_bytes_per_frame: f64,
+        gpu_cache_hits: u64,
+        gpu_cache_misses: u64,
     },
     /// A `--capture-frame` PNG was written to `path`.
     CaptureWritten { path: String },

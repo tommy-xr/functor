@@ -211,7 +211,7 @@ used to `println!` directly. PR-2a routes them through the runtime event sink (b
 | `type`            | Fields                                                                           | Emitted when |
 | ----------------- | -------------------------------------------------------------------------------- | ------------ |
 | `runtime_ready`   | —                                                                                | the runtime loaded and is about to render |
-| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `frame_us`?, `budget_pct`?, `over_n_frames` | every `over_n_frames` frames (300) |
+| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `frame_us`?, `budget_pct`?, `over_n_frames`, `gpu_live_vaos`?, `gpu_live_buffers`?, `gpu_live_textures`?, `gpu_bytes_per_frame`?, `gpu_cache_hits`?, `gpu_cache_misses`? | every `over_n_frames` frames (300) |
 | `capture_written` | `path` (string)                                                                  | a `--capture-frame` PNG was written |
 | `hot_reload`      | `ok` (bool), `message` (string)                                                  | a hot-reload settled (`ok:false` = rejected edit; old program kept) |
 | `asset_error`     | `path` (string?), `message` (string)                                             | an asset failed to load (fallback served) |
@@ -228,11 +228,20 @@ All are rounded to one decimal. `render_us`/`swap_us` come from the native GL sh
 window (300). This is a per-window,
 **not** per-frame, emission — see the cadence note below.
 
+The `gpu_*` fields (native only) are the GPU-resource counters (`functor_runtime_common::gpu_counters`),
+a leak tripwire: since GL objects have no `Drop`, a resource created every frame and never freed is
+otherwise invisible. `gpu_live_vaos` / `gpu_live_buffers` / `gpu_live_textures` are the **instantaneous**
+live counts (bumped at every `create_*` site, decremented at each explicit `delete`) — a leak class
+(e.g. a per-frame mesh) shows up as one of these climbing sample over sample; they stay flat when
+nothing leaks. `gpu_bytes_per_frame` is the average bytes uploaded per frame over the window
+(`buffer_data`/`buffer_sub_data`/`tex_image` payloads); `gpu_cache_hits`/`gpu_cache_misses` are the
+heightmap-mesh cache's window totals (a healthy animated heightmap is ~all hits after the first frame).
+
 Example tail of `functor -d examples/lighting run native --json` (frame stats + capture):
 
 ```json
 {"type":"runtime_ready"}
-{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"render_us":210.5,"swap_us":15980.2,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300}
+{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"render_us":210.5,"swap_us":15980.2,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300,"gpu_live_vaos":6,"gpu_live_buffers":11,"gpu_live_textures":4,"gpu_bytes_per_frame":101376.0,"gpu_cache_hits":300,"gpu_cache_misses":0}
 {"type":"capture_written","path":"/tmp/frame.png"}
 ```
 

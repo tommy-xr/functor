@@ -512,9 +512,12 @@ pub fn render_debug_lines(
             mvp_raw,
         );
 
+        let counters = crate::gpu_counters::gpu_counters();
         let vao = gl.create_vertex_array().expect("create debug line vao");
+        counters.vao_created();
         gl.bind_vertex_array(Some(vao));
         let vbo = gl.create_buffer().expect("create debug line vbo");
+        counters.buffer_created();
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
         // Same raw-bytes view the mesh upload path uses (indexed_mesh.rs).
         let vertices_u8: &[u8] = core::slice::from_raw_parts(
@@ -522,6 +525,7 @@ pub fn render_debug_lines(
             std::mem::size_of_val(vertices.as_slice()),
         );
         gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::STREAM_DRAW);
+        counters.uploaded(vertices_u8.len());
         let stride = (7 * std::mem::size_of::<f32>()) as i32;
         gl.enable_vertex_attrib_array(0);
         gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
@@ -539,7 +543,9 @@ pub fn render_debug_lines(
         gl.bind_buffer(glow::ARRAY_BUFFER, None);
         gl.use_program(None);
         gl.delete_buffer(vbo);
+        counters.buffer_deleted();
         gl.delete_vertex_array(vao);
+        counters.vao_deleted();
         gl.delete_program(program);
     }
 }
