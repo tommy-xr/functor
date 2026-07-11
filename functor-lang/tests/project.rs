@@ -535,6 +535,137 @@ fn cross_module_generics_check() {
     );
 }
 
+/// Binding annotations in a NON-ENTRY module are canonicalized like the
+/// entry's: the sibling's own bare type name resolves nominally, so a wrong
+/// value is a real diagnostic (it used to silently resolve to Unknown), on
+/// both top-level `let name: Type = …` and expression `let … in`.
+#[test]
+fn sibling_binding_annotations_are_enforced() {
+    let scratch = Scratch::new(
+        "sibling-binding-annot",
+        &[
+            ("game.fun", "let main = () => 0.0\n"),
+            (
+                "utils.fun",
+                "type Shape = | Circle(radius: float) | Point\n\
+                 let bad: Shape = 3.0\n\
+                 let letIn = () =>\n\
+                 let x: Shape = 4.0 in\n\
+                 x\n",
+            ),
+        ],
+    );
+    let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
+    let diags = project.check();
+    assert_eq!(diags.len(), 2, "expected two diagnostics, got {diags:?}");
+    for diag in &diags {
+        assert!(
+            diag.message.contains("expected Utils.Shape, got float"),
+            "unexpected diagnostic: {}",
+            diag.message
+        );
+    }
+}
+
+/// Qualified cross-module type names in a sibling's binding annotation
+/// resolve too: a good value checks clean, a bad one is flagged with the
+/// canonical name.
+#[test]
+fn qualified_types_in_sibling_binding_annotations() {
+    let files: &[(&str, &str)] = &[
+        ("game.fun", "let main = () => 0.0\n"),
+        ("shapes.fun", "type Shape = | Circle(radius: float) | Point\n"),
+        (
+            "consumer.fun",
+            "let good: Shapes.Shape = Shapes.Circle(1.0)\n\
+             let bad: Shapes.Shape = 3.0\n",
+        ),
+    ];
+    let scratch = Scratch::new("sibling-qualified-annot", files);
+    let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
+    let diags = project.check();
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
+    assert!(
+        diags[0]
+            .message
+            .contains("expected Shapes.Shape, got float"),
+        "unexpected diagnostic: {}",
+        diags[0].message
+    );
+}
+
+/// `open`ed type names in binding annotations resolve to their module's
+/// canonical type (this held for params; binding annotations skipped it).
+#[test]
+fn opened_types_in_binding_annotations_are_enforced() {
+    let scratch = Scratch::new(
+        "opened-binding-annot",
+        &[
+            (
+                "game.fun",
+                "open Shapes\nlet bad: Shape = 3.0\nlet main = () => 0.0\n",
+            ),
+            ("shapes.fun", "type Shape = | Circle(radius: float) | Point\n"),
+        ],
+    );
+    let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
+    let diags = project.check();
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
+    assert!(
+        diags[0]
+            .message
+            .contains("expected Shapes.Shape, got float"),
+        "unexpected diagnostic: {}",
+        diags[0].message
+    );
+}
+
+/// Interface (`.funi`) types — the prelude's `Anim.t` shape — are enforced in
+/// a SIBLING module's binding annotations: a host-made value checks clean, a
+/// bare number is flagged.
+#[test]
+fn interface_types_in_sibling_binding_annotations() {
+    let scratch = Scratch::new(
+        "sibling-funi-annot",
+        &[
+            ("game.fun", "let main = () => 0.0\n"),
+            (
+                "widget.funi",
+                "type Handle\nlet make : () => Handle\n",
+            ),
+            (
+                "util.fun",
+                "let good: Widget.Handle = Widget.make()\n\
+                 let bad: Widget.Handle = 3.0\n",
+            ),
+        ],
+    );
+    let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
+    let diags = project.check();
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
+    assert!(
+        diags[0]
+            .message
+            .contains("expected Widget.Handle, got float"),
+        "unexpected diagnostic: {}",
+        diags[0].message
+    );
+}
+
+/// Binding annotations get the same lowering-time validation as param
+/// annotations: an unknown member of a KNOWN module is a load error.
+#[test]
+fn unknown_member_type_in_binding_annotation_is_a_load_error() {
+    let err = load_err(
+        "unknown-binding-annot-type",
+        &[
+            ("game.fun", "let x: Util.Nope = 1.0\n"),
+            ("util.fun", "let x = 1.0\n"),
+        ],
+    );
+    assert_eq!(err, "game.fun:1:8: module `Util` has no type `Nope`");
+}
+
 /// An UNREFERENCED sibling declaring a same-shaped record type must not
 /// capture (or make ambiguous) a bare record literal elsewhere — literal
 /// resolution is scoped to types visible unqualified where the literal is
