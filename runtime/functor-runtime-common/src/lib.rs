@@ -99,7 +99,9 @@ pub use render_target::RenderTargetDescriptor;
 pub use renderer::*;
 pub use skybox::SkyboxDescription;
 pub use scene3d::*;
-pub use trajectory::{overlay, trajectory_trail};
+pub use trajectory::{
+    overlay, scene_preview, trajectory_trail, PreviewOptions, ScenePreview, StrobeOptions,
+};
 pub use viewport::*;
 
 #[cfg(test)]
