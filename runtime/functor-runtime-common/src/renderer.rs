@@ -62,7 +62,7 @@ pub fn render_frame(
             scene_context.ensure_render_target(
                 gl,
                 &pass.target,
-                crate::fog::clear_color(pass.frame.fog.as_ref()),
+                pass.frame.resolved_clear_color(),
             );
         } else {
             scene_context.warn_once(
@@ -115,7 +115,7 @@ target frame are ignored (depth 1 only)",
             // The FBO owns the whole texture — no scissoring wanted (the main
             // pass re-enables it, clipped to its viewport pane).
             gl.disable(glow::SCISSOR_TEST);
-            let [r, g, b] = crate::fog::clear_color(pass.frame.fog.as_ref());
+            let [r, g, b] = pass.frame.resolved_clear_color();
             gl.clear_color(r, g, b, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
@@ -170,7 +170,7 @@ target frame are ignored (depth 1 only)",
             viewport.height as i32,
         );
         gl.enable(glow::SCISSOR_TEST);
-        let [r, g, b] = crate::fog::clear_color(frame.fog.as_ref());
+        let [r, g, b] = frame.resolved_clear_color();
         gl.clear_color(r, g, b, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
     }
@@ -235,7 +235,7 @@ pub fn render_composited_frames(
     let mut textures: Vec<glow::Texture> = Vec::with_capacity(n);
     for (i, (frame, frame_time)) in frames[..n].iter().enumerate() {
         let id = format!("__composite_{i}");
-        let clear = crate::fog::clear_color(frame.fog.as_ref());
+        let clear = frame.resolved_clear_color();
         let desc = RenderTargetDescriptor {
             id: id.clone(),
             width: viewport.width,

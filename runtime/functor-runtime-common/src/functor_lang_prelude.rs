@@ -56,6 +56,9 @@
 //! Frame.withFog(fog, frame)                                  -> Frame
 //!   (frame-level distance fog on every forward material, emissive included —
 //!    fog occludes glow; the fog color is also the pass's clear color)
+//! Frame.withClearColor(r, g, b, frame)                       -> Frame
+//!   (explicit background clear color, overriding the fog-color default; it
+//!    only paints the background, not fog blending)
 //! Ui.text(s) / Ui.textColor(r, g, b, s)                     -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
@@ -892,6 +895,7 @@ const PATHS: &[&str] = &[
     "Fog.linear",
     "Fog.exp",
     "Frame.withSkybox",
+    "Frame.withClearColor",
     "Skybox.files",
     "RenderTarget.named",
     "RenderTarget.sized",
@@ -1497,6 +1501,7 @@ the game dir",
                         render_targets: vec![],
                         fog: None,
                         skybox: None,
+                        clear_color: None,
                     })))
                 }
                 _ => usage("Frame.createLit(camera, scene, [light, …])"),
@@ -2001,6 +2006,24 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                     Ok(host(FunctorLangFrame(Frame::with_skybox(inner.clone(), sky.clone()))))
                 }
                 _ => usage("Frame.withSkybox(skybox, frame)"),
+            },
+            // Frame LAST (subject-last), so it pipes:
+            // `frame |> Frame.withClearColor(r, g, b)`. Sets the background
+            // clear color explicitly, overriding the fog-color default.
+            "Frame.withClearColor" => match args.as_slice() {
+                [r, g, b, frame] => {
+                    let (r, g, b) = (num(r, span)?, num(g, span)?, num(b, span)?);
+                    let Some(inner) = frame_value(frame) else {
+                        return usage("Frame.withClearColor(r, g, b, frame)");
+                    };
+                    Ok(host(FunctorLangFrame(Frame::with_clear_color(
+                        inner.clone(),
+                        r as f32,
+                        g as f32,
+                        b as f32,
+                    ))))
+                }
+                _ => usage("Frame.withClearColor(r, g, b, frame)"),
             },
             // Scene LAST (subject-last), so it pipes: `Scene.quad() |> Scene.screen(feed)` —
             // an emissive (fullbright, screens glow) surface showing the
@@ -3986,6 +4009,36 @@ piped through RenderTarget.sized"
         assert!(json.contains(r#""Linear""#), "json: {json}");
         let back: Frame = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // Frame.withClearColor sets the frame's explicit clear color, and it wins
+    // over the fog color as the resolved background (fog blending unchanged).
+    #[test]
+    fn functor_lang_snippet_declares_clear_color() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
+             |> Frame.withClearColor(0.2, 0.4, 0.6)",
+        );
+        assert_eq!(frame.clear_color, Some([0.2, 0.4, 0.6]));
+        assert_eq!(frame.resolved_clear_color(), [0.2, 0.4, 0.6]);
+
+        // Without the override, the resolved clear color is the engine default;
+        // with fog it's the fog color; withClearColor overrides even that.
+        let plain = frame_of(
+            "let main = () => \
+             Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())",
+        );
+        assert_eq!(plain.clear_color, None);
+        assert_eq!(plain.resolved_clear_color(), [0.1, 0.2, 0.3]);
+
+        let both = frame_of(
+            "let main = () => \
+             Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube()) \
+             |> Frame.withFog(Fog.linear(4.0, 30.0, 0.5, 0.6, 0.7)) \
+             |> Frame.withClearColor(0.0, 0.0, 0.0)",
+        );
+        assert_eq!(both.resolved_clear_color(), [0.0, 0.0, 0.0]);
     }
 
     // [units, tier 1 — the Angle rule] Frame.withFog accepts ONLY the branded

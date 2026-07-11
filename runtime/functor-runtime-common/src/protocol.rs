@@ -354,6 +354,7 @@ mod tests {
             skybox: Some(crate::skybox::SkyboxDescription::new(
                 "px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg",
             )),
+            clear_color: Some([0.2, 0.4, 0.6]),
         };
         assert_json_stable(&frame);
 
@@ -368,6 +369,7 @@ mod tests {
         assert!(legacy.render_targets.is_empty());
         assert!(legacy.fog.is_none());
         assert!(legacy.skybox.is_none());
+        assert!(legacy.clear_color.is_none());
     }
 
     // The render-target wire vocabulary: the reader (a texture by target id)
