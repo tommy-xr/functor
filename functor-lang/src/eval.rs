@@ -309,9 +309,12 @@ impl Interp<'_> {
         if self.depth > MAX_EVAL_DEPTH {
             self.depth -= 1;
             return Err(RunError {
-                message:
-                    "evaluation nested too deeply (deep recursion, or deeply nested expressions)"
-                        .to_string(),
+                message: format!(
+                    "evaluation nested too deeply (exceeded the depth cap of {MAX_EVAL_DEPTH}): \
+deep recursion, or deeply nested expressions. Deep list iteration belongs in the builtin list \
+functions (List.fold/map/filter/any/all/length/…), which loop in the interpreter and consume no \
+evaluation depth."
+                ),
                 span: expr.span,
             });
         }
@@ -955,6 +958,109 @@ most 1000000 cells"
                 }
                 _ => err("List.maximum(list) expects one list".to_string()),
             },
+            // The iterative list helpers a game reaches for — hand-rolling
+            // these recursively blows the eval-depth cap around n≈60, so they
+            // loop in Rust and consume no evaluation depth (see MAX_EVAL_DEPTH).
+            Builtin::ListLength => match args.as_slice() {
+                [Value::List(items)] => Ok(Value::Number(items.len() as f64)),
+                _ => err("List.length(list) expects one list".to_string()),
+            },
+            // Subject-LAST — `xs |> List.append(ys)` is `List.append(ys, xs)`
+            // and yields `xs` followed by `ys` (the piped list stays the head).
+            Builtin::ListAppend => match args.as_slice() {
+                [Value::List(other), Value::List(items)] => {
+                    let mut out = Vec::with_capacity(items.len() + other.len());
+                    out.extend(items.iter().cloned());
+                    out.extend(other.iter().cloned());
+                    Ok(Value::List(Rc::new(out)))
+                }
+                _ => err("List.append(other, list) expects two lists".to_string()),
+            },
+            // Concatenate a list of lists one level deep (`List<List<'a>>` ->
+            // `List<'a>`). A non-list element is an error, not a silent no-op.
+            Builtin::ListFlatten => match args.as_slice() {
+                [Value::List(items)] => {
+                    let mut out = Vec::new();
+                    for item in items.iter() {
+                        match item {
+                            Value::List(inner) => out.extend(inner.iter().cloned()),
+                            other => {
+                                return err(format!(
+                                    "List.flatten expects a list of lists, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(Value::List(Rc::new(out)))
+                }
+                _ => err("List.flatten(list) expects one list of lists".to_string()),
+            },
+            // Subject-LAST — `xs |> List.any(pred)`. True when the predicate
+            // holds for at least one element; short-circuits on the first hit.
+            Builtin::ListAny => match args.as_slice() {
+                [f, Value::List(items)] => {
+                    for (i, item) in items.iter().enumerate() {
+                        match self.call(
+                            f.clone(),
+                            vec![item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )? {
+                            Value::Bool(true) => return Ok(Value::Bool(true)),
+                            Value::Bool(false) => {}
+                            other => {
+                                return err(format!(
+                                    "List.any predicate must return a bool, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(Value::Bool(false))
+                }
+                _ => err("List.any(fn, list) expects a function and a list".to_string()),
+            },
+            // Subject-LAST — `xs |> List.all(pred)`. True when the predicate
+            // holds for every element; short-circuits on the first miss (an
+            // empty list is vacuously true).
+            Builtin::ListAll => match args.as_slice() {
+                [f, Value::List(items)] => {
+                    for (i, item) in items.iter().enumerate() {
+                        match self.call(
+                            f.clone(),
+                            vec![item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )? {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => return Ok(Value::Bool(false)),
+                            other => {
+                                return err(format!(
+                                    "List.all predicate must return a bool, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(Value::Bool(true))
+                }
+                _ => err("List.all(fn, list) expects a function and a list".to_string()),
+            },
+            Builtin::ListReverse => match args.as_slice() {
+                [Value::List(items)] => {
+                    let mut out: Vec<Value> = items.iter().cloned().collect();
+                    out.reverse();
+                    Ok(Value::List(Rc::new(out)))
+                }
+                _ => err("List.reverse(list) expects one list".to_string()),
+            },
+            Builtin::ListIsEmpty => match args.as_slice() {
+                [Value::List(items)] => Ok(Value::Bool(items.is_empty())),
+                _ => err("List.isEmpty(list) expects one list".to_string()),
+            },
             Builtin::TextConcat => match args.as_slice() {
                 [Value::String(a), Value::String(b)] => {
                     Ok(Value::String(Rc::from(format!("{a}{b}").as_str())))
@@ -1294,6 +1400,9 @@ pub fn builtin_arity(b: Builtin) -> usize {
         Builtin::ListFold | Builtin::ListGrid => 3,
         Builtin::ListMap
         | Builtin::ListFilter
+        | Builtin::ListAppend
+        | Builtin::ListAny
+        | Builtin::ListAll
         | Builtin::TextConcat
         | Builtin::TextFixed
         | Builtin::TextSplit
@@ -1301,6 +1410,10 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::DebugLog => 2,
         Builtin::ListRange
         | Builtin::ListMaximum
+        | Builtin::ListLength
+        | Builtin::ListFlatten
+        | Builtin::ListReverse
+        | Builtin::ListIsEmpty
         | Builtin::TextFromFloat
         | Builtin::TextToBullets
         | Builtin::TextParseFloat
@@ -1320,6 +1433,13 @@ pub enum Builtin {
     MathSin,
     MathCos,
     ListMaximum,
+    ListLength,
+    ListAppend,
+    ListFlatten,
+    ListAny,
+    ListAll,
+    ListReverse,
+    ListIsEmpty,
     TextConcat,
     TextFromFloat,
     TextFixed,
@@ -1341,6 +1461,13 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.range" => Builtin::ListRange,
         "List.grid" => Builtin::ListGrid,
         "List.maximum" => Builtin::ListMaximum,
+        "List.length" => Builtin::ListLength,
+        "List.append" => Builtin::ListAppend,
+        "List.flatten" => Builtin::ListFlatten,
+        "List.any" => Builtin::ListAny,
+        "List.all" => Builtin::ListAll,
+        "List.reverse" => Builtin::ListReverse,
+        "List.isEmpty" => Builtin::ListIsEmpty,
         "Text.concat" => Builtin::TextConcat,
         "Text.fromFloat" => Builtin::TextFromFloat,
         "Text.fixed" => Builtin::TextFixed,
@@ -1365,6 +1492,13 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListRange => "List.range",
         Builtin::ListGrid => "List.grid",
         Builtin::ListMaximum => "List.maximum",
+        Builtin::ListLength => "List.length",
+        Builtin::ListAppend => "List.append",
+        Builtin::ListFlatten => "List.flatten",
+        Builtin::ListAny => "List.any",
+        Builtin::ListAll => "List.all",
+        Builtin::ListReverse => "List.reverse",
+        Builtin::ListIsEmpty => "List.isEmpty",
         Builtin::TextConcat => "Text.concat",
         Builtin::TextFromFloat => "Text.fromFloat",
         Builtin::TextFixed => "Text.fixed",

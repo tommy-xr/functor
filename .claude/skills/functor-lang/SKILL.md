@@ -260,7 +260,11 @@ open Widget                                              // …or open, bringing
   `let Foo` may coexist, but constructors share the value namespace with
   `let`s), record fields (literal and update), lambda params, pattern
   variables within one pattern.
-- Recursion depth is capped (~200); deep iteration belongs in `List.*`.
+- Recursion depth is capped (128 eval levels); deep iteration belongs in the
+  iterative `List.*` builtins (`List.fold`/`map`/`filter`/`any`/`all`/`length`/…),
+  which loop in the interpreter and consume no evaluation depth. A hand-rolled
+  recursive list walk trips the cap around n≈60; the depth error names the cap
+  value (128) and points at `List.fold`.
 
 ## Builtins (the whole registry)
 
@@ -272,7 +276,12 @@ thread through `|>` (which appends): `list |> List.map(fn)` == `List.map(fn, lis
 `List.grid(fn, rows, cols)` (→ `List<List<'a>>`; calls `fn(row, col)`, both
 0-based, per cell — the engine-loop form of a procedural heightmap, e.g.
 `Scene.heightmap(List.grid(height, r, c))`) ·
-`List.maximum(list)` · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
+`List.maximum(list)` · `List.length(list)` (→ Float) · `List.isEmpty(list)` ·
+`List.reverse(list)` · `List.flatten(list)` (`List<List<'a>>` → `List<'a>`, one
+level) · `List.append(other, list)` (subject-LAST: `xs |> List.append(ys)` is
+`xs` followed by `ys`) · `List.any(fn, list)` / `List.all(fn, list)` (predicate
+first, list last — `xs |> List.any(pred)`; empty list is vacuously all-true /
+any-false) · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
 `Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
 `%d` shape) · `Text.toBullets(list)` · `Text.split(sep, s)` (→ `List<string>`;
 empty `sep` is an error; `Text.split(sep, "")` = `[""]`) · `Text.join(sep, list)`
