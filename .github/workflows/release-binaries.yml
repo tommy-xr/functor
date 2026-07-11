@@ -1,0 +1,140 @@
+name: Release Binaries
+
+# Builds the standalone `functor` binary for every supported platform, runs a
+# headless sanity check on each, and uploads a per-platform archive as a
+# workflow artifact.
+#
+# Two triggers:
+#   - workflow_dispatch: build them on demand for testing (version defaults to
+#     "dev"); download the archives from the run's Artifacts.
+#   - workflow_call: invoked by the release pipeline (a later PR) with the real
+#     version; that job downloads these artifacts and attaches them to the
+#     GitHub release.
+#
+# Build order matters: the single `functor` binary embeds the web-runtime
+# bundle via `include_bytes!`, so the wasm bundle must exist before the CLI is
+# built.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version baked into the binary and archive names (e.g. 0.2.0)"
+        default: "0.0.0-dev"
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  build-binary:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: functor
+          - os: macos-14 # Apple Silicon
+            target: aarch64-apple-darwin
+            bin: functor
+          - os: macos-13 # Intel
+            target: x86_64-apple-darwin
+            bin: functor
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: functor.exe
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      # The `functor` binary always links the native GLFW/OpenGL/ALSA runtime,
+      # so Linux needs the same system libs as build-native.yml (macOS ships the
+      # frameworks; Windows builds GLFW from source with no extra deps).
+      - name: Install GL/X11 system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libglfw3 \
+            libglfw3-dev \
+            libasound2-dev
+
+      - name: Build web runtime bundle
+        run: wasm-pack build --target=web
+        working-directory: runtime/functor-runtime-web
+
+      # FUNCTOR_RELEASE_VERSION bakes the version into the binary's `--version`
+      # (the crate itself is 0.0.0-dev). For a dispatch build this is 0.0.0-dev;
+      # the release pipeline passes the real tag.
+      - name: Build functor binary
+        run: cargo build --bin functor --release
+        env:
+          FUNCTOR_RELEASE_VERSION: ${{ inputs.version }}
+
+      # Sanity-check the freshly built binary on its own platform: it runs
+      # (`--version`), and it can load + typecheck a real project. `build` is
+      # target-independent and headless — no GL window — so it works on the
+      # display-less CI runners.
+      - name: Sanity check the binary
+        shell: bash
+        run: |
+          ./target/release/${{ matrix.bin }} --version
+          ./target/release/${{ matrix.bin }} --version | grep -qF "${{ inputs.version }}"
+          ./target/release/${{ matrix.bin }} -d examples/primitives build
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          staging="functor-${{ inputs.version }}-${{ matrix.target }}"
+          mkdir "$staging"
+          cp "target/release/${{ matrix.bin }}" "$staging"/
+          cp LICENSE README.md "$staging"/ 2>/dev/null || true
+          tar czf "$staging.tar.gz" "$staging"
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "functor-${{ inputs.version }}-${{ matrix.target }}"
+          New-Item -ItemType Directory $staging | Out-Null
+          Copy-Item "target/release/${{ matrix.bin }}" $staging/
+          Copy-Item LICENSE, README.md $staging/ -ErrorAction SilentlyContinue
+          Compress-Archive -Path "$staging/*" -DestinationPath "$staging.zip"
+          "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: functor-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          retention-days: 14

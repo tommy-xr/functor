@@ -10,13 +10,21 @@ pub mod util;
 
 use output::{emit, Event};
 
+/// Baked-in CLI version. The release pipeline sets `FUNCTOR_RELEASE_VERSION` at
+/// build time to the release tag; every other build (local dev, CI dispatch)
+/// falls back to the crate's `0.0.0-dev`, so an unreleased binary says so.
+const VERSION: &str = match option_env!("FUNCTOR_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// Functor — a functional toolkit for building 3D games in Functor Lang.
 ///
 /// Operates on a project directory (a `functor.json` with
 /// `"language": "functor-lang"`). Add `--json` to any command for a newline-delimited
 /// JSON event stream instead of human text (see `docs/cli-output.md`).
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 struct Args {
     /// Project directory (defaults to the current working directory).
     #[arg(short, long, global = true)]
