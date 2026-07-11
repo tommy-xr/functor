@@ -19,8 +19,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version string used in archive names (e.g. 0.2.0)"
-        default: "dev"
+        description: "Version baked into the binary and archive names (e.g. 0.2.0)"
+        default: "0.0.0-dev"
         type: string
   workflow_call:
     inputs:
@@ -91,8 +91,13 @@ jobs:
         run: wasm-pack build --target=web
         working-directory: runtime/functor-runtime-web
 
+      # FUNCTOR_RELEASE_VERSION bakes the version into the binary's `--version`
+      # (the crate itself is 0.0.0-dev). For a dispatch build this is 0.0.0-dev;
+      # the release pipeline passes the real tag.
       - name: Build functor binary
         run: cargo build --bin functor --release
+        env:
+          FUNCTOR_RELEASE_VERSION: ${{ inputs.version }}
 
       # Sanity-check the freshly built binary on its own platform: it runs
       # (`--version`), and it can load + typecheck a real project. `build` is
@@ -102,6 +107,7 @@ jobs:
         shell: bash
         run: |
           ./target/release/${{ matrix.bin }} --version
+          ./target/release/${{ matrix.bin }} --version | grep -qF "${{ inputs.version }}"
           ./target/release/${{ matrix.bin }} -d examples/primitives build
 
       - name: Package (Unix)
