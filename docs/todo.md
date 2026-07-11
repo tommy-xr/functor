@@ -31,7 +31,9 @@ golden tests), see `CLAUDE.md` and `git log`.
       (Skinning-space bug fixed 2026-07-10 — the skeleton now includes the
       ancestor chain above the skin root and the renderer ignores a skinned
       mesh's node transform per the glTF spec, so skinned models render at
-      authored world scale.)
+      authored world scale. Lighting done 2026-07-10 — `SkinnedMaterial`
+      deforms the normal by the joint blend and shades/receives shadows via
+      the same lighting GLSL as `LitMaterial`.)
 - [ ] Dynamic mesh (+ emissive texture material).
 - [ ] Lighting: ambient, point, directional, ambient/positional fog, spot →
       shadow mapping. (Distance fog done 2026-07-04 — `Frame.withFog`,
