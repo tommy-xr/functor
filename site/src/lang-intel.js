@@ -25,8 +25,17 @@ const PKG_URL = "/pkg/functor_lang_wasm.js";
 let analyzeFn = null; // (src) => JSON string, set once the wasm is ready
 let hoverFn = null; // (src, offset) => JSON string ("" when nothing to show)
 let completeFn = null; // (src, offset) => JSON string, set once the wasm is ready
+let resetFn = null; // () => void, clears the wasm completion cache
 let lastDoc = null;
 let lastResult = null;
+
+// Clear the wasm completion last-good cache — called by the sandbox when the
+// editor document is wholly replaced (example switch, inline load, reset) so
+// stale candidates from the previous program can't leak into the new one. A
+// no-op when analysis is degraded/unavailable.
+export const resetIntel = () => {
+  if (resetFn) resetFn();
+};
 
 // Run analyze at most once per distinct doc string. Returns the parsed
 // `{ diagnostics, inlays, lenses }`, or null when the wasm isn't loaded.
@@ -93,9 +102,14 @@ const hoverTypes = hoverTooltip((view, pos) => {
     return null;
   }
   if (!info || !info.text) return null;
+  // Clamp to the current doc, exactly like toDiagnostics/buildDecorations: the
+  // wasm offsets can lag the live buffer by a keystroke.
+  const len = view.state.doc.length;
+  const from = Math.max(0, Math.min(info.from | 0, len));
+  const to = Math.max(from, Math.min(info.to | 0, len));
   return {
-    pos: info.from | 0,
-    end: info.to | 0,
+    pos: from,
+    end: to,
     create: () => {
       const dom = document.createElement("div");
       dom.className = "cm-hover-type";
@@ -342,9 +356,20 @@ export const setupLangIntel = async () => {
   try {
     const mod = await import(PKG_URL);
     await mod.default(); // init the wasm
+    // A partial/mismatched bundle (missing an expected export) degrades fully
+    // rather than installing half the intel — the catch below is the one seam.
+    if (
+      typeof mod.functor_lang_analyze !== "function" ||
+      typeof mod.functor_lang_hover !== "function" ||
+      typeof mod.functor_lang_complete !== "function"
+    ) {
+      throw new Error("functor-lang-wasm is missing an expected export");
+    }
     analyzeFn = mod.functor_lang_analyze;
     hoverFn = mod.functor_lang_hover;
     completeFn = mod.functor_lang_complete;
+    // reset is optional — an older bundle without it just skips cache clearing.
+    resetFn = typeof mod.functor_lang_reset === "function" ? mod.functor_lang_reset : null;
   } catch {
     console.info(
       "[lang-intel] language analysis unavailable (pkg not built) — editor runs without diagnostics"

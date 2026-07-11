@@ -40,11 +40,11 @@ const USER_FILE: &str = "game.fun";
 /// {
 ///   "diagnostics": [{ "from": u16, "to": u16, "message": str, "severity": "error" }],
 ///   "inlays":      [{ "pos": u16, "label": str }],
-///   "lenses":      [{ "line": u32, "from": u16, "text": str }]
+///   "lenses":      [{ "from": u16, "text": str }]
 /// }
 /// ```
 ///
-/// `from`/`to`/`pos` are whole-document UTF-16 offsets; `line` is 0-based.
+/// `from`/`to`/`pos` are whole-document UTF-16 offsets.
 /// A load-level failure (parse/link error) comes back as a single diagnostic —
 /// never an exception. Prelude spans are filtered out.
 #[wasm_bindgen]
@@ -65,6 +65,14 @@ pub fn functor_lang_hover(src: &str, offset: f64) -> String {
 #[wasm_bindgen]
 pub fn functor_lang_complete(src: &str, offset: f64) -> String {
     complete_json(src, offset.max(0.0) as usize)
+}
+
+/// Clear the completion last-good cache. The sandbox calls this whenever the
+/// editor document is wholly replaced (example switch, inline `#src=` load,
+/// reset) so candidates from the previous program can't leak into the new one.
+#[wasm_bindgen]
+pub fn functor_lang_reset() {
+    reset_cache();
 }
 
 /// See [`functor_lang_analyze`]. Pure — the tested seam.
@@ -104,7 +112,6 @@ pub fn analyze_json(src: &str) -> String {
         .filter(|l| owns(file, l.span.start))
         .map(|l| {
             json!({
-                "line": line_of(file, l.span.start),
                 "from": to_u16(file, l.span.start),
                 "text": l.title,
             })
@@ -169,6 +176,13 @@ pub fn complete_json(src: &str, offset: usize) -> String {
         let items = functor_lang::complete::complete(project, &project.entry, src, byte);
         completion_json(&items)
     })
+}
+
+/// See [`functor_lang_reset`]. Pure — the tested seam. Drops the last-good
+/// project so the next completion starts from a blank cache (no candidates from
+/// a previously-loaded, now-replaced document).
+pub fn reset_cache() {
+    LAST_GOOD.with(|cell| *cell.borrow_mut() = None);
 }
 
 /// Encode completion items as `{"items": [...]}`, capped at [`MAX_ITEMS`].
@@ -243,12 +257,6 @@ fn to_u16(file: &SourceFile, offset: usize) -> usize {
     utf16_len(&file.src[..local])
 }
 
-/// The 0-based line a project-wide byte offset sits on within `file`.
-fn line_of(file: &SourceFile, offset: usize) -> usize {
-    let local = offset.saturating_sub(file.base).min(file.src.len());
-    file.src[..local].matches('\n').count()
-}
-
 /// UTF-16 code-unit length of `s` (what CodeMirror/JS counts).
 fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
@@ -313,11 +321,13 @@ mod tests {
             let pos = inlay["pos"].as_u64().unwrap() as usize;
             assert!(pos <= utf16_len(src), "inlay leaked past user file: {inlay}");
         }
-        // The one top-level def gets a signature lens on line 0.
+        // The one top-level def gets a signature lens titled `draw : …`.
         let lenses = out["lenses"].as_array().unwrap();
         assert!(
-            lenses.iter().any(|l| l["line"] == 0),
-            "expected a lens for `draw` on line 0: {out}"
+            lenses
+                .iter()
+                .any(|l| l["text"].as_str().unwrap().starts_with("draw ")),
+            "expected a signature lens for `draw`: {out}"
         );
     }
 
@@ -455,6 +465,47 @@ mod tests {
     fn empty_cache_is_empty_items() {
         let out = parse(&complete_json("let s = Scene.", utf16_len("let s = Scene.")));
         assert!(out["items"].as_array().unwrap().is_empty(), "{out}");
+    }
+
+    // Resetting the cache clears the last-good project: a broken buffer for a
+    // DIFFERENT program, completed after a reset, does NOT offer the previous
+    // program's globals — the fix for switching sandbox examples and then
+    // dot-completing a broken buffer. Without the reset the stale cache is
+    // deliberately reused (the offset contract: candidates from a
+    // possibly-stale project), which this test also documents.
+    #[test]
+    fn reset_clears_completion_cache() {
+        // Program A defines a distinctive global `alpha`.
+        let a = "let alpha = 1.0\nlet main = () => alpha";
+        // A DIFFERENT, broken program (a bare top-level word `al` never parses),
+        // so it can't refresh the cache — completion falls back to whatever the
+        // cache holds. `al` is a top-level partial that matches A's `alpha`.
+        let broken_b = "let beta = 2.0\nal";
+        let at = utf16_len(broken_b);
+
+        // Without reset: A's `alpha` leaks into the broken B buffer.
+        complete_json(a, 0); // load A cleanly → cache A
+        let leaked = parse(&complete_json(broken_b, at));
+        assert!(
+            labels(&leaked).contains(&"alpha".to_string()),
+            "expected stale reuse of A's globals: {:?}",
+            labels(&leaked)
+        );
+
+        // With reset: the cache is cleared, so A's globals are gone and the
+        // broken buffer completes to nothing (empty cache → empty items).
+        complete_json(a, 0); // re-cache A
+        reset_cache();
+        let cleared = parse(&complete_json(broken_b, at));
+        assert!(
+            !labels(&cleared).contains(&"alpha".to_string()),
+            "cache not cleared — A's globals still offered: {:?}",
+            labels(&cleared)
+        );
+        assert!(
+            cleared["items"].as_array().unwrap().is_empty(),
+            "empty cache → empty items: {cleared}"
+        );
     }
 
     // Hover round-trips on a non-ASCII line: the returned span's UTF-16 offsets

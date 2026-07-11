@@ -546,6 +546,15 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     await page.evaluate((s) => window.__sandbox.setSource(s), TYPE_ERROR);
     const gotError = await waitLint((n) => n > 0);
     check("type error draws a lint underline", gotError, `count=${await lintCount()}`);
+    // Await the hot-swap RESULT before reading liveness: the debounced push
+    // (busy → live) can be mid-flight right when the underline appears, so a
+    // bare status() read would intermittently catch the transient "reloading".
+    // TYPE_ERROR still loads and runs (type diagnostics are advisory), so the
+    // push reports "model preserved".
+    await page.waitForFunction(
+      () => window.__sandbox.status().message.includes("model preserved"),
+      { timeout: 8000 }
+    );
     check(
       "diagnostics keep the sandbox live",
       (await page.evaluate(() => window.__sandbox.status().state)) === "live"
@@ -554,6 +563,11 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     await page.evaluate((s) => window.__sandbox.setSource(s), CLEAN);
     const cleared = await waitLint((n) => n === 0);
     check("fixing the type error clears the underline", cleared, `count=${await lintCount()}`);
+    // Same as above: wait for the fix's push to round-trip before asserting live.
+    await page.waitForFunction(
+      () => window.__sandbox.status().message.includes("model preserved"),
+      { timeout: 8000 }
+    );
     check(
       "sandbox returns/stays live after the fix",
       (await page.evaluate(() => window.__sandbox.status().state)) === "live"

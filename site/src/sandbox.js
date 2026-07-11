@@ -10,7 +10,7 @@ import { StateEffect } from "@codemirror/state";
 import { indentWithTab } from "@codemirror/commands";
 import { startCompletion, acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
-import { setupLangIntel, analyzeCached, completeAt } from "./lang-intel.js";
+import { setupLangIntel, analyzeCached, completeAt, resetIntel } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 
 const EXAMPLES = [
@@ -87,6 +87,9 @@ window.__lang = {
 
 const setDoc = (source) => {
   bridge.reset();
+  // Wholesale document replacement (example switch, inline load, reset): drop
+  // the wasm completion cache so the previous program's candidates can't leak.
+  resetIntel();
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;

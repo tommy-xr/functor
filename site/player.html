@@ -237,7 +237,18 @@
         window.addEventListener("message", (event) => {
           if (event.source !== window.parent) return;
           const data = event.data;
-          if (!data || data.type !== "functor-lang-set-source" || typeof data.source !== "string") return;
+          if (!data) return;
+          // Handshake: a `functor-lang-preview-hello` from the hosting bridge asks
+          // us to re-announce readiness (its listener may have attached after our
+          // one-shot ready fired). Reply only once we're actually live; before
+          // that, the one-shot announce below covers this direction.
+          if (data.type === "functor-lang-preview-hello") {
+            if (functor_lang_is_running()) {
+              window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
+            }
+            return;
+          }
+          if (data.type !== "functor-lang-set-source" || typeof data.source !== "string") return;
           // Queue the source; the wasm frame loop applies it at a safe point
           // (never mid-frame) and posts an `functor-lang-set-source-result` back to the
           // hosting frame with the outcome (a broken push keeps the old program).
