@@ -394,6 +394,14 @@ fn list_builtins_do_not_consume_eval_depth() {
         main_result("let main = () => List.isEmpty(List.reverse(List.range(1000.0)))"),
         "false"
     );
+    assert_eq!(
+        main_result("let main = () => List.range(1000.0) |> List.any((x) => x > 900.0)"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => List.range(1000.0) |> List.all((x) => x < 1000.0)"),
+        "true"
+    );
 }
 
 // NaN follows f64::max (IEEE maximumNumber): ignored unless all-NaN.
