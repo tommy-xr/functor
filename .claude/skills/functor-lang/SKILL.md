@@ -477,6 +477,8 @@ Ui.textInput(value, tagger)                                // INTERACTIVE contro
                                                            //   resets the cursor to the end.
                                                            //   Headless:
                                                            //   {"kind":{"TextChanged":"hi"}}
+                                                           //   `examples/ui` showcases every
+                                                           //   widget in one panel
 
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic("tag", shape)                              // simulated body
