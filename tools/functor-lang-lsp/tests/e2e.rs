@@ -497,6 +497,112 @@ fn completion_over_real_stdio() {
     server.child.wait().expect("wait for exit");
 }
 
+/// Completion PR 2 (scope-aware): over the real binary, a FRESH valid buffer
+/// offers an in-scope local (a lambda param, kind Value = 12) and a typed
+/// record field (kind Field = 5), with the cursor mid-buffer. Single-file
+/// (no functor.json) still gets the injected prelude.
+#[test]
+fn scope_aware_completion_over_real_stdio() {
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+
+    // A helper: replace the whole buffer, drain its diagnostics, then ask for
+    // completion at (line, character) — character in UTF-16 code units.
+    let complete_at = |server: &mut Server, version: i64, text: &str, line: i64, character: i64| {
+        server.send(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": URI, "version": version },
+                "contentChanges": [ { "text": text } ],
+            },
+        }));
+        server.recv(); // publishDiagnostics
+        server.send(json!({
+            "jsonrpc": "2.0", "id": 200 + version, "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": URI },
+                "position": { "line": line, "character": character },
+            },
+        }));
+        server.recv()["result"].clone()
+    };
+
+    // Seed the last-good cache with a valid buffer.
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": URI, "languageId": "functor-lang", "version": 1, "text": "let s = () => 1.0\n",
+        } },
+    }));
+    server.recv(); // publishDiagnostics (clean)
+
+    // A FRESH, valid buffer: complete at the end of the body reference `v`
+    // (line 1) → the lambda param `v` is an in-scope local (kind Value = 12).
+    let local_line = "let mk = (v: Vec2) => v";
+    let local_text = format!("type Vec2 = {{ x: float, y: float }}\n{local_line}");
+    let result = complete_at(
+        &mut server,
+        2,
+        &local_text,
+        1,
+        local_line.encode_utf16().count() as i64,
+    );
+    let items = result.as_array().expect("completion array");
+    let local = items
+        .iter()
+        .find(|item| item["label"] == "v")
+        .unwrap_or_else(|| panic!("no local `v` in {result}"));
+    assert_eq!(local["kind"], 12, "local `v` should be a Value: {result}");
+    assert_eq!(local["detail"], "v : Vec2");
+
+    // Same fresh buffer with a completed `v.x`: complete just after the dot →
+    // the record's fields, `x` carrying kind Field = 5.
+    let field_line = "let mk = (v: Vec2) => v.x";
+    let field_text = format!("type Vec2 = {{ x: float, y: float }}\n{field_line}");
+    let after_dot = (field_line.find("v.").unwrap() + 2) as i64;
+    let result = complete_at(&mut server, 3, &field_text, 1, after_dot);
+    let items = result.as_array().expect("completion array");
+    let field = items
+        .iter()
+        .find(|item| item["label"] == "x")
+        .unwrap_or_else(|| panic!("no field `x` in {result}"));
+    assert_eq!(
+        field["kind"], 5,
+        "record field `x` should be a Field: {result}"
+    );
+    assert_eq!(field["detail"], "x : float");
+
+    // The trigger keystroke itself: retype the line WITHOUT `.x` (valid —
+    // refreshes the cache), then add just the `.` (breaks the parse — the
+    // cache is one edit behind). Fields must still appear: the member gate
+    // accepts exactly that typed-tail shape.
+    let result = complete_at(&mut server, 4, &local_text, 0, 0);
+    assert!(result.is_array(), "cache re-seeded: {result}");
+    let dot_line = "let mk = (v: Vec2) => v.";
+    let dot_text = format!("type Vec2 = {{ x: float, y: float }}\n{dot_line}");
+    let result = complete_at(
+        &mut server,
+        5,
+        &dot_text,
+        1,
+        dot_line.encode_utf16().count() as i64,
+    );
+    let items = result.as_array().expect("completion array");
+    assert!(
+        items.iter().any(|item| item["label"] == "x"),
+        "no field `x` at the dot keystroke: {result}"
+    );
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 9, "method": "shutdown" }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
+}
+
 /// The VSCode extension's grammar and manifests must at least be valid JSON
 /// (visual verification happens in the editor — see tools/functor-lang-vscode/README).
 /// The highlighting sample must also be a valid Functor Lang module, so it stays in

@@ -404,6 +404,7 @@ fn kind_code(kind: functor_lang::complete::CompletionKind) -> i64 {
     match kind {
         CompletionKind::Function => 3,
         CompletionKind::Constructor => 4,
+        CompletionKind::Field => 5,
         CompletionKind::Module => 9,
         CompletionKind::Value => 12,
         CompletionKind::Keyword => 14,
