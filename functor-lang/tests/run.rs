@@ -1299,3 +1299,40 @@ fn if_condition_on_non_bool_errors() {
     );
     assert_eq!(message, "`if` condition needs a bool, got a number");
 }
+
+// --- Literals inside tuple / constructor patterns ---
+
+#[test]
+fn tuple_literal_patterns_match_by_value() {
+    // The input-mapping shape: match on (key, isDown).
+    let src = "let classify = (key, down) =>\n\
+               \x20 match (key, down) with\n\
+               \x20 | (\"Enter\", true) => \"start\"\n\
+               \x20 | (\"Escape\", true) => \"quit\"\n\
+               \x20 | (_, false) => \"release\"\n\
+               \x20 | (_, _) => \"other\"\n\
+               let main = () => [classify(\"Enter\", true), classify(\"W\", false), classify(\"W\", true)]";
+    assert_eq!(main_result(src), "[\"start\", \"release\", \"other\"]");
+}
+
+#[test]
+fn ctor_literal_patterns_match_by_value() {
+    let src = "type Shape = | Circle(r: float) | Rect(w: float, h: float)\n\
+               let describe = (s: Shape) =>\n\
+               \x20 match s with\n\
+               \x20 | Circle(0.0) => \"point\"\n\
+               \x20 | Circle(r) => \"circle\"\n\
+               \x20 | Rect(w, h) => \"rect\"\n\
+               let main = () => [describe(Circle(0.0)), describe(Circle(2.0)), describe(Rect(1.0, 2.0))]";
+    assert_eq!(main_result(src), "[\"point\", \"circle\", \"rect\"]");
+}
+
+#[test]
+fn negative_number_sub_pattern() {
+    let src = "let sign = (p) =>\n\
+               \x20 match p with\n\
+               \x20 | (-1.0, y) => \"neg\"\n\
+               \x20 | (_, _) => \"other\"\n\
+               let main = () => [sign((-1.0, 5.0)), sign((2.0, 5.0))]";
+    assert_eq!(main_result(src), "[\"neg\", \"other\"]");
+}

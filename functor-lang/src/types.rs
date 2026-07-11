@@ -244,6 +244,17 @@ fn pattern_var_bindings(pattern: &Pattern, f: &mut impl FnMut(u32)) {
     }
 }
 
+/// Is `pattern` (a tuple/ctor sub-pattern) irrefutable — matching any value of
+/// the right type? Names and `_` are; a literal sub-pattern is not. Used by
+/// exhaustiveness: a tuple/ctor arm only counts as a catch-all / as covering
+/// its constructor when every sub-pattern is irrefutable.
+fn sub_pattern_irrefutable(pattern: &Pattern) -> bool {
+    matches!(
+        pattern.kind,
+        PatternKind::Wildcard | PatternKind::Var { .. }
+    )
+}
+
 /// Substitute declaration parameter placeholders (`Var(i)`, i < args.len())
 /// with concrete type arguments — how generic record/variant field types
 /// meet their use sites. Non-generic declarations contain no placeholders,
@@ -1939,15 +1950,26 @@ missing {missing}. Did you forget an argument?"
                         list_exact.push(items.len());
                     }
                 }
-                // Sub-patterns are irrefutable (names/`_`), so a tuple arm
-                // catches every tuple of its arity — but only if that arity
-                // CAN match the scrutinee (the mismatch itself is diagnosed
-                // in check_pattern; it must not also count as exhaustive).
-                PatternKind::Tuple(args) => match &self.zonk(&scrutinee_ty) {
-                    Type::Tuple(elems) if elems.len() != args.len() => {}
-                    _ => has_catch_all = true,
-                },
-                PatternKind::Ctor { name, .. } => covered_ctors.push(name),
+                // A tuple arm catches every tuple of its arity only when all
+                // its sub-patterns are irrefutable (names/`_`); a literal
+                // sub-pattern (`("Enter", true)`) makes it refutable, so it no
+                // longer counts as a catch-all. And the arity must be able to
+                // match the scrutinee (a mismatch is diagnosed in
+                // check_pattern; it must not also count as exhaustive).
+                PatternKind::Tuple(args) if args.iter().all(sub_pattern_irrefutable) => {
+                    match &self.zonk(&scrutinee_ty) {
+                        Type::Tuple(elems) if elems.len() != args.len() => {}
+                        _ => has_catch_all = true,
+                    }
+                }
+                PatternKind::Tuple(_) => {}
+                // A ctor arm fully covers that constructor only when all its
+                // sub-patterns are irrefutable; `Circle(0.0)` matches some
+                // `Circle`s, not all, so it doesn't count toward coverage.
+                PatternKind::Ctor { name, args } if args.iter().all(sub_pattern_irrefutable) => {
+                    covered_ctors.push(name)
+                }
+                PatternKind::Ctor { .. } => {}
                 PatternKind::Bool(true) => saw_true = true,
                 PatternKind::Bool(false) => saw_false = true,
                 PatternKind::Number(_) | PatternKind::String(_) => {}
@@ -2033,17 +2055,22 @@ a catch-all arm (`_` or a name)"
                         );
                     }
                 }
-                // A known product with no arity-matching arm can never be
-                // handled (the per-arm mismatch diags say why each arm
-                // fails; this says the MATCH as a whole is uncovered).
+                // A known product left uncovered. Either no arm matches the
+                // arity at all, or some do but are all refutable (a literal
+                // sub-pattern) with no catch-all — distinguish the two so the
+                // message fits the feature's primary use (input mapping).
                 Type::Tuple(elems) => {
+                    let arity_matched = arms.iter().any(|arm| {
+                        matches!(&arm.pattern.kind, PatternKind::Tuple(args) if args.len() == elems.len())
+                    });
+                    let detail = if arity_matched {
+                        "its arms are refutable — add a catch-all (`_` or a name)".to_string()
+                    } else {
+                        format!("no arm matches a {}-element tuple", elems.len())
+                    };
                     self.diag(
                         expr.span,
-                        format!(
-                            "match on {scrutinee_ty} is not exhaustive: no arm matches a \
-{}-element tuple",
-                            elems.len()
-                        ),
+                        format!("match on {scrutinee_ty} is not exhaustive: {detail}"),
                     );
                 }
                 // Unknown stays gradual; List/Record/Fn scrutinees already

@@ -792,10 +792,10 @@ and an `else` branch)",
         while self.peek_kind() != &TokenKind::RBracket {
             if self.peek_kind() == &TokenKind::DotDot {
                 self.bump();
-                tail = Some(Box::new(self.sub_pattern()?));
+                tail = Some(Box::new(self.list_element_pattern()?));
                 break;
             }
-            items.push(self.sub_pattern()?);
+            items.push(self.list_element_pattern()?);
             if self.peek_kind() == &TokenKind::Comma {
                 self.bump();
             } else {
@@ -874,7 +874,70 @@ and an `else` branch)",
         })
     }
 
+    /// A sub-pattern of a tuple or constructor pattern: a variable binding,
+    /// `_`, or a LITERAL (number — negative included — string, or bool). These
+    /// stay non-nesting: a nested constructor/tuple/list sub-pattern is still
+    /// refused, so `(Circle(r), _)` does not parse — only the leaves may be
+    /// literals (`("Enter", true)`).
     fn sub_pattern(&mut self) -> Result<Pattern, ParseError> {
+        // A leading `-` folds into a negative number literal (as in the
+        // top-level `pattern`).
+        if self.peek_kind() == &TokenKind::Minus {
+            if let TokenKind::Number(n) = self.nth_kind(1) {
+                let n = *n;
+                let minus = self.bump();
+                let number = self.bump();
+                return Ok(Pattern {
+                    kind: PatternKind::Number(-n),
+                    span: minus.span.to(number.span),
+                });
+            }
+        }
+        let span = self.peek().span;
+        let kind = match self.peek_kind() {
+            TokenKind::Number(n) => {
+                let n = *n;
+                self.bump();
+                PatternKind::Number(n)
+            }
+            TokenKind::Str(s) => {
+                let s = s.clone();
+                self.bump();
+                PatternKind::String(s)
+            }
+            TokenKind::True => {
+                self.bump();
+                PatternKind::Bool(true)
+            }
+            TokenKind::False => {
+                self.bump();
+                PatternKind::Bool(false)
+            }
+            TokenKind::Ident(name) if name == "_" => {
+                self.bump();
+                PatternKind::Wildcard
+            }
+            TokenKind::Ident(name) if !starts_uppercase(name) => {
+                let name = name.clone();
+                self.bump();
+                PatternKind::Var(name)
+            }
+            _ => {
+                return self.error(
+                    "a binding name, `_`, or a literal (constructor/tuple patterns do not nest)",
+                )
+            }
+        };
+        Ok(Pattern { kind, span })
+    }
+
+    /// A list element / tail sub-pattern: a variable binding or `_` only.
+    /// Unlike tuple/ctor sub-patterns, list elements may NOT be literals —
+    /// list exhaustiveness is length-based (it assumes every element is
+    /// irrefutable), so a literal element (`[true, ..rest]`) would silently
+    /// break it. Keeping the restriction here scopes the literal widening to
+    /// tuple/ctor patterns, where exhaustiveness accounts for it.
+    fn list_element_pattern(&mut self) -> Result<Pattern, ParseError> {
         let span = self.peek().span;
         let kind = match self.peek_kind() {
             TokenKind::Ident(name) if name == "_" => {
@@ -886,7 +949,7 @@ and an `else` branch)",
                 self.bump();
                 PatternKind::Var(name)
             }
-            _ => return self.error("a binding name or `_` (constructor patterns do not nest)"),
+            _ => return self.error("a binding name or `_` (list patterns do not nest)"),
         };
         Ok(Pattern { kind, span })
     }

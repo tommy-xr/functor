@@ -54,7 +54,7 @@ let shapes = [c, Rect(3.0, 4.0), Point]       // bare Point IS the value
 let area = (s: Shape): float =>
   match s with                                // match: | pattern => full-expression body
   | Circle(r) => 3.14 * r * r                 // ctor patterns bind positionally
-  | Rect(w, _) => w * w                       // sub-patterns: names or _ ONLY (no nesting)
+  | Rect(w, _) => w * w                       // sub-patterns: names, _, or literals (no deeper nesting)
   | Point => 0.0                              // exhaustiveness checked when s's type is known
 
 let sizeOf = (s: Shape): string =>
@@ -273,9 +273,17 @@ open Widget                                              // …or open, bringing
   pattern vars can't (they are forced lowercase).
 - **Patterns are minimal**: `Ctor(x, _)` / `Ctor` / `(x, _)` (tuple) /
   bare name / `_` / literals (`true`, `false`, numbers incl. negative,
-  strings — equality match). Ctor and tuple sub-patterns are names or `_`
-  only — no nesting, no literals inside. A tuple pattern matches by EXACT
-  arity (mismatch = non-match, like ctors).
+  strings — equality match). Ctor and tuple sub-patterns are names, `_`, or a
+  LITERAL (`| ("Enter", true) =>`, `| Circle(0.0) =>` — number incl. negative,
+  string, bool) — but still no deeper nesting (no ctor/tuple/list inside).
+  A literal sub-pattern is REFUTABLE, so a tuple/ctor arm with one no longer
+  counts toward exhaustiveness (`| ("Enter", true) =>` needs a catch-all; a
+  lone `| Circle(0.0) =>` still leaves `Circle` "missing"). This is
+  conservative — even a nominally-total set like `(true, _) | (false, _)`
+  still wants a catch-all (nested products aren't split into cases). LIST
+  element/tail sub-patterns stay names/`_` only (no literals — list
+  exhaustiveness is length-based). A tuple pattern matches by EXACT arity
+  (mismatch = non-match, like ctors).
   Pattern vars are immutable bindings; lambdas may capture them. First
   matching arm wins; no arm matching is a spanned runtime error. Unapplied
   ctors are first-class (`xs |> List.map(Circle)`); the runtime checks ctor
