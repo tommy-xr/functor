@@ -111,6 +111,10 @@ pub enum Event {
         tick_us: f64,
         draw_us: f64,
         #[serde(skip_serializing_if = "Option::is_none")]
+        render_us: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        swap_us: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         frame_us: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         budget_pct: Option<f64>,
@@ -146,12 +150,16 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
             R::FrameStats {
                 tick_us,
                 draw_us,
+                render_us,
+                swap_us,
                 frame_us,
                 budget_pct,
                 over_n_frames,
             } => Event::FrameStats {
                 tick_us,
                 draw_us,
+                render_us: Some(render_us),
+                swap_us: Some(swap_us),
                 frame_us: Some(frame_us),
                 budget_pct: Some(budget_pct),
                 over_n_frames,
@@ -311,11 +319,19 @@ impl PlainRenderer {
             Event::FrameStats {
                 tick_us,
                 draw_us,
+                render_us,
+                swap_us,
                 frame_us,
                 budget_pct,
                 over_n_frames,
             } => {
                 let mut s = format!("tick {tick_us:.1}µs, draw {draw_us:.1}µs");
+                if let Some(render_us) = render_us {
+                    s.push_str(&format!(", render {render_us:.1}µs"));
+                }
+                if let Some(swap_us) = swap_us {
+                    s.push_str(&format!(", swap {swap_us:.1}µs"));
+                }
                 if let Some(frame_us) = frame_us {
                     s.push_str(&format!(", frame {frame_us:.1}µs"));
                 }

@@ -211,23 +211,28 @@ used to `println!` directly. PR-2a routes them through the runtime event sink (b
 | `type`            | Fields                                                                           | Emitted when |
 | ----------------- | -------------------------------------------------------------------------------- | ------------ |
 | `runtime_ready`   | —                                                                                | the runtime loaded and is about to render |
-| `frame_stats`     | `tick_us`, `draw_us`, `frame_us`?, `budget_pct`?, `over_n_frames`                | every `over_n_frames` frames (300) |
+| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `frame_us`?, `budget_pct`?, `over_n_frames` | every `over_n_frames` frames (300) |
 | `capture_written` | `path` (string)                                                                  | a `--capture-frame` PNG was written |
 | `hot_reload`      | `ok` (bool), `message` (string)                                                  | a hot-reload settled (`ok:false` = rejected edit; old program kept) |
 | `asset_error`     | `path` (string?), `message` (string)                                             | an asset failed to load (fallback served) |
 | `reload`          | —                                                                                | reserved for the wasm dev-server page reload (not emitted natively yet) |
 
-`frame_stats` folds the runtime's per-frame `tick`/`physics`/`draw` cost into three numbers:
-`tick_us` and `draw_us` are the tick and draw averages; `frame_us` is the **total** (tick +
-physics + draw), and `budget_pct` is that total against a 60 fps (16.666 ms) budget. All are
-rounded to one decimal. `over_n_frames` is the averaging window (300). This is a per-window,
+`frame_stats` folds the runtime's per-frame cost into averaged numbers: `tick_us` and `draw_us`
+are the interpreter's tick and draw (frame-description) averages; `render_us` and `swap_us` are the
+shell-measured GL cost — the scene render pass and the buffer swap (which blocks on vsync). Splitting
+them out lets you tell interpreter cost from GL cost. `frame_us` is the **total** (tick + physics +
+draw) and `budget_pct` is that against a 60 fps (16.666 ms) budget; `render_us`/`swap_us` are
+reported alongside but **not** folded into `frame_us` (swap's vsync block would peg `budget_pct`).
+All are rounded to one decimal. `render_us`/`swap_us` come from the native GL shell; under
+`--headless` there is no GL pass to measure, so they read `0.0`. `over_n_frames` is the averaging
+window (300). This is a per-window,
 **not** per-frame, emission — see the cadence note below.
 
 Example tail of `functor -d examples/lighting run native --json` (frame stats + capture):
 
 ```json
 {"type":"runtime_ready"}
-{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300}
+{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"render_us":210.5,"swap_us":15980.2,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300}
 {"type":"capture_written","path":"/tmp/frame.png"}
 ```
 

@@ -149,6 +149,10 @@ pub struct FunctorLangGame {
     tick_ns: u64,
     physics_ns: u64,
     draw_ns: u64,
+    // GL cost the shell measures around its render/swap calls and folds back via
+    // `record_gl_timing` — the render pass and the vsync-blocking buffer swap.
+    render_ns: u64,
+    swap_ns: u64,
 }
 
 const STATS_EVERY: u64 = 300;
@@ -380,6 +384,8 @@ impl FunctorLangGame {
             tick_ns: 0,
             physics_ns: 0,
             draw_ns: 0,
+            render_ns: 0,
+            swap_ns: 0,
         }
     }
 
@@ -478,10 +484,14 @@ impl FunctorLangGame {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let physics_us = self.physics_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let draw_us = self.draw_ns as f64 / STATS_EVERY as f64 / 1000.0;
+            let render_us = self.render_ns as f64 / STATS_EVERY as f64 / 1000.0;
+            let swap_us = self.swap_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let frame_us = tick_us + physics_us + draw_us;
             events::emit(RuntimeEvent::FrameStats {
                 tick_us: round1(tick_us),
                 draw_us: round1(draw_us),
+                render_us: round1(render_us),
+                swap_us: round1(swap_us),
                 frame_us: round1(frame_us),
                 budget_pct: round1(frame_us / 16_666.0 * 100.0),
                 over_n_frames: STATS_EVERY as u32,
@@ -489,6 +499,8 @@ impl FunctorLangGame {
             self.tick_ns = 0;
             self.physics_ns = 0;
             self.draw_ns = 0;
+            self.render_ns = 0;
+            self.swap_ns = 0;
         }
     }
 
@@ -855,6 +867,15 @@ AudioScene.empty), got {}",
         // On failure this is the last good frame — a bad draw must not blank
         // the screen.
         self.last_frame.clone()
+    }
+
+    fn record_gl_timing(&mut self, render_ns: u64, swap_ns: u64) {
+        // The shell measured this frame's GL render + swap (it owns the GL
+        // calls); fold them into the same rolling window `report_stats` averages
+        // — same one-frame lag as `draw_ns`, which is likewise accumulated after
+        // `tick` runs `report_stats`.
+        self.render_ns += render_ns;
+        self.swap_ns += swap_ns;
     }
 
     fn ui(&self) -> View {

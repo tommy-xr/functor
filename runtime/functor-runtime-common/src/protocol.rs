@@ -190,6 +190,18 @@ pub trait GameProducer {
 
     fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame;
 
+    /// Record the shell-measured GL cost of the frame just presented — the wall
+    /// time of the scene render pass (`render_ns`, interpreter → GL submission)
+    /// and of the buffer swap (`swap_ns`, which captures vsync blocking). Unlike
+    /// `tick`/`draw` (interpreter cost the producer times itself), these are
+    /// measured in the imperative shell around the GL calls, so the shell folds
+    /// them back here once per windowed frame after `swap_buffers`; the producer
+    /// averages them into its rolling frame-stats window. The default drops them
+    /// — the honest no-op for producers with no GL shell (replays, web). The
+    /// headless desktop loop uses the same producer but never calls this (no
+    /// GL), so its `render_us`/`swap_us` stay 0.
+    fn record_gl_timing(&mut self, _render_ns: u64, _swap_ns: u64) {}
+
     /// The game's declarative UI tree (`ui model`), lowered by the shell to a
     /// text overlay drawn on top of the frame.
     fn ui(&self) -> crate::ui::View;
