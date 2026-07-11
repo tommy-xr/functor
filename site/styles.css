@@ -40,6 +40,35 @@ a:hover {
   text-decoration: underline;
 }
 
+/* Theme every scrollbar (page, code panels, editors) — the OS-default silver
+   bars glare against the dark panels. Slim, track-less, thumb on --line. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #3d3560;
+  background-clip: padding-box;
+}
+
 /* Flourish (b): the one decorative divider — a thin cyan→pink rule. */
 .gradient-rule {
   height: 1px;
