@@ -52,6 +52,10 @@ jobs:
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
+          # wrangler-action's default (v3.90.0) predates static-assets-only
+          # Workers and demands a `main` entry-point; pin v4, which serves our
+          # assets-only wrangler.jsonc (no server script).
+          wranglerVersion: "4.110.0"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
