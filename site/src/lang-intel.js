@@ -16,6 +16,7 @@
 import { linter } from "@codemirror/lint";
 import { Decoration, EditorView, ViewPlugin, WidgetType, hoverTooltip } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
+import { functorLangLanguage } from "./functor-lang.js";
 
 // The runtime import specifier resolves to the glue esbuild leaves external
 // (see build.mjs `external`), copied to /pkg/ at build time — NOT bundled.
@@ -23,6 +24,7 @@ const PKG_URL = "/pkg/functor_lang_wasm.js";
 
 let analyzeFn = null; // (src) => JSON string, set once the wasm is ready
 let hoverFn = null; // (src, offset) => JSON string ("" when nothing to show)
+let completeFn = null; // (src, offset) => JSON string, set once the wasm is ready
 let lastDoc = null;
 let lastResult = null;
 
@@ -40,6 +42,18 @@ export const analyzeCached = (docString) => {
   lastDoc = docString;
   lastResult = result;
   return result;
+};
+
+// Raw completion at a UTF-16 offset — the test/introspection seam
+// (window.__lang.complete). Returns the parsed `{ items }`, or null when the
+// wasm isn't loaded.
+export const completeAt = (src, offset) => {
+  if (!completeFn) return null;
+  try {
+    return JSON.parse(completeFn(src, offset));
+  } catch {
+    return null;
+  }
 };
 
 // Read the memoized result WITHOUT running analyze: returns it only when it is
@@ -90,6 +104,49 @@ const hoverTypes = hoverTooltip((view, pos) => {
     },
   };
 });
+
+// --- Autocomplete -------------------------------------------------------------
+// A CodeMirror completion source backed by the wasm's scope-aware `complete`.
+// Registered via the language's `data` facet (below), so basicSetup's
+// `autocompletion()` picks it up through `languageDataAt("autocomplete")` — no
+// second popup, and in degraded mode (no wasm) it is simply never registered.
+
+// Map the wasm's completion kind to a CodeMirror `type`, so the built-in icons
+// render (function/variable/namespace/keyword/enum/property all have glyphs).
+const KIND_TO_TYPE = {
+  function: "function",
+  value: "variable",
+  module: "namespace",
+  keyword: "keyword",
+  constructor: "enum",
+  field: "property",
+};
+
+// Fires on explicit trigger (Ctrl-Space), after a `.`, or while typing a word.
+// Returns `validFor` so CodeMirror filters the list client-side as more word
+// chars are typed — one wasm call per token, not per keystroke.
+const functorCompletions = (context) => {
+  if (!completeFn) return null;
+  const word = context.matchBefore(/[A-Za-z_]\w*/);
+  const afterDot = context.pos > 0 && context.state.sliceDoc(context.pos - 1, context.pos) === ".";
+  if (!context.explicit && !afterDot && !word) return null;
+  let items;
+  try {
+    items = JSON.parse(completeFn(context.state.doc.toString(), context.pos)).items;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(items) || items.length === 0) return null;
+  return {
+    from: word ? word.from : context.pos,
+    options: items.map((it) => ({
+      label: it.label,
+      type: KIND_TO_TYPE[it.kind],
+      detail: it.detail || undefined,
+    })),
+    validFor: /^\w*$/,
+  };
+};
 
 // --- Inlay hints + codelenses (one StateField) --------------------------------
 // Block decorations (the codelenses) MUST come from a StateField, not a
@@ -247,6 +304,36 @@ const intelTheme = EditorView.theme({
     fontStyle: "italic",
     lineHeight: "1.5",
   },
+  // Autocomplete popup: the same calm dark panel as the hover tooltip.
+  ".cm-tooltip.cm-tooltip-autocomplete": {
+    backgroundColor: "#1e1833",
+    border: "1px solid #2b2542",
+    borderRadius: "5px",
+  },
+  ".cm-tooltip-autocomplete > ul": {
+    fontFamily: mono,
+    fontSize: "12.5px",
+    maxHeight: "16em",
+  },
+  ".cm-tooltip-autocomplete > ul > li": {
+    color: "#e9e6f2",
+    padding: "2px 6px",
+  },
+  ".cm-tooltip-autocomplete ul li[aria-selected]": {
+    backgroundColor: "#0e3b46",
+    color: "#c7f2f7",
+  },
+  // The detail (type signature) trailing each option, dimmed.
+  ".cm-completionDetail": {
+    color: "#6c6685",
+    fontStyle: "italic",
+  },
+  // The kind icon, tinted to the cyan accent so glyphs read on the dark panel.
+  ".cm-completionIcon": {
+    color: "#9b94b3",
+    opacity: "0.9",
+    marginRight: "0.4em",
+  },
 });
 
 // Async setup: resolve to the full intel extension set, or [] on any failure so
@@ -257,6 +344,7 @@ export const setupLangIntel = async () => {
     await mod.default(); // init the wasm
     analyzeFn = mod.functor_lang_analyze;
     hoverFn = mod.functor_lang_hover;
+    completeFn = mod.functor_lang_complete;
   } catch {
     console.info(
       "[lang-intel] language analysis unavailable (pkg not built) — editor runs without diagnostics"
@@ -268,6 +356,9 @@ export const setupLangIntel = async () => {
     hoverTypes,
     decorationField,
     initialRefresh,
+    // Register the completion source on the language's data facet — basicSetup's
+    // autocompletion() picks it up via languageDataAt (no second popup).
+    functorLangLanguage.data.of({ autocomplete: functorCompletions }),
     intelTheme,
   ];
 };

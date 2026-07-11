@@ -650,6 +650,118 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   }
 }
 
+// --- 13. Scope-aware autocomplete in the editor (commit 8b). ------------------
+// The completion source is backed by the wasm's scope-aware `complete`, driven
+// through the __sandbox.triggerComplete seam (insert text + set cursor + open
+// the popup). That seam is guarded to NOT push, so the status pill stays live
+// throughout. SKIPs (like the lint/hover blocks) when the analysis pkg is absent.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+
+  const langAvailable = await page.evaluate(() => window.__lang && window.__lang.ready);
+  if (!langAvailable) {
+    console.log("SKIP: autocomplete — language analysis pkg not built (__lang not ready)");
+    await page.close();
+  } else {
+    // Prime the wasm last-good cache with a valid program (via the __lang seam —
+    // no doc change, no push), so dot-completion works even while the live
+    // buffer is mid-edit.
+    await page.evaluate((s) => window.__lang.complete(s, 0), GREEN);
+
+    // Open the popup and wait until its option labels satisfy `pred`; retries
+    // the trigger — under load a popup open can be swallowed by a lagging
+    // transaction (a lint pass landing mid-open), so a single-shot wait flakes.
+    const openCompletion = async (source, cursor, pred) => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await page.evaluate(
+          ({ s, c }) => window.__sandbox.triggerComplete(s, c),
+          { s: source, c: cursor }
+        );
+        const t0 = Date.now();
+        while (Date.now() - t0 < 2500) {
+          const labels = await page.evaluate(() =>
+            [...document.querySelectorAll(".cm-tooltip-autocomplete .cm-completionLabel")].map(
+              (el) => el.textContent
+            )
+          );
+          if (pred(labels)) return labels;
+          await sleep(150);
+        }
+      }
+      return [];
+    };
+
+    // A) Member popup: cursor right after `Scene.` (empty partial) surfaces many
+    // members. `triggerComplete` is guarded (no push), so status stays live.
+    const memberCursor = GREEN.indexOf("Scene.") + "Scene.".length;
+    const opts = await openCompletion(
+      GREEN,
+      memberCursor,
+      (labels) => labels.length > 3 && labels.includes("sphere")
+    );
+    check(
+      "Scene. opens the completion popup with >3 members",
+      opts.length > 3,
+      `options=${JSON.stringify(opts.slice(0, 8))}`
+    );
+    check(
+      "completion offers a known Scene member (sphere)",
+      opts.includes("sphere"),
+      JSON.stringify(opts.slice(0, 8))
+    );
+
+    // B) Applying a completion inserts its label: a typo'd member `spher` offers
+    // the sole `sphere`; accepting it fixes the program (still valid → the push
+    // keeps the loop live), and the label is now in the doc.
+    const GREEN_TYPO = GREEN.replace("Scene.sphere()", "Scene.spher()");
+    const typoCursor = GREEN_TYPO.indexOf("Scene.spher") + "Scene.spher".length;
+    const typoOpts = await openCompletion(
+      GREEN_TYPO,
+      typoCursor,
+      (labels) => labels[0] === "sphere"
+    );
+    // Accept via the editor's own apply path (deterministic — no key focus).
+    const accepted = await page.evaluate(() => window.__sandbox.acceptCompletion());
+    await sleep(150);
+    const afterAccept = await page.evaluate(() => window.__sandbox.getSource());
+    check(
+      "applying a completion inserts its label",
+      afterAccept.includes("Scene.sphere()"),
+      `accepted=${accepted}, popup=${JSON.stringify(typoOpts)}, line=${JSON.stringify(
+        afterAccept.split("\n").find((l) => l.includes("Scene.")) || afterAccept.slice(0, 60)
+      )}`
+    );
+    // The accept pushed the fixed (valid) program. Wait for the push RESULT
+    // (not just state === "live": the pill is already live before the debounced
+    // push fires, so that would pass early and the final live check below could
+    // catch the transient "reloading").
+    await page.waitForFunction(
+      () => window.__sandbox.status().message.includes("model preserved"),
+      { timeout: 8000 }
+    );
+
+    // C) Top-level partial `le` → the `let` keyword (guarded — no push).
+    const topOpts = await openCompletion("le", 2, (labels) => labels.includes("let"));
+    check(
+      "top-level `le` offers the `let` keyword",
+      topOpts.includes("let"),
+      JSON.stringify(topOpts.slice(0, 8))
+    );
+
+    check(
+      "autocomplete keeps the sandbox live",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.close();
+  }
+}
+
 await browser.close();
 server.kill();
 console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

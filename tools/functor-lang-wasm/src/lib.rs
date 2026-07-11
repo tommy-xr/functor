@@ -20,8 +20,10 @@
 //! `#[wasm_bindgen]` wrappers, so `cargo test -p functor-lang-wasm` exercises it
 //! natively.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
+use functor_lang::complete::{CompletionItem, CompletionKind};
 use functor_lang::project::{self, Project, SourceFile};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
@@ -55,6 +57,14 @@ pub fn functor_lang_analyze(src: &str) -> String {
 #[wasm_bindgen]
 pub fn functor_lang_hover(src: &str, offset: f64) -> String {
     hover_json(src, offset.max(0.0) as usize)
+}
+
+/// Completion candidates at `offset` (a UTF-16 code-unit position). Returns a
+/// JSON string `{"items": [{"label", "detail" (string|null), "kind"}]}` — the
+/// `kind` a lowercase string (`"function"`, `"module"`, …). Never throws.
+#[wasm_bindgen]
+pub fn functor_lang_complete(src: &str, offset: f64) -> String {
+    complete_json(src, offset.max(0.0) as usize)
 }
 
 /// See [`functor_lang_analyze`]. Pure — the tested seam.
@@ -126,6 +136,72 @@ pub fn hover_json(src: &str, offset: usize) -> String {
         "text": text,
     })
     .to_string()
+}
+
+// The last project that loaded cleanly — dot-completion keeps answering off
+// this while the live buffer is mid-edit or broken (the offset contract:
+// context comes from the live `src`, candidates from a possibly-stale
+// project). Refreshed on every clean load. Per-wasm-instance, single-threaded.
+thread_local! {
+    static LAST_GOOD: RefCell<Option<Project>> = const { RefCell::new(None) };
+}
+
+/// The most completion items to encode — bounds the JSON for a huge namespace.
+const MAX_ITEMS: usize = 200;
+
+/// See [`functor_lang_complete`]. Pure — the tested seam. `offset` is UTF-16.
+///
+/// Refreshes the last-good cache when `src` loads cleanly, then completes
+/// against it (falling back to the previous cache when the live buffer is
+/// broken; empty items when nothing has loaded yet). The byte offset the
+/// language crate wants is LOCAL to `src`, so it converts straight from UTF-16
+/// with no `file.base`.
+pub fn complete_json(src: &str, offset: usize) -> String {
+    let byte = from_u16(src, offset);
+    if let Ok(project) = load(src) {
+        LAST_GOOD.with(|cell| *cell.borrow_mut() = Some(project));
+    }
+    LAST_GOOD.with(|cell| {
+        let borrow = cell.borrow();
+        let Some(project) = borrow.as_ref() else {
+            return empty_completion();
+        };
+        let items = functor_lang::complete::complete(project, &project.entry, src, byte);
+        completion_json(&items)
+    })
+}
+
+/// Encode completion items as `{"items": [...]}`, capped at [`MAX_ITEMS`].
+fn completion_json(items: &[CompletionItem]) -> String {
+    let items: Vec<Value> = items
+        .iter()
+        .take(MAX_ITEMS)
+        .map(|item| {
+            json!({
+                "label": item.label,
+                "detail": item.detail,
+                "kind": kind_str(item.kind),
+            })
+        })
+        .collect();
+    json!({ "items": items }).to_string()
+}
+
+fn empty_completion() -> String {
+    json!({ "items": [] }).to_string()
+}
+
+/// A completion kind as a lowercase string, matching the CodeMirror `type` the
+/// editor maps to a built-in icon.
+fn kind_str(kind: CompletionKind) -> &'static str {
+    match kind {
+        CompletionKind::Function => "function",
+        CompletionKind::Value => "value",
+        CompletionKind::Module => "module",
+        CompletionKind::Keyword => "keyword",
+        CompletionKind::Constructor => "constructor",
+        CompletionKind::Field => "field",
+    }
 }
 
 /// Load `src` as a single-file project with the host prelude injected (so
@@ -296,6 +372,89 @@ mod tests {
         // The flagged token is the `"x"` string literal (wrong type for `+`).
         assert!(src[byte_from..].starts_with("\"x\""), "flagged {:?}: {out}", &src[byte_from..]);
         assert!(to > from && to <= utf16_len(src));
+    }
+
+    // Prime the last-good cache with a clean buffer, then complete `live` at its
+    // end (UTF-16). Returns the parsed `{ items }` — the same one/two-step the
+    // editor does (a valid doc parses, then the user types a `.`).
+    fn complete_after(prime_src: &str, live: &str) -> Value {
+        complete_json(prime_src, 0); // load cleanly → refresh the cache
+        parse(&complete_json(live, utf16_len(live)))
+    }
+
+    fn labels(items: &Value) -> Vec<String> {
+        items["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn item<'a>(items: &'a Value, label: &str) -> &'a Value {
+        items["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["label"] == label)
+            .unwrap_or_else(|| panic!("no `{label}` in {:?}", labels(items)))
+    }
+
+    // (a) `Scene.` member completion offers prelude members with kind
+    // "function". The buffer is a complete, valid program (`Scene.cube()`) with
+    // the cursor right after the dot — the fresh path.
+    #[test]
+    fn scene_member_completion() {
+        let src = "let d = () => Scene.cube()";
+        let offset = utf16_len(&src[..src.find("Scene.").unwrap() + "Scene.".len()]);
+        let out = parse(&complete_json(src, offset));
+        let names = labels(&out);
+        assert!(names.contains(&"cube".to_string()), "{names:?}");
+        assert!(names.len() > 3, "expected many Scene members: {names:?}");
+        assert_eq!(item(&out, "cube")["kind"], "function");
+        assert!(item(&out, "cube")["detail"].is_string(), "{out}");
+    }
+
+    // (b) A BROKEN live buffer (trailing `.`) still completes via the last-good
+    // cache — the cache was primed by a clean, unrelated buffer.
+    #[test]
+    fn broken_buffer_completes_from_cache() {
+        let out = complete_after("let main = () => 1.0", "let x = 1.0\nlet s = Scene.");
+        let names = labels(&out);
+        assert!(names.contains(&"cube".to_string()), "{names:?}");
+        assert_eq!(item(&out, "cube")["kind"], "function");
+    }
+
+    // (c) UTF-16 offset conversion: a non-ASCII prefix pushes byte offsets past
+    // their UTF-16 counterparts, so a raw UTF-16-as-bytes offset would miss the
+    // dot. The correct conversion lands member completion (`cube` present).
+    #[test]
+    fn completion_offset_is_utf16() {
+        // 'é' (2 bytes) and '→' (3 bytes) before the completion point.
+        let src = "let label = \"café→\"\nlet d = () => Scene.cube()";
+        let dot = src.find("Scene.").unwrap() + "Scene.".len();
+        let offset = utf16_len(&src[..dot]);
+        // The byte offset must exceed the UTF-16 offset — proving conversion is
+        // needed (a raw offset would land short of the dot).
+        assert!(dot > offset, "expected multibyte prefix: byte {dot} vs utf16 {offset}");
+        let out = parse(&complete_json(src, offset));
+        assert!(labels(&out).contains(&"cube".to_string()), "{:?}", labels(&out));
+    }
+
+    // (d) A top-level partial `le` includes the keyword `let`.
+    #[test]
+    fn top_level_partial_offers_keyword() {
+        let out = complete_after("let main = () => 1.0", "le");
+        assert!(labels(&out).contains(&"let".to_string()), "{:?}", labels(&out));
+        assert_eq!(item(&out, "let")["kind"], "keyword");
+    }
+
+    // An empty cache (nothing ever loaded) answers with empty items, never an
+    // error, on a broken buffer.
+    #[test]
+    fn empty_cache_is_empty_items() {
+        let out = parse(&complete_json("let s = Scene.", utf16_len("let s = Scene.")));
+        assert!(out["items"].as_array().unwrap().is_empty(), "{out}");
     }
 
     // Hover round-trips on a non-ASCII line: the returned span's UTF-16 offsets
