@@ -268,12 +268,13 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
 
     /// `build wasm`, after the typecheck gate: write the project as a
     /// self-contained static web bundle in `dist/web/` — the same file set
-    /// the wasm dev server serves (see `util::wasm_export`). Zip the folder
-    /// for itch.io (HTML5) or serve it from any static host.
-    pub fn export_wasm(&self, working_directory: &str) -> Result<(), Error> {
+    /// the wasm dev server serves (see `util::wasm_export`). With `zip`,
+    /// also archive it as `dist/<project>-web.zip` (index.html at the zip
+    /// root, the layout itch.io expects for an HTML5 game).
+    pub fn export_wasm(&self, working_directory: &str, zip: bool) -> Result<(), Error> {
         #[cfg(not(feature = "web"))]
         {
-            let _ = working_directory;
+            let _ = (working_directory, zip);
             Err(Error::other(
                 "the web runtime is not bundled in this build — rebuild with the `web` feature \
                  (`npm run build:cli`) to `build wasm`",
@@ -326,6 +327,26 @@ bundle's runtime files"
                     export.runtime_bytes as f64 / 1e6,
                 ),
             });
+            if zip {
+                // Name the archive after the project directory; `-d .` and
+                // friends need the canonical path to have a file name.
+                let name = std::fs::canonicalize(working_directory)?
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "game".to_string());
+                let zip_path = Path::new(working_directory)
+                    .join("dist")
+                    .join(format!("{name}-web.zip"));
+                let bytes = util::zip_bundle(&export.out_dir, &zip_path)?;
+                emit(Event::Info {
+                    message: format!(
+                        "zipped web bundle to {} ({:.1} MB) — upload it as an itch.io \
+HTML5 game (set \"This file will be played in the browser\")",
+                        zip_path.display(),
+                        bytes as f64 / 1e6,
+                    ),
+                });
+            }
             Ok(())
         }
     }

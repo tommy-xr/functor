@@ -124,6 +124,49 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
     })
 }
 
+/// Zip the exported bundle's CONTENTS into `zip_path` — `index.html` sits at
+/// the zip ROOT, which is how itch.io wants an HTML5 game archive. Entries
+/// are sorted so the archive is deterministic for identical inputs.
+pub fn zip_bundle(bundle_dir: &Path, zip_path: &Path) -> Result<u64, Error> {
+    let mut paths = Vec::new();
+    collect_files(bundle_dir, &mut paths)?;
+    paths.sort();
+
+    if let Some(parent) = zip_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::File::create(zip_path)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        // Pin the entry timestamp (the zip epoch, 1980-01-01): the default
+        // becomes wall-clock time if zip's `time` feature is ever enabled
+        // (feature unification could do it transitively), which would bake
+        // the build time into every entry and break determinism.
+        .last_modified_time(zip::DateTime::default());
+    for path in &paths {
+        let rel = path.strip_prefix(bundle_dir).map_err(Error::other)?;
+        let name = rel.to_string_lossy().replace('\\', "/");
+        writer.start_file(name, options).map_err(Error::other)?;
+        let mut src = std::fs::File::open(path)?;
+        std::io::copy(&mut src, &mut writer)?;
+    }
+    writer.finish().map_err(Error::other)?;
+    Ok(std::fs::metadata(zip_path)?.len())
+}
+
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_files(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct CopyStats {
     files: usize,
@@ -356,17 +399,62 @@ let g = "pkg/tex.png"
     }
 
     #[test]
-    fn hidden_sibling_modules_fail_the_export() {
+    fn zip_puts_the_bundle_contents_at_the_archive_root() {
+        let dir = TestDir::new("zip");
+        dir.write("game.fun", "let init = 0");
+        dir.write("tex/wall.png", "png-bytes");
+
+        let wd = dir.path().to_string_lossy().to_string();
+        let export = export_functor_lang_wasm(&wd, "game.fun").unwrap();
+        let zip_path = dir.path().join("dist/bundle.zip");
+        let bytes = zip_bundle(&export.out_dir, &zip_path).unwrap();
+        assert_eq!(bytes, fs::metadata(&zip_path).unwrap().len());
+
+        let mut archive = zip::ZipArchive::new(fs::File::open(&zip_path).unwrap()).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        // Sorted, rooted at the bundle (index.html at the zip root — the
+        // itch.io HTML5 layout), forward slashes only.
+        assert_eq!(
+            names,
+            vec![
+                "game.fun",
+                "index.html",
+                "pkg/functor_runtime_web.js",
+                "pkg/functor_runtime_web_bg.wasm",
+                "tex/wall.png",
+            ]
+        );
+        // Round-trip: the archived source matches the exported file.
+        let mut entry = archive.by_name("game.fun").unwrap();
+        let mut content = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut content).unwrap();
+        assert_eq!(content, "let init = 0");
+        drop(entry);
+        drop(archive);
+
+        // Deterministic: re-zipping identical inputs is byte-identical (the
+        // entry timestamp is pinned, not wall-clock).
+        let again = dir.path().join("dist/bundle-again.zip");
+        zip_bundle(&export.out_dir, &again).unwrap();
+        assert_eq!(fs::read(&zip_path).unwrap(), fs::read(&again).unwrap());
+    }
+
+    #[test]
+    fn hidden_sibling_modules_are_skipped_not_bundled() {
         let dir = TestDir::new("hidden-module");
         dir.write("game.fun", "let init = 0");
-        // Listed by project_files (it's a sibling *.fun) but excluded by the
-        // copy's hidden rule — exporting would bake a 404 into the index.
+        // A dot-prefixed sibling (an editor temp file like `.#game.fun`) is
+        // filtered by project loading (functor_lang::project skips non-loadable
+        // stems), so it's neither listed in the index nor copied. The export
+        // succeeds with only the entry — the hidden file never reaches it.
         dir.write(".hidden.fun", "let ghost = 1");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let err = export_functor_lang_wasm(&wd, "game.fun").unwrap_err();
-        assert!(err.to_string().contains(".hidden.fun"), "{err}");
-        assert!(!dir.path().join("dist").exists(), "failed before any write");
+        let export = export_functor_lang_wasm(&wd, "game.fun").unwrap();
+        assert_eq!(export.file_count, 1, "only game.fun ships");
+        assert!(!export.out_dir.join(".hidden.fun").exists(), "hidden sibling not bundled");
     }
 
     #[cfg(unix)]

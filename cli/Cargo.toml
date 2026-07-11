@@ -38,3 +38,4 @@ functor_runtime_common = { path = "../runtime/functor-runtime-common" }
 # The desktop runtime (GLFW/OpenGL). `functor run native` drives its run loop
 # in-process — post-E3 there is a single `functor` binary, always with GL.
 functor-runtime-desktop = { path = "../runtime/functor-runtime-desktop" }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

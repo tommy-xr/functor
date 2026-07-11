@@ -88,6 +88,11 @@ enum Command {
     Build {
         #[arg(value_enum)]
         environment: Option<Environment>,
+
+        /// With `build wasm`: also write the bundle as
+        /// `dist/<project>-web.zip`, ready to upload as an itch.io HTML5 game.
+        #[arg(long)]
+        zip: bool,
     },
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
     /// server). E.g. `functor -d examples/primitives run native`.
@@ -277,10 +282,18 @@ async fn run(args: &Args) -> io::Result<()> {
             // `build` is the strict typecheck gate — nothing compiles for
             // either target (native interprets the file; wasm ships it as
             // text). `build wasm` then also writes the static web bundle.
-            Command::Build { environment } => {
+            Command::Build { environment, zip } => {
+                // Flag validation precedes the (potentially slow) typecheck.
+                if *zip && !matches!(environment, Some(Environment::Wasm)) {
+                    return Err(io::Error::other(
+                        "--zip applies to `build wasm` (the static web bundle)",
+                    ));
+                }
                 project.build(&working_directory_str)?;
                 match environment {
-                    Some(Environment::Wasm) => project.export_wasm(&working_directory_str),
+                    Some(Environment::Wasm) => {
+                        project.export_wasm(&working_directory_str, *zip)
+                    }
                     _ => Ok(()),
                 }
             }

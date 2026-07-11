@@ -46,3 +46,7 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.adler2]
 opt-level = 3
+# flate2's zlib-rs backend deflates the `build wasm --zip` archive; the ~8MB
+# wasm runtime takes >10s unoptimized vs well under a second optimized.
+[profile.dev.package.zlib-rs]
+opt-level = 3
