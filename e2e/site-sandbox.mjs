@@ -95,6 +95,28 @@ const centerPixel = (frame) =>
       })
   );
 
+// Hash a 32×32 downscale of the whole player canvas (drawn in a rAF callback so
+// it reads the just-rendered buffer). Two equal hashes ~300ms apart = the frame
+// is frozen; a change = it's animating.
+const regionHash = (frame) =>
+  frame.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => {
+          const gl = document.getElementById("canvas");
+          const c = document.createElement("canvas");
+          c.width = 32;
+          c.height = 32;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(gl, 0, 0, 32, 32);
+          const d = ctx.getImageData(0, 0, 32, 32).data;
+          let h = 0;
+          for (let i = 0; i < d.length; i++) h = (h * 31 + d[i]) >>> 0;
+          resolve(h);
+        });
+      })
+  );
+
 const playerFrame = (page) => {
   const frame = page.frames().find((f) => f.url().includes("player.html"));
   if (!frame) throw new Error("player iframe not found");
@@ -117,6 +139,13 @@ const playerFrame = (page) => {
   // clear color rgb(26, 51, 77); "not clear color" = the scene rendered.
   const rendered = Math.abs(pixel[0] - 26) + Math.abs(pixel[1] - 51) + Math.abs(pixel[2] - 77) > 30;
   check("landing hero scene renders", rendered, `center = rgb(${pixel})`);
+
+  // The shared player carries the scrubber into the hero iframe too (hidden
+  // until history, but the element is present).
+  const heroHasScrubber = await playerFrame(page).evaluate(
+    () => !!document.getElementById("scrubber")
+  );
+  check("landing hero player has the scrubber element", heroHasScrubber);
   await page.close();
 }
 
@@ -208,6 +237,79 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   } catch {
     check("docs try-it program loads live in the sandbox", false, href);
   }
+  await page.close();
+}
+
+// --- 8. Time-travel scrubber drives/observes the player via __scrub. ----------
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+  const player = playerFrame(page);
+
+  // The seam appears once the scrubber is wired; history then accrues as the
+  // scene ticks.
+  await player.waitForFunction(() => window.__scrub, { timeout: 10000 });
+  const sandboxHasScrubber = await player.evaluate(
+    () => !!document.getElementById("scrubber")
+  );
+  check("sandbox player has the scrubber element", sandboxHasScrubber);
+
+  await player.waitForFunction(() => window.__scrub.range().length === 2, {
+    timeout: 10000,
+  });
+
+  // The recorded range grows while running.
+  const r0 = await player.evaluate(() => window.__scrub.range());
+  await sleep(500);
+  const r1 = await player.evaluate(() => window.__scrub.range());
+  check("scrubber range grows while running", r1[1] > r0[1], `${r0} -> ${r1}`);
+
+  // Pause freezes both the frame counter AND the pixels.
+  await player.evaluate(() => window.__scrub.togglePause());
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  const f0 = await player.evaluate(() => window.__scrub.frame());
+  const h0 = await regionHash(player);
+  await sleep(300);
+  const f1 = await player.evaluate(() => window.__scrub.frame());
+  const h1 = await regionHash(player);
+  check("pause freezes the frame counter", f0 === f1, `${f0} -> ${f1}`);
+  check("pause freezes the pixels", h0 === h1, `hash ${h0} -> ${h1}`);
+
+  // Seek snaps to a frame within the range.
+  const rng = await player.evaluate(() => window.__scrub.range());
+  const target = Math.round((rng[0] + rng[1]) / 2);
+  await player.evaluate((f) => window.__scrub.seek(f), target);
+  await sleep(150);
+  const seeked = await player.evaluate(() => window.__scrub.frame());
+  check(
+    "seek snaps to a frame within range",
+    seeked >= rng[0] && seeked <= rng[1] && Math.abs(seeked - target) <= 1,
+    `target ${target}, got ${seeked}, range ${rng}`
+  );
+
+  // Step advances the frame by exactly 1 while paused.
+  const before = await player.evaluate(() => window.__scrub.frame());
+  await player.evaluate(() => window.__scrub.step());
+  await sleep(150);
+  const after = await player.evaluate(() => window.__scrub.frame());
+  check(
+    "step advances the frame by exactly 1 while paused",
+    after === before + 1,
+    `${before} -> ${after}`
+  );
+
+  // Resume: frames advance again.
+  await player.evaluate(() => window.__scrub.togglePause());
+  await player.waitForFunction(() => !window.__scrub.paused(), { timeout: 3000 });
+  const rf0 = await player.evaluate(() => window.__scrub.frame());
+  await sleep(400);
+  const rf1 = await player.evaluate(() => window.__scrub.frame());
+  check("resume advances frames again", rf1 > rf0, `${rf0} -> ${rf1}`);
+
   await page.close();
 }
 

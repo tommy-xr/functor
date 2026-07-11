@@ -3,19 +3,67 @@
        index-functor-lang.html (runtime/functor-runtime-web/index-functor-lang.html), except the
        .fun entry comes from the `?game=` query instead of being substituted
        server-side — so one static page can host every example. The input
-       mapping and the postMessage set-source seam are copied from that page;
-       keep them in sync when the runtime's functor_lang_* exports change. -->
+       mapping, the explicit mouse-look button, the time-travel scrubber, and
+       the postMessage set-source seam are copied from that page; keep them in
+       sync when the runtime's functor_lang_* exports change. -->
   <head>
     <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
     <style>
+      /* The scrubber/button chrome matches the site's calm violet theme
+         (site/styles.css :root), but player.html loads no webfonts, so the
+         mono is the ui-monospace system stack. */
+      :root {
+        --scrub-bg: rgba(30, 24, 51, 0.92); /* bg-raised #1e1833 */
+        --scrub-line: #2b2542;
+        --scrub-text: #e9e6f2;
+        --scrub-dim: #9b94b3;
+        --scrub-accent: #41d8e6;
+        --scrub-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0221; }
       /* Fill the frame; the runtime sizes the drawable buffer (and GL
          viewport) to match this displayed size each frame, scaled for HiDPI. */
       #canvas { display: block; width: 100%; height: 100%; }
+      /* Explicit mouse-look toggle. The cursor stays FREE by default so the
+         time-travel scrubber (and the sandbox editor) is usable without the
+         pointer being grabbed on every canvas click; press this (or Esc to
+         release) to control the camera. */
+      #mouselook {
+        position: fixed; top: 10px; left: 10px; z-index: 10;
+        font: 12px/1 var(--scrub-font); padding: 6px 10px; cursor: pointer;
+        color: var(--scrub-text); background: var(--scrub-bg);
+        border: 1px solid var(--scrub-line); border-radius: 6px;
+      }
+      #mouselook:hover { border-color: var(--scrub-accent); }
+      /* The time-travel scrubber — a slim bottom strip of native DOM OUTSIDE
+         the canvas, so its controls never fight the game's pointer handling.
+         Hidden until the runtime has recorded some history. */
+      #scrubber {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+        display: none; align-items: center; gap: 10px;
+        font: 12px/1 var(--scrub-font); color: var(--scrub-text);
+        padding: 8px 12px; background: var(--scrub-bg);
+        border-top: 1px solid var(--scrub-line);
+      }
+      #scrubber button {
+        font: 12px/1 var(--scrub-font); color: var(--scrub-text); cursor: pointer;
+        background: rgba(65, 216, 230, 0.10);
+        border: 1px solid var(--scrub-line); border-radius: 5px; padding: 5px 9px;
+      }
+      #scrubber button:hover { border-color: var(--scrub-accent); }
+      #scrub-slider { flex: 1; min-width: 80px; accent-color: var(--scrub-accent); }
+      #scrub-label { color: var(--scrub-dim); min-width: 118px; text-align: right; }
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
+    <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
+    <div id="scrubber">
+      <button id="scrub-pause">Pause</button>
+      <button id="scrub-step">Step ▸</button>
+      <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
+      <span id="scrub-label">time-travel</span>
+    </div>
     <script type="module">
 
       import init, {
@@ -24,6 +72,12 @@
         functor_lang_mouse_wheel,
         functor_lang_is_running,
         functor_lang_set_source,
+        functor_lang_scene_frame,
+        functor_lang_scene_range,
+        functor_lang_seek_scene,
+        functor_lang_scrub_toggle_pause,
+        functor_lang_scrub_step,
+        functor_lang_scrub_paused,
       } from "./pkg/functor_runtime_web.js";
 
       // The Functor Lang entry, from `?game=<path>` (a path relative to this page).
@@ -81,12 +135,22 @@
           functor_lang_key_event(code, false);
         });
 
-        // Mouse free-look: click the canvas to pointer-lock, accumulate
-        // relative motion so the game's delta logic matches native.
-        canvas.addEventListener("click", () => canvas.requestPointerLock());
+        // Mouse free-look. Pointer Lock is the browser equivalent of the
+        // desktop runtime's cursor capture, giving movementX/Y relative motion.
+        // Entered EXPLICITLY via the "mouse look" button (not on every canvas
+        // click) so the cursor stays free for the time-travel scrubber; Esc
+        // releases the lock (browser default). We accumulate movement into a
+        // running position so the game's "delta = current - lastMouse" works
+        // the same as on native.
+        document
+          .getElementById("mouselook")
+          .addEventListener("click", () => canvas.requestPointerLock());
         let ax = 0;
         let ay = 0;
         document.addEventListener("mousemove", (e) => {
+          // Only drive the camera while in look mode (pointer locked); otherwise
+          // moving the cursor to the scrubber must not rotate the view.
+          if (document.pointerLockElement !== canvas) return;
           ax += e.movementX;
           ay += e.movementY;
           functor_lang_mouse_move(ax, ay);
@@ -96,6 +160,60 @@
           e.preventDefault();
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
         });
+      };
+
+      // The time-travel scrubber. Native DOM controls drive the runtime through
+      // the `functor_lang_scrub_*` exports and poll the published view state each
+      // frame to track the handle. Coalesce drags to one seek per frame, and
+      // don't fight the user's drag by writing the slider value while they hold
+      // it. (Ghost controls are deliberately out of scope here.)
+      const setupScrubber = () => {
+        const el = document.getElementById("scrubber");
+        const label = document.getElementById("scrub-label");
+        const pause = document.getElementById("scrub-pause");
+        const slider = document.getElementById("scrub-slider");
+        const step = document.getElementById("scrub-step");
+
+        let scrubbing = false;
+        let pendingSeek = null;
+        slider.addEventListener("pointerdown", () => (scrubbing = true));
+        window.addEventListener("pointerup", () => (scrubbing = false));
+        slider.addEventListener("input", () => (pendingSeek = Number(slider.value)));
+        pause.addEventListener("click", () => functor_lang_scrub_toggle_pause());
+        step.addEventListener("click", () => functor_lang_scrub_step());
+
+        // Headless test seam: drive/observe the scrubber without the DOM
+        // controls (e2e/site-sandbox.mjs). Thin wrappers over the same exports.
+        window.__scrub = {
+          paused: () => functor_lang_scrub_paused(),
+          frame: () => functor_lang_scene_frame(),
+          range: () => functor_lang_scene_range(),
+          seek: (f) => functor_lang_seek_scene(f),
+          togglePause: () => functor_lang_scrub_toggle_pause(),
+          step: () => functor_lang_scrub_step(),
+        };
+
+        const update = () => {
+          if (pendingSeek !== null) {
+            functor_lang_seek_scene(pendingSeek);
+            pendingSeek = null;
+          }
+          const range = functor_lang_scene_range(); // [] or [lo, hi]
+          if (range.length === 2) {
+            el.style.display = "flex";
+            const lo = range[0], hi = range[1];
+            slider.min = lo;
+            slider.max = hi;
+            const frame = functor_lang_scene_frame();
+            if (!scrubbing) slider.value = frame; // don't tug the handle mid-drag
+            label.textContent = `time-travel · ${frame | 0} / ${hi | 0}`;
+            pause.textContent = functor_lang_scrub_paused() ? "Resume" : "Pause";
+          } else {
+            el.style.display = "none"; // nothing recorded yet
+          }
+          requestAnimationFrame(update);
+        };
+        requestAnimationFrame(update);
       };
 
       // The live-edit seam: the hosting page (the sandbox) posts the full
@@ -127,9 +245,19 @@
 
       init().then(() => {
         // In a deterministic capture (?fixed-time), don't wire up input — a
-        // stray mouse move would turn the camera.
-        const deterministic = new URLSearchParams(window.location.search).has("fixed-time");
-        if (!deterministic) setupInput();
+        // stray mouse move would turn the camera — and skip the scrubber
+        // entirely, so its chrome never appears in a golden capture. Hide the
+        // mouse-look button too (there is no input to drive).
+        const deterministic = params.has("fixed-time");
+        // `?scrubber=0` is an explicit opt-out for the scrubber only (input and
+        // mouse-look stay live).
+        const scrubberOff = params.get("scrubber") === "0";
+        if (deterministic) {
+          document.getElementById("mouselook").style.display = "none";
+        } else {
+          setupInput();
+          if (!scrubberOff) setupScrubber();
+        }
         setupSetSource();
       });
     </script>
