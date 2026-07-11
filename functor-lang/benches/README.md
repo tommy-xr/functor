@@ -120,6 +120,31 @@ when the currying spike lands.
 | `adt.fun` | ADT construct + variant-pattern match over 100k |
 | `record_update.fun` | `{ r with … }` record update threaded through a 100k fold |
 
+## Micro-suite vs the frame bench (which to use when)
+
+This corpus times language **micro-ops under the plain prelude** — perfect for
+isolating an interpreter change, but a *derived* per-frame estimate from it has
+misjudged real game cost before. The windowed runtime's `draw_us` telemetry is
+no substitute: it inflates ~2x on sub-saturated scenes (vsync idle + DVFS
+downclocking between frames), so neither number tells you what a frame truly
+costs on CPU.
+
+For that, use the **macro frame bench** — headless, no GL, engine prelude
+(`Scene.*`/`Camera.*`/`Frame.*` resolve for real), calling a synthwave-shaped
+game's `draw` back-to-back at full clock, reporting µs/frame, µs/cell, and —
+the deterministic, run-to-run-identical metric — **allocations per frame**:
+
+```sh
+cargo run -q --release -p functor_runtime_common --example frame_bench
+```
+
+Use the micro-suite to localize *what* regressed; use the frame bench to judge
+*whether a game cares*. A/B it the same way as the corpus (base ref vs branch,
+same machine, 2-3 runs each). Under background load the median inflates —
+prefer `us/frame(min)` and the alloc columns, which don't. Details in the
+example's doc header
+(`runtime/functor-runtime-common/examples/frame_bench.rs`).
+
 ## Baseline (for orientation only — your numbers will differ)
 
 Apple M3 (Mac15,12), rustc 1.96.0, `--release`:
