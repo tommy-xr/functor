@@ -449,14 +449,11 @@ namespace `Debug` — rename the file"
 }
 
 #[test]
-fn non_identifier_file_stems_are_refused() {
-    let err = load_err(
-        "bad-stem",
-        &[
-            ("game.fun", "let main = () => 0.0\n"),
-            ("my-utils.fun", "let x = 1.0\n"),
-        ],
-    );
+fn non_identifier_entry_stem_is_refused() {
+    // A non-identifier SIBLING is now skipped (see
+    // `non_identifier_fun_siblings_are_skipped`), but the ENTRY file — which is
+    // always loaded — must still name a valid module.
+    let err = load_err("bad-entry-stem", &[("my-utils.fun", "let x = 1.0\n")]);
     assert!(
         err.contains("cannot derive a module name from `my-utils.fun`"),
         "unexpected error: {err}"
@@ -1162,4 +1159,47 @@ fn injected_prelude_types_host_externals() {
         "unexpected: {}",
         diags[0].message
     );
+}
+
+/// Editor temp files and other non-identifier `.fun` stems (`.#game.fun`,
+/// `2d.fun`) are ignored by the loader, not treated as modules — so a stray
+/// temp file next to `game.fun` can't break the load (or hot reload). Their
+/// (deliberately broken) contents are never parsed.
+#[test]
+fn non_identifier_fun_siblings_are_skipped() {
+    let project = load(
+        "skip-temp-siblings",
+        &[
+            ("game.fun", "let main = 1.0\n"),
+            (".#game.fun", "$$ not valid functor-lang $$\n"),
+            ("2d.fun", "also completely broken !!!\n"),
+        ],
+    );
+    let names: Vec<String> = project
+        .sources
+        .files()
+        .iter()
+        .filter_map(|f| f.path.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .collect();
+    // The entry loads; the built-in Net module is always injected.
+    assert!(names.contains(&"game.fun".to_string()), "{names:?}");
+    // Neither skipped sibling contributes a module.
+    assert!(!names.iter().any(|n| n == ".#game.fun"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "2d.fun"), "{names:?}");
+}
+
+/// A well-named sibling still loads normally alongside a skipped temp file —
+/// the filter drops only the non-identifier stems, not real modules.
+#[test]
+fn valid_sibling_loads_beside_a_skipped_temp_file() {
+    let value = run_main(
+        "valid-sibling-beside-temp",
+        &[
+            ("game.fun", "let main = Utils.answer\n"),
+            ("utils.fun", "let answer = 42.0\n"),
+            (".#utils.fun", "garbage that must be ignored\n"),
+        ],
+    );
+    assert_eq!(number(&value), 42.0);
 }
