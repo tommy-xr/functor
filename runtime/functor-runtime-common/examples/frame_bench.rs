@@ -28,13 +28,21 @@
 //!
 //! # What it reports
 //!
-//! Per grid size: us/frame (min + median over the timed iterations), derived
-//! us/cell (from the min — under background load the median inflates but the
-//! min doesn't), and — the deterministic, future-gateable number — allocations and
-//! bytes per `draw` via a counting `#[global_allocator]` local to this binary.
-//! Wall time is noisy; alloc counts are exactly reproducible run-to-run.
+//! Per grid size: us/frame (min + median over a FIXED number of timed frames,
+//! so every run and both sides of an A/B draw from the same sample count),
+//! derived us/cell (from the min — under background load the median inflates
+//! far more), and — the deterministic, future-gateable number — allocations
+//! and bytes per frame via a counting `#[global_allocator]` local to this
+//! binary. Wall time is noisy; alloc counts are exactly reproducible
+//! run-to-run. A "frame" here mirrors the producers' render path: the `draw`
+//! call plus `Frame` extraction and the retained `last_frame` clone the shells
+//! perform (their GL rendering of that frame is out of scope by design).
 //! Report-only: no thresholds, no CI gate (see the micro-suite README for why
 //! raw perf thresholds flake on shared hardware).
+//!
+//! The counting allocator stays enabled during timing; its two relaxed
+//! fetch-adds per allocation cost a few percent on this alloc-heavy workload,
+//! identically on both sides of an A/B.
 //!
 //! # Run it
 //!
@@ -55,7 +63,8 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use functor_lang::Value;
-use functor_runtime_common::functor_lang_prelude::FunctorHost;
+use functor_runtime_common::functor_lang_prelude::{frame_value, FunctorHost};
+use functor_runtime_common::Frame;
 
 // --- Counting allocator (this binary only) --------------------------------
 //
@@ -157,10 +166,10 @@ let draw = (m: float, tts: float) =>
 
 /// Warmup wall-clock before timing begins (caches / branch predictor).
 const WARMUP: Duration = Duration::from_millis(300);
-/// Timed-phase floor: keep drawing until this much wall-clock AND
-/// [`MIN_ITERS`] frames have accumulated, so medians are stable.
-const MIN_TIMED: Duration = Duration::from_millis(1500);
-const MIN_ITERS: usize = 50;
+/// Timed frames per size. FIXED (not a wall-clock budget) so every run — and
+/// both sides of an A/B — draws from the same number of samples; a time
+/// budget would hand faster runs more chances at an anomalously low min.
+const SAMPLES: usize = 200;
 /// Frames the alloc counters are averaged over (they are deterministic, so
 /// this only guards against a miscount, not noise).
 const ALLOC_FRAMES: u64 = 5;
@@ -185,9 +194,13 @@ fn load_session(side: u32) -> (functor_lang::Session, Value) {
     (session, model)
 }
 
-/// One `draw(model, tts)` frame. Fixed `tts` keeps the frame — and therefore
-/// the alloc counts — byte-for-byte identical across iterations and runs.
-fn draw_frame(session: &functor_lang::Session, model: &Value) {
+/// One `draw(model, tts)` frame, mirroring the producers' render path: call
+/// `draw`, extract the `Frame`, and clone it into a retained slot exactly as
+/// the shells' `last_frame` does — so extraction + clone cost is part of the
+/// measured frame, and a non-Frame return fails loudly instead of being timed
+/// as garbage. Fixed `tts` keeps the frame — and therefore the alloc counts —
+/// byte-for-byte identical across iterations and runs.
+fn draw_frame(session: &functor_lang::Session, model: &Value, last_frame: &mut Option<Frame>) {
     let value = session
         .call(
             "draw",
@@ -195,34 +208,41 @@ fn draw_frame(session: &functor_lang::Session, model: &Value) {
             &mut FunctorHost,
         )
         .unwrap_or_else(|e| panic!("draw failed: {}", e.message));
-    black_box(value);
+    let frame = frame_value(&value).unwrap_or_else(|| {
+        panic!(
+            "draw must return Frame.create(camera, scene), got {}",
+            value.kind_name()
+        )
+    });
+    *last_frame = Some(frame.clone());
+    black_box(last_frame);
 }
 
 fn bench_size(side: u32) -> SizeResult {
     let (session, model) = load_session(side);
+    let mut last_frame: Option<Frame> = None;
 
     // Warmup.
     let warm_start = Instant::now();
     while warm_start.elapsed() < WARMUP {
-        draw_frame(&session, &model);
+        draw_frame(&session, &model, &mut last_frame);
     }
 
     // Allocations per frame (deterministic; averaged only as a self-check).
     let count_before = ALLOC_COUNT.load(Relaxed);
     let bytes_before = ALLOC_BYTES.load(Relaxed);
     for _ in 0..ALLOC_FRAMES {
-        draw_frame(&session, &model);
+        draw_frame(&session, &model, &mut last_frame);
     }
     let allocs_per_frame = (ALLOC_COUNT.load(Relaxed) - count_before) / ALLOC_FRAMES;
     let bytes_per_frame = (ALLOC_BYTES.load(Relaxed) - bytes_before) / ALLOC_FRAMES;
 
-    // Timed phase: per-frame wall time (frames are ms-scale, so per-call
-    // Instant reads are far above clock resolution).
-    let mut samples_ns: Vec<u128> = Vec::new();
-    let timed_start = Instant::now();
-    while timed_start.elapsed() < MIN_TIMED || samples_ns.len() < MIN_ITERS {
+    // Timed phase: per-frame wall time over a fixed sample count (frames are
+    // ms-scale, so per-call Instant reads are far above clock resolution).
+    let mut samples_ns: Vec<u128> = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
         let start = Instant::now();
-        draw_frame(&session, &model);
+        draw_frame(&session, &model, &mut last_frame);
         samples_ns.push(start.elapsed().as_nanos());
     }
     samples_ns.sort_unstable();
@@ -278,9 +298,10 @@ fn main() {
         args.iter()
             .map(|a| {
                 let side: u32 = a.parse().unwrap_or(0);
-                if side < 2 {
-                    // Scene.heightmap needs at least a 2x2 grid.
-                    eprintln!("frame_bench: expected grid sides (integers >= 2), got `{a}`");
+                // Scene.heightmap needs at least 2x2; List.grid caps total
+                // cells at 1,000,000, so the largest square side is 1000.
+                if !(2..=1000).contains(&side) {
+                    eprintln!("frame_bench: expected grid sides in 2..=1000, got `{a}`");
                     std::process::exit(2);
                 }
                 side
@@ -303,8 +324,8 @@ fn main() {
             format!("{}x{}", r.side, r.side),
             r.min_us,
             r.median_us,
-            // Derived from MIN: under background load the median inflates but
-            // the min doesn't, and per-cell cost is the A/B slope to trust.
+            // Derived from MIN: under background load the median inflates far
+            // more, and per-cell cost is the A/B slope to trust.
             r.min_us / r.cells as f64,
             r.allocs_per_frame,
             r.bytes_per_frame,

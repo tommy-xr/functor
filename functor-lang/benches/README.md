@@ -140,9 +140,10 @@ cargo run -q --release -p functor_runtime_common --example frame_bench
 
 Use the micro-suite to localize *what* regressed; use the frame bench to judge
 *whether a game cares*. A/B it the same way as the corpus (base ref vs branch,
-same machine, 2-3 runs each). Under background load the median inflates —
-prefer `us/frame(min)` and the alloc columns, which don't. Details in the
-example's doc header
+same machine, 2-3 runs each; the timed sample count per size is fixed, so runs
+draw from comparable samples). Under background load the median inflates badly
+— prefer `us/frame(min)` (least contaminated, though not immune) and the alloc
+columns (exact). Details in the example's doc header
 (`runtime/functor-runtime-common/examples/frame_bench.rs`).
 
 ## Baseline (for orientation only — your numbers will differ)
