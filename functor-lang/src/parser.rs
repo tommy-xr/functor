@@ -92,9 +92,11 @@ fn parse_impl(src: &str, base: usize, interface: bool) -> Result<Program, ParseE
 
 /// Nesting cap for the recursive entry points: pathological input
 /// (`((((…))))`) must fail as a clean spanned error, not a stack overflow —
-/// Functor Lang sources may be machine-generated. Each nesting level costs ~10 debug
-/// frames, so the cap must fit a 2 MiB test-thread stack with margin.
-const MAX_DEPTH: usize = 100;
+/// Functor Lang sources may be machine-generated. Each nesting level costs ~13 debug
+/// frames (the operator-precedence descent — pipeline → `||` → `&&` → `not` →
+/// comparison → … → primary), so the cap must fit a 2 MiB test-thread stack
+/// with margin.
+const MAX_DEPTH: usize = 76;
 
 struct Parser {
     tokens: Vec<Token>,
@@ -840,14 +842,14 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
     }
 
     fn pipeline(&mut self) -> Result<Expr, ParseError> {
-        let head = self.comparison()?;
+        let head = self.logic_or()?;
         if self.peek_kind() != &TokenKind::PipeGt {
             return Ok(head);
         }
         let mut stages = Vec::new();
         while self.peek_kind() == &TokenKind::PipeGt {
             self.bump();
-            stages.push(self.comparison()?);
+            stages.push(self.logic_or()?);
         }
         let span = head
             .span
@@ -859,6 +861,66 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             },
             span,
         })
+    }
+
+    /// `a || b` — left-assoc, looser than `&&`. Short-circuit semantics live
+    /// in eval; the parser only records the tree. The loop is inlined (rather
+    /// than a shared helper) to keep the per-level frame cost — which the
+    /// `MAX_DEPTH` guard is calibrated against — small.
+    fn logic_or(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.logic_and()?;
+        while self.peek_kind() == &TokenKind::PipePipe {
+            self.bump();
+            let rhs = self.logic_and()?;
+            let span = lhs.span.to(rhs.span);
+            lhs = Expr {
+                kind: ExprKind::Logical {
+                    op: LogicalOp::Or,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    /// `a && b` — left-assoc, tighter than `||`, looser than `not`/comparison.
+    fn logic_and(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.logic_not()?;
+        while self.peek_kind() == &TokenKind::AmpAmp {
+            self.bump();
+            let rhs = self.logic_not()?;
+            let span = lhs.span.to(rhs.span);
+            lhs = Expr {
+                kind: ExprKind::Logical {
+                    op: LogicalOp::And,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    /// `not e` — prefix boolean negation, binding looser than comparison (so
+    /// `not a == b` is `not (a == b)`) but tighter than `&&`. Iterative so a
+    /// `not not not …` chain can't grow the host stack past the depth guard.
+    fn logic_not(&mut self) -> Result<Expr, ParseError> {
+        let mut not_spans = Vec::new();
+        while self.peek_kind() == &TokenKind::Not {
+            not_spans.push(self.bump().span);
+        }
+        let mut expr = self.comparison()?;
+        for not_span in not_spans.into_iter().rev() {
+            let span = not_span.to(expr.span);
+            expr = Expr {
+                kind: ExprKind::Not(Box::new(expr)),
+                span,
+            };
+        }
+        Ok(expr)
     }
 
     fn comparison(&mut self) -> Result<Expr, ParseError> {

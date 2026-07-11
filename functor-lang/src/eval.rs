@@ -526,6 +526,34 @@ impl Interp<'_> {
                 }
                 Ok(acc)
             }
+            // Short-circuit: an operand is evaluated only when the accumulator
+            // so far doesn't already decide the result (`false && _` is false,
+            // `true || _` is true). Both operands must be bools. Left-assoc
+            // chains nest down the lhs and the parser builds them iteratively
+            // (no depth guard), so walk the spine iteratively too — like the
+            // Binary arm above, a flat `a && b && …` chain must not consume
+            // host stack per term. Each spine node carries its own op, so a
+            // mixed `a && b || c` folds correctly.
+            ExprKind::Logical { .. } => {
+                use crate::ast::LogicalOp;
+                let mut spine = Vec::new();
+                let mut leaf = expr;
+                while let ExprKind::Logical { op, lhs, rhs } = &leaf.kind {
+                    spine.push((*op, rhs.as_ref()));
+                    leaf = lhs;
+                }
+                let mut acc = as_bool(&self.eval(leaf, env)?, leaf.span)?;
+                for (op, rhs) in spine.into_iter().rev() {
+                    let decided = match op {
+                        LogicalOp::And => !acc,
+                        LogicalOp::Or => acc,
+                    };
+                    if !decided {
+                        acc = as_bool(&self.eval(rhs, env)?, rhs.span)?;
+                    }
+                }
+                Ok(Value::Bool(acc))
+            }
             ExprKind::Neg(inner) => match self.eval(inner, env)? {
                 Value::Number(n) => Ok(Value::Number(-n)),
                 other => Err(RunError {
@@ -533,6 +561,9 @@ impl Interp<'_> {
                     span: expr.span,
                 }),
             },
+            ExprKind::Not(inner) => {
+                Ok(Value::Bool(!as_bool(&self.eval(inner, env)?, inner.span)?))
+            }
             // A nullary constructor used bare IS the variant value; a
             // parameterful one is a callable constructor (so `List.map(xs,
             // Circle)` works like any function argument).
@@ -1080,6 +1111,18 @@ most 1000000 cells"
                 ),
             },
         }
+    }
+}
+
+/// Coerce a value to a bool for the boolean operators (`&&`, `||`, `not`),
+/// erroring at `span` on anything else.
+fn as_bool(value: &Value, span: Span) -> Result<bool, RunError> {
+    match value {
+        Value::Bool(b) => Ok(*b),
+        other => Err(RunError {
+            message: format!("boolean operator needs a bool, got {}", other.kind_name()),
+            span,
+        }),
     }
 }
 

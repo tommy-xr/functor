@@ -21,6 +21,7 @@ pub enum TokenKind {
     With,
     In,
     Match,
+    Not,
     LParen,
     RParen,
     LBrace,
@@ -37,7 +38,9 @@ pub enum TokenKind {
     EqEq,
     FatArrow,
     PipeGt,
+    PipePipe,
     Pipe,
+    AmpAmp,
     Plus,
     Minus,
     Star,
@@ -69,6 +72,7 @@ pub fn describe(kind: &TokenKind) -> String {
         With => "`with`".to_string(),
         In => "`in`".to_string(),
         Match => "`match`".to_string(),
+        Not => "`not`".to_string(),
         LParen => "`(`".to_string(),
         RParen => "`)`".to_string(),
         LBrace => "`{`".to_string(),
@@ -85,7 +89,9 @@ pub fn describe(kind: &TokenKind) -> String {
         EqEq => "`==`".to_string(),
         FatArrow => "`=>`".to_string(),
         PipeGt => "`|>`".to_string(),
+        PipePipe => "`||`".to_string(),
         Pipe => "`|`".to_string(),
+        AmpAmp => "`&&`".to_string(),
         Plus => "`+`".to_string(),
         Minus => "`-`".to_string(),
         Star => "`*`".to_string(),
@@ -215,12 +221,21 @@ pub fn lex(src: &str, base: usize) -> Result<Vec<Token>, ParseError> {
                     i += 2;
                     TokenKind::PipeGt
                 }
+                Some(b'|') => {
+                    i += 2;
+                    TokenKind::PipePipe
+                }
                 // Bare `|` begins a variant alternative or a match arm.
                 _ => {
                     i += 1;
                     TokenKind::Pipe
                 }
             },
+            // `&&` is the only use of `&` — a bare `&` is a lex error.
+            b'&' if bytes.get(i + 1) == Some(&b'&') => {
+                i += 2;
+                TokenKind::AmpAmp
+            }
             b'"' => {
                 let (kind, next) = lex_string(src, i, base)?;
                 i = next;
@@ -267,6 +282,7 @@ pub fn lex(src: &str, base: usize) -> Result<Vec<Token>, ParseError> {
                     "with" => TokenKind::With,
                     "in" => TokenKind::In,
                     "match" => TokenKind::Match,
+                    "not" => TokenKind::Not,
                     name => TokenKind::Ident(name.to_string()),
                 }
             }

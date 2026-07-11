@@ -353,7 +353,7 @@ fn collect(expr: &Expr, def: &str, path: &mut Vec<String>, index: &mut ModuleInd
                 seg(arg, format!(":{i}"), path, index);
             }
         }
-        ExprKind::Binary { lhs, rhs, .. } => {
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::Logical { lhs, rhs, .. } => {
             seg(lhs, "lhs".to_string(), path, index);
             seg(rhs, "rhs".to_string(), path, index);
         }
@@ -368,7 +368,7 @@ fn collect(expr: &Expr, def: &str, path: &mut Vec<String>, index: &mut ModuleInd
         }
         // Single-child edges are transparent: uniqueness is preserved, and
         // e.g. negating or field-accessing around a lambda keeps its id.
-        ExprKind::Neg(inner) => collect(inner, def, path, index),
+        ExprKind::Neg(inner) | ExprKind::Not(inner) => collect(inner, def, path, index),
         ExprKind::FieldAccess { object, .. } => collect(object, def, path, index),
         ExprKind::Number(_)
         | ExprKind::String(_)
@@ -502,11 +502,11 @@ pub(crate) fn each_child<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
                 f(arg);
             }
         }
-        ExprKind::Binary { lhs, rhs, .. } => {
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::Logical { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
         }
-        ExprKind::Neg(inner) => f(inner),
+        ExprKind::Neg(inner) | ExprKind::Not(inner) => f(inner),
         ExprKind::Match { scrutinee, arms } => {
             f(scrutinee);
             for arm in arms {

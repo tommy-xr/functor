@@ -17,7 +17,7 @@ bug found in the same exercise was fixed on the spot
 - [ ] Pure seeded randomness (`Random.step(seed) -> (value, seed)` or
       `Effect.randomList`) — `Effect.random`'s one-float-per-update forces
       sin-hash noise, whose correlated streams caused a real visual bug.
-- [ ] Boolean operators `&&` / `||` / `not` (compound predicates are
+- [x] Boolean operators `&&` / `||` / `not` (compound predicates are
       match-pyramids / hand-rolled helpers today).
 - [ ] List builtins: `length`, `append`, `flatten`, `any`/`all`, `reverse`,
       `isEmpty` — naive recursive versions blow the eval-depth cap at n≈60;

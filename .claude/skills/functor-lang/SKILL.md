@@ -107,8 +107,13 @@ let main = () => report([12.0, 3.5, 40.0])    // zero-param main is run's entry 
 ```
 
 Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
-loosest), unary `-`. There is **no** if/else, loops, or string-concatenation
-operator — iteration is `List.map/filter/fold`,
+loosest), unary `-`, and the **short-circuiting booleans** `&&` / `||` plus
+prefix `not`. Precedence (tightest→loosest): comparisons > `not` > `&&` > `||`
+> pipelines. So `not a == b` is `not (a == b)`, `a || b && c` is
+`a || (b && c)`, and all three operands are checked as `bool`. `&&`/`||`
+short-circuit — `false && e` / `true || e` never evaluate `e` (so
+`isReady && risky()` is safe). There is **no** if/else, loops, or
+string-concatenation operator — iteration is `List.map/filter/fold`,
 and the conditional is a **bool-literal match**
 (`match x > 3.0 with | true => a | false => b`). Tuples are structural:
 `(1.0, "a") == (1.0, "a")`; tuple types annotate as `(float, string)` and

@@ -191,8 +191,19 @@ pub enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// `a && b` / `a || b` — short-circuiting boolean operators. Kept distinct
+    /// from [`Self::Binary`] because the right operand is evaluated lazily
+    /// (only when the left doesn't already decide the result), so they can't
+    /// ride the eager left-assoc binary spine.
+    Logical {
+        op: LogicalOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// Unary minus.
     Neg(Box<Expr>),
+    /// `not e` — boolean negation (prefix operator).
+    Not(Box<Expr>),
     /// `match expr with | pattern => expr | …` — first matching arm wins,
     /// top to bottom. Arm bodies are full expressions, so a nested `match`
     /// inside an arm greedily consumes the following `|` arms — parenthesize
@@ -273,4 +284,12 @@ pub enum BinOp {
     Lt,
     Gt,
     Eq,
+}
+
+/// The short-circuiting boolean operators. `And` binds tighter than `Or`;
+/// both are looser than comparisons and `not` (see [`crate::parser`]).
+#[derive(Debug, Clone, Copy)]
+pub enum LogicalOp {
+    And,
+    Or,
 }

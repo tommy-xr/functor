@@ -1440,3 +1440,39 @@ fn forgotten_type_equals_is_diagnosed() {
         );
     }
 }
+
+// --- Boolean operators typecheck as Bool ---
+
+#[test]
+fn bool_operators_check_clean() {
+    assert_clean(
+        "let f = (a: bool, b: bool): bool => a && b || not a\n\
+         let g = (x: float): bool => x > 0.0 && not (x == 1.0)",
+    );
+}
+
+#[test]
+fn logical_operand_must_be_bool() {
+    let (message, line, _) = single_diag("let f = () => 1.0 && true");
+    assert_eq!(message, "`&&`/`||` needs bool operands, got float");
+    assert_eq!(line, 1);
+}
+
+#[test]
+fn not_operand_must_be_bool() {
+    let (message, _, _) = single_diag("let f = () => not 3.0");
+    assert_eq!(message, "`not` needs bool operands, got float");
+}
+
+#[test]
+fn logical_result_is_bool() {
+    // The `&&` result feeds a float context — the mismatch proves it typed
+    // as Bool, not gradual Unknown.
+    let (message, _, _) = single_diag(
+        "let f = (a: bool, b: bool): float => a && b",
+    );
+    assert!(
+        message.contains("bool") && message.contains("float"),
+        "unexpected: {message}"
+    );
+}

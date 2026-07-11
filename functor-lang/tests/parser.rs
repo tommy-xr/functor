@@ -437,3 +437,64 @@ fn error_spread_needs_a_leading_element() {
         )
     );
 }
+
+// --- Boolean operators `&&` / `||` / `not` ---
+
+/// Parse `let v = <expr>` and hand back the expression's kind.
+fn parsed_value(src: &str) -> ExprKind {
+    let program = functor_lang::parse(src).unwrap();
+    let Item::Let(decl) = program.items.into_iter().next().unwrap() else {
+        panic!("expected a let declaration");
+    };
+    decl.value.kind
+}
+
+#[test]
+fn and_binds_tighter_than_or() {
+    // `a || b && c` parses as `a || (b && c)`.
+    use functor_lang::ast::LogicalOp;
+    let ExprKind::Logical { op: LogicalOp::Or, rhs, .. } = parsed_value("let v = a || b && c")
+    else {
+        panic!("expected an `||` at the root");
+    };
+    assert!(
+        matches!(rhs.kind, ExprKind::Logical { op: LogicalOp::And, .. }),
+        "expected `&&` on the right of `||`, got {:?}",
+        rhs.kind
+    );
+}
+
+#[test]
+fn logical_is_looser_than_comparison() {
+    // `a > b && c > d` parses as `(a > b) && (c > d)`.
+    use functor_lang::ast::LogicalOp;
+    let ExprKind::Logical { op: LogicalOp::And, lhs, .. } =
+        parsed_value("let v = a > b && c > d")
+    else {
+        panic!("expected an `&&` at the root");
+    };
+    assert!(
+        matches!(lhs.kind, ExprKind::Binary { .. }),
+        "expected a comparison on the left of `&&`, got {:?}",
+        lhs.kind
+    );
+}
+
+#[test]
+fn not_is_looser_than_comparison() {
+    // `not a == b` parses as `not (a == b)`, so the child is the comparison.
+    let ExprKind::Not(inner) = parsed_value("let v = not a == b") else {
+        panic!("expected a `not` at the root");
+    };
+    assert!(
+        matches!(inner.kind, ExprKind::Binary { .. }),
+        "expected a comparison under `not`, got {:?}",
+        inner.kind
+    );
+}
+
+#[test]
+fn bare_ampersand_is_a_lex_error() {
+    let (message, _, _) = parse_err("let v = a & b");
+    assert_eq!(message, "unexpected character `&`");
+}
