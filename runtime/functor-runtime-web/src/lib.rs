@@ -919,8 +919,16 @@ async fn run_async() -> Result<(), JsValue> {
                 .unwrap()
                 .dyn_into::<web_sys::HtmlCanvasElement>()
                 .unwrap();
+            // Ask for a lean context: no MSAA (the canvas is sized to CSS px x
+            // devicePixelRatio, so on retina 4x multisampling a ~2880x1800
+            // backbuffer every frame is a GPU burner), an opaque backbuffer (no
+            // alpha compositing with the page), and the discrete GPU.
+            let attrs = web_sys::WebGlContextAttributes::new();
+            attrs.set_antialias(false);
+            attrs.set_alpha(false);
+            attrs.set_power_preference(web_sys::WebGlPowerPreference::HighPerformance);
             let webgl2_context = canvas
-                .get_context("webgl2")
+                .get_context_with_context_options("webgl2", &attrs)
                 .unwrap()
                 .unwrap()
                 .dyn_into::<web_sys::WebGl2RenderingContext>()
