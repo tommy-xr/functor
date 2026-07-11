@@ -2,6 +2,8 @@ use std::io;
 
 use warp::{http::Response, Filter};
 
+use super::bundle::project_file_urls;
+
 pub struct WasmDevServer;
 
 // pub(crate): the static `build wasm` exporter (util::wasm_export) writes
@@ -37,29 +39,6 @@ pub(crate) fn render_functor_lang_index(entry: &str, files: &[String]) -> String
     INDEX_FUNCTOR_LANG_HTML
         .replace("\"__FUNCTOR_LANG_ENTRY__\"", &entry_literal)
         .replace("\"__FUNCTOR_LANG_PROJECT_FILES__\"", &files_literal)
-}
-
-/// The project's file list as URLs relative to the served directory (entry
-/// first, then sibling `.fun`/`.funi` files) — the same set the desktop
-/// producer links (`functor_lang::project::project_files`), made relative so the web
-/// runtime fetches each from the dev server's filesystem route. Falls back to
-/// just the entry if the directory can't be scanned.
-pub(crate) fn project_file_urls(working_directory: &str, entry: &str) -> Vec<String> {
-    let entry_path = std::path::Path::new(working_directory).join(entry);
-    let paths = match functor_lang::project::project_files(&entry_path) {
-        Ok(paths) => paths,
-        Err(_) => return vec![entry.to_string()],
-    };
-    let root = std::path::Path::new(working_directory);
-    paths
-        .iter()
-        .map(|p| {
-            p.strip_prefix(root)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
-        .collect()
 }
 
 impl WasmDevServer {

@@ -21,10 +21,11 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 
 use crate::output::{emit, Event, Severity};
-// `util` (the shell-command runner + wasm dev server) is only used by the
-// `web`-gated `run wasm` path.
+use crate::util;
+// The shell-command runner + wasm dev server are only used by the
+// `web`-gated `run wasm` path; the bundle/native exporters are ungated.
 #[cfg(feature = "web")]
-use crate::util::{self, ShellCommand, WasmDevServer};
+use crate::util::{ShellCommand, WasmDevServer};
 use crate::Environment;
 
 /// The Functor Lang project settings read from `functor.json`.
@@ -282,58 +283,21 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         }
         #[cfg(feature = "web")]
         {
-            self.entry_path(working_directory)?;
-            // Same constraint as `run wasm`: the bundle carries the project
-            // directory, so the entry must live inside it.
-            if entry_escapes_project(&self.entry) {
-                return Err(Error::other(format!(
-                    "functor-lang on wasm ships the project directory, so `entry` must be a \
-relative path inside it (got {})",
-                    self.entry
-                )));
-            }
+            self.bundle_entry_path(working_directory)?;
             let export = util::export_functor_lang_wasm(working_directory, &self.entry)?;
-            for name in &export.shadowed {
-                emit(Event::Warning {
-                    message: format!(
-                        "project file `{name}` was not copied — that name is reserved for the \
-bundle's runtime files"
-                    ),
-                });
-            }
-            for link in &export.skipped_symlinks {
-                emit(Event::Warning {
-                    message: format!(
-                        "symlinked directory `{link}` was not copied into the bundle \
-(following it could recurse or pull in files outside the project)"
-                    ),
-                });
-            }
-            for asset in &export.missing_assets {
-                emit(Event::Warning {
-                    message: format!(
-                        "asset \"{asset}\" is referenced in the source but won't be in the bundle \
-(missing from the project dir, or an absolute/`..` path) — it would load as the empty fallback"
-                    ),
-                });
-            }
+            emit_staging_warnings(&export.staged);
             emit(Event::Info {
                 message: format!(
                     "exported static web bundle to {} ({} project files, {:.1} MB + {:.1} MB runtime) \
 — zip the folder for itch.io (HTML5), or serve it from any static host",
                     export.out_dir.display(),
-                    export.file_count,
-                    export.project_bytes as f64 / 1e6,
+                    export.staged.file_count,
+                    export.staged.project_bytes as f64 / 1e6,
                     export.runtime_bytes as f64 / 1e6,
                 ),
             });
             if zip {
-                // Name the archive after the project directory; `-d .` and
-                // friends need the canonical path to have a file name.
-                let name = std::fs::canonicalize(working_directory)?
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "game".to_string());
+                let name = crate::util::bundle::project_name(Path::new(working_directory));
                 let zip_path = Path::new(working_directory)
                     .join("dist")
                     .join(format!("{name}-web.zip"));
@@ -349,6 +313,51 @@ HTML5 game (set \"This file will be played in the browser\")",
             }
             Ok(())
         }
+    }
+
+    /// `build native`, after the typecheck gate: write a runnable native
+    /// bundle in `dist/native/<os>-<arch>/` — a copy of THIS `functor`
+    /// binary renamed after the project (the desktop runtime is built in;
+    /// launched bare next to its `functor.json` it boots the game — see
+    /// `bundled_invocation` in main.rs) plus the same staged project file
+    /// set the web export ships. Zip the folder to share a playable build
+    /// for this platform.
+    pub fn export_native(&self, working_directory: &str) -> Result<(), Error> {
+        self.bundle_entry_path(working_directory)?;
+        let exe = std::env::current_exe()?;
+        let export = util::export_functor_lang_native(working_directory, &self.entry, &exe)?;
+        emit_staging_warnings(&export.staged);
+        emit(Event::Info {
+            message: format!(
+                "exported native bundle to {} ({} project files, {:.1} MB + the {:.1} MB `{}` \
+binary) — run it, or zip the folder to share (this platform only)",
+                export.out_dir.display(),
+                export.staged.file_count,
+                export.staged.project_bytes as f64 / 1e6,
+                export.binary_bytes as f64 / 1e6,
+                export
+                    .binary_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            ),
+        });
+        Ok(())
+    }
+
+    /// The entry, validated for bundling: it must exist AND live inside the
+    /// project directory — every bundle (and the wasm dev server) carries
+    /// exactly the project dir, so an escaping entry can never ship.
+    fn bundle_entry_path(&self, working_directory: &str) -> Result<PathBuf, Error> {
+        let path = self.entry_path(working_directory)?;
+        if entry_escapes_project(&self.entry) {
+            return Err(Error::other(format!(
+                "a bundle ships the project directory, so `entry` must be a relative path \
+inside it (got {})",
+                self.entry
+            )));
+        }
+        Ok(path)
     }
 
     /// Serve the project at 127.0.0.1:8080 with the Functor Lang index page (docs/
@@ -429,6 +438,35 @@ relative path inside it (got {})",
     }
 }
 
+/// The user-facing warnings for everything the staging copy skipped or
+/// couldn't find — shared verbatim by the wasm and native exports.
+fn emit_staging_warnings(staged: &crate::util::bundle::StagedBundle) {
+    for name in &staged.shadowed {
+        emit(Event::Warning {
+            message: format!(
+                "project file `{name}` was not copied — that name is reserved for the \
+bundle's own files"
+            ),
+        });
+    }
+    for link in &staged.skipped_symlinks {
+        emit(Event::Warning {
+            message: format!(
+                "symlinked directory `{link}` was not copied into the bundle \
+(following it could recurse or pull in files outside the project)"
+            ),
+        });
+    }
+    for asset in &staged.missing_assets {
+        emit(Event::Warning {
+            message: format!(
+                "asset \"{asset}\" is referenced in the source but won't be in the bundle \
+(missing from the project dir, or an absolute/`..` path) — it would load as the empty fallback"
+            ),
+        });
+    }
+}
+
 /// Minimal HTTP POST over std::net — one dependency-free request to the
 /// runner's tiny_http server. Returns (status, body). `Connection: close`
 /// keeps the read side trivial (read to EOF, split headers off).
@@ -476,16 +514,15 @@ fn nth_line(src: &str, line: usize) -> Option<String> {
         .map(str::to_string)
 }
 
-/// True when `entry` can't be served by the wasm dev server, which roots at
-/// the project directory: absolute paths and any `..` component escape it.
-#[cfg(feature = "web")]
+/// True when `entry` escapes the project directory — which the wasm dev
+/// server serves and every bundle ships, so such an entry can't be served
+/// or exported: absolute paths and any `..` component escape it.
 fn entry_escapes_project(entry: &str) -> bool {
     Path::new(entry).is_absolute() || entry.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "web")]
     use super::entry_escapes_project;
     use super::nth_line;
 
@@ -504,14 +541,12 @@ mod tests {
         assert_eq!(nth_line("", 1), None);
     }
 
-    #[cfg(feature = "web")]
     #[test]
     fn entries_inside_the_project_are_servable() {
         assert!(!entry_escapes_project("game.fun"));
         assert!(!entry_escapes_project("src/game.fun"));
     }
 
-    #[cfg(feature = "web")]
     #[test]
     fn escaping_entries_are_rejected() {
         assert!(entry_escapes_project("../shared/game.fun"));

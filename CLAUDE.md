@@ -144,7 +144,11 @@ Under the hood: `build` typechecks the whole `.fun` project (diagnostics are err
 then also exports a **self-contained static web bundle** to `<project>/dist/web` — the rendered
 host page + the embedded web runtime + a copy of the project directory (hidden files and `dist/`
 excluded), with a warn-only lint for string-literal asset references that won't be in the bundle.
-Zip that folder for itch.io (HTML5) or serve it from any static host. `run native`
+Zip that folder for itch.io (HTML5) or serve it from any static host — `--zip` writes
+`dist/<project>-web.zip` (itch layout) for you. `build native` exports a **runnable native
+bundle** to `<project>/dist/native/<os>-<arch>/`: a copy of the running `functor` binary renamed
+after the project + the same staged file set; launching that binary bare (or with runner flags
+like `--capture-frame`) boots the game from its own directory. `run native`
 drives the built-in desktop runtime in-process from the game dir; it **interprets** the
 `.fun` each frame — nothing compiles. `run wasm` serves the project directory: the `.fun` ships as
 text and is interpreted by the embedded web runtime. `develop` is `run` (hot-reload is built in; on

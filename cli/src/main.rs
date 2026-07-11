@@ -83,8 +83,10 @@ enum Command {
     },
     /// Typecheck the Functor Lang project (the strict build gate — diagnostics are
     /// errors). `build wasm` also exports a self-contained static web bundle
-    /// to `dist/web/` (zip it for itch.io, or serve from any static host).
-    /// E.g. `functor -d examples/primitives build`.
+    /// to `dist/web/` (zip it for itch.io, or serve from any static host);
+    /// `build native` exports a runnable bundle to `dist/native/<os>-<arch>/`
+    /// (this binary named after the project + the game — launching it bare
+    /// starts the game). E.g. `functor -d examples/primitives build`.
     Build {
         #[arg(value_enum)]
         environment: Option<Environment>,
@@ -179,7 +181,18 @@ enum InspectTarget {
 #[tokio::main]
 async fn main() -> tokio::io::Result<()> {
     let started = Instant::now();
-    let args = Args::parse();
+    // Anything that parses as a CLI invocation IS one — even next to a
+    // bundle's functor.json (`./game --verbose build native` stays CLI).
+    // Only when clap rejects the args (a bare double-click, or runner flags
+    // like `--capture-frame`) does the bundled-game boot get a look; with
+    // no bundle context, the clap error/help prints as usual.
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(clap_error) => match bundled_invocation() {
+            Some(bundled) => bundled,
+            None => clap_error.exit(),
+        },
+    };
 
     output::init(
         args.json,
@@ -294,7 +307,10 @@ async fn run(args: &Args) -> io::Result<()> {
                     Some(Environment::Wasm) => {
                         project.export_wasm(&working_directory_str, *zip)
                     }
-                    _ => Ok(()),
+                    Some(Environment::Native) => {
+                        project.export_native(&working_directory_str)
+                    }
+                    None => Ok(()),
                 }
             }
             Command::Run {
@@ -349,6 +365,49 @@ async fn run(args: &Args) -> io::Result<()> {
         Command::Inspect { .. } => unreachable!(),
         // Handled earlier (right after functor.json validation).
         Command::Import => unreachable!(),
+    }
+}
+
+/// The bundled-game boot (`build native` output): when THIS binary sits
+/// next to a `functor.json` — the layout the native export writes — and
+/// clap rejected the invocation as CLI args, a bare launch (a double-click)
+/// or one that starts with a `-`/`--` flag (runner args like
+/// `--capture-frame`) synthesizes `run native` on the binary's own
+/// directory, forwarding those flags to the runtime. `--help`/`--version`
+/// keep their CLI meaning even inside a bundle. Returns None for every
+/// non-bundle context (a dev `target/debug/functor` has no adjacent
+/// functor.json).
+fn bundled_invocation() -> Option<Args> {
+    let raw: Vec<String> = env::args().skip(1).collect();
+    if !is_bundled_launch(&raw) {
+        return None;
+    }
+    let exe = env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    if !exe_dir.join("functor.json").is_file() {
+        return None;
+    }
+    Some(Args {
+        dir: Some(exe_dir.to_path_buf()),
+        json: false,
+        quiet: false,
+        no_color: false,
+        ascii: false,
+        verbose: false,
+        command: Command::Run {
+            environment: Some(Environment::Native),
+            runner_args: raw,
+        },
+    })
+}
+
+/// Bare, or flags only — and not a CLI meta-flag.
+fn is_bundled_launch(raw: &[String]) -> bool {
+    match raw.first() {
+        None => true,
+        Some(first) => {
+            first.starts_with('-') && !matches!(first.as_str(), "--help" | "-h" | "--version" | "-V")
+        }
     }
 }
 
@@ -449,9 +508,28 @@ fn get_working_directory(args: &Args) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{run, Args};
+    use super::{is_bundled_launch, run, Args};
     use clap::Parser;
     use std::fs;
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn bare_and_flag_only_launches_are_bundled() {
+        assert!(is_bundled_launch(&[]));
+        assert!(is_bundled_launch(&strings(&["--capture-frame", "f.png"])));
+        assert!(is_bundled_launch(&strings(&["--fixed-time", "2"])));
+    }
+
+    #[test]
+    fn subcommands_and_cli_meta_flags_stay_cli() {
+        assert!(!is_bundled_launch(&strings(&["run", "native"])));
+        assert!(!is_bundled_launch(&strings(&["build", "wasm"])));
+        assert!(!is_bundled_launch(&strings(&["--help"])));
+        assert!(!is_bundled_launch(&strings(&["-V"])));
+    }
 
     #[tokio::test]
     async fn init_dispatches_before_metadata_validation_and_defaults_to_3d() {
