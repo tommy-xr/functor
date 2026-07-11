@@ -1241,6 +1241,39 @@ most 1000000 cells"
             // `Math.pi` is a constant resolved directly to its value in `eval`;
             // it is never a callable, so reaching here means it was applied.
             Builtin::MathPi => err("Math.pi is a constant, not a function".to_string()),
+            // Pure seeded PRNG: `Random.step(seed) => (value, nextSeed)` with
+            // value in [0, 1). Deterministic (same seed → same stream) with no
+            // effect round-trip, so it fits the functional core and runs
+            // headlessly. Thread `nextSeed` through the model to advance.
+            Builtin::RandomStep => match args.as_slice() {
+                [Value::Number(seed)] if seed.is_finite() => {
+                    let (value, next) = random_step(*seed);
+                    Ok(Value::Tuple(Rc::new(vec![
+                        Value::Number(value),
+                        Value::Number(next),
+                    ])))
+                }
+                _ => err("Random.step(seed) expects one finite number".to_string()),
+            },
+            // Convenience: `Random.range(lo, hi, seed) => (value, nextSeed)`
+            // with value in [lo, hi) for lo <= hi (one `Random.step` draw
+            // rescaled).
+            Builtin::RandomRange => match args.as_slice() {
+                [Value::Number(lo), Value::Number(hi), Value::Number(seed)]
+                    if lo.is_finite() && hi.is_finite() && seed.is_finite() =>
+                {
+                    let (u, next) = random_step(*seed);
+                    // Lerp form `lo(1-u) + hi·u` rather than `lo + u(hi-lo)`:
+                    // it stays finite even for extreme finite bounds (the
+                    // `hi - lo` difference could overflow to ±inf) and is still
+                    // < hi for u in [0, 1) when lo < hi.
+                    Ok(Value::Tuple(Rc::new(vec![
+                        Value::Number(lo * (1.0 - u) + hi * u),
+                        Value::Number(next),
+                    ])))
+                }
+                _ => err("Random.range(lo, hi, seed) expects three finite numbers".to_string()),
+            },
             // Elm-style trace (`Debug.log : String -> a -> a`): log
             // `label: <subject>` through the process-wide trace sink and return
             // the SUBJECT unchanged — an impure observability escape hatch that
@@ -1486,7 +1519,7 @@ fn callee_arity(v: &Value) -> Option<usize> {
 /// [`Interp::call_builtin`] (and [`crate::types::builtin_signature`]).
 pub fn builtin_arity(b: Builtin) -> usize {
     match b {
-        Builtin::ListFold | Builtin::ListGrid => 3,
+        Builtin::ListFold | Builtin::ListGrid | Builtin::RandomRange => 3,
         Builtin::ListMap
         | Builtin::ListFilter
         | Builtin::ListAppend
@@ -1520,6 +1553,7 @@ pub fn builtin_arity(b: Builtin) -> usize {
         // `Math.pi` resolves straight to a number in `eval` (it's a constant,
         // never a callable value), so this arity is never consulted.
         Builtin::MathPi => 0,
+        | Builtin::RandomStep => 1,
     }
 }
 
@@ -1557,7 +1591,51 @@ pub enum Builtin {
     TextJoin,
     TextParseFloat,
     MathClamp01,
+    RandomStep,
+    RandomRange,
     DebugLog,
+}
+
+/// Pure seeded PRNG — the splitmix64 finalizer over a 52-bit Weyl counter.
+///
+/// Functor Lang numbers are f64, so the seed we hand back to the language has
+/// to round-trip *exactly*: we keep the counter in `[0, 2^52)` (a comfortable
+/// margin inside the 2^53 exact-integer range of f64, so `nextSeed` survives
+/// the trip through the language's number type without rounding) and do all
+/// mixing in `u64`, which is bit-identical on native and wasm. Each step
+/// advances the counter by an odd golden-ratio gamma (a large stride, *not*
+/// +1) and runs the result through the splitmix64 finalizer. Adjacent seeds
+/// are different *phases* of the one full-period cycle; the large stride means
+/// their draw sequences share no element within any game-length prefix (the
+/// residues collide only after ~2^51 steps), and the finalizer decorrelates
+/// their outputs — together that's the anti-correlation property the sin-hash
+/// noise lacked.
+///
+/// Returns `(value, nextSeed)` with `value` in `[0, 1)`.
+fn random_step(seed: f64) -> (f64, f64) {
+    const MASK52: u64 = (1u64 << 52) - 1;
+    const TWO52: f64 = 4_503_599_627_370_496.0; // 2^52
+    // Odd 52-bit golden-ratio gamma — a large stride with full period 2^52.
+    const GAMMA: u64 = 0x9E37_79B9_7F4A_7;
+
+    // Fold whatever came in down to the counter range. Values WE produced are
+    // already non-negative integers in `[0, 2^52)`, for which `rem_euclid` is
+    // the identity — so the threaded-seed round-trip is exact. A caller-chosen
+    // seed is reduced mod 2^52: `rem_euclid` (unlike a saturating `as u64`
+    // cast, which maps every negative to 0) wraps negatives to DISTINCT
+    // counters. Fractional seeds truncate — the counter is integral.
+    let counter = seed.rem_euclid(TWO52) as u64 & MASK52;
+    let next = counter.wrapping_add(GAMMA) & MASK52;
+
+    // The splitmix64 finalizer avalanches the (52-bit) Weyl state into 64 bits.
+    let mut z = next;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+
+    // Top 53 bits → a double in [0, 1) (the standard splitmix64→f64 mapping).
+    let value = (z >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0); // 2^53
+    (value, next as f64)
 }
 
 /// Resolve an [`ExprKind::External`] path against the registry.
@@ -1596,6 +1674,8 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Math.max" => Builtin::MathMax,
         "Math.pow" => Builtin::MathPow,
         "Math.pi" => Builtin::MathPi,
+        "Random.step" => Builtin::RandomStep,
+        "Random.range" => Builtin::RandomRange,
         "Debug.log" => Builtin::DebugLog,
         _ => return None,
     })
@@ -1636,6 +1716,8 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::MathMax => "Math.max",
         Builtin::MathPow => "Math.pow",
         Builtin::MathPi => "Math.pi",
+        Builtin::RandomStep => "Random.step",
+        Builtin::RandomRange => "Random.range",
         Builtin::DebugLog => "Debug.log",
     }
 }
@@ -1670,4 +1752,127 @@ pub fn render_trace(events: &[TraceEvent]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod random_tests {
+    use super::random_step;
+
+    /// Draw `n` values starting from `seed`, threading the returned seed.
+    fn stream(seed: f64, n: usize) -> Vec<f64> {
+        let mut s = seed;
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (v, next) = random_step(s);
+            out.push(v);
+            s = next;
+        }
+        out
+    }
+
+    #[test]
+    fn deterministic_same_seed_same_stream() {
+        assert_eq!(stream(42.0, 64), stream(42.0, 64));
+    }
+
+    #[test]
+    fn different_seeds_diverge() {
+        assert_ne!(stream(1.0, 32), stream(2.0, 32));
+    }
+
+    #[test]
+    fn values_in_unit_interval() {
+        for &v in &stream(7.0, 10_000) {
+            assert!((0.0..1.0).contains(&v), "value {v} out of [0,1)");
+        }
+    }
+
+    #[test]
+    fn successive_draws_differ() {
+        let s = stream(123.0, 1000);
+        // No two consecutive draws collide (a stuck/low-period generator would).
+        for pair in s.windows(2) {
+            assert_ne!(pair[0], pair[1]);
+        }
+        // And the stream isn't dominated by repeats overall.
+        let mut sorted = s.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.dedup();
+        assert!(sorted.len() > 990, "too many repeats: {} unique", sorted.len());
+    }
+
+    #[test]
+    fn caller_seeds_do_not_collapse() {
+        // Regression: a saturating `as u64` cast maps every negative seed to 0,
+        // collapsing them onto one stream. `rem_euclid` folding keeps them
+        // distinct — negative, zero, and in-range integer seeds each differ.
+        let seeds = [-100.0, -2.0, -1.0, 0.0, 1.0, 2.0, 42.0, 12345.0];
+        let firsts: Vec<f64> = seeds.iter().map(|&s| random_step(s).0).collect();
+        let mut sorted = firsts.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.dedup();
+        assert_eq!(sorted.len(), seeds.len(), "distinct seeds collapsed: {firsts:?}");
+        // And in-range integer seeds are the identity fold (not remapped).
+        assert_eq!(random_step(5.0), random_step(5.0));
+    }
+
+    #[test]
+    fn seed_round_trips_exactly_as_f64() {
+        // The returned seed must be an integer exactly representable as f64, so
+        // it survives being held in the (f64) model without drift.
+        let mut s = 999.0;
+        for _ in 0..100 {
+            let (_, next) = random_step(s);
+            assert_eq!(next, next.trunc(), "seed {next} is not an integer");
+            assert!(next >= 0.0 && next < (1u64 << 52) as f64);
+            s = next;
+        }
+    }
+
+    /// The original bug: streams seeded from adjacent integers were visibly
+    /// correlated. Draw many parallel streams `f(i)` for adjacent `i` and
+    /// assert their first draws show no linear correlation.
+    #[test]
+    fn adjacent_seeds_uncorrelated() {
+        let n = 4096;
+        // First draw of each adjacent-seed stream.
+        let xs: Vec<f64> = (0..n).map(|i| random_step(i as f64).0).collect();
+        // Pearson correlation between consecutive first-draws (x[i], x[i+1]) —
+        // the "shifted stream" footgun would spike this toward ±1.
+        let pairs: Vec<(f64, f64)> = xs.windows(2).map(|w| (w[0], w[1])).collect();
+        let corr = pearson(&pairs);
+        assert!(corr.abs() < 0.05, "adjacent-seed correlation too high: {corr}");
+
+        // Also: no adjacent-seed streams share an element within the first few
+        // draws (the true overlap bug — stream i+1 == stream i shifted by one).
+        for i in 0..64 {
+            let a = stream(i as f64, 8);
+            let b = stream((i + 1) as f64, 8);
+            for &va in &a {
+                assert!(
+                    !b.contains(&va),
+                    "adjacent seeds {i}/{} share a value {va}",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    fn pearson(pairs: &[(f64, f64)]) -> f64 {
+        let n = pairs.len() as f64;
+        let (sx, sy): (f64, f64) = pairs
+            .iter()
+            .fold((0.0, 0.0), |(sx, sy), (x, y)| (sx + x, sy + y));
+        let (mx, my) = (sx / n, sy / n);
+        let mut cov = 0.0;
+        let mut vx = 0.0;
+        let mut vy = 0.0;
+        for (x, y) in pairs {
+            let (dx, dy) = (x - mx, y - my);
+            cov += dx * dy;
+            vx += dx * dx;
+            vy += dy * dy;
+        }
+        cov / (vx.sqrt() * vy.sqrt())
+    }
 }

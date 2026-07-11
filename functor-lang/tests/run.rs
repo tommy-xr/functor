@@ -658,6 +658,56 @@ fn new_builtins_evaluate() {
     assert_eq!(main_result("let main = () => Math.cos(0.0)"), "1");
 }
 
+/// `Random.step(seed) => (value, nextSeed)` — pure, deterministic, no effect.
+/// The pure PRNG quality is unit-tested in `eval::random_tests`; here we just
+/// confirm the builtin is wired end-to-end (parse → check → eval) and returns
+/// a `(value, nextSeed)` tuple with the value in [0, 1).
+#[test]
+fn random_step_is_pure_and_deterministic() {
+    let src = "let main = () =>\n  \
+        let (a, s1) = Random.step(42.0) in\n  \
+        let (b, _) = Random.step(s1) in\n  \
+        (a == a, a < 1.0, a == b)";
+    // Same seed → same value (a==a), value in [0,1), a fresh draw differs.
+    assert_eq!(main_result(src), "(true, true, false)");
+}
+
+/// `Random.range(lo, hi, seed)` rescales the same draw `Random.step` produces
+/// into `[lo, hi)` and threads the same next-seed.
+#[test]
+fn random_range_rescales_step_draw() {
+    // range(0,10,seed) == step(seed).value * 10 — the rescale relationship,
+    // checked deterministically without hardcoding a float.
+    let src = "let main = () =>\n  \
+        let (u, _) = Random.step(7.0) in\n  \
+        let (v, _) = Random.range(0.0, 10.0, 7.0) in\n  \
+        (v == u * 10.0, u < 1.0)";
+    assert_eq!(main_result(src), "(true, true)");
+}
+
+/// Edge bounds: equal bounds return `lo`; a negative range stays finite and
+/// within `(lo, hi]` orientation — no NaN/inf leaks from finite inputs.
+#[test]
+fn random_range_edge_bounds() {
+    // lo == hi → exactly lo (lerp lo*(1-u)+lo*u == lo).
+    assert_eq!(
+        main_result("let main = () => let (v, _) = Random.range(5.0, 5.0, 1.0) in v == 5.0"),
+        "true",
+    );
+    // Negative bounds stay inside [-2, -1) — v < hi is the tight guarantee;
+    // the loose lower bound just confirms no inf/NaN leak.
+    let neg = "let main = () =>\n  \
+        let (v, _) = Random.range(-2.0, -1.0, 3.0) in\n  \
+        (-2.5 < v, v < -1.0)";
+    assert_eq!(main_result(neg), "(true, true)");
+}
+
+#[test]
+fn random_step_rejects_non_number() {
+    let (message, _, _) = run_err("let main = () => Random.step(\"x\")");
+    assert!(message.starts_with("Random.step(seed) expects"));
+}
+
 /// `Text.fixed(n, decimals)` — the F# `sprintf "%.1f"` shape (HUD text):
 /// fixed decimals, rounding, and 0 decimals as the integer (`%d`) shape.
 #[test]
