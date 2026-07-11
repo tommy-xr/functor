@@ -1063,6 +1063,19 @@ async fn run_async() -> Result<(), JsValue> {
         let mut ghost_divisions: usize = 8;
         let mut ghost_window: f32 = 2.0;
 
+        // Scene-diff preview (docs/time-travel.md T6): trail dots and/or
+        // scene-space strobe copies, driven by the DOM preview <select>. Same
+        // anchor cache as the desktop shell: while paused the anchor (scene
+        // frame + tts) is frozen, so reuse the computed preview; the refresh
+        // bound re-projects a pushed source edit within ~half a second.
+        let mut preview_mode = functor_runtime_common::PreviewMode::Off;
+        const PREVIEW_REFRESH_FRAMES: u32 = 30;
+        let mut preview_cache: Option<(
+            (Option<u64>, u32, bool, bool),
+            functor_runtime_common::ScenePreview,
+        )> = None;
+        let mut preview_refresh: u32 = 0;
+
         *g.borrow_mut() = Some(Closure::new(move || {
             // The frame's exclusive borrow of the shared producer.
             let mut game = game.borrow_mut();
@@ -1098,6 +1111,9 @@ async fn run_async() -> Result<(), JsValue> {
                         ghost_on = on;
                         ghost_divisions = divisions;
                         ghost_window = window;
+                    }
+                    functor_lang_game::ScrubControl::SetPreview(mode) => {
+                        preview_mode = functor_runtime_common::PreviewMode::from_index(mode);
                     }
                     functor_lang_game::ScrubControl::SeekTo(f) => {
                         let _ = game.seek_scene_to(f);
@@ -1148,11 +1164,62 @@ async fn run_async() -> Result<(), JsValue> {
             dispatch_audio_commands(&**game);
             dispatch_conn_commands(&**game, &ws_state);
 
-            let frame: Frame = game.render(frame_time.clone());
+            let mut frame: Frame = game.render(frame_time.clone());
 
             // Soundscape: aim the listener from this frame's camera, then
             // reconcile the desired looping voices against the live ones.
             update_soundscape(&**game, &frame.camera);
+
+            // Scene-diff preview (docs/time-travel.md T6): the DOM preview
+            // <select>'s trail/strobe overlays, from ONE shared forward-sim —
+            // `scene_preview`, the same step the desktop shell runs. The web
+            // scrubber is always visible, so like the ghost it renders only
+            // while PAUSED. Script inputs are `None`: web has no --input-script.
+            let paused = clock.is_paused();
+            let trail_wanted = preview_mode.wants_trail() && paused;
+            // Under the screen-space ghost compositor the scene-space strobe
+            // would double-ghost — and the compositor arm never draws this
+            // frame — so the strobe yields to the ghost (the trail still shows:
+            // it rides IN the composited frames below).
+            let strobe_wanted = preview_mode.wants_strobe() && paused && !ghost_on;
+            let preview = if trail_wanted || strobe_wanted {
+                let key = (
+                    game.current_scene_frame(),
+                    frame_time.tts.to_bits(),
+                    trail_wanted,
+                    strobe_wanted,
+                );
+                let cache_hit = preview_refresh > 0
+                    && preview_cache.as_ref().is_some_and(|(k, _)| *k == key);
+                if cache_hit {
+                    preview_refresh -= 1;
+                    preview_cache.as_ref().map(|(_, p)| p.clone())
+                } else {
+                    let p = functor_runtime_common::scene_preview(
+                        &**game,
+                        &frame.scene,
+                        frame_time.tts as f64,
+                        None,
+                        &functor_runtime_common::PreviewOptions {
+                            divisions: 32,
+                            window: 1.6,
+                            // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut
+                            // respawn teleports.
+                            eps: 0.04,
+                            max_step: 3.0,
+                            trail: trail_wanted,
+                            strobe: strobe_wanted
+                                .then(functor_runtime_common::StrobeOptions::default),
+                        },
+                    );
+                    preview_refresh = PREVIEW_REFRESH_FRAMES;
+                    preview_cache = Some((key, p.clone()));
+                    Some(p)
+                }
+            } else {
+                preview_cache = None;
+                None
+            };
 
             // Match the drawable buffer to the canvas's displayed (CSS) size,
             // scaled for HiDPI, so the view follows browser/window resizes. In
@@ -1198,6 +1265,27 @@ async fn run_async() -> Result<(), JsValue> {
             } else {
                 Vec::new()
             };
+
+            // The trail composes with the ghost strobe by riding IN each
+            // composited frame (identical opaque geometry at identical world
+            // positions reconstructs at full intensity under the equal-weight
+            // average); otherwise the preview overlays go on the live frame.
+            let mut ghosts = ghosts;
+            if let Some(t) = preview.as_ref().and_then(|p| p.trail.as_ref()) {
+                for (f, _) in ghosts.iter_mut() {
+                    functor_runtime_common::overlay(&mut f.scene, t.clone());
+                }
+            }
+            if ghosts.is_empty() {
+                if let Some(p) = &preview {
+                    if let Some(t) = &p.trail {
+                        functor_runtime_common::overlay(&mut frame.scene, t.clone());
+                    }
+                    if let Some(s) = &p.strobe {
+                        functor_runtime_common::overlay(&mut frame.scene, s.clone());
+                    }
+                }
+            }
 
             // Shadow + forward passes, shared with the desktop runtime. Each
             // ghost frame renders at ITS OWN division-boundary time, so

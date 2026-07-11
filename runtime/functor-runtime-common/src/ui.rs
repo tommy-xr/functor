@@ -692,6 +692,10 @@ pub struct ScrubberState {
     pub ghost_divisions: usize,
     /// The forward window in seconds; `dt = ghost_window / ghost_divisions`.
     pub ghost_window: f32,
+    /// Scene-diff preview mode (docs/time-travel.md T6): trail dots and/or
+    /// scene-space strobe copies. Interactive companion to the
+    /// `--trajectory`/`--strobe` launch flags.
+    pub preview_mode: crate::trajectory::PreviewMode,
 }
 
 /// A control the user activated in the scrubber this frame.
@@ -708,6 +712,8 @@ pub enum ScrubberAction {
     SetGhostDivisions(usize),
     /// Set the ghost's forward window in seconds.
     SetGhostWindow(f32),
+    /// Set the scene-diff preview mode (the `preview:` cycle button).
+    SetPreviewMode(crate::trajectory::PreviewMode),
 }
 
 /// The scrubber's output for one frame.
@@ -843,6 +849,20 @@ impl Scrubber {
                                 .changed()
                             {
                                 action = Some(ScrubberAction::SetGhostWindow(window));
+                            }
+
+                            // Scene-diff preview (docs/time-travel.md T6): a
+                            // compact cycle button (off → trail → strobe → both)
+                            // — one widget until the scrubber declutter pass
+                            // gives previews a proper popover.
+                            ui.separator();
+                            if ui
+                                .button(format!("preview: {}", state.preview_mode.label()))
+                                .clicked()
+                            {
+                                action = Some(ScrubberAction::SetPreviewMode(
+                                    state.preview_mode.next(),
+                                ));
                             }
                         });
                     });
