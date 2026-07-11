@@ -29,7 +29,8 @@
 //! # What it reports
 //!
 //! Per grid size: us/frame (min + median over the timed iterations), derived
-//! us/cell, and — the deterministic, future-gateable number — allocations and
+//! us/cell (from the min — under background load the median inflates but the
+//! min doesn't), and — the deterministic, future-gateable number — allocations and
 //! bytes per `draw` via a counting `#[global_allocator]` local to this binary.
 //! Wall time is noisy; alloc counts are exactly reproducible run-to-run.
 //! Report-only: no thresholds, no CI gate (see the micro-suite README for why
@@ -173,6 +174,17 @@ struct SizeResult {
     bytes_per_frame: u64,
 }
 
+/// Parse + lower + load the workload at `side` under the engine prelude.
+fn load_session(side: u32) -> (functor_lang::Session, Value) {
+    let src = workload(side);
+    let module = functor_lang::lower(functor_lang::parse(&src).expect("workload parses"))
+        .expect("workload lowers");
+    let session = functor_lang::Session::load(&module, &mut FunctorHost)
+        .unwrap_or_else(|f| panic!("workload load failed: {}", f.error.message));
+    let model = session.global("init").expect("workload defines init");
+    (session, model)
+}
+
 /// One `draw(model, tts)` frame. Fixed `tts` keeps the frame — and therefore
 /// the alloc counts — byte-for-byte identical across iterations and runs.
 fn draw_frame(session: &functor_lang::Session, model: &Value) {
@@ -187,12 +199,7 @@ fn draw_frame(session: &functor_lang::Session, model: &Value) {
 }
 
 fn bench_size(side: u32) -> SizeResult {
-    let src = workload(side);
-    let module = functor_lang::lower(functor_lang::parse(&src).expect("workload parses"))
-        .expect("workload lowers");
-    let session = functor_lang::Session::load(&module, &mut FunctorHost)
-        .unwrap_or_else(|f| panic!("workload load failed: {}", f.error.message));
-    let model = session.global("init").expect("workload defines init");
+    let (session, model) = load_session(side);
 
     // Warmup.
     let warm_start = Instant::now();
@@ -234,12 +241,7 @@ fn bench_size(side: u32) -> SizeResult {
 /// `tick` is the identity in this workload, so this is pure entry-point call
 /// overhead — reported once for completeness (it does not depend on the grid).
 fn bench_tick(side: u32) -> f64 {
-    let src = workload(side);
-    let module = functor_lang::lower(functor_lang::parse(&src).expect("workload parses"))
-        .expect("workload lowers");
-    let session = functor_lang::Session::load(&module, &mut FunctorHost)
-        .unwrap_or_else(|f| panic!("workload load failed: {}", f.error.message));
-    let model = session.global("init").expect("workload defines init");
+    let (session, model) = load_session(side);
     let call = |n: u64| {
         let start = Instant::now();
         for _ in 0..n {
@@ -275,10 +277,13 @@ fn main() {
     } else {
         args.iter()
             .map(|a| {
-                a.parse().unwrap_or_else(|_| {
-                    eprintln!("frame_bench: expected grid sides (integers), got `{a}`");
+                let side: u32 = a.parse().unwrap_or(0);
+                if side < 2 {
+                    // Scene.heightmap needs at least a 2x2 grid.
+                    eprintln!("frame_bench: expected grid sides (integers >= 2), got `{a}`");
                     std::process::exit(2);
-                })
+                }
+                side
             })
             .collect()
     };
@@ -298,7 +303,9 @@ fn main() {
             format!("{}x{}", r.side, r.side),
             r.min_us,
             r.median_us,
-            r.median_us / r.cells as f64,
+            // Derived from MIN: under background load the median inflates but
+            // the min doesn't, and per-cell cost is the A/B slope to trust.
+            r.min_us / r.cells as f64,
             r.allocs_per_frame,
             r.bytes_per_frame,
         );
