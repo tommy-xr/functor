@@ -27,7 +27,7 @@
       #scrubber {
         position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
         z-index: 10; display: none; align-items: center; gap: 10px;
-        font: 12px/1 monospace; color: #eee; padding: 8px 12px 20px;
+        font: 12px/1 monospace; color: #eee; padding: 8px 12px 16px;
         background: rgba(20,20,24,0.82); border-radius: 8px;
         border: 1px solid rgba(255,255,255,0.14);
       }
@@ -37,12 +37,13 @@
         border-radius: 5px; padding: 5px 9px;
       }
       #scrubber button:hover { background: rgba(110,110,125,0.7); }
-      /* Frame counter: a small faded row BELOW the controls, inside the panel
-         (the bar's extra bottom padding is its home), centered — positioned,
-         so digit growth never reflows the controls. */
+      /* Frame counter: tiny, faded, tucked right under the timeline rail and
+         centered on IT (not the panel) — positioned, so digit growth never
+         reflows the controls. */
       #scrub-label {
-        position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%);
-        opacity: 0.5; font-size: 9.5px; white-space: nowrap; pointer-events: none;
+        position: absolute; top: calc(100% + 1px); left: 50%;
+        transform: translateX(-50%);
+        opacity: 0.5; font-size: 9px; white-space: nowrap; pointer-events: none;
       }
       /* The timeline rail: the range input spans the RECORDED part; the
          translucent strip marks [handle, handle + preview window] — the rail's
@@ -50,8 +51,9 @@
       #scrub-rail { position: relative; display: flex; align-items: center; width: 340px; }
       #scrub-slider { width: 100%; accent-color: #e0803a; }
       #scrub-future {
-        position: absolute; height: 3px; bottom: 5px; border-radius: 2px;
-        background: rgba(224,128,58,0.45); pointer-events: none; display: none;
+        position: absolute; height: 5px; top: 50%; transform: translateY(-50%);
+        border-radius: 2px; background: rgba(64,217,255,0.8);
+        pointer-events: none; display: none;
       }
       #scrubber label { display: flex; align-items: center; gap: 4px; }
       #scrubber input[type="number"] {
@@ -86,11 +88,11 @@
     <canvas id="canvas"></canvas>
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
     <div id="scrubber">
-      <span id="scrub-label">time-travel</span>
       <button id="scrub-pause">Pause</button>
       <span id="scrub-rail">
         <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
         <span id="scrub-future"></span>
+        <span id="scrub-label">time-travel</span>
       </span>
       <button id="scrub-step">Step ▸</button>
       <label title="Future preview while paused: trail dots, scene-space strobe copies, or the screen-space ghost compositor (docs/time-travel.md T6)">

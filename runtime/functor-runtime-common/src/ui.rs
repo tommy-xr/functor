@@ -787,6 +787,11 @@ impl Scrubber {
                 .show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.vertical(|ui| {
+                            // The timeline rail's horizontal extent (slider +
+                            // future segment), captured from inside the row so
+                            // the frame counter below can center on the BAR
+                            // rather than the whole panel.
+                            let mut rail: Option<(f32, f32)> = None;
                             ui.horizontal(|ui| {
                                 if ui
                                     .button(if state.paused { "Resume" } else { "Pause" })
@@ -825,6 +830,7 @@ impl Scrubber {
                                         if slider.changed() {
                                             action = Some(ScrubberAction::SeekTo(f));
                                         }
+                                        rail = Some((slider.rect.left(), slider.rect.right()));
                                         if future > 0.0 {
                                             // The future segment sits flush
                                             // against the rail: drop the item
@@ -842,13 +848,16 @@ impl Scrubber {
                                                 egui::Sense::hover(),
                                             );
                                             ui.spacing_mut().item_spacing = old_spacing;
-                                            // Paint the strip just under the
-                                            // rail line, handle → window end.
-                                            // The handle's center travels an
-                                            // INSET range (≈ its half-size)
-                                            // inside the slider rect — start
-                                            // the strip from that, not the box
-                                            // edge, so it meets the handle.
+                                            rail = Some((slider.rect.left(), ext.right()));
+                                            // Paint the future segment ON the
+                                            // rail line at track height —
+                                            // trail-cyan, so it reads as "the
+                                            // preview's part of the bar", not
+                                            // a hint. The handle's center
+                                            // travels an INSET range (≈ its
+                                            // half-size) inside the slider
+                                            // rect — start from that, not the
+                                            // box edge, so it meets the handle.
                                             let y = slider.rect.center().y;
                                             let inset = slider.rect.height() * 0.5;
                                             let travel =
@@ -860,12 +869,12 @@ impl Scrubber {
                                                 .min(ext.right());
                                             ui.painter().rect_filled(
                                                 egui::Rect::from_min_max(
-                                                    egui::pos2(x0, y + 6.0),
-                                                    egui::pos2(x1, y + 9.0),
+                                                    egui::pos2(x0, y - 2.5),
+                                                    egui::pos2(x1, y + 2.5),
                                                 ),
-                                                1.5,
+                                                2.0,
                                                 egui::Color32::from_rgba_unmultiplied(
-                                                    224, 128, 58, 110,
+                                                    64, 217, 255, 200,
                                                 ),
                                             );
                                         }
@@ -913,22 +922,28 @@ impl Scrubber {
                                     );
                                 });
                             });
-                            // The frame counter: a small faded row BELOW the
-                            // controls, centered on the bar — digit growth
-                            // re-centers this text but never reflows the
-                            // control row above it (the controls row is the
-                            // wider one, so it fixes the panel's width).
+                            // The frame counter: tiny, faded, PAINTED just
+                            // under the timeline rail and centered on IT (not
+                            // the panel) — positioned text, so digit growth
+                            // never reflows anything.
                             let label = match state.range {
                                 Some((_, hi)) => format!("{} / {hi}", state.frame),
                                 None => format!("frame {}", state.frame),
                             };
-                            ui.vertical_centered(|ui| {
-                                ui.label(
-                                    egui::RichText::new(label)
-                                        .font(egui::FontId::monospace(UI_FONT_SIZE - 5.0))
-                                        .weak(),
-                                );
-                            });
+                            let (strip, _) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width().max(1.0), 8.0),
+                                egui::Sense::hover(),
+                            );
+                            let center_x = rail
+                                .map(|(l, r)| (l + r) * 0.5)
+                                .unwrap_or_else(|| strip.center().x);
+                            ui.painter().text(
+                                egui::pos2(center_x, strip.top() - 3.0),
+                                egui::Align2::CENTER_TOP,
+                                label,
+                                egui::FontId::monospace(UI_FONT_SIZE - 6.0),
+                                ui.visuals().weak_text_color(),
+                            );
                         });
                     });
                 });
