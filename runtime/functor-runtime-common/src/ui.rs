@@ -685,35 +685,34 @@ pub struct ScrubberState {
     /// until something is recorded (the slider is then hidden).
     pub range: Option<(u64, u64)>,
     pub paused: bool,
-    /// Forward-ghosting (docs/time-travel.md T6d) toggle: composite the ~window-s
-    /// future into a strobe. Interactive companion to the `--ghost` launch flag.
-    pub ghost_on: bool,
-    /// Divisions composited by the ghost (1..=8, the compositor `MAX_GHOST` cap).
-    pub ghost_divisions: usize,
-    /// The forward window in seconds; `dt = ghost_window / ghost_divisions`.
-    pub ghost_window: f32,
-    /// Scene-diff preview mode (docs/time-travel.md T6): trail dots and/or
-    /// scene-space strobe copies. Interactive companion to the
-    /// `--trajectory`/`--strobe` launch flags.
+    /// Future-preview mode (docs/time-travel.md T6/T6d): the scene-diff trail /
+    /// strobe overlays, or the screen-space ghost compositor — one selector,
+    /// with the per-family knobs collapsed into the ⚙ popover. Interactive
+    /// companion to the `--trajectory`/`--strobe`/`--ghost` launch flags.
     pub preview_mode: crate::trajectory::PreviewMode,
+    /// The forward window in seconds, shared by every preview mode; also sizes
+    /// the timeline's translucent future segment.
+    pub preview_window: f32,
+    /// Forward samples across the window (the ghost compositor clamps to its
+    /// 8-target cap at use).
+    pub preview_samples: usize,
 }
 
 /// A control the user activated in the scrubber this frame.
-// No `Eq`: `SetGhostWindow` carries an `f32`.
+// No `Eq`: `SetPreviewWindow` carries an `f32`.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ScrubberAction {
     TogglePause,
     /// Non-destructive scrub to a rendered frame (dragging the timeline).
     SeekTo(u64),
     Step,
-    /// Toggle forward-ghosting on/off (the `ghost` checkbox).
-    SetGhost(bool),
-    /// Set the ghost's forward divisions (clamped 1..=8 by the shell).
-    SetGhostDivisions(usize),
-    /// Set the ghost's forward window in seconds.
-    SetGhostWindow(f32),
-    /// Set the scene-diff preview mode (the `preview:` cycle button).
+    /// Set the future-preview mode (the `preview:` cycle button).
     SetPreviewMode(crate::trajectory::PreviewMode),
+    /// Set the preview's forward window in seconds (the ⚙ popover).
+    SetPreviewWindow(f32),
+    /// Set the preview's forward samples (the ⚙ popover; the ghost compositor
+    /// clamps to 8 at use).
+    SetPreviewSamples(usize),
 }
 
 /// The scrubber's output for one frame.
@@ -787,83 +786,149 @@ impl Scrubber {
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -MARGIN))
                 .show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let label = match state.range {
-                                Some((_, hi)) => format!("time-travel · {} / {hi}", state.frame),
-                                None => format!("time-travel · frame {}", state.frame),
-                            };
-                            ui.label(
-                                egui::RichText::new(label).font(egui::FontId::monospace(UI_FONT_SIZE)),
-                            );
-                            if ui.button(if state.paused { "Resume" } else { "Pause" }).clicked() {
-                                action = Some(ScrubberAction::TogglePause);
-                            }
-                            // The draggable timeline: drag anywhere in the
-                            // recorded window to scrub (non-destructive). Only
-                            // shown once there's a range to drag across.
-                            if let Some((lo, hi)) = state.range {
-                                if hi > lo {
-                                    let mut f = state.frame.clamp(lo, hi);
-                                    ui.spacing_mut().slider_width = 260.0;
-                                    let slider = ui.add(
-                                        egui::Slider::new(&mut f, lo..=hi)
-                                            .show_value(false)
-                                            .handle_shape(egui::style::HandleShape::Rect {
-                                                aspect_ratio: 0.5,
-                                            }),
-                                    );
-                                    if slider.changed() {
-                                        action = Some(ScrubberAction::SeekTo(f));
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(if state.paused { "Resume" } else { "Pause" })
+                                    .clicked()
+                                {
+                                    action = Some(ScrubberAction::TogglePause);
+                                }
+                                // The draggable timeline: drag anywhere in the
+                                // recorded window to scrub (non-destructive).
+                                // Only shown once there's a range to drag
+                                // across. When a preview is on, the rail's
+                                // DOMAIN extends past the recorded end by the
+                                // preview window (60 fixed frames/sec): the
+                                // slider spans the recorded part and a
+                                // translucent strip marks [handle, handle +
+                                // window] — how far ahead the preview looks.
+                                if let Some((lo, hi)) = state.range {
+                                    if hi > lo {
+                                        const RAIL_W: f32 = 300.0;
+                                        let span = (hi - lo) as f32;
+                                        let future = if state.preview_mode.is_on() {
+                                            (state.preview_window * 60.0).max(0.0)
+                                        } else {
+                                            0.0
+                                        };
+                                        let px_per_frame = RAIL_W / (span + future);
+                                        let mut f = state.frame.clamp(lo, hi);
+                                        ui.spacing_mut().slider_width = px_per_frame * span;
+                                        let slider = ui.add(
+                                            egui::Slider::new(&mut f, lo..=hi)
+                                                .show_value(false)
+                                                .handle_shape(egui::style::HandleShape::Rect {
+                                                    aspect_ratio: 0.5,
+                                                }),
+                                        );
+                                        if slider.changed() {
+                                            action = Some(ScrubberAction::SeekTo(f));
+                                        }
+                                        if future > 0.0 {
+                                            // The future segment sits flush
+                                            // against the rail: drop the item
+                                            // gap only BETWEEN the slider and
+                                            // this allocation (set after the
+                                            // slider, so the Pause↔slider gap
+                                            // is untouched).
+                                            let old_spacing = ui.spacing().item_spacing;
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            let (ext, _) = ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    px_per_frame * future,
+                                                    slider.rect.height(),
+                                                ),
+                                                egui::Sense::hover(),
+                                            );
+                                            ui.spacing_mut().item_spacing = old_spacing;
+                                            // Paint the strip just under the
+                                            // rail line, handle → window end.
+                                            // The handle's center travels an
+                                            // INSET range (≈ its half-size)
+                                            // inside the slider rect — start
+                                            // the strip from that, not the box
+                                            // edge, so it meets the handle.
+                                            let y = slider.rect.center().y;
+                                            let inset = slider.rect.height() * 0.5;
+                                            let travel =
+                                                (slider.rect.width() - 2.0 * inset).max(1.0);
+                                            let x0 = slider.rect.left()
+                                                + inset
+                                                + (f - lo) as f32 / span * travel;
+                                            let x1 = (x0 + px_per_frame * future)
+                                                .min(ext.right());
+                                            ui.painter().rect_filled(
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(x0, y + 6.0),
+                                                    egui::pos2(x1, y + 9.0),
+                                                ),
+                                                1.5,
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    224, 128, 58, 110,
+                                                ),
+                                            );
+                                        }
                                     }
                                 }
-                            }
-                            if ui.button("Step >").clicked() {
-                                action = Some(ScrubberAction::Step);
-                            }
+                                if ui.button("Step >").clicked() {
+                                    action = Some(ScrubberAction::Step);
+                                }
 
-                            // Forward-ghosting controls (docs/time-travel.md T6d):
-                            // an in-app companion to the `--ghost` launch flag.
-                            ui.separator();
-                            let mut ghost_on = state.ghost_on;
-                            if ui.checkbox(&mut ghost_on, "ghost").changed() {
-                                action = Some(ScrubberAction::SetGhost(ghost_on));
-                            }
-                            // Divisions (1..=8, the compositor MAX_GHOST cap) and
-                            // the forward window in seconds (dt = window / divisions).
-                            let mut divisions = state.ghost_divisions.clamp(1, 8);
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut divisions)
-                                        .range(1..=8)
-                                        .prefix("÷"),
-                                )
-                                .changed()
-                            {
-                                action = Some(ScrubberAction::SetGhostDivisions(divisions));
-                            }
-                            let mut window = state.ghost_window;
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut window, 0.5..=5.0).suffix("s"),
-                                )
-                                .changed()
-                            {
-                                action = Some(ScrubberAction::SetGhostWindow(window));
-                            }
-
-                            // Scene-diff preview (docs/time-travel.md T6): a
-                            // compact cycle button (off → trail → strobe → both)
-                            // — one widget until the scrubber declutter pass
-                            // gives previews a proper popover.
-                            ui.separator();
-                            if ui
-                                .button(format!("preview: {}", state.preview_mode.label()))
-                                .clicked()
-                            {
-                                action = Some(ScrubberAction::SetPreviewMode(
-                                    state.preview_mode.next(),
-                                ));
-                            }
+                                // Future preview (docs/time-travel.md T6/T6d):
+                                // one cycle button for the mode; the shared
+                                // window/samples knobs live in the ⚙ popover.
+                                ui.separator();
+                                if ui
+                                    .button(format!("preview: {}", state.preview_mode.label()))
+                                    .clicked()
+                                {
+                                    action = Some(ScrubberAction::SetPreviewMode(
+                                        state.preview_mode.next(),
+                                    ));
+                                }
+                                ui.menu_button("⚙", |ui| {
+                                    ui.label("forward window");
+                                    let mut window = state.preview_window;
+                                    if ui
+                                        .add(egui::Slider::new(&mut window, 0.5..=5.0).suffix("s"))
+                                        .changed()
+                                    {
+                                        action = Some(ScrubberAction::SetPreviewWindow(window));
+                                    }
+                                    ui.label("samples");
+                                    let mut samples = state.preview_samples.clamp(1, 64);
+                                    if ui
+                                        .add(egui::DragValue::new(&mut samples).range(1..=64))
+                                        .changed()
+                                    {
+                                        action = Some(ScrubberAction::SetPreviewSamples(samples));
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "ghost composites at most 8 samples",
+                                        )
+                                        .weak()
+                                        .size(10.0),
+                                    );
+                                });
+                            });
+                            // The frame counter: a small faded row BELOW the
+                            // controls, centered on the bar — digit growth
+                            // re-centers this text but never reflows the
+                            // control row above it (the controls row is the
+                            // wider one, so it fixes the panel's width).
+                            let label = match state.range {
+                                Some((_, hi)) => format!("{} / {hi}", state.frame),
+                                None => format!("frame {}", state.frame),
+                            };
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .font(egui::FontId::monospace(UI_FONT_SIZE - 5.0))
+                                        .weak(),
+                                );
+                            });
                         });
                     });
                 });

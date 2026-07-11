@@ -414,9 +414,13 @@ pub fn overlay(scene: &mut Scene3D, trail: Scene3D) {
     };
 }
 
-/// The interactive scene-diff preview mode — what the scrubber's selector (and
-/// the `--trajectory`/`--strobe` launch flags, which seed it) ask the shell to
-/// overlay. Shared by both shells so the wire encoding and cycle order match.
+/// The interactive future-preview mode — what the scrubber's selector (and the
+/// `--trajectory`/`--strobe`/`--ghost` launch flags, which seed it) ask the
+/// shell to overlay. One selector covers both preview families: the scene-diff
+/// overlays (trail / strobe / both — geometry on the normal render path) and
+/// `Ghost`, the screen-space compositor strobe (the only mode that can depict
+/// non-geometry motion such as animated lighting). Shared by both shells so
+/// the wire encoding and cycle order match.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PreviewMode {
     #[default]
@@ -424,6 +428,7 @@ pub enum PreviewMode {
     Trail,
     Strobe,
     Both,
+    Ghost,
 }
 
 impl PreviewMode {
@@ -433,13 +438,23 @@ impl PreviewMode {
     pub fn wants_strobe(self) -> bool {
         matches!(self, PreviewMode::Strobe | PreviewMode::Both)
     }
-    /// Cycle order for a one-button UI: off → trail → strobe → both → off.
+    /// The screen-space compositor strobe (docs/time-travel.md T6d).
+    pub fn wants_ghost(self) -> bool {
+        matches!(self, PreviewMode::Ghost)
+    }
+    /// Any mode that forward-simulates (i.e. everything but `Off`) — the
+    /// timeline's future pseudo-bar shows exactly when this is true.
+    pub fn is_on(self) -> bool {
+        self != PreviewMode::Off
+    }
+    /// Cycle order for a one-button UI: off → trail → strobe → both → ghost.
     pub fn next(self) -> PreviewMode {
         match self {
             PreviewMode::Off => PreviewMode::Trail,
             PreviewMode::Trail => PreviewMode::Strobe,
             PreviewMode::Strobe => PreviewMode::Both,
-            PreviewMode::Both => PreviewMode::Off,
+            PreviewMode::Both => PreviewMode::Ghost,
+            PreviewMode::Ghost => PreviewMode::Off,
         }
     }
     pub fn label(self) -> &'static str {
@@ -448,6 +463,7 @@ impl PreviewMode {
             PreviewMode::Trail => "trail",
             PreviewMode::Strobe => "strobe",
             PreviewMode::Both => "both",
+            PreviewMode::Ghost => "ghost",
         }
     }
     /// Stable wire encoding for the wasm scrubber bridge (the DOM `<select>`
@@ -457,6 +473,7 @@ impl PreviewMode {
             1 => PreviewMode::Trail,
             2 => PreviewMode::Strobe,
             3 => PreviewMode::Both,
+            4 => PreviewMode::Ghost,
             _ => PreviewMode::Off,
         }
     }

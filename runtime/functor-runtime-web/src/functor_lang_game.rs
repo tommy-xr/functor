@@ -1019,17 +1019,13 @@ pub enum ScrubControl {
     TogglePause,
     Step,
     SeekTo(u64),
-    /// Forward-ghosting (docs/time-travel.md T6d): toggle + parameters, pushed by
-    /// the DOM ghost controls. The frame loop owns the ghost state.
-    SetGhost {
-        on: bool,
-        divisions: usize,
-        window: f32,
-    },
-    /// Scene-diff preview mode (docs/time-travel.md T6), pushed by the DOM
+    /// Future-preview mode (docs/time-travel.md T6/T6d), pushed by the DOM
     /// preview `<select>` (PreviewMode wire index: 0 off / 1 trail / 2 strobe /
-    /// 3 both). The frame loop owns the preview state.
+    /// 3 both / 4 ghost). The frame loop owns the preview state.
     SetPreview(u32),
+    /// The ⚙ popover's shared forward window (seconds) + samples, pushed by
+    /// the DOM inputs on change.
+    SetPreviewConfig { window: f32, samples: usize },
 }
 
 thread_local! {
@@ -1078,22 +1074,18 @@ pub fn functor_lang_scrub_step() {
     push_scrub(ScrubControl::Step);
 }
 
-/// Page → runtime: set forward-ghosting on/off and its parameters (JS owns the
-/// ghost UI state and pushes this on any change — docs/time-travel.md T6d).
-#[wasm_bindgen]
-pub fn functor_lang_scrub_set_ghost(on: bool, divisions: usize, window: f32) {
-    push_scrub(ScrubControl::SetGhost {
-        on,
-        divisions,
-        window,
-    });
-}
-
-/// Page → runtime: set the scene-diff preview mode (the DOM preview `<select>`;
-/// 0 off / 1 trail / 2 strobe / 3 both — `PreviewMode::from_index`).
+/// Page → runtime: set the future-preview mode (the DOM preview `<select>`;
+/// 0 off / 1 trail / 2 strobe / 3 both / 4 ghost — `PreviewMode::from_index`).
 #[wasm_bindgen]
 pub fn functor_lang_scrub_set_preview(mode: u32) {
     push_scrub(ScrubControl::SetPreview(mode));
+}
+
+/// Page → runtime: set the preview's shared forward window (seconds) and
+/// sample count (the ⚙ popover; JS owns the inputs and pushes on change).
+#[wasm_bindgen]
+pub fn functor_lang_scrub_set_preview_config(window: f32, samples: usize) {
+    push_scrub(ScrubControl::SetPreviewConfig { window, samples });
 }
 
 /// Page → runtime: non-destructively scrub to a rendered frame (slider drag).

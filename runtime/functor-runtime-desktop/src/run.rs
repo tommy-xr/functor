@@ -330,6 +330,14 @@ pub struct Args {
     #[arg(long)]
     strobe: bool,
 
+    /// Start with the time-travel scrubber overlay visible (it is otherwise
+    /// hidden until summoned with `~`). Useful for demos and captures of the
+    /// scrubber itself. NOTE: with the overlay up, previews follow the
+    /// interactive rule (paused only) — combine with --trajectory/--strobe/
+    /// --ghost WITHOUT --scrubber for headless overlay captures.
+    #[arg(long)]
+    scrubber: bool,
+
     /// Narrate the game clock + time-travel seams to stderr: pause/resume/seek
     /// rebases (with the tts they land on), ghost on/off, and per-frame HITCH
     /// warnings when a rendered frame's dt blows past 33ms (the tell-tale of the
@@ -868,27 +876,27 @@ pub fn run(args: Args) {
         let mut ui_wants_keyboard = false;
         // The time-travel console (`~`): HIDDEN by default in the native game
         // (it's a dev tool you summon with `~`, which also frees the cursor so
-        // you can scrub right away). The wasm/vscode preview shows it always.
-        let mut scrubber_visible = false;
-        // Forward-ghosting (docs/time-travel.md T6d) state, driven interactively
-        // from the scrubber overlay. Seeded from the launch flags so `--ghost`
-        // (the headless-capture escape hatch, overlay hidden) is unchanged; when
-        // the overlay is up, these vars take over (see the `ghost_active` gate).
-        let mut ghost_on = args.ghost;
-        let mut ghost_divisions = args.ghost_divisions;
-        let mut ghost_window: f32 = 2.0;
-        // Scene-diff preview (docs/time-travel.md T6) state, driven
-        // interactively from the scrubber's `preview:` cycle button. Seeded
-        // from the launch flags so `--trajectory`/`--strobe` (the
-        // headless-capture escape hatch, overlay hidden) are unchanged; when
-        // the overlay is up, this var takes over (the `active_preview` gate).
-        let args_preview = match (args.trajectory, args.strobe) {
-            (true, true) => functor_runtime_common::PreviewMode::Both,
-            (true, false) => functor_runtime_common::PreviewMode::Trail,
-            (false, true) => functor_runtime_common::PreviewMode::Strobe,
-            (false, false) => functor_runtime_common::PreviewMode::Off,
+        // you can scrub right away; --scrubber starts it open, e.g. for
+        // captures). The wasm/vscode preview shows it always.
+        let mut scrubber_visible = args.scrubber;
+        // Future-preview (docs/time-travel.md T6/T6d) state, driven
+        // interactively from the scrubber's `preview:` selector and ⚙ popover.
+        // Seeded from the launch flags — which stay authoritative while the
+        // overlay is hidden (the headless-capture escape hatch), where they may
+        // also COMBINE (--ghost --trajectory composes the trail into the
+        // strobe; the selector picks one mode at a time).
+        let mut preview_mode = match (args.ghost, args.trajectory, args.strobe) {
+            (true, _, _) => functor_runtime_common::PreviewMode::Ghost,
+            (false, true, true) => functor_runtime_common::PreviewMode::Both,
+            (false, true, false) => functor_runtime_common::PreviewMode::Trail,
+            (false, false, true) => functor_runtime_common::PreviewMode::Strobe,
+            (false, false, false) => functor_runtime_common::PreviewMode::Off,
         };
-        let mut preview_mode = args_preview;
+        // The ⚙ popover's shared forward window/samples. Ghost seeds samples
+        // from its historical flag so `--ghost --ghost-divisions N` still tunes
+        // the interactive strobe.
+        let mut preview_window: f32 = 2.0;
+        let mut preview_samples: usize = if args.ghost { args.ghost_divisions } else { 32 };
         // --trajectory/--strobe preview cache. The 32-division forward-sim is
         // the expensive part, and while PAUSED its anchor (scene frame + tts) is
         // frozen — so reuse the computed preview while the anchor key matches,
@@ -898,7 +906,7 @@ pub fn run(args: Args) {
         // --ghost does.
         const TRAIL_REFRESH_FRAMES: u32 = 30;
         let mut trail_cache: Option<(
-            (Option<u64>, u32, bool, bool),
+            (Option<u64>, u32, bool, bool, usize, u32),
             functor_runtime_common::ScenePreview,
         )> = None;
         let mut trail_refresh: u32 = 0;
@@ -1286,53 +1294,56 @@ Escape again to quit"
             // `is_paused()` is false under --fixed-time, so the headless
             // `args.ghost` capture branch is unaffected. Computed HERE, above
             // the scene-diff preview, because the preview's gating reads it.
-            let ghost_active = if scrubber_visible {
-                ghost_on && clock.is_paused()
-            } else {
-                args.ghost
-            };
-
-            // Scene-diff preview (docs/time-travel.md T6): forward-simulate the
-            // model (physics included, via the shared ghost_frames inside
-            // scene_preview) and diff the rendered scenes' node world transforms
-            // into --trajectory's dotted trail and/or --strobe's real-geometry
-            // future copies — both overlays on the normal render path, computed
-            // from ONE forward-sim. Same gating as ghost (interactive only while
-            // the scrubber is paused; headless via the flags, so it's
-            // deterministically capturable).
-            // Interactive preview follows the ghost rule: with the overlay up
-            // it renders only while PAUSED (forward-stepping every LIVE frame
-            // tanks the framerate); with the overlay hidden the launch flags
-            // drive it, so headless captures are byte-for-byte unchanged.
-            let active_preview = if scrubber_visible {
+            // One wanted-set drives every future preview (docs/time-travel.md
+            // T6/T6d): the scene-diff trail/strobe overlays AND the
+            // screen-space ghost compositor. With the overlay up, the
+            // scrubber's selector picks ONE mode, and only while PAUSED
+            // (forward-stepping every LIVE frame tanks the framerate); with the
+            // overlay hidden the launch flags drive it — several may combine
+            // there (--ghost --trajectory composes the trail into the strobe) —
+            // so headless captures are byte-for-byte unchanged.
+            let (trail_wanted, strobe_wanted, ghost_active) = if scrubber_visible {
                 if clock.is_paused() {
-                    preview_mode
+                    (
+                        preview_mode.wants_trail(),
+                        preview_mode.wants_strobe(),
+                        preview_mode.wants_ghost(),
+                    )
                 } else {
-                    functor_runtime_common::PreviewMode::Off
+                    (false, false, false)
                 }
             } else {
-                args_preview
+                (args.trajectory, args.strobe, args.ghost)
             };
-            let trail_wanted = active_preview.wants_trail();
             // Under the screen-space ghost compositor the scene-space strobe
             // would double-ghost — and the compositor arm never draws the
             // display frame — so while the ghost is active the strobe is off
             // (the trail still shows: it rides IN the composited frames), and
             // it must not silently burn a forward-sim it can't display.
-            let strobe_wanted = active_preview.wants_strobe() && !ghost_active;
+            let strobe_wanted = strobe_wanted && !ghost_active;
+            // Forward window/samples: the ⚙ popover's shared values
+            // interactively; the historical constants on the flag path (32
+            // samples over 1.6s), keeping captures byte-identical.
+            let (preview_divisions, preview_window_s) = if scrubber_visible {
+                (preview_samples.clamp(1, 64), preview_window)
+            } else {
+                (32usize, 1.6f32)
+            };
             let preview_active = (trail_wanted || strobe_wanted)
                 && args.composite_demo == CompositeDemoArg::Off;
             let preview: Option<functor_runtime_common::ScenePreview> = if preview_active {
                 // Not bound by the 8-target compositor cap — this only reads node
                 // transforms — so sample finely for a smooth arc.
-                let divisions = 32usize;
-                let window = 1.6f32;
+                let divisions = preview_divisions;
+                let window = preview_window_s;
                 let dt = window / divisions as f32;
                 let key = (
                     game.current_scene_frame(),
                     time.tts.to_bits(),
                     trail_wanted,
                     strobe_wanted,
+                    divisions,
+                    window.to_bits(),
                 );
                 let cache_hit = trail_refresh > 0
                     && trail_cache.as_ref().is_some_and(|(k, _)| *k == key);
@@ -1360,6 +1371,13 @@ Escape again to quit"
                             // same way or the two projections diverge. Live
                             // playback consumes the script, so there the next
                             // unconsumed frame (k + 1) is the right anchor.
+                            // Deliberately keyed on the LAUNCH FLAG, not the
+                            // interactive mode: `--ghost --input-script` is the
+                            // F2 session semantic (the script drives the
+                            // anchored future, never the live game), so
+                            // selecting trail/strobe there previews the SAME
+                            // scripted future — switching modes changes the
+                            // visualization, not the script routing.
                             let base = if args.ghost {
                                 0
                             } else {
@@ -1412,7 +1430,14 @@ Escape again to quit"
                 && args.composite_demo == CompositeDemoArg::Off
             {
                 const MAX_GHOST: usize = 8;
-                let divisions = ghost_divisions.clamp(1, MAX_GHOST);
+                // Interactive: the ⚙ popover's shared window/samples (clamped
+                // to the compositor's 8-target cap). Flag path: the historical
+                // --ghost-divisions over a 2s window, byte-identical captures.
+                let (divisions, ghost_window) = if scrubber_visible {
+                    (preview_samples.clamp(1, MAX_GHOST), preview_window)
+                } else {
+                    (args.ghost_divisions.clamp(1, MAX_GHOST), 2.0f32)
+                };
                 let dt = ghost_window / divisions as f32;
                 // F2 (docs/time-travel.md): when an --input-script is loaded, the
                 // ghost previews the SCRIPT's trajectory from the live anchor
@@ -1716,10 +1741,9 @@ Escape again to quit"
                         frame: game.current_scene_frame().unwrap_or(0),
                         range: game.scene_frame_range(),
                         paused: clock.is_paused(),
-                        ghost_on,
-                        ghost_divisions,
-                        ghost_window,
                         preview_mode,
+                        preview_window,
+                        preview_samples,
                     },
                 )
             } else {
@@ -1777,23 +1801,17 @@ Escape again to quit"
                     // Step implies pause: advance exactly one frame, then hold.
                     clock.step(1.0 / 60.0);
                 }
-                Some(functor_runtime_common::ui::ScrubberAction::SetGhost(on)) => {
-                    if args.debug_clock {
-                        eprintln!("[clock] ghost {}", if on { "on" } else { "off" });
-                    }
-                    ghost_on = on;
-                }
-                Some(functor_runtime_common::ui::ScrubberAction::SetGhostDivisions(n)) => {
-                    ghost_divisions = n.clamp(1, 8);
-                }
-                Some(functor_runtime_common::ui::ScrubberAction::SetGhostWindow(w)) => {
-                    ghost_window = w.clamp(0.5, 5.0);
-                }
                 Some(functor_runtime_common::ui::ScrubberAction::SetPreviewMode(m)) => {
                     if args.debug_clock {
                         eprintln!("[clock] preview {}", m.label());
                     }
                     preview_mode = m;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetPreviewWindow(w)) => {
+                    preview_window = w.clamp(0.5, 5.0);
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetPreviewSamples(n)) => {
+                    preview_samples = n.clamp(1, 64);
                 }
                 None => {}
             }

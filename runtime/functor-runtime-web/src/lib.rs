@@ -1056,22 +1056,19 @@ async fn run_async() -> Result<(), JsValue> {
         // golden captures.
         let mut clock = GameClock::new(fixed_time);
 
-        // Forward-ghosting (docs/time-travel.md T6d). Unlike native (gated on the
-        // `~` overlay), the web DOM scrubber is always visible, so the ghost shows
-        // whenever `ghost_on`. JS owns this UI state and pushes `SetGhost` on change.
-        let mut ghost_on = false;
-        let mut ghost_divisions: usize = 8;
-        let mut ghost_window: f32 = 2.0;
-
-        // Scene-diff preview (docs/time-travel.md T6): trail dots and/or
-        // scene-space strobe copies, driven by the DOM preview <select>. Same
-        // anchor cache as the desktop shell: while paused the anchor (scene
-        // frame + tts) is frozen, so reuse the computed preview; the refresh
-        // bound re-projects a pushed source edit within ~half a second.
+        // Future preview (docs/time-travel.md T6/T6d): trail dots, scene-space
+        // strobe copies, or the screen-space ghost compositor — one mode, driven
+        // by the DOM preview <select>, with the shared forward window/samples
+        // from the ⚙ popover. Same anchor cache as the desktop shell: while
+        // paused the anchor (scene frame + tts) is frozen, so reuse the
+        // computed preview; the refresh bound re-projects a pushed source edit
+        // within ~half a second.
         let mut preview_mode = functor_runtime_common::PreviewMode::Off;
+        let mut preview_window: f32 = 2.0;
+        let mut preview_samples: usize = 32;
         const PREVIEW_REFRESH_FRAMES: u32 = 30;
         let mut preview_cache: Option<(
-            (Option<u64>, u32, bool, bool),
+            (Option<u64>, u32, bool, bool, usize, u32),
             functor_runtime_common::ScenePreview,
         )> = None;
         let mut preview_refresh: u32 = 0;
@@ -1103,17 +1100,12 @@ async fn run_async() -> Result<(), JsValue> {
                         clock.toggle_pause();
                     }
                     functor_lang_game::ScrubControl::Step => clock.step(1.0 / 60.0),
-                    functor_lang_game::ScrubControl::SetGhost {
-                        on,
-                        divisions,
-                        window,
-                    } => {
-                        ghost_on = on;
-                        ghost_divisions = divisions;
-                        ghost_window = window;
-                    }
                     functor_lang_game::ScrubControl::SetPreview(mode) => {
                         preview_mode = functor_runtime_common::PreviewMode::from_index(mode);
+                    }
+                    functor_lang_game::ScrubControl::SetPreviewConfig { window, samples } => {
+                        preview_window = window.clamp(0.5, 5.0);
+                        preview_samples = samples.clamp(1, 64);
                     }
                     functor_lang_game::ScrubControl::SeekTo(f) => {
                         let _ = game.seek_scene_to(f);
@@ -1177,17 +1169,18 @@ async fn run_async() -> Result<(), JsValue> {
             // while PAUSED. Script inputs are `None`: web has no --input-script.
             let paused = clock.is_paused();
             let trail_wanted = preview_mode.wants_trail() && paused;
-            // Under the screen-space ghost compositor the scene-space strobe
-            // would double-ghost — and the compositor arm never draws this
-            // frame — so the strobe yields to the ghost (the trail still shows:
-            // it rides IN the composited frames below).
-            let strobe_wanted = preview_mode.wants_strobe() && paused && !ghost_on;
+            // The selector is single-valued, so a strobe mode and the ghost
+            // compositor can never be on together (the double-ghost hazard the
+            // desktop flag path still guards against).
+            let strobe_wanted = preview_mode.wants_strobe() && paused;
             let preview = if trail_wanted || strobe_wanted {
                 let key = (
                     game.current_scene_frame(),
                     frame_time.tts.to_bits(),
                     trail_wanted,
                     strobe_wanted,
+                    preview_samples,
+                    preview_window.to_bits(),
                 );
                 let cache_hit = preview_refresh > 0
                     && preview_cache.as_ref().is_some_and(|(k, _)| *k == key);
@@ -1201,8 +1194,8 @@ async fn run_async() -> Result<(), JsValue> {
                         frame_time.tts as f64,
                         None,
                         &functor_runtime_common::PreviewOptions {
-                            divisions: 32,
-                            window: 1.6,
+                            divisions: preview_samples.clamp(1, 64),
+                            window: preview_window,
                             // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut
                             // respawn teleports.
                             eps: 0.04,
@@ -1245,45 +1238,39 @@ async fn run_async() -> Result<(), JsValue> {
             }
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
 
-            // Forward-ghosting (docs/time-travel.md T6d): when the DOM ghost
-            // toggle is on AND the clock is paused, forward-step the scene over
-            // `ghost_window` seconds in `ghost_divisions` slices and composite them
-            // at equal weight, so moving elements strobe across their future and
-            // static geometry stays solid. `None` = the recorded-log/coast path
-            // (web has no --input-script). Empty (→ this arm skipped) leaves live
-            // rendering unchanged.
+            // Forward-ghosting (docs/time-travel.md T6d): when the preview
+            // selector is on `ghost` AND the clock is paused, forward-step the
+            // scene over the ⚙ popover's window in up to 8 slices and composite
+            // them at equal weight, so moving elements strobe across their
+            // future and static geometry stays solid. `None` = the
+            // recorded-log/coast path (web has no --input-script). Empty
+            // (→ this arm skipped) leaves live rendering unchanged.
             //
             // Gated on `is_paused()` to match the desktop shell: the strobe is a
             // preview of a FROZEN frame's future, and forward-stepping the scene N
             // times every LIVE rAF frame would starve the wasm render loop (the
             // interpreter forward-step is costly on WebGL2). Pause via the DOM
             // scrubber to see it.
-            let ghosts = if ghost_on && clock.is_paused() {
-                let divisions = ghost_divisions.clamp(1, 8);
-                let dt = ghost_window / divisions as f32;
+            let ghosts = if preview_mode.wants_ghost() && clock.is_paused() {
+                // The ⚙ popover's shared window/samples, clamped to the
+                // compositor's 8-target cap.
+                let divisions = preview_samples.clamp(1, 8);
+                let dt = preview_window / divisions as f32;
                 game.ghost_frames(divisions, dt, frame_time.tts as f64, None)
             } else {
                 Vec::new()
             };
 
-            // The trail composes with the ghost strobe by riding IN each
-            // composited frame (identical opaque geometry at identical world
-            // positions reconstructs at full intensity under the equal-weight
-            // average); otherwise the preview overlays go on the live frame.
-            let mut ghosts = ghosts;
-            if let Some(t) = preview.as_ref().and_then(|p| p.trail.as_ref()) {
-                for (f, _) in ghosts.iter_mut() {
-                    functor_runtime_common::overlay(&mut f.scene, t.clone());
+            // Preview overlays go on the live frame. (The single-valued mode
+            // selector means the scene-diff preview and the ghost compositor
+            // are never on together here — unlike the desktop flag path, where
+            // --ghost --trajectory composes the trail into the ghost frames.)
+            if let Some(p) = &preview {
+                if let Some(t) = &p.trail {
+                    functor_runtime_common::overlay(&mut frame.scene, t.clone());
                 }
-            }
-            if ghosts.is_empty() {
-                if let Some(p) = &preview {
-                    if let Some(t) = &p.trail {
-                        functor_runtime_common::overlay(&mut frame.scene, t.clone());
-                    }
-                    if let Some(s) = &p.strobe {
-                        functor_runtime_common::overlay(&mut frame.scene, s.clone());
-                    }
+                if let Some(s) = &p.strobe {
+                    functor_runtime_common::overlay(&mut frame.scene, s.clone());
                 }
             }
 
