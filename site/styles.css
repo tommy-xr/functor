@@ -1,23 +1,21 @@
-/* functor.dev — synthwave/retrocomputing theme shared by the landing page
-   and the sandbox. Palette anchors: deep-space violet background, hot pink
-   and cyan neon, amber accents. */
+/* functor.dev — calm, professional retro theme shared by the landing page,
+   sandbox, and docs. Dark-violet identity; cyan is the primary accent, pink
+   is reserved for the hero wordmark and the gradient rule. */
 
 :root {
-  --bg: #0d0221;
-  --bg-panel: #12052e;
-  --bg-raised: #1a0a42;
-  --line: #2a1454;
-  --text: #e8dcff;
-  --text-dim: #9c86c8;
-  --pink: #ff2fbf;
-  --pink-soft: #ff6ad5;
-  --cyan: #27e8f7;
-  --amber: #ffd76d;
-  --green: #7bf59d;
-  --red: #ff5d7a;
+  --bg: #0f0c1d;
+  --bg-panel: #161226;
+  --bg-raised: #1e1833;
+  --line: #2b2542;
+  --text: #e9e6f2;
+  --text-dim: #9b94b3;
+  --pink: #e858b8;
+  --cyan: #41d8e6;
+  --amber: #eec877;
+  --green: #6fdc92;
+  --red: #f2637f;
   --font-display: "Orbitron", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --font-arcade: "Press Start 2P", "Orbitron", monospace;
 }
 
 * {
@@ -39,7 +37,16 @@ a {
 }
 
 a:hover {
-  text-shadow: 0 0 8px rgba(39, 232, 247, 0.6);
+  text-decoration: underline;
+}
+
+/* Flourish (b): the one decorative divider — a thin cyan→pink rule. */
+.gradient-rule {
+  height: 1px;
+  border: 0;
+  max-width: 780px;
+  margin: 0 auto;
+  background: linear-gradient(90deg, var(--cyan), var(--pink));
 }
 
 /* ---------------------------------------------------------------- landing */
@@ -74,35 +81,32 @@ a:hover {
   /* Vignette so the title stays readable over the bright sun. */
   background: radial-gradient(
     ellipse at center 40%,
-    rgba(13, 2, 33, 0.55) 0%,
-    rgba(13, 2, 33, 0.15) 55%,
-    rgba(13, 2, 33, 0.75) 100%
+    rgba(15, 12, 29, 0.6) 0%,
+    rgba(15, 12, 29, 0.2) 55%,
+    rgba(15, 12, 29, 0.8) 100%
   );
 }
 
+/* Flourish (a): the gradient-clipped wordmark — the one big statement. */
 .hero-title {
   font-family: var(--font-display);
   font-weight: 800;
-  font-size: clamp(3rem, 10vw, 7rem);
-  letter-spacing: 0.18em;
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  letter-spacing: 0.08em;
   margin: 0;
-  background: linear-gradient(180deg, var(--cyan) 0%, #b16aff 55%, var(--pink) 100%);
+  background: linear-gradient(180deg, var(--cyan) 0%, #a9a2c6 55%, var(--pink) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  filter: drop-shadow(0 0 18px rgba(255, 47, 191, 0.45))
-    drop-shadow(0 0 42px rgba(39, 232, 247, 0.25));
 }
 
 .hero-tagline {
-  font-family: var(--font-arcade);
-  font-size: clamp(0.7rem, 1.6vw, 1rem);
-  line-height: 1.8;
-  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+  font-size: clamp(0.8rem, 1.4vw, 1rem);
+  line-height: 1.7;
+  letter-spacing: 0.06em;
   color: var(--text);
-  margin: 18px 0 0;
-  text-transform: uppercase;
-  text-shadow: 0 0 12px rgba(39, 232, 247, 0.5);
+  margin: 14px 0 0;
 }
 
 .hero-sub {
@@ -121,30 +125,36 @@ a:hover {
 
 .button-primary,
 .button-ghost {
-  font-family: var(--font-arcade);
-  letter-spacing: 0.06em;
-  padding: 14px 26px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 12px 24px;
   border-radius: 4px;
-  text-transform: uppercase;
-  font-size: 0.7rem;
+  font-size: 0.85rem;
   line-height: 1.4;
 }
 
 .button-primary {
-  color: #16032f;
-  background: linear-gradient(90deg, var(--cyan), var(--pink-soft));
-  box-shadow: 0 0 18px rgba(255, 47, 191, 0.5);
+  color: var(--bg);
+  background: var(--cyan);
+  border: 1px solid var(--cyan);
 }
 
 .button-primary:hover {
-  box-shadow: 0 0 28px rgba(39, 232, 247, 0.7);
-  text-shadow: none;
+  text-decoration: none;
+  background: #5ce2ee;
+  border-color: #5ce2ee;
 }
 
 .button-ghost {
-  color: var(--text);
-  border: 1px solid var(--pink);
-  box-shadow: inset 0 0 12px rgba(255, 47, 191, 0.15);
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+}
+
+.button-ghost:hover {
+  text-decoration: none;
+  color: var(--cyan);
+  border-color: var(--cyan);
 }
 
 .hero-note {
@@ -166,23 +176,18 @@ a:hover {
 .feature {
   background: var(--bg-panel);
   border: 1px solid var(--line);
-  border-top: 2px solid var(--pink);
   border-radius: 6px;
-  padding: 8px 22px 18px;
-}
-
-.feature:nth-child(2) {
-  border-top-color: var(--cyan);
-}
-
-.feature:nth-child(3) {
-  border-top-color: var(--amber);
+  padding: 20px 22px 18px;
 }
 
 .feature h2 {
-  font-size: 1.05rem;
-  font-family: var(--font-display);
-  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--cyan);
+  margin: 0 0 10px;
 }
 
 .feature p {
@@ -217,16 +222,15 @@ a:hover {
   padding: 20px;
   overflow-x: auto;
   font-size: 0.85rem;
-  box-shadow: 0 0 32px rgba(39, 232, 247, 0.08);
 }
 
 .tok-k { color: var(--pink); }
 .tok-t { color: var(--amber); }
-.tok-n { color: #c792ff; }
-.tok-c { color: #6a5a96; font-style: italic; }
+.tok-n { color: #b7a9e0; }
+.tok-c { color: #6c6685; font-style: italic; }
 .tok-s { color: var(--green); }
-.tok-a { color: #ff9f43; }
-.tok-o { color: var(--pink-soft); }
+.tok-a { color: var(--amber); }
+.tok-o { color: var(--text-dim); }
 
 .how-it-works ol {
   padding-left: 20px;
@@ -271,15 +275,15 @@ a:hover {
 }
 
 .wordmark {
-  font-family: var(--font-arcade);
-  letter-spacing: 0.05em;
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.14em;
   color: var(--text);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
 }
 
 .wordmark-accent {
   color: var(--pink);
-  text-shadow: 0 0 10px rgba(255, 47, 191, 0.7);
 }
 
 .sandbox-controls {
@@ -313,13 +317,16 @@ a:hover {
 
 #reset:hover {
   border-color: var(--cyan);
-  box-shadow: 0 0 10px rgba(39, 232, 247, 0.3);
+  color: var(--cyan);
 }
 
 .status-pill {
-  font-family: var(--font-arcade);
-  font-size: 0.55rem;
-  padding: 7px 12px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  padding: 6px 12px;
   border-radius: 999px;
   border: 1px solid var(--line);
   white-space: nowrap;
@@ -327,14 +334,12 @@ a:hover {
 
 .status-pill[data-state="live"] {
   color: var(--green);
-  border-color: rgba(123, 245, 157, 0.4);
-  text-shadow: 0 0 8px rgba(123, 245, 157, 0.5);
+  border-color: rgba(111, 220, 146, 0.4);
 }
 
 .status-pill[data-state="error"] {
   color: var(--red);
-  border-color: rgba(255, 93, 122, 0.5);
-  text-shadow: 0 0 8px rgba(255, 93, 122, 0.5);
+  border-color: rgba(242, 99, 127, 0.5);
 }
 
 .status-pill[data-state="busy"] {
@@ -377,8 +382,8 @@ a:hover {
   overflow: auto;
   font-size: 0.78rem;
   color: var(--red);
-  background: #1c0618;
-  border-top: 1px solid rgba(255, 93, 122, 0.4);
+  background: #1a1220;
+  border-top: 1px solid rgba(242, 99, 127, 0.4);
   white-space: pre-wrap;
 }
 
@@ -449,7 +454,7 @@ a:hover {
 .docs-nav a:hover {
   color: var(--cyan);
   border-left-color: var(--cyan);
-  text-shadow: none;
+  text-decoration: none;
 }
 
 .docs-main h1 {
@@ -465,7 +470,7 @@ a:hover {
   margin-top: 48px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
-  color: var(--pink-soft);
+  color: var(--text);
 }
 
 .docs-main h3 {
@@ -535,19 +540,20 @@ a:hover {
   position: absolute;
   top: 8px;
   right: 8px;
-  font-family: var(--font-display);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  color: #16032f;
-  background: linear-gradient(90deg, var(--cyan), var(--pink-soft));
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--bg);
+  background: var(--cyan);
   border-radius: 3px;
   padding: 4px 10px;
   text-transform: uppercase;
 }
 
 .try-button:hover {
-  box-shadow: 0 0 14px rgba(39, 232, 247, 0.6);
-  text-shadow: none;
+  text-decoration: none;
+  background: #5ce2ee;
 }
 
 .docs-footnote {
