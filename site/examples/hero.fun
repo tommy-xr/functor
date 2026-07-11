@@ -13,7 +13,10 @@ let waveY = (t: float, ix: float, iz: float): float =>
   Math.sin(iz * 0.8 - t * 2.2 + ix * 0.3) * 0.55
 
 // One glowing grid dot. Near rows burn hot magenta; far rows cool toward
-// violet so the grid reads as depth even without fog.
+// violet so the grid reads as depth even without fog. The landing page mounts
+// a live editor over exactly this region — edit the emissive and watch the
+// running grid recolor with the wave still rolling.
+// <editable>
 let dot = (t, ix, iz) =>
   let depth = iz / gridRows in
   Scene.cube()
@@ -24,6 +27,7 @@ let dot = (t, ix, iz) =>
          (ix - (gridCols - 1.0) / 2.0) * spacing,
          waveY(t, ix, iz),
          iz * spacing)
+// </editable>
 
 let row = (t, iz) =>
   Scene.group(List.range(gridCols) |> List.map((ix) => dot(t, ix, iz)))

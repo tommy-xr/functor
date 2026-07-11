@@ -130,6 +130,45 @@ a:hover {
   font-style: italic;
 }
 
+/* The live code panel below the scene, inside the card. ~8 visible lines of
+   the editable region; the mini-editor carries the shared synthwave theme. */
+.hero-editor {
+  border-top: 1px solid var(--line);
+  height: 172px;
+  overflow: auto;
+  background: #161226;
+}
+
+.hero-editor .cm-editor {
+  height: 100%;
+}
+
+/* A small status dot pinned to the card corner: green live / red on a broken
+   edit. The message lives in its tooltip (title) — calm, not a banner. */
+.hero-status {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--text-dim);
+  box-shadow: 0 0 0 4px rgba(15, 12, 29, 0.55);
+  z-index: 2;
+}
+
+.hero-status[data-state="live"] {
+  background: var(--green);
+}
+
+.hero-status[data-state="busy"] {
+  background: var(--amber);
+}
+
+.hero-status[data-state="error"] {
+  background: var(--red);
+}
+
 /* Flourish (a): the gradient-clipped wordmark — the one big statement. */
 .hero-title {
   font-family: var(--font-display);

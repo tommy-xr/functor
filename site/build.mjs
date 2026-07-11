@@ -56,7 +56,7 @@ for (const [name, path] of Object.entries(EXAMPLES)) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`],
+  entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`, `${site}src/hero.js`],
   bundle: true,
   minify: true,
   format: "esm",

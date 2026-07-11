@@ -117,6 +117,30 @@ const regionHash = (frame) =>
       })
   );
 
+// True if any pixel in the lower half of the player canvas is green-dominant
+// (g > 150, r < 100) — the hero's dot-grid lives below the horizon, so a green
+// recolor of the dots shows up here even though the sun/sky dominate the center.
+const lowerHalfGreen = (frame) =>
+  frame.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => {
+          const gl = document.getElementById("canvas");
+          const c = document.createElement("canvas");
+          c.width = gl.width;
+          c.height = gl.height;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(gl, 0, 0);
+          const y0 = Math.floor(c.height * 0.5);
+          const d = ctx.getImageData(0, y0, c.width, c.height - y0).data;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i] < 100 && d[i + 1] > 150) return resolve(true);
+          }
+          resolve(false);
+        });
+      })
+  );
+
 const playerFrame = (page) => {
   const frame = page.frames().find((f) => f.url().includes("player.html"));
   if (!frame) throw new Error("player iframe not found");
@@ -146,6 +170,74 @@ const playerFrame = (page) => {
     () => !!document.getElementById("scrubber")
   );
   check("landing hero player has the scrubber element", heroHasScrubber);
+
+  // The hero mini-sandbox: a live editor over just the `dot` def.
+  await page.waitForFunction(
+    () => window.__hero && window.__hero.region().includes("let dot"),
+    { timeout: 10000 }
+  );
+  const region = await page.evaluate(() => window.__hero.region());
+  check(
+    "hero editor shows only the dot region (not the whole file)",
+    region.includes("let dot") && !region.includes("let init"),
+    region.slice(0, 40)
+  );
+
+  // A green edit: recolor the dots' emissive to pure green. The scene must
+  // hot-swap with the model preserved (the wave keeps rolling) — no reload.
+  const greenRegion = region.replace(
+    /Scene\.emissive\([^)]*\)/,
+    "Scene.emissive(0.1, 1.0, 0.2)"
+  );
+  await page.evaluate((s) => window.__hero.setRegion(s), greenRegion);
+  await page.waitForFunction(
+    () =>
+      window.__hero.status().state === "live" &&
+      window.__hero.status().message.includes("model preserved"),
+    { timeout: 8000 }
+  );
+  check("hero edit reaches an ok status mentioning model preserved", true);
+  await sleep(500);
+  const heroGreen = await lowerHalfGreen(playerFrame(page));
+  check("hero edit recolors the grid green", heroGreen);
+
+  // A broken edit (unbalanced paren): error surfaced, old frame keeps drawing.
+  await page.evaluate((s) => window.__hero.setRegion(s), `${greenRegion}\n(`);
+  await page.waitForFunction(() => window.__hero.status().state === "error", {
+    timeout: 8000,
+  });
+  await sleep(300);
+  const stillPixel = await centerPixel(playerFrame(page));
+  const stillRendered =
+    Math.abs(stillPixel[0] - 26) +
+      Math.abs(stillPixel[1] - 51) +
+      Math.abs(stillPixel[2] - 77) >
+    30;
+  check(
+    "hero broken edit errors and the scene still renders",
+    stillRendered,
+    `center = rgb(${stillPixel})`
+  );
+
+  // Recover with a good edit; the scrubber keeps recording as it runs.
+  await page.evaluate((s) => window.__hero.setRegion(s), greenRegion);
+  await page.waitForFunction(() => window.__hero.status().state === "live", {
+    timeout: 8000,
+  });
+  const heroPlayer = playerFrame(page);
+  await heroPlayer.waitForFunction(
+    () => window.__scrub && window.__scrub.range().length === 2,
+    { timeout: 10000 }
+  );
+  const hr0 = await heroPlayer.evaluate(() => window.__scrub.range());
+  await sleep(500);
+  const hr1 = await heroPlayer.evaluate(() => window.__scrub.range());
+  check(
+    "hero scrubber still records after edits",
+    hr1[1] > hr0[1],
+    `${hr0} -> ${hr1}`
+  );
+
   await page.close();
 }
 
