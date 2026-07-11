@@ -14,21 +14,33 @@
 //!   parse): its `.funi` prelude signatures, sibling defs, ADT constructors,
 //!   the builtin registry, keywords, and module names.
 //!
-//! v1 non-goals (PR 2): locals/parameters, typed record fields (`pos.`),
-//! chained members (`a.b.`), type-position members (`Scene.t` /
-//! `Pieces.Shape` in annotations), and `open`ed modules' exports offered
-//! bare (the merged module does not retain `open` metadata). Each of the
-//! testable ones is pinned as an empty result by a boundary test below so
-//! PR 2 flips assertions rather than discovering surprises.
+//! Beyond v1's context + candidates, two **scope-aware** layers run when the
+//! live buffer is FRESH — the cached project parsed from exactly this text, so
+//! offsets into its AST are sound (see [`fresh_offset`]): **locals in scope**
+//! extend the top-level candidates, and **typed record fields** (`pos.` where
+//! `pos`'s checked type is a declared record) extend the member candidates.
+//! Member context additionally tolerates the one edit completion itself
+//! causes — the `.partial` tail being typed, which breaks the parse (see
+//! [`member_fresh_offset`]) — so fields appear at the trigger keystroke. Any
+//! other stale or broken buffer skips both layers and falls back to the
+//! textual-only answer — the low-confidence rule, in its simplest honest form.
+//!
+//! Non-goals: chained members (`a.b.`), type-position members (`Scene.t` /
+//! `Pieces.Shape` in annotations), `open`ed modules' exports offered bare (the
+//! merged module does not retain `open` metadata), and expression receivers
+//! (`foo().`). Each testable one is pinned as an empty result by a boundary
+//! test below.
 
 use std::collections::BTreeSet;
 
 use crate::ast::{TypeBody, VariantDecl};
 use crate::eval::{builtin_name, Builtin};
-use crate::hover::type_name_text;
+use crate::hover::{children, type_name_text};
+use crate::ir::{BindingId, Def, Expr, ExprKind, Pattern, PatternKind};
 use crate::lexer::{Token, TokenKind};
 use crate::project::Project;
-use crate::types::{builtin_signature, Type};
+use crate::span::Span;
+use crate::types::{builtin_signature, ExprTypes, Type};
 
 /// One completion candidate: the inserted `label`, an optional hover-style
 /// `detail` (`name : Type`), and its editor `kind`.
@@ -47,6 +59,8 @@ pub enum CompletionKind {
     Module,
     Keyword,
     Constructor,
+    /// A record field, offered after a record-typed value (`pos.x`).
+    Field,
 }
 
 /// The complete builtin registry. Hand-listed because [`Builtin`] is not
@@ -88,15 +102,87 @@ pub fn complete(
 ) -> Vec<CompletionItem> {
     match context_at(live_text, offset) {
         Context::None => Vec::new(),
-        Context::Member { qualifier, partial } => member_candidates(project, &qualifier, &partial),
-        Context::TopLevel { partial } => top_level_candidates(project, current_module, &partial),
+        Context::Member {
+            qualifier,
+            partial,
+            dot,
+        } => {
+            // Member context tolerates the one edit completion itself causes:
+            // the buffer that is exactly the cached text plus the `.partial`
+            // tail being typed (see [`member_fresh_offset`]).
+            let fresh = member_fresh_offset(project, current_module, live_text, dot, offset);
+            member_candidates(project, current_module, &qualifier, &partial, fresh)
+        }
+        Context::TopLevel { partial } => {
+            let fresh = fresh_offset(project, current_module, live_text, offset);
+            top_level_candidates(project, current_module, &partial, fresh)
+        }
     }
+}
+
+/// FRESHNESS GATE (the low-confidence rule). The scope-aware layers index into
+/// the cached project's AST, but `complete`'s `offset` is LOCAL to the live
+/// buffer and the cache may be stale. This returns the PROJECT-WIDE offset
+/// (`file.base + offset`) ONLY when the current module's (non-interface) file
+/// in the cache is byte-for-byte the live buffer — i.e. the buffer parsed and
+/// the cache is fresh. `None` (a broken or stale buffer) means the scope-aware
+/// layers are skipped and completion falls back to v1's textual-only answers.
+fn fresh_offset(
+    project: &Project,
+    current_module: &str,
+    live_text: &str,
+    offset: usize,
+) -> Option<usize> {
+    let file = fresh_file(project, current_module)?;
+    (file.src == live_text).then_some(file.base + offset)
+}
+
+/// The member-context freshness gate. Typing `.` breaks the parse (`v.` is not
+/// an expression), so at completion's own trigger keystroke the cache is one
+/// edit behind the buffer. Accept exactly that edit: the live text with the
+/// member tail `[dot..offset)` (the `.` and any partial) removed must restore
+/// the cached text byte-for-byte. The returned PROJECT-WIDE offset is the dot's
+/// position — the qualifier's scope, valid in the cached AST. An exact match
+/// (the cursor inside an already-valid `v.x`) passes the same way.
+fn member_fresh_offset(
+    project: &Project,
+    current_module: &str,
+    live_text: &str,
+    dot: usize,
+    offset: usize,
+) -> Option<usize> {
+    let file = fresh_file(project, current_module)?;
+    let restored = file.src == live_text
+        || (file.src.len() + (offset - dot) == live_text.len()
+            && file
+                .src
+                .as_bytes()
+                .starts_with(&live_text.as_bytes()[..dot])
+            && file.src.as_bytes()[dot..] == live_text.as_bytes()[offset..]);
+    restored.then_some(file.base + dot)
+}
+
+/// The current module's (non-interface) source file in the cached project.
+fn fresh_file<'a>(
+    project: &'a Project,
+    current_module: &str,
+) -> Option<&'a crate::project::SourceFile> {
+    project
+        .sources
+        .files()
+        .iter()
+        .find(|file| !file.interface && file.module == current_module)
 }
 
 /// The cursor's completion context, derived textually from the prefix.
 enum Context {
     /// After `Qualifier.` — offer that module's members filtered by `partial`.
-    Member { qualifier: String, partial: String },
+    /// `dot` is the byte offset of the `.` in the live buffer.
+    Member {
+        qualifier: String,
+        partial: String,
+        dot: usize,
+    },
     /// A bare word (or fresh position) — offer keywords, globals, modules.
     TopLevel { partial: String },
     /// No completion here (inside a string/comment, after a literal, …).
@@ -146,6 +232,7 @@ fn context_at(live_text: &str, offset: usize) -> Context {
                     return Context::Member {
                         qualifier: qualifier_chain(&tokens, n - 2),
                         partial: String::new(),
+                        dot: last.span.start,
                     };
                 }
             }
@@ -163,6 +250,7 @@ fn context_at(live_text: &str, offset: usize) -> Context {
                         return Context::Member {
                             qualifier: qualifier_chain(&tokens, n - 3),
                             partial: partial.clone(),
+                            dot: tokens[n - 2].span.start,
                         };
                     }
                 }
@@ -231,13 +319,36 @@ fn is_keyword(kind: &TokenKind) -> bool {
 
 /// Candidates for `Qualifier.partial`: the module's `.funi` signatures, its
 /// sibling defs, its ADT constructors, and the builtins in its namespace.
-fn member_candidates(project: &Project, qualifier: &str, partial: &str) -> Vec<CompletionItem> {
+fn member_candidates(
+    project: &Project,
+    current_module: &str,
+    qualifier: &str,
+    partial: &str,
+    fresh: Option<usize>,
+) -> Vec<CompletionItem> {
     let module = &project.module;
     let prefix = format!("{qualifier}.");
     // Lazy: only checked now that a context matched (defs need the checker's
     // types for their details). The check is on `project` (last-good), never
     // on the live buffer.
     let (_, types) = project.check_with_types();
+
+    // Value bindings shadow namespaces — lowering resolves locals and
+    // top-level lets BEFORE sibling/builtin modules (see `crate::lower`'s
+    // resolution order), so `List.x` on a record-typed binder named `List` is
+    // a field access, not a builtin call. When the buffer is fresh and the
+    // qualifier is a single segment that names a value, answer as that value:
+    // a declared record offers its fields, anything else offers nothing
+    // (field access on a non-record has no members). Chained `a.b.` stays
+    // empty — the chained-member boundary.
+    if !qualifier.contains('.') {
+        if let Some(offset) = fresh {
+            if let Some(ty) = qualifier_type(project, current_module, qualifier, offset, &types) {
+                return finish(record_fields_of(project, &ty), partial);
+            }
+        }
+    }
+
     let mut items = Vec::new();
 
     // Host-provided values (`Scene.cube : () => Scene.t`).
@@ -299,17 +410,88 @@ fn member_candidates(project: &Project, qualifier: &str, partial: &str) -> Vec<C
     finish(items, partial)
 }
 
+/// The fields of a declared record type, or empty. Only a [`Type::Record`]
+/// offers fields (gradual honesty — an unknown/non-record type offers
+/// nothing).
+fn record_fields_of(project: &Project, ty: &Type) -> Vec<CompletionItem> {
+    let Type::Record(name, _) = ty else {
+        return Vec::new();
+    };
+    // The declaration by its EXACT (canonical) name — a sibling's record is
+    // `Utils.Vec2` in both the type and the declaration.
+    let Some(decl) = project.module.types.iter().find(|decl| &decl.name == name) else {
+        return Vec::new();
+    };
+    let TypeBody::Record(fields) = &decl.body else {
+        return Vec::new();
+    };
+    fields
+        .iter()
+        .map(|field| CompletionItem {
+            label: field.name.clone(),
+            detail: Some(format!("{} : {}", field.name, type_name_text(&field.ty))),
+            kind: CompletionKind::Field,
+        })
+        .collect()
+}
+
+/// The checked type of a single-segment member qualifier at `offset`, when it
+/// names a VALUE: a binder in scope (innermost wins), else an own-module def
+/// (bare for the entry, `Module.name` for a sibling). A binding that exists
+/// but has no checked type is `Unknown` (it still shadows — the caller must
+/// not fall through to namespace members). `None` only when no value binding
+/// has that name.
+fn qualifier_type(
+    project: &Project,
+    current_module: &str,
+    qualifier: &str,
+    offset: usize,
+    types: &ExprTypes,
+) -> Option<Type> {
+    if let Some(def) = enclosing_def(project, current_module, offset) {
+        if let Some((_, binding, _)) = binders_in_scope(&def.value, offset)
+            .into_iter()
+            .find(|(name, _, _)| name == qualifier)
+        {
+            return Some(types.binding(binding).cloned().unwrap_or(Type::Unknown));
+        }
+    }
+    let canonical = if current_module == project.entry {
+        qualifier.to_string()
+    } else {
+        format!("{current_module}.{qualifier}")
+    };
+    let def = project
+        .module
+        .defs
+        .iter()
+        .find(|def| def.name == canonical)?;
+    Some(types.expr(def.value.id).cloned().unwrap_or(Type::Unknown))
+}
+
 /// Candidates at a top-level position: keywords, the current module's own
 /// defs and constructors (bare), and the visible module names.
 fn top_level_candidates(
     project: &Project,
     current_module: &str,
     partial: &str,
+    fresh: Option<usize>,
 ) -> Vec<CompletionItem> {
     let module = &project.module;
     let entry = &project.entry;
     let (_, types) = project.check_with_types();
     let mut items = Vec::new();
+
+    // Locals in scope (scope-aware, fresh buffers only). Pushed BEFORE the
+    // keywords/globals below so `finish`'s stable sort + dedup lets an inner
+    // binder shadow a same-named global (locals appear first, dedup keeps them).
+    if let Some(offset) = fresh {
+        if let Some(def) = enclosing_def(project, current_module, offset) {
+            for (name, binding, mutable) in binders_in_scope(&def.value, offset) {
+                items.push(binder_item(&name, binding, mutable, &types));
+            }
+        }
+    }
 
     for kw in KEYWORDS {
         items.push(CompletionItem {
@@ -417,6 +599,122 @@ fn value_kind(ty: &Type) -> CompletionKind {
     }
 }
 
+/// The top-level def whose span contains project-wide `offset` and whose name
+/// belongs to `current_module` (the file being edited) — the def whose value
+/// expression the scope-aware walk explores. Ends are inclusive so a cursor at
+/// the very end of the def (the common completion position) still matches.
+fn enclosing_def<'a>(project: &'a Project, current_module: &str, offset: usize) -> Option<&'a Def> {
+    project.module.defs.iter().find(|def| {
+        owning_module(&def.name, &project.entry) == current_module
+            && scope_contains(def.span, offset)
+    })
+}
+
+/// Every value binder in scope at `offset` within `root` (a def's value),
+/// INNERMOST FIRST — `(name, binding id, is_mut)`. Scoping mirrors the
+/// interpreter (see [`crate::lower`]): lambda params scope over the lambda
+/// body, `let … in` binders over the `in` body (not their own value — `let` is
+/// non-recursive), and match-arm pattern variables over that arm's body.
+/// Innermost-first ordering lets a shadowing inner binder win dedup.
+fn binders_in_scope(root: &Expr, offset: usize) -> Vec<(String, BindingId, bool)> {
+    let mut out = Vec::new();
+    collect_binders_in_scope(root, offset, &mut out);
+    out.reverse();
+    out
+}
+
+/// Half-open at the start, INCLUSIVE at the end — a binder is in scope right up
+/// to the end of its body (where the cursor sits when completing).
+fn scope_contains(span: Span, offset: usize) -> bool {
+    span.start <= offset && offset <= span.end
+}
+
+fn collect_binders_in_scope(expr: &Expr, offset: usize, out: &mut Vec<(String, BindingId, bool)>) {
+    match &expr.kind {
+        ExprKind::Lambda { params, body, .. } => {
+            if scope_contains(body.span, offset) {
+                for param in params.iter() {
+                    out.push((param.name.clone(), param.binding, false));
+                }
+            }
+            collect_binders_in_scope(body, offset, out);
+        }
+        ExprKind::Let {
+            binding,
+            name,
+            mutable,
+            value,
+            body,
+            ..
+        } => {
+            if scope_contains(body.span, offset) {
+                out.push((name.clone(), *binding, *mutable));
+            }
+            collect_binders_in_scope(value, offset, out);
+            collect_binders_in_scope(body, offset, out);
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            collect_binders_in_scope(scrutinee, offset, out);
+            for arm in arms {
+                if scope_contains(arm.body.span, offset) {
+                    collect_pattern_binders(&arm.pattern, out);
+                }
+                collect_binders_in_scope(&arm.body, offset, out);
+            }
+        }
+        // Lambda/Match are handled above; every other node's children come
+        // from the shared walk (Assign's `name := …` target is a reference to
+        // an enclosing `let mut`, not a new binder).
+        _ => {
+            for child in children(expr) {
+                collect_binders_in_scope(child, offset, out);
+            }
+        }
+    }
+}
+
+/// Every variable a pattern binds (a match arm's binders), pushed to `out`.
+/// Pattern variables are never mutable.
+fn collect_pattern_binders(pattern: &Pattern, out: &mut Vec<(String, BindingId, bool)>) {
+    match &pattern.kind {
+        PatternKind::Var { binding, name } => out.push((name.clone(), *binding, false)),
+        PatternKind::Ctor { args, .. } | PatternKind::Tuple(args) => {
+            for arg in args {
+                collect_pattern_binders(arg, out);
+            }
+        }
+        PatternKind::List { items, tail } => {
+            for arg in items {
+                collect_pattern_binders(arg, out);
+            }
+            if let Some(tail) = tail {
+                collect_pattern_binders(tail, out);
+            }
+        }
+        PatternKind::Wildcard
+        | PatternKind::Number(_)
+        | PatternKind::Bool(_)
+        | PatternKind::String(_) => {}
+    }
+}
+
+/// A completion item for an in-scope binder: `name : Type` detail from the
+/// checker's binding table (`mut name : Type` for a mutable slot, matching
+/// hover), `Unknown` where the checker doesn't know it.
+fn binder_item(name: &str, binding: BindingId, mutable: bool, types: &ExprTypes) -> CompletionItem {
+    let ty = types.binding(binding).cloned().unwrap_or(Type::Unknown);
+    let detail = if mutable {
+        format!("mut {name} : {ty}")
+    } else {
+        format!("{name} : {ty}")
+    };
+    CompletionItem {
+        label: name.to_string(),
+        detail: Some(detail),
+        kind: value_kind(&ty),
+    }
+}
+
 /// The module a canonical name belongs to: the segment before its first `.`,
 /// or the entry (whose members are bare).
 fn owning_module<'a>(name: &'a str, entry: &'a str) -> &'a str {
@@ -480,6 +778,14 @@ mod tests {
     fn game(project_src: &str, prelude: &[(&str, &str)], live: &str) -> Vec<CompletionItem> {
         let project = project_of(&[("game.fun", project_src)], prelude);
         complete(&project, "Game", live, live.len())
+    }
+
+    /// Complete in module `Game` at byte `offset` inside `src`, with the entry
+    /// project (`game.fun`) loaded from EXACTLY `src` — a FRESH buffer, so the
+    /// scope-aware layers (locals, record fields) run.
+    fn fresh(src: &str, prelude: &[(&str, &str)], offset: usize) -> Vec<CompletionItem> {
+        let project = project_of(&[("game.fun", src)], prelude);
+        complete(&project, "Game", src, offset)
     }
 
     fn labels(items: &[CompletionItem]) -> Vec<String> {
@@ -726,20 +1032,257 @@ mod tests {
         assert!(items.is_empty(), "{:?}", labels(&items));
     }
 
-    // 10. Lowercase qualifier `pos.` (a record field) — empty today. PR 2:
-    // typed record-field completion flips this.
+    // 10 (PR 2). A record-typed value's fields are offered after its dot. The
+    // buffer is FRESH (`v.x` complete, cursor between the dot and `x`).
     #[test]
-    fn record_field_qualifier_is_empty_pr2_boundary() {
-        let items = game(STUB, &[("Scene", SCENE)], "let x = pos.");
+    fn record_field_completion() {
+        let src = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => v.x";
+        let offset = src.find("v.").unwrap() + 2; // after the dot
+        let items = fresh(src, &[("Scene", SCENE)], offset);
+        assert_eq!(labels(&items), ["x", "y"]);
+        assert_eq!(find(&items, "x").kind, CompletionKind::Field);
+        assert_eq!(find(&items, "x").detail.as_deref(), Some("x : float"));
+        assert_eq!(find(&items, "y").detail.as_deref(), Some("y : float"));
+    }
+
+    // 11 (PR 2, flip of the old boundary). Locals ARE offered when the buffer
+    // is fresh: a partial `sc` inside the lambda body offers the param `score`.
+    #[test]
+    fn locals_offered_when_fresh() {
+        // Fresh: the project src and the live buffer are the SAME valid text;
+        // the cursor sits after `sc` of the body reference `score`.
+        let src = "let f = (score) => score";
+        let offset = src.rfind("score").unwrap() + 2; // inside the reference
+        let items = fresh(src, &[], offset);
+        assert!(
+            has(&items, "score"),
+            "local not offered: {:?}",
+            labels(&items)
+        );
+    }
+
+    // PR 2. A lambda param is offered (with its type) inside the lambda body,
+    // and NOT in a later def's body.
+    #[test]
+    fn lambda_param_offered_in_its_body_only() {
+        let src = "let f = (score: float) => score\nlet g = (yy) => yy";
+        let project = project_of(&[("game.fun", src)], &[]);
+
+        // Inside `f`'s body: `score` is offered, typed from its annotation.
+        let in_f = complete(&project, "Game", src, src.find("=> score").unwrap() + 8);
+        assert_eq!(
+            find(&in_f, "score").detail.as_deref(),
+            Some("score : float")
+        );
+        assert_eq!(find(&in_f, "score").kind, CompletionKind::Value);
+
+        // Inside `g`'s body (end of buffer): `g`'s own param, but NOT `score`.
+        let in_g = complete(&project, "Game", src, src.len());
+        assert!(has(&in_g, "yy"), "g's own param: {:?}", labels(&in_g));
+        assert!(!has(&in_g, "score"), "outer param leaked into a later def");
+    }
+
+    // PR 2. Match-arm pattern binders are in scope inside THAT arm only.
+    #[test]
+    fn match_arm_binders_scope_to_their_arm() {
+        let src = "type Shape = | Circle(r: float) | Square(s: float)\n\
+                   let f = (sh: Shape) => match sh with \
+                   | Circle(rad) => rad | Square(side) => side";
+        let project = project_of(&[("game.fun", src)], &[]);
+
+        // In the Circle arm (after the body reference `rad`): `rad`, not `side`.
+        let in_circle = complete(&project, "Game", src, src.find("rad |").unwrap() + 3);
+        assert_eq!(
+            find(&in_circle, "rad").detail.as_deref(),
+            Some("rad : float")
+        );
+        assert!(!has(&in_circle, "side"), "other arm's binder leaked");
+
+        // In the Square arm (end of buffer): `side`, not `rad`.
+        let in_square = complete(&project, "Game", src, src.len());
+        assert!(
+            has(&in_square, "side"),
+            "arm binder: {:?}",
+            labels(&in_square)
+        );
+        assert!(!has(&in_square, "rad"), "other arm's binder leaked");
+    }
+
+    // PR 2. A `let … in` binder is in scope in the `in` body, NOT in its own
+    // value (`let` is non-recursive — see `crate::lower`).
+    #[test]
+    fn let_in_binder_scopes_to_the_body() {
+        let src = "let f = (x: float) => let y = x + 1.0 in y";
+        let project = project_of(&[("game.fun", src)], &[]);
+
+        // In the `in` body (end, partial `y`): the `let` binder `y` is offered.
+        let in_body = complete(&project, "Game", src, src.len());
+        assert_eq!(find(&in_body, "y").detail.as_deref(), Some("y : float"));
+
+        // In `y`'s value (`x + 1.0`, empty partial): `x` is in scope, `y` NOT.
+        let in_value = complete(&project, "Game", src, src.find("let y = ").unwrap() + 8);
+        assert!(
+            has(&in_value, "x"),
+            "param in the value: {:?}",
+            labels(&in_value)
+        );
+        assert!(!has(&in_value, "y"), "the binder leaked into its own value");
+    }
+
+    // PR 2. Shadowing: a param named like a global yields ONE `score` item,
+    // and its detail is the LOCAL's type (the inner binder wins dedup).
+    #[test]
+    fn local_shadows_a_same_named_global() {
+        let src = "let score = \"hi\"\nlet f = (score: float) => score";
+        let items = fresh(src, &[], src.len());
+        assert_eq!(
+            items.iter().filter(|i| i.label == "score").count(),
+            1,
+            "expected a single `score`: {:?}",
+            items
+        );
+        assert_eq!(
+            find(&items, "score").detail.as_deref(),
+            Some("score : float")
+        );
+    }
+
+    // PR 2. THE trigger keystroke: typing `.` breaks the parse, so the cache
+    // still holds the pre-dot text — the member gate accepts exactly that
+    // one-edit shape and fields appear at the moment the editor auto-triggers.
+    #[test]
+    fn record_fields_offered_at_the_dot_keystroke() {
+        let src = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => v";
+        let project = project_of(&[("game.fun", src)], &[]);
+        let live = format!("{src}.");
+        let items = complete(&project, "Game", &live, live.len());
+        assert_eq!(labels(&items), ["x", "y"]);
+        assert_eq!(find(&items, "x").kind, CompletionKind::Field);
+
+        // And with a partial being typed after the dot: `.y` filters to `y`.
+        let live = format!("{src}.y");
+        let items = complete(&project, "Game", &live, live.len());
+        assert_eq!(labels(&items), ["y"]);
+    }
+
+    // PR 2. The dot-keystroke gate also holds mid-buffer: inserting `.` before
+    // existing trailing text still restores the cached src when removed.
+    #[test]
+    fn record_fields_offered_mid_buffer_dot() {
+        let src = "type V = { x: float }\nlet f = (v: V) => v + 1.0";
+        let project = project_of(&[("game.fun", src)], &[]);
+        let dot = src.find("v +").unwrap() + 1;
+        let live = format!("{}.{}", &src[..dot], &src[dot..]);
+        let items = complete(&project, "Game", &live, dot + 1); // cursor after the dot
+        assert_eq!(labels(&items), ["x"]);
+    }
+
+    // PR 2. Value bindings shadow namespaces, mirroring lowering's resolution
+    // order: a record-typed param named `List` answers with its FIELDS (not
+    // the builtins), and a non-record def named `Scene` answers with nothing
+    // (not the prelude members — field access on a float has no members).
+    #[test]
+    fn value_bindings_shadow_namespaces() {
+        let src = "type Vec2 = { x: float, y: float }\nlet f = (List: Vec2) => List.x";
+        let offset = src.find("List.").unwrap() + 5; // after the dot
+        let items = fresh(src, &[], offset);
+        assert_eq!(labels(&items), ["x", "y"], "builtins leaked past a local");
+
+        let src = "let Scene = 1.0\nlet f = () => Scene";
+        let project = project_of(&[("game.fun", src)], &[("Scene", SCENE)]);
+        let live = format!("{src}.");
+        let items = complete(&project, "Game", &live, live.len());
+        assert!(
+            items.is_empty(),
+            "prelude members leaked past a def: {:?}",
+            labels(&items)
+        );
+    }
+
+    // PR 2. A partial after the dot filters the record fields.
+    #[test]
+    fn record_field_partial_filters() {
+        let src = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => v.x";
+        let items = fresh(src, &[], src.len()); // cursor after `v.x` → partial `x`
+        assert_eq!(labels(&items), ["x"]);
+    }
+
+    // PR 2. A non-record (here inference-variable) qualifier offers no fields —
+    // gradual honesty, matching how hover shows Unknown.
+    #[test]
+    fn unknown_typed_qualifier_offers_no_fields() {
+        let src = "let f = (u) => u.z";
+        let offset = src.find("u.").unwrap() + 2; // after the dot
+        let items = fresh(src, &[], offset);
         assert!(items.is_empty(), "{:?}", labels(&items));
     }
 
-    // 11. Locals are not offered at the top level. PR 2: locals/params flip
-    // this.
+    // PR 2, THE GATE (low-confidence rule). When the live buffer is NOT the
+    // cached project src (broken/stale), the scope-aware layers are skipped:
+    // no locals at the top level, and `v.` resolves no fields. The v1 textual
+    // answers (keywords, modules, prelude members) still work.
     #[test]
-    fn locals_not_offered_pr2_boundary() {
-        let items = game("let f = (score) => score", &[], "let f = (score) => sc");
-        assert!(!has(&items, "score"), "local leaked into completion");
+    fn stale_buffer_falls_back_to_v1() {
+        let project = project_of(
+            &[(
+                "game.fun",
+                "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => v.x",
+            )],
+            &[("Scene", SCENE)],
+        );
+
+        // A broken top-level buffer (differs from the cached src) with an EMPTY
+        // partial: the gate is closed, so the param local `v` is suppressed,
+        // while the v1 keywords/modules still answer.
+        let stale_top = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => ";
+        let top = complete(&project, "Game", stale_top, stale_top.len());
+        assert!(!has(&top, "v"), "a local leaked through a stale buffer");
+        assert!(has(&top, "let"), "v1 keyword still offered");
+        assert!(has(&top, "Scene"), "v1 module still offered");
+
+        // A stale member buffer `v.`: record fields must not resolve.
+        let stale_v = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => v.";
+        let member = complete(&project, "Game", stale_v, stale_v.len());
+        assert!(
+            member.is_empty(),
+            "record fields resolved stale: {:?}",
+            labels(&member)
+        );
+
+        // …but a v1 prelude member (no freshness needed) still answers.
+        let scene = complete(&project, "Game", "let s = Scene.", "let s = Scene.".len());
+        assert!(has(&scene, "cube"), "v1 prelude member still works");
+    }
+
+    // PR 2. Sibling-file offsets: a local in a def in utils.fun is offered when
+    // editing utils.fun — the base translation (`file.base + offset`) works for
+    // a file whose base is > 0.
+    #[test]
+    fn sibling_file_locals_use_base_translation() {
+        let utils = "let g = (val: float) => val";
+        let project = project_of(&[("game.fun", STUB), ("utils.fun", utils)], &[]);
+        let items = complete(&project, "Utils", utils, utils.len());
+        assert!(has(&items, "val"), "sibling local: {:?}", labels(&items));
+        assert_eq!(find(&items, "val").detail.as_deref(), Some("val : float"));
+    }
+
+    // PR 2. A value typed as a SIBLING module's record offers that record's
+    // fields — the TypeDef lookup uses the canonical name (`Utils.Vec2`).
+    #[test]
+    fn record_field_completion_for_sibling_typed_value() {
+        let src = "let mk = (v: Utils.Vec2) => v.x";
+        let project = project_of(
+            &[
+                ("game.fun", src),
+                ("utils.fun", "type Vec2 = { x: float, y: float }"),
+            ],
+            &[],
+        );
+        let offset = src.find("v.").unwrap() + 2; // after the dot
+        let items = complete(&project, "Game", src, offset);
+        assert_eq!(labels(&items), ["x", "y"]);
+        assert_eq!(find(&items, "x").kind, CompletionKind::Field);
+        assert_eq!(find(&items, "x").detail.as_deref(), Some("x : float"));
     }
 
     // 12. Partial top-level `Sc` → `Scene`, not `let`, not `List`.
