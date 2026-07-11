@@ -47,9 +47,11 @@ pub struct SceneContext {
     sphere: RefCell<Box<dyn Geometry>>,
     quad: RefCell<Box<dyn Geometry>>,
     plane: RefCell<Box<dyn Geometry>>,
-    // Heightmaps are parameterized, so they're cached by a content hash (rows,
-    // cols, heights) — static terrain builds its GL mesh once and reuses it.
-    heightmaps: RefCell<HashMap<u64, Box<dyn Geometry>>>,
+    // One persistent mesh per grid size. Animated terrain (heights change every
+    // frame) re-uploads its vertex buffer in place instead of rebuilding a fresh
+    // GL mesh each frame; static terrain uploads exactly once. Keyed by
+    // (rows, cols) — the stable identity of the mesh across frames.
+    heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
     // Render targets persist across frames/hot reloads, keyed by the target's
     // string id (the cross-frame identity). Buffers for ids a game stops
     // declaring are kept until exit — TODO: evict.
@@ -924,32 +926,23 @@ named \"{name}\" — {hint}"
                     &xform,
                     &skinning_data,
                 );
-                // Build the grid mesh once per unique (rows, cols, heights) and
-                // cache it; static terrain reuses the same GL buffers each frame.
-                let key = heightmap_key(*rows, *cols, heights);
-                scene_context
-                    .heightmaps
-                    .borrow_mut()
-                    .entry(key)
-                    .or_insert_with(|| {
-                        geometry::Heightmap::create(*rows as usize, *cols as usize, heights)
-                    });
-                scene_context.heightmaps.borrow()[&key].draw(&render_context.gl);
+                // One persistent GL mesh per (rows, cols): build it on first sight,
+                // then re-upload its vertices in place only when the heights change
+                // (a no-op for static terrain). No per-frame VAO/VBO/EBO churn.
+                let mut heightmaps = scene_context.heightmaps.borrow_mut();
+                let mesh = heightmaps.entry((*rows, *cols)).or_insert_with(|| {
+                    geometry::HeightmapMesh::create(
+                        &render_context.gl,
+                        *rows as usize,
+                        *cols as usize,
+                        heights,
+                    )
+                });
+                mesh.update(&render_context.gl, heights);
+                mesh.draw(&render_context.gl);
             }
         }
     }
-}
-
-/// Content hash of a heightmap's parameters, used to cache its built GL mesh.
-fn heightmap_key(rows: u32, cols: u32, heights: &[f32]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    rows.hash(&mut hasher);
-    cols.hash(&mut hasher);
-    for h in heights {
-        h.to_bits().hash(&mut hasher);
-    }
-    hasher.finish()
 }
 
 fn serialize_matrix<S>(matrix: &Matrix4<f32>, serializer: S) -> Result<S::Ok, S::Error>
