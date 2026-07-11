@@ -52,6 +52,22 @@ let draw = (model, tts: Float) =>
     Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(1.0, 0.2, 0.8))
 `;
 
+// A float-model program for the language-intelligence checks: every top-level
+// def has a knowable type (no record-typed `init` — a record's type stays
+// Unknown and earns no lens), so all four defs get a signature codelens; the
+// two unannotated `model` params get inlay hints; and `speed` hovers to its
+// type. Loaded via #src= so it fresh-inits (its float model runs cleanly —
+// a hot-swap onto the record-model default would throw at draw).
+const INTEL_SRC = `let speed = 2.0
+let init = 0.0
+let tick = (model, dt: Float, tts: Float) => model + dt
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Scene.sphere() |> Scene.emissive(0.1, 1.0, 0.2)
+      |> Scene.rotateY(Angle.radians(model)) |> Scene.scale(speed))
+`;
+
 let failures = 0;
 const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}: ${name}${ok || !detail ? "" : ` — ${detail}`}`);
@@ -540,6 +556,93 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     check("fixing the type error clears the underline", cleared, `count=${await lintCount()}`);
     check(
       "sandbox returns/stays live after the fix",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.close();
+  }
+}
+
+// --- 12. Hover types + inlay hints + codelens (commit 8). ---------------------
+// The intel program loads fresh via #src=; once the analysis pkg is ready the
+// editor grows inline `: float` inlays, a signature codelens above each def,
+// and a hover tooltip — all while the push loop keeps the status pill live.
+// SKIPs (like the lint block) when the analysis pkg isn't built.
+{
+  const b64u = Buffer.from(INTEL_SRC).toString("base64url");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html#src=${b64u}`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+
+  const langAvailable = await page.evaluate(() => window.__lang && window.__lang.ready);
+  if (!langAvailable) {
+    console.log("SKIP: hover/inlay/codelens — language analysis pkg not built (__lang not ready)");
+    await page.close();
+  } else {
+    // The signature lens appears once per top-level def; count them in the source.
+    const topDefs = INTEL_SRC.split("\n").filter((l) => l.startsWith("let ")).length;
+
+    // Inlays and lenses lag the doc by the lint debounce (they read the cache
+    // the lint pass fills), so poll rather than sampling once.
+    const poll = async (fn, pred, timeout = 8000) => {
+      const t0 = Date.now();
+      for (;;) {
+        const v = await fn();
+        if (pred(v)) return v;
+        if (Date.now() - t0 > timeout) return v;
+        await sleep(150);
+      }
+    };
+
+    const inlays = await poll(() => page.locator(".cm-inlay").count(), (n) => n > 0);
+    check("inlay hints decorate unannotated params", inlays > 0, `count=${inlays}`);
+
+    const lenses = await poll(() => page.locator(".cm-lens").count(), (n) => n >= topDefs);
+    check(
+      "codelens shows a signature above every top-level def",
+      lenses >= topDefs,
+      `lenses=${lenses}, defs=${topDefs}`
+    );
+
+    // Hover a REAL code token (skip the lens/inlay widget text) and rest the
+    // mouse over it — a jiggle would keep resetting the hover timer.
+    const coord = await page.evaluate(() => {
+      const content = document.querySelector(".cm-content");
+      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (node.parentElement.closest(".cm-lens, .cm-inlay")) continue; // widget text
+        const idx = node.textContent.indexOf("speed");
+        if (idx >= 0) {
+          const range = document.createRange();
+          range.setStart(node, idx);
+          range.setEnd(node, idx + 5);
+          const r = range.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }
+      }
+      return null;
+    });
+    check("found a hoverable token in the editor", !!coord, JSON.stringify(coord));
+    if (coord) {
+      await page.mouse.move(coord.x - 40, coord.y);
+      await sleep(100);
+      await page.mouse.move(coord.x, coord.y);
+      const tip = await poll(
+        async () => {
+          const el = page.locator(".cm-tooltip-hover");
+          return (await el.count()) ? (await el.first().textContent()) || "" : "";
+        },
+        (t) => t.includes(":")
+      );
+      check("hover shows a type tooltip", tip.includes(":"), `tooltip=${JSON.stringify(tip)}`);
+    }
+
+    check(
+      "language intelligence keeps the sandbox live",
       (await page.evaluate(() => window.__sandbox.status().state)) === "live"
     );
 
