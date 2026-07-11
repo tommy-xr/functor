@@ -858,6 +858,18 @@ pub fn run(args: Args) {
         let mut ghost_on = args.ghost;
         let mut ghost_divisions = args.ghost_divisions;
         let mut ghost_window: f32 = 2.0;
+        // --trajectory trail cache. The 32-division forward-sim is the expensive
+        // part, and while PAUSED its anchor (scene frame + tts) is frozen — so
+        // reuse the trail while the anchor key matches, but still refresh every
+        // TRAIL_REFRESH_FRAMES so a hot-reload's edited code re-projects within
+        // ~half a second (the anchor can't see a code edit). Live play changes
+        // the key every frame, so it recomputes like --ghost does.
+        const TRAIL_REFRESH_FRAMES: u32 = 30;
+        let mut trail_cache: Option<(
+            (Option<u64>, u32),
+            Option<functor_runtime_common::Scene3D>,
+        )> = None;
+        let mut trail_refresh: u32 = 0;
 
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
@@ -1227,40 +1239,86 @@ Escape again to quit"
             let viewport = functor_runtime_common::Viewport::new(fb_width as u32, fb_height as u32);
 
             // The game supplies the camera/scene/lights as part of its frame.
-            let mut frame = game.render(time.clone());
+            // Kept PRISTINE: the debug server's GET /scene serves this frame, and
+            // it must reflect exactly what the game's `draw` produced — the
+            // trajectory overlay goes on a render-only copy below.
+            let frame = game.render(time.clone());
 
             // Scene-diff trajectory preview (docs/time-travel.md T6, scene-diff
             // variant): forward-simulate the model (physics included, via the
             // shared ghost_frames) and diff the rendered scenes' node world
-            // positions, then overlay a dotted trail on just the movers — the
-            // clean-lines COMPLEMENT to --ghost's whole-scene strobe. Same gating
-            // as ghost (interactive only while the scrubber is paused; headless
-            // via the flag, so it's deterministically capturable). Renders on the
-            // normal path — the trail is ordinary emissive geometry, no
-            // compositor.
-            let trajectory_active = if scrubber_visible {
-                args.trajectory && clock.is_paused()
-            } else {
-                args.trajectory
-            };
-            if trajectory_active {
+            // positions into a dotted trail on just the movers — the clean-lines
+            // COMPLEMENT to --ghost's whole-scene strobe. Same gating as ghost
+            // (interactive only while the scrubber is paused; headless via the
+            // flag, so it's deterministically capturable). Renders on the normal
+            // path — the trail is ordinary emissive geometry, no compositor.
+            let trajectory_active = args.trajectory
+                && args.composite_demo == CompositeDemoArg::Off
+                && (!scrubber_visible || clock.is_paused());
+            let trail: Option<functor_runtime_common::Scene3D> = if trajectory_active {
                 // Not bound by the 8-target compositor cap — this only reads node
                 // positions — so sample finely for a smooth arc.
                 let divisions = 32usize;
                 let window = 1.6f32;
                 let dt = window / divisions as f32;
-                let futures = game.ghost_frames(divisions, dt, time.tts as f64, None);
-                let trail = {
-                    let mut scenes: Vec<&functor_runtime_common::Scene3D> = vec![&frame.scene];
-                    scenes.extend(futures.iter().map(|(f, _)| &f.scene));
-                    // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut respawn
-                    // teleports (a reset covers many units in one sample).
-                    functor_runtime_common::trajectory_trail(&scenes, 0.04, 3.0)
-                };
-                if let Some(trail) = trail {
-                    frame.scene = functor_runtime_common::overlay(frame.scene.clone(), trail);
+                let key = (game.current_scene_frame(), time.tts.to_bits());
+                let cache_hit = trail_refresh > 0
+                    && trail_cache.as_ref().is_some_and(|(k, _)| *k == key);
+                if cache_hit {
+                    trail_refresh -= 1;
+                    trail_cache.as_ref().and_then(|(_, t)| t.clone())
+                } else {
+                    // Under --input-script the live loop keeps consuming the
+                    // script (its gate is `!args.ghost`), so the forward-sim must
+                    // replay the SAME upcoming slice — with `None` it would
+                    // replay the recorder's (empty-at-head) log and predict an
+                    // input-free future the game won't play. The slice anchors at
+                    // the fine step after the newest recorded frame, mirroring
+                    // the `inputs_from(k + 1)` anchor of the recorded-log path.
+                    let script_slice: Option<Vec<Vec<RecordedInput>>> =
+                        input_script.as_ref().map(|script| {
+                            let sub_dt = 1.0f32 / 60.0;
+                            let steps_per_division =
+                                ((dt / sub_dt).round() as usize).max(1);
+                            let total = (divisions * steps_per_division) as u64;
+                            // Under --ghost the live loop does NOT consume the
+                            // script (the model holds at the init anchor while
+                            // the recorder still advances), and the ghost slice
+                            // below replays from frame 0 — anchor the trail the
+                            // same way or the two projections diverge. Live
+                            // playback consumes the script, so there the next
+                            // unconsumed frame (k + 1) is the right anchor.
+                            let base = if args.ghost {
+                                0
+                            } else {
+                                game.current_scene_frame().map_or(0, |k| k + 1)
+                            };
+                            (0..total)
+                                .map(|j| script.get(&(base + j)).cloned().unwrap_or_default())
+                                .collect()
+                        });
+                    let futures = game.ghost_frames(
+                        divisions,
+                        dt,
+                        time.tts as f64,
+                        script_slice.as_deref(),
+                    );
+                    let t = {
+                        let mut scenes: Vec<&functor_runtime_common::Scene3D> =
+                            vec![&frame.scene];
+                        scenes.extend(futures.iter().map(|(f, _)| &f.scene));
+                        // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut respawn
+                        // teleports (a reset covers many units in one sample).
+                        functor_runtime_common::trajectory_trail(&scenes, 0.04, 3.0)
+                    };
+                    trail_refresh = TRAIL_REFRESH_FRAMES;
+                    trail_cache = Some((key, t.clone()));
+                    t
                 }
-            }
+            } else {
+                trail_cache = None;
+                None
+            };
 
             // Forward-ghosting (docs/time-travel.md T6d): when --ghost is on, step
             // the scene forward over a ~2s window and collect a Frame per division
@@ -1314,6 +1372,18 @@ Escape again to quit"
             } else {
                 Vec::new()
             };
+            // The trail composes with the strobe by riding IN each composited
+            // frame: the dots are identical opaque geometry at identical world
+            // positions in every input, so the equal-weight average reconstructs
+            // them at full intensity (unlike movers, which appear in only one
+            // frame each). Without this the ghost render arm draws only
+            // `ghost_frames` and the trail would silently vanish.
+            let mut ghost_frames = ghost_frames;
+            if let Some(trail) = &trail {
+                for (f, _) in ghost_frames.iter_mut() {
+                    functor_runtime_common::overlay(&mut f.scene, trail.clone());
+                }
+            }
 
             // The camera actually viewed/heard: the game's camera, rotated by
             // the head orientation when Xreal tracking is on.
@@ -1368,6 +1438,20 @@ Escape again to quit"
                 })
                 .flatten();
 
+            // The frame the render ladder draws: the game frame plus the
+            // trajectory overlay (`frame` itself stays pristine for GET /scene).
+            // Skipped when the ghost arm will draw instead — the trail already
+            // rides inside `ghost_frames`.
+            let display_frame = match (&trail, ghost_frames.is_empty()) {
+                (Some(t), true) => {
+                    let mut f = frame.clone();
+                    functor_runtime_common::overlay(&mut f.scene, t.clone());
+                    Some(f)
+                }
+                _ => None,
+            };
+            let drawn_frame = display_frame.as_ref().unwrap_or(&frame);
+
             // Shadow + forward passes, shared with the web runtime. In stereo
             // mode, render the same frame twice — once per eye camera into each
             // half of the window. (The shadow pass runs per eye; it must start
@@ -1391,7 +1475,7 @@ Escape again to quit"
                         asset_cache.clone(),
                         &scene_context,
                         &shadow_map,
-                        &frame,
+                        drawn_frame,
                         camera,
                         time.clone(),
                         *eye_viewport,
@@ -1461,7 +1545,7 @@ Escape again to quit"
                     asset_cache.clone(),
                     &scene_context,
                     &shadow_map,
-                    &frame,
+                    drawn_frame,
                     &view_camera,
                     time.clone(),
                     viewport,

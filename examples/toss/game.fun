@@ -13,26 +13,53 @@ type Ball = { pos: Vec3, vel: Vec3 }
 
 let gravity = 14.0
 let bounce = 0.55
+let restVel = 0.5    // a bounce reflecting slower than this lands as at-rest
 
 let init = {
   balls: [
     { pos: { x: -4.0, y: 0.5, z: 0.0 }, vel: { x: 3.2, y: 9.0, z: 0.0 } },
     { pos: { x: -1.5, y: 0.5, z: 1.5 }, vel: { x: 2.6, y: 11.5, z: -0.7 } },
     { pos: { x: 1.5, y: 0.5, z: -1.0 }, vel: { x: -1.8, y: 8.0, z: 0.4 } },
-    // Already at rest on the ground (y = 0, zero velocity) — it never moves in
-    // the forward-sim, so the runtime gives it NO trail.
+    // At rest on the ground (y = 0, zero velocity). `stepBall` holds a resting
+    // ball exactly still, so it never moves in the forward-sim and the runtime
+    // gives it NO trail.
     { pos: { x: 4.0, y: 0.0, z: 0.0 }, vel: { x: 0.0, y: 0.0, z: 0.0 } }
   ]
 }
 
+// A ball exactly at rest on the ground stays at rest. Without this, gravity
+// accumulates for a step, the discrete bounce reflects it, and a "resting"
+// ball pumps a tiny perpetual hop — enough motion to earn the trail it is
+// here to prove it must NOT get.
+let atRest = (b) =>
+  match b.pos.y == 0.0 with
+  | false => false
+  | true =>
+    match b.vel.x == 0.0 with
+    | false => false
+    | true =>
+      match b.vel.y == 0.0 with
+      | false => false
+      | true => b.vel.z == 0.0
+
+// One Euler step; bounce off the ground at y = 0. A bounce that would reflect
+// slower than restVel PARKS the ball (all velocity zeroed — crude friction), so
+// every ball converges to atRest and its trail ends when its motion does.
 let stepBall = (dt, b) =>
-  let nx = b.pos.x + b.vel.x * dt in
-  let ny = b.pos.y + b.vel.y * dt in
-  let nz = b.pos.z + b.vel.z * dt in
-  let nvy = b.vel.y - gravity * dt in
-  match ny < 0.0 with
-  | true => { pos: { x: nx, y: 0.0, z: nz }, vel: { x: b.vel.x, y: 0.0 - nvy * bounce, z: b.vel.z } }
-  | false => { pos: { x: nx, y: ny, z: nz }, vel: { x: b.vel.x, y: nvy, z: b.vel.z } }
+  match atRest(b) with
+  | true => b
+  | false =>
+    let nx = b.pos.x + b.vel.x * dt in
+    let ny = b.pos.y + b.vel.y * dt in
+    let nz = b.pos.z + b.vel.z * dt in
+    let nvy = b.vel.y - gravity * dt in
+    match ny < 0.0 with
+    | true =>
+      let ry = 0.0 - nvy * bounce in
+      (match ry < restVel with
+       | true => { pos: { x: nx, y: 0.0, z: nz }, vel: { x: 0.0, y: 0.0, z: 0.0 } }
+       | false => { pos: { x: nx, y: 0.0, z: nz }, vel: { x: b.vel.x, y: ry, z: b.vel.z } })
+    | false => { pos: { x: nx, y: ny, z: nz }, vel: { x: b.vel.x, y: nvy, z: b.vel.z } }
 
 let tick = (model, dt, tts) =>
   { model with balls: model.balls |> List.map((b) => stepBall(dt, b)) }

@@ -29,6 +29,7 @@ type Ball = { pos: Vec3, vel: Vec3 }
 // --- Tunables (edit while running; the arcs re-project live on save) ---
 let gravity = 14.0        // downward accel, units/s^2
 let bounce = 0.55         // restitution when a ball hits the ground (y = 0)
+let restVel = 0.5         // a bounce reflecting slower than this lands as at-rest
 let previewSteps = 48.0   // how many steps into the future to project
 let previewDt = 0.03      // seconds per preview step (~arc resolution)
 
@@ -37,22 +38,48 @@ let init = {
     { pos: { x: -4.0, y: 0.5, z: 0.0 }, vel: { x: 3.2, y: 9.0, z: 0.0 } },
     { pos: { x: -1.5, y: 0.5, z: 1.5 }, vel: { x: 2.6, y: 11.5, z: -0.7 } },
     { pos: { x: 1.5, y: 0.5, z: -1.0 }, vel: { x: -1.8, y: 8.0, z: 0.4 } },
-    // A ball at rest: velocity ~0, so it earns NO trail (the "smart" filter).
-    { pos: { x: 4.0, y: 0.3, z: 0.0 }, vel: { x: 0.0, y: 0.0, z: 0.0 } }
+    // A ball at rest on the ground: `stepBall` holds it exactly still, so its
+    // velocity stays zero and it earns NO trail (the "smart" filter).
+    { pos: { x: 4.0, y: 0.0, z: 0.0 }, vel: { x: 0.0, y: 0.0, z: 0.0 } }
   ]
 }
 
-// The ONE pure step. Euler integrate; bounce off the ground plane at y = 0.
-// Both the live `tick` and the forward-sim preview call this — the ghost trail
-// is, by construction, exactly the future the game itself will produce.
+// A ball exactly at rest on the ground stays at rest. Without this, gravity
+// accumulates for a step, the discrete bounce reflects it, and a "resting"
+// ball pumps a tiny perpetual hop — enough velocity to defeat the `moving`
+// filter below and earn a trail it must not have.
+let atRest = (b) =>
+  match b.pos.y == 0.0 with
+  | false => false
+  | true =>
+    match b.vel.x == 0.0 with
+    | false => false
+    | true =>
+      match b.vel.y == 0.0 with
+      | false => false
+      | true => b.vel.z == 0.0
+
+// The ONE pure step. Euler integrate; bounce off the ground plane at y = 0 (a
+// bounce reflecting slower than restVel PARKS the ball — all velocity zeroed,
+// crude friction — so every ball converges to atRest and its trail ends when
+// its motion does). Both the live `tick` and the forward-sim preview call
+// this — the ghost trail is, by construction, exactly the future the game
+// itself will produce.
 let stepBall = (dt, b) =>
-  let nx = b.pos.x + b.vel.x * dt in
-  let ny = b.pos.y + b.vel.y * dt in
-  let nz = b.pos.z + b.vel.z * dt in
-  let nvy = b.vel.y - gravity * dt in
-  match ny < 0.0 with
-  | true => { pos: { x: nx, y: 0.0, z: nz }, vel: { x: b.vel.x, y: 0.0 - nvy * bounce, z: b.vel.z } }
-  | false => { pos: { x: nx, y: ny, z: nz }, vel: { x: b.vel.x, y: nvy, z: b.vel.z } }
+  match atRest(b) with
+  | true => b
+  | false =>
+    let nx = b.pos.x + b.vel.x * dt in
+    let ny = b.pos.y + b.vel.y * dt in
+    let nz = b.pos.z + b.vel.z * dt in
+    let nvy = b.vel.y - gravity * dt in
+    match ny < 0.0 with
+    | true =>
+      let ry = 0.0 - nvy * bounce in
+      (match ry < restVel with
+       | true => { pos: { x: nx, y: 0.0, z: nz }, vel: { x: 0.0, y: 0.0, z: 0.0 } }
+       | false => { pos: { x: nx, y: 0.0, z: nz }, vel: { x: b.vel.x, y: ry, z: b.vel.z } })
+    | false => { pos: { x: nx, y: ny, z: nz }, vel: { x: b.vel.x, y: nvy, z: b.vel.z } }
 
 let stepModel = (dt, m) =>
   { m with balls: m.balls |> List.map((b) => stepBall(dt, b)) }

@@ -11,29 +11,39 @@
 //!
 //! Pure and testable — no GPU, no interpreter needed (see the unit tests).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use cgmath::{InnerSpace, Matrix4, SquareMatrix, Vector3};
 
 use crate::{MaterialDescription, Scene3D, SceneObject};
 
+/// One step of a node path: (child index, sibling count). Node identity across
+/// frames = the path of these segments from the root. Including the sibling
+/// count means a structural change that alters a group's SIZE (a child spawning
+/// or despawning mid-window) changes every sibling's key in that frame, so a
+/// current-frame path stops matching there instead of silently resolving to a
+/// shifted neighbor — a plain despawn TRUNCATES a trail rather than cross-wiring
+/// it onto a different entity. Positional identity still can't distinguish
+/// size-preserving changes (a removal plus an insertion within one sample
+/// interval, or two siblings swapping list positions) — those can alias, and
+/// the real fix is stable node ids, a known limit.
+type PathSeg = (usize, usize);
+
 /// Walk `scene`, accumulating world transforms, and record each LEAF node's
-/// world-space position keyed by its child-index path from the root. Node
-/// identity across frames = this path — stable while `draw` keeps the same tree
-/// shape (the common case, where only transforms vary frame to frame). A game
-/// that conditionally changes the tree structure between frames will simply not
-/// match those nodes across frames (they fall out of the trail), which is safe.
+/// world-space position keyed by its path from the root. A `BTreeMap` so
+/// iteration (and thus trail-dot order in the emitted scene) is deterministic.
 fn collect_positions(
     scene: &Scene3D,
     world: Matrix4<f32>,
-    path: &mut Vec<usize>,
-    out: &mut Vec<(Vec<usize>, Vector3<f32>)>,
+    path: &mut Vec<PathSeg>,
+    out: &mut BTreeMap<Vec<PathSeg>, Vector3<f32>>,
 ) {
     let w = world * scene.xform;
     match &scene.obj {
         SceneObject::Group(children) | SceneObject::Material(_, children) => {
+            let count = children.len();
             for (i, child) in children.iter().enumerate() {
-                path.push(i);
+                path.push((i, count));
                 collect_positions(child, w, path, out);
                 path.pop();
             }
@@ -41,16 +51,16 @@ fn collect_positions(
         SceneObject::Geometry(_) | SceneObject::Model(_) => {
             // The 4th column of the accumulated matrix is the node origin's
             // world position.
-            out.push((path.clone(), w.w.truncate()));
+            out.insert(path.clone(), w.w.truncate());
         }
     }
 }
 
-fn positions_by_path(scene: &Scene3D) -> HashMap<Vec<usize>, Vector3<f32>> {
-    let mut out = Vec::new();
+fn positions_by_path(scene: &Scene3D) -> BTreeMap<Vec<PathSeg>, Vector3<f32>> {
+    let mut out = BTreeMap::new();
     let mut path = Vec::new();
     collect_positions(scene, Matrix4::identity(), &mut path, &mut out);
-    out.into_iter().collect()
+    out
 }
 
 /// A single dim emissive marker at a world position. The renderer applies a
@@ -89,21 +99,16 @@ pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<
     let per_scene: Vec<_> = scenes.iter().map(|s| positions_by_path(s)).collect();
     let eps2 = eps * eps;
     let mut dots = Vec::new();
-    // Identity set = the paths present in the current (index 0) scene.
+    // Identity set = the paths present in the current (index 0) scene. A node
+    // whose path stops matching mid-window (despawn, or its group changed
+    // shape — see `PathSeg`) keeps its trail up to that sample.
     for (path, p0) in &per_scene[0] {
         let mut poly = vec![*p0];
-        let mut present_everywhere = true;
         for m in &per_scene[1..] {
             match m.get(path) {
                 Some(p) => poly.push(*p),
-                None => {
-                    present_everywhere = false;
-                    break;
-                }
+                None => break,
             }
-        }
-        if !present_everywhere {
-            continue;
         }
         // Cut at the first teleport (respawn/reset) — a trajectory is continuous.
         if let Some(cut) = (1..poly.len()).find(|&i| (poly[i] - poly[i - 1]).magnitude() > max_step)
@@ -113,16 +118,6 @@ pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<
         let moved = poly.iter().any(|p| (p - poly[0]).magnitude2() > eps2);
         if !moved {
             continue;
-        }
-        if std::env::var("TRAJ_DEBUG").is_ok() {
-            let last = poly.len() - 1;
-            let span = poly.iter().map(|p| (p - poly[0]).magnitude()).fold(0.0f32, f32::max);
-            eprintln!(
-                "[traj] path={:?} span={:.2} p0=({:.2},{:.2},{:.2}) plast=({:.2},{:.2},{:.2})",
-                path, span,
-                poly[0].x, poly[0].y, poly[0].z,
-                poly[last].x, poly[last].y, poly[last].z,
-            );
         }
         for p in &poly {
             dots.push(trail_dot(*p));
@@ -138,12 +133,21 @@ pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<
     }
 }
 
-/// Composite a derived trail onto a scene (the runtime's trajectory overlay).
-pub fn overlay(scene: Scene3D, trail: Scene3D) -> Scene3D {
-    Scene3D {
-        obj: SceneObject::Group(vec![scene, trail]),
+/// Composite a derived trail onto a scene in place (the runtime's trajectory
+/// overlay). In-place so callers overlaying every frame don't deep-clone the
+/// scene tree just to regroup it.
+pub fn overlay(scene: &mut Scene3D, trail: Scene3D) {
+    let prev = std::mem::replace(
+        scene,
+        Scene3D {
+            obj: SceneObject::Group(Vec::new()),
+            xform: Matrix4::identity(),
+        },
+    );
+    *scene = Scene3D {
+        obj: SceneObject::Group(vec![prev, trail]),
         xform: Matrix4::identity(),
-    }
+    };
 }
 
 #[cfg(test)]
@@ -200,6 +204,35 @@ mod tests {
         // Second dot is the mover at frame b: world x = 2 (group) + 3 (local) = 5.
         let x = dots[1].xform.w.x;
         assert!((x - 5.0).abs() < 1e-4, "expected world x=5, got {x}");
+    }
+
+    #[test]
+    fn mid_list_despawn_truncates_and_never_cross_wires() {
+        // Group [mover, staticA, staticB]; in the last frame the mover
+        // despawns, shifting the statics down one list slot. With bare-index
+        // paths the statics' old paths would resolve to their neighbors and
+        // fabricate a phantom trail between two objects that never moved; with
+        // sibling counts in the key the changed group stops matching, so the
+        // mover keeps its trail up to the despawn and the statics get nothing.
+        let f = |x: f32| Scene3D {
+            obj: SceneObject::Group(vec![
+                ball_at(x, 0.0),
+                ball_at(1.0, 0.0),
+                ball_at(2.0, 0.0),
+            ]),
+            xform: Matrix4::identity(),
+        };
+        let last = Scene3D {
+            obj: SceneObject::Group(vec![ball_at(1.0, 0.0), ball_at(2.0, 0.0)]),
+            xform: Matrix4::identity(),
+        };
+        let trail = trajectory_trail(&[&f(0.0), &f(0.5), &last], 0.05, 3.0).expect("a trail");
+        match trail.obj {
+            // Two dots: the mover's frames before the despawn. Anything more
+            // means a static sibling was aliased onto a neighbor's position.
+            SceneObject::Group(dots) => assert_eq!(dots.len(), 2, "expected only the mover's pre-despawn dots"),
+            _ => panic!("expected a group of dots"),
+        }
     }
 
     #[test]
