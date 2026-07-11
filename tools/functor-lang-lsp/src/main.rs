@@ -44,6 +44,11 @@ fn main() {
 fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
     let mut shutdown_seen = false;
     let mut documents: HashMap<String, String> = HashMap::new();
+    // The last-good parsed project per URI, for completion. Completion fires on
+    // code that does not parse (`let s = Scene.`), where `load_project` returns
+    // `None`; keeping the previous good load lets us still answer. A failed
+    // refresh retains the previous entry — that IS "last good".
+    let mut projects: HashMap<String, functor_lang::project::Project> = HashMap::new();
     while let Some(message) = read_message(reader) {
         let method = message["method"].as_str().unwrap_or("").to_string();
         let id = message.get("id").cloned();
@@ -73,6 +78,7 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                         "definitionProvider": true,
                         "inlayHintProvider": true,
                         "codeLensProvider": { "resolveProvider": false },
+                        "completionProvider": { "triggerCharacters": ["."] },
                     },
                     "serverInfo": { "name": "functor-lang-lsp" },
                 });
@@ -136,6 +142,22 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                     &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 );
             }
+            ("textDocument/completion", Some(id)) => {
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                // No reload here: didOpen/didChange already refreshed the cache
+                // from this same `documents` state, so it is as fresh as the
+                // live buffer allows — a parseable buffer refreshed it, a
+                // broken one kept the last good load. Completion is the hot
+                // keystroke path; don't reparse the project a second time.
+                let result = projects
+                    .get(uri)
+                    .and_then(|project| completion(project, uri, &documents, &params["position"]))
+                    .unwrap_or_else(|| json!([]));
+                write_message(
+                    writer,
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                );
+            }
             (_, Some(id)) => {
                 let error = json!({
                     "code": METHOD_NOT_FOUND,
@@ -153,6 +175,9 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                 let text = params["textDocument"]["text"].as_str().unwrap_or("");
                 publish_diagnostics(writer, uri, text);
                 documents.insert(uri.to_string(), text.to_string());
+                if let Some(project) = load_project(uri, &documents) {
+                    projects.insert(uri.to_string(), project);
+                }
             }
             ("textDocument/didChange", None) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
@@ -164,11 +189,15 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
                 {
                     publish_diagnostics(writer, uri, text);
                     documents.insert(uri.to_string(), text.to_string());
+                    if let Some(project) = load_project(uri, &documents) {
+                        projects.insert(uri.to_string(), project);
+                    }
                 }
             }
             ("textDocument/didClose", None) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
                 documents.remove(uri);
+                projects.remove(uri);
                 // Clear stale squiggles for the closed file.
                 write_diagnostics(writer, uri, vec![]);
             }
@@ -328,6 +357,57 @@ fn inlay_hints(uri: &str, documents: &HashMap<String, String>, range: &Value) ->
         })
         .collect();
     Some(Value::Array(hints))
+}
+
+/// Answer a completion request. Unlike hover/definition, the offset stays
+/// **local** to the live buffer (no `file.base +`): `functor_lang::complete`
+/// derives context textually from that buffer, while candidates come from the
+/// (possibly stale) last-good `project`. `current_module` is the open file's
+/// module (a sibling's own defs are referenced bare), falling back to the
+/// project entry.
+fn completion(
+    project: &functor_lang::project::Project,
+    uri: &str,
+    documents: &HashMap<String, String>,
+    position: &Value,
+) -> Option<Value> {
+    let text = documents.get(uri)?;
+    let offset = position_to_offset(text, position)?;
+    let current_module = uri_to_path(uri)
+        .and_then(|path| {
+            project
+                .sources
+                .file_by_path(&path)
+                .map(|file| file.module.clone())
+        })
+        .unwrap_or_else(|| project.entry.clone());
+    let items = functor_lang::complete::complete(project, &current_module, text, offset);
+    if items.is_empty() {
+        return None;
+    }
+    let items: Vec<Value> = items
+        .into_iter()
+        .map(|item| {
+            json!({
+                "label": item.label,
+                "kind": kind_code(item.kind),
+                "detail": item.detail,
+            })
+        })
+        .collect();
+    Some(Value::Array(items))
+}
+
+/// The LSP `CompletionItemKind` code for a completion kind.
+fn kind_code(kind: functor_lang::complete::CompletionKind) -> i64 {
+    use functor_lang::complete::CompletionKind;
+    match kind {
+        CompletionKind::Function => 3,
+        CompletionKind::Constructor => 4,
+        CompletionKind::Module => 9,
+        CompletionKind::Value => 12,
+        CompletionKind::Keyword => 14,
+    }
 }
 
 /// Whether project-wide `offset` falls in `file` (its half-open base range).

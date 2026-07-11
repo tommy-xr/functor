@@ -82,6 +82,10 @@ fn diagnostics_over_real_stdio() {
         response["result"]["capabilities"]["codeLensProvider"]["resolveProvider"],
         false
     );
+    assert_eq!(
+        response["result"]["capabilities"]["completionProvider"]["triggerCharacters"],
+        json!(["."])
+    );
 
     server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
 
@@ -266,7 +270,10 @@ fn diagnostics_over_real_stdio() {
 #[test]
 fn project_aware_hover_and_cross_file_definition() {
     // A scratch project: game.fun (entry) calls Utils.double from utils.fun.
-    let dir = std::env::temp_dir().join(format!("functor-lang-lsp-e2e-project-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "functor-lang-lsp-e2e-project-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     std::fs::write(
@@ -310,8 +317,7 @@ fn project_aware_hover_and_cross_file_definition() {
     }));
     let response = server.recv();
     assert_eq!(
-        response["result"]["contents"]["value"],
-        "```functor\nUtils.double : (float) => float\n```",
+        response["result"]["contents"]["value"], "```functor\nUtils.double : (float) => float\n```",
         "cross-file hover: {response}"
     );
 
@@ -325,17 +331,170 @@ fn project_aware_hover_and_cross_file_definition() {
         },
     }));
     let response = server.recv();
-    assert_eq!(response["result"]["uri"], utils_uri, "cross-file goto: {response}");
+    assert_eq!(
+        response["result"]["uri"], utils_uri,
+        "cross-file goto: {response}"
+    );
     assert_eq!(
         response["result"]["range"]["start"]["line"], 0,
         "double is on line 0 of utils.fun: {response}"
     );
+
+    // Row 23: cross-file completion. Edit game.fun to an (unparseable) buffer
+    // ending in `Utils.` — completion still answers from the last-good project,
+    // offering the sibling's `double` with its inferred signature.
+    let broken = "let apply = (n) => Utils.";
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": game_uri, "version": 2 },
+            "contentChanges": [ { "text": broken } ],
+        },
+    }));
+    server.recv(); // publishDiagnostics (a parse error on the broken buffer)
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 10, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": game_uri },
+            "position": { "line": 0, "character": broken.encode_utf16().count() as i64 },
+        },
+    }));
+    let response = server.recv();
+    let items = response["result"].as_array().expect("completion array");
+    let double = items
+        .iter()
+        .find(|item| item["label"] == "double")
+        .unwrap_or_else(|| panic!("no `double` in completion: {response}"));
+    assert_eq!(double["detail"], "Utils.double : (float) => float");
 
     server.send(json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
     server.recv();
     server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
     server.child.wait().expect("wait for exit");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Completion over the real binary (matrix rows 7, 8, 9, 13, 22): a broken
+/// live buffer still completes prelude members from the last-good project, with
+/// LSP kind codes over the wire and UTF-16 positions. Single-file (no
+/// functor.json) still gets the injected prelude.
+#[test]
+fn completion_over_real_stdio() {
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+
+    // A valid buffer opens first, seeding the last-good project cache.
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": URI, "languageId": "functor-lang", "version": 1, "text": "let s = () => 1.0\n",
+        } },
+    }));
+    server.recv(); // publishDiagnostics (clean)
+
+    // A helper: replace the whole buffer, drain its diagnostics, then ask for
+    // completion at (line, character) — character in UTF-16 code units.
+    let complete_at = |server: &mut Server, version: i64, text: &str, line: i64, character: i64| {
+        server.send(json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": URI, "version": version },
+                "contentChanges": [ { "text": text } ],
+            },
+        }));
+        server.recv(); // publishDiagnostics
+        server.send(json!({
+            "jsonrpc": "2.0", "id": 100 + version, "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": URI },
+                "position": { "line": line, "character": character },
+            },
+        }));
+        server.recv()["result"].clone()
+    };
+
+    // Row 7: didChange to a broken buffer ending `Scene.` → completion still
+    // answers `cube` with the real detail and kind 3 (Function), from cache.
+    let broken = "let s = Scene.";
+    let result = complete_at(
+        &mut server,
+        2,
+        broken,
+        0,
+        broken.encode_utf16().count() as i64,
+    );
+    let items = result.as_array().expect("completion array");
+    let cube = items
+        .iter()
+        .find(|item| item["label"] == "cube")
+        .unwrap_or_else(|| panic!("no `cube` in {result}"));
+    assert_eq!(cube["detail"], "Scene.cube : () => Scene.t");
+    assert_eq!(cube["kind"], 3);
+
+    // Row 8: broken ELSEWHERE than the cursor line (line 0 never parses) — the
+    // members are still offered on the completion line.
+    let elsewhere = "let broken =\nlet s = Scene.";
+    let line1 = "let s = Scene.";
+    let result = complete_at(
+        &mut server,
+        3,
+        elsewhere,
+        1,
+        line1.encode_utf16().count() as i64,
+    );
+    let items = result.as_array().expect("completion array");
+    assert!(
+        items.iter().any(|item| item["label"] == "cube"),
+        "row 8 expected cube: {result}"
+    );
+
+    // Row 9: an unknown module `Nope.` → an empty array (not null).
+    let nope = "let s = Nope.";
+    let result = complete_at(&mut server, 4, nope, 0, nope.encode_utf16().count() as i64);
+    assert_eq!(result, json!([]), "row 9 expected []: {result}");
+
+    // Row 13: an emoji earlier on the completion line — the character must be
+    // counted in UTF-16 code units (the emoji is 2), or the offset lands wrong.
+    let utf16 = "let s = { a: \"\u{1F642}\", b: Scene. }";
+    let cursor = utf16.find("Scene.").unwrap() + "Scene.".len();
+    let character = utf16[..cursor].encode_utf16().count() as i64;
+    let result = complete_at(&mut server, 5, utf16, 0, character);
+    let items = result.as_array().expect("completion array");
+    assert!(
+        items.iter().any(|item| item["label"] == "cube"),
+        "row 13 expected cube with UTF-16 offset: {result}"
+    );
+
+    // Row 22: a top-level request shows the JSON kind codes over the wire —
+    // `let` is a Keyword (14) and `Scene` is a Module (9).
+    let top = "let x = 1.0\nlet y = ";
+    let result = complete_at(
+        &mut server,
+        6,
+        top,
+        1,
+        "let y = ".encode_utf16().count() as i64,
+    );
+    let items = result.as_array().expect("completion array");
+    let kw = items
+        .iter()
+        .find(|item| item["label"] == "let")
+        .unwrap_or_else(|| panic!("no `let` at top level: {result}"));
+    assert_eq!(kw["kind"], 14);
+    let module = items
+        .iter()
+        .find(|item| item["label"] == "Scene")
+        .unwrap_or_else(|| panic!("no `Scene` module at top level: {result}"));
+    assert_eq!(module["kind"], 9);
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 9, "method": "shutdown" }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
 }
 
 /// The VSCode extension's grammar and manifests must at least be valid JSON
@@ -391,8 +550,7 @@ fn prelude_gives_host_calls_real_types() {
     }));
     let response = server.recv();
     assert_eq!(
-        response["result"]["contents"]["value"],
-        "```functor\nScene.cube : () => Scene.t\n```",
+        response["result"]["contents"]["value"], "```functor\nScene.cube : () => Scene.t\n```",
         "prelude hover: {response}"
     );
 
