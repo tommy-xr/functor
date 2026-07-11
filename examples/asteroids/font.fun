@@ -7,15 +7,13 @@
 // (no Text.chars), so words are passed as explicit glyph lists:
 //   Font.word(0.7, 0.0, -8.0, [Font.gA, Font.gS, ...])
 
-open Lib
-
 let gA = [[0.0,1.0,0.0],[1.0,0.0,1.0],[1.0,1.0,1.0],[1.0,0.0,1.0],[1.0,0.0,1.0]]
 let gD = [[1.0,1.0,0.0],[1.0,0.0,1.0],[1.0,0.0,1.0],[1.0,0.0,1.0],[1.0,1.0,0.0]]
 let gE = [[1.0,1.0,1.0],[1.0,0.0,0.0],[1.0,1.0,0.0],[1.0,0.0,0.0],[1.0,1.0,1.0]]
 let gG = [[0.0,1.0,1.0],[1.0,0.0,0.0],[1.0,0.0,1.0],[1.0,0.0,1.0],[0.0,1.0,1.0]]
 let gI = [[1.0,1.0,1.0],[0.0,1.0,0.0],[0.0,1.0,0.0],[0.0,1.0,0.0],[1.0,1.0,1.0]]
 let gM = [[1.0,0.0,1.0],[1.0,1.0,1.0],[1.0,0.0,1.0],[1.0,0.0,1.0],[1.0,0.0,1.0]]
-let gN = [[1.0,0.0,1.0],[1.0,1.0,1.0],[1.0,1.0,1.0],[1.0,0.0,1.0],[1.0,0.0,1.0]]
+let gN = [[1.0,0.0,1.0],[1.0,1.0,1.0],[1.0,0.0,1.0],[1.0,1.0,1.0],[1.0,0.0,1.0]]
 let gO = [[1.0,1.0,1.0],[1.0,0.0,1.0],[1.0,0.0,1.0],[1.0,0.0,1.0],[1.0,1.0,1.0]]
 let gP = [[1.0,1.0,1.0],[1.0,0.0,1.0],[1.0,1.0,1.0],[1.0,0.0,0.0],[1.0,0.0,0.0]]
 let gR = [[1.0,1.0,1.0],[1.0,0.0,1.0],[1.0,1.0,0.0],[1.0,0.0,1.0],[1.0,0.0,1.0]]
@@ -49,10 +47,11 @@ let glyphCubes = (gx, gz, s, rows) =>
 let word = (s, cx, cz, glyphs) =>
   let count = Lib.length(glyphs) in
   let width = count * 4.0 * s - s in
-  let startX = cx - width * 0.5 in
+  // startX/row origin are CELL CENTERS, hence the half-cell offsets.
+  let startX = cx - width * 0.5 + s * 0.5 in
   let folded = glyphs |> List.fold((acc, g) =>
     let (gx, out) = acc in
-    (gx + 4.0 * s, Lib.append(glyphCubes(gx, cz - 2.5 * s, s, g), out)),
+    (gx + 4.0 * s, Lib.append(glyphCubes(gx, cz - 2.0 * s, s, g), out)),
     (startX, [])) in
   let (ignored, cubes) = folded in
   Scene.group(cubes)

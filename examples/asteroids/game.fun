@@ -396,24 +396,28 @@ let pressEnter = (tts, z) =>
                |> Scene.emissive(0.92, 0.92, 0.92)]
   | false => []
 
+// Titles float at y=2.5, above the rock plane, so a drifting rock passes
+// under the letters instead of hiding them.
 let titleScenes = (model, tts) =>
-  match model.phase with
-  | Playing => []
-  | Menu =>
-    [Font.word(0.72, 0.0, 0.0 - 6.0,
-       [Font.gA, Font.gS, Font.gT, Font.gE, Font.gR, Font.gO, Font.gI, Font.gD, Font.gS])
-       |> Scene.emissive(0.55, 1.0, 0.65),
-     ..pressEnter(tts, 0.0 - 1.5)]
-  | Won =>
-    [Font.word(0.55, 0.0, 0.0 - 5.0,
-       [Font.gY, Font.gO, Font.gU, Font.gSpace, Font.gW, Font.gI, Font.gN])
-       |> Scene.emissive(0.55, 1.0, 0.65),
-     ..pressEnter(tts, 0.0 - 1.5)]
-  | Lost =>
-    [Font.word(0.55, 0.0, 0.0 - 5.0,
-       [Font.gG, Font.gA, Font.gM, Font.gE, Font.gSpace, Font.gO, Font.gV, Font.gE, Font.gR])
-       |> Scene.emissive(1.0, 0.45, 0.35),
-     ..pressEnter(tts, 0.0 - 1.5)]
+  let screens =
+    (match model.phase with
+     | Playing => []
+     | Menu =>
+       [Font.word(0.72, 0.0, 0.0 - 6.0,
+          [Font.gA, Font.gS, Font.gT, Font.gE, Font.gR, Font.gO, Font.gI, Font.gD, Font.gS])
+          |> Scene.emissive(0.55, 1.0, 0.65),
+        ..pressEnter(tts, 0.0 - 1.5)]
+     | Won =>
+       [Font.word(0.55, 0.0, 0.0 - 5.0,
+          [Font.gY, Font.gO, Font.gU, Font.gSpace, Font.gW, Font.gI, Font.gN])
+          |> Scene.emissive(0.55, 1.0, 0.65),
+        ..pressEnter(tts, 0.0 - 1.5)]
+     | Lost =>
+       [Font.word(0.55, 0.0, 0.0 - 5.0,
+          [Font.gG, Font.gA, Font.gM, Font.gE, Font.gSpace, Font.gO, Font.gV, Font.gE, Font.gR])
+          |> Scene.emissive(1.0, 0.45, 0.35),
+        ..pressEnter(tts, 0.0 - 1.5)]) in
+  screens |> List.map((s) => s |> Scene.translate(0.0, 2.5, 0.0))
 
 let draw = (model, tts) =>
   let rocks = model.asteroids |> List.map((a) => rockScene(a, tts)) in
