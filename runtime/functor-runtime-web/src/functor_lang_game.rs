@@ -1026,6 +1026,10 @@ pub enum ScrubControl {
         divisions: usize,
         window: f32,
     },
+    /// Scene-diff preview mode (docs/time-travel.md T6), pushed by the DOM
+    /// preview `<select>` (PreviewMode wire index: 0 off / 1 trail / 2 strobe /
+    /// 3 both). The frame loop owns the preview state.
+    SetPreview(u32),
 }
 
 thread_local! {
@@ -1083,6 +1087,13 @@ pub fn functor_lang_scrub_set_ghost(on: bool, divisions: usize, window: f32) {
         divisions,
         window,
     });
+}
+
+/// Page → runtime: set the scene-diff preview mode (the DOM preview `<select>`;
+/// 0 off / 1 trail / 2 strobe / 3 both — `PreviewMode::from_index`).
+#[wasm_bindgen]
+pub fn functor_lang_scrub_set_preview(mode: u32) {
+    push_scrub(ScrubControl::SetPreview(mode));
 }
 
 /// Page → runtime: non-destructively scrub to a rendered frame (slider drag).

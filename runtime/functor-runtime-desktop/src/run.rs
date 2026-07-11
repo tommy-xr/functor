@@ -877,6 +877,18 @@ pub fn run(args: Args) {
         let mut ghost_on = args.ghost;
         let mut ghost_divisions = args.ghost_divisions;
         let mut ghost_window: f32 = 2.0;
+        // Scene-diff preview (docs/time-travel.md T6) state, driven
+        // interactively from the scrubber's `preview:` cycle button. Seeded
+        // from the launch flags so `--trajectory`/`--strobe` (the
+        // headless-capture escape hatch, overlay hidden) are unchanged; when
+        // the overlay is up, this var takes over (the `active_preview` gate).
+        let args_preview = match (args.trajectory, args.strobe) {
+            (true, true) => functor_runtime_common::PreviewMode::Both,
+            (true, false) => functor_runtime_common::PreviewMode::Trail,
+            (false, true) => functor_runtime_common::PreviewMode::Strobe,
+            (false, false) => functor_runtime_common::PreviewMode::Off,
+        };
+        let mut preview_mode = args_preview;
         // --trajectory/--strobe preview cache. The 32-division forward-sim is
         // the expensive part, and while PAUSED its anchor (scene frame + tts) is
         // frozen — so reuse the computed preview while the anchor key matches,
@@ -886,7 +898,7 @@ pub fn run(args: Args) {
         // --ghost does.
         const TRAIL_REFRESH_FRAMES: u32 = 30;
         let mut trail_cache: Option<(
-            (Option<u64>, u32, bool),
+            (Option<u64>, u32, bool, bool),
             functor_runtime_common::ScenePreview,
         )> = None;
         let mut trail_refresh: u32 = 0;
@@ -1288,23 +1300,40 @@ Escape again to quit"
             // from ONE forward-sim. Same gating as ghost (interactive only while
             // the scrubber is paused; headless via the flags, so it's
             // deterministically capturable).
-            let trail_wanted = args.trajectory;
+            // Interactive preview follows the ghost rule: with the overlay up
+            // it renders only while PAUSED (forward-stepping every LIVE frame
+            // tanks the framerate); with the overlay hidden the launch flags
+            // drive it, so headless captures are byte-for-byte unchanged.
+            let active_preview = if scrubber_visible {
+                if clock.is_paused() {
+                    preview_mode
+                } else {
+                    functor_runtime_common::PreviewMode::Off
+                }
+            } else {
+                args_preview
+            };
+            let trail_wanted = active_preview.wants_trail();
             // Under the screen-space ghost compositor the scene-space strobe
             // would double-ghost — and the compositor arm never draws the
             // display frame — so while the ghost is active the strobe is off
             // (the trail still shows: it rides IN the composited frames), and
             // it must not silently burn a forward-sim it can't display.
-            let strobe_wanted = args.strobe && !ghost_active;
+            let strobe_wanted = active_preview.wants_strobe() && !ghost_active;
             let preview_active = (trail_wanted || strobe_wanted)
-                && args.composite_demo == CompositeDemoArg::Off
-                && (!scrubber_visible || clock.is_paused());
+                && args.composite_demo == CompositeDemoArg::Off;
             let preview: Option<functor_runtime_common::ScenePreview> = if preview_active {
                 // Not bound by the 8-target compositor cap — this only reads node
                 // transforms — so sample finely for a smooth arc.
                 let divisions = 32usize;
                 let window = 1.6f32;
                 let dt = window / divisions as f32;
-                let key = (game.current_scene_frame(), time.tts.to_bits(), strobe_wanted);
+                let key = (
+                    game.current_scene_frame(),
+                    time.tts.to_bits(),
+                    trail_wanted,
+                    strobe_wanted,
+                );
                 let cache_hit = trail_refresh > 0
                     && trail_cache.as_ref().is_some_and(|(k, _)| *k == key);
                 if cache_hit {
@@ -1690,6 +1719,7 @@ Escape again to quit"
                         ghost_on,
                         ghost_divisions,
                         ghost_window,
+                        preview_mode,
                     },
                 )
             } else {
@@ -1758,6 +1788,12 @@ Escape again to quit"
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SetGhostWindow(w)) => {
                     ghost_window = w.clamp(0.5, 5.0);
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetPreviewMode(m)) => {
+                    if args.debug_clock {
+                        eprintln!("[clock] preview {}", m.label());
+                    }
+                    preview_mode = m;
                 }
                 None => {}
             }

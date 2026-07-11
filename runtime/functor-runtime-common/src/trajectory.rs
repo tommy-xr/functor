@@ -414,6 +414,54 @@ pub fn overlay(scene: &mut Scene3D, trail: Scene3D) {
     };
 }
 
+/// The interactive scene-diff preview mode — what the scrubber's selector (and
+/// the `--trajectory`/`--strobe` launch flags, which seed it) ask the shell to
+/// overlay. Shared by both shells so the wire encoding and cycle order match.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PreviewMode {
+    #[default]
+    Off,
+    Trail,
+    Strobe,
+    Both,
+}
+
+impl PreviewMode {
+    pub fn wants_trail(self) -> bool {
+        matches!(self, PreviewMode::Trail | PreviewMode::Both)
+    }
+    pub fn wants_strobe(self) -> bool {
+        matches!(self, PreviewMode::Strobe | PreviewMode::Both)
+    }
+    /// Cycle order for a one-button UI: off → trail → strobe → both → off.
+    pub fn next(self) -> PreviewMode {
+        match self {
+            PreviewMode::Off => PreviewMode::Trail,
+            PreviewMode::Trail => PreviewMode::Strobe,
+            PreviewMode::Strobe => PreviewMode::Both,
+            PreviewMode::Both => PreviewMode::Off,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            PreviewMode::Off => "off",
+            PreviewMode::Trail => "trail",
+            PreviewMode::Strobe => "strobe",
+            PreviewMode::Both => "both",
+        }
+    }
+    /// Stable wire encoding for the wasm scrubber bridge (the DOM `<select>`
+    /// values); anything unknown is `Off`.
+    pub fn from_index(i: u32) -> PreviewMode {
+        match i {
+            1 => PreviewMode::Trail,
+            2 => PreviewMode::Strobe,
+            3 => PreviewMode::Both,
+            _ => PreviewMode::Off,
+        }
+    }
+}
+
 /// What [`scene_preview`] should compute.
 pub struct PreviewOptions {
     /// Forward-sim divisions (samples). Not bound by the screen-space

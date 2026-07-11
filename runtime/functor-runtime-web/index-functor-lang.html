@@ -48,6 +48,12 @@
         border-radius: 5px; padding: 4px 5px;
       }
       #scrub-ghost { accent-color: #e0803a; }
+      /* Scene-diff preview (docs/time-travel.md T6): trail / strobe selector. */
+      #scrub-preview {
+        font: 12px/1 monospace; color: #eee;
+        background: rgba(80,80,90,0.6); border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 5px; padding: 4px 5px;
+      }
     </style>
   </head>
   <body>
@@ -66,6 +72,14 @@
       </label>
       <label title="Ghost window (seconds)">
         <input id="scrub-ghost-win" type="number" step="0.5" value="2" />s
+      </label>
+      <label title="Scene-diff preview while paused: dotted trail and/or scene-space strobe copies of whatever moves (docs/time-travel.md T6)">
+        <select id="scrub-preview">
+          <option value="0" selected>preview: off</option>
+          <option value="1">preview: trail</option>
+          <option value="2">preview: strobe</option>
+          <option value="3">preview: both</option>
+        </select>
       </label>
     </div>
     <script type="module">
@@ -87,6 +101,7 @@
         functor_lang_scrub_step,
         functor_lang_scrub_paused,
         functor_lang_scrub_set_ghost,
+        functor_lang_scrub_set_preview,
       } from "./pkg/functor_runtime_web.js";
 
       // The Functor Lang entry file, substituted in by the CLI's dev server (see
@@ -252,6 +267,16 @@
         ghost.addEventListener("change", pushGhost);
         ghostDiv.addEventListener("input", pushGhost);
         ghostWin.addEventListener("input", pushGhost);
+
+        // Scene-diff preview (docs/time-travel.md T6): JS owns the selector
+        // state and pushes the mode index (0 off / 1 trail / 2 strobe / 3 both)
+        // on change; the frame loop overlays while paused. Pushed once at setup
+        // too: the browser may restore the select's value across a reload while
+        // the fresh runtime starts at Off.
+        const preview = document.getElementById("scrub-preview");
+        const pushPreview = () => functor_lang_scrub_set_preview(+preview.value);
+        preview.addEventListener("change", pushPreview);
+        pushPreview();
 
         const update = () => {
           if (pendingSeek !== null) {
