@@ -1,12 +1,11 @@
 name: Release Binaries
 
-# Builds the standalone `functor` binary for every supported platform, runs a
-# headless sanity check on each, and uploads a per-platform archive as a
-# workflow artifact.
+# Builds the standalone `functor` binary for every supported platform, sanity-
+# checks each, and uploads a per-platform archive as a workflow artifact.
 #
 # Two triggers:
 #   - workflow_dispatch: build them on demand for testing (version defaults to
-#     "dev"); download the archives from the run's Artifacts.
+#     0.0.0-dev); download the archives from the run's Artifacts.
 #   - workflow_call: invoked by the release pipeline (a later PR) with the real
 #     version; that job downloads these artifacts and attaches them to the
 #     GitHub release.
@@ -14,6 +13,11 @@ name: Release Binaries
 # Build order matters: the single `functor` binary embeds the web-runtime
 # bundle via `include_bytes!`, so the wasm bundle must exist before the CLI is
 # built.
+#
+# macOS: both arches build on the Apple-Silicon runner — arm64 natively, x86_64
+# by cross-compiling (`--target`). GitHub's Intel `macos-13` runners are being
+# deprecated and queue unreliably (a release can't wait hours for one), and an
+# arm64 host builds the x86_64 slice fine against the universal macOS SDK.
 
 on:
   workflow_dispatch:
@@ -40,12 +44,13 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: functor
-          - os: macos-14 # Apple Silicon
+          - os: macos-14 # Apple Silicon (native)
             target: aarch64-apple-darwin
             bin: functor
-          - os: macos-13 # Intel
+          - os: macos-14 # Intel, cross-compiled on the arm64 runner
             target: x86_64-apple-darwin
             bin: functor
+            cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: functor.exe
@@ -59,7 +64,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,${{ matrix.target }}
 
       - name: Install wasm-pack
         run: npm install -g wasm-pack
@@ -93,22 +98,35 @@ jobs:
 
       # FUNCTOR_RELEASE_VERSION bakes the version into the binary's `--version`
       # (the crate itself is 0.0.0-dev). For a dispatch build this is 0.0.0-dev;
-      # the release pipeline passes the real tag.
+      # the release pipeline passes the real tag. `--target` makes the output
+      # path uniform (target/<triple>/release/) across native and cross builds.
       - name: Build functor binary
-        run: cargo build --bin functor --release
+        run: cargo build --bin functor --release --target ${{ matrix.target }}
         env:
           FUNCTOR_RELEASE_VERSION: ${{ inputs.version }}
 
-      # Sanity-check the freshly built binary on its own platform: it runs
-      # (`--version`), and it can load + typecheck a real project. `build` is
-      # target-independent and headless — no GL window — so it works on the
-      # display-less CI runners.
-      - name: Sanity check the binary
+      # Native targets: run the binary — it reports the baked version, and it
+      # loads + typechecks a real project. `build` is target-independent and
+      # headless (no GL window), so it works on the display-less CI runners.
+      - name: Sanity check (native)
+        if: ${{ !matrix.cross }}
         shell: bash
         run: |
-          ./target/release/${{ matrix.bin }} --version
-          ./target/release/${{ matrix.bin }} --version | grep -qF "${{ inputs.version }}"
-          ./target/release/${{ matrix.bin }} -d examples/primitives build
+          bin="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          "$bin" --version
+          "$bin" --version | grep -qF "${{ inputs.version }}"
+          "$bin" -d examples/primitives build
+
+      # Cross-compiled target: can't execute an x86_64 binary on the arm64
+      # runner, so assert it's a valid x86_64 Mach-O instead. The arm64 job
+      # already proves the same source runs on macOS.
+      - name: Sanity check (cross, no exec)
+        if: ${{ matrix.cross }}
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          file "$bin"
+          file "$bin" | grep -q "x86_64"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -116,7 +134,7 @@ jobs:
         run: |
           staging="functor-${{ inputs.version }}-${{ matrix.target }}"
           mkdir "$staging"
-          cp "target/release/${{ matrix.bin }}" "$staging"/
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging"/
           cp LICENSE README.md "$staging"/ 2>/dev/null || true
           tar czf "$staging.tar.gz" "$staging"
           echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
@@ -127,7 +145,7 @@ jobs:
         run: |
           $staging = "functor-${{ inputs.version }}-${{ matrix.target }}"
           New-Item -ItemType Directory $staging | Out-Null
-          Copy-Item "target/release/${{ matrix.bin }}" $staging/
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" $staging/
           Copy-Item LICENSE, README.md $staging/ -ErrorAction SilentlyContinue
           Compress-Archive -Path "$staging/*" -DestinationPath "$staging.zip"
           "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
