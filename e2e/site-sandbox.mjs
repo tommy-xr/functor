@@ -442,6 +442,46 @@ const docsSlugs = manifest.groups.flatMap((g) => g.entries.map((e) => e.slug));
   await page.close();
 }
 
+// --- 7d. Docs search (Pagefind): typing surfaces results linking to docs. ------
+// The docs pages load ONE script (the stock Pagefind UI) that fetches the index
+// built into dist/pagefind/. Type a term, await async results, and assert a
+// result both links under /docs and navigates there when followed.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/docs/`);
+
+  // The search input mounts once pagefind-ui.js loads and PagefindUI inits.
+  const input = page.locator(".pagefind-ui__search-input");
+  await input.waitFor({ state: "visible", timeout: 15000 });
+  check("docs search UI mounts in the sidebar", true);
+
+  await input.fill("pipeline");
+  // Results are async (fetch + wasm decode); poll for at least one result card.
+  const results = page.locator(".pagefind-ui__result");
+  try {
+    await results.first().waitFor({ state: "visible", timeout: 15000 });
+  } catch {
+    // fall through — the count check reports the failure with detail
+  }
+  const count = await results.count();
+  check("docs search 'pipeline' returns >=1 result", count >= 1, `${count} results`);
+
+  const href = await page.locator(".pagefind-ui__result-link").first().getAttribute("href");
+  const underDocs = !!href && new URL(href, `${BASE}/docs/`).pathname.startsWith("/docs");
+  check("first search result links to a docs page", underDocs, `href=${href}`);
+
+  // Following the result navigates to a docs page (its .docs-main renders).
+  await page.goto(new URL(href, `${BASE}/docs/`).href);
+  await page.waitForFunction(() => !!document.querySelector(".docs-main"), { timeout: 10000 });
+  check(
+    "following a search result lands on a docs page",
+    new URL(page.url()).pathname.startsWith("/docs"),
+    `url=${page.url()}`
+  );
+
+  await page.close();
+}
+
 // --- 8. Inline #src= program with its OWN model shape fresh-inits. -------------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });

@@ -653,6 +653,47 @@ a:hover {
   margin-top: 0;
 }
 
+/* Pagefind stock UI, themed to the calm palette via its custom properties.
+   The index/UI is fetched at runtime from /pagefind/; when it's absent the
+   container stays empty (see the guarded mount in docs-page.mjs). */
+.docs-search {
+  margin-bottom: 6px;
+  --pagefind-ui-scale: 0.8;
+  --pagefind-ui-primary: var(--cyan);
+  --pagefind-ui-text: var(--text);
+  --pagefind-ui-background: var(--bg-panel);
+  --pagefind-ui-border: var(--line);
+  --pagefind-ui-tag: var(--bg-raised);
+  --pagefind-ui-border-width: 1px;
+  --pagefind-ui-border-radius: 6px;
+  --pagefind-ui-font: var(--font-mono);
+}
+
+/* The results panel and each sub-result sit on the raised surface with dim
+   body text and cyan links — readable against the dark docs page. */
+.docs-search .pagefind-ui__result {
+  background: var(--bg-raised);
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+}
+
+.docs-search .pagefind-ui__result-title a,
+.docs-search .pagefind-ui__result-link {
+  color: var(--cyan);
+}
+
+.docs-search .pagefind-ui__result-excerpt,
+.docs-search .pagefind-ui__message {
+  color: var(--text-dim);
+}
+
+.docs-search .pagefind-ui__result-excerpt mark {
+  background: transparent;
+  color: var(--amber);
+  font-weight: 600;
+}
+
 .docs-main h1 {
   font-family: var(--font-display);
   letter-spacing: 0.06em;

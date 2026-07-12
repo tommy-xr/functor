@@ -12,6 +12,7 @@ import { cp, mkdir, rm, access, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 import { marked, Renderer } from "marked";
+import * as pagefind from "pagefind";
 import { highlight, toBase64Url, escapeHtml } from "./src/highlight.mjs";
 import { renderDocsPage } from "./src/docs-page.mjs";
 
@@ -95,8 +96,25 @@ await esbuild.build({
 });
 
 await buildDocs();
+await buildSearchIndex();
 
 console.log(`site built at ${dist}`);
+
+// ---------------------------------------------------------------- search
+// Pagefind's programmatic Node API indexes the rendered site into dist/pagefind/
+// (its stock UI fetches this at runtime). We addDirectory over all of dist so
+// result URLs are root-relative (/docs/<slug>/), but ONLY the docs pages carry
+// data-pagefind-body — and once any page has it, Pagefind excludes every page
+// without it, so the index is exactly the docs. The index is the sole reason
+// docs pages load any JS; a build without it leaves the guarded UI mount a no-op.
+async function buildSearchIndex() {
+  const t0 = performance.now();
+  const { index } = await pagefind.createIndex();
+  await index.addDirectory({ path: dist });
+  await index.writeFiles({ outputPath: `${dist}/pagefind` });
+  await pagefind.close();
+  console.log(`docs search index built in ${Math.round(performance.now() - t0)}ms`);
+}
 
 // ------------------------------------------------------------------- docs
 // The docs are a build-time markdown pipeline. site/docs/manifest.json is the

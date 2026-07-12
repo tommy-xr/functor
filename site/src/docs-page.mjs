@@ -23,6 +23,7 @@ export const renderDocsPage = ({ title, sidebar, content, rootPrefix }) => `<!do
       href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
       rel="stylesheet"
     />
+    <link rel="stylesheet" href="${rootPrefix}pagefind/pagefind-ui.css" />
     <link rel="stylesheet" href="${rootPrefix}styles.css" />
   </head>
   <body class="docs-page">
@@ -37,6 +38,7 @@ export const renderDocsPage = ({ title, sidebar, content, rootPrefix }) => `<!do
 
     <div class="docs-layout">
       <nav class="docs-nav">
+        <div class="docs-search" id="docs-search" data-pagefind-ignore></div>
 ${sidebar}
       </nav>
 
@@ -44,6 +46,24 @@ ${sidebar}
 ${content}
       </main>
     </div>
+
+    <!-- Docs search: the ONE script these otherwise zero-JS pages load. The
+         Pagefind UI + its index are built into ${rootPrefix}pagefind/. If that
+         directory is absent (a build without the dep), the script 404s,
+         PagefindUI stays undefined, and the guarded init below is a no-op —
+         the page still renders. -->
+    <script src="${rootPrefix}pagefind/pagefind-ui.js" onerror="window.__nopagefind = true"></script>
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        if (window.__nopagefind || typeof PagefindUI === "undefined") return;
+        new PagefindUI({
+          element: "#docs-search",
+          showSubResults: true,
+          showImages: false,
+          placeholder: "Search the docs",
+        });
+      });
+    </script>
   </body>
 </html>
 `;
