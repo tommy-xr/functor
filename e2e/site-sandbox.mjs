@@ -501,6 +501,37 @@ const docsSlugs = manifest.groups.flatMap((g) => g.entries.map((e) => e.slug));
   await page.close();
 }
 
+// --- 7e. The language reference renders its major sections and is indexed. ------
+// The full language guide is a long, section-heavy page; assert it renders a
+// healthy number of h2 sections and that Pagefind indexes its distinctive
+// content (a search for a term unique to this page returns a docs result).
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/docs/language/`);
+  await page.waitForFunction(() => !!document.querySelector(".docs-main h1"), { timeout: 10000 });
+  const h2s = await page.locator(".docs-main h2").count();
+  check("language reference renders its major sections", h2s >= 12, `${h2s} h2 sections`);
+
+  // Pagefind indexes the new content: a term unique to the language guide
+  // ("polymorphism", from the generics section) returns a docs result.
+  const input = page.locator(".pagefind-ui__search-input");
+  await input.waitFor({ state: "visible", timeout: 15000 });
+  await input.fill("polymorphism");
+  const results = page.locator(".pagefind-ui__result");
+  try {
+    await results.first().waitFor({ state: "visible", timeout: 15000 });
+  } catch {
+    // fall through — the count check reports the failure with detail
+  }
+  const count = await results.count();
+  check("docs search 'polymorphism' returns >=1 result", count >= 1, `${count} results`);
+  const href = await page.locator(".pagefind-ui__result-link").first().getAttribute("href");
+  const underDocs = !!href && new URL(href, `${BASE}/docs/`).pathname.startsWith("/docs");
+  check("'polymorphism' result links to a docs page", underDocs, `href=${href}`);
+
+  await page.close();
+}
+
 // --- 8. Inline #src= program with its OWN model shape fresh-inits. -------------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
