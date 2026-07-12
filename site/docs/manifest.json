@@ -1,0 +1,16 @@
+{
+  "groups": [
+    {
+      "title": "Guide",
+      "entries": [
+        { "slug": "index", "title": "Get started" }
+      ]
+    },
+    {
+      "title": "Reference",
+      "entries": [
+        { "slug": "language", "title": "Language reference" }
+      ]
+    }
+  ]
+}

@@ -634,6 +634,25 @@ a:hover {
   text-decoration: none;
 }
 
+.docs-nav a[aria-current="page"] {
+  color: var(--cyan);
+  border-left-color: var(--cyan);
+}
+
+.docs-nav-group {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  opacity: 0.75;
+  margin-top: 10px;
+}
+
+.docs-nav-group:first-child {
+  margin-top: 0;
+}
+
 .docs-main h1 {
   font-family: var(--font-display);
   letter-spacing: 0.06em;

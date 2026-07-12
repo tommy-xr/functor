@@ -8,15 +8,18 @@
 //
 // The output is fully static — deploy site/dist to any static host.
 
-import { cp, mkdir, rm, access } from "node:fs/promises";
+import { cp, mkdir, rm, access, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
+import { marked, Renderer } from "marked";
+import { highlight, toBase64Url, escapeHtml } from "./src/highlight.mjs";
+import { renderDocsPage } from "./src/docs-page.mjs";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = `${site}dist`;
 
-const PAGES = ["index.html", "sandbox.html", "player.html", "docs.html", "styles.css"];
+const PAGES = ["index.html", "sandbox.html", "player.html", "styles.css"];
 
 const PKG = `${root}runtime/functor-runtime-web/pkg`;
 const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
@@ -80,7 +83,7 @@ if (langPkgPresent) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`, `${site}src/hero.js`],
+  entryPoints: [`${site}src/sandbox.js`, `${site}src/hero.js`],
   bundle: true,
   minify: true,
   format: "esm",
@@ -91,4 +94,78 @@ await esbuild.build({
   logLevel: "info",
 });
 
+await buildDocs();
+
 console.log(`site built at ${dist}`);
+
+// ------------------------------------------------------------------- docs
+// The docs are a build-time markdown pipeline. site/docs/manifest.json is the
+// single nav source of truth (ordered groups → { slug, title } entries); each
+// slug is a sibling <slug>.md rendered through marked into a page. The `index`
+// slug is the docs root (dist/docs/index.html → served at /docs/); every other
+// slug nests (dist/docs/<slug>/index.html → /docs/<slug>/) for clean URLs.
+async function buildDocs() {
+  const manifest = JSON.parse(await readFile(`${site}docs/manifest.json`, "utf8"));
+
+  // "../" from /docs/ back to the site root; "../../" from a nested /docs/<slug>/.
+  const rootPrefixFor = (slug) => (slug === "index" ? "../" : "../../");
+  const docHref = (slug, rootPrefix) =>
+    slug === "index" ? `${rootPrefix}docs/` : `${rootPrefix}docs/${slug}/`;
+
+  const renderSidebar = (currentSlug, rootPrefix) =>
+    manifest.groups
+      .flatMap((group) => [
+        `        <div class="docs-nav-group">${escapeHtml(group.title)}</div>`,
+        ...group.entries.map((entry) => {
+          const current = entry.slug === currentSlug ? ` aria-current="page"` : "";
+          return `        <a href="${docHref(entry.slug, rootPrefix)}"${current}>${escapeHtml(entry.title)}</a>`;
+        }),
+      ])
+      .join("\n");
+
+  // A code fence's info string drives the render: `functor` highlights (and
+  // `functor run` adds the sandbox try-button), `sh`/`shell` keep the shell
+  // style, anything else is a plain escaped block.
+  const renderCode = (text, lang, rootPrefix) => {
+    const words = (lang || "").trim().split(/\s+/);
+    if (words[0] === "functor") {
+      const button = words.includes("run")
+        ? `<a class="try-button" href="${rootPrefix}sandbox.html#src=${toBase64Url(text)}" title="Open this program live in the sandbox" target="_blank">▶ try it</a>`
+        : "";
+      return `<pre class="functor-lang">${highlight(text)}${button}</pre>`;
+    }
+    if (words[0] === "sh" || words[0] === "shell") {
+      return `<pre class="shell">${escapeHtml(text)}</pre>`;
+    }
+    return `<pre>${escapeHtml(text)}</pre>`;
+  };
+
+  for (const entry of manifest.groups.flatMap((g) => g.entries)) {
+    const rootPrefix = rootPrefixFor(entry.slug);
+    const md = await readFile(`${site}docs/${entry.slug}.md`, "utf8");
+    const renderer = new Renderer();
+    renderer.code = ({ text, lang }) => renderCode(text, lang, rootPrefix);
+    const content = marked.parse(md, { renderer });
+    const html = renderDocsPage({
+      title: entry.title,
+      sidebar: renderSidebar(entry.slug, rootPrefix),
+      content,
+      rootPrefix,
+    });
+    const outDir = entry.slug === "index" ? `${dist}/docs` : `${dist}/docs/${entry.slug}`;
+    await mkdir(outDir, { recursive: true });
+    await writeFile(`${outDir}/index.html`, html);
+  }
+
+  // Meta-refresh stub so the old /docs.html link still lands on the docs index.
+  await writeFile(
+    `${dist}/docs.html`,
+    `<!doctype html>
+<meta charset="utf-8" />
+<meta http-equiv="refresh" content="0; url=docs/" />
+<link rel="canonical" href="docs/" />
+<title>functor docs</title>
+<p>Redirecting to <a href="docs/">the docs</a>…</p>
+`
+  );
+}

@@ -2,6 +2,9 @@
 // theme. The tokenizer is a small hand-rolled StreamLanguage (Functor Lang has no
 // Lezer grammar); keep the keyword list in sync with the language
 // (.claude/skills/functor-lang/SKILL.md is the source of truth).
+//
+// The docs pipeline's build-time highlighter (src/highlight.mjs) mirrors this
+// same classification with a few regexes — keep the two token sets in sync.
 
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";

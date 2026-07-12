@@ -1,10 +1,7 @@
-// Docs page enhancement: syntax-highlight the <pre class="functor-lang"> blocks and
-// give the runnable ones (class "runnable") a "▶ try it" button that opens
-// the program in the sandbox via the #src= fragment (see sandbox.js).
-//
-// The tokenizer mirrors src/functor-lang.js's CodeMirror StreamLanguage; it's a few
-// regexes, so a static-HTML variant beats dragging CodeMirror onto the docs
-// page. Keep the two classifications in sync.
+// Build-time syntax highlighter for Functor Lang code blocks. The tokenizer is a
+// few regexes lifted verbatim from the old src/docs.js; it mirrors
+// src/functor-lang.js's CodeMirror StreamLanguage (same token classes tok-*).
+// Keep the two classifications in sync (functor-lang.js carries the note).
 
 const KEYWORDS = new Set(["let", "type", "match", "with", "mut", "in"]);
 const ATOMS = new Set(["true", "false"]);
@@ -12,7 +9,7 @@ const ATOMS = new Set(["true", "false"]);
 const TOKEN =
   /\/\/[^\n]*|"(?:[^"\\]|\\.)*"?|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|[+\-*/<>=|]/g;
 
-const escapeHtml = (s) =>
+export const escapeHtml = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 const classify = (token) => {
@@ -26,7 +23,7 @@ const classify = (token) => {
   return "tok-o";
 };
 
-const highlight = (source) => {
+export const highlight = (source) => {
   let html = "";
   let last = 0;
   for (const match of source.matchAll(TOKEN)) {
@@ -39,22 +36,8 @@ const highlight = (source) => {
   return html + escapeHtml(source.slice(last));
 };
 
-const toBase64Url = (s) =>
+export const toBase64Url = (s) =>
   btoa(String.fromCharCode(...new TextEncoder().encode(s)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
-
-for (const pre of document.querySelectorAll("pre.functor-lang")) {
-  const source = pre.textContent;
-  pre.innerHTML = highlight(source);
-  if (pre.classList.contains("runnable")) {
-    const link = document.createElement("a");
-    link.className = "try-button";
-    link.textContent = "▶ try it";
-    link.title = "Open this program live in the sandbox";
-    link.href = `sandbox.html#src=${toBase64Url(source)}`;
-    link.target = "_blank";
-    pre.appendChild(link);
-  }
-}

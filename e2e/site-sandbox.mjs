@@ -25,6 +25,7 @@
 //   wasm-pack build runtime/functor-runtime-web --target=web   # once
 //   node e2e/site-sandbox.mjs
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
@@ -333,18 +334,26 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   await page.close();
 }
 
-// --- 7. Docs page + "try it" into the sandbox. --------------------------------
+// --- 7. Docs index page + "try it" into the sandbox. --------------------------
+// The docs are now a build-time markdown pipeline (site/docs/*.md → dist/docs/).
+// The nav lives in site/docs/manifest.json; slug `index` is the docs root
+// (/docs/), every other slug nests (/docs/<slug>/).
+const manifest = JSON.parse(readFileSync(`${ROOT}site/docs/manifest.json`, "utf8"));
+const docsUrl = (slug) => (slug === "index" ? `${BASE}/docs/` : `${BASE}/docs/${slug}/`);
+const docsSlugs = manifest.groups.flatMap((g) => g.entries.map((e) => e.slug));
+
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  await page.goto(`${BASE}/docs.html`);
+  await page.goto(`${BASE}/docs/`);
   const highlighted = await page.locator("pre.functor-lang span.tok-k").count();
   const tryButtons = await page.locator("a.try-button").count();
   check("docs page highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
   check("docs page offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
 
-  // Follow the first try-it link in THIS page (target=_blank would detach).
+  // Follow the first try-it link in THIS page (target=_blank would detach); the
+  // href is relative to /docs/, so resolve it against the page URL.
   const href = await page.locator("a.try-button").first().getAttribute("href");
-  await page.goto(`${BASE}/${href}`);
+  await page.goto(new URL(href, `${BASE}/docs/`).href);
   try {
     await page.waitForFunction(
       () => window.__sandbox && window.__sandbox.status().state === "live",
@@ -359,6 +368,77 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   } catch {
     check("docs try-it program loads live in the sandbox", false, href);
   }
+  await page.close();
+}
+
+// --- 7b. Every try-it program across ALL docs pages loads live and clean. ------
+// Enumerate every page in the manifest, collect every try-button's #src= across
+// all of them, then load each into a fresh sandbox and assert it reaches live
+// with no `[functor-lang]` error consoles. This is the regression gate for the
+// migrated runnables (and any content commits grow later).
+{
+  const programs = []; // { fromSlug, b64 }
+  for (const slug of docsSlugs) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.goto(docsUrl(slug));
+    const hrefs = await page.locator("a.try-button").evaluateAll((els) =>
+      els.map((el) => el.getAttribute("href"))
+    );
+    for (const href of hrefs) {
+      const frag = new URL(href, docsUrl(slug)).hash; // "#src=<b64>"
+      const b64 = frag.replace(/^#src=/, "");
+      // Decodable base64url (the sandbox's fragment contract) — fail loud if not.
+      let decoded = "";
+      try {
+        decoded = Buffer.from(b64, "base64url").toString("utf8");
+      } catch {
+        decoded = "";
+      }
+      check(`try-button on '${slug}' has a decodable #src=`, decoded.length > 0, href);
+      programs.push({ fromSlug: slug, b64 });
+    }
+    await page.close();
+  }
+  check("docs try-buttons found across all pages", programs.length >= 4, `${programs.length} programs`);
+
+  for (let i = 0; i < programs.length; i++) {
+    const { fromSlug, b64 } = programs[i];
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    const consoleLog = [];
+    page.on("console", (m) => consoleLog.push(m.text()));
+    await page.goto(`${BASE}/sandbox.html#src=${b64}`);
+    const name = `docs try-it #${i + 1} (from '${fromSlug}') loads live and ticks cleanly`;
+    try {
+      await page.waitForFunction(
+        () => window.__sandbox && window.__sandbox.status().state === "live",
+        { timeout: 30000 }
+      );
+      await sleep(600);
+      const errors = consoleLog.filter((m) => m.includes("[functor-lang]") && m.includes("error"));
+      check(name, errors.length === 0, errors.join("\n"));
+    } catch {
+      check(name, false, consoleLog.slice(-5).join("\n"));
+    }
+    await page.close();
+  }
+}
+
+// --- 7c. The old /docs.html link still lands on the docs index (redirect). -----
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/docs.html`);
+  // The stub is a 0-delay meta refresh to docs/; Playwright follows it. Give it a
+  // moment, then assert we're on the docs index (its h1 + sidebar are present).
+  let landed = false;
+  for (let i = 0; i < 40; i++) {
+    const h1 = await page.locator(".docs-main h1").count();
+    if (h1 > 0 && page.url().includes("/docs/")) {
+      landed = true;
+      break;
+    }
+    await sleep(100);
+  }
+  check("old /docs.html redirects to the docs index", landed, `url=${page.url()}`);
   await page.close();
 }
 
