@@ -9,8 +9,19 @@ const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { LanguageClient } = require("vscode-languageclient/node");
+// All inspector decision logic (relay filter, attach/detach state, port
+// parsing, status bar text) lives in this plain module so it is testable with
+// `node --test` (client/inspector.test.js) — extension.js keeps only the thin
+// VS Code wiring around it.
+const inspector = require("./inspector.js");
 
 let client;
+// The paused-scene inspector's attach state + its status bar item. Attach
+// persists server-side until detach, so this is per-session UI state; the
+// last-used port is persisted across sessions in globalState.
+let inspectorState;
+let inspectorStatus;
+const INSPECTOR_PORT_KEY = "functor-lang.inspector.port";
 // The open preview panel, if any. A singleton: the dev server owns a fixed
 // port, so a second panel would race the first for it — and closing either
 // panel would kill the server out from under the other. Re-running the
@@ -46,6 +57,46 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("functor-lang.openLivePreview", openLivePreview)
+  );
+
+  // --- Paused-scene inspector: attach/detach + status bar -----------------
+  inspectorState = inspector.initialState(context.globalState.get(INSPECTOR_PORT_KEY));
+  inspectorStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+  const renderInspectorStatus = () => {
+    const bar = inspector.statusBar(inspectorState);
+    inspectorStatus.text = bar.text;
+    inspectorStatus.tooltip = bar.tooltip;
+    inspectorStatus.command = bar.command;
+    inspectorStatus.show();
+  };
+  renderInspectorStatus();
+
+  const attachInspector = async () => {
+    const input = await vscode.window.showInputBox({
+      prompt: "Functor Lang inspector: debug-server port to attach to",
+      value: inspector.promptDefault(inspectorState),
+      validateInput: (v) => inspector.parsePort(v).error,
+    });
+    if (input === undefined) return; // cancelled
+    const parsed = inspector.parsePort(input);
+    if (parsed.error) return; // validateInput blocks this, but be defensive
+    inspectorState = inspector.reduce(inspectorState, { type: "attach", port: parsed.port });
+    context.globalState.update(INSPECTOR_PORT_KEY, parsed.port);
+    const n = inspector.attachNotification(parsed.port);
+    if (client) client.sendNotification(n.notification, n.params);
+    renderInspectorStatus();
+  };
+  const detachInspector = () => {
+    inspectorState = inspector.reduce(inspectorState, { type: "detach" });
+    const n = inspector.detachNotification();
+    if (client) client.sendNotification(n.notification, n.params);
+    renderInspectorStatus();
+  };
+
+  context.subscriptions.push(
+    inspectorStatus,
+    vscode.commands.registerCommand(inspector.ATTACH_COMMAND, attachInspector),
+    vscode.commands.registerCommand(inspector.DETACH_COMMAND, detachInspector)
   );
 }
 
@@ -214,6 +265,15 @@ async function openLivePreview() {
   };
   panel.webview.onDidReceiveMessage((msg) => {
     if (!msg) return;
+    // Inspector trace relay (wasm push path, PR2b): the game iframe posts a
+    // `functor-inspector-trace` message that the webview forwards here; hand
+    // the wire-contract payload to the LSP. Inert until the wasm runtime emits
+    // these; unrelated messages fall through to relayTrace → null.
+    const relayed = inspector.relayTrace(msg);
+    if (relayed) {
+      if (client) client.sendNotification(relayed.notification, relayed.params);
+      return;
+    }
     if (msg.type === "functor-lang-preview-ready") {
       if (ready) return;
       ready = true;
@@ -314,10 +374,15 @@ function previewHtml() {
           // Extension → game page (the page only accepts pushes from its
           // parent — us).
           if (frame.contentWindow) frame.contentWindow.postMessage(data, "*");
-        } else if (data.type === "functor-lang-set-source-result" || data.type === "functor-lang-preview-ready") {
-          // Game page → extension. Only trust the page we framed: anything
-          // else on that port (or the game code itself) must not spoof
-          // results or readiness.
+        } else if (
+          data.type === "functor-lang-set-source-result" ||
+          data.type === "functor-lang-preview-ready" ||
+          data.type === "functor-inspector-trace"
+        ) {
+          // Game page → extension: reload results, readiness, and inspector
+          // trace pushes (the wasm path, PR2b — inert until the runtime emits
+          // them). Only trust the page we framed: anything else on that port
+          // (or the game code itself) must not spoof these.
           if (event.source !== frame.contentWindow) return;
           if (event.origin && event.origin !== "${PREVIEW_ORIGIN}") return;
           vscode.postMessage(data);
