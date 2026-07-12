@@ -26,7 +26,10 @@ use functor_runtime_common::functor_lang_prelude::{
     take_ui_handlers, view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind,
     RealEffects, UiHandler,
 };
-use functor_runtime_common::functor_lang_producer::{FrameCtx, Reporter, SpanSource};
+use functor_runtime_common::functor_lang_producer::{
+    journal_arm, journal_swap, FrameCtx, JournalEntry, Reporter, SpanSource,
+};
+use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::timetravel::SceneRecorder;
@@ -121,6 +124,20 @@ pub struct FunctorLangWebGame {
     /// of a frozen canvas, React-HMR style). Tracked so the DOM is touched only
     /// on a transition (draw breaks / recovers), not every frame.
     overlay_error: Option<String>,
+    /// The last real frame's replay journal (visual-debugger PR2b): one entry
+    /// per model-updating call, swapped in from the thread-local journal at the
+    /// end of each `tick`. A paused frame runs no `tick`, so this is preserved —
+    /// the inspector reads the last real frame. Replayed through
+    /// `Session::call_recorded` while paused. Mirrors the desktop producer.
+    last_frame_journal: Vec<JournalEntry>,
+    /// The lazily built + cached inspector-trace JSON for the current paused
+    /// frame. Invalidated when the frame advances (`tick`), the paused frame
+    /// changes (rewind/seek), or the program reloads.
+    cached_trace: Option<String>,
+    /// Per-file sha256 of the loaded `.fun` source, computed at load / reload
+    /// (not per frame) — the wire contract's `sources`, and the per-file
+    /// base→(file, local offset) map for binding spans.
+    source_hashes: Vec<InspectorSource>,
 }
 
 /// A successfully loaded, contract-validated game module (the desktop
@@ -282,9 +299,18 @@ impl FunctorLangWebGame {
             .unwrap_or_else(|| "game.fun".to_string());
         let loaded = load_source(&sources)?;
         web_sys::console::log_1(&format!("[functor-lang] loaded {path}").into());
+        // Arm the paused-inspector journal on this (the only) wasm thread: from
+        // now on every live model-updating call is journaled (a cheap Rc-clone
+        // push). During play we NEVER arm the recorder or render Display — the
+        // trace is built lazily only when paused (visual-debugger PR2b).
+        journal_arm();
+        let source_hashes = inspector_sources(&loaded.sources);
         Ok(FunctorLangWebGame {
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_console),
             overlay_error: None,
+            last_frame_journal: Vec::new(),
+            cached_trace: None,
+            source_hashes,
             sources,
             path,
             module: loaded.module,
@@ -330,6 +356,13 @@ impl FunctorLangWebGame {
         for warning in &report.warnings {
             web_sys::console::warn_1(&format!("[functor-lang] reload: {warning}").into());
         }
+        // Recompute the inspector source hashes for the edited files, and drop
+        // the journal + cached trace: they refer to the OLD program's spans and
+        // execution (visual-debugger PR2b — reload clears both, like desktop).
+        self.source_hashes = inspector_sources(&loaded.sources);
+        self.last_frame_journal.clear();
+        self.cached_trace = None;
+        journal_swap(); // discard any partial current-frame journal
         self.reporter.set_source(SpanSource::Project(loaded.sources));
         self.module = loaded.module;
         self.session = loaded.session;
@@ -469,6 +502,10 @@ impl GameProducer for FunctorLangWebGame {
             // Model restored to `target`; drop orphaned buffered input so it can't
             // record into the branch (fixed-timestep 0-substep buffering, xreview).
             self.input_buf.clear();
+            // The scrubbed frame is a historical one whose journal we didn't keep
+            // — report it honestly as empty invocations (visual-debugger PR2b).
+            self.last_frame_journal.clear();
+            self.cached_trace = None;
         }
         result
     }
@@ -485,6 +522,10 @@ impl GameProducer for FunctorLangWebGame {
             // Same as rewind: the model was restored, so buffered input since the
             // last recorded frame is orphaned and must not enter the branch.
             self.input_buf.clear();
+            // The paused frame changed — clear the last-frame journal and cache
+            // so the trace reflects the scrubbed frame (visual-debugger PR2b).
+            self.last_frame_journal.clear();
+            self.cached_trace = None;
         }
         result
     }
@@ -532,6 +573,14 @@ impl GameProducer for FunctorLangWebGame {
         // (docs/time-travel.md T6a). Web runs it as one call — unlike native it
         // has no per-frame perf timing to split it at the physics boundary.
         self.ctx().run_frame(frame_time);
+        // A real frame ran: swap its journal into `last_frame_journal` (leaving
+        // a fresh armed journal) and drop the cached trace (the frame advanced).
+        // A paused frame never reaches here, so its last real frame is kept
+        // (visual-debugger PR2b — mirrors the desktop producer).
+        if let Some(journal) = journal_swap() {
+            self.last_frame_journal = journal;
+        }
+        self.cached_trace = None;
     }
 
     fn key_event(&mut self, code: i32, is_down: bool) {
@@ -702,6 +751,34 @@ AudioScene.empty), got {}",
 
     fn state_debug(&self) -> String {
         self.model.to_string()
+    }
+
+    /// The paused-inspector trace (visual-debugger PR2b), same contract and
+    /// caching as the desktop producer: the byte-stable stub while playing
+    /// (no `frame`/`tts`), and a lazily built + cached full doc while paused —
+    /// built only once per pause / paused-frame change (the cache is dropped on
+    /// tick / rewind / seek / reload). Published to the page's poll loop via
+    /// [`publish_inspector_trace`] each frame; the page relays a CHANGE to the
+    /// VS Code live-preview as a `functor-inspector-trace` postMessage.
+    fn inspector_trace(&mut self, paused: bool) -> String {
+        if !paused {
+            return build_trace_doc(false, 0, 0.0, &self.source_hashes, &[], &self.session);
+        }
+        if let Some(cached) = &self.cached_trace {
+            return cached.clone();
+        }
+        let frame = self.recorder.current_scene_frame().unwrap_or(0);
+        let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
+        let json = build_trace_doc(
+            true,
+            frame,
+            tts,
+            &self.source_hashes,
+            &self.last_frame_journal,
+            &self.session,
+        );
+        self.cached_trace = Some(json.clone());
+        json
     }
 
     fn net_drain_commands(&self) -> String {
@@ -1118,4 +1195,52 @@ pub fn functor_lang_scene_range() -> Vec<f64> {
 #[wasm_bindgen]
 pub fn functor_lang_scrub_paused() -> bool {
     SCRUB_VIEW.with(|v| v.borrow().3)
+}
+
+// --- Paused-scene inspector ↔ DOM bridge (visual-debugger PR2b) --------------
+//
+// The desktop shell serves the inspector trace over `GET /trace`; the web shell
+// has no debug HTTP server, so it uses the SAME poll pattern as the scrubber
+// above. Each frame the loop publishes the current trace doc via
+// [`publish_inspector_trace`]; a GENERATION counter bumps only when the doc
+// CONTENT changes — which, given the producer's caching, happens only on a
+// pause-state change or a paused-frame change (step/seek), never generally
+// during play. The page polls the counter and, on a change, reads the doc and
+// relays it to the VS Code live-preview as a `functor-inspector-trace`
+// postMessage (which the extension already forwards to the LSP).
+
+thread_local! {
+    /// `(generation, doc json)` — published each frame by the loop, read by the
+    /// page's poll exports. The generation increments ONLY when the doc bytes
+    /// change, so the page posts a trace on pause / paused-frame change, not
+    /// every frame.
+    static INSPECTOR_TRACE: RefCell<(u32, String)> = const { RefCell::new((0, String::new())) };
+}
+
+/// Publish this frame's inspector trace for the page to poll. Cheap: the doc is
+/// the producer's cached string while paused (rebuilt only on a pause/frame
+/// change) and the byte-stable stub while playing, so the equality check here
+/// is a plain string compare — the generation bumps only on a real change.
+pub fn publish_inspector_trace(doc: String) {
+    INSPECTOR_TRACE.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.1 != doc {
+            t.0 = t.0.wrapping_add(1);
+            t.1 = doc;
+        }
+    });
+}
+
+/// Runtime → page: the inspector-trace generation. The page polls this each
+/// frame and reads [`functor_lang_inspector_trace`] only when it changes.
+#[wasm_bindgen]
+pub fn functor_lang_inspector_trace_gen() -> u32 {
+    INSPECTOR_TRACE.with(|t| t.borrow().0)
+}
+
+/// Runtime → page: the current inspector-trace wire JSON (the paused full doc,
+/// or the byte-stable playing stub).
+#[wasm_bindgen]
+pub fn functor_lang_inspector_trace() -> String {
+    INSPECTOR_TRACE.with(|t| t.borrow().1.clone())
 }

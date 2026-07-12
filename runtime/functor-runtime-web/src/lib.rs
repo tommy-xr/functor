@@ -1395,6 +1395,13 @@ async fn run_async() -> Result<(), JsValue> {
                 clock.is_paused(),
             );
 
+            // Publish the paused-inspector trace for the page's poll loop
+            // (visual-debugger PR2b). Cheap: while playing this is the byte-stable
+            // stub; while paused the producer serves its cached doc (rebuilt only
+            // on a pause / paused-frame change). The page relays a CHANGE to the
+            // VS Code live-preview as a `functor-inspector-trace` postMessage.
+            functor_lang_game::publish_inspector_trace(game.inspector_trace(clock.is_paused()));
+
             // Schedule the next frame. In deterministic mode (?fixed-time, the
             // golden) render a short warm-up (shader compile, first-frame
             // settling) then stop, so the page is perfectly static: the golden

@@ -16,6 +16,7 @@
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",
     "test:wasm-smoke": "node e2e/wasm-smoke.mjs",
+    "test:inspector-emit": "node e2e/inspector-emit.mjs",
     "site:build": "node site/build.mjs",
     "site:serve": "node site/serve.mjs",
     "test:site": "node e2e/site-sandbox.mjs"
