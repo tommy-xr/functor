@@ -86,6 +86,28 @@ fn print_report(path: &str, report: &ModelReport) {
     }
     println!();
 
+    // Per-node: local translation (with an `(offset)` marker for a non-origin
+    // one — a baked placement that renders displaced) and, for a mesh node, its
+    // local bbox. This is how a Kenney-style baked offset shows up in text.
+    println!("Nodes: {}", report.nodes.len());
+    for (i, n) in report.nodes.iter().enumerate() {
+        let offset = if n.translation_nonzero {
+            "  (offset)"
+        } else {
+            ""
+        };
+        let bbox = if n.has_mesh {
+            format!("  mesh bbox: {}", format_aabb(&n.bbox))
+        } else {
+            String::new()
+        };
+        println!(
+            "  [{}] {} - translation ({:.4}, {:.4}, {:.4}){}{}",
+            i, n.name, n.translation[0], n.translation[1], n.translation[2], offset, bbox,
+        );
+    }
+    println!();
+
     if report.has_skeleton {
         println!("Skeleton: present ({} joints)", report.joint_count);
     } else {

@@ -99,10 +99,58 @@ pub struct AnimationReport {
     pub duration: f32,
 }
 
+/// Per-node inspection: the node's name, its local translation, and — for a mesh
+/// node — the AABB of its own mesh positions. Kenney-style glbs bake placement
+/// offsets into node translations; those render displaced and look like renderer
+/// bugs, so surfacing them here is the point of this section.
+#[derive(Clone, Debug, Serialize)]
+pub struct NodeReport {
+    pub name: String,
+    /// The node's local translation (the T of its local TRS transform).
+    /// Serialized as `[x, y, z]`, or `null` if any component is non-finite —
+    /// mirroring [`Aabb`] so a malformed node transform never emits a JSON array
+    /// containing `null` (serde renders a non-finite float as `null`).
+    #[serde(serialize_with = "serialize_translation")]
+    pub translation: [f32; 3],
+    /// True when `translation` is not (approximately) the origin — the baked
+    /// placement offset worth noticing.
+    pub translation_nonzero: bool,
+    /// True when this node carries a mesh.
+    pub has_mesh: bool,
+    /// AABB of this node's own mesh positions, in the mesh's local space (bind
+    /// pose; the node's transform is NOT applied). Empty (serializes to `null`)
+    /// for a node with no mesh (or a mesh whose primitives carry no positions).
+    pub bbox: Aabb,
+}
+
+/// Whether a local translation is far enough from the origin to flag as a baked
+/// placement offset (vs floating-point noise around zero).
+fn is_nonzero_translation(t: [f32; 3]) -> bool {
+    const EPS: f32 = 1e-6;
+    t.iter().any(|c| c.abs() > EPS)
+}
+
+/// Serialize a `[x, y, z]` translation, emitting `null` when any component is
+/// non-finite — the same guard [`Aabb`] applies, so a malformed node transform
+/// never yields a JSON array containing `null`.
+fn serialize_translation<S>(t: &[f32; 3], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if t.iter().any(|c| !c.is_finite()) {
+        serializer.serialize_none()
+    } else {
+        t.serialize(serializer)
+    }
+}
+
 /// The full model inspection report.
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelReport {
     pub primitives: Vec<PrimitiveReport>,
+    /// Per-node name + local translation (+ mesh bbox) in scene traversal order
+    /// (depth-first, parents before children). Reveals baked node offsets.
+    pub nodes: Vec<NodeReport>,
     pub mesh_count: usize,
     /// Number of joints in the skeleton (0 if no skeleton).
     pub joint_count: i32,
@@ -172,6 +220,7 @@ pub fn inspect_model(
     }
 
     let mut primitives: Vec<PrimitiveReport> = Vec::new();
+    let mut nodes: Vec<NodeReport> = Vec::new();
     let mut skinned_vertices: Vec<SkinnedVertex> = Vec::new();
     let mut static_aabb = Aabb::empty();
     let mut mesh_count: usize = 0;
@@ -188,6 +237,7 @@ pub fn inspect_model(
                 &buffers_data,
                 &hierarchy,
                 &mut primitives,
+                &mut nodes,
                 &mut skinned_vertices,
                 &mut static_aabb,
                 &mut mesh_count,
@@ -277,6 +327,7 @@ pub fn inspect_model(
 
     Ok(ModelReport {
         primitives,
+        nodes,
         mesh_count,
         joint_count,
         has_skeleton,
@@ -306,16 +357,23 @@ fn skin_position(v: &SkinnedVertex, skinning_transforms: &[Matrix4<f32>]) -> Vec
     vec3(p.x, p.y, p.z)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn inspect_node(
     node: &gltf::Node,
     buffers: &[gltf::buffer::Data],
     hierarchy: &HashMap<usize, HierarchyNode>,
     primitives: &mut Vec<PrimitiveReport>,
+    nodes: &mut Vec<NodeReport>,
     skinned_vertices: &mut Vec<SkinnedVertex>,
     static_aabb: &mut Aabb,
     mesh_count: &mut usize,
     maybe_skeleton: &mut Option<Skeleton>,
 ) {
+    // This node's own mesh bbox (local space), accumulated alongside the global
+    // `static_aabb` as we walk its primitives' positions.
+    let mut node_bbox = Aabb::empty();
+    let has_mesh = node.mesh().is_some();
+
     if let Some(mesh) = node.mesh() {
         *mesh_count += 1;
         let mesh_name = mesh.name().unwrap_or("<no name>").to_owned();
@@ -352,6 +410,7 @@ fn inspect_node(
             for (i, pos) in positions.iter().enumerate() {
                 let position = vec3(pos[0], pos[1], pos[2]);
                 static_aabb.extend(position);
+                node_bbox.extend(position);
 
                 let joint = joints.get(i).copied().unwrap_or([0, 0, 0, 0]);
                 let weight = weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
@@ -378,6 +437,15 @@ fn inspect_node(
         }
     }
 
+    let translation = node.transform().decomposed().0;
+    nodes.push(NodeReport {
+        name: node.name().unwrap_or("<no name>").to_owned(),
+        translation,
+        translation_nonzero: is_nonzero_translation(translation),
+        has_mesh,
+        bbox: node_bbox,
+    });
+
     if let Some(skin) = node.skin() {
         let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
 
@@ -401,6 +469,7 @@ fn inspect_node(
             buffers,
             hierarchy,
             primitives,
+            nodes,
             skinned_vertices,
             static_aabb,
             mesh_count,
@@ -585,5 +654,74 @@ mod tests {
         // The time guard runs before any glTF parsing, so empty bytes are fine.
         let err = inspect_model(Vec::new(), Some(f32::NAN), None).unwrap_err();
         assert!(err.contains("finite"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn node_translation_serializes_nonfinite_as_null() {
+        // A non-finite component makes the whole translation serialize as null,
+        // never a JSON array containing `null` (matching the `Aabb` guard).
+        let node = NodeReport {
+            name: "n".to_string(),
+            translation: [f32::NAN, 0.0, 0.0],
+            translation_nonzero: false,
+            has_mesh: false,
+            bbox: Aabb::empty(),
+        };
+        assert!(serde_json::to_value(&node).unwrap()["translation"].is_null());
+
+        // A finite translation serializes as the `[x, y, z]` array.
+        let finite = NodeReport {
+            translation: [1.0, 2.0, 3.0],
+            ..node
+        };
+        assert_eq!(
+            serde_json::to_value(&finite).unwrap()["translation"],
+            serde_json::json!([1.0, 2.0, 3.0])
+        );
+    }
+
+    #[test]
+    fn nonzero_translation_flags_offsets_not_noise() {
+        assert!(!is_nonzero_translation([0.0, 0.0, 0.0]));
+        assert!(!is_nonzero_translation([1e-9, 0.0, -1e-9])); // below epsilon → noise
+        assert!(is_nonzero_translation([0.0, 0.5, 0.0]));
+        assert!(is_nonzero_translation([-3.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn inspect_reports_per_node_translations_and_bbox() {
+        // Use the committed skinned glove model (a real glb with a skeleton, so
+        // its joint nodes carry non-origin local translations).
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/glove/vr_glove_model.glb");
+        let bytes = std::fs::read(&path).expect("read committed glove glb");
+        let report = inspect_model(bytes, None, None).expect("inspect glove");
+
+        // Every scene node is reported.
+        assert!(!report.nodes.is_empty(), "expected per-node reports");
+
+        // At least one node carries the mesh, with a populated local bbox.
+        let mesh_nodes: Vec<&NodeReport> = report.nodes.iter().filter(|n| n.has_mesh).collect();
+        assert!(!mesh_nodes.is_empty(), "expected a mesh-bearing node");
+        assert!(
+            mesh_nodes.iter().all(|n| !n.bbox.is_empty()),
+            "a mesh node's local bbox should be populated"
+        );
+
+        // The skeleton's joints sit at non-origin local translations — exactly
+        // the baked-offset signal this report exists to surface.
+        assert!(
+            report.nodes.iter().any(|n| n.translation_nonzero),
+            "expected at least one node with a non-zero translation"
+        );
+
+        // `translation_nonzero` is consistent with the reported translation, and
+        // a node with no mesh has an empty (null-serializing) bbox.
+        for n in &report.nodes {
+            assert_eq!(n.translation_nonzero, is_nonzero_translation(n.translation));
+            if !n.has_mesh {
+                assert!(n.bbox.is_empty(), "no-mesh node should have an empty bbox");
+            }
+        }
     }
 }
