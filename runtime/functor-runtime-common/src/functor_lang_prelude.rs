@@ -63,6 +63,8 @@
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
 //! Ui.topLeft() / topRight() / bottomLeft() / bottomRight()  -> Anchor
+//! Ui.center()                                               -> Anchor
+//!   (pins a panel to the screen center — e.g. a menu column)
 //! Ui.button(label, msg)                                     -> View
 //! Ui.slider(min, max, value, tagger)                        -> View
 //! Ui.textInput(value, tagger)                               -> View
@@ -909,6 +911,7 @@ const PATHS: &[&str] = &[
     "Ui.topRight",
     "Ui.bottomLeft",
     "Ui.bottomRight",
+    "Ui.center",
     "Ui.button",
     "Ui.slider",
     "Ui.textInput",
@@ -2132,6 +2135,10 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
             "Ui.bottomRight" => match args.as_slice() {
                 [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::BottomRight))),
                 _ => usage("Ui.bottomRight()"),
+            },
+            "Ui.center" => match args.as_slice() {
+                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::Center))),
+                _ => usage("Ui.center()"),
             },
             "Ui.row" => match args.as_slice() {
                 [Value::List(items)] => {
@@ -5139,6 +5146,28 @@ the game dir"
             r#"{"Panel":{"anchor":"TopLeft","child":{"Column":[{"Text":{"text":"functor · hello","color":[255,255,255],"font":null}},{"Text":{"text":"eye  0.0 0.0 -5.0","color":[255,217,102],"font":null}}]}}}"#
         );
         // And it round-trips (the wasm boundary ships Views as JSON).
+        let back: View = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // Ui.center() pins a panel to the screen center — the menu anchor. It
+    // lowers to a Panel with the Center anchor and round-trips over the wire.
+    #[test]
+    fn ui_center_anchors_a_panel_to_the_middle() {
+        let value = eval(
+            "let main = () =>\n\
+             Ui.column([Ui.text(\"Play\"), Ui.text(\"Quit\")]) |> Ui.panel(Ui.center())",
+        );
+        let view = view_value(&value).expect("main should return a View");
+        assert!(matches!(
+            view,
+            View::Panel {
+                anchor: ui::Anchor::Center,
+                ..
+            }
+        ));
+        let json = serde_json::to_string(view).expect("serialize");
+        assert!(json.contains(r#""anchor":"Center""#), "json: {json}");
         let back: View = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }

@@ -51,13 +51,15 @@ pub struct FontRef {
     pub size: f32,
 }
 
-/// Which screen corner a [`View::Panel`] pins its subtree to.
+/// Which screen position a [`View::Panel`] pins its subtree to — the four
+/// corners, or the screen center (for menus).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum Anchor {
     TopLeft,
     TopRight,
     BottomLeft,
     BottomRight,
+    Center,
 }
 
 /// A declarative, serializable 2D UI tree — the lowering target for the F# `Ui`
@@ -376,23 +378,26 @@ fn render_view(ui: &mut egui::Ui, view: &View, state: &mut UiFrameState) {
     }
 }
 
-/// egui corner alignment + inset offset for an [`Anchor`].
+/// egui alignment + inset offset for an [`Anchor`]. Center pins to the middle
+/// with no edge inset (the margin is meaningless there).
 fn anchor_align(anchor: Anchor) -> (egui::Align2, egui::Vec2) {
     match anchor {
         Anchor::TopLeft => (egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN)),
         Anchor::TopRight => (egui::Align2::RIGHT_TOP, egui::vec2(-MARGIN, MARGIN)),
         Anchor::BottomLeft => (egui::Align2::LEFT_BOTTOM, egui::vec2(MARGIN, -MARGIN)),
         Anchor::BottomRight => (egui::Align2::RIGHT_BOTTOM, egui::vec2(-MARGIN, -MARGIN)),
+        Anchor::Center => (egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)),
     }
 }
 
-/// A stable per-corner id so distinct panels get distinct egui `Area` ids.
+/// A stable per-anchor id so distinct panels get distinct egui `Area` ids.
 fn anchor_id(anchor: Anchor) -> u8 {
     match anchor {
         Anchor::TopLeft => 0,
         Anchor::TopRight => 1,
         Anchor::BottomLeft => 2,
         Anchor::BottomRight => 3,
+        Anchor::Center => 4,
     }
 }
 
@@ -1051,6 +1056,23 @@ mod tests {
             pos: None,
             primary_down: down,
         }
+    }
+
+    #[test]
+    fn center_anchor_maps_to_the_middle_with_a_unique_id() {
+        let (align, offset) = anchor_align(Anchor::Center);
+        assert_eq!(align, egui::Align2::CENTER_CENTER);
+        assert_eq!(offset, egui::vec2(0.0, 0.0));
+        // A distinct id from every corner so a centered panel gets its own Area.
+        let ids = [
+            anchor_id(Anchor::TopLeft),
+            anchor_id(Anchor::TopRight),
+            anchor_id(Anchor::BottomLeft),
+            anchor_id(Anchor::BottomRight),
+            anchor_id(Anchor::Center),
+        ];
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "anchor ids must be unique");
     }
 
     #[test]

@@ -509,6 +509,8 @@ Ui.text("line") / Ui.textColor(r, g, b, "line")            // HUD text (monospac
 Ui.column([view, …]) / Ui.row([view, …])                   // stack top-to-bottom / left-to-right
 view |> Ui.panel(Ui.topLeft())                             // pin to a corner (view-LAST: pipes);
 Ui.topLeft() / topRight() / bottomLeft() / bottomRight()   //   Anchor VALUES (the Angle rule)
+Ui.center()                                                //   center anchor (menus): pins a
+                                                           //   panel to the middle of the screen
 Ui.button("label", msg)                                    // INTERACTIVE (docs/ui-interaction.md):
                                                            //   a click delivers msg VERBATIM
                                                            //   through `update` (the Sub.every
