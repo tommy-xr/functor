@@ -427,6 +427,10 @@ frame |> Frame.withFog(fog)                                // distance fog on al
                                                            //   materials incl. emissive;
                                                            //   the fog color is also the
                                                            //   pass's clear color
+frame |> Frame.withClearColor(r, g, b)                     // explicit background clear color
+                                                           //   (r,g,b in 0..1), overriding the
+                                                           //   fog-color default; paints the
+                                                           //   background only, not fog blending
 Skybox.files(px, nx, py, ny, pz, nz)                       // Skybox VALUES only: six face
 frame |> Frame.withSkybox(sky)                             //   paths (+X..-Z). Faces are
                                                            //   fetched assets (not checked

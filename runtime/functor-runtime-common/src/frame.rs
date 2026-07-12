@@ -33,6 +33,12 @@ pub struct Frame {
     /// A cubemap skybox drawn behind everything (fog does not apply to it).
     #[serde(default)]
     pub skybox: Option<SkyboxDescription>,
+    /// Explicit background clear color (`Frame.withClearColor`). When set it
+    /// wins over the fog-color-as-clear-color default; when `None` the clear
+    /// color falls back to the fog color, else the engine default. It only
+    /// paints the background — it does not affect fog blending.
+    #[serde(default)]
+    pub clear_color: Option<[f32; 3]>,
 }
 
 impl Frame {
@@ -46,7 +52,16 @@ impl Frame {
             render_targets: vec![],
             fog: None,
             skybox: None,
+            clear_color: None,
         }
+    }
+
+    /// The background clear color for this frame's pass: the explicit
+    /// `Frame.withClearColor` override when set, otherwise the fog color, else
+    /// the engine default (`fog::clear_color`).
+    pub fn resolved_clear_color(&self) -> [f32; 3] {
+        self.clear_color
+            .unwrap_or_else(|| crate::fog::clear_color(self.fog.as_ref()))
     }
 
     /// Render `target_frame` into `target` each frame, before this frame's main
@@ -78,5 +93,42 @@ impl Frame {
     pub fn with_skybox(mut frame: Frame, skybox: SkyboxDescription) -> Frame {
         frame.skybox = Some(skybox);
         frame
+    }
+
+    /// Explicit background clear color, overriding the fog-color default.
+    /// Subject-last so it pipes (`frame |> Frame.withClearColor(r, g, b)`).
+    pub fn with_clear_color(mut frame: Frame, r: f32, g: f32, b: f32) -> Frame {
+        frame.clear_color = Some([r, g, b]);
+        frame
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{fog::Fog, Scene3D};
+
+    fn bare() -> Frame {
+        Frame::new(Camera::default(), Scene3D::cube())
+    }
+
+    #[test]
+    fn resolved_clear_color_defaults_to_engine_default() {
+        assert_eq!(bare().resolved_clear_color(), [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn resolved_clear_color_falls_back_to_fog_color() {
+        let frame = Frame::with_fog(bare(), Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7));
+        assert_eq!(frame.resolved_clear_color(), [0.5, 0.6, 0.7]);
+    }
+
+    #[test]
+    fn explicit_clear_color_wins_over_fog() {
+        let frame = Frame::with_fog(bare(), Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7));
+        let frame = Frame::with_clear_color(frame, 0.0, 0.0, 0.0);
+        assert_eq!(frame.resolved_clear_color(), [0.0, 0.0, 0.0]);
+        // The fog itself is untouched — only the background clear changed.
+        assert!(frame.fog.is_some());
     }
 }

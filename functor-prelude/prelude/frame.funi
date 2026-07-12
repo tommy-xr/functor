@@ -12,3 +12,6 @@ let createLit : (Camera.t, Scene.t, List<Light.t>) => t
 let withRenderTarget : (RenderTarget.t, t, t) => t
 let withFog : (Fog.t, t) => t
 let withSkybox : (Skybox.t, t) => t
+// Explicit background clear color (r, g, b in 0..1), overriding the fog-color
+// default. Frame LAST, so it pipes: `frame |> Frame.withClearColor(0.1, 0.0, 0.2)`.
+let withClearColor : (float, float, float, t) => t

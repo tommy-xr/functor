@@ -24,7 +24,7 @@ bug found in the same exercise was fixed on the spot
       the depth error should name the cap and hint at `List.fold`.
 - [ ] Literals inside tuple/ctor patterns (`| ("Enter", true) =>`) for
       input mapping.
-- [ ] `Frame.withClearColor` (today: distant-fog trick doubles as clear color).
+- [x] `Frame.withClearColor` (today: distant-fog trick doubles as clear color).
 - [ ] `Ui.center()` anchor (+ eventually font size / spacer) for menus.
 - [x] Soundscape missing-asset error should warn once, not every frame.
 - [ ] Project loader/watcher: ignore non-identifier / dot-prefixed `*.fun`
