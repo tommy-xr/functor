@@ -21,6 +21,14 @@
       {
         "command": "functor-lang.openLivePreview",
         "title": "Functor Lang: Open Live Preview"
+      },
+      {
+        "command": "functor-lang.inspector.attach",
+        "title": "Functor Lang: Attach Inspector"
+      },
+      {
+        "command": "functor-lang.inspector.detach",
+        "title": "Functor Lang: Detach Inspector"
       }
     ],
     "configuration": {
@@ -60,6 +68,7 @@
     ]
   },
   "scripts": {
+    "test": "node --test client/inspector.test.js",
     "package:vsix": "npx --yes @vscode/vsce@3.9.2 package --out functor-lang-vscode.vsix",
     "install:vsix": "npm run package:vsix && code --install-extension functor-lang-vscode.vsix --force"
   },
