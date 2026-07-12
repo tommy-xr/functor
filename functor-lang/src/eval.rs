@@ -58,6 +58,13 @@ const MAX_EVAL_DEPTH: usize = 128;
 /// Trace-event cap; see the module doc.
 pub const MAX_TRACE_EVENTS: usize = 10_000;
 
+/// Recorder caps (see [`Recorder`] / [`Session::call_recorded`]). Distinct
+/// binding *sites* per armed invocation, and total binding *events* (a loop
+/// re-binding one site counts each time). A breach stops recording and flags
+/// `truncated`; evaluation itself is never affected.
+pub const MAX_RECORDED_SITES: usize = 1024;
+pub const MAX_RECORDED_BINDINGS: usize = 100_000;
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tracing {
     Off,
@@ -97,6 +104,94 @@ pub struct RunRecord {
 pub struct RunFailure {
     pub error: RunError,
     pub trace: Vec<TraceEvent>,
+}
+
+/// The record of one armed entry-point call (see [`Session::call_recorded`]):
+/// the call's result and every binding-site value observed while it ran, as
+/// pre-rendered `Display` text (the record owns no `Value`s). Framing above a
+/// single invocation — entry provenance, ghost, index/count within a frame —
+/// is the producer's job; this is one call's raw record.
+pub struct RecordedInvocation {
+    /// The called top-level name (`update`, `tick`, …).
+    pub entry: String,
+    /// `Display` of the returned value.
+    pub result: String,
+    /// One entry per distinct binding site reached, in first-seen order.
+    pub bindings: Vec<RecordedBinding>,
+    /// The recorder hit a cap during this call — `bindings` is partial (but
+    /// `result` is exact; recording never changes evaluation).
+    pub truncated: bool,
+}
+
+/// One binding site's last observed value. A site is a `let` binding, a
+/// lambda/function parameter, or a match-pattern variable; nested calls' sites
+/// appear here too (flat — spans disambiguate them). `value` is the LAST
+/// value bound at the site and `count` how many times it bound (a loop, e.g.
+/// `List.fold`, re-binds a site each iteration).
+pub struct RecordedBinding {
+    pub name: String,
+    /// Byte range into the loaded source. NOTE: [`Span`] carries no file — a
+    /// multi-file project loads as one concatenated source, so mapping this
+    /// range back to (file, offset) is the producer's job (see the visual-
+    /// debugger wire contract). For a `let` this is the `let [mut] name =`
+    /// region (as `goto`/`hover` report binder names); for a param or match
+    /// var it is the name's own span.
+    pub span: Span,
+    /// `Display` of the last value bound here.
+    pub value: String,
+    pub count: u32,
+}
+
+/// The per-call binding-site recorder — armed by [`Session::call_recorded`],
+/// mirroring the [`Tracing`] mode: an `Option<Recorder>` on the interpreter,
+/// checked cheaply at binding sites only (a `None` test when off). Keyed by
+/// [`BindingId`] (unique per site in a module; a loop re-enters the same
+/// site's id), it keeps the last value + hit count per site. On a cap breach
+/// it sets `truncated` and stops recording — evaluation continues untouched.
+struct Recorder {
+    bindings: Vec<RecordedBinding>,
+    /// `BindingId` raw → index into `bindings`.
+    index: HashMap<u32, usize>,
+    events: usize,
+    truncated: bool,
+}
+
+impl Recorder {
+    fn new() -> Recorder {
+        Recorder {
+            bindings: Vec::new(),
+            index: HashMap::new(),
+            events: 0,
+            truncated: false,
+        }
+    }
+
+    /// Record a value bound at `binding`'s site. Once `truncated`, a no-op.
+    fn record(&mut self, binding: u32, name: &str, span: Span, value: &Value) {
+        if self.truncated {
+            return;
+        }
+        self.events += 1;
+        if self.events > MAX_RECORDED_BINDINGS {
+            self.truncated = true;
+            return;
+        }
+        if let Some(&idx) = self.index.get(&binding) {
+            let slot = &mut self.bindings[idx];
+            slot.value = value.to_string();
+            slot.count += 1;
+        } else if self.bindings.len() >= MAX_RECORDED_SITES {
+            self.truncated = true;
+        } else {
+            self.index.insert(binding, self.bindings.len());
+            self.bindings.push(RecordedBinding {
+                name: name.to_string(),
+                span,
+                value: value.to_string(),
+                count: 1,
+            });
+        }
+    }
 }
 
 /// Host-provided externals: the embedding runtime (e.g. Functor's shells)
@@ -146,6 +241,7 @@ pub fn run_with_host(
         mut_slots: HashMap::new(),
         trace: Vec::new(),
         tracing,
+        recorder: None,
         depth: 0,
         call_depth: 0,
         host,
@@ -182,6 +278,7 @@ impl Session {
             mut_slots: HashMap::new(),
             trace: Vec::new(),
             tracing: Tracing::Off,
+            recorder: None,
             depth: 0,
             call_depth: 0,
             host,
@@ -219,6 +316,7 @@ impl Session {
             mut_slots: HashMap::new(),
             trace: Vec::new(),
             tracing: Tracing::Off,
+            recorder: None,
             depth: 0,
             call_depth: 0,
             host,
@@ -241,11 +339,50 @@ impl Session {
             mut_slots: HashMap::new(),
             trace: Vec::new(),
             tracing: Tracing::Off,
+            recorder: None,
             depth: 0,
             call_depth: 0,
             host,
         };
         interp.call(callee, args, label.to_string(), Span::new(0, 0), None)
+    }
+
+    /// Like [`Self::call`], but with the binding-site recorder armed: returns
+    /// the call's result plus a [`RecordedInvocation`] of every `let` /
+    /// parameter / match-variable value bound while it ran (including nested
+    /// user calls). Recording is bounded (see [`MAX_RECORDED_SITES`] /
+    /// [`MAX_RECORDED_BINDINGS`]) and never changes evaluation — the result is
+    /// identical to [`Self::call`]; only observation is added. The seam the
+    /// paused visual-debugger replays entry points through.
+    pub fn call_recorded(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        host: &mut dyn Host,
+    ) -> Result<(Value, RecordedInvocation), RunError> {
+        let callee = self.globals.get(name).cloned().ok_or_else(|| RunError {
+            message: format!("no top-level `let {name}` in the module"),
+            span: Span::new(0, 0),
+        })?;
+        let mut interp = Interp {
+            globals: self.globals.clone(),
+            mut_slots: HashMap::new(),
+            trace: Vec::new(),
+            tracing: Tracing::Off,
+            recorder: Some(Recorder::new()),
+            depth: 0,
+            call_depth: 0,
+            host,
+        };
+        let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
+        let recorder = interp.recorder.expect("armed above");
+        let invocation = RecordedInvocation {
+            entry: name.to_string(),
+            result: result.to_string(),
+            bindings: recorder.bindings,
+            truncated: recorder.truncated,
+        };
+        Ok((result, invocation))
     }
 }
 
@@ -258,6 +395,9 @@ struct Interp<'h> {
     mut_slots: HashMap<u32, Vec<Value>>,
     trace: Vec<TraceEvent>,
     tracing: Tracing,
+    /// The binding-site recorder, armed only by [`Session::call_recorded`];
+    /// `None` (the norm) means zero recording cost on the hot path.
+    recorder: Option<Recorder>,
     depth: usize,
     call_depth: usize,
     host: &'h mut dyn Host,
@@ -321,6 +461,15 @@ evaluation depth."
         let result = self.eval_inner(expr, env);
         self.depth -= 1;
         result
+    }
+
+    /// Record a value bound at `binding`'s site, when the recorder is armed —
+    /// a cheap `None` check otherwise (the binding-site hot-path cost). See
+    /// [`Recorder`].
+    fn record_binding(&mut self, binding: BindingId, name: &str, span: Span, value: &Value) {
+        if let Some(recorder) = &mut self.recorder {
+            recorder.record(binding.0, name, span, value);
+        }
     }
 
     fn eval_inner(&mut self, expr: &Expr, env: &Env) -> Result<Value, RunError> {
@@ -436,12 +585,16 @@ evaluation depth."
                 }),
             ExprKind::Let {
                 binding,
+                name,
                 mutable,
                 value,
                 body,
                 ..
             } => {
+                // The `let [mut] name =` region, as goto/hover report binders.
+                let binder_span = Span::new(expr.span.start, value.span.start);
                 let value = self.eval(value, env)?;
+                self.record_binding(*binding, name, binder_span, &value);
                 if *mutable {
                     self.mut_slots.entry(binding.0).or_default().push(value);
                     let result = self.eval(body, env);
@@ -591,6 +744,17 @@ evaluation depth."
                 for arm in arms {
                     let mut vars = Vec::new();
                     if match_pattern(&arm.pattern, &value, &mut vars) {
+                        if self.recorder.is_some() {
+                            let mut sites = Vec::new();
+                            pattern_binder_sites(&arm.pattern, &mut sites);
+                            for (binding, bound) in &vars {
+                                if let Some(&(_, name, span)) =
+                                    sites.iter().find(|(b, _, _)| b == binding)
+                                {
+                                    self.record_binding(*binding, name, span, bound);
+                                }
+                            }
+                        }
                         let child = env.child(vars);
                         return self.eval(&arm.body, &child);
                     }
@@ -715,7 +879,13 @@ evaluation depth."
                         span,
                     })
                 } else {
-                    let vars = closure.params.iter().map(|p| p.binding).zip(args).collect();
+                    let vars: Vec<(BindingId, Value)> =
+                        closure.params.iter().map(|p| p.binding).zip(args).collect();
+                    if self.recorder.is_some() {
+                        for (param, (_, value)) in closure.params.iter().zip(vars.iter()) {
+                            self.record_binding(param.binding, &param.name, param.span, value);
+                        }
+                    }
                     let env = closure.env.child(vars);
                     let body = closure.body.clone();
                     self.eval(&body, &env)
@@ -1379,6 +1549,32 @@ fn match_pattern(pattern: &Pattern, value: &Value, vars: &mut Vec<(BindingId, Va
         PatternKind::Number(n) => matches!(value, Value::Number(v) if v == n),
         PatternKind::Bool(b) => matches!(value, Value::Bool(v) if v == b),
         PatternKind::String(s) => matches!(value, Value::String(v) if v.as_ref() == s),
+    }
+}
+
+/// Each pattern variable's `(binding, name, span)` — the recorder's per-site
+/// key/label/location for match binders (the `Var` pattern's own span is the
+/// name's span), mirroring `goto::pattern_binders`'s traversal.
+fn pattern_binder_sites<'a>(pattern: &'a Pattern, out: &mut Vec<(BindingId, &'a str, Span)>) {
+    match &pattern.kind {
+        PatternKind::Var { binding, name } => out.push((*binding, name, pattern.span)),
+        PatternKind::Ctor { args, .. } | PatternKind::Tuple(args) => {
+            for arg in args {
+                pattern_binder_sites(arg, out);
+            }
+        }
+        PatternKind::List { items, tail } => {
+            for item in items {
+                pattern_binder_sites(item, out);
+            }
+            if let Some(tail) = tail {
+                pattern_binder_sites(tail, out);
+            }
+        }
+        PatternKind::Wildcard
+        | PatternKind::Number(_)
+        | PatternKind::Bool(_)
+        | PatternKind::String(_) => {}
     }
 }
 
