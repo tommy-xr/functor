@@ -39,12 +39,13 @@ use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_push, journal_swap, FrameCtx, JournalEntry, Provenance, Reporter,
     SpanSource,
 };
+use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 use functor_lang::project::SourceMap;
-use functor_lang::{Session, Span, Value};
+use functor_lang::{Session, Value};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -194,45 +195,6 @@ struct Loaded {
     has_physics: bool,
     has_soundscape: bool,
     has_ui: bool,
-}
-
-/// One project source file's inspector metadata (visual-debugger PR2): its
-/// wire name, its base offset in the project-wide span space, its length, and
-/// the sha256 of the text the runtime loaded. Computed once per load, so a
-/// binding span maps to `(file, local offset)` and the wire `sources` gates on
-/// a content hash without re-reading files.
-struct InspectorSource {
-    file: String,
-    base: usize,
-    len: usize,
-    hash: String,
-}
-
-/// Build the per-file inspector metadata from a loaded [`SourceMap`]: the REAL
-/// project `.fun` files only (skip the injected prelude `.funi` interfaces and
-/// the `<builtin>/Net.fun` module — a game binding never lands in them, and
-/// they aren't editor documents the LSP gates on).
-fn inspector_sources(sources: &SourceMap) -> Vec<InspectorSource> {
-    use sha2::{Digest, Sha256};
-    sources
-        .files()
-        .iter()
-        .filter(|f| !f.interface && !f.path.to_string_lossy().starts_with('<'))
-        .map(|f| {
-            let file = f
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| f.path.to_string_lossy().into_owned());
-            let hash = format!("{:x}", Sha256::digest(f.src.as_bytes()));
-            InspectorSource {
-                file,
-                base: f.base,
-                len: f.src.len(),
-                hash,
-            }
-        })
-        .collect()
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -585,98 +547,6 @@ impl FunctorLangGame {
         }
     }
 
-    /// Map a project-wide binding span to `(file, local start, local end)` for
-    /// the wire contract, using the per-file base offsets (visual-debugger PR2).
-    /// `None` if the span falls outside a real project file (a prelude/builtin
-    /// span — a game binding never does).
-    fn span_to_file(&self, span: Span) -> Option<(String, usize, usize)> {
-        let src = self
-            .source_hashes
-            .iter()
-            .filter(|s| s.base <= span.start)
-            .max_by_key(|s| s.base)?;
-        if span.start > src.base + src.len {
-            return None;
-        }
-        Some((
-            src.file.clone(),
-            span.start - src.base,
-            span.end.saturating_sub(src.base),
-        ))
-    }
-
-    /// Replay the last real frame's journal into the wire-contract
-    /// `invocations` (visual-debugger PR2). Each journaled call is re-run through
-    /// `Session::call_recorded` — entry points are pure functions of their args,
-    /// so the record is exact, and effects are plain data (nothing performs), so
-    /// replay is side-effect-free. `index`/`count` frame each call within its
-    /// entry name; binding spans map to `(file, local offsets)`.
-    fn build_invocations(&self) -> Vec<serde_json::Value> {
-        use std::collections::HashMap;
-        // Replay FIRST, then frame: `index`/`count` are computed over the
-        // invocations actually EMITTED, so the array is always consistent with
-        // its own counts (the LSP picker mod-cycles on `count`). A call that
-        // succeeded live, replayed pure, should not fail — skip one
-        // defensively rather than abort the whole trace if it somehow does.
-        let mut replayed = Vec::with_capacity(self.last_frame_journal.len());
-        for e in &self.last_frame_journal {
-            if let Ok((_discard, inv)) =
-                self.session
-                    .call_recorded(e.entry, e.args.clone(), &mut FunctorHost)
-            {
-                replayed.push((e, inv));
-            }
-        }
-        let mut counts: HashMap<&str, usize> = HashMap::new();
-        for (e, _) in &replayed {
-            *counts.entry(e.entry).or_default() += 1;
-        }
-        let mut seen: HashMap<&str, usize> = HashMap::new();
-        let mut out = Vec::with_capacity(replayed.len());
-        for (e, inv) in &replayed {
-            let index = {
-                let c = seen.entry(e.entry).or_default();
-                let i = *c;
-                *c += 1;
-                i
-            };
-            let bindings: Vec<serde_json::Value> = inv
-                .bindings
-                .iter()
-                .filter_map(|b| {
-                    self.span_to_file(b.span).map(|(file, start, end)| {
-                        serde_json::json!({
-                            "name": b.name,
-                            "file": file,
-                            "start": start,
-                            "end": end,
-                            "value": b.value,
-                            "count": b.count,
-                        })
-                    })
-                })
-                .collect();
-            out.push(serde_json::json!({
-                "entry": e.entry,
-                "index": index,
-                "count": counts[e.entry],
-                "provenance": e.provenance.render(&e.args),
-                "ghost": false,
-                "result": inv.result,
-                "truncated": inv.truncated,
-                "bindings": bindings,
-            }));
-        }
-        out
-    }
-
-    /// The wire `sources` array — `{ file, hash }` per loaded project file.
-    fn sources_json(&self) -> Vec<serde_json::Value> {
-        self.source_hashes
-            .iter()
-            .map(|s| serde_json::json!({ "file": s.file, "hash": s.hash }))
-            .collect()
-    }
 }
 
 impl Game for FunctorLangGame {
@@ -1091,26 +961,21 @@ AudioScene.empty), got {}",
     /// (`GameClock::is_paused`).
     fn inspector_trace(&mut self, paused: bool) -> String {
         if !paused {
-            return serde_json::json!({
-                "paused": false,
-                "sources": self.sources_json(),
-                "invocations": [],
-            })
-            .to_string();
+            return build_trace_doc(false, 0, 0.0, &self.source_hashes, &[], &self.session);
         }
-        let frame = self.recorder.current_scene_frame().unwrap_or(0);
-        let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
         if let Some(cached) = &self.cached_trace {
             return cached.clone();
         }
-        let json = serde_json::json!({
-            "frame": frame,
-            "tts": tts,
-            "paused": true,
-            "sources": self.sources_json(),
-            "invocations": self.build_invocations(),
-        })
-        .to_string();
+        let frame = self.recorder.current_scene_frame().unwrap_or(0);
+        let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
+        let json = build_trace_doc(
+            true,
+            frame,
+            tts,
+            &self.source_hashes,
+            &self.last_frame_journal,
+            &self.session,
+        );
         self.cached_trace = Some(json.clone());
         json
     }

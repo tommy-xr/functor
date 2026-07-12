@@ -149,6 +149,8 @@
         functor_lang_scrub_paused,
         functor_lang_scrub_set_preview,
         functor_lang_scrub_set_preview_config,
+        functor_lang_inspector_trace_gen,
+        functor_lang_inspector_trace,
       } from "./pkg/functor_runtime_web.js";
 
       // The Functor Lang entry file, substituted in by the CLI's dev server (see
@@ -299,6 +301,12 @@
 
         let scrubbing = false;
         let pendingSeek = null;
+        // Paused-scene inspector (visual-debugger PR2b): the runtime bumps a
+        // generation counter only when the trace CONTENT changes (on pause, or
+        // when the paused frame changes). We poll it in the same per-frame loop
+        // and relay each change to the hosting frame — the VS Code live-preview
+        // webview, which forwards it to the LSP as `functor/inspector/trace`.
+        let lastTraceGen = -1;
         slider.addEventListener("pointerdown", () => (scrubbing = true));
         window.addEventListener("pointerup", () => (scrubbing = false));
         slider.addEventListener("input", () => (pendingSeek = Number(slider.value)));
@@ -354,6 +362,20 @@
           if (pendingSeek !== null) {
             functor_lang_seek_scene(pendingSeek);
             pendingSeek = null;
+          }
+          // Relay a changed inspector trace to the hosting frame. Posting to
+          // `window.parent` is harmless when not embedded (it resolves to this
+          // window, which has no production listener); the VS Code webview
+          // whitelists `functor-inspector-trace` and forwards it to the LSP.
+          const traceGen = functor_lang_inspector_trace_gen();
+          if (traceGen !== lastTraceGen) {
+            lastTraceGen = traceGen;
+            try {
+              const trace = JSON.parse(functor_lang_inspector_trace());
+              window.parent.postMessage({ type: "functor-inspector-trace", trace }, "*");
+            } catch (e) {
+              // A malformed doc (shouldn't happen) must not kill the poll loop.
+            }
           }
           const range = functor_lang_scene_range(); // [] or [lo, hi]
           if (range.length === 2) {

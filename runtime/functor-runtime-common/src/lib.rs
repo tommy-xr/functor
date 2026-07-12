@@ -63,6 +63,7 @@ pub mod game_clock;
 pub mod geometry;
 mod input;
 pub mod inspect;
+pub mod inspector;
 pub mod io;
 mod light;
 pub mod material;
