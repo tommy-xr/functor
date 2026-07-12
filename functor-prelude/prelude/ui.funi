@@ -19,6 +19,8 @@ let topLeft : () => anchor
 let topRight : () => anchor
 let bottomLeft : () => anchor
 let bottomRight : () => anchor
+// Pins a panel to the screen center — e.g. `menuColumn |> Ui.panel(Ui.center())`.
+let center : () => anchor
 // Interactive widgets (docs/ui-interaction.md); like Sub.every's msg, 'msg is
 // erased by the opaque `view` — the msg↔update link is checked at runtime.
 // A click delivers `msg` verbatim through `update`.
