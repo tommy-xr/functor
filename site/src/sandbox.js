@@ -6,8 +6,11 @@
 
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
+import { StateEffect } from "@codemirror/state";
 import { indentWithTab } from "@codemirror/commands";
+import { startCompletion, acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
+import { setupLangIntel, analyzeCached, completeAt, resetIntel } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 
 const EXAMPLES = [
@@ -66,8 +69,27 @@ const view = new EditorView({
   ],
 });
 
+// Live type diagnostics: load the analysis wasm lazily and, once ready, append
+// the CodeMirror linter to the already-constructed editor. Degrades silently —
+// if the pkg is absent the promise resolves to no extensions and the sandbox is
+// unchanged. `ready` resolves to whether analysis is available so e2e can await
+// it; `analyze` exposes the same cached pass the linter uses.
+const langReady = setupLangIntel().then((extensions) => {
+  if (extensions.length) view.dispatch({ effects: StateEffect.appendConfig.of(extensions) });
+  return extensions.length > 0;
+});
+
+window.__lang = {
+  ready: langReady,
+  analyze: (source) => analyzeCached(source),
+  complete: (source, offset) => completeAt(source, offset),
+};
+
 const setDoc = (source) => {
   bridge.reset();
+  // Wholesale document replacement (example switch, inline load, reset): drop
+  // the wasm completion cache so the previous program's candidates can't leak.
+  resetIntel();
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
@@ -175,4 +197,23 @@ window.__sandbox = {
     message: statusPill.title,
     detail: statusLog.textContent,
   }),
+  getSource: () => view.state.doc.toString(),
+  // Replace the buffer, place the cursor, and open the completion popup
+  // (explicit trigger). Guarded so it does NOT push to the runtime — completion
+  // is an editor-only concern that must not disturb the live loop. Any open
+  // popup is closed first so the fresh trigger reflects the new buffer.
+  triggerComplete(source, cursor) {
+    closeCompletion(view);
+    programmaticEdit = true;
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: source },
+      selection: { anchor: cursor },
+    });
+    programmaticEdit = false;
+    view.focus();
+    startCompletion(view);
+  },
+  // Accept the selected completion (the editor's normal apply path — this DOES
+  // push, exactly as a real accept would). Returns whether one was applied.
+  acceptCompletion: () => acceptCompletion(view),
 };

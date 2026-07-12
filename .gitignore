@@ -51,3 +51,4 @@ perf*
 # shared target/ corrupts cross-compile fingerprints)
 target-android/
 runtime/functor-runtime-web/pkg
+tools/functor-lang-wasm/pkg

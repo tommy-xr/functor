@@ -52,6 +52,22 @@ let draw = (model, tts: Float) =>
     Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(1.0, 0.2, 0.8))
 `;
 
+// A float-model program for the language-intelligence checks: every top-level
+// def has a knowable type (no record-typed `init` — a record's type stays
+// Unknown and earns no lens), so all four defs get a signature codelens; the
+// two unannotated `model` params get inlay hints; and `speed` hovers to its
+// type. Loaded via #src= so it fresh-inits (its float model runs cleanly —
+// a hot-swap onto the record-model default would throw at draw).
+const INTEL_SRC = `let speed = 2.0
+let init = 0.0
+let tick = (model, dt: Float, tts: Float) => model + dt
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Scene.sphere() |> Scene.emissive(0.1, 1.0, 0.2)
+      |> Scene.rotateY(Angle.radians(model)) |> Scene.scale(speed))
+`;
+
 let failures = 0;
 const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}: ${name}${ok || !detail ? "" : ` — ${detail}`}`);
@@ -441,6 +457,323 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   check("resume advances frames again", rf1 > rf0, `${rf0} -> ${rf1}`);
 
   await page.close();
+}
+
+// --- 10. The editor language-intelligence wasm analyzes source in-browser. -----
+// Commits 7-8 wire this into the CodeMirror editor (diagnostics/hover); here we
+// just smoke-test the bundle loads and `functor_lang_analyze` reports errors on
+// a bad source and none on a clean one.
+{
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  await page.goto(BASE); // any same-origin page; we only need /pkg/ reachable
+  const result = await page.evaluate(async () => {
+    let mod;
+    try {
+      mod = await import("/pkg/functor_lang_wasm.js");
+    } catch {
+      return null; // pkg not built — degraded config, skip below
+    }
+    await mod.default(); // init the wasm
+    // A type error: adding a string to a float.
+    const bad = JSON.parse(mod.functor_lang_analyze('let bad = 1.0 + "x"\n'));
+    // A clean program using prelude names.
+    const clean = JSON.parse(
+      mod.functor_lang_analyze(
+        "let draw = (model, tts: Float) =>\n" +
+          "  Frame.create(Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n"
+      )
+    );
+    return { bad, clean };
+  });
+  if (!result) {
+    console.log("SKIP: language wasm analyzes source in-browser — pkg not built");
+    await page.close();
+    // Nothing further to assert in the degraded config.
+  } else {
+  const d = result.bad.diagnostics;
+  const sane =
+    Array.isArray(d) &&
+    d.length >= 1 &&
+    Number.isInteger(d[0].from) &&
+    Number.isInteger(d[0].to) &&
+    d[0].from < d[0].to;
+  check(
+    "language wasm analyzes source in-browser (error on bad, none on clean)",
+    sane && result.clean.diagnostics.length === 0,
+    `bad=${JSON.stringify(d)} clean=${result.clean.diagnostics.length}`
+  );
+  await page.close();
+  }
+}
+
+// --- 11. Live diagnostics: the linter underlines a type error, clears on fix. --
+// A valid MVU program (loads & runs live — type diagnostics are advisory in the
+// dev loop) with ONE unused function whose body is a type error the checker
+// flags. The `.cm-lintRange-error` underline must appear, then clear when the
+// bad def is removed — all while the push loop keeps the status pill live.
+{
+  const CLEAN = GREEN;
+  const TYPE_ERROR = `${GREEN}let oops = (x: Float) => x + "type error"\n`;
+
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+
+  // Await the analysis wasm's readiness (resolves to false when the pkg is
+  // absent — then the whole lint block is skipped so the suite stays green in
+  // both configurations).
+  const langAvailable = await page.evaluate(
+    () => window.__lang && window.__lang.ready
+  );
+  if (!langAvailable) {
+    console.log("SKIP: live diagnostics — language analysis pkg not built (__lang not ready)");
+    await page.close();
+  } else {
+    const lintCount = () => page.locator(".cm-lintRange-error").count();
+    // Poll for the count to reach a predicate (covers the 300ms lint delay).
+    const waitLint = async (pred, timeout = 6000) => {
+      const t0 = Date.now();
+      for (;;) {
+        if (pred(await lintCount())) return true;
+        if (Date.now() - t0 > timeout) return false;
+        await sleep(150);
+      }
+    };
+
+    await page.evaluate((s) => window.__sandbox.setSource(s), TYPE_ERROR);
+    const gotError = await waitLint((n) => n > 0);
+    check("type error draws a lint underline", gotError, `count=${await lintCount()}`);
+    // Await the hot-swap RESULT before reading liveness: the debounced push
+    // (busy → live) can be mid-flight right when the underline appears, so a
+    // bare status() read would intermittently catch the transient "reloading".
+    // TYPE_ERROR still loads and runs (type diagnostics are advisory), so the
+    // push reports "model preserved".
+    await page.waitForFunction(
+      () => window.__sandbox.status().message.includes("model preserved"),
+      { timeout: 8000 }
+    );
+    check(
+      "diagnostics keep the sandbox live",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.evaluate((s) => window.__sandbox.setSource(s), CLEAN);
+    const cleared = await waitLint((n) => n === 0);
+    check("fixing the type error clears the underline", cleared, `count=${await lintCount()}`);
+    // Same as above: wait for the fix's push to round-trip before asserting live.
+    await page.waitForFunction(
+      () => window.__sandbox.status().message.includes("model preserved"),
+      { timeout: 8000 }
+    );
+    check(
+      "sandbox returns/stays live after the fix",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.close();
+  }
+}
+
+// --- 12. Hover types + inlay hints + codelens (commit 8). ---------------------
+// The intel program loads fresh via #src=; once the analysis pkg is ready the
+// editor grows inline `: float` inlays, a signature codelens above each def,
+// and a hover tooltip — all while the push loop keeps the status pill live.
+// SKIPs (like the lint block) when the analysis pkg isn't built.
+{
+  const b64u = Buffer.from(INTEL_SRC).toString("base64url");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html#src=${b64u}`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+
+  const langAvailable = await page.evaluate(() => window.__lang && window.__lang.ready);
+  if (!langAvailable) {
+    console.log("SKIP: hover/inlay/codelens — language analysis pkg not built (__lang not ready)");
+    await page.close();
+  } else {
+    // The signature lens appears once per top-level def; count them in the source.
+    const topDefs = INTEL_SRC.split("\n").filter((l) => l.startsWith("let ")).length;
+
+    // Inlays and lenses lag the doc by the lint debounce (they read the cache
+    // the lint pass fills), so poll rather than sampling once.
+    const poll = async (fn, pred, timeout = 8000) => {
+      const t0 = Date.now();
+      for (;;) {
+        const v = await fn();
+        if (pred(v)) return v;
+        if (Date.now() - t0 > timeout) return v;
+        await sleep(150);
+      }
+    };
+
+    const inlays = await poll(() => page.locator(".cm-inlay").count(), (n) => n > 0);
+    check("inlay hints decorate unannotated params", inlays > 0, `count=${inlays}`);
+
+    const lenses = await poll(() => page.locator(".cm-lens").count(), (n) => n >= topDefs);
+    check(
+      "codelens shows a signature above every top-level def",
+      lenses >= topDefs,
+      `lenses=${lenses}, defs=${topDefs}`
+    );
+
+    // Hover a REAL code token (skip the lens/inlay widget text) and rest the
+    // mouse over it — a jiggle would keep resetting the hover timer.
+    const coord = await page.evaluate(() => {
+      const content = document.querySelector(".cm-content");
+      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (node.parentElement.closest(".cm-lens, .cm-inlay")) continue; // widget text
+        const idx = node.textContent.indexOf("speed");
+        if (idx >= 0) {
+          const range = document.createRange();
+          range.setStart(node, idx);
+          range.setEnd(node, idx + 5);
+          const r = range.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }
+      }
+      return null;
+    });
+    check("found a hoverable token in the editor", !!coord, JSON.stringify(coord));
+    if (coord) {
+      await page.mouse.move(coord.x - 40, coord.y);
+      await sleep(100);
+      await page.mouse.move(coord.x, coord.y);
+      const tip = await poll(
+        async () => {
+          const el = page.locator(".cm-tooltip-hover");
+          return (await el.count()) ? (await el.first().textContent()) || "" : "";
+        },
+        (t) => t.includes(":")
+      );
+      check("hover shows a type tooltip", tip.includes(":"), `tooltip=${JSON.stringify(tip)}`);
+    }
+
+    check(
+      "language intelligence keeps the sandbox live",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.close();
+  }
+}
+
+// --- 13. Scope-aware autocomplete in the editor (commit 8b). ------------------
+// The completion source is backed by the wasm's scope-aware `complete`, driven
+// through the __sandbox.triggerComplete seam (insert text + set cursor + open
+// the popup). That seam is guarded to NOT push, so the status pill stays live
+// throughout. SKIPs (like the lint/hover blocks) when the analysis pkg is absent.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+
+  const langAvailable = await page.evaluate(() => window.__lang && window.__lang.ready);
+  if (!langAvailable) {
+    console.log("SKIP: autocomplete — language analysis pkg not built (__lang not ready)");
+    await page.close();
+  } else {
+    // Prime the wasm last-good cache with a valid program (via the __lang seam —
+    // no doc change, no push), so dot-completion works even while the live
+    // buffer is mid-edit.
+    await page.evaluate((s) => window.__lang.complete(s, 0), GREEN);
+
+    // Open the popup and wait until its option labels satisfy `pred`; retries
+    // the trigger — under load a popup open can be swallowed by a lagging
+    // transaction (a lint pass landing mid-open), so a single-shot wait flakes.
+    const openCompletion = async (source, cursor, pred) => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await page.evaluate(
+          ({ s, c }) => window.__sandbox.triggerComplete(s, c),
+          { s: source, c: cursor }
+        );
+        const t0 = Date.now();
+        while (Date.now() - t0 < 2500) {
+          const labels = await page.evaluate(() =>
+            [...document.querySelectorAll(".cm-tooltip-autocomplete .cm-completionLabel")].map(
+              (el) => el.textContent
+            )
+          );
+          if (pred(labels)) return labels;
+          await sleep(150);
+        }
+      }
+      return [];
+    };
+
+    // A) Member popup: cursor right after `Scene.` (empty partial) surfaces many
+    // members. `triggerComplete` is guarded (no push), so status stays live.
+    const memberCursor = GREEN.indexOf("Scene.") + "Scene.".length;
+    const opts = await openCompletion(
+      GREEN,
+      memberCursor,
+      (labels) => labels.length > 3 && labels.includes("sphere")
+    );
+    check(
+      "Scene. opens the completion popup with >3 members",
+      opts.length > 3,
+      `options=${JSON.stringify(opts.slice(0, 8))}`
+    );
+    check(
+      "completion offers a known Scene member (sphere)",
+      opts.includes("sphere"),
+      JSON.stringify(opts.slice(0, 8))
+    );
+
+    // B) Applying a completion inserts its label: a typo'd member `spher` offers
+    // the sole `sphere`; accepting it fixes the program (still valid → the push
+    // keeps the loop live), and the label is now in the doc.
+    const GREEN_TYPO = GREEN.replace("Scene.sphere()", "Scene.spher()");
+    const typoCursor = GREEN_TYPO.indexOf("Scene.spher") + "Scene.spher".length;
+    const typoOpts = await openCompletion(
+      GREEN_TYPO,
+      typoCursor,
+      (labels) => labels[0] === "sphere"
+    );
+    // Accept via the editor's own apply path (deterministic — no key focus).
+    const accepted = await page.evaluate(() => window.__sandbox.acceptCompletion());
+    await sleep(150);
+    const afterAccept = await page.evaluate(() => window.__sandbox.getSource());
+    check(
+      "applying a completion inserts its label",
+      afterAccept.includes("Scene.sphere()"),
+      `accepted=${accepted}, popup=${JSON.stringify(typoOpts)}, line=${JSON.stringify(
+        afterAccept.split("\n").find((l) => l.includes("Scene.")) || afterAccept.slice(0, 60)
+      )}`
+    );
+    // The accept pushed the fixed (valid) program. Wait for the push RESULT
+    // (not just state === "live": the pill is already live before the debounced
+    // push fires, so that would pass early and the final live check below could
+    // catch the transient "reloading").
+    await page.waitForFunction(
+      () => window.__sandbox.status().message.includes("model preserved"),
+      { timeout: 8000 }
+    );
+
+    // C) Top-level partial `le` → the `let` keyword (guarded — no push).
+    const topOpts = await openCompletion("le", 2, (labels) => labels.includes("let"));
+    check(
+      "top-level `le` offers the `let` keyword",
+      topOpts.includes("let"),
+      JSON.stringify(topOpts.slice(0, 8))
+    );
+
+    check(
+      "autocomplete keeps the sandbox live",
+      (await page.evaluate(() => window.__sandbox.status().state)) === "live"
+    );
+
+    await page.close();
+  }
 }
 
 await browser.close();

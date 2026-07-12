@@ -21,6 +21,13 @@ const PAGES = ["index.html", "sandbox.html", "player.html", "docs.html", "styles
 const PKG = `${root}runtime/functor-runtime-web/pkg`;
 const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
 
+// The editor's in-browser language intelligence (diagnostics/hover), a separate
+// small wasm bundle built by `npm run build:lang-wasm`. Optional: the site must
+// still build without it (the editor just loses live analysis), so a missing
+// pkg is a note, not an error.
+const LANG_PKG = `${root}tools/functor-lang-wasm/pkg`;
+const LANG_PKG_FILES = ["functor_lang_wasm.js", "functor_lang_wasm_bg.wasm"];
+
 // dist/examples/<name>.fun — site-local plus the repo's Functor Lang examples.
 const EXAMPLES = {
   hero: `${site}examples/hero.fun`,
@@ -55,11 +62,31 @@ for (const [name, path] of Object.entries(EXAMPLES)) {
   await cp(path, `${dist}/examples/${name}.fun`);
 }
 
+// The language-intelligence wasm, if it has been built. Absent → skip (build on).
+let langPkgPresent = false;
+try {
+  await access(`${LANG_PKG}/${LANG_PKG_FILES[0]}`);
+  langPkgPresent = true;
+} catch {
+  console.log(
+    `note: ${LANG_PKG_FILES[0]} not found — skipping the editor language pkg ` +
+      `(build it with \`npm run build:lang-wasm\`)`
+  );
+}
+if (langPkgPresent) {
+  for (const file of LANG_PKG_FILES) {
+    await cp(`${LANG_PKG}/${file}`, `${dist}/pkg/${file}`);
+  }
+}
+
 await esbuild.build({
   entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`, `${site}src/hero.js`],
   bundle: true,
   minify: true,
   format: "esm",
+  // The editor dynamic-imports the language wasm glue at runtime from /pkg/;
+  // esbuild must not try to bundle that path (it's copied in above, or absent).
+  external: ["/pkg/functor_lang_wasm.js"],
   outdir: `${dist}/assets`,
   logLevel: "info",
 });

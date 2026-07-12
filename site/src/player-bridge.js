@@ -36,6 +36,21 @@ export class PlayerBridge {
     // Replies and readiness from the player iframe. Only trust the iframe we
     // created (same-origin, but be explicit about the source anyway).
     window.addEventListener("message", (event) => this.#onMessage(event));
+
+    // Handshake: the player posts a one-shot `functor-lang-preview-ready` when it
+    // boots, but under load that can fire before this bridge exists (its message
+    // listener isn't attached yet), leaving the status stuck "busy". So also
+    // greet the player: post `functor-lang-preview-hello` into the iframe now and
+    // on every load — an already-live player replies with the ready message.
+    this.#hello();
+    this.iframe.addEventListener("load", () => this.#hello());
+  }
+
+  // Greet the player so an already-live one re-announces readiness. Harmless if
+  // the player isn't up yet: it ignores the hello and its one-shot ready (now
+  // reaching our attached listener) covers that direction.
+  #hello() {
+    this.iframe.contentWindow?.postMessage({ type: "functor-lang-preview-hello" }, "*");
   }
 
   // Debounced live edit: swap in `source` once the buffer settles.
@@ -72,6 +87,9 @@ export class PlayerBridge {
     const data = event.data;
     if (!data) return;
     if (data.type === "functor-lang-preview-ready") {
+      // Idempotent: the one-shot ready and a hello-ack ready can both arrive for
+      // one live session — honor only the first (reset() re-arms this on reload).
+      if (this.previewReady) return;
       this.previewReady = true;
       // Flush edits made while the runtime was still starting.
       if (this.dirty) this.#post();

@@ -4,6 +4,7 @@
   "scripts": {
     "clean": "git clean -fdX",
     "build:cli": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
+    "build:lang-wasm": "wasm-pack build tools/functor-lang-wasm --target=web",
     "build:lsp": "cargo install --path tools/functor-lang-lsp --force && (pkill -x functor-lang-lsp || true)",
     "install:vsix": "npm run install:vsix --prefix tools/functor-lang-vscode",
     "build:oculus": "ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-sdk} CARGO_TARGET_DIR=target-android cargo ndk -t arm64-v8a build --manifest-path runtime/functor-runtime-oculus/Cargo.toml",
@@ -21,8 +22,10 @@
     "test:site": "node e2e/site-sandbox.mjs"
   },
   "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
     "@codemirror/view": "^6.43.5",
     "@lezer/highlight": "^1.2.3",
     "@playwright/test": "^1.61.0",

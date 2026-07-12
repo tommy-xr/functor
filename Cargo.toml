@@ -10,6 +10,7 @@ members = [
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
     "tools/functor-lang-lsp",
+    "tools/functor-lang-wasm",
 ]
 
 # Debug info dominated target/ size (it was repeatedly filling the disk during
