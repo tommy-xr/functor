@@ -18,7 +18,9 @@
       "title": "Coming from…",
       "entries": [
         { "slug": "compare/elm", "title": "Elm" },
-        { "slug": "compare/fsharp", "title": "F#" }
+        { "slug": "compare/fsharp", "title": "F#" },
+        { "slug": "compare/ocaml", "title": "OCaml" },
+        { "slug": "compare/csharp", "title": "C#" }
       ]
     }
   ]

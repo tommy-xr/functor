@@ -580,6 +580,8 @@ const docsSlugs = manifest.groups.flatMap((g) => g.entries.map((e) => e.slug));
 for (const { slug, heading, term } of [
   { slug: "compare/elm", heading: /coming from elm/i, term: "decoders" },
   { slug: "compare/fsharp", heading: /coming from f#/i, term: "computation" },
+  { slug: "compare/ocaml", heading: /coming from ocaml/i, term: "dune" },
+  { slug: "compare/csharp", heading: /coming from c#/i, term: "LINQ" },
 ]) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(`${BASE}/docs/${slug}/`);
@@ -620,15 +622,15 @@ for (const { slug, heading, term } of [
 }
 
 // --- 7h. Landing teaser links resolve to the comparison pages. -----------------
-// The landing page's "Coming from Elm or F#?" teaser links must resolve (200)
-// and land on the two comparison docs pages.
+// The landing page's "Coming from Elm, F#, OCaml, or C#?" teaser links must
+// resolve (200) and land on the four comparison docs pages.
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(BASE);
   const hrefs = await page
     .locator(".compare-teaser a")
     .evaluateAll((els) => els.map((el) => el.getAttribute("href")));
-  check("landing teaser has two comparison links", hrefs.length === 2, JSON.stringify(hrefs));
+  check("landing teaser has four comparison links", hrefs.length === 4, JSON.stringify(hrefs));
   for (const href of hrefs) {
     const url = new URL(href, `${BASE}/`).href;
     const res = await fetch(url);
