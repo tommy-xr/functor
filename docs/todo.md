@@ -24,7 +24,7 @@ bug found in the same exercise was fixed on the spot
 - [x] List builtins: `length`, `append`, `flatten`, `any`/`all`, `reverse`,
       `isEmpty` — naive recursive versions blow the eval-depth cap at n≈60;
       the depth error should name the cap and hint at `List.fold`.
-- [ ] Literals inside tuple/ctor patterns (`| ("Enter", true) =>`) for
+- [x] Literals inside tuple/ctor patterns (`| ("Enter", true) =>`) for
       input mapping.
 - [x] `Frame.withClearColor` (today: distant-fog trick doubles as clear color).
 - [ ] `Ui.center()` anchor (+ eventually font size / spacer) for menus.

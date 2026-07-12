@@ -1479,6 +1479,18 @@ fn bool_operators_check_clean() {
     );
 }
 
+// --- Literals inside tuple / constructor patterns ---
+
+#[test]
+fn tuple_literal_patterns_check_clean() {
+    assert_clean(
+        "let f = (key: string, down: bool) =>\n\
+         \x20 match (key, down) with\n\
+         \x20 | (\"Enter\", true) => 1.0\n\
+         \x20 | (_, _) => 0.0",
+    );
+}
+
 #[test]
 fn logical_operand_must_be_bool() {
     let (message, line, _) = single_diag("let f = () => 1.0 && true");
@@ -1517,6 +1529,18 @@ fn if_else_checks_clean() {
 }
 
 #[test]
+fn ctor_literal_patterns_check_clean() {
+    assert_clean(
+        "type Shape = | Circle(r: float) | Rect(w: float, h: float)\n\
+         let f = (s: Shape) =>\n\
+         \x20 match s with\n\
+         \x20 | Circle(0.0) => \"pt\"\n\
+         \x20 | Circle(r) => \"c\"\n\
+         \x20 | Rect(w, h) => \"r\"",
+    );
+}
+
+#[test]
 fn if_condition_must_be_bool() {
     // A genuinely-non-bool condition (a float literal) — an unannotated param
     // would simply be inferred to bool instead.
@@ -1531,6 +1555,24 @@ fn if_branches_must_unify() {
     assert_eq!(
         message,
         "`if` branches have incompatible types float and string"
+    );
+}
+
+#[test]
+fn tuple_literal_sub_pattern_is_not_a_catch_all() {
+    // `("Enter", true)` is refutable, so without a catch-all the match is
+    // not exhaustive.
+    let (message, _, _) = single_diag(
+        "let f = (a: string, b: bool) =>\n\
+         \x20 match (a, b) with\n\
+         \x20 | (\"Enter\", true) => 1.0",
+    );
+    // The arm matches the arity but is refutable — the message must point at
+    // the missing catch-all, not claim no arm matches the arity.
+    assert_eq!(
+        message,
+        "match on (string, bool) is not exhaustive: its arms are refutable — \
+         add a catch-all (`_` or a name)"
     );
 }
 
@@ -1576,4 +1618,37 @@ fn nested_if_keeps_its_own_type() {
     );
     let inner = types.expr(else_branch.id).expect("inner if type recorded");
     assert_eq!(inner.to_string(), "float");
+}
+
+#[test]
+fn ctor_literal_sub_pattern_does_not_cover_the_ctor() {
+    // `Circle(0.0)` matches some circles, not all — `Circle` is still missing.
+    let diags = check_src(
+        "type Shape = | Circle(r: float) | Rect(w: float, h: float)\n\
+         let f = (s: Shape) =>\n\
+         \x20 match s with\n\
+         \x20 | Circle(0.0) => \"pt\"\n\
+         \x20 | Rect(w, h) => \"r\"",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|(m, _, _)| m.contains("not exhaustive") && m.contains("Circle")),
+        "expected a 'missing Circle' diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn literal_sub_pattern_type_mismatch_is_diagnosed() {
+    // A string literal where the tuple element is a float.
+    let (message, _, _) = single_diag(
+        "let f = (a: float, b: bool) =>\n\
+         \x20 match (a, b) with\n\
+         \x20 | (\"x\", true) => 1.0\n\
+         \x20 | (_, _) => 0.0",
+    );
+    assert!(
+        message.contains("string") && message.contains("float"),
+        "unexpected: {message}"
+    );
 }

@@ -306,17 +306,92 @@ fn error_match_requires_leading_bar() {
     );
 }
 
-/// Sub-patterns are bindings or `_` only — constructor patterns don't nest.
+/// Sub-patterns are bindings, `_`, or literals — constructor patterns don't
+/// nest another constructor/tuple.
 #[test]
 fn error_nested_constructor_pattern() {
     assert_eq!(
         parse_err("let f = (s) => match s with | Circle(Point) => 1.0 | _ => 0.0"),
         (
-            "expected a binding name or `_` (constructor patterns do not nest), found `Point`"
+            "expected a binding name, `_`, or a literal (constructor/tuple patterns do not nest), \
+             found `Point`"
                 .to_string(),
             1,
             38
         )
+    );
+}
+
+/// Literals ARE allowed as tuple/ctor sub-patterns (`("Enter", true)`) — the
+/// input-mapping shape. String, number (incl. negative), and bool leaves.
+#[test]
+fn tuple_pattern_allows_literal_sub_patterns() {
+    use functor_lang::ast::PatternKind;
+    let src = "let f = (p) => match p with | (\"Enter\", true) => 1.0 | (-1.0, x) => x | _ => 0.0";
+    let program = functor_lang::parse(src).unwrap();
+    let Item::Let(decl) = &program.items[0] else {
+        panic!("expected a let declaration");
+    };
+    let ExprKind::Lambda { body, .. } = &decl.value.kind else {
+        panic!("expected a lambda");
+    };
+    let ExprKind::Match { arms, .. } = &body.kind else {
+        panic!("expected a match");
+    };
+    let PatternKind::Tuple(first) = &arms[0].pattern.kind else {
+        panic!("expected a tuple pattern");
+    };
+    assert!(matches!(first[0].kind, PatternKind::String(ref s) if s == "Enter"));
+    assert!(matches!(first[1].kind, PatternKind::Bool(true)));
+    let PatternKind::Tuple(second) = &arms[1].pattern.kind else {
+        panic!("expected a tuple pattern");
+    };
+    assert!(matches!(second[0].kind, PatternKind::Number(n) if n == -1.0));
+    assert!(matches!(second[1].kind, PatternKind::Var(ref n) if n == "x"));
+}
+
+/// A literal inside a constructor pattern (`Circle(0.0)`) parses.
+#[test]
+fn ctor_pattern_allows_literal_sub_pattern() {
+    use functor_lang::ast::PatternKind;
+    let src = "let f = (s) => match s with | Circle(0.0) => 1.0 | _ => 0.0";
+    let program = functor_lang::parse(src).unwrap();
+    let Item::Let(decl) = &program.items[0] else {
+        panic!("expected a let declaration");
+    };
+    let ExprKind::Lambda { body, .. } = &decl.value.kind else {
+        panic!("expected a lambda");
+    };
+    let ExprKind::Match { arms, .. } = &body.kind else {
+        panic!("expected a match");
+    };
+    let PatternKind::Ctor { args, .. } = &arms[0].pattern.kind else {
+        panic!("expected a ctor pattern");
+    };
+    assert!(matches!(args[0].kind, PatternKind::Number(n) if n == 0.0));
+}
+
+/// A nested tuple sub-pattern is still refused (only literal leaves, no
+/// deeper structure).
+#[test]
+fn error_nested_tuple_sub_pattern() {
+    let (message, _, _) = parse_err("let f = (p) => match p with | ((a, b), c) => a | _ => 0.0");
+    assert_eq!(
+        message,
+        "expected a binding name, `_`, or a literal (constructor/tuple patterns do not nest), \
+         found `(`"
+    );
+}
+
+/// Literals are NOT allowed in LIST element/tail patterns — list
+/// exhaustiveness is length-based and would silently break. The widening is
+/// scoped to tuple/ctor patterns.
+#[test]
+fn error_literal_in_list_pattern() {
+    let (message, _, _) = parse_err("let f = (xs) => match xs with | [] => 0.0 | [true, ..r] => 1.0");
+    assert_eq!(
+        message,
+        "expected a binding name or `_` (list patterns do not nest), found `true`"
     );
 }
 
