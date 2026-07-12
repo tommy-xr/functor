@@ -24,8 +24,10 @@ const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
 // dist/examples/<name>.fun — site-local plus the repo's Functor Lang examples.
 const EXAMPLES = {
   hero: `${site}examples/hero.fun`,
-  orbit: `${root}examples/hello-cubes/game.fun`,
-  physics: `${root}examples/physics/game.fun`,
+  primitives: `${root}examples/primitives/game.fun`,
+  // Named `bounce` (not `physics`): the flat copy makes `file = module`, and a
+  // module literally named `Physics` collides with the builtin/prelude namespace.
+  bounce: `${root}examples/physics/game.fun`,
   monitor: `${root}examples/monitor/game.fun`,
 };
 
@@ -54,7 +56,7 @@ for (const [name, path] of Object.entries(EXAMPLES)) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`],
+  entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`, `${site}src/hero.js`],
   bundle: true,
   minify: true,
   format: "esm",

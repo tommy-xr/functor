@@ -2,20 +2,50 @@
 
 # functor
 
-Functor: A functional toolkit for building 3D games in **Functor Lang**, Functor's own
-interpreted, F#-inspired game-logic language.
+![Live-editing the hero scene's color while it hot-reloads with the model preserved, then scrubbing the running scene back through its own recorded timeline](docs/media/readme-hero.gif)
 
-You write your game as a `.fun` file. There is **no transpile or compile step for
-game logic** — the Rust runtime *interprets* the `.fun` directly:
+*This is the live hero at [functor.games](https://functor.games): scrub the running
+scene back through its own recorded timeline (whole-game time travel), and
+live-edit the code to watch it hot-reload with the model preserved
+([still frame](docs/media/readme-hero.png)).*
 
-- **native** — the `functor` desktop runtime (GLFW + OpenGL), run in-process by the
-  `functor` CLI, loads and runs your `.fun`, with hot-reloading on save for fast iteration.
-- **wasm** — the web runtime (WebGL2) ships the `.fun` source as text and
-  interprets it in the browser.
+Functor is a functional toolkit for building 3D games in **Functor Lang** — Functor's
+own tiny, interpreted, F#-inspired game-logic language. You write your game as pure
+Model–View–Update functions in a `.fun` file: there is **no transpile or compile step
+for game logic** — the Rust runtime *interprets* the `.fun` directly, with
+state-preserving hot reload as you save, whole-game time travel over the running model,
+and the same source running on **native and wasm**.
 
-The same interpreter runs everywhere Rust runs. The heavy per-frame work
-(rendering, skinning, physics) stays in the Rust shell; only the game logic is
-Functor Lang.
+## Try it in the browser
+
+No install needed:
+
+- **[functor.games](https://functor.games)** — the landing page's hero is a live
+  Functor Lang scene you can edit in place (the GIF above).
+- **[functor.games/sandbox.html](https://functor.games/sandbox.html)** — a full
+  in-browser sandbox: edit a `.fun`, watch it hot-reload, and scrub the timeline.
+
+(The redesigned pages ship with this branch.)
+
+## Quick start (local)
+
+Prereqs: **Rust stable** with the `wasm32-unknown-unknown` target, **Node 22+**, and
+**`wasm-pack`** (exact known-good versions in [Prerequisites](#prerequisites) below).
+
+```sh
+# 1. Build the single `functor` binary (wasm bundle first, then the CLI).
+npm run build:cli
+
+# 2. Scaffold a game.
+./target/debug/functor -d my-game init
+
+# 3. Run it natively — a window opens. Edit my-game/game.fun and save;
+#    it hot-reloads, preserving the model.
+./target/debug/functor -d my-game run native
+```
+
+See [Building the CLI](#building-the-cli) and [Running a sample](#running-a-sample)
+for the full details (wasm target, serving to the browser, sample assets).
 
 ## Writing a game
 
@@ -45,6 +75,12 @@ specific values.) The full language and prelude
 are documented in the `functor-lang` skill (`.claude/skills/functor-lang/`) and
 `docs/functor-lang.md`. See `examples/hello/game.fun` or
 `examples/primitives/game.fun` for complete games.
+
+Because the model is a plain, cheap-to-clone value the host holds between frames,
+the runtime can **hot-reload your edits with the model preserved** and **record the
+model every rendered frame** — that's what powers the live editing and whole-game
+time-travel scrubber you see at [functor.games](https://functor.games) (design notes:
+`docs/time-travel.md`).
 
 ## Design principles
 
@@ -103,7 +139,7 @@ npm run build:cli
 This produces a single binary in `target/debug/`: `functor` (the CLI, with the desktop
 runtime linked in as a library and run in-process — there is no separate `functor-runner`).
 
-## Running a sample (`examples/hello`)
+## Running a sample
 
 Some samples reference glTF model assets that aren't checked in (they download from
 [BabylonJS Assets](https://github.com/BabylonJS/Assets/)); fetch them first:

@@ -321,11 +321,20 @@ pub fn load_sources_with_prelude(
         message,
     };
 
-    // Derive and validate module names; assign span bases.
+    // Derive and validate module names; assign span bases. A SINGLE-source
+    // project (the inline / wasm single-entry case) has no siblings to refer
+    // to it by name, so a non-identifier or protected stem falls back to
+    // `Main` — same rule as `load_single_file`. On-disk multi-file projects
+    // keep the loud errors: there, siblings reference modules by name.
+    let single = sources.len() == 1;
     let mut files: Vec<SourceFile> = Vec::new();
     let mut base = 0usize;
     for (path, src) in sources.iter() {
-        let module = module_name(path).map_err(|message| at(path, message))?;
+        let module = if single {
+            single_module_name(path)
+        } else {
+            module_name(path).map_err(|message| at(path, message))?
+        };
         if PROTECTED_NAMESPACES.contains(&module.as_str()) {
             return Err(at(
                 path,
@@ -562,13 +571,7 @@ pub fn load_single_file(
     src: &str,
     prelude: &[(String, String)],
 ) -> Result<Project, ProjectError> {
-    // Fall back to `Main` for a non-identifier stem OR one that capitalizes to
-    // a protected namespace (`net.fun` → `Net`), which would otherwise collide
-    // with the builtin module `link` injects and silently fail the load.
-    let module = match module_name(path) {
-        Ok(name) if !PROTECTED_NAMESPACES.contains(&name.as_str()) => name,
-        _ => "Main".to_string(),
-    };
+    let module = single_module_name(path);
     let mut files = vec![SourceFile {
         interface: is_interface(path),
         path: path.to_path_buf(),
@@ -578,6 +581,19 @@ pub fn load_single_file(
     }];
     push_prelude(&mut files, prelude);
     link(files)
+}
+
+/// The module name for a SINGLE-source project (one entry, no siblings): the
+/// file's derived name, or `Main` when the stem isn't an identifier OR
+/// capitalizes to a protected namespace (`net.fun` → `Net`), which would
+/// otherwise collide with the builtin module `link` injects and fail the load.
+/// A single file is its own bare entry, so the name only labels it — nothing
+/// references it by name.
+fn single_module_name(path: &Path) -> String {
+    match module_name(path) {
+        Ok(name) if !PROTECTED_NAMESPACES.contains(&name.as_str()) => name,
+        _ => "Main".to_string(),
+    }
 }
 
 /// The module name a file provides: its stem, first letter capitalized

@@ -38,42 +38,42 @@ export const functorLangLanguage = StreamLanguage.define({
   },
 });
 
-// Synthwave '84-adjacent palette: hot pink keywords, cyan names, glowing
-// constructors — tuned against the site's #0d0221 background.
+// Calmer dark-violet palette matching the site theme: demoted pink keywords,
+// cyan the primary accent — tuned against the site's #0f0c1d background.
 const highlight = HighlightStyle.define([
-  { tag: tags.keyword, color: "#ff2fbf" },
-  { tag: tags.atom, color: "#ff9f43" },
-  { tag: tags.typeName, color: "#ffd76d" },
-  { tag: tags.variableName, color: "#9ef7ff" },
-  { tag: tags.operator, color: "#ff6ad5" },
-  { tag: tags.number, color: "#c792ff" },
-  { tag: tags.string, color: "#7bf59d" },
-  { tag: tags.comment, color: "#6a5a96", fontStyle: "italic" },
+  { tag: tags.keyword, color: "#e858b8" },
+  { tag: tags.atom, color: "#eec877" },
+  { tag: tags.typeName, color: "#eec877" },
+  { tag: tags.variableName, color: "#c7f2f7" },
+  { tag: tags.operator, color: "#9b94b3" },
+  { tag: tags.number, color: "#b7a9e0" },
+  { tag: tags.string, color: "#6fdc92" },
+  { tag: tags.comment, color: "#6c6685", fontStyle: "italic" },
 ]);
 
 const chrome = EditorView.theme(
   {
     "&": {
-      backgroundColor: "#0f0328",
-      color: "#e8dcff",
+      backgroundColor: "#161226",
+      color: "#e9e6f2",
       height: "100%",
       fontSize: "13.5px",
     },
     ".cm-content": {
       fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
-      caretColor: "#27e8f7",
+      caretColor: "#41d8e6",
     },
-    ".cm-cursor": { borderLeftColor: "#27e8f7" },
+    ".cm-cursor": { borderLeftColor: "#41d8e6" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-      backgroundColor: "#3b1a6e88",
+      backgroundColor: "#2b254288",
     },
-    ".cm-activeLine": { backgroundColor: "#1c0a4233" },
-    ".cm-activeLineGutter": { backgroundColor: "#1c0a42" },
+    ".cm-activeLine": { backgroundColor: "#1e183333" },
+    ".cm-activeLineGutter": { backgroundColor: "#1e1833" },
     ".cm-gutters": {
-      backgroundColor: "#0d0221",
-      color: "#5d4a8a",
+      backgroundColor: "#0f0c1d",
+      color: "#6c6685",
       border: "none",
-      borderRight: "1px solid #2a1454",
+      borderRight: "1px solid #2b2542",
     },
     "&.cm-focused": { outline: "none" },
   },

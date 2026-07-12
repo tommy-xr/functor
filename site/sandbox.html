@@ -11,13 +11,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Press+Start+2P&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="sandbox-page">
-    <header class="sandbox-header">
+    <header class="site-header">
       <a class="wordmark" href="./">FUNCTOR<span class="wordmark-accent">//SANDBOX</span></a>
       <div class="sandbox-controls">
         <label class="picker-label" for="example-picker">scene</label>
@@ -27,8 +27,11 @@
         </button>
         <span id="status" class="status-pill" data-state="busy">◌ loading…</span>
       </div>
-      <a class="header-link" href="docs.html">Docs</a>
-      <a class="header-link" href="https://github.com/tommy-xr/functor">GitHub ↗</a>
+      <nav class="site-nav">
+        <a href="sandbox.html" aria-current="page">Sandbox</a>
+        <a href="docs.html">Docs</a>
+        <a href="https://github.com/tommy-xr/functor">GitHub ↗</a>
+      </nav>
     </header>
 
     <main class="sandbox-split">
@@ -44,8 +47,9 @@
     <footer class="sandbox-footer">
       <p>
         Edits hot-reload the running game <em>with the model preserved</em> — the wave keeps
-        rolling while you retune it. A broken edit keeps the old program running. Click the
-        scene for mouse-look where a scene supports it.
+        rolling while you retune it. A broken edit keeps the old program running. Press
+        <em>mouse look</em> to steer the camera (Esc to release), and scrub the timeline
+        along the bottom to travel through time.
       </p>
     </footer>
 
