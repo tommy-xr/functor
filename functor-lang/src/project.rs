@@ -337,6 +337,13 @@ pub fn load_with_prelude(
         );
     }
 
+    // The ENTRY is always loaded, so its stem must name a valid module even
+    // when it has no siblings — an on-disk one-file project must NOT take the
+    // single-source `Main` fallback in `load_sources_with_prelude`, which
+    // exists for the inline wasm/docs single-entry case where the path is
+    // only a label.
+    module_name(entry_path).map_err(|message| at(entry_path, message))?;
+
     // Read every project file (entry first), honoring the in-memory overrides,
     // then hand the (path, source) pairs to the shared linker.
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
