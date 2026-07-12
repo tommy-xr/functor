@@ -1,62 +1,65 @@
-# Functor Lang — the functor game language
+# Functor — a functional toolkit for 3D games
 
-Functor Lang is a deliberately small, F#-inspired language for game logic. It is
-*interpreted* — the source ships as text and runs natively, in the browser, and
-in the [sandbox](/sandbox.html) — and it hot-reloads with your game's state
-preserved. Every full program on this page has a **▶ try it** button that
-opens it live in the sandbox.
+Functor is a functional toolkit for building 3D games in **Functor Lang** — a
+deliberately small, F#-inspired game-logic language. You write your game as pure
+Model–View–Update functions in a `.fun` file, and:
 
-## Get started
+- **there is no compile step for game logic** — the Rust runtime *interprets* the
+  `.fun` directly;
+- **hot reload preserves your model** — save an edit and the running game swaps to
+  the new code mid-flight, keeping its state;
+- **you can time-travel the running game** — pause, scrub, and step back through the
+  scene's own recorded timeline;
+- **one source runs on native and wasm** — the same `.fun` runs in a desktop window
+  and in the browser;
+- **it's LLM-native** — a text-only runtime path and inspectable state, so an agent
+  can drive and observe a game with no GPU window.
 
-The fastest path is the [sandbox](/sandbox.html) — nothing to install. For
-local development you need Rust (stable), Node 22, and `wasm-pack`; then:
+Every full program on this page has a **▶ try it** button that opens it live in the
+[sandbox](/sandbox.html) — nothing to install.
 
-```sh
-git clone https://github.com/tommy-xr/functor && cd functor
-npm run build:cli                    # builds the functor CLI + runtimes
-```
+## Your first scene
 
-An Functor Lang project is a directory with two files:
-
-```sh
-# functor.json
-{ "language": "functor-lang", "entry": "game.fun" }
-```
-
-And the game itself — here is the smallest interesting one:
+This is exactly what `functor init` scaffolds — a lit ground plane, a slowly
+rotating cube, and a sphere. The first code you see is the code you'd start from.
+Press **▶ try it**, then edit a color or a number and watch it hot-reload:
 
 ```functor run
+// The scene `functor init` scaffolds. Saving an edit (locally, or in the
+// sandbox) hot-reloads it with the model preserved.
+
 let init = {}
-let tick = (m, dt, tts) => m
-let draw = (m, tts: Float) =>
-  Frame.create(
-    Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),
-    Scene.cube()
-      |> Scene.emissive(1.0, 0.2, 0.8)
-      |> Scene.rotateY(Angle.radians(tts)))
+
+let tick = (model, dt, tts) => model
+
+let draw = (model, tts) =>
+  Frame.createLit(
+    Camera.lookAt(6.0, 4.0, -8.0, 0.0, 0.5, 0.0),
+    Scene.group([
+      Scene.plane()
+        |> Scene.scale(20.0)
+        |> Scene.lit(0.35, 0.38, 0.42),
+      Scene.cube()
+        |> Scene.rotateY(Angle.radians(tts * 0.5))
+        |> Scene.translate(0.0, 0.75, 0.0)
+        |> Scene.lit(0.25, 0.65, 1.0),
+      Scene.sphere()
+        |> Scene.scale(0.55)
+        |> Scene.translate(-2.0, 0.55, 1.0)
+        |> Scene.lit(1.0, 0.35, 0.25),
+    ]),
+    [
+      Light.ambient(0.12, 0.12, 0.16),
+      Light.directional(0.5, -1.0, 0.35, 1.0, 0.96, 0.9, 1.0)
+        |> Light.castShadows,
+    ])
 ```
 
-Run it:
+## What a game looks like
 
-```sh
-functor -d . run native      # desktop window
-functor -d . run wasm        # serves it in the browser
-functor -d . develop         # hot-reload loop: save the file, see it in ~1 frame
-functor -d . build           # typecheck (diagnostics are errors)
-```
-
-**Hot reload preserves the model.** Under `develop` (and in
-the sandbox), saving an edit swaps the program under the *running* state: a
-bouncing ball keeps bouncing, mid-arc, with your new gravity. A broken edit keeps the
-old program running and shows the error. An edited `init` takes effect on
-restart, not on reload.
-
-## A complete game
-
-A game is Model–View–Update: `init` is the starting model,
-`tick` steps it every frame, `draw` renders it, and messages
-(from timers, effects) fold through `update`. This one pulses a sphere and
-counts beats once a second:
+A game is Model–View–Update: `init` is the starting model, `tick` steps it every
+frame, `draw` renders it, and messages (from timers, effects, input) fold through
+`update`. This one pulses a sphere and counts beats once a second:
 
 ```functor run
 // a pulsing sphere with a beat counter
@@ -137,3 +140,12 @@ let draw = (m, tts) =>
       Light.directional(0.4, -1.0, 0.3, 1.0, 0.95, 0.9, 0.9) |> Light.castShadows,
     ])
 ```
+
+## Where next
+
+- **[Getting started](/docs/getting-started/)** — start in the browser sandbox, then
+  set up a local project and the hot-reload dev loop.
+- **[Language reference](/docs/language/)** — the whole of Functor Lang: syntax,
+  semantics, and the engine prelude.
+- **[The sandbox](/sandbox.html)** — edit a `.fun` live, watch it hot-reload, and
+  scrub the timeline. No install.

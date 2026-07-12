@@ -3,7 +3,8 @@
     {
       "title": "Guide",
       "entries": [
-        { "slug": "index", "title": "Get started" }
+        { "slug": "index", "title": "Overview" },
+        { "slug": "getting-started", "title": "Getting started" }
       ]
     },
     {

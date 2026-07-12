@@ -44,8 +44,10 @@ npm run build:cli
 ./target/debug/functor -d my-game run native
 ```
 
-See [Building the CLI](#building-the-cli) and [Running a sample](#running-a-sample)
-for the full details (wasm target, serving to the browser, sample assets).
+For the full walkthrough — start in the browser sandbox, then the local dev loop,
+`functor.json`, typed asset names, and the hot-reload semantics — see the
+**[Getting started guide](https://functor.games/docs/getting-started/)**. The
+repo-specific details below cover the manual two-step build and fetching sample assets.
 
 ## Writing a game
 
@@ -174,16 +176,9 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
 | `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime |
 
-### What `build`/`run` do under the hood
-
-1. `build` loads the project (the entry `.fun` plus every sibling `.fun` — file = module)
-   and typechecks the whole program; diagnostics are errors here.
-2. (native) `run` runs the desktop runtime in-process on the entry `.fun` (no separate
-   process); it **interprets** the `.fun` each frame and hot-reloads it on save,
-   preserving the model.
-3. (wasm) `run` serves the project directory — the `.fun` ships as text; the embedded
-   web runtime fetches and interprets it. (File-watch hot-reload is native-only;
-   reload the page to pick up saved edits.)
+For what each command does under the hood — how `run` interprets the `.fun` each frame,
+`file = module` loading, and the hot-reload semantics — see the
+[Getting started guide](https://functor.games/docs/getting-started/).
 
 ## Credits
 

@@ -442,6 +442,25 @@ const docsSlugs = manifest.groups.flatMap((g) => g.entries.map((e) => e.slug));
   await page.close();
 }
 
+// --- 7c-nav. Getting started renders with the sidebar marking it current. ------
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/docs/getting-started/`);
+  await page.waitForFunction(() => !!document.querySelector(".docs-main h1"), { timeout: 10000 });
+  const heading = await page.locator(".docs-main h1").first().textContent();
+  check("getting-started page renders its heading", /getting started/i.test(heading || ""), heading);
+  // The sidebar link for this page carries aria-current="page" (the current mark).
+  const current = await page.locator('.docs-nav a[aria-current="page"]');
+  const currentText = (await current.count()) ? await current.first().textContent() : "";
+  const currentHref = (await current.count()) ? await current.first().getAttribute("href") : "";
+  check(
+    "sidebar marks getting-started current",
+    /getting started/i.test(currentText) && /getting-started/.test(currentHref || ""),
+    `text=${currentText} href=${currentHref}`
+  );
+  await page.close();
+}
+
 // --- 7d. Docs search (Pagefind): typing surfaces results linking to docs. ------
 // The docs pages load ONE script (the stock Pagefind UI) that fetches the index
 // built into dist/pagefind/. Type a term, await async results, and assert a
