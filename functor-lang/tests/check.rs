@@ -218,6 +218,17 @@ fn error_builtin_argument_type() {
     assert_eq!((line, col), (1, 28));
 }
 
+// The math builtins check like any other: a two-arg builtin flags a bad
+// argument, and `Math.pi` is a plain `Float` value (usable in arithmetic).
+#[test]
+fn math_builtins_check() {
+    assert_clean("let x = () => Math.sqrt(2.0)");
+    assert_clean("let x = () => Math.pow(2.0, 8.0)");
+    assert_clean("let area = (r: float): float => Math.pi * r * r");
+    let (message, _, _) = single_diag("let x = () => Math.mod(1.0, \"s\")");
+    assert_eq!(message, "argument 2 of `Math.mod`: expected float, got string");
+}
+
 // Currying: a partially-applied builtin is a legal value, not an arity error
 // — `Text.concat("a")` is a `(String) => String`.
 #[test]

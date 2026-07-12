@@ -64,8 +64,8 @@ pub enum CompletionKind {
 }
 
 /// The complete builtin registry. Hand-listed because [`Builtin`] is not
-/// iterable — keep in sync with `eval::Builtin` (24 variants).
-const BUILTINS: [Builtin; 24] = [
+/// iterable — keep in sync with `eval::Builtin` (33 variants).
+const BUILTINS: [Builtin; 33] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
@@ -81,6 +81,15 @@ const BUILTINS: [Builtin; 24] = [
     Builtin::ListIsEmpty,
     Builtin::MathSin,
     Builtin::MathCos,
+    Builtin::MathSqrt,
+    Builtin::MathAbs,
+    Builtin::MathFloor,
+    Builtin::MathAtan2,
+    Builtin::MathMod,
+    Builtin::MathMin,
+    Builtin::MathMax,
+    Builtin::MathPow,
+    Builtin::MathPi,
     Builtin::TextConcat,
     Builtin::TextFromFloat,
     Builtin::TextFixed,
@@ -402,14 +411,15 @@ fn member_candidates(
         }
     }
 
-    // Builtins whose namespace is the qualifier (`List.map`, …).
+    // Builtins whose namespace is the qualifier (`List.map`, …). Most are
+    // functions, but a constant like `Math.pi` is a plain value.
     for &b in &BUILTINS {
         let name = builtin_name(b);
         if let Some(label) = name.strip_prefix(&prefix) {
             items.push(CompletionItem {
                 label: label.to_string(),
                 detail: Some(format!("{name} : {}", builtin_signature(b))),
-                kind: CompletionKind::Function,
+                kind: value_kind(&builtin_signature(b)),
             });
         }
     }
@@ -853,6 +863,16 @@ mod tests {
             Some("List.map : (('a) => 'b, List<'a>) => List<'b>")
         );
         assert_eq!(find(&items, "map").kind, CompletionKind::Function);
+    }
+
+    // Builtin module `Math.` — the function builtins complete as functions, but
+    // the constant `Math.pi` completes as a Value (not a callable).
+    #[test]
+    fn math_member_completion_pi_is_a_value() {
+        let items = game(STUB, &[], "let s = Math.");
+        assert_eq!(find(&items, "sqrt").kind, CompletionKind::Function);
+        assert_eq!(find(&items, "pi").kind, CompletionKind::Value);
+        assert_eq!(find(&items, "pi").detail.as_deref(), Some("Math.pi : float"));
     }
 
     // 3 (+20). Sibling module `Utils.` from `game.fun` — exact Vec, kinds.
@@ -1400,6 +1420,15 @@ mod tests {
                 | Builtin::ListIsEmpty
                 | Builtin::MathSin
                 | Builtin::MathCos
+                | Builtin::MathSqrt
+                | Builtin::MathAbs
+                | Builtin::MathFloor
+                | Builtin::MathAtan2
+                | Builtin::MathMod
+                | Builtin::MathMin
+                | Builtin::MathMax
+                | Builtin::MathPow
+                | Builtin::MathPi
                 | Builtin::MathClamp01
                 | Builtin::TextConcat
                 | Builtin::TextFromFloat
@@ -1411,7 +1440,7 @@ mod tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(BUILTINS.len(), 24, "BUILTINS must list every Builtin");
+        assert_eq!(BUILTINS.len(), 33, "BUILTINS must list every Builtin");
     }
 
     // 19. A full keyword typed (`let`, cursor at end) still offers `let`.

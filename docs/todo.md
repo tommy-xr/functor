@@ -12,7 +12,7 @@ Gaps hit building `examples/asteroids` end-to-end (full report:
 bug found in the same exercise was fixed on the spot
 (`functor-runtime-desktop/Cargo.toml`).
 
-- [ ] Math builtins: `sqrt`, `atan2`, `abs`, `floor`/`mod`, `min`/`max`,
+- [x] Math builtins: `sqrt`, `atan2`, `abs`, `floor`/`mod`, `min`/`max`,
       `pi`, `pow` (today: only `sin`/`cos`/`clamp01` — every game hits these).
 - [ ] Pure seeded randomness (`Random.step(seed) -> (value, seed)` or
       `Effect.randomList`) — `Effect.random`'s one-float-per-update forces

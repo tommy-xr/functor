@@ -404,8 +404,21 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::TextJoin => func(vec![String, List(Box::new(String))], String),
         // Text.parseFloat : (String) => Float
         Builtin::TextParseFloat => func(vec![String], Float),
-        // Math.clamp01 / sin / cos : (Float) => Float
-        Builtin::MathClamp01 | Builtin::MathSin | Builtin::MathCos => func(vec![Float], Float),
+        // Math.clamp01 / sin / cos / sqrt / abs / floor : (Float) => Float
+        Builtin::MathClamp01
+        | Builtin::MathSin
+        | Builtin::MathCos
+        | Builtin::MathSqrt
+        | Builtin::MathAbs
+        | Builtin::MathFloor => func(vec![Float], Float),
+        // Math.atan2 / mod / min / max / pow : (Float, Float) => Float
+        Builtin::MathAtan2
+        | Builtin::MathMod
+        | Builtin::MathMin
+        | Builtin::MathMax
+        | Builtin::MathPow => func(vec![Float, Float], Float),
+        // Math.pi : Float — a constant, not a function.
+        Builtin::MathPi => Float,
         // Subject-LAST. Debug.log : (String, 'a) => 'a — label first, subject
         // last; logs `label: subject` and returns the subject unchanged (Var(0)
         // is generic, so it's transparent in a pipe).
