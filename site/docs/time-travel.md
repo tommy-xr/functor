@@ -79,10 +79,12 @@ Both features fall out of how a Functor game is written. Your game is pure
 Model–View–Update: the model is an ordinary value, and every frame is a function of
 it — `tick` advances the model, `draw` turns it into a picture. So "go back a frame"
 is just "restore an earlier value and draw it," and "hot reload" is just "keep the
-value, swap the functions." Nothing is hidden in opaque engine state. The same
-purity makes the recording deterministic — replayed under a controlled effect
-runner, a program produces exactly the frames it produced live — which is the
-foundation the deeper time-travel tools build on.
+value, swap the functions." Nothing is hidden in opaque engine state. Scrubbing needs
+no replay at all: the recorder snapshots the model every frame (values are cheap to
+keep), and a seek simply restores the exact snapshot — what you see is what happened,
+byte for byte. The same purity separately enables deterministic *replay* — under a
+controlled effect runner a program reproduces its frames exactly — which is the
+foundation for the runtime's testing seams and the deeper time-travel tools to come.
 
 ## Still evolving
 

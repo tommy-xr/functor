@@ -11,7 +11,7 @@ on a small program you can edit in place — try this one:
 ```functor run
 let init = {}
 let tick = (m, dt, tts) => m
-let draw = (m, tts: Float) =>
+let draw = (m, tts: float) =>
   Frame.create(
     Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),
     Scene.cube()

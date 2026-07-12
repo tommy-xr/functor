@@ -7,7 +7,7 @@ scene with your live state gone. In Functor Lang you edit and **the runtime
 hot-swaps your code under the running model, mid-frame** — the sphere keeps
 spinning, the count keeps its value, nothing reloads. On top of that the whole
 session is recorded, so you can **scrub the running game's timeline back and
-forth** deterministically — pause, drag, single-step — with no test harness.
+forth** — pause, drag, single-step; each frame restores exactly as recorded — with no test harness.
 
 The paradigm is the other jump. Functor Lang has **no classes, no inheritance, no
 `null`**. A game is plain **values** and **pure functions**: an `init` value, an
@@ -116,8 +116,8 @@ frame instead of mutating objects — is what makes hot reload and time travel w
   the live model in about one frame — the scene keeps running and its state is
   preserved. Compare the Unity round-trip of edit → recompile → domain reload →
   lost play state.
-- **Whole-game time travel.** Scrub the running game's timeline back and forth,
-  deterministically — pause, drag, single-step. No record-and-replay harness to
+- **Whole-game time travel.** Scrub the running game's timeline back and forth —
+  pause, drag, single-step; every frame restores exactly as it was recorded. No record-and-replay harness to
   set up; it's built into the runtime.
 - **No null reference exceptions.** Absence is a variant you match on, checked at
   the boundary — the entire class of `NullReferenceException` is gone.

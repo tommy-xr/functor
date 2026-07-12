@@ -67,7 +67,7 @@ type Msg = | Beat
 
 let init = { spin: 0.0, beat: 0.0 }
 
-let tick = (model, dt: Float, tts: Float) =>
+let tick = (model, dt: float, tts: float) =>
   { model with spin: model.spin + dt }
 
 let update = (model, msg) =>
@@ -76,7 +76,7 @@ let update = (model, msg) =>
 
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
 
-let draw = (model, tts: Float) =>
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),
     Scene.sphere()

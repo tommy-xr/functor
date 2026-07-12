@@ -341,8 +341,8 @@ let main = () => firstOf({ first: 1.0, second: "label" })   // 1
 
 A declaration with no `= body` is an **abstract type**: an opaque nominal with no fields and
 no constructor. Its values are made by host code; you name it only in annotations. This is
-how engine handles (`Camera.t`, `Physics.body`, …) are typed — and how you'd declare your
-own host-backed handle in a [`.funi`](#interface-files-funi):
+how engine handles (`Camera.t`, `Physics.body`, …) are typed. In a `.fun` file it looks
+like this:
 
 ```functor
 type Handle                       // opaque — no fields, no constructor
@@ -350,8 +350,13 @@ let size = (h: Handle): float => 1.0
 let main = () => 0.0
 ```
 
-One current limit: **function types can't be written in annotations yet** — `f: ('a) => 'b`
-does not parse. Leave higher-order parameters unannotated and let inference type them. An
+In a [`.funi` interface file](#interface-files-funi) the same idea is declared *bodiless* —
+`type Handle` plus a signature like `let size : (Handle) => float` — since interface files
+carry no implementations.
+
+Function types can be written in annotations too — `f: (float) => float` or the generic
+`f: ('a) => 'a` — with one parsing rule: a function type in *return* position needs
+parentheses (`(): ((float) => float) => …`), since the outer `=>` introduces the body. An
 *undeclared* type variable inside a declaration (a `'z` that isn't a parameter) is a
 teaching error.
 
@@ -468,8 +473,8 @@ A few rules worth internalizing:
   variant type; a foreign-literal arm is a can-never-match error; exhaustiveness checks all
   constructors (or `true`+`false`, or a catch-all); and all arm results must agree in type.
 - **A `mut` slot's type fixes at its initializer.**
-- **Function types can't be annotated yet** (`f: ('a) => 'b` doesn't parse) — leave
-  higher-order params unannotated.
+- **A function type in return position needs parens** — `(): ((float) => float) => …`;
+  without them the outer `=>` reads as the body.
 
 Diagnostics are **advisory in the live dev loop** — a program with type errors still loads,
 hot-swaps, and runs, so you can iterate through a red squiggle. They become **strict in

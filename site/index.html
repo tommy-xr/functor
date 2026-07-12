@@ -71,7 +71,7 @@
 
 <span class="tok-k">let</span> init = { spin: <span class="tok-n">0.0</span>, beat: <span class="tok-n">0.0</span> }
 
-<span class="tok-k">let</span> tick = (model, dt: <span class="tok-t">Float</span>, tts: <span class="tok-t">Float</span>) =>
+<span class="tok-k">let</span> tick = (model, dt: <span class="tok-t">float</span>, tts: <span class="tok-t">float</span>) =>
   { model <span class="tok-k">with</span> spin: model.spin + dt }
 
 <span class="tok-k">let</span> update = (model, msg) =>
@@ -80,14 +80,14 @@
 
 <span class="tok-k">let</span> subscriptions = (model) => <span class="tok-t">Sub</span>.every(<span class="tok-t">Time</span>.seconds(<span class="tok-n">1.0</span>), <span class="tok-t">Beat</span>)
 
-<span class="tok-k">let</span> draw = (model, tts: <span class="tok-t">Float</span>) =>
+<span class="tok-k">let</span> draw = (model, tts: <span class="tok-t">float</span>) =>
   <span class="tok-t">Frame</span>.create(
     <span class="tok-t">Camera</span>.lookAt(<span class="tok-n">0.0</span>, <span class="tok-n">2.0</span>, <span class="tok-n">-6.0</span>, <span class="tok-n">0.0</span>, <span class="tok-n">0.0</span>, <span class="tok-n">0.0</span>),
     <span class="tok-t">Scene</span>.sphere()
       |> <span class="tok-t">Scene</span>.emissive(<span class="tok-n">1.0</span>, <span class="tok-n">0.3</span>, <span class="tok-n">0.8</span>)
       |> <span class="tok-t">Scene</span>.scale(<span class="tok-n">1.0</span> + <span class="tok-n">0.2</span> * <span class="tok-t">Math</span>.sin(model.spin * <span class="tok-n">4.0</span>)))</code><a
         class="try-button"
-        href="sandbox.html#src=Ly8gYSBwdWxzaW5nIHNwaGVyZSB3aXRoIGEgYmVhdCBjb3VudGVyCnR5cGUgTXNnID0gfCBCZWF0CgpsZXQgaW5pdCA9IHsgc3BpbjogMC4wLCBiZWF0OiAwLjAgfQoKbGV0IHRpY2sgPSAobW9kZWwsIGR0OiBGbG9hdCwgdHRzOiBGbG9hdCkgPT4KICB7IG1vZGVsIHdpdGggc3BpbjogbW9kZWwuc3BpbiArIGR0IH0KCmxldCB1cGRhdGUgPSAobW9kZWwsIG1zZykgPT4KICBtYXRjaCBtc2cgd2l0aAogIHwgQmVhdCA9PiB7IG1vZGVsIHdpdGggYmVhdDogbW9kZWwuYmVhdCArIDEuMCB9CgpsZXQgc3Vic2NyaXB0aW9ucyA9IChtb2RlbCkgPT4gU3ViLmV2ZXJ5KFRpbWUuc2Vjb25kcygxLjApLCBCZWF0KQoKbGV0IGRyYXcgPSAobW9kZWwsIHR0czogRmxvYXQpID0-CiAgRnJhbWUuY3JlYXRlKAogICAgQ2FtZXJhLmxvb2tBdCgwLjAsIDIuMCwgLTYuMCwgMC4wLCAwLjAsIDAuMCksCiAgICBTY2VuZS5zcGhlcmUoKQogICAgICB8PiBTY2VuZS5lbWlzc2l2ZSgxLjAsIDAuMywgMC44KQogICAgICB8PiBTY2VuZS5zY2FsZSgxLjAgKyAwLjIgKiBNYXRoLnNpbihtb2RlbC5zcGluICogNC4wKSkp"
+        href="sandbox.html#src=Ly8gYSBwdWxzaW5nIHNwaGVyZSB3aXRoIGEgYmVhdCBjb3VudGVyCnR5cGUgTXNnID0gfCBCZWF0CgpsZXQgaW5pdCA9IHsgc3BpbjogMC4wLCBiZWF0OiAwLjAgfQoKbGV0IHRpY2sgPSAobW9kZWwsIGR0OiBmbG9hdCwgdHRzOiBmbG9hdCkgPT4KICB7IG1vZGVsIHdpdGggc3BpbjogbW9kZWwuc3BpbiArIGR0IH0KCmxldCB1cGRhdGUgPSAobW9kZWwsIG1zZykgPT4KICBtYXRjaCBtc2cgd2l0aAogIHwgQmVhdCA9PiB7IG1vZGVsIHdpdGggYmVhdDogbW9kZWwuYmVhdCArIDEuMCB9CgpsZXQgc3Vic2NyaXB0aW9ucyA9IChtb2RlbCkgPT4gU3ViLmV2ZXJ5KFRpbWUuc2Vjb25kcygxLjApLCBCZWF0KQoKbGV0IGRyYXcgPSAobW9kZWwsIHR0czogZmxvYXQpID0-CiAgRnJhbWUuY3JlYXRlKAogICAgQ2FtZXJhLmxvb2tBdCgwLjAsIDIuMCwgLTYuMCwgMC4wLCAwLjAsIDAuMCksCiAgICBTY2VuZS5zcGhlcmUoKQogICAgICB8PiBTY2VuZS5lbWlzc2l2ZSgxLjAsIDAuMywgMC44KQogICAgICB8PiBTY2VuZS5zY2FsZSgxLjAgKyAwLjIgKiBNYXRoLnNpbihtb2RlbC5zcGluICogNC4wKSkp"
         title="Open this program live in the sandbox"
         target="_blank"
         >▶ try it</a></pre>
@@ -124,7 +124,7 @@
           <h2>Whole-game time travel</h2>
           <p>
             Every session records itself as it runs. Pause, drag the timeline back, and
-            single-step forward — the whole game replays, deterministically.
+            single-step forward — every recorded frame restores exactly as it was.
           </p>
         </div>
         <div class="feature">

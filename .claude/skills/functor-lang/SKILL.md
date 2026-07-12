@@ -673,9 +673,9 @@ every use, element types flow through `List.map`/`filter`/`fold`, and
 apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: 'b): List<'b>`). Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized type
-names) and absorbs anything. (Function TYPES cannot be written in
-annotations yet — `f: ('a) => 'b` does not parse; leave higher-order
-parameters unannotated and let inference type them.) Generic declarations (`type Pair<'x, 'y> = { first: 'x, second: 'y }`)
+names) and absorbs anything. (Function TYPES in annotations parse —
+`f: (float) => float` and `f: ('a) => 'a` both work; return-position
+function types need parens, as in the `.funi` note above.) Generic declarations (`type Pair<'x, 'y> = { first: 'x, second: 'y }`)
 instantiate fresh per use; an UNDECLARED type variable in a declaration is
 a teaching error. Record literals resolve nominally, F#-style:
 the unique declared type with exactly that field set (no match = anonymous

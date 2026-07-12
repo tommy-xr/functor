@@ -155,8 +155,8 @@ prelude's own types (`Scene`, `Camera`, `Frame`, …) are declared. So it is an
 - **State-preserving hot reload.** Save and the runtime swaps your code under the
   live model; closures rebind to the edited code with their captured values
   carried over. No restart, no `dune build`.
-- **Whole-game time travel.** Scrub the running game's timeline back and forth,
-  deterministically — pause, drag, single-step. (Editing the program resets the
+- **Whole-game time travel.** Scrub the running game's timeline back and forth —
+  pause, drag, single-step; every frame restores exactly as it was recorded. (Editing the program resets the
   recorded history.)
 - **Gradual types.** The same HM inference you know, but annotations are optional
   and a type warning never blocks a run.
