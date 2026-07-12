@@ -13,7 +13,8 @@
 //! `Panned` source — the same model the wasm backend uses (we don't use rodio's
 //! `SpatialSink`, whose pan law is too gentle to localize).
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -122,6 +123,12 @@ pub struct AudioPlayer {
     // host (not the dylib), so it survives a hot reload — the voices keep playing
     // and the next frame's `soundScape` re-diffs against them.
     voices: HashMap<String, LoopVoice>,
+    // Asset paths whose open/decode already failed and were logged. A missing
+    // soundscape voice never enters `voices`, so `reconcile` re-spawns it every
+    // frame; without this the decode error would print every frame. Warn once per
+    // path instead (`RefCell` because `decode` takes `&self`). Not reset on hot
+    // reload — a path that's still missing stays quiet until the file appears.
+    warned_paths: RefCell<HashSet<String>>,
 }
 
 impl AudioPlayer {
@@ -140,6 +147,7 @@ impl AudioPlayer {
                     up: [0.0, 1.0, 0.0],
                 },
                 voices: HashMap::new(),
+                warned_paths: RefCell::new(HashSet::new()),
             }),
             Err(e) => {
                 eprintln!("[audio] no output device, audio disabled: {e}");
@@ -299,16 +307,56 @@ impl AudioPlayer {
         let file = match File::open(path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("[audio] open '{path}': {e}");
+                self.warn_once(path, format_args!("[audio] open '{path}': {e}"));
                 return None;
             }
         };
         match Decoder::new(BufReader::new(file)) {
             Ok(s) => Some(s),
             Err(e) => {
-                eprintln!("[audio] decode '{path}': {e}");
+                self.warn_once(path, format_args!("[audio] decode '{path}': {e}"));
                 None
             }
         }
+    }
+
+    /// Log an asset-failure message the first time `path` fails, then stay quiet
+    /// for it — a soundscape voice with a missing/undecodable file is re-spawned
+    /// every frame, so an un-deduped `eprintln!` would spam the console.
+    fn warn_once(&self, path: &str, message: std::fmt::Arguments) {
+        if first_failure(&self.warned_paths, path) {
+            eprintln!("{message}");
+        }
+    }
+}
+
+/// Record `path` as a failed asset and report whether this is the FIRST failure
+/// for it (so the caller logs once and stays quiet thereafter). The `contains`
+/// guard matters: a missing soundscape voice is re-`decode`d every frame, so the
+/// common case is an already-known path — avoid allocating an owned `String` for
+/// it, and only allocate on the genuinely-first failure.
+fn first_failure(warned: &RefCell<HashSet<String>>, path: &str) -> bool {
+    let mut warned = warned.borrow_mut();
+    if warned.contains(path) {
+        return false;
+    }
+    warned.insert(path.to_string());
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_failure_warns_once_per_path() {
+        let warned = RefCell::new(HashSet::new());
+        // First time a path fails -> warn; repeats (every frame) -> stay quiet.
+        assert!(first_failure(&warned, "missing.ogg"));
+        assert!(!first_failure(&warned, "missing.ogg"));
+        assert!(!first_failure(&warned, "missing.ogg"));
+        // A different path warns on its own first failure.
+        assert!(first_failure(&warned, "other.ogg"));
+        assert!(!first_failure(&warned, "other.ogg"));
     }
 }

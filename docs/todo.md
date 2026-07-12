@@ -26,7 +26,7 @@ bug found in the same exercise was fixed on the spot
       input mapping.
 - [ ] `Frame.withClearColor` (today: distant-fog trick doubles as clear color).
 - [ ] `Ui.center()` anchor (+ eventually font size / spacer) for menus.
-- [ ] Soundscape missing-asset error should warn once, not every frame.
+- [x] Soundscape missing-asset error should warn once, not every frame.
 - [ ] Project loader/watcher: ignore non-identifier / dot-prefixed `*.fun`
       stems (editor temp files fail hot reload today).
 - [ ] Asset introspection: `functor inspect` should print per-node
