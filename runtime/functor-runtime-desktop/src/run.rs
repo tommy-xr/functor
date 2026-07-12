@@ -563,6 +563,12 @@ fn service_debug_request(
                 .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
             let _ = resp.send(json);
         }
+        debug_server::DebugRequest::Trace(resp) => {
+            // The paused-inspector trace (visual-debugger PR2). Paused-ness is a
+            // clock property: while paused the last real frame's journal is
+            // stable, so the producer replays it; otherwise it early-outs empty.
+            let _ = resp.send(game.inspector_trace(clock.is_paused()));
+        }
         debug_server::DebugRequest::ReloadSource(source, resp) => {
             let _ = resp.send(game.reload_source(&source));
         }

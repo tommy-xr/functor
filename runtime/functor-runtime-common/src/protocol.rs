@@ -211,6 +211,15 @@ pub trait GameProducer {
     /// debug text — see the module doc; consumers must not parse it.
     fn state_debug(&self) -> String;
 
+    /// The paused-inspector trace (visual-debugger PR2): the wire-contract JSON
+    /// for the last real frame's entry-point invocations, replayed on demand
+    /// while paused (the debug server's `GET /trace`). `paused` is the shell's
+    /// clock state. The default is an inert doc — only the interpreter producer
+    /// keeps a replay journal (a compiled/replay producer has no source to trace).
+    fn inspector_trace(&mut self, _paused: bool) -> String {
+        "{\"frame\":0,\"tts\":0.0,\"paused\":false,\"sources\":[],\"invocations\":[]}".to_string()
+    }
+
     /// Take the networking commands the game queued this frame (a JSON array
     /// of [`crate::net::NetCommand`]). The shell performs the I/O and reports
     /// results back with `net_push_http_response` / `net_push_http_error`.

@@ -11,8 +11,8 @@
 //! only read on the main thread.
 //!
 //! Endpoints: `GET /` (index), `POST /capture`, `GET /state`, `GET /scene`,
-//! `POST /input`, `POST /time`. See `docs/debug-runtime.md` for usage and the
-//! observe-vs-drive workflows.
+//! `GET /trace`, `POST /input`, `POST /time`. See `docs/debug-runtime.md` for
+//! usage and the observe-vs-drive workflows.
 
 use std::io::Read;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -117,6 +117,10 @@ pub enum DebugRequest {
     State(Sender<RuntimeState>),
     /// `GET /scene` — reply with the current frame (camera + scene) as JSON.
     Scene(Sender<String>),
+    /// `GET /trace` — reply with the paused-inspector trace JSON (visual-
+    /// debugger PR2): the last real frame's entry-point invocations, replayed
+    /// while paused. The GL loop fills in the paused state from its clock.
+    Trace(Sender<String>),
     /// `POST /input` — inject a key/mouse event; reply Ok or an error message.
     Input(InputCommand, Sender<Result<(), String>>),
     /// `POST /time` — set/advance/resume the clock; reply once applied.
@@ -232,6 +236,28 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                         Err(_) => {
                             let _ = request.respond(
                                 Response::from_string("scene failed").with_status_code(500),
+                            );
+                        }
+                    }
+                }
+                (Method::Get, "/trace") => {
+                    let (resp_tx, resp_rx) = mpsc::channel::<String>();
+                    if tx.send(DebugRequest::Trace(resp_tx)).is_err() {
+                        let _ = request
+                            .respond(Response::from_string("runtime gone").with_status_code(503));
+                        continue;
+                    }
+                    match resp_rx.recv() {
+                        Ok(json) => {
+                            let header =
+                                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                    .unwrap();
+                            let resp = Response::from_string(json).with_header(header);
+                            let _ = request.respond(resp);
+                        }
+                        Err(_) => {
+                            let _ = request.respond(
+                                Response::from_string("trace failed").with_status_code(500),
                             );
                         }
                     }
@@ -411,6 +437,7 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                             "POST /capture": "PNG (image/png) of the next rendered frame",
                             "GET /state": "runtime state JSON: frame, tts, viewport, input (held_keys + mouse), model (Debug text)",
                             "GET /scene": "current frame as JSON: camera + scene + lights",
+                            "GET /trace": "paused-inspector trace: last real frame's entry-point invocations (bindings + result) replayed while paused; {paused:false, invocations:[]} while playing",
                             "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"}",
                             "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}",
                             "POST /reload-source": "swap game logic from the request body (raw .fun source), model preserved — 400 with the load error on a broken push",

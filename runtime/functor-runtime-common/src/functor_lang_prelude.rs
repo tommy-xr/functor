@@ -2677,7 +2677,15 @@ pub fn deliver_physics_events(
                     continue;
                 }
             };
-            match session.call("update", vec![model.clone(), msg], &mut FunctorHost) {
+            // Journal this collision-driven `update` for the paused inspector
+            // (PR2); a no-op unless journaling is armed.
+            let args = vec![model.clone(), msg];
+            crate::functor_lang_producer::journal_push(
+                "update",
+                &args,
+                crate::functor_lang_producer::Provenance::Collision,
+            );
+            match session.call("update", args, &mut FunctorHost) {
                 Ok(returned) => {
                     let (next_model, more) = split_model_effect(returned);
                     *model = next_model;
@@ -3072,7 +3080,17 @@ dropping the rest"
                 continue;
             }
         };
-        match session.call("update", vec![model.clone(), msg], &mut FunctorHost) {
+        // Journal this effect-result `update` for the paused inspector (PR2): a
+        // raycast result is a physics QUERY, everything else an effect result.
+        // A no-op unless journaling is armed (the live desktop frame only).
+        let args = vec![model.clone(), msg];
+        let provenance = if kind == "physics.raycast" {
+            crate::functor_lang_producer::Provenance::PhysicsQuery
+        } else {
+            crate::functor_lang_producer::Provenance::EffectResult
+        };
+        crate::functor_lang_producer::journal_push("update", &args, provenance);
+        match session.call("update", args, &mut FunctorHost) {
             Ok(returned) => {
                 let (next_model, more) = split_model_effect(returned);
                 *model = next_model;
