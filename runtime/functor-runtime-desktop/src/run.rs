@@ -613,6 +613,12 @@ fn service_debug_request(
                     Ok(())
                 }
             };
+            // Input injected while PAUSED journals entry-point calls no `tick`
+            // will sweep — fold them into the inspector's last-frame journal so
+            // they show in `GET /trace` now, not as phantoms on resume (PR2).
+            if clock.is_paused() {
+                game.absorb_paused_input();
+            }
             let _ = resp.send(result);
         }
         debug_server::DebugRequest::Time(cmd, resp) => {
