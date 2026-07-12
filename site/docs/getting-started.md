@@ -102,18 +102,12 @@ Rerun it when your models change, and check the generated file in.
 ## Hot reload: what to expect
 
 Saving an edit reloads the program in about a frame **with the model preserved** — a
-bouncing ball keeps bouncing, mid-arc, under your new gravity. The rules worth knowing:
+bouncing ball keeps bouncing, mid-arc, under your new gravity. `init` does not re-run,
+a broken edit keeps the last good scene rendering, and the running game records itself
+so you can pause and scrub back through it.
 
-- **`init` does not re-run.** The model is carried over as-is; an edited `init` only
-  takes effect on a fresh restart.
-- **Closures stored in the model rebind by name.** A closure adopts the edited body of
-  the def it came from, carrying its captured values over. A def that was renamed or
-  deleted keeps its old body, with a loud `[functor-lang]` warning.
-- **A broken edit keeps the old program running** and prints the error — you never lose
-  the running scene to a typo.
-- **Pending effects reset on reload** (an in-flight request tagger would dangle), and a
-  live edit resets the recorded scrub history — you scrub forward from the edit, not
-  back through it.
+The **[time travel & hot reload](/docs/time-travel/)** guide has the full rules —
+closure rebinding, effect reset, and how a live edit resets the scrub timeline.
 
 From here, the **[language reference](/docs/language/)** covers the whole of Functor
 Lang — syntax, semantics, and the engine prelude (`Scene.*` / `Camera.*` / `Frame.*` /

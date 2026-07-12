@@ -4,7 +4,8 @@
       "title": "Guide",
       "entries": [
         { "slug": "index", "title": "Overview" },
-        { "slug": "getting-started", "title": "Getting started" }
+        { "slug": "getting-started", "title": "Getting started" },
+        { "slug": "time-travel", "title": "Time travel & hot reload" }
       ]
     },
     {

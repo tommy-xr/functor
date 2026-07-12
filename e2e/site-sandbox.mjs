@@ -532,6 +532,47 @@ const docsSlugs = manifest.groups.flatMap((g) => g.entries.map((e) => e.slug));
   await page.close();
 }
 
+// --- 7f. Time-travel guide renders, is marked current, and is indexed. ---------
+// The new time-travel & hot-reload page renders with the sidebar marking it
+// current, and Pagefind indexes a term distinctive to it ("reload boundary")
+// returning a result that links to /docs/time-travel/.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/docs/time-travel/`);
+  await page.waitForFunction(() => !!document.querySelector(".docs-main h1"), { timeout: 10000 });
+  const heading = await page.locator(".docs-main h1").first().textContent();
+  check("time-travel page renders its heading", /time travel/i.test(heading || ""), heading);
+
+  // The sidebar link for this page carries aria-current="page".
+  const current = await page.locator('.docs-nav a[aria-current="page"]');
+  const currentText = (await current.count()) ? await current.first().textContent() : "";
+  const currentHref = (await current.count()) ? await current.first().getAttribute("href") : "";
+  check(
+    "sidebar marks time-travel current",
+    /time travel/i.test(currentText) && /time-travel/.test(currentHref || ""),
+    `text=${currentText} href=${currentHref}`
+  );
+
+  // Pagefind finds a term distinctive to this page and links to it.
+  const input = page.locator(".pagefind-ui__search-input");
+  await input.waitFor({ state: "visible", timeout: 15000 });
+  await input.fill("reload boundary");
+  const results = page.locator(".pagefind-ui__result");
+  try {
+    await results.first().waitFor({ state: "visible", timeout: 15000 });
+  } catch {
+    // fall through — the count check reports the failure with detail
+  }
+  const count = await results.count();
+  check("docs search 'reload boundary' returns >=1 result", count >= 1, `${count} results`);
+  const href = await page.locator(".pagefind-ui__result-link").first().getAttribute("href");
+  const toTimeTravel =
+    !!href && new URL(href, `${BASE}/docs/`).pathname.startsWith("/docs/time-travel");
+  check("'reload boundary' result links to the time-travel page", toTimeTravel, `href=${href}`);
+
+  await page.close();
+}
+
 // --- 8. Inline #src= program with its OWN model shape fresh-inits. -------------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
