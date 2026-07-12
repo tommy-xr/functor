@@ -29,7 +29,7 @@ bug found in the same exercise was fixed on the spot
 - [x] `Frame.withClearColor` (today: distant-fog trick doubles as clear color).
 - [ ] `Ui.center()` anchor (+ eventually font size / spacer) for menus.
 - [x] Soundscape missing-asset error should warn once, not every frame.
-- [ ] Project loader/watcher: ignore non-identifier / dot-prefixed `*.fun`
+- [x] Project loader/watcher: ignore non-identifier / dot-prefixed `*.fun`
       stems (editor temp files fail hot reload today).
 - [x] Asset introspection: `functor inspect` should print per-node
       translations + bbox (Kenney glbs carry baked placement offsets that

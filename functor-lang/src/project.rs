@@ -206,9 +206,24 @@ impl ProjectError {
 }
 
 /// The `.fun` files of the project rooted at `entry_path`: the entry first,
-/// then its sibling `.fun` files in name order. (Subdirectories are not
-/// scanned — a directory is one flat module space.)
+/// then its loadable sibling `.fun` files in name order. (Subdirectories are not
+/// scanned — a directory is one flat module space.) Siblings whose stem isn't a
+/// valid module identifier — editor temp files like `.#game.fun`, or `2d.fun` —
+/// are skipped (see [`scan_project_dir`]); the watcher and dev server both go
+/// through here, so they ignore those files too.
 pub fn project_files(entry_path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    scan_project_dir(entry_path).map(|(kept, _skipped)| kept)
+}
+
+/// Scan the entry's directory, partitioning sibling `.fun`/`.funi` files into
+/// **kept** (the entry first, then loadable siblings whose stem is a valid module
+/// identifier — [`is_module_stem`]) and **skipped** (files that match the
+/// extension but whose stem can't be a module: editor temp files like
+/// `.#game.fun`, or non-identifier stems like `2d.fun`). Skipping them here — vs
+/// letting [`module_name`] fail the whole load — is what keeps a stray editor
+/// temp file next to `game.fun` from breaking hot reload. Both lists are sorted;
+/// the entry is always kept regardless of its own stem.
+fn scan_project_dir(entry_path: &Path) -> std::io::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     // A bare relative entry ("game.fun") has an EMPTY parent — that still
     // means the current directory, not "no siblings".
     let dir = match entry_path.parent() {
@@ -228,9 +243,31 @@ pub fn project_files(entry_path: &Path) -> std::io::Result<Vec<PathBuf>> {
         })
         .collect();
     siblings.sort();
-    let mut files = vec![entry_path.to_path_buf()];
-    files.extend(siblings);
-    Ok(files)
+
+    let (kept_siblings, skipped): (Vec<PathBuf>, Vec<PathBuf>) =
+        siblings.into_iter().partition(|path| is_loadable_stem(path));
+
+    let mut kept = vec![entry_path.to_path_buf()];
+    kept.extend(kept_siblings);
+    Ok((kept, skipped))
+}
+
+/// Whether a path's file stem is a valid module identifier (so it can load as a
+/// module — see [`is_module_stem`]). A dot-prefixed stem (`.#game`) or a
+/// non-identifier stem (`2d`) returns false.
+fn is_loadable_stem(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(is_module_stem)
+}
+
+/// Whether `stem` is a valid module identifier: non-empty, starts with an ASCII
+/// letter, and is otherwise ASCII alphanumeric or `_`. This is the same rule
+/// [`module_name`] enforces — a file whose stem fails it cannot name a module.
+fn is_module_stem(stem: &str) -> bool {
+    !stem.is_empty()
+        && stem.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Load the multi-file project rooted at `entry_path` (see the module doc).
@@ -283,12 +320,22 @@ pub fn load_with_prelude(
         message,
     };
 
-    let paths = project_files(entry_path).map_err(|e| {
+    let (paths, skipped) = scan_project_dir(entry_path).map_err(|e| {
         at(
             entry_path,
             format!("cannot read the project directory: {e}"),
         )
     })?;
+
+    // Tell the user (once, at load — not per frame) about `.fun` siblings we
+    // ignored, so a temp file or misnamed module isn't a silent no-load.
+    for path in &skipped {
+        eprintln!(
+            "[functor-lang] ignoring {} — its file stem is not a valid module identifier \
+(editor temp file?); rename it to load it as a module",
+            file_name(path)
+        );
+    }
 
     // Read every project file (entry first), honoring the in-memory overrides,
     // then hand the (path, source) pairs to the shared linker.
@@ -605,10 +652,7 @@ fn module_name(path: &Path) -> Result<String, String> {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
-    let valid = !stem.is_empty()
-        && stem.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !valid {
+    if !is_module_stem(stem) {
         return Err(format!(
             "cannot derive a module name from `{}` — file stems must be identifiers \
 (letters, digits, `_`; starting with a letter), like `utils.fun` → `Utils`",
@@ -712,4 +756,37 @@ fn dependency_order(
         }
     }
     Ok(order)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_stem_accepts_identifiers_and_rejects_the_rest() {
+        // Valid module identifiers.
+        assert!(is_module_stem("game"));
+        assert!(is_module_stem("Utils"));
+        assert!(is_module_stem("enemy_ai"));
+        assert!(is_module_stem("a1"));
+
+        // Rejected: empty, non-letter start, and non-identifier characters —
+        // the exact stems that would otherwise fail `module_name` (or, for a
+        // dot-prefixed stem, name an editor temp file).
+        assert!(!is_module_stem(""));
+        assert!(!is_module_stem("2d")); // starts with a digit
+        assert!(!is_module_stem(".#game")); // emacs lock file stem
+        assert!(!is_module_stem("#game")); // starts with `#`
+        assert!(!is_module_stem("my-game")); // contains `-`
+        assert!(!is_module_stem("game.old")); // contains `.`
+    }
+
+    #[test]
+    fn loadable_stem_reads_the_file_stem() {
+        // `.fun` files whose stem is / isn't a valid module identifier.
+        assert!(is_loadable_stem(Path::new("game.fun")));
+        assert!(is_loadable_stem(Path::new("dir/utils.funi")));
+        assert!(!is_loadable_stem(Path::new(".#game.fun"))); // stem `.#game`
+        assert!(!is_loadable_stem(Path::new("2d.fun"))); // stem `2d`
+    }
 }
