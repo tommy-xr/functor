@@ -1035,3 +1035,99 @@ fn thread_last_pipe_appends() {
         "[2, 4, 6]"
     );
 }
+
+// --- Boolean operators `&&` / `||` / `not` ---
+
+#[test]
+fn bool_operators_evaluate() {
+    assert_eq!(main_result("let main = () => true && false"), "false");
+    assert_eq!(main_result("let main = () => true && true"), "true");
+    assert_eq!(main_result("let main = () => false || true"), "true");
+    assert_eq!(main_result("let main = () => false || false"), "false");
+    assert_eq!(main_result("let main = () => not true"), "false");
+    assert_eq!(main_result("let main = () => not false"), "true");
+}
+
+#[test]
+fn bool_operator_precedence() {
+    // `&&` binds tighter than `||`: `false || true && false` is
+    // `false || (true && false)` == false.
+    assert_eq!(
+        main_result("let main = () => false || true && false"),
+        "false"
+    );
+    // Both are looser than comparison: `3.0 > 2.0 && 2.0 > 1.0` is
+    // `(3.0 > 2.0) && (2.0 > 1.0)` == true.
+    assert_eq!(
+        main_result("let main = () => 3.0 > 2.0 && 2.0 > 1.0"),
+        "true"
+    );
+    // `not` is looser than comparison: `not 1.0 == 2.0` is `not (1.0 == 2.0)`.
+    assert_eq!(main_result("let main = () => not 1.0 == 2.0"), "true");
+}
+
+#[test]
+fn logical_and_short_circuits() {
+    // `boom(0.0)` would fail at runtime (no matching arm); `false && _`
+    // must not evaluate it.
+    assert_eq!(
+        main_result(
+            "let boom = (x) => match x with | 99.0 => true\n\
+             let main = () => false && boom(0.0)"
+        ),
+        "false"
+    );
+}
+
+#[test]
+fn logical_or_short_circuits() {
+    assert_eq!(
+        main_result(
+            "let boom = (x) => match x with | 99.0 => true\n\
+             let main = () => true || boom(0.0)"
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn logical_and_evaluates_rhs_when_needed() {
+    // The complement: `true && _` DOES evaluate the right side, so the
+    // failing call surfaces.
+    let (message, _, _) = run_err(
+        "let boom = (x) => match x with | 99.0 => true\n\
+         let main = () => true && boom(0.0)",
+    );
+    assert_eq!(message, "no pattern matched 0");
+}
+
+#[test]
+fn long_logical_chain_does_not_overflow() {
+    // Left-assoc `&&`/`||` chains parse iteratively (no depth guard), so eval
+    // must walk their spine iteratively too — a flat 2000-term chain must not
+    // consume host stack per term. `true && … && true && false` == false.
+    let chain = std::iter::repeat("true")
+        .take(2000)
+        .collect::<Vec<_>>()
+        .join(" && ");
+    assert_eq!(
+        main_result(&format!("let main = () => {chain} && false")),
+        "false"
+    );
+    let ors = std::iter::repeat("false")
+        .take(2000)
+        .collect::<Vec<_>>()
+        .join(" || ");
+    assert_eq!(
+        main_result(&format!("let main = () => {ors} || true")),
+        "true"
+    );
+}
+
+#[test]
+fn bool_operator_on_non_bool_errors() {
+    // A non-bool operand is a runtime error (the checker also rejects it,
+    // but `run` does not typecheck).
+    let (message, _, _) = run_err("let main = () => not 3.0");
+    assert_eq!(message, "boolean operator needs a bool, got a number");
+}

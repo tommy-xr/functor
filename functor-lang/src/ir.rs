@@ -17,7 +17,7 @@
 //! - **Type annotations stay symbolic** ([`TypeName`] carried through
 //!   verbatim) — no inference or checking until B4.
 
-use crate::ast::{BinOp, TypeBody, TypeName};
+use crate::ast::{BinOp, LogicalOp, TypeBody, TypeName};
 use crate::span::Span;
 use std::fmt;
 use std::rc::Rc;
@@ -198,7 +198,16 @@ pub enum ExprKind {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
+    /// `a && b` / `a || b` — short-circuiting; the right operand is evaluated
+    /// only when the left doesn't decide the result (see [`crate::eval`]).
+    Logical {
+        op: LogicalOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     Neg(Box<Expr>),
+    /// `not e` — boolean negation.
+    Not(Box<Expr>),
     /// Reference to a declared variant constructor (an uppercase identifier
     /// that resolved against the module's constructors — see
     /// [`crate::lower`]). `arity` is the declared field count, carried here

@@ -821,7 +821,33 @@ impl Lowerer<'_> {
                     args: lowered,
                 }
             }
+            // Like the Binary spine above: left-assoc `&&`/`||` chains nest
+            // down the lhs, so lower them iteratively — a flat chain must not
+            // grow the host stack per term.
+            ast::ExprKind::Logical { .. } => {
+                let mut spine = Vec::new();
+                let mut leaf = expr;
+                while let ast::ExprKind::Logical { op, lhs, rhs } = leaf.kind {
+                    spine.push((op, *rhs, leaf.span));
+                    leaf = *lhs;
+                }
+                let mut acc = self.expr(leaf)?;
+                for (op, rhs, node_span) in spine.into_iter().rev() {
+                    let rhs = self.expr(rhs)?;
+                    acc = Expr {
+                        id: self.expr_id(),
+                        kind: ExprKind::Logical {
+                            op,
+                            lhs: Box::new(acc),
+                            rhs: Box::new(rhs),
+                        },
+                        span: node_span,
+                    };
+                }
+                return Ok(acc);
+            }
             ast::ExprKind::Neg(inner) => ExprKind::Neg(Box::new(self.expr(*inner)?)),
+            ast::ExprKind::Not(inner) => ExprKind::Not(Box::new(self.expr(*inner)?)),
             ast::ExprKind::Match { scrutinee, arms } => {
                 // The scrutinee is evaluated outside any arm's scope.
                 let scrutinee = Box::new(self.expr(*scrutinee)?);

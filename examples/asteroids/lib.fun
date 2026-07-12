@@ -5,11 +5,6 @@
 let length = (xs) =>
   xs |> List.fold((acc, x) => acc + 1.0, 0.0)
 
-let not = (b) =>
-  match b with
-  | true => false
-  | false => true
-
 let and = (a, b) =>
   match a with
   | true => b

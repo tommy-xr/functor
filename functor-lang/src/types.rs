@@ -1795,6 +1795,27 @@ missing {missing}. Did you forget an argument?"
                 }
                 acc
             }
+            ExprKind::Logical { .. } => {
+                // Left-assoc chains nest down the lhs with no parser depth
+                // guard — walk the spine iteratively, like the Binary arm.
+                // Every operand (and every node) is Bool.
+                let mut spine = Vec::new();
+                let mut leaf = expr;
+                while let ExprKind::Logical { lhs, rhs, .. } = &leaf.kind {
+                    spine.push((rhs.as_ref(), leaf.id));
+                    leaf = lhs;
+                }
+                let leaf_ty = self.infer(leaf);
+                self.require_bool(&leaf_ty, leaf.span, "`&&`/`||`");
+                for (rhs, node_id) in spine.into_iter().rev() {
+                    let rhs_ty = self.infer(rhs);
+                    self.require_bool(&rhs_ty, rhs.span, "`&&`/`||`");
+                    // Spine nodes never pass through the recording `infer`
+                    // wrapper (the walk is iterative) — record each here.
+                    self.expr_types.insert(node_id.raw(), Type::Bool);
+                }
+                Type::Bool
+            }
             ExprKind::Neg(inner) => {
                 let ty = self.infer(inner);
                 let ty = self.zonk(&ty);
@@ -1807,6 +1828,11 @@ missing {missing}. Did you forget an argument?"
                     );
                 }
                 Type::Float
+            }
+            ExprKind::Not(inner) => {
+                let ty = self.infer(inner);
+                self.require_bool(&ty, inner.span, "`not`");
+                Type::Bool
             }
             // A constructor reference: nullary is the variant value itself,
             // parameterful is a function from its declared field types.
@@ -2304,6 +2330,19 @@ is {other}"
                 span,
                 format!("`{}` needs float operands, got {ty}", op_str(op)),
             );
+        }
+    }
+
+    /// Constrain an operand of a boolean operator (`&&`, `||`, `not`) to
+    /// `Bool` — unifying an unsolved variable, erroring on a known non-bool.
+    fn require_bool(&mut self, ty: &Type, span: Span, op: &str) {
+        let ty = self.zonk(ty);
+        if let Type::Var(_) = ty {
+            self.unify(&ty, &Type::Bool, span, "boolean operand");
+            return;
+        }
+        if !compatible(&ty, &Type::Bool) {
+            self.diag(span, format!("{op} needs bool operands, got {ty}"));
         }
     }
 }

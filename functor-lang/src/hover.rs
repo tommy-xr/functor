@@ -159,7 +159,9 @@ pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
             .chain(args.iter())
             .collect(),
         ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
+        ExprKind::Logical { lhs, rhs, .. } => vec![lhs, rhs],
         ExprKind::Neg(inner) => vec![inner],
+        ExprKind::Not(inner) => vec![inner],
         ExprKind::Let { value, body, .. } => vec![value, body],
         ExprKind::Assign { value, rest, .. } => vec![value, rest],
         // Match is caller-handled (see the doc comment): `visit` must walk
