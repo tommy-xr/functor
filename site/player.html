@@ -18,6 +18,7 @@
         --scrub-text: #e9e6f2;
         --scrub-dim: #9b94b3;
         --scrub-accent: #41d8e6;
+        --scrub-future: #e858b8; /* pink #e858b8 — the extrapolated-future accent */
         --scrub-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0221; }
@@ -33,49 +34,21 @@
         font: 12px/1 var(--scrub-font); padding: 6px 10px; cursor: pointer;
         color: var(--scrub-text); background: var(--scrub-bg);
         border: 1px solid var(--scrub-line); border-radius: 6px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35); /* depth — matches the scrubber buttons */
+        transition: box-shadow 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
       }
-      #mouselook:hover { border-color: var(--scrub-accent); }
-      /* The time-travel scrubber — a slim bottom strip of native DOM OUTSIDE
-         the canvas, so its controls never fight the game's pointer handling.
-         Hidden until the runtime has recorded some history. */
-      #scrubber {
-        position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-        display: none; align-items: center; gap: 10px;
-        font: 12px/1 var(--scrub-font); color: var(--scrub-text);
-        padding: 8px 12px; background: var(--scrub-bg);
-        border-top: 1px solid var(--scrub-line);
+      #mouselook:hover {
+        border-color: var(--scrub-accent);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5); transform: translateY(-1px);
       }
-      #scrubber button {
-        font: 12px/1 var(--scrub-font); color: var(--scrub-text); cursor: pointer;
-        background: rgba(65, 216, 230, 0.10);
-        border: 1px solid var(--scrub-line); border-radius: 5px; padding: 5px 9px;
-      }
-      #scrubber button:hover { border-color: var(--scrub-accent); }
-      #scrub-slider { flex: 1; min-width: 80px; accent-color: var(--scrub-accent); }
-      #scrub-label { color: var(--scrub-dim); min-width: 118px; text-align: right; }
-      /* Narrow hosts (the ~350px hero card on a phone). This page is an
-         iframe, so the parent's media queries can't reach in — this query runs
-         against the iframe's own viewport. Drop the "time-travel · " prefix,
-         tighten gaps/padding, and let the slider flex smaller so the whole
-         strip (buttons + slider + counter) fits without clipping. */
-      @media (max-width: 480px) {
-        #scrubber { gap: 6px; padding: 6px 8px; }
-        #scrubber button { padding: 5px 7px; }
-        #scrub-prefix { display: none; }
-        #scrub-label { min-width: 0; }
-        #scrub-slider { min-width: 40px; }
-      }
+      /* The time-travel scrubber is the shared component (scrubber.js); it
+         injects its own styles, reading the --scrub-* vars above so it matches
+         this page's calm theme. */
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
-    <div id="scrubber">
-      <button id="scrub-pause">Pause</button>
-      <button id="scrub-step">Step ▸</button>
-      <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
-      <span id="scrub-label"><span id="scrub-prefix">time-travel · </span><span id="scrub-count"></span></span>
-    </div>
     <script type="module">
 
       import init, {
@@ -85,13 +58,11 @@
         functor_lang_is_running,
         functor_lang_set_source,
         functor_lang_set_project,
-        functor_lang_scene_frame,
-        functor_lang_scene_range,
-        functor_lang_seek_scene,
-        functor_lang_scrub_toggle_pause,
-        functor_lang_scrub_step,
-        functor_lang_scrub_paused,
       } from "./pkg/functor_runtime_web.js";
+      // The time-travel scrubber is the shared component, served next to
+      // pkg/ (see runtime/functor-runtime-web/scrubber.js). It wires the
+      // functor_lang_scrub_* exports itself.
+      import { mountScrubber } from "./scrubber.js";
 
       // The Functor Lang entry, from `?game=<path>` (a path relative to this page).
       // Must be set before init(): the runtime reads it at start to choose the
@@ -180,62 +151,6 @@
           e.preventDefault();
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
         });
-      };
-
-      // The time-travel scrubber. Native DOM controls drive the runtime through
-      // the `functor_lang_scrub_*` exports and poll the published view state each
-      // frame to track the handle. Coalesce drags to one seek per frame, and
-      // don't fight the user's drag by writing the slider value while they hold
-      // it. (Ghost controls are deliberately out of scope here.)
-      const setupScrubber = () => {
-        const el = document.getElementById("scrubber");
-        const count = document.getElementById("scrub-count");
-        const pause = document.getElementById("scrub-pause");
-        const slider = document.getElementById("scrub-slider");
-        const step = document.getElementById("scrub-step");
-
-        let scrubbing = false;
-        let pendingSeek = null;
-        slider.addEventListener("pointerdown", () => (scrubbing = true));
-        window.addEventListener("pointerup", () => (scrubbing = false));
-        slider.addEventListener("input", () => (pendingSeek = Number(slider.value)));
-        pause.addEventListener("click", () => functor_lang_scrub_toggle_pause());
-        step.addEventListener("click", () => functor_lang_scrub_step());
-
-        // Headless test seam: drive/observe the scrubber without the DOM
-        // controls (e2e/site-sandbox.mjs). Thin wrappers over the same exports.
-        window.__scrub = {
-          paused: () => functor_lang_scrub_paused(),
-          frame: () => functor_lang_scene_frame(),
-          range: () => functor_lang_scene_range(),
-          seek: (f) => functor_lang_seek_scene(f),
-          togglePause: () => functor_lang_scrub_toggle_pause(),
-          step: () => functor_lang_scrub_step(),
-        };
-
-        const update = () => {
-          if (pendingSeek !== null) {
-            functor_lang_seek_scene(pendingSeek);
-            pendingSeek = null;
-          }
-          const range = functor_lang_scene_range(); // [] or [lo, hi]
-          if (range.length === 2) {
-            el.style.display = "flex";
-            const lo = range[0], hi = range[1];
-            slider.min = lo;
-            slider.max = hi;
-            const frame = functor_lang_scene_frame();
-            if (!scrubbing) slider.value = frame; // don't tug the handle mid-drag
-            // The "time-travel · " prefix is static markup (#scrub-prefix),
-            // hidden on narrow viewports; only the counter updates here.
-            count.textContent = `${frame | 0} / ${hi | 0}`;
-            pause.textContent = functor_lang_scrub_paused() ? "Resume" : "Pause";
-          } else {
-            el.style.display = "none"; // nothing recorded yet
-          }
-          requestAnimationFrame(update);
-        };
-        requestAnimationFrame(update);
       };
 
       // The live-edit seam: the hosting page (the sandbox / the IDE) posts
@@ -353,7 +268,7 @@
           document.getElementById("mouselook").style.display = "none";
         } else {
           setupInput();
-          if (!scrubberOff) setupScrubber();
+          if (!scrubberOff) mountScrubber();
         }
         announceWhenReady();
       });
