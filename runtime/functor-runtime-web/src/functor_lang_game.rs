@@ -486,6 +486,35 @@ impl GameProducer for FunctorLangWebGame {
         Ok(status)
     }
 
+    fn reload_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        // The multi-file push path (the web IDE): the pusher owns the WHOLE
+        // file set, so — unlike `reload_source`, which swaps the entry and
+        // keeps the last-fetched siblings — this replaces every module.
+        // Entry first, then siblings; same keep-old-program-on-failure
+        // semantics.
+        if files.is_empty() {
+            return Err("a pushed project needs at least the entry file".to_string());
+        }
+        let started = js_sys::Date::now();
+        let loaded = load_source(files)?;
+        self.sources = files.to_vec();
+        self.path = files[0].0.clone();
+        let rebound = self.swap_in(loaded);
+        let stored = if rebound > 0 {
+            format!("; {rebound} stored closure(s) rebound")
+        } else {
+            String::new()
+        };
+        let status = format!(
+            "reloaded {} ({} file(s)) from pushed project in {:.2}ms (model preserved{stored})",
+            self.path,
+            files.len(),
+            js_sys::Date::now() - started
+        );
+        web_sys::console::log_1(&format!("[functor-lang] {status}").into());
+        Ok(status)
+    }
+
     /// Coupled scene rewind — delegated to the shared [`SceneRecorder`]
     /// (docs/time-travel.md T1), identical to the desktop producer.
     fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {

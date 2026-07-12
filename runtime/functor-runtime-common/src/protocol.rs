@@ -99,6 +99,16 @@ pub trait GameProducer {
         Err("this producer does not support source reload (not an .fun game)".to_string())
     }
 
+    /// Replace the game's logic from a full pushed FILE SET — `(path, source)`
+    /// pairs, the entry first, then siblings (`file = module`). The multi-file
+    /// sibling of [`GameProducer::reload_source`], for pushers that hold the
+    /// whole project in memory (the web IDE) rather than editing one buffer
+    /// over served files. Same semantics: model preserved, a broken push
+    /// keeps the old program running.
+    fn reload_project(&mut self, _files: &[(String, String)]) -> Result<String, String> {
+        Err("this producer does not support project reload (not an .fun game)".to_string())
+    }
+
     /// Rewind the whole scene — model AND physics world — to an earlier
     /// RENDERED frame, restoring both to the state they had at the end of that
     /// frame and branching the recorded future from there (docs/time-travel.md

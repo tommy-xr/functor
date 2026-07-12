@@ -145,12 +145,49 @@ fn functor_lang_project_files() -> Option<Vec<String>> {
     (!files.is_empty()).then_some(files)
 }
 
+/// In-memory project sources (`window.__functorLangProjectSources`, an array of
+/// `{path, source}` objects, entry FIRST) — set by a page that holds the
+/// whole project in memory instead of serving it (the IDE's inline boot,
+/// see `player.html?project=inline`). Absent or malformed → `None`, and the
+/// caller uses the fetch path.
+fn functor_lang_project_sources() -> Option<Vec<(String, String)>> {
+    let value =
+        js_sys::Reflect::get(&window(), &JsValue::from_str("__functorLangProjectSources")).ok()?;
+    parse_project_files(&value)
+}
+
+/// Parse an array of `{path, source}` objects (both strings) into the
+/// producer's `(path, source)` pairs — shared by the inline-boot global
+/// above and the `functor_lang_set_project` push below. `None` when the value
+/// isn't that shape (including an empty array).
+fn parse_project_files(value: &JsValue) -> Option<Vec<(String, String)>> {
+    use wasm_bindgen::JsCast;
+    let array = value.dyn_ref::<js_sys::Array>()?;
+    let mut files = Vec::with_capacity(array.length() as usize);
+    for item in array.iter() {
+        let path = js_sys::Reflect::get(&item, &JsValue::from_str("path"))
+            .ok()?
+            .as_string()?;
+        let source = js_sys::Reflect::get(&item, &JsValue::from_str("source"))
+            .ok()?
+            .as_string()?;
+        files.push((path, source));
+    }
+    (!files.is_empty()).then_some(files)
+}
+
 /// Fetch every project `.fun`/`.funi` source (entry first, then siblings) and
 /// build the interpreter producer. `file = module`, so a game split across
 /// `game.fun` + `pieces.fun` links exactly as it does natively. Failures are
 /// rendered strings (fetch status, parse/load position, contract violation) for
 /// `run_async` to fail loud with.
 async fn create_functor_lang_game(entry: &str) -> Result<functor_lang_game::FunctorLangWebGame, String> {
+    // A page that already holds every source in memory (the IDE's
+    // `?project=inline` boot) injects them directly — nothing to fetch, and
+    // module names come from the given paths exactly as in the fetch path.
+    if let Some(sources) = functor_lang_project_sources() {
+        return functor_lang_game::FunctorLangWebGame::create(sources);
+    }
     // The CLI injects the whole project file list; a page that set only the
     // entry (or none) falls back to loading the entry alone.
     let paths = functor_lang_project_files().unwrap_or_else(|| vec![entry.to_string()]);
@@ -186,16 +223,25 @@ pub fn functor_lang_is_running() -> bool {
     GAME.with(|g| g.borrow().is_some())
 }
 
+/// A queued push: the classic single-buffer text push (the sandbox / VSCode
+/// preview editing the entry over served siblings), or the whole-project
+/// push (the IDE, which owns every file in memory).
+enum PendingPush {
+    Source(String),
+    Project(Vec<(String, String)>),
+}
+
 thread_local! {
-    /// Source pushed via `functor_lang_set_source` (with the pusher's optional
-    /// correlation id), waiting to be applied at a SAFE point
-    /// (the top of the frame loop, where the loop already holds the producer
-    /// borrow). Deferring — rather than reloading straight from the message
-    /// handler — is what keeps a push from ever colliding with the frame's
-    /// borrow ("runtime is mid-frame"); it also coalesces a burst of edits to
-    /// the last one. Mirrors the desktop runner, which applies reloads between
-    /// frames.
-    static PENDING_RELOAD: RefCell<Option<(String, Option<f64>)>> = const { RefCell::new(None) };
+    /// The push queued via `functor_lang_set_source` / `functor_lang_set_project` (with
+    /// the pusher's optional correlation id), waiting to be applied at a SAFE
+    /// point (the top of the frame loop, where the loop already holds the
+    /// producer borrow). Deferring — rather than reloading straight from the
+    /// message handler — is what keeps a push from ever colliding with the
+    /// frame's borrow ("runtime is mid-frame"); it also coalesces a burst of
+    /// edits to the last one (across BOTH push kinds: last push wins).
+    /// Mirrors the desktop runner, which applies reloads between frames.
+    static PENDING_RELOAD: RefCell<Option<(PendingPush, Option<f64>)>> =
+        const { RefCell::new(None) };
 }
 
 /// Post a `functor-lang-set-source-result` back to the page (the reload's outcome). The
@@ -229,10 +275,14 @@ fn post_reload_result(ok: bool, message: &str, id: Option<f64>) {
 /// A good push clears the error overlay; a broken one shows it; either way the
 /// outcome is posted back to the page.
 fn apply_pending_reload(game: &mut dyn GameProducer) {
-    let Some((source, id)) = PENDING_RELOAD.with(|p| p.borrow_mut().take()) else {
+    let Some((push, id)) = PENDING_RELOAD.with(|p| p.borrow_mut().take()) else {
         return;
     };
-    match game.reload_source(&source) {
+    let outcome = match push {
+        PendingPush::Source(source) => game.reload_source(&source),
+        PendingPush::Project(files) => game.reload_project(&files),
+    };
+    match outcome {
         Ok(status) => {
             hide_error_overlay();
             post_reload_result(true, &status, id);
@@ -261,7 +311,34 @@ pub fn functor_lang_set_source(source: String, id: Option<f64>) {
         return;
     }
     // Last edit wins: a burst of pushes before the next frame coalesces.
-    PENDING_RELOAD.with(|p| *p.borrow_mut() = Some((source, id)));
+    PENDING_RELOAD.with(|p| *p.borrow_mut() = Some((PendingPush::Source(source), id)));
+}
+
+/// The multi-file sibling of [`functor_lang_set_source`]: hot-swap the running
+/// game from a pushed FILE SET — an array of `{path, source}` objects, the
+/// entry first, then siblings (`file = module`). For pushers that own the
+/// whole project in memory (the web IDE); a single-buffer editor over served
+/// files keeps using `functor_lang_set_source`. Same queue, same result message,
+/// same model-preserving semantics.
+#[wasm_bindgen]
+pub fn functor_lang_set_project(files: JsValue, id: Option<f64>) {
+    if !functor_lang_is_running() {
+        post_reload_result(
+            false,
+            "game is not running yet (still loading, or the load failed)",
+            id,
+        );
+        return;
+    }
+    let Some(parsed) = parse_project_files(&files) else {
+        post_reload_result(
+            false,
+            "malformed project push: expected a non-empty array of {path, source} objects",
+            id,
+        );
+        return;
+    };
+    PENDING_RELOAD.with(|p| *p.borrow_mut() = Some((PendingPush::Project(parsed), id)));
 }
 
 /// Route a socket event to the LIVE producer via the shared `GAME` handle (the

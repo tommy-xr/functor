@@ -20,7 +20,8 @@
     "test:inspector-emit": "node e2e/inspector-emit.mjs",
     "site:build": "node site/build.mjs",
     "site:serve": "node site/serve.mjs",
-    "test:site": "node e2e/site-sandbox.mjs"
+    "test:site": "node e2e/site-sandbox.mjs",
+    "test:ide": "node e2e/ide-project.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
