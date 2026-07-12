@@ -419,6 +419,10 @@ pub fn builtin_signature(b: Builtin) -> Type {
         | Builtin::MathPow => func(vec![Float, Float], Float),
         // Math.pi : Float — a constant, not a function.
         Builtin::MathPi => Float,
+        // Random.step : (Float) => (Float, Float) — (value in [0,1), nextSeed)
+        Builtin::RandomStep => func(vec![Float], Tuple(vec![Float, Float])),
+        // Random.range : (Float, Float, Float) => (Float, Float) — (value in [lo,hi), nextSeed)
+        Builtin::RandomRange => func(vec![Float, Float, Float], Tuple(vec![Float, Float])),
         // Subject-LAST. Debug.log : (String, 'a) => 'a — label first, subject
         // last; logs `label: subject` and returns the subject unchanged (Var(0)
         // is generic, so it's transparent in a pipe).

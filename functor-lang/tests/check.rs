@@ -229,6 +229,23 @@ fn math_builtins_check() {
     assert_eq!(message, "argument 2 of `Math.mod`: expected float, got string");
 }
 
+// `Random.step`/`Random.range` are typed builtins: the seed is a float and the
+// result is a `(float, float)` tuple, so a destructuring `let` checks cleanly.
+#[test]
+fn random_step_typechecks() {
+    assert_clean("let x = () => let (v, s) = Random.step(1.0) in v + s");
+    assert_clean("let x = () => let (v, s) = Random.range(0.0, 10.0, 1.0) in v + s");
+}
+
+#[test]
+fn random_step_rejects_non_float_seed() {
+    let (message, _, _) = single_diag("let x = () => Random.step(\"s\")");
+    assert_eq!(
+        message,
+        "argument 1 of `Random.step`: expected float, got string"
+    );
+}
+
 // Currying: a partially-applied builtin is a legal value, not an arity error
 // — `Text.concat("a")` is a `(String) => String`.
 #[test]

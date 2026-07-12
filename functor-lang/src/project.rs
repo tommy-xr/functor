@@ -47,6 +47,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "List",
     "Text",
     "Math",
+    "Random",
     "Scene",
     "Anim",
     "Camera",

@@ -300,6 +300,20 @@ positively: `Math.mod(-1.0, 8.0)` == `7.0`, the wraparound games want;
 `Math.min(a, b)` · `Math.max(a, b)` · `Math.pow(base, exp)` (`base ^ exp`) ·
 `Math.pi` (a constant `float` VALUE, not a call — write `Math.pi`, never
 `Math.pi()`) · `Debug.log(label, value)` — `(string, 'a) => 'a`: an Elm-style trace. Logs
+`Random.step(seed)` → `(value, nextSeed)` — pure seeded PRNG: `value` in
+`[0, 1)`, deterministic (same seed → same stream), no effect round-trip.
+Thread `nextSeed` through the model to advance the stream
+(`let (v, s2) = Random.step(model.seed) in …`). Seed the stream once at
+init via `Effect.random`/`Effect.now` (or a fixed constant for a
+reproducible run). Because it's a builtin it also runs under plain
+`functor-lang run`. Adjacent seeds give **decorrelated** streams with no
+short-prefix overlap (a splitmix64 avalanche over a Weyl counter — this is the
+fix for the sin-hash noise whose correlated streams were a visual bug), so
+`baseSeed + i` per entity is safe. Seeds fold mod 2^52, so any finite seed
+(including negatives) is a valid distinct starting point.
+`Random.range(lo, hi, seed)` → `(value, nextSeed)` is the one convenience:
+one draw rescaled into `[lo, hi)` (for `lo <= hi`) · `Debug.log(label, value)` —
+`(string, 'a) => 'a`: an Elm-style trace. Logs
 `label: <value>` (the value rendered exactly as `functor-lang run`/`trace` displays it —
 any type) and returns `value` **unchanged**, so it's pure to the program
 result and safe to drop into a pipe: `m.x |> Debug.log("x") |> clamp(0.0, 1.0)`
