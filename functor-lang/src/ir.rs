@@ -208,6 +208,14 @@ pub enum ExprKind {
     Neg(Box<Expr>),
     /// `not e` — boolean negation.
     Not(Box<Expr>),
+    /// `if cond then a else b` — a conditional; only the taken branch is
+    /// evaluated. `else if` chains nest down `else_branch`, walked iteratively
+    /// in eval/types (see [`crate::eval`]).
+    If {
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
     /// Reference to a declared variant constructor (an uppercase identifier
     /// that resolved against the module's constructors — see
     /// [`crate::lower`]). `arity` is the declared field count, carried here

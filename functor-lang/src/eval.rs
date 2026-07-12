@@ -570,6 +570,41 @@ evaluation depth."
             ExprKind::Not(inner) => {
                 Ok(Value::Bool(!as_bool(&self.eval(inner, env)?, inner.span)?))
             }
+            // Only the TAKEN branch is evaluated: test each condition (which
+            // must be a bool) in order and evaluate the first matching branch.
+            // `else if` chains nest down `else_branch`, so descend that spine
+            // ITERATIVELY — a long chain must consume no host stack per link.
+            ExprKind::If { .. } => {
+                let mut node = expr;
+                loop {
+                    match &node.kind {
+                        ExprKind::If {
+                            cond,
+                            then_branch,
+                            else_branch,
+                        } => {
+                            let taken = match self.eval(cond, env)? {
+                                Value::Bool(b) => b,
+                                other => {
+                                    return Err(RunError {
+                                        message: format!(
+                                            "`if` condition needs a bool, got {}",
+                                            other.kind_name()
+                                        ),
+                                        span: cond.span,
+                                    })
+                                }
+                            };
+                            if taken {
+                                return self.eval(then_branch, env);
+                            }
+                            node = else_branch;
+                        }
+                        // The final (non-`if`) else branch.
+                        _ => return self.eval(node, env),
+                    }
+                }
+            }
             // A nullary constructor used bare IS the variant value; a
             // parameterful one is a callable constructor (so `List.map(xs,
             // Circle)` works like any function argument).

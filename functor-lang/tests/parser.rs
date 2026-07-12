@@ -498,3 +498,74 @@ fn bare_ampersand_is_a_lex_error() {
     let (message, _, _) = parse_err("let v = a & b");
     assert_eq!(message, "unexpected character `&`");
 }
+
+// --- `if … then … else …` conditional expression ---
+
+#[test]
+fn if_else_parses() {
+    let ExprKind::If {
+        then_branch,
+        else_branch,
+        ..
+    } = parsed_value("let v = if a then b else c")
+    else {
+        panic!("expected an `if` at the root");
+    };
+    assert!(matches!(then_branch.kind, ExprKind::Ident(_)));
+    assert!(matches!(else_branch.kind, ExprKind::Ident(_)));
+}
+
+#[test]
+fn else_if_nests_in_the_else_branch() {
+    // `else if` is an `if` in the else position — no `elif` token; the chain
+    // nests down `else_branch`.
+    let ExprKind::If { else_branch, .. } =
+        parsed_value("let v = if a then b else if c then d else e")
+    else {
+        panic!("expected an `if` at the root");
+    };
+    assert!(
+        matches!(else_branch.kind, ExprKind::If { .. }),
+        "expected a nested `if` in the else position, got {:?}",
+        else_branch.kind
+    );
+}
+
+#[test]
+fn if_condition_absorbs_logical_operators() {
+    // `if a && b then …` — the condition is the whole `a && b`, so `&&` binds
+    // tighter than the `if` form.
+    let ExprKind::If { cond, .. } = parsed_value("let v = if a && b then c else d") else {
+        panic!("expected an `if` at the root");
+    };
+    assert!(
+        matches!(cond.kind, ExprKind::Logical { .. }),
+        "expected `a && b` as the condition, got {:?}",
+        cond.kind
+    );
+}
+
+#[test]
+fn if_else_branch_absorbs_a_trailing_pipeline() {
+    // The else branch is a full expression, so `if c then a else b |> f`
+    // parses as `if c then a else (b |> f)`.
+    let ExprKind::If { else_branch, .. } =
+        parsed_value("let v = if c then a else b |> f")
+    else {
+        panic!("expected an `if` at the root");
+    };
+    assert!(
+        matches!(else_branch.kind, ExprKind::Pipeline { .. }),
+        "expected the trailing pipe to fold into the else branch, got {:?}",
+        else_branch.kind
+    );
+}
+
+#[test]
+fn if_without_else_is_a_parse_error() {
+    let (message, _, _) = parse_err("let v = if a then b");
+    assert!(
+        message.contains("else"),
+        "expected the missing-else error to mention `else`, got: {message}"
+    );
+}

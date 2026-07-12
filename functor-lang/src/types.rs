@@ -1847,6 +1847,42 @@ missing {missing}. Did you forget an argument?"
                 self.require_bool(&ty, inner.span, "`not`");
                 Type::Bool
             }
+            // `if cond then a else b` — every condition is bool, and every
+            // branch (all the `then`s plus the final `else`) unifies to one
+            // type, exactly like `match` arms (via `join_arms`, so the bare-
+            // model/effect-seam lift applies here too). `else if` chains nest
+            // down `else_branch`; walk the spine iteratively so a long chain
+            // (which the parser builds with no depth cost) can't overflow.
+            ExprKind::If { .. } => {
+                // Collect the spine in source order: each link is its `if`
+                // node id + its `then` type; `leaf` is the final (non-`if`)
+                // else. Conditions are all bool.
+                let mut links = Vec::new();
+                let mut leaf = expr;
+                while let ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } = &leaf.kind
+                {
+                    let cond_ty = self.infer(cond);
+                    self.require_cond_bool(&cond_ty, cond.span);
+                    links.push((leaf.id, self.infer(then_branch), then_branch.span));
+                    leaf = else_branch;
+                }
+                // Fold from the innermost link outward: each `if` node's type
+                // is the join of its own `then` with the accumulated else
+                // suffix. Record it here — spine nodes bypass the `infer`
+                // wrapper (the walk is iterative), and a nested `if` keeps its
+                // OWN suffix type, not the outer chain's.
+                let mut acc = self.infer(leaf);
+                for (node_id, then_ty, then_span) in links.into_iter().rev() {
+                    // `then` first so the diagnostic reads "<then> and <else>".
+                    acc = self.join_arms(then_ty, acc, then_span, "`if` branches");
+                    self.expr_types.insert(node_id.raw(), acc.clone());
+                }
+                acc
+            }
             // A constructor reference: nullary is the variant value itself,
             // parameterful is a function from its declared field types.
             ExprKind::Ctor { name, .. } => match self.ctors.get(name).cloned() {
@@ -1918,7 +1954,7 @@ missing {missing}. Did you forget an argument?"
             let body_ty = self.infer(&arm.body);
             result = Some(match result {
                 None => body_ty,
-                Some(prev) => self.join_arms(prev, body_ty, arm.body.span),
+                Some(prev) => self.join_arms(prev, body_ty, arm.body.span, "match arms"),
             });
         }
         // Exhaustiveness fires only where the scrutinee's type is known —
@@ -2024,7 +2060,11 @@ a catch-all arm (`_` or a name)"
     /// `functor_lang` (no prelude, effects are gradual externals) or the host prelude's
     /// opaque `Effect` type under the runner — so real tuple mismatches
     /// (`(m, 1.0)` vs `m`) still error.
-    fn join_arms(&mut self, prev: Type, body: Type, span: Span) -> Type {
+    /// Unify two branch types into one, lifting a bare model to `(model,
+    /// Effect)` at the effect seam (the entry-point rule). `noun` names the
+    /// two things being joined for the diagnostic — "match arms" or "`if`
+    /// branches" — so both conditional forms share this logic.
+    fn join_arms(&mut self, prev: Type, body: Type, span: Span, noun: &str) -> Type {
         let (p, b) = (self.zonk(&prev), self.zonk(&body));
         for (pair, bare) in [(&p, &b), (&b, &p)] {
             if let Type::Tuple(items) = pair {
@@ -2041,7 +2081,7 @@ a catch-all arm (`_` or a name)"
             let (prev_n, body_n) = self.normalize_pair(&p, &b);
             self.diag(
                 span,
-                format!("match arms have incompatible types {prev_n} and {body_n}"),
+                format!("{noun} have incompatible types {prev_n} and {body_n}"),
             );
             Type::Unknown
         } else {
@@ -2356,6 +2396,19 @@ is {other}"
         }
         if !compatible(&ty, &Type::Bool) {
             self.diag(span, format!("{op} needs bool operands, got {ty}"));
+        }
+    }
+
+    /// Constrain an `if` condition to `Bool` — unifying an unsolved variable,
+    /// erroring on a known non-bool with an if-specific message.
+    fn require_cond_bool(&mut self, ty: &Type, span: Span) {
+        let ty = self.zonk(ty);
+        if let Type::Var(_) = ty {
+            self.unify(&ty, &Type::Bool, span, "`if` condition");
+            return;
+        }
+        if !compatible(&ty, &Type::Bool) {
+            self.diag(span, format!("`if` condition needs a bool, got {ty}"));
         }
     }
 }

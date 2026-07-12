@@ -204,6 +204,17 @@ pub enum ExprKind {
     Neg(Box<Expr>),
     /// `not e` — boolean negation (prefix operator).
     Not(Box<Expr>),
+    /// `if cond then a else b` — a conditional EXPRESSION (both branches
+    /// required; there is no else-less form). `else if` is just an `if` in the
+    /// `else_branch`, so a chain nests down the `else_branch` — only the taken
+    /// branch is evaluated (see [`crate::eval`]). Both branches unify to one
+    /// type, like `match` arms (see [`crate::types`]). The bool-literal
+    /// `match cond with | true => a | false => b` remains valid.
+    If {
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
     /// `match expr with | pattern => expr | …` — first matching arm wins,
     /// top to bottom. Arm bodies are full expressions, so a nested `match`
     /// inside an arm greedily consumes the following `|` arms — parenthesize

@@ -1169,3 +1169,83 @@ fn bool_operator_on_non_bool_errors() {
     let (message, _, _) = run_err("let main = () => not 3.0");
     assert_eq!(message, "boolean operator needs a bool, got a number");
 }
+
+// --- `if … then … else …` conditional expression ---
+
+#[test]
+fn if_else_evaluates_taken_branch() {
+    assert_eq!(main_result("let main = () => if true then 1.0 else 2.0"), "1");
+    assert_eq!(main_result("let main = () => if false then 1.0 else 2.0"), "2");
+}
+
+#[test]
+fn else_if_chain_selects_the_first_true_arm() {
+    let src = "let classify = (n) =>\n\
+               \x20 if n > 10.0 then \"big\"\n\
+               \x20 else if n > 5.0 then \"medium\"\n\
+               \x20 else if n > 0.0 then \"small\"\n\
+               \x20 else \"nonpositive\"\n\
+               let main = () => classify(7.0)";
+    assert_eq!(main_result(src), "\"medium\"");
+}
+
+#[test]
+fn if_evaluates_only_the_taken_branch() {
+    // `boom(0.0)` would fail at runtime (no matching arm); a taken `then`
+    // branch must never evaluate the `else`.
+    assert_eq!(
+        main_result(
+            "let boom = (x) => match x with | 99.0 => true\n\
+             let main = () => if true then 42.0 else boom(0.0)"
+        ),
+        "42"
+    );
+}
+
+#[test]
+fn if_evaluates_the_else_when_condition_is_false() {
+    // The complement: a false condition DOES evaluate the else branch, so the
+    // failing call surfaces.
+    let (message, _, _) = run_err(
+        "let boom = (x) => match x with | 99.0 => true\n\
+         let main = () => if false then 42.0 else boom(0.0)",
+    );
+    assert_eq!(message, "no pattern matched 0");
+}
+
+#[test]
+fn if_condition_absorbs_boolean_operators() {
+    // `if a && b then …` — the condition is the whole compound predicate.
+    assert_eq!(
+        main_result("let main = () => if true && false then \"y\" else \"n\""),
+        "\"n\""
+    );
+    assert_eq!(
+        main_result("let main = () => if 3.0 > 2.0 || false then \"y\" else \"n\""),
+        "\"y\""
+    );
+}
+
+#[test]
+fn long_else_if_chain_does_not_overflow() {
+    // `else if` chains nest down the else branch; the parser builds them
+    // iteratively (no depth guard) and eval/lower/types walk that spine
+    // iteratively too — a 600-link chain must not consume host stack per link.
+    let mut src = String::from("let classify = (n) =>\n");
+    for i in 0..600 {
+        src.push_str(&format!("  if n == {}.0 then {}.0\n  else ", i, i * 2));
+    }
+    src.push_str("0.0\nlet main = () => classify(597.0)");
+    assert_eq!(main_result(&src), "1194");
+}
+
+#[test]
+fn if_condition_on_non_bool_errors() {
+    // A non-bool condition is a runtime error (the checker also rejects it,
+    // but `run` does not typecheck).
+    let (message, _, _) = run_err(
+        "let f = (n) => if n then 1.0 else 2.0\n\
+         let main = () => f(3.0)",
+    );
+    assert_eq!(message, "`if` condition needs a bool, got a number");
+}

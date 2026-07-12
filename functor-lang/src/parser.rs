@@ -14,11 +14,12 @@
 //!   (in a lambda RETURN annotation the `=>` is the body arrow, so a bare
 //!    "(" … ")" is only a tuple/group — a function return type is parenthesized)
 //! tatom     := typevar | ident ("<" type ("," type)* ">")?
-//! expr      := letIn | assign | match | pipeline
+//! expr      := letIn | assign | match | ifExpr | pipeline
 //! letIn     := "let" ("mut"? ident | tuplePat) "=" expr "in" expr
 //!              (a tuple-pattern let is sugar for a single-arm match)
 //! assign    := ident ":=" expr ";" expr
 //! match     := "match" expr "with" ("|" pattern "=>" expr)+
+//! ifExpr    := "if" expr "then" expr "else" (ifExpr | expr)   (else required)
 //! pattern   := "_" | lowerIdent | upperIdent ("(" subpat,+ ")")?
 //!            | tuplePat | "true" | "false" | "-"? number | string
 //! tuplePat  := "(" subpat ("," subpat)+ ","? ")"
@@ -551,6 +552,7 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         let result = match self.peek_kind() {
             TokenKind::Let => self.let_in(),
             TokenKind::Match => self.match_expr(),
+            TokenKind::If => self.if_expr(),
             TokenKind::Ident(_) if self.nth_kind(1) == &TokenKind::ColonEq => self.assign(),
             _ => {
                 let expr = self.pipeline();
@@ -678,6 +680,54 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             },
             span,
         })
+    }
+
+    /// `if cond then a else b` — a conditional EXPRESSION. `else` is required
+    /// (Functor Lang has no else-less `if`: it is an expression, so both
+    /// branches must yield a value). `else if` is just an `if` in the `else`
+    /// position — no `elif` keyword. The chain is collected ITERATIVELY (a
+    /// loop, not recursion through `expr()`), so an arbitrarily long
+    /// `else if …` chain grows neither the parser's `depth` guard nor the host
+    /// stack; the right-nested AST is then folded from the back.
+    fn if_expr(&mut self) -> Result<Expr, ParseError> {
+        // Each link: (if-keyword span, condition, then-branch).
+        let mut links: Vec<(Span, Expr, Expr)> = Vec::new();
+        let mut kw = self.bump(); // the leading `if`
+        let else_branch = loop {
+            let cond = self.expr()?;
+            self.expect(TokenKind::Then, "`then` after the `if` condition")?;
+            let then_branch = self.expr()?;
+            // `else` is required — an `if` is an expression, so it must yield a
+            // value on both paths (there is no else-less form).
+            self.expect(
+                TokenKind::Else,
+                "`else` (an `if` is an expression — it needs both a `then` \
+and an `else` branch)",
+            )?;
+            links.push((kw.span, cond, then_branch));
+            // `else if` continues the chain iteratively; any other `else`
+            // body is the final branch.
+            if self.peek_kind() == &TokenKind::If {
+                kw = self.bump();
+            } else {
+                break self.expr()?;
+            }
+        };
+        // Fold from the innermost link out: each `if` node spans its own
+        // keyword through the accumulated else-branch.
+        let mut acc = else_branch;
+        for (kw_span, cond, then_branch) in links.into_iter().rev() {
+            let span = kw_span.to(acc.span);
+            acc = Expr {
+                kind: ExprKind::If {
+                    cond: Box::new(cond),
+                    then_branch: Box::new(then_branch),
+                    else_branch: Box::new(acc),
+                },
+                span,
+            };
+        }
+        Ok(acc)
     }
 
     fn pattern(&mut self) -> Result<Pattern, ParseError> {

@@ -58,10 +58,18 @@ let area = (s: Shape): float =>
   | Point => 0.0                              // exhaustiveness checked when s's type is known
 
 let sizeOf = (s: Shape): string =>
-  match area(s) > 10.0 with                   // bool-literal match = the ONLY conditional
-  | true => "big"
-  | false => "small"                          // number/string literal arms exist too
-                                              // (they need a catch-all: `| x =>` or `| _ =>`)
+  match area(s) > 10.0 with                   // bool-literal match: still valid, and the
+  | true => "big"                             //   general form (number/string literal arms
+  | false => "small"                          //   exist too — they need a catch-all
+                                              //   `| x =>` or `| _ =>`)
+
+let sizeOf2 = (s: Shape): string =>
+  if area(s) > 10.0 then "big" else "small"   // if/else EXPRESSION — both branches required
+                                              //   (no else-less form); branches must unify
+let grade = (n: float): string =>             // `else if` chains — just an `if` in the
+  if n > 90.0 then "A"                         //   else position, no `elif` keyword
+  else if n > 80.0 then "B"                   //   (only the taken branch is evaluated)
+  else "C"
 
 let threshold = 10                            // top-level let; ints/floats are all float (f64)
 let origin: Position = { x: 0.0, y: 0.0 }     // OPTIONAL binding annotation `let name: Type = …`
@@ -112,10 +120,21 @@ prefix `not`. Precedence (tightest→loosest): comparisons > `not` > `&&` > `||`
 > pipelines. So `not a == b` is `not (a == b)`, `a || b && c` is
 `a || (b && c)`, and all three operands are checked as `bool`. `&&`/`||`
 short-circuit — `false && e` / `true || e` never evaluate `e` (so
-`isReady && risky()` is safe). There is **no** if/else, loops, or
-string-concatenation operator — iteration is `List.map/filter/fold`,
-and the conditional is a **bool-literal match**
-(`match x > 3.0 with | true => a | false => b`). Tuples are structural:
+`isReady && risky()` is safe).
+
+The conditional is `if cond then a else b` — a full **expression**, so
+**both branches are required** (there is no else-less `if`; omitting the
+`else` is a parse error, since the expression must yield a value). Chain with
+`else if` (an `if` in the `else` position — no `elif` keyword); only the taken
+branch is evaluated, and the branches must unify to one type (like `match`
+arms). The condition must be `bool` (comparisons/`&&`/`||`/`not` all fit: `if a
+&& b then …`). The `if` form sits at the loosest level (like `match`/`let … in`),
+so a trailing pipe folds into the else branch: `if c then a else b |> f` is `if
+c then a else (b |> f)`. The **bool-literal match** (`match x > 3.0 with | true
+=> a | false => b`) remains equally valid — it and `if`/`else` share the same
+lazy branch selection (only the taken branch runs). There are **no** loops or
+string-concatenation operator —
+iteration is `List.map/filter/fold`. Tuples are structural:
 `(1.0, "a") == (1.0, "a")`; tuple types annotate as `(float, string)` and
 function types as `(A, B) => C` / `() => C`, with `(A)` as grouping. Prefer
 named records for anything that outlives an expression; tuples are for

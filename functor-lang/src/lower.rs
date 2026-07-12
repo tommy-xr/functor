@@ -848,6 +848,37 @@ impl Lowerer<'_> {
             }
             ast::ExprKind::Neg(inner) => ExprKind::Neg(Box::new(self.expr(*inner)?)),
             ast::ExprKind::Not(inner) => ExprKind::Not(Box::new(self.expr(*inner)?)),
+            // `else if` chains nest down `else_branch`, so lower the spine
+            // iteratively — a long chain must not grow the host stack per
+            // link (like the Logical spine above).
+            ast::ExprKind::If { .. } => {
+                let mut spine = Vec::new();
+                let mut leaf = expr;
+                while let ast::ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } = leaf.kind
+                {
+                    spine.push((*cond, *then_branch, leaf.span));
+                    leaf = *else_branch;
+                }
+                let mut acc = self.expr(leaf)?; // the final (non-`if`) else branch
+                for (cond, then_branch, node_span) in spine.into_iter().rev() {
+                    let cond = self.expr(cond)?;
+                    let then_branch = self.expr(then_branch)?;
+                    acc = Expr {
+                        id: self.expr_id(),
+                        kind: ExprKind::If {
+                            cond: Box::new(cond),
+                            then_branch: Box::new(then_branch),
+                            else_branch: Box::new(acc),
+                        },
+                        span: node_span,
+                    };
+                }
+                return Ok(acc);
+            }
             ast::ExprKind::Match { scrutinee, arms } => {
                 // The scrutinee is evaluated outside any arm's scope.
                 let scrutinee = Box::new(self.expr(*scrutinee)?);

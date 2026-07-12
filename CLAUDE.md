@@ -210,8 +210,9 @@ main context.
 ## Gotchas
 
 - **The `functor-lang` skill is the source of truth for Functor Lang.** Functor Lang is a small, custom language —
-  do NOT guess syntax/semantics from F#/OCaml intuition (e.g. there is no `if`/`else`; the
-  conditional is a bool-literal `match`; assignment is `:=`; pipelines *append* the subject
+  do NOT guess syntax/semantics from F#/OCaml intuition (e.g. `if cond then a else b` exists
+  as an EXPRESSION — both branches required, `else if` chains, no `elif` — alongside the
+  equally-valid bool-literal `match`; assignment is `:=`; pipelines *append* the subject
   (thread-last: `x |> f(a)` == `f(a, x)`)).
   When a change touches the language or the prelude, update the skill in the same PR.
 - **`file = module`.** Every `.fun` in the entry's directory loads with the project — an
