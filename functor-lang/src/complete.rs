@@ -103,10 +103,10 @@ const BUILTINS: [Builtin; 35] = [
     Builtin::DebugLog,
 ];
 
-/// The keywords offered at a top-level position: the 8 lexer keywords plus
+/// The keywords offered at an expression position: the lexer keywords plus
 /// the contextual `open` (`lexer.rs`).
-const KEYWORDS: [&str; 9] = [
-    "let", "type", "open", "mut", "with", "in", "match", "true", "false",
+const KEYWORDS: [&str; 12] = [
+    "let", "type", "open", "mut", "with", "in", "match", "true", "false", "if", "then", "else",
 ];
 
 /// OFFSET CONTRACT: `offset` is LOCAL to `live_text` (the live buffer), NOT

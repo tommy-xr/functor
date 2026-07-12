@@ -366,6 +366,15 @@ fn collect(expr: &Expr, def: &str, path: &mut Vec<String>, index: &mut ModuleInd
                 seg(&arm.body, format!("|{i}"), path, index);
             }
         }
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            seg(cond, "if".to_string(), path, index);
+            seg(then_branch, "then".to_string(), path, index);
+            seg(else_branch, "else".to_string(), path, index);
+        }
         // Single-child edges are transparent: uniqueness is preserved, and
         // e.g. negating or field-accessing around a lambda keeps its id.
         ExprKind::Neg(inner) | ExprKind::Not(inner) => collect(inner, def, path, index),
@@ -512,6 +521,15 @@ pub(crate) fn each_child<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             for arm in arms {
                 f(&arm.body);
             }
+        }
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            f(cond);
+            f(then_branch);
+            f(else_branch);
         }
     }
 }

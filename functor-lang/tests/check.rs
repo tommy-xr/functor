@@ -1504,3 +1504,76 @@ fn logical_result_is_bool() {
         "unexpected: {message}"
     );
 }
+
+// --- `if … then … else …` conditional expression ---
+
+#[test]
+fn if_else_checks_clean() {
+    assert_clean(
+        "let abs = (n: float): float => if n > 0.0 then n else 0.0 - n\n\
+         let label = (n: float): string =>\n\
+         \x20 if n > 10.0 then \"big\" else if n > 0.0 then \"small\" else \"zero-ish\"",
+    );
+}
+
+#[test]
+fn if_condition_must_be_bool() {
+    // A genuinely-non-bool condition (a float literal) — an unannotated param
+    // would simply be inferred to bool instead.
+    let (message, line, _) = single_diag("let f = () => if 3.0 then 1.0 else 2.0");
+    assert_eq!(message, "`if` condition needs a bool, got float");
+    assert_eq!(line, 1);
+}
+
+#[test]
+fn if_branches_must_unify() {
+    let (message, _, _) = single_diag("let f = (b: bool) => if b then 1.0 else \"two\"");
+    assert_eq!(
+        message,
+        "`if` branches have incompatible types float and string"
+    );
+}
+
+#[test]
+fn if_result_type_flows() {
+    // The `if` feeds a string context but yields float — the mismatch proves
+    // the whole `if` typed as float, not gradual Unknown.
+    let (message, _, _) = single_diag("let f = (b: bool): string => if b then 1.0 else 2.0");
+    assert!(
+        message.contains("float") && message.contains("string"),
+        "unexpected: {message}"
+    );
+}
+
+#[test]
+fn else_if_chain_checks_clean() {
+    assert_clean(
+        "let sign = (n: float): float =>\n\
+         \x20 if n > 0.0 then 1.0 else if n < 0.0 then 0.0 - 1.0 else 0.0",
+    );
+}
+
+/// A nested `if` in an else-if chain keeps its OWN type in the type table
+/// (hover), even when the outer chain is ill-typed — the iterative else-spine
+/// records each node's own else-suffix type, not the shared outer result.
+#[test]
+fn nested_if_keeps_its_own_type() {
+    use functor_lang::ir::ExprKind;
+    // Outer branch is bool, inner if is float+float -> the outer chain can't
+    // unify (bool vs float), but the inner `if c2 then 1.0 else 2.0` is float.
+    let src = "let f = (c1: bool, c2: bool) => if c1 then true else if c2 then 1.0 else 2.0";
+    let module = functor_lang::lower(functor_lang::parse(src).unwrap()).unwrap();
+    let (_diags, types) = functor_lang::check_with_types(&module);
+    let ExprKind::Lambda { body, .. } = &module.defs[0].value.kind else {
+        panic!("expected a lambda");
+    };
+    let ExprKind::If { else_branch, .. } = &body.kind else {
+        panic!("expected an outer `if`");
+    };
+    assert!(
+        matches!(else_branch.kind, ExprKind::If { .. }),
+        "expected a nested `if` in the else position"
+    );
+    let inner = types.expr(else_branch.id).expect("inner if type recorded");
+    assert_eq!(inner.to_string(), "float");
+}
