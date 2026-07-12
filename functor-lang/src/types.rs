@@ -369,6 +369,27 @@ pub fn builtin_signature(b: Builtin) -> Type {
         ),
         // List.maximum : (List<Float>) => Float
         Builtin::ListMaximum => func(vec![List(Box::new(Float))], Float),
+        // List.length : (List<'a>) => Float
+        Builtin::ListLength => func(vec![List(Box::new(Var(0)))], Float),
+        // Subject-LAST. List.append : (List<'a>, List<'a>) => List<'a> — (other, list)
+        Builtin::ListAppend => func(
+            vec![List(Box::new(Var(0))), List(Box::new(Var(0)))],
+            List(Box::new(Var(0))),
+        ),
+        // List.flatten : (List<List<'a>>) => List<'a>
+        Builtin::ListFlatten => func(
+            vec![List(Box::new(List(Box::new(Var(0)))))],
+            List(Box::new(Var(0))),
+        ),
+        // Subject-LAST. List.any / List.all : (('a) => Bool, List<'a>) => Bool
+        Builtin::ListAny | Builtin::ListAll => func(
+            vec![func(vec![Var(0)], Bool), List(Box::new(Var(0)))],
+            Bool,
+        ),
+        // List.reverse : (List<'a>) => List<'a>
+        Builtin::ListReverse => func(vec![List(Box::new(Var(0)))], List(Box::new(Var(0)))),
+        // List.isEmpty : (List<'a>) => Bool
+        Builtin::ListIsEmpty => func(vec![List(Box::new(Var(0)))], Bool),
         // Text.concat : (String, String) => String
         Builtin::TextConcat => func(vec![String, String], String),
         // Text.fromFloat : (Float) => String

@@ -64,14 +64,21 @@ pub enum CompletionKind {
 }
 
 /// The complete builtin registry. Hand-listed because [`Builtin`] is not
-/// iterable — keep in sync with `eval::Builtin` (17 variants).
-const BUILTINS: [Builtin; 17] = [
+/// iterable — keep in sync with `eval::Builtin` (24 variants).
+const BUILTINS: [Builtin; 24] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
     Builtin::ListRange,
     Builtin::ListGrid,
     Builtin::ListMaximum,
+    Builtin::ListLength,
+    Builtin::ListAppend,
+    Builtin::ListFlatten,
+    Builtin::ListAny,
+    Builtin::ListAll,
+    Builtin::ListReverse,
+    Builtin::ListIsEmpty,
     Builtin::MathSin,
     Builtin::MathCos,
     Builtin::TextConcat,
@@ -1384,6 +1391,13 @@ mod tests {
                 | Builtin::ListRange
                 | Builtin::ListGrid
                 | Builtin::ListMaximum
+                | Builtin::ListLength
+                | Builtin::ListAppend
+                | Builtin::ListFlatten
+                | Builtin::ListAny
+                | Builtin::ListAll
+                | Builtin::ListReverse
+                | Builtin::ListIsEmpty
                 | Builtin::MathSin
                 | Builtin::MathCos
                 | Builtin::MathClamp01
@@ -1397,7 +1411,7 @@ mod tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(BUILTINS.len(), 17, "BUILTINS must list every Builtin");
+        assert_eq!(BUILTINS.len(), 24, "BUILTINS must list every Builtin");
     }
 
     // 19. A full keyword typed (`let`, cursor at end) still offers `let`.

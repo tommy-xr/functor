@@ -19,7 +19,7 @@ bug found in the same exercise was fixed on the spot
       sin-hash noise, whose correlated streams caused a real visual bug.
 - [ ] Boolean operators `&&` / `||` / `not` (compound predicates are
       match-pyramids / hand-rolled helpers today).
-- [ ] List builtins: `length`, `append`, `flatten`, `any`/`all`, `reverse`,
+- [x] List builtins: `length`, `append`, `flatten`, `any`/`all`, `reverse`,
       `isEmpty` — naive recursive versions blow the eval-depth cap at n≈60;
       the depth error should name the cap and hint at `List.fold`.
 - [ ] Literals inside tuple/ctor patterns (`| ("Enter", true) =>`) for

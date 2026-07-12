@@ -281,9 +281,11 @@ fn error_infinite_recursion_is_a_clean_error() {
         "let spin = (n) => spin(n + 1.0)\n\
          let main = () => spin(0.0)",
     );
-    assert_eq!(
-        message,
-        "evaluation nested too deeply (deep recursion, or deeply nested expressions)"
+    // The improved cap error names the numeric cap and points at the
+    // iterative builtins (List.fold), which don't consume evaluation depth.
+    assert!(
+        message.contains("128") && message.contains("List.fold"),
+        "got: {message}"
     );
 }
 
@@ -314,6 +316,91 @@ fn builtins_evaluate() {
     assert_eq!(
         main_result("let main = () => [1.0, 2.0, 3.0] |> List.fold((acc, x) => acc + x, 0.0)"),
         "6"
+    );
+}
+
+#[test]
+fn list_length_isempty_reverse() {
+    assert_eq!(main_result("let main = () => List.length([7.0, 8.0, 9.0])"), "3");
+    assert_eq!(main_result("let main = () => List.length([])"), "0");
+    assert_eq!(main_result("let main = () => List.isEmpty([])"), "true");
+    assert_eq!(main_result("let main = () => List.isEmpty([1.0])"), "false");
+    assert_eq!(
+        main_result("let main = () => List.reverse([1.0, 2.0, 3.0])"),
+        "[3, 2, 1]"
+    );
+    assert_eq!(main_result("let main = () => List.reverse([])"), "[]");
+}
+
+#[test]
+fn list_append_threads_last() {
+    // Subject-LAST: `xs |> List.append(ys)` yields xs followed by ys.
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.append([3.0, 4.0])"),
+        "[1, 2, 3, 4]"
+    );
+    assert_eq!(
+        main_result("let main = () => List.append([3.0], [1.0, 2.0])"),
+        "[1, 2, 3]"
+    );
+    assert_eq!(main_result("let main = () => List.append([], [])"), "[]");
+}
+
+#[test]
+fn list_flatten_one_level() {
+    assert_eq!(
+        main_result("let main = () => List.flatten([[1.0, 2.0], [3.0], []])"),
+        "[1, 2, 3]"
+    );
+    assert_eq!(main_result("let main = () => List.flatten([])"), "[]");
+    let (message, _, _) = run_err("let main = () => List.flatten([1.0])");
+    assert!(message.contains("list of lists"), "got: {message}");
+}
+
+#[test]
+fn list_any_all_predicates() {
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0, 3.0] |> List.any((x) => x > 2.0)"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0, 3.0] |> List.any((x) => x > 5.0)"),
+        "false"
+    );
+    assert_eq!(
+        main_result("let main = () => [2.0, 3.0] |> List.all((x) => x > 1.0)"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => [2.0, 3.0] |> List.all((x) => x > 2.0)"),
+        "false"
+    );
+    // Vacuous truth / falsity on the empty list.
+    assert_eq!(main_result("let main = () => List.all((x) => x > 0.0, [])"), "true");
+    assert_eq!(main_result("let main = () => List.any((x) => x > 0.0, [])"), "false");
+    let (message, _, _) = run_err("let main = () => List.any((x) => x, [1.0])");
+    assert!(message.contains("must return a bool"), "got: {message}");
+}
+
+// The builtins loop in Rust, so folding/iterating a large list never trips
+// the eval-depth cap that a hand-rolled recursion hits around n≈60.
+#[test]
+fn list_builtins_do_not_consume_eval_depth() {
+    assert_eq!(
+        main_result("let main = () => List.length(List.range(1000.0))"),
+        "1000"
+    );
+    assert_eq!(
+        main_result("let main = () => List.isEmpty(List.reverse(List.range(1000.0)))"),
+        "false"
+    );
+    assert_eq!(
+        main_result("let main = () => List.range(1000.0) |> List.any((x) => x > 900.0)"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => List.range(1000.0) |> List.all((x) => x < 1000.0)"),
+        "true"
     );
 }
 
