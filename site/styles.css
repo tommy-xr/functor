@@ -340,35 +340,6 @@ a:hover {
   font-size: 0.85rem;
 }
 
-/* Language bullets under the sample. */
-.lang-bullets {
-  list-style: none;
-  padding: 0;
-  margin: 28px 0 0;
-  display: grid;
-  gap: 14px;
-}
-
-.lang-bullets li {
-  position: relative;
-  padding-left: 22px;
-  color: var(--text-dim);
-  font-size: 0.9rem;
-}
-
-.lang-bullets li::before {
-  content: "›";
-  position: absolute;
-  left: 0;
-  color: var(--cyan);
-  font-weight: 600;
-}
-
-.lang-bullets code {
-  color: var(--green);
-  font-size: 0.9em;
-}
-
 /* The one-line LLM-native banner under the differentiators. */
 .llm-banner {
   max-width: 1180px;
