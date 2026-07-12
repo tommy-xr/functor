@@ -42,6 +42,169 @@ use crate::physics::{self, PhysicsEvent, SteppedPhysics};
 use crate::timetravel::SceneRecorder;
 use crate::{Frame, FrameTime};
 
+// ---------------------------------------------------------------------------
+// The paused-inspector replay journal (visual-debugger PR2).
+//
+// During normal play the producer records nothing and renders no Display text —
+// the hard perf requirement. Instead each model-updating entry-point call site
+// pushes a cheap `(entry, Rc-cloned args, provenance tag)` into a thread-local
+// journal. On pause the desktop producer replays each journaled call through
+// `Session::call_recorded` (the PR1 recorder) to build the trace; entry points
+// are pure functions of their args (the input model is `args[0]`), so replay is
+// exact and — effects being plain data that only the drain performs — free of
+// side effects.
+//
+// A THREAD-LOCAL sink (rather than a `FrameCtx` field) keeps this off the web
+// producer entirely (it never arms it → the pushes are a `None` check) and off
+// the shared effect machinery's signatures. The dry-run forward-step pauses it
+// ([`JournalPause`]) so `--ghost` calls are never journaled.
+// ---------------------------------------------------------------------------
+
+/// One journaled model-updating call: the entry name, its Rc-cloned args, and a
+/// lightweight provenance tag. The provenance STRING (the wire vocabulary) is
+/// derived from the tag + args only at trace-build time — never during play, so
+/// journaling renders no Display text.
+pub struct JournalEntry {
+    /// The entry-point name — `tick` | `input` | `mouseMove` | `mouseWheel` |
+    /// `update` (the wire contract's `entry`).
+    pub entry: &'static str,
+    /// The call's arguments (Rc-cloned). `args[0]` is the input model; for a
+    /// message-bearing call `args[1]` is the message.
+    pub args: Vec<Value>,
+    pub provenance: Provenance,
+}
+
+/// Why a model-updating call ran — the source that drove it. Rendered to the
+/// wire provenance string by [`Provenance::render`].
+#[derive(Clone, Copy)]
+pub enum Provenance {
+    Tick,
+    Input,
+    MouseMove,
+    MouseWheel,
+    Subscription,
+    EffectResult,
+    PhysicsQuery,
+    Collision,
+    NetEvent,
+    HttpResponse,
+    AudioFinished,
+    UiEvent,
+}
+
+impl Provenance {
+    /// The wire provenance string, from the tag + the call's args. The
+    /// message-bearing variants render `args[1]` (the message); `tick` renders
+    /// its `dt` (`args[1]`); `input` reads the key name (`args[1]`, unquoted)
+    /// and the down flag (`args[2]`). Built here at trace time, not during play.
+    pub fn render(&self, args: &[Value]) -> String {
+        let msg = || args.get(1).map(|v| v.to_string()).unwrap_or_default();
+        match self {
+            // `dt` is f32-sourced (the protocol's FrameTime), so render it at
+            // f32 precision — the f64 Value would show cast noise (…0.2000000029).
+            Provenance::Tick => {
+                let dt = match args.get(1) {
+                    Some(Value::Number(n)) => (*n as f32).to_string(),
+                    _ => String::new(),
+                };
+                format!("tick dt={dt}")
+            }
+            Provenance::Input => {
+                let key = match args.get(1) {
+                    Some(Value::String(s)) => s.to_string(),
+                    _ => String::new(),
+                };
+                let dir = match args.get(2) {
+                    Some(Value::Bool(false)) => "up",
+                    _ => "down",
+                };
+                format!("input: {key} {dir}")
+            }
+            Provenance::MouseMove => "mouseMove".to_string(),
+            Provenance::MouseWheel => "mouseWheel".to_string(),
+            Provenance::Subscription => format!("subscription: {}", msg()),
+            Provenance::EffectResult => format!("effect result: {}", msg()),
+            Provenance::PhysicsQuery => format!("physics query: {}", msg()),
+            Provenance::Collision => format!("collision: {}", msg()),
+            Provenance::NetEvent => format!("net event: {}", msg()),
+            Provenance::HttpResponse => format!("http response: {}", msg()),
+            Provenance::AudioFinished => format!("audio finished: {}", msg()),
+            Provenance::UiEvent => format!("ui event: {}", msg()),
+        }
+    }
+}
+
+thread_local! {
+    /// The current frame's journal, `Some` only while the desktop producer is
+    /// driving live frames (armed once in `FunctorLangGame::create`). `None`
+    /// everywhere else — the web producer, the dry-run forward-step, tests —
+    /// so [`journal_push`] is a cheap `None` check with zero allocation.
+    static JOURNAL: std::cell::RefCell<Option<Vec<JournalEntry>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Push a journal entry if journaling is armed on this thread — otherwise a
+/// no-op (one thread-local borrow). Called at every model-updating entry-point
+/// call site; `args` is cloned (Rc-shared, cheap).
+pub fn journal_push(entry: &'static str, args: &[Value], provenance: Provenance) {
+    JOURNAL.with(|j| {
+        if let Some(v) = j.borrow_mut().as_mut() {
+            v.push(JournalEntry {
+                entry,
+                args: args.to_vec(),
+                provenance,
+            });
+        }
+    });
+}
+
+/// Arm journaling for this thread (idempotent). The desktop producer calls this
+/// once at startup; the web producer never does, so its shared frame body pays
+/// only the `None` check.
+pub fn journal_arm() {
+    JOURNAL.with(|j| {
+        let mut b = j.borrow_mut();
+        if b.is_none() {
+            *b = Some(Vec::new());
+        }
+    });
+}
+
+/// Swap out the current frame's collected entries, leaving a fresh empty
+/// journal armed — called at the end of each real frame (`tick`). `None` when
+/// journaling isn't armed (web / tests).
+pub fn journal_swap() -> Option<Vec<JournalEntry>> {
+    JOURNAL.with(|j| {
+        j.borrow_mut()
+            .as_mut()
+            .map(|v| std::mem::replace(v, Vec::new()))
+    })
+}
+
+/// Disarm journaling on this thread, dropping any collected entries — for tests
+/// that armed it (so a reused test thread starts clean).
+pub fn journal_disarm() {
+    JOURNAL.with(|j| *j.borrow_mut() = None);
+}
+
+/// RAII guard that PAUSES journaling for its lifetime: takes the current
+/// journal out (leaving `None`, so nested pushes no-op) and restores it on
+/// drop. Wraps the dry-run forward-step so `--ghost` forward-projection calls
+/// never land in the journal, even on an unwind from stepped game code.
+struct JournalPause(Option<Vec<JournalEntry>>);
+
+impl JournalPause {
+    fn enter() -> JournalPause {
+        JournalPause(JOURNAL.with(|j| j.borrow_mut().take()))
+    }
+}
+
+impl Drop for JournalPause {
+    fn drop(&mut self) {
+        JOURNAL.with(|j| *j.borrow_mut() = self.0.take());
+    }
+}
+
 /// Where a producer resolves per-frame error spans to `path:line:col: message`.
 /// The two shells hold their source differently (a multi-file project map on
 /// desktop; the single fetched entry source on web), so this captures both.
@@ -201,6 +364,7 @@ impl FrameCtx<'_> {
             Value::Number(frame_time.dts as f64),
             Value::Number(frame_time.tts as f64),
         ];
+        journal_push("tick", &args, Provenance::Tick);
         match self.session.call("tick", args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error("tick", &err),
@@ -544,10 +708,9 @@ to receive their messages; dropping them"
             Err(message) => return self.reporter.report_once(format!("[functor-lang] {message}")),
         };
         for msg in msgs {
-            match self
-                .session
-                .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
-            {
+            let args = vec![self.model.clone(), msg];
+            journal_push("update", &args, Provenance::Subscription);
+            match self.session.call("update", args, &mut FunctorHost) {
                 Ok(returned) => self.absorb(returned),
                 Err(err) => self.reporter.frame_error("update", &err),
             }
@@ -677,10 +840,9 @@ to receive their messages; dropping them"
             Ok(msg) => msg,
             Err(err) => return self.reporter.frame_error("net event", &err),
         };
-        match self
-            .session
-            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
-        {
+        let args = vec![self.model.clone(), msg];
+        journal_push("update", &args, Provenance::NetEvent);
+        match self.session.call("update", args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error("update", &err),
         }
@@ -702,10 +864,9 @@ to receive their messages; dropping them"
             Ok(msg) => msg,
             Err(err) => return self.reporter.frame_error("http response", &err),
         };
-        match self
-            .session
-            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
-        {
+        let args = vec![self.model.clone(), msg];
+        journal_push("update", &args, Provenance::HttpResponse);
+        match self.session.call("update", args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error("update", &err),
         }
@@ -769,10 +930,9 @@ carries no payload to tag; dropped",
                 ));
             }
         };
-        match self
-            .session
-            .call("update", vec![self.model.clone(), msg], &mut FunctorHost)
-        {
+        let args = vec![self.model.clone(), msg];
+        journal_push("update", &args, Provenance::UiEvent);
+        match self.session.call("update", args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error("update", &err),
         }
@@ -787,10 +947,9 @@ carries no payload to tag; dropped",
         let Some(message) = take_audio_completion(token) else {
             return;
         };
-        match self
-            .session
-            .call("update", vec![self.model.clone(), message], &mut FunctorHost)
-        {
+        let args = vec![self.model.clone(), message];
+        journal_push("update", &args, Provenance::AudioFinished);
+        match self.session.call("update", args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error("update", &err),
         }
@@ -846,6 +1005,12 @@ pub fn forward_step_scene(
     steps_per_division: usize,
     inputs: &[Vec<RecordedInput>],
 ) -> Vec<(Value, Option<Vec<u8>>)> {
+    // Pause the paused-inspector journal for the whole dry run: `--ghost`
+    // forward-projection replays `tick`/`update` over throwaway state, and those
+    // calls must NOT land in the live frame's journal (they are not real frame
+    // executions). Restored on drop, including on an unwind from stepped game
+    // code.
+    let _journal_pause = JournalPause::enter();
     // Dry-run physics: snapshot the live world and restore it into a fresh
     // throwaway world, so stepping forward never touches the live world,
     // driver, or timeline. The `DryWorld` guard removes it on drop — including on
@@ -1202,5 +1367,178 @@ mod tests {
             },
         );
         assert_model(&session, &model, "init"); // unchanged
+    }
+
+    // ---- Paused-inspector replay journal (visual-debugger PR2) --------------
+
+    use crate::functor_lang_prelude::FakeEffects;
+
+    /// A game with a per-second subscription whose `update` returns an
+    /// `Effect.now` — one subscription firing drives TWO `update` calls in a
+    /// frame (the timer message, then its effect result), so the journal proves
+    /// count > 1 and both provenance kinds.
+    const INSPECTOR_SRC: &str = "\
+        type Msg = | Tick | GotTime(t: Float)\n\
+        type Model = { ticks: Float, lastTime: Float }\n\
+        let init = { ticks: 0.0, lastTime: 0.0 }\n\
+        let update = (m: Model, msg: Msg) =>\n\
+          match msg with\n\
+          | Tick => ({ m with ticks: m.ticks + 1.0 }, Effect.now((t) => GotTime(t)))\n\
+          | GotTime(t) => { m with lastTime: t }\n\
+        let subscriptions = (m: Model) => Sub.every(Time.seconds(1.0), Tick)\n\
+        let tick = (m: Model, dt: Float, tts: Float) => m\n\
+        let draw = (m: Model, tts: Float) =>\n\
+          Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())\n";
+
+    fn inspector_session() -> (Session, Value) {
+        let project = functor_lang::project::load_single_source("game", INSPECTOR_SRC)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let model = session.global("init").expect("init");
+        (session, model)
+    }
+
+    /// Run one live frame (subscriptions + tick) with the journal armed, driving
+    /// the model with `FakeEffects` so `Effect.now` is deterministic.
+    fn run_inspector_frame(session: &Session, model: &mut Value) {
+        let mut physics_rt = SteppedPhysics::new();
+        let mut physics_frame = 0u64;
+        let mut recorder = SceneRecorder::new();
+        let mut effect_runner = FakeEffects::new(42.0, vec![0.0]);
+        let mut effect_log = EffectLog::new();
+        let mut deferred_queries: Vec<EffectTree> = Vec::new();
+        let mut pending_events: Vec<PhysicsEvent> = Vec::new();
+        let mut live_conn_keys: HashSet<String> = HashSet::new();
+        // prev_tts just below a period boundary so this frame crosses 1.0s and
+        // fires the `Sub.every` timer.
+        let mut prev_tts: Option<f64> = Some(0.9);
+        let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut reporter = Reporter::new(
+            SpanSource::Single {
+                src: INSPECTOR_SRC.to_string(),
+                path: "game".to_string(),
+            },
+            silent_emit,
+        );
+        let mut ctx = FrameCtx {
+            session,
+            model,
+            physics_rt: &mut physics_rt,
+            physics_frame: &mut physics_frame,
+            recorder: &mut recorder,
+            effect_runner: &mut effect_runner as &mut dyn EffectRunner,
+            effect_log: &mut effect_log,
+            deferred_queries: &mut deferred_queries,
+            pending_events: &mut pending_events,
+            live_conn_keys: &mut live_conn_keys,
+            prev_tts: &mut prev_tts,
+            input_buf: &mut input_buf,
+            has_physics: false,
+            has_subscriptions: true,
+            suppress_outbound: false,
+            reporter: &mut reporter,
+        };
+        ctx.before_physics(FrameTime {
+            dts: 0.2,
+            tts: 1.1,
+        });
+    }
+
+    #[test]
+    fn journal_records_a_frame_with_provenance_and_replay_matches() {
+        journal_disarm(); // this thread may be reused across tests
+        journal_arm();
+        let (session, model) = inspector_session();
+
+        let mut m = model.clone();
+        run_inspector_frame(&session, &mut m);
+        let journal = journal_swap().expect("journaling armed");
+
+        // Subscription `update` (Tick), its effect-result `update` (GotTime),
+        // then `tick` — the frame's model-updating calls, in order.
+        assert_eq!(journal.len(), 3, "tick + two updates");
+        assert_eq!(journal[0].entry, "update");
+        assert_eq!(
+            journal[0].provenance.render(&journal[0].args),
+            "subscription: Tick"
+        );
+        assert_eq!(journal[1].entry, "update");
+        assert_eq!(
+            journal[1].provenance.render(&journal[1].args),
+            "effect result: GotTime(42)"
+        );
+        assert_eq!(journal[2].entry, "tick");
+        assert_eq!(journal[2].provenance.render(&journal[2].args), "tick dt=0.2");
+
+        // Replaying each journaled call through the PR1 recorder reproduces the
+        // exact result of a direct `call` (entry points are pure), and records
+        // binding sites (the seam the desktop trace serializes).
+        for e in &journal {
+            let direct = session
+                .call(e.entry, e.args.clone(), &mut FunctorHost)
+                .expect("direct call");
+            let (replayed, inv) = session
+                .call_recorded(e.entry, e.args.clone(), &mut FunctorHost)
+                .expect("recorded call");
+            assert_eq!(replayed.to_string(), direct.to_string());
+            assert_eq!(inv.result, direct.to_string());
+            // Each call binds its params (`m`, `msg`/`dt`/`tts`) — non-empty.
+            assert!(!inv.bindings.is_empty(), "recorded some binding sites");
+        }
+
+        journal_disarm();
+    }
+
+    #[test]
+    fn journal_survives_a_paused_frame_and_excludes_ghost_calls() {
+        journal_disarm();
+        journal_arm();
+        let (session, model) = inspector_session();
+
+        // A real frame fills the journal; swap it out (the producer's frame-end
+        // move into `last_frame_journal`).
+        let mut m = model.clone();
+        run_inspector_frame(&session, &mut m);
+        let last_frame = journal_swap().expect("armed");
+        assert_eq!(last_frame.len(), 3);
+
+        // A dry-run forward-step (the `--ghost` projection) calls tick/update
+        // over throwaway state — and must NOT touch the live journal. After it,
+        // the freshly-armed journal is still empty (ghost calls excluded).
+        let _ = forward_step_scene(
+            &session,
+            &m,
+            false, // has_physics
+            true,  // has_subscriptions
+            Some(0.9),
+            1.1,
+            1.0 / 60.0,
+            3, // divisions
+            1, // steps per division
+            &[],
+        );
+        let after_ghost = journal_swap().expect("still armed");
+        assert!(
+            after_ghost.is_empty(),
+            "ghost forward-projection calls must not be journaled, got {}",
+            after_ghost.len()
+        );
+
+        journal_disarm();
+    }
+
+    #[test]
+    fn journaling_off_by_default_is_a_noop() {
+        // With no `journal_arm` (the web / plain-frame path), running a frame
+        // journals nothing — the perf gate: no collection, no Display rendering.
+        journal_disarm();
+        let (session, model) = inspector_session();
+        let mut m = model.clone();
+        run_inspector_frame(&session, &mut m);
+        assert!(
+            journal_swap().is_none(),
+            "journaling must stay off until explicitly armed"
+        );
     }
 }

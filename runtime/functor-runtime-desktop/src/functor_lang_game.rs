@@ -35,13 +35,16 @@ use functor_runtime_common::functor_lang_prelude::{
     UiHandler,
 };
 use functor_runtime_common::events::{self, RuntimeEvent};
-use functor_runtime_common::functor_lang_producer::{FrameCtx, Reporter, SpanSource};
+use functor_runtime_common::functor_lang_producer::{
+    journal_arm, journal_push, journal_swap, FrameCtx, JournalEntry, Provenance, Reporter,
+    SpanSource,
+};
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
 use functor_lang::project::SourceMap;
-use functor_lang::{Session, Value};
+use functor_lang::{Session, Span, Value};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -141,6 +144,20 @@ pub struct FunctorLangGame {
     /// Per-frame error reporting (dedupe + stderr sink + project-span
     /// rendering) — shared with the web producer (`functor_lang_producer::Reporter`).
     reporter: Reporter,
+    /// The last real frame's replay journal (visual-debugger PR2): one entry
+    /// per model-updating call, swapped in from the thread-local journal at the
+    /// end of each `tick`. A paused frame runs no `tick`, so this is preserved
+    /// — the inspector reads the last real frame. `GET /trace` replays each
+    /// entry through `Session::call_recorded` while paused.
+    last_frame_journal: Vec<JournalEntry>,
+    /// The lazily built + cached `/trace` JSON for the current paused frame.
+    /// Invalidated when the frame advances (`tick`), the paused frame changes
+    /// (rewind/seek), or the program reloads.
+    cached_trace: Option<String>,
+    /// Per-file sha256 of the loaded `.fun` source, computed at load /
+    /// hot-reload (not per frame) — the wire contract's `sources`, and the
+    /// per-file base→(file, local offset) map for binding spans.
+    source_hashes: Vec<InspectorSource>,
     // rolling per-frame eval cost, printed every STATS_EVERY frames (the C6
     // perf gate watches these). Physics is engine cost, not Functor Lang eval cost, so
     // it gets its own counter — a heavy scene must not read as an interpreter
@@ -177,6 +194,45 @@ struct Loaded {
     has_physics: bool,
     has_soundscape: bool,
     has_ui: bool,
+}
+
+/// One project source file's inspector metadata (visual-debugger PR2): its
+/// wire name, its base offset in the project-wide span space, its length, and
+/// the sha256 of the text the runtime loaded. Computed once per load, so a
+/// binding span maps to `(file, local offset)` and the wire `sources` gates on
+/// a content hash without re-reading files.
+struct InspectorSource {
+    file: String,
+    base: usize,
+    len: usize,
+    hash: String,
+}
+
+/// Build the per-file inspector metadata from a loaded [`SourceMap`]: the REAL
+/// project `.fun` files only (skip the injected prelude `.funi` interfaces and
+/// the `<builtin>/Net.fun` module — a game binding never lands in them, and
+/// they aren't editor documents the LSP gates on).
+fn inspector_sources(sources: &SourceMap) -> Vec<InspectorSource> {
+    use sha2::{Digest, Sha256};
+    sources
+        .files()
+        .iter()
+        .filter(|f| !f.interface && !f.path.to_string_lossy().starts_with('<'))
+        .map(|f| {
+            let file = f
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| f.path.to_string_lossy().into_owned());
+            let hash = format!("{:x}", Sha256::digest(f.src.as_bytes()));
+            InspectorSource {
+                file,
+                base: f.base,
+                len: f.src.len(),
+                hash,
+            }
+        })
+        .collect()
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -351,6 +407,12 @@ impl FunctorLangGame {
                 std::process::exit(1);
             }
         };
+        // Arm the paused-inspector journal on this (the render) thread: from now
+        // on every live model-updating call is journaled (a cheap Rc-clone push).
+        // The web producer never arms it — its shared frame body pays only a
+        // `None` check. See `functor_lang_producer`.
+        journal_arm();
+        let source_hashes = inspector_sources(&loaded.sources);
         FunctorLangGame {
             path: path.to_string(),
             stamp,
@@ -380,6 +442,9 @@ impl FunctorLangGame {
             live_conn_keys: std::collections::HashSet::new(),
             last_frame: empty_frame(),
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_stderr),
+            last_frame_journal: Vec::new(),
+            cached_trace: None,
+            source_hashes,
             frames: 0,
             tick_ns: 0,
             physics_ns: 0,
@@ -431,6 +496,13 @@ impl FunctorLangGame {
         for warning in &report.warnings {
             eprintln!("[functor-lang] reload: {warning}");
         }
+        // Recompute the inspector source hashes for the edited files, and drop
+        // the journal + cached trace: they refer to the OLD program's spans and
+        // execution (visual-debugger PR2 — hot-reload clears both).
+        self.source_hashes = inspector_sources(&loaded.sources);
+        self.last_frame_journal.clear();
+        self.cached_trace = None;
+        journal_swap(); // discard any partial current-frame journal
         self.reporter.set_source(SpanSource::Project(loaded.sources));
         self.module = loaded.module;
         self.session = loaded.session;
@@ -513,6 +585,98 @@ impl FunctorLangGame {
         }
     }
 
+    /// Map a project-wide binding span to `(file, local start, local end)` for
+    /// the wire contract, using the per-file base offsets (visual-debugger PR2).
+    /// `None` if the span falls outside a real project file (a prelude/builtin
+    /// span — a game binding never does).
+    fn span_to_file(&self, span: Span) -> Option<(String, usize, usize)> {
+        let src = self
+            .source_hashes
+            .iter()
+            .filter(|s| s.base <= span.start)
+            .max_by_key(|s| s.base)?;
+        if span.start > src.base + src.len {
+            return None;
+        }
+        Some((
+            src.file.clone(),
+            span.start - src.base,
+            span.end.saturating_sub(src.base),
+        ))
+    }
+
+    /// Replay the last real frame's journal into the wire-contract
+    /// `invocations` (visual-debugger PR2). Each journaled call is re-run through
+    /// `Session::call_recorded` — entry points are pure functions of their args,
+    /// so the record is exact, and effects are plain data (nothing performs), so
+    /// replay is side-effect-free. `index`/`count` frame each call within its
+    /// entry name; binding spans map to `(file, local offsets)`.
+    fn build_invocations(&self) -> Vec<serde_json::Value> {
+        use std::collections::HashMap;
+        // Replay FIRST, then frame: `index`/`count` are computed over the
+        // invocations actually EMITTED, so the array is always consistent with
+        // its own counts (the LSP picker mod-cycles on `count`). A call that
+        // succeeded live, replayed pure, should not fail — skip one
+        // defensively rather than abort the whole trace if it somehow does.
+        let mut replayed = Vec::with_capacity(self.last_frame_journal.len());
+        for e in &self.last_frame_journal {
+            if let Ok((_discard, inv)) =
+                self.session
+                    .call_recorded(e.entry, e.args.clone(), &mut FunctorHost)
+            {
+                replayed.push((e, inv));
+            }
+        }
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for (e, _) in &replayed {
+            *counts.entry(e.entry).or_default() += 1;
+        }
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        let mut out = Vec::with_capacity(replayed.len());
+        for (e, inv) in &replayed {
+            let index = {
+                let c = seen.entry(e.entry).or_default();
+                let i = *c;
+                *c += 1;
+                i
+            };
+            let bindings: Vec<serde_json::Value> = inv
+                .bindings
+                .iter()
+                .filter_map(|b| {
+                    self.span_to_file(b.span).map(|(file, start, end)| {
+                        serde_json::json!({
+                            "name": b.name,
+                            "file": file,
+                            "start": start,
+                            "end": end,
+                            "value": b.value,
+                            "count": b.count,
+                        })
+                    })
+                })
+                .collect();
+            out.push(serde_json::json!({
+                "entry": e.entry,
+                "index": index,
+                "count": counts[e.entry],
+                "provenance": e.provenance.render(&e.args),
+                "ghost": false,
+                "result": inv.result,
+                "truncated": inv.truncated,
+                "bindings": bindings,
+            }));
+        }
+        out
+    }
+
+    /// The wire `sources` array — `{ file, hash }` per loaded project file.
+    fn sources_json(&self) -> Vec<serde_json::Value> {
+        self.source_hashes
+            .iter()
+            .map(|s| serde_json::json!({ "file": s.file, "hash": s.hash }))
+            .collect()
+    }
 }
 
 impl Game for FunctorLangGame {
@@ -625,6 +789,11 @@ impl Game for FunctorLangGame {
             self.pending_events.clear();
             clear_http_taggers();
             clear_audio_completions();
+            // The paused frame moved to `target`, for which we hold no journal
+            // (only the last real frame's) — drop the stale trace so the
+            // inspector reports the rewound frame with no invocations (PR2).
+            self.last_frame_journal.clear();
+            self.cached_trace = None;
             // Drop any input buffered since the last recorded frame: the model was
             // just restored to `target`, so a stray live event (e.g. one buffered
             // on a 0-substep frame under the fixed-timestep loop) is now orphaned
@@ -703,6 +872,11 @@ impl Game for FunctorLangGame {
             self.has_physics,
         );
         if result.is_ok() {
+            // The scrubbed frame changed: drop the stale journal + cached trace
+            // (we hold a journal only for the last real frame, not the scrubbed
+            // target) — PR2, like `rewind_scene_to`.
+            self.last_frame_journal.clear();
+            self.cached_trace = None;
             // The model was restored to `target`; drop any input buffered since
             // the last recorded frame so a stray live event (buffered on a
             // 0-substep frame under the fixed-timestep loop) can't be recorded
@@ -723,6 +897,13 @@ impl Game for FunctorLangGame {
         self.ctx().physics_phase(frame_time);
         self.physics_ns += physics_started.elapsed().as_nanos() as u64;
         self.ctx().record_frame(frame_time);
+        // A real frame ran: swap its journal into `last_frame_journal` (leaving
+        // a fresh armed journal) and drop the cached trace (the frame advanced).
+        // A paused frame never reaches here, so its last real frame is kept.
+        if let Some(journal) = journal_swap() {
+            self.last_frame_journal = journal;
+        }
+        self.cached_trace = None;
         self.frames += 1;
         self.report_stats();
     }
@@ -742,6 +923,7 @@ impl Game for FunctorLangGame {
             Value::String(std::rc::Rc::from(key.name().as_str())),
             Value::Bool(is_down),
         ];
+        journal_push("input", &args, Provenance::Input);
         match self.session.call("input", args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("input", &err),
@@ -760,6 +942,7 @@ impl Game for FunctorLangGame {
             Value::Number(x as f64),
             Value::Number(y as f64),
         ];
+        journal_push("mouseMove", &args, Provenance::MouseMove);
         match self.session.call("mouseMove", args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseMove", &err),
@@ -773,6 +956,7 @@ impl Game for FunctorLangGame {
             return;
         }
         let args = vec![self.model.clone(), Value::Number(delta as f64)];
+        journal_push("mouseWheel", &args, Provenance::MouseWheel);
         match self.session.call("mouseWheel", args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseWheel", &err),
@@ -893,6 +1077,58 @@ AudioScene.empty), got {}",
 
     fn state_debug(&self) -> String {
         self.model.to_string()
+    }
+
+    /// The paused-inspector trace (visual-debugger PR2). When NOT paused, a
+    /// cheap early-out: `paused: false` with empty invocations — and NO
+    /// `frame`/`tts`, which change every frame: the LSP's idle poll dedups on
+    /// the doc bytes, so the unpaused doc must stay byte-identical while the
+    /// sources are unchanged (otherwise every poll would churn a hint/lens
+    /// refresh in the editor). When paused, lazily replay the last real
+    /// frame's journal into the wire-contract `invocations` and CACHE the
+    /// result until the frame advances (`tick`), the scrubbed frame changes,
+    /// or the program reloads. `paused` is the shell's clock state
+    /// (`GameClock::is_paused`).
+    fn inspector_trace(&mut self, paused: bool) -> String {
+        if !paused {
+            return serde_json::json!({
+                "paused": false,
+                "sources": self.sources_json(),
+                "invocations": [],
+            })
+            .to_string();
+        }
+        let frame = self.recorder.current_scene_frame().unwrap_or(0);
+        let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
+        if let Some(cached) = &self.cached_trace {
+            return cached.clone();
+        }
+        let json = serde_json::json!({
+            "frame": frame,
+            "tts": tts,
+            "paused": true,
+            "sources": self.sources_json(),
+            "invocations": self.build_invocations(),
+        })
+        .to_string();
+        self.cached_trace = Some(json.clone());
+        json
+    }
+
+    /// Debug input delivered while PAUSED (`POST /input` with the clock
+    /// pinned) journaled its entry-point calls, but no `tick` runs to swap
+    /// them — fold them into the last real frame's journal now, so the
+    /// injection shows up in `GET /trace` as a first-class invocation (with
+    /// its bindings) instead of lingering and leaking into the RESUME frame's
+    /// journal as a phantom. The cached trace is dropped so the next `/trace`
+    /// rebuilds with the injected calls included.
+    fn absorb_paused_input(&mut self) {
+        if let Some(mut entries) = journal_swap() {
+            if !entries.is_empty() {
+                self.last_frame_journal.append(&mut entries);
+                self.cached_trace = None;
+            }
+        }
     }
 
     fn net_drain_commands(&self) -> String {
@@ -2126,6 +2362,160 @@ mod tests {
         );
 
         physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Paused-inspector trace (visual-debugger PR2) -----------------------
+
+    /// A per-second subscription whose `update` fires an `Effect.now` — one
+    /// timer firing drives TWO `update`s in a frame (the message + its effect
+    /// result), so the trace shows `update` count > 1. The `input` hook exists
+    /// for the paused-injection test below.
+    const INSPECTOR_GAME: &str = "\
+        type Msg = | Tick | GotTime(t: Float)\n\
+        type Model = { ticks: Float, lastTime: Float }\n\
+        let init = { ticks: 0.0, lastTime: 0.0 }\n\
+        let update = (m: Model, msg: Msg) =>\n\
+          match msg with\n\
+          | Tick => ({ m with ticks: m.ticks + 1.0 }, Effect.now((t) => GotTime(t)))\n\
+          | GotTime(t) => { m with lastTime: t }\n\
+        let subscriptions = (m: Model) => Sub.every(Time.seconds(1.0), Tick)\n\
+        let input = (m: Model, key: String, isDown: Bool) => { m with ticks: m.ticks + 100.0 }\n\
+        let tick = (m: Model, dt: Float, tts: Float) => m\n\
+        let draw = (m: Model, tts: Float) =>\n\
+          Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())\n";
+
+    #[test]
+    fn inspector_trace_replays_the_paused_frame_and_is_empty_while_playing() {
+        let dir = std::env::temp_dir().join(format!("functor-inspector-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.fun"), INSPECTOR_GAME).unwrap();
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().unwrap());
+
+        // Frame 1 seeds prev_tts (nothing fires on frame one); frame 2 crosses
+        // the 1s boundary → the timer fires.
+        game.tick(FrameTime { dts: 0.9, tts: 0.9 });
+        game.tick(FrameTime { dts: 0.2, tts: 1.1 });
+
+        // NOT paused: the cheap early-out — no replay, empty invocations, and
+        // NO frame/tts (they change every frame; the LSP's idle poll dedups on
+        // the doc bytes, so the unpaused doc must be byte-identical while the
+        // sources are unchanged). (Also proves the recorder is only armed on
+        // the paused path — `build_invocations` never runs here.)
+        let playing_doc = game.inspector_trace(false);
+        let playing: serde_json::Value = serde_json::from_str(&playing_doc).unwrap();
+        assert_eq!(playing["paused"], serde_json::json!(false));
+        assert_eq!(playing["invocations"].as_array().unwrap().len(), 0);
+        assert!(!playing["sources"].as_array().unwrap().is_empty());
+        assert!(playing.get("frame").is_none(), "no frame while playing");
+        assert!(playing.get("tts").is_none(), "no tts while playing");
+        // Byte-identical across ticks (sources unchanged) — the dedup contract.
+        game.tick(FrameTime { dts: 0.1, tts: 1.2 });
+        assert_eq!(game.inspector_trace(false), playing_doc);
+        // Restore the frame state the paused assertions below expect (a fresh
+        // last real frame at tts 1.1's shape: tick-only would differ — so
+        // re-run the boundary-crossing frame).
+        game.tick(FrameTime { dts: 0.7, tts: 1.9 });
+        game.tick(FrameTime { dts: 0.2, tts: 2.1 });
+
+        // PAUSED: the last real frame replays into invocations.
+        let paused: serde_json::Value = serde_json::from_str(&game.inspector_trace(true)).unwrap();
+        assert_eq!(paused["paused"], serde_json::json!(true));
+        let invs = paused["invocations"].as_array().unwrap();
+        let updates: Vec<_> = invs.iter().filter(|i| i["entry"] == "update").collect();
+        assert_eq!(updates.len(), 2, "update count > 1: {invs:#?}");
+        assert_eq!(updates[0]["count"], serde_json::json!(2));
+        assert_eq!(updates[0]["index"], serde_json::json!(0));
+        assert_eq!(
+            updates[0]["provenance"],
+            serde_json::json!("subscription: Tick")
+        );
+        assert!(updates[1]["provenance"]
+            .as_str()
+            .unwrap()
+            .starts_with("effect result: GotTime("));
+        assert_eq!(updates[0]["ghost"], serde_json::json!(false));
+
+        // Bindings map to the entry file with LOCAL byte offsets + values.
+        let bindings = updates[0]["bindings"].as_array().unwrap();
+        assert!(!bindings.is_empty());
+        assert!(bindings.iter().all(|b| b["file"] == "game.fun"));
+        assert!(bindings
+            .iter()
+            .all(|b| b["start"].as_u64().is_some() && b["value"].is_string()));
+
+        // The `tick` invocation is present with its dt provenance.
+        let tick = invs.iter().find(|i| i["entry"] == "tick").unwrap();
+        assert_eq!(tick["provenance"], serde_json::json!("tick dt=0.2"));
+
+        // sources: one entry per project file, each a 64-hex sha256.
+        assert_eq!(paused["sources"][0]["file"], serde_json::json!("game.fun"));
+        assert_eq!(paused["sources"][0]["hash"].as_str().unwrap().len(), 64);
+
+        // A second /trace while still paused is served from cache (identical).
+        assert_eq!(game.inspector_trace(true), game.inspector_trace(true));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The paused-injection contract (visual-debugger PR2): input delivered
+    /// while PAUSED (the debug server's `POST /input`, followed by the shell's
+    /// `absorb_paused_input` call) folds into the last-frame journal — so it
+    /// shows in `GET /trace` as a first-class invocation with bindings — and
+    /// does NOT leak into the resume frame's journal as a phantom.
+    #[test]
+    fn paused_injected_input_folds_into_the_trace_not_the_resume_frame() {
+        let dir = std::env::temp_dir().join(format!(
+            "functor-inspector-input-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.fun"), INSPECTOR_GAME).unwrap();
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().unwrap());
+
+        // One real frame (no timer boundary): the last-frame journal is [tick].
+        game.tick(FrameTime { dts: 0.5, tts: 0.5 });
+
+        // Pause: prime the cached trace, then inject a key (the POST /input
+        // path) and fold — exactly what the shell does while the clock is
+        // paused.
+        let before = game.inspector_trace(true);
+        game.key_event(functor_runtime_common::Key::W as i32, true);
+        game.absorb_paused_input();
+
+        // The cache was invalidated and the injection is now a first-class
+        // invocation with its bindings, appended after the frame's tick.
+        let after = game.inspector_trace(true);
+        assert_ne!(before, after, "cached trace must be invalidated");
+        let doc: serde_json::Value = serde_json::from_str(&after).unwrap();
+        let invs = doc["invocations"].as_array().unwrap();
+        let input = invs
+            .iter()
+            .find(|i| i["entry"] == "input")
+            .expect("injected input invocation");
+        assert_eq!(input["provenance"], serde_json::json!("input: W down"));
+        assert_eq!(input["count"], serde_json::json!(1));
+        assert!(!input["bindings"].as_array().unwrap().is_empty());
+
+        // Resume (a real frame runs): the new frame's journal replaces
+        // everything — no phantom input carried over from the paused injection.
+        game.tick(FrameTime { dts: 0.1, tts: 0.6 });
+        let resumed: serde_json::Value =
+            serde_json::from_str(&game.inspector_trace(true)).unwrap();
+        let entries: Vec<&str> = resumed["invocations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["entry"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["tick"],
+            "only the resume frame's own entries survive"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

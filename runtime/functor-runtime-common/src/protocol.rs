@@ -211,6 +211,25 @@ pub trait GameProducer {
     /// debug text — see the module doc; consumers must not parse it.
     fn state_debug(&self) -> String;
 
+    /// The paused-inspector trace (visual-debugger PR2): the wire-contract JSON
+    /// for the last real frame's entry-point invocations, replayed on demand
+    /// while paused (the debug server's `GET /trace`). `paused` is the shell's
+    /// clock state. The unpaused doc carries no `frame`/`tts` (it must stay
+    /// byte-identical across idle polls — the LSP dedups on the doc bytes).
+    /// The default is an inert doc — only the interpreter producer keeps a
+    /// replay journal (a compiled/replay producer has no source to trace).
+    fn inspector_trace(&mut self, _paused: bool) -> String {
+        "{\"paused\":false,\"sources\":[],\"invocations\":[]}".to_string()
+    }
+
+    /// The shell delivered debug-injected input (`POST /input`) while the clock
+    /// is PAUSED (visual-debugger PR2): no `tick` will run to sweep the
+    /// journaled entry-point calls into the last-frame journal, so the producer
+    /// folds them in now — the injection becomes a first-class invocation in
+    /// `GET /trace` instead of a phantom on the resume frame's journal.
+    /// Default: no-op (producers without a replay journal have nothing to fold).
+    fn absorb_paused_input(&mut self) {}
+
     /// Take the networking commands the game queued this frame (a JSON array
     /// of [`crate::net::NetCommand`]). The shell performs the I/O and reports
     /// results back with `net_push_http_response` / `net_push_http_error`.
