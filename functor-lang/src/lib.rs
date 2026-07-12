@@ -16,7 +16,9 @@ pub mod goto;
 pub mod hover;
 pub mod inlay;
 pub mod ir;
-mod lexer;
+// Public for consumers that need raw string literals without evaluating
+// (the CLI's `build wasm` missing-asset lint).
+pub mod lexer;
 mod lower;
 mod parser;
 pub mod project;

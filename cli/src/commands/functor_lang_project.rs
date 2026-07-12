@@ -266,6 +266,70 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         }
     }
 
+    /// `build wasm`, after the typecheck gate: write the project as a
+    /// self-contained static web bundle in `dist/web/` — the same file set
+    /// the wasm dev server serves (see `util::wasm_export`). Zip the folder
+    /// for itch.io (HTML5) or serve it from any static host.
+    pub fn export_wasm(&self, working_directory: &str) -> Result<(), Error> {
+        #[cfg(not(feature = "web"))]
+        {
+            let _ = working_directory;
+            Err(Error::other(
+                "the web runtime is not bundled in this build — rebuild with the `web` feature \
+                 (`npm run build:cli`) to `build wasm`",
+            ))
+        }
+        #[cfg(feature = "web")]
+        {
+            self.entry_path(working_directory)?;
+            // Same constraint as `run wasm`: the bundle carries the project
+            // directory, so the entry must live inside it.
+            if entry_escapes_project(&self.entry) {
+                return Err(Error::other(format!(
+                    "functor-lang on wasm ships the project directory, so `entry` must be a \
+relative path inside it (got {})",
+                    self.entry
+                )));
+            }
+            let export = util::export_functor_lang_wasm(working_directory, &self.entry)?;
+            for name in &export.shadowed {
+                emit(Event::Warning {
+                    message: format!(
+                        "project file `{name}` was not copied — that name is reserved for the \
+bundle's runtime files"
+                    ),
+                });
+            }
+            for link in &export.skipped_symlinks {
+                emit(Event::Warning {
+                    message: format!(
+                        "symlinked directory `{link}` was not copied into the bundle \
+(following it could recurse or pull in files outside the project)"
+                    ),
+                });
+            }
+            for asset in &export.missing_assets {
+                emit(Event::Warning {
+                    message: format!(
+                        "asset \"{asset}\" is referenced in the source but won't be in the bundle \
+(missing from the project dir, or an absolute/`..` path) — it would load as the empty fallback"
+                    ),
+                });
+            }
+            emit(Event::Info {
+                message: format!(
+                    "exported static web bundle to {} ({} project files, {:.1} MB + {:.1} MB runtime) \
+— zip the folder for itch.io (HTML5), or serve it from any static host",
+                    export.out_dir.display(),
+                    export.file_count,
+                    export.project_bytes as f64 / 1e6,
+                    export.runtime_bytes as f64 / 1e6,
+                ),
+            });
+            Ok(())
+        }
+    }
+
     /// Serve the project at 127.0.0.1:8080 with the Functor Lang index page (docs/
     /// docs/functor-lang.md C5). The `.fun` entry ships as text — the dev server's
     /// filesystem route serves it from the project dir and the embedded web

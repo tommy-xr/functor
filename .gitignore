@@ -34,6 +34,8 @@ target
 .ionide
 .fake
 out
+# `functor build wasm` static web bundles (<project>/dist/web) + site/dist
+dist/
 
 # perf output
 perf*

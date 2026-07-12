@@ -4,11 +4,13 @@ use warp::{http::Response, Filter};
 
 pub struct WasmDevServer;
 
+// pub(crate): the static `build wasm` exporter (util::wasm_export) writes
+// these same embedded files to disk instead of serving them.
 const INDEX_FUNCTOR_LANG_HTML: &str =
     include_str!("../../../runtime/functor-runtime-web/index-functor-lang.html");
-const WASM_FILE: &[u8] =
+pub(crate) const WASM_FILE: &[u8] =
     include_bytes!("../../../runtime/functor-runtime-web/pkg/functor_runtime_web_bg.wasm");
-const JS_FILE_1: &[u8] =
+pub(crate) const JS_FILE_1: &[u8] =
     include_bytes!("../../../runtime/functor-runtime-web/pkg/functor_runtime_web.js");
 
 /// The standard inline-script defense: JSON escaping is not HTML escaping, so a
@@ -27,7 +29,7 @@ fn script_safe(json: String) -> String {
 ///   module`) load EVERY module, not just the entry (docs/functor-lang.md Track C5).
 ///
 /// Both are valid JS for any path (quotes/backslashes included).
-fn render_functor_lang_index(entry: &str, files: &[String]) -> String {
+pub(crate) fn render_functor_lang_index(entry: &str, files: &[String]) -> String {
     let entry_literal =
         script_safe(serde_json::to_string(entry).expect("a string always serializes"));
     let files_literal =
@@ -42,7 +44,7 @@ fn render_functor_lang_index(entry: &str, files: &[String]) -> String {
 /// producer links (`functor_lang::project::project_files`), made relative so the web
 /// runtime fetches each from the dev server's filesystem route. Falls back to
 /// just the entry if the directory can't be scanned.
-fn project_file_urls(working_directory: &str, entry: &str) -> Vec<String> {
+pub(crate) fn project_file_urls(working_directory: &str, entry: &str) -> Vec<String> {
     let entry_path = std::path::Path::new(working_directory).join(entry);
     let paths = match functor_lang::project::project_files(&entry_path) {
         Ok(paths) => paths,
