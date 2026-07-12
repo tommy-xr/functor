@@ -573,6 +573,70 @@ const docsSlugs = manifest.groups.flatMap((g) => g.entries.map((e) => e.slug));
   await page.close();
 }
 
+// --- 7g. The "Coming from…" comparison pages (nested slugs). -------------------
+// compare/elm and compare/fsharp live at nested URLs (/docs/compare/<x>/). Each
+// must render, be marked current in the sidebar (the nested-slug rootPrefix +
+// aria-current path), and be indexed by Pagefind under a term distinctive to it.
+for (const { slug, heading, term } of [
+  { slug: "compare/elm", heading: /coming from elm/i, term: "decoders" },
+  { slug: "compare/fsharp", heading: /coming from f#/i, term: "computation" },
+]) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/docs/${slug}/`);
+  await page.waitForFunction(() => !!document.querySelector(".docs-main h1"), { timeout: 10000 });
+  const h1 = await page.locator(".docs-main h1").first().textContent();
+  check(`${slug} page renders its heading`, heading.test(h1 || ""), h1);
+
+  // The two-column side-by-side grid rendered (both <pre> columns present).
+  const cols = await page.locator(".compare-cols pre").count();
+  check(`${slug} renders the side-by-side grid`, cols === 2, `${cols} columns`);
+
+  // Sidebar marks this nested page current (aria-current on the nested href).
+  const current = page.locator('.docs-nav a[aria-current="page"]');
+  const currentHref = (await current.count()) ? await current.first().getAttribute("href") : "";
+  check(
+    `sidebar marks ${slug} current`,
+    new RegExp(slug).test(currentHref || ""),
+    `href=${currentHref}`
+  );
+
+  // Pagefind indexes the page under a distinctive term, linking to the nested URL.
+  const input = page.locator(".pagefind-ui__search-input");
+  await input.waitFor({ state: "visible", timeout: 15000 });
+  await input.fill(term);
+  const results = page.locator(".pagefind-ui__result");
+  try {
+    await results.first().waitFor({ state: "visible", timeout: 15000 });
+  } catch {
+    // fall through — the count check reports the failure with detail
+  }
+  const count = await results.count();
+  check(`docs search '${term}' returns >=1 result`, count >= 1, `${count} results`);
+  const href = await page.locator(".pagefind-ui__result-link").first().getAttribute("href");
+  const toPage = !!href && new URL(href, `${BASE}/docs/`).pathname.startsWith(`/docs/${slug}`);
+  check(`'${term}' result links to the ${slug} page`, toPage, `href=${href}`);
+
+  await page.close();
+}
+
+// --- 7h. Landing teaser links resolve to the comparison pages. -----------------
+// The landing page's "Coming from Elm or F#?" teaser links must resolve (200)
+// and land on the two comparison docs pages.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(BASE);
+  const hrefs = await page
+    .locator(".compare-teaser a")
+    .evaluateAll((els) => els.map((el) => el.getAttribute("href")));
+  check("landing teaser has two comparison links", hrefs.length === 2, JSON.stringify(hrefs));
+  for (const href of hrefs) {
+    const url = new URL(href, `${BASE}/`).href;
+    const res = await fetch(url);
+    check(`teaser link ${href} resolves 200`, res.status === 200, `status=${res.status}`);
+  }
+  await page.close();
+}
+
 // --- 8. Inline #src= program with its OWN model shape fresh-inits. -------------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });

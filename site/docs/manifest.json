@@ -13,6 +13,13 @@
       "entries": [
         { "slug": "language", "title": "Language reference" }
       ]
+    },
+    {
+      "title": "Coming from…",
+      "entries": [
+        { "slug": "compare/elm", "title": "Elm" },
+        { "slug": "compare/fsharp", "title": "F#" }
+      ]
     }
   ]
 }

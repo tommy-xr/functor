@@ -369,6 +369,14 @@ a:hover {
   font-size: 0.9em;
 }
 
+/* One-line teaser to the language-comparison pages. */
+.compare-teaser {
+  margin: 24px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+
 /* The one-line LLM-native banner under the differentiators. */
 .llm-banner {
   max-width: 1180px;
@@ -797,6 +805,27 @@ a:hover {
   margin-top: 32px;
   font-size: 0.8rem;
   font-style: italic;
+}
+
+/* Side-by-side language comparison: two <pre> columns (the other language and
+   Functor Lang), stacking to one column on narrow screens. */
+.docs-main .compare-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 20px 0;
+  align-items: start;
+}
+
+.docs-main .compare-cols pre {
+  margin: 0;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .docs-main .compare-cols {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {

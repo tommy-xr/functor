@@ -125,8 +125,11 @@ async function buildSearchIndex() {
 async function buildDocs() {
   const manifest = JSON.parse(await readFile(`${site}docs/manifest.json`, "utf8"));
 
-  // "../" from /docs/ back to the site root; "../../" from a nested /docs/<slug>/.
-  const rootPrefixFor = (slug) => (slug === "index" ? "../" : "../../");
+  // Relative path from a page's URL back to the site root. `index` lives at
+  // /docs/ ("../"); a flat slug at /docs/<slug>/ ("../../"); a nested slug like
+  // `compare/elm` at /docs/compare/elm/ ("../../../") — one "../" per URL segment.
+  const rootPrefixFor = (slug) =>
+    slug === "index" ? "../" : "../".repeat(slug.split("/").length + 1);
   const docHref = (slug, rootPrefix) =>
     slug === "index" ? `${rootPrefix}docs/` : `${rootPrefix}docs/${slug}/`;
 
