@@ -389,6 +389,9 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
 // --- 9. Time-travel scrubber drives/observes the player via __scrub. ----------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const scrubConsole = [];
+  page.on("console", (message) => scrubConsole.push(message.text()));
+  page.on("pageerror", (error) => scrubConsole.push(`pageerror: ${error.message}`));
   await page.goto(`${BASE}/sandbox.html?example=bounce`);
   await page.waitForFunction(
     () => window.__sandbox && window.__sandbox.status().state === "live",
@@ -410,6 +413,16 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     })
   );
   check("scrubber exposes two keyboard-focusable slider handles", customHandles);
+  const handleColors = await player.evaluate(() => ({
+    playhead: getComputedStyle(document.getElementById("scrub-playhead")).backgroundColor,
+    preview: getComputedStyle(document.getElementById("scrub-preview-handle")).backgroundColor,
+  }));
+  check(
+    "scrubber handles keep their solid cyan and pink fills",
+    handleColors.playhead === "rgb(65, 216, 230)" &&
+      handleColors.preview === "rgb(232, 88, 184)",
+    JSON.stringify(handleColors)
+  );
 
   await player.waitForFunction(() => window.__scrub.range().length === 2, {
     timeout: 10000,
@@ -435,6 +448,13 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     () => !!document.querySelector("#scrub-events .scrub-event.input")
   );
   check("timeline renders recorded input markers", inputMarker);
+  const accessibleInputMarkers = await player
+    .getByRole("button", { name: /frame \d+, Space down/ })
+    .count();
+  check(
+    "timeline markers are present in the accessibility tree",
+    accessibleInputMarkers > 0
+  );
 
   await page.evaluate(() =>
     window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// timeline reload marker`)
@@ -447,7 +467,13 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     () => !!document.querySelector("#scrub-events .scrub-event.reload")
   );
   check("timeline renders successful hot-reload boundaries", reloadMarker);
-  await player.waitForFunction(() => window.__scrub.range().length === 2, { timeout: 3000 });
+  await player.waitForFunction(
+    () => {
+      const range = window.__scrub.range();
+      return range.length === 2 && range[1] - range[0] >= 30;
+    },
+    { timeout: 3000 }
+  );
 
   // Pause freezes both the frame counter AND the pixels.
   await player.evaluate(() => window.__scrub.togglePause());
@@ -476,6 +502,66 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     previewAfter.previewEndFrame > previewAfter.viewport.hi && previewAfter.previewClippedFrames > 0,
     JSON.stringify(previewAfter)
   );
+  const transportAccessibility = await player.evaluate(() => ({
+    pause: document.getElementById("scrub-pause").getAttribute("aria-label"),
+    extrapolating: document.getElementById("scrub-extrapolate").getAttribute("aria-pressed"),
+  }));
+  check(
+    "transport and extrapolation expose their current state accessibly",
+    transportAccessibility.pause === "Resume" && transportAccessibility.extrapolating === "true",
+    JSON.stringify(transportAccessibility)
+  );
+  const clippedHandlesRemainIndependent = await player.evaluate(() => {
+    const playhead = document.getElementById("scrub-playhead");
+    const preview = document.getElementById("scrub-preview-handle");
+    const rect = playhead.getBoundingClientRect();
+    return (
+      preview.classList.contains("fully-clipped") &&
+      document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === playhead
+    );
+  });
+  check(
+    "a fully clipped preview endpoint does not cover the playhead",
+    clippedHandlesRemainIndependent
+  );
+
+  const frozenBeforeStep = await player.evaluate(() => window.__scrub.view());
+  await player.evaluate(() => window.__scrub.step());
+  await player.waitForFunction(
+    (frame) => window.__scrub.frame() === frame + 1,
+    frozenBeforeStep.selectedFrame,
+    { timeout: 3000 }
+  );
+  const frozenAfterStep = await player.evaluate(() => window.__scrub.view());
+  check(
+    "step advances logically without moving the frozen paused endpoint",
+    frozenAfterStep.selectedFrame === frozenBeforeStep.selectedFrame + 1 &&
+      frozenAfterStep.viewport.hi === frozenBeforeStep.viewport.hi &&
+      frozenAfterStep.playheadClippedAfter,
+    JSON.stringify(frozenAfterStep)
+  );
+
+  // Markers have generous invisible hit targets, expose hover detail, and seek
+  // when selected.
+  const markerDetail = await player.evaluate(() => {
+    const marker = document.querySelector("#scrub-events .scrub-event-hit");
+    marker.dispatchEvent(new MouseEvent("mouseenter"));
+    return document.getElementById("scrub-event-detail").textContent;
+  });
+  check("hovering a marker exposes its frame and label", markerDetail.includes("frame"), markerDetail);
+  const selectedMarkerFrame = await player.evaluate(() => {
+    const marker = document.querySelector("#scrub-events .scrub-event-hit");
+    marker.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    return window.__scrub.model().selectedEventId !== null
+      ? Number(marker.getAttribute("aria-label").match(/frame (\d+)/)[1])
+      : -1;
+  });
+  await player.waitForFunction(
+    (frame) => Math.abs(window.__scrub.frame() - frame) <= 1,
+    selectedMarkerFrame,
+    { timeout: 3000 }
+  );
+  check("selecting a marker seeks to its frame", selectedMarkerFrame >= 0);
 
   // Seek snaps to a frame within the range.
   const rng = await player.evaluate(() => window.__scrub.range());
@@ -494,19 +580,150 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   await player.evaluate(() => window.__scrub.step());
   await sleep(150);
   const after = await player.evaluate(() => window.__scrub.frame());
+  const afterStepView = await player.evaluate(() => window.__scrub.view());
   check(
     "step advances the frame by exactly 1 while paused",
     after === before + 1,
     `${before} -> ${after}`
   );
+  check(
+    "stepping from history marks the discarded future as unrecorded",
+    afterStepView.recordedEndUnit < 1,
+    JSON.stringify(afterStepView)
+  );
 
   // Resume: frames advance again.
   await player.evaluate(() => window.__scrub.togglePause());
-  await player.waitForFunction(() => !window.__scrub.paused(), { timeout: 3000 });
   const rf0 = await player.evaluate(() => window.__scrub.frame());
   await sleep(400);
   const rf1 = await player.evaluate(() => window.__scrub.frame());
   check("resume advances frames again", rf1 > rf0, `${rf0} -> ${rf1}`);
+
+  // Rewinding and resuming replaces the first frame of the discarded future.
+  // Its markers must be rebuilt from the new branch, not retained from the old
+  // history or skipped by the publication cursor.
+  await player.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
+  });
+  await player.waitForFunction(
+    () => window.__scrub.events().some((event) => event.label === "Space down"),
+    { timeout: 3000 }
+  );
+  const oldBranchFrame = await player.evaluate(
+    () => window.__scrub.events().findLast((event) => event.label === "Space down").frame
+  );
+  await player.waitForFunction(
+    (frame) => window.__scrub.range()[1] >= frame + 4,
+    oldBranchFrame,
+    { timeout: 3000 }
+  );
+  await player.evaluate(() => window.__scrub.togglePause());
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  await player.evaluate((frame) => window.__scrub.seek(frame - 1), oldBranchFrame);
+  await player.waitForFunction(
+    (frame) => window.__scrub.frame() === frame - 1,
+    oldBranchFrame,
+    { timeout: 3000 }
+  );
+  await player.evaluate(() => {
+    window.__scrub.togglePause();
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "Space" }));
+  });
+  await player.waitForFunction(
+    (frame) =>
+      window.__scrub.events().some((event) => event.frame === frame && event.label === "Space up"),
+    oldBranchFrame,
+    { timeout: 3000 }
+  );
+  const branchMarkersAreAuthoritative = await player.evaluate(
+    (frame) => {
+      const atBranch = window.__scrub.events().filter((event) => event.frame === frame);
+      return (
+        atBranch.some((event) => event.label === "Space up") &&
+        !atBranch.some((event) => event.label === "Space down")
+      );
+    },
+    oldBranchFrame
+  );
+  check(
+    "branching replaces discarded-future markers with authoritative inputs",
+    branchMarkersAreAuthoritative
+  );
+
+  // A successful reload while scrubbed still resumes at the recorder's next
+  // monotonic frame, so its boundary marker must not be anchored to the older
+  // selected frame and then pruned from the new history.
+  await player.waitForFunction(() => !window.__scrub.paused(), { timeout: 3000 });
+  await player.waitForFunction(() => {
+    const range = window.__scrub.range();
+    return range.length === 2 && range[1] - range[0] >= 4;
+  });
+  const reloadWhileScrubbed = await player.evaluate(() => ({
+    hi: window.__scrub.range()[1],
+    lastId: Math.max(-1, ...window.__scrub.events().map((event) => event.id)),
+  }));
+  await player.evaluate(() => window.__scrub.togglePause());
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  await player.evaluate((hi) => window.__scrub.seek(hi - 2), reloadWhileScrubbed.hi);
+  await player.waitForFunction(
+    (hi) => window.__scrub.frame() === hi - 2,
+    reloadWhileScrubbed.hi,
+    { timeout: 3000 }
+  );
+  await page.evaluate(() =>
+    window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// reload while scrubbed marker`)
+  );
+  await player.waitForFunction(
+    (lastId) =>
+      window.__scrub
+        .events()
+        .some((event) => event.id > lastId && event.kind === "reload-ok"),
+    reloadWhileScrubbed.lastId,
+    { timeout: 5000 }
+  );
+  const scrubbedReloadMarker = await player.evaluate(
+    (lastId) =>
+      window.__scrub
+        .events()
+        .find((event) => event.id > lastId && event.kind === "reload-ok"),
+    reloadWhileScrubbed.lastId
+  );
+  const reloadTransportIsVisible = await player.evaluate(() => {
+    const scrubber = document.getElementById("scrubber");
+    const step = document.getElementById("scrub-step");
+    return (
+      getComputedStyle(scrubber).display === "flex" &&
+      getComputedStyle(step).visibility !== "hidden" &&
+      !step.disabled
+    );
+  });
+  check("reload boundary keeps the visible Step/Resume transport", reloadTransportIsVisible);
+  await player.locator("#scrub-step").click();
+  await sleep(500);
+  const postReloadStep = await player.evaluate(() => ({
+    paused: window.__scrub.paused(),
+    frame: window.__scrub.frame(),
+    range: window.__scrub.range(),
+  }));
+  check(
+    "stepping after a scrubbed reload records its boundary",
+    postReloadStep.range.length === 2 &&
+      postReloadStep.range[0] <= scrubbedReloadMarker.frame &&
+      scrubbedReloadMarker.frame <= postReloadStep.range[1],
+    JSON.stringify({ postReloadStep, scrubConsole: scrubConsole.slice(-8) })
+  );
+  const playedRailStartsAtRecordedBoundary = await player.evaluate(
+    () => Number(document.getElementById("scrub-played").getAttribute("x")) > 0
+  );
+  check(
+    "played rail does not paint history before the reload boundary",
+    playedRailStartsAtRecordedBoundary
+  );
+  check(
+    "reload while scrubbed branches from the selected frame",
+    scrubbedReloadMarker.frame === reloadWhileScrubbed.hi - 1,
+    JSON.stringify({ reloadWhileScrubbed, scrubbedReloadMarker })
+  );
 
   await page.close();
 }

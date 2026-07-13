@@ -453,6 +453,12 @@ impl FunctorLangGame {
     /// tick right through a reload. Returns the number of stored closures
     /// rebound, for the status line.
     fn swap_in(&mut self, loaded: Loaded) -> usize {
+        self.recorder.commit_scrub_before_reload(
+            &mut self.model,
+            &mut self.physics_rt,
+            &mut self.physics_frame,
+            self.has_physics,
+        );
         let (model, report) = functor_lang::rebind_value(&self.model, &self.module, &loaded.module);
         self.model = model;
         for warning in &report.warnings {

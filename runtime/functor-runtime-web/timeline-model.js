@@ -30,12 +30,15 @@ export function normalizePreviewConfig(next = {}, previous = { seconds: 2, rate:
 export function createTimelineState(preview = {}) {
   return {
     runtime: null,
+    recordingAvailable: false,
     viewport: null,
     selectedFrame: null,
     requestedFrame: null,
-    followLive: true,
+    requestedSeekId: null,
     preview: normalizePreviewConfig(preview),
     events: [],
+    hoveredEventId: null,
+    selectedEventId: null,
   };
 }
 
@@ -54,7 +57,6 @@ export function reduceTimeline(state, action) {
       const snapshot = action.snapshot;
       if (!validSnapshot(snapshot)) return state;
 
-      const previousPaused = state.runtime?.paused ?? false;
       const recorded = { lo: snapshot.lo, hi: snapshot.hi };
       let viewport = state.viewport;
 
@@ -66,30 +68,65 @@ export function reduceTimeline(state, action) {
       if (snapshot.paused) {
         // Pause captures the viewport exactly once. Subsequent history/config /
         // selection updates cannot resize it.
-        if (!previousPaused || !viewport) viewport = recorded;
-      } else if (state.followLive || !viewport) {
+        if (!viewport) viewport = recorded;
+      } else {
         viewport = recorded;
       }
 
       const acknowledged =
         state.requestedFrame !== null && snapshot.frame === state.requestedFrame;
       const requestedFrame = acknowledged ? null : state.requestedFrame;
+      const requestedSeekId = acknowledged ? null : state.requestedSeekId;
       const selectedFrame = requestedFrame ?? snapshot.frame;
 
       return {
         ...state,
         runtime: snapshot,
+        recordingAvailable: true,
         viewport,
         requestedFrame,
+        requestedSeekId,
         selectedFrame,
       };
     }
 
     case "seek-requested": {
-      if (!state.viewport || !Number.isFinite(action.frame)) return state;
-      const frame = Math.round(clamp(action.frame, state.viewport.lo, state.viewport.hi));
-      return { ...state, selectedFrame: frame, requestedFrame: frame };
+      if (
+        !state.recordingAvailable ||
+        !state.viewport ||
+        !state.runtime ||
+        !Number.isFinite(action.frame)
+      ) {
+        return state;
+      }
+      const lo = Math.max(state.viewport.lo, state.runtime.lo);
+      const hi = Math.min(state.viewport.hi, state.runtime.hi);
+      if (hi < lo) return state;
+      const frame = Math.round(clamp(action.frame, lo, hi));
+      return {
+        ...state,
+        selectedFrame: frame,
+        requestedFrame: frame,
+        requestedSeekId: action.id ?? null,
+      };
     }
+
+    case "seek-resolved":
+      if (
+        state.requestedSeekId === null ||
+        action.id !== state.requestedSeekId
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        selectedFrame: finiteOr(action.frame, state.runtime?.frame ?? state.selectedFrame),
+        requestedFrame: null,
+        requestedSeekId: null,
+      };
+
+    case "recording-cleared":
+      return state.runtime ? { ...state, recordingAvailable: false } : state;
 
     case "preview-changed":
       return {
@@ -102,6 +139,12 @@ export function reduceTimeline(state, action) {
         ...state,
         events: Array.isArray(action.events) ? action.events : state.events,
       };
+
+    case "event-hovered":
+      return { ...state, hoveredEventId: action.id ?? null };
+
+    case "event-selected":
+      return { ...state, selectedEventId: action.id ?? null };
 
     case "preview-end-requested": {
       if (state.selectedFrame === null || !Number.isFinite(action.frame)) return state;
@@ -118,18 +161,6 @@ export function reduceTimeline(state, action) {
       return {
         ...state,
         preview: normalizePreviewConfig({ seconds }, state.preview),
-      };
-    }
-
-    case "follow-live-changed":
-      return { ...state, followLive: Boolean(action.enabled) };
-
-    case "viewport-changed": {
-      if (!validSnapshot({ frame: action.lo, lo: action.lo, hi: action.hi })) return state;
-      return {
-        ...state,
-        viewport: { lo: action.lo, hi: action.hi },
-        followLive: false,
       };
     }
 
@@ -151,29 +182,51 @@ export function unitToFrame(unit, viewport) {
 export function deriveTimelineView(state) {
   if (!state.runtime || !state.viewport || state.selectedFrame === null) return null;
 
-  const selectedFrame = Math.round(
-    clamp(state.selectedFrame, state.viewport.lo, state.viewport.hi)
-  );
+  // The logical frame may move beyond a deliberately frozen paused viewport
+  // after Step. Keep that truth in labels/ARIA and clamp only its coordinate.
+  const selectedFrame = Math.round(state.selectedFrame);
+  const visibleSelectedFrame = clamp(selectedFrame, state.viewport.lo, state.viewport.hi);
   const previewFrames = state.preview.enabled
     ? Math.round(state.preview.seconds * TIMELINE_FPS)
     : 0;
   const previewEndFrame = selectedFrame + previewFrames;
-  const visiblePreviewEndFrame = Math.min(previewEndFrame, state.viewport.hi);
+  const visiblePreviewEndFrame = clamp(
+    previewEndFrame,
+    state.viewport.lo,
+    state.viewport.hi
+  );
   const eventMarkers = clusterTimelineEvents(state.events, state.viewport);
+  const recordedStartFrame = state.recordingAvailable
+    ? clamp(state.runtime.lo, state.viewport.lo, state.viewport.hi)
+    : state.viewport.lo;
+  const recordedEndFrame = state.recordingAvailable
+    ? clamp(state.runtime.hi, state.viewport.lo, state.viewport.hi)
+    : state.viewport.lo;
+  const activeEventId = state.hoveredEventId ?? state.selectedEventId;
+  const activeEvent = eventMarkers.find((marker) => marker.id === activeEventId) ?? null;
 
   return {
     viewport: state.viewport,
     recorded: { lo: state.runtime.lo, hi: state.runtime.hi },
+    recordingAvailable: state.recordingAvailable,
+    recordedStartUnit: frameToUnit(recordedStartFrame, state.viewport),
+    recordedEndUnit: frameToUnit(recordedEndFrame, state.viewport),
     paused: state.runtime.paused,
     selectedFrame,
+    visibleSelectedFrame,
     requestedFrame: state.requestedFrame,
     playheadUnit: frameToUnit(selectedFrame, state.viewport),
+    playheadClippedBefore: selectedFrame < state.viewport.lo,
+    playheadClippedAfter: selectedFrame > state.viewport.hi,
     previewFrames,
     previewEndFrame,
     visiblePreviewEndFrame,
     previewEndUnit: frameToUnit(visiblePreviewEndFrame, state.viewport),
     previewClippedFrames: Math.max(previewEndFrame - state.viewport.hi, 0),
     eventMarkers,
+    activeEvent,
+    selectedEventId: state.selectedEventId,
+    hoveredEventId: state.hoveredEventId,
   };
 }
 

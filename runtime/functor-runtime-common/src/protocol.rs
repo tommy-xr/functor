@@ -139,6 +139,18 @@ pub trait GameProducer {
         Vec::new()
     }
 
+    /// Revision of the authoritative recording generation. It changes when a
+    /// destructive branch or reload can replace frame-indexed timeline data.
+    fn scene_timeline_generation(&self) -> u64 {
+        0
+    }
+
+    /// Rendered frame that the producer will record next, including after a
+    /// scrubbed reload commits a branch.
+    fn next_scene_frame(&self) -> Option<u64> {
+        None
+    }
+
     /// The recorded `tts` of the frame the scene currently sits on (the scrubbed
     /// frame while dragging, else the newest recorded frame). Shells read this to
     /// REBASE their [`crate::GameClock`] when a time-travel branch resumes — on a

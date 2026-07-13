@@ -278,24 +278,26 @@ fn apply_pending_reload(game: &mut dyn GameProducer) {
     let Some((push, id)) = PENDING_RELOAD.with(|p| p.borrow_mut().take()) else {
         return;
     };
-    let marker_frame = game
+    let selected_frame = game
         .current_scene_frame()
         .or_else(|| game.scene_frame_range().map(|(_, hi)| hi))
-        .unwrap_or(0)
-        .saturating_add(1);
+        .unwrap_or(0);
     let outcome = match push {
         PendingPush::Source(source) => game.reload_source(&source),
         PendingPush::Project(files) => game.reload_project(&files),
     };
     match outcome {
         Ok(status) => {
-            functor_lang_game::publish_timeline_reload(marker_frame, true, &status);
+            let next_recorded_frame = game
+                .next_scene_frame()
+                .unwrap_or_else(|| selected_frame.saturating_add(1));
+            functor_lang_game::publish_timeline_reload(next_recorded_frame, true, &status);
             hide_error_overlay();
             post_reload_result(true, &status, id);
         }
         Err(message) => {
             functor_lang_game::publish_timeline_reload(
-                marker_frame.saturating_sub(1),
+                selected_frame,
                 false,
                 &message,
             );
@@ -1206,7 +1208,10 @@ async fn run_async() -> Result<(), JsValue> {
                         preview_window = window.clamp(0.5, 5.0);
                         preview_rate = rate.clamp(1, 30);
                     }
-                    functor_lang_game::ScrubControl::SeekTo(f) => {
+                    functor_lang_game::ScrubControl::SeekTo {
+                        frame: f,
+                        request_id,
+                    } => {
                         let newest = game.scene_frame_range().map(|(_, h)| h);
                         match newest {
                             Some(h) if f > h => {
@@ -1231,6 +1236,10 @@ async fn run_async() -> Result<(), JsValue> {
                                 clock.pause();
                             }
                         }
+                        functor_lang_game::publish_scrub_seek_result(
+                            request_id,
+                            game.current_scene_frame(),
+                        );
                     }
                 }
             }

@@ -6,12 +6,14 @@ import {
   functor_lang_scene_frame,
   functor_lang_scene_range,
   functor_lang_seek_scene,
+  functor_lang_scrub_seek_result,
   functor_lang_scrub_toggle_pause,
   functor_lang_scrub_step,
   functor_lang_scrub_paused,
   functor_lang_scrub_set_preview,
   functor_lang_scrub_set_preview_config,
   functor_lang_timeline_events,
+  functor_lang_timeline_events_gen,
 } from "./pkg/functor_runtime_web.js";
 import {
   PREVIEW_SECONDS_MAX,
@@ -64,20 +66,35 @@ const STYLE = `
 .scrub-event.input { fill: #ffd166; }
 .scrub-event.reload { fill: #b994ff; }
 .scrub-event.reload-error { fill: #ff6b7d; }
+.scrub-event-hit { cursor: pointer; outline: none; }
+.scrub-event-hit.active .scrub-event,
+.scrub-event-hit:focus .scrub-event { stroke: white; stroke-width: 2; }
 .scrub-handle {
   position: absolute; top: 15px; z-index: 3; width: 14px; height: 20px;
   box-sizing: border-box; padding: 0 !important; transform: translate(-50%, -50%) !important;
   border-radius: 4px !important; touch-action: none; cursor: ew-resize !important;
 }
 .scrub-handle:focus-visible { outline: 2px solid white; outline-offset: 2px; }
-#scrub-playhead { background: var(--sb-accent); border-color: #b9f8ff; }
-#scrub-preview-handle { background: var(--sb-future); border-color: #ffd0ee; }
+#scrubber #scrub-playhead { background: var(--sb-accent); border-color: #b9f8ff; }
+#scrubber #scrub-preview-handle { background: var(--sb-future); border-color: #ffd0ee; }
 #scrub-preview-handle.clipped { border-radius: 3px 0 0 3px !important; }
+#scrub-preview-handle.fully-clipped {
+  top: 0; z-index: 5; height: 12px;
+}
+#scrub-playhead.outside { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55); }
 #scrub-overflow {
   position: absolute; right: 0; top: -5px; z-index: 4; display: none;
   padding: 2px 4px; border: 1px solid var(--sb-future); border-radius: 5px;
   color: #ffd0ee; background: rgba(30, 24, 51, 0.96); font-size: 9px;
   pointer-events: none;
+}
+#scrub-event-detail {
+  position: absolute; z-index: 5; bottom: calc(100% + 7px); display: none;
+  max-width: min(280px, 80vw); padding: 5px 7px; transform: translateX(-50%);
+  border: 1px solid var(--sb-line); border-radius: 6px; color: var(--sb-text);
+  background: rgba(30, 24, 51, 0.98); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  font-size: 10px; line-height: 1.3; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; pointer-events: none;
 }
 #scrub-label {
   position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%);
@@ -85,6 +102,7 @@ const STYLE = `
   pointer-events: none;
 }
 #scrub-label .fut { color: var(--sb-future); }
+#scrub-label .out { color: #ffd166; }
 #scrub-extrapolate.on {
   border-color: var(--sb-future);
   box-shadow: 0 0 0 1px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.4);
@@ -118,19 +136,21 @@ const STYLE = `
 const HTML = `
   <button id="scrub-pause" title="Pause / resume">⏸</button>
   <button id="scrub-step" title="Step one frame forward">⏭</button>
-  <span id="scrub-rail" aria-label="Time-travel timeline">
-    <svg id="scrub-timeline" viewBox="0 0 1000 30" preserveAspectRatio="none" aria-hidden="true">
-      <rect id="scrub-track-bg" x="0" y="12" width="1000" height="6" rx="3" />
-      <rect id="scrub-recorded" x="0" y="12" width="1000" height="6" rx="3" />
-      <rect id="scrub-played" x="0" y="12" width="0" height="6" rx="3" />
-      <rect id="scrub-future" x="0" y="11" width="0" height="8" rx="3" />
-      <g id="scrub-events"></g>
+  <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
+    <svg id="scrub-timeline" viewBox="0 0 1000 30" preserveAspectRatio="none"
+      role="group" aria-label="Timeline event markers">
+      <rect id="scrub-track-bg" x="0" y="12" width="1000" height="6" rx="3" aria-hidden="true" />
+      <rect id="scrub-recorded" x="0" y="12" width="1000" height="6" rx="3" aria-hidden="true" />
+      <rect id="scrub-played" x="0" y="12" width="0" height="6" rx="3" aria-hidden="true" />
+      <rect id="scrub-future" x="0" y="11" width="0" height="8" rx="3" aria-hidden="true" />
+      <g id="scrub-events" aria-label="Recorded events"></g>
     </svg>
     <button id="scrub-playhead" class="scrub-handle" role="slider"
       aria-label="Selected frame" aria-orientation="horizontal"></button>
     <button id="scrub-preview-handle" class="scrub-handle" role="slider"
       aria-label="Extrapolation endpoint" aria-orientation="horizontal"></button>
     <span id="scrub-overflow"></span>
+    <span id="scrub-event-detail" role="status"></span>
     <span id="scrub-label"><span id="scrub-count"></span></span>
   </span>
   <button id="scrub-extrapolate" title="Extrapolate the paused game into the future">🔮</button>
@@ -166,11 +186,13 @@ export function mountScrubber() {
   const pause = $("scrub-pause");
   const step = $("scrub-step");
   const label = $("scrub-count");
+  const recorded = $("scrub-recorded");
   const played = $("scrub-played");
   const future = $("scrub-future");
   const playhead = $("scrub-playhead");
   const previewHandle = $("scrub-preview-handle");
   const overflow = $("scrub-overflow");
+  const eventDetail = $("scrub-event-detail");
   const eventLayer = $("scrub-events");
   const extrapolate = $("scrub-extrapolate");
   const mode = $("scrub-mode");
@@ -179,9 +201,12 @@ export function mountScrubber() {
 
   let state = createTimelineState();
   let pendingSeek = null;
-  let lastEventsJson = "";
-  let markerRenderKey = "";
+  let nextSeekId = 1;
+  let lastSeekResultId = null;
+  let lastEventsGeneration = null;
+  let lastRuntimeSnapshotKey = "";
   let raf = 0;
+  const markerNodes = new Map();
 
   const dispatch = (action) => {
     state = reduceTimeline(state, action);
@@ -202,8 +227,11 @@ export function mountScrubber() {
   };
 
   const requestSeek = (frame) => {
-    dispatch({ type: "seek-requested", frame });
-    pendingSeek = state.requestedFrame;
+    const id = nextSeekId++;
+    dispatch({ type: "seek-requested", id, frame });
+    if (state.requestedSeekId === id) {
+      pendingSeek = { id, frame: state.requestedFrame };
+    }
   };
 
   const frameAtPointer = (event) => {
@@ -215,32 +243,98 @@ export function mountScrubber() {
   };
 
   const renderMarkers = (current) => {
-    const key =
-      `${current.viewport.lo}:${current.viewport.hi}:` +
-      current.eventMarkers.map((marker) => `${marker.id}:${marker.count}`).join(",");
-    if (key === markerRenderKey) return;
-    markerRenderKey = key;
-    eventLayer.replaceChildren();
     const ns = "http://www.w3.org/2000/svg";
+    const desiredIds = new Set(current.eventMarkers.map((marker) => marker.id));
+    for (const [id, group] of markerNodes) {
+      if (!desiredIds.has(id)) {
+        group.remove();
+        markerNodes.delete(id);
+      }
+    }
+
+    let nextChild = eventLayer.firstElementChild;
     for (const marker of current.eventMarkers) {
-      const tick = document.createElementNS(ns, "rect");
-      const x = marker.unit * 1000;
-      const reload = marker.category === "reload";
-      tick.setAttribute("x", String(x - (reload ? 3 : 2)));
-      tick.setAttribute("y", reload ? "1" : "21");
-      tick.setAttribute("width", reload ? "6" : "4");
-      tick.setAttribute("height", reload ? "9" : "7");
-      tick.setAttribute("rx", reload ? "2" : "1");
-      tick.setAttribute(
-        "class",
-        `scrub-event ${marker.category}${marker.kind === "reload-error" ? " reload-error" : ""}`
+      let group = markerNodes.get(marker.id);
+      if (!group) {
+        group = document.createElementNS(ns, "g");
+        const tick = document.createElementNS(ns, "rect");
+        const hit = document.createElementNS(ns, "rect");
+        const reload = marker.category === "reload";
+
+        group.setAttribute("class", "scrub-event-hit");
+        group.setAttribute("role", "button");
+        group.setAttribute("tabindex", "0");
+        group.dataset.eventId = String(marker.id);
+
+        hit.setAttribute("x", "-9");
+        hit.setAttribute("y", "0");
+        hit.setAttribute("width", "18");
+        hit.setAttribute("height", "30");
+        hit.setAttribute("fill", "transparent");
+
+        tick.setAttribute("x", String(-(reload ? 3 : 2)));
+        tick.setAttribute("y", reload ? "1" : "21");
+        tick.setAttribute("width", reload ? "6" : "4");
+        tick.setAttribute("height", reload ? "9" : "7");
+        tick.setAttribute("rx", reload ? "2" : "1");
+        tick.setAttribute(
+          "class",
+          `scrub-event ${marker.category}${marker.kind === "reload-error" ? " reload-error" : ""}`
+        );
+
+        const activate = () => {
+          dispatch({ type: "event-selected", id: marker.id });
+          requestSeek(marker.frame);
+        };
+        group.addEventListener("mouseenter", () => dispatch({ type: "event-hovered", id: marker.id }));
+        group.addEventListener("mouseleave", () => dispatch({ type: "event-hovered", id: null }));
+        group.addEventListener("focus", () => dispatch({ type: "event-hovered", id: marker.id }));
+        group.addEventListener("blur", () => dispatch({ type: "event-hovered", id: null }));
+        group.addEventListener("pointerdown", (event) => event.stopPropagation());
+        group.addEventListener("click", (event) => {
+          event.stopPropagation();
+          activate();
+        });
+        group.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            activate();
+          } else if (event.key === "Escape") {
+            dispatch({ type: "event-selected", id: null });
+          }
+        });
+        group.append(hit, tick);
+        markerNodes.set(marker.id, group);
+      }
+
+      const suffix = marker.count > 1 ? `, ${marker.count} nearby events` : "";
+      group.setAttribute("aria-label", `frame ${marker.frame}, ${marker.labels[0]}${suffix}`);
+      group.setAttribute("transform", `translate(${marker.unit * 1000} 0)`);
+      // Retain nodes/listeners and touch the DOM only when clustering changes
+      // their chronological keyboard-navigation order.
+      if (group === nextChild) {
+        nextChild = nextChild.nextElementSibling;
+      } else {
+        eventLayer.insertBefore(group, nextChild);
+      }
+    }
+
+    for (const group of eventLayer.querySelectorAll(".scrub-event-hit")) {
+      const id = Number(group.dataset.eventId);
+      group.classList.toggle(
+        "active",
+        id === current.selectedEventId || id === current.hoveredEventId
       );
-      tick.dataset.eventId = String(marker.id);
-      const title = document.createElementNS(ns, "title");
-      const suffix = marker.count > 1 ? ` (+${marker.count - 1} nearby)` : "";
-      title.textContent = `frame ${marker.frame}: ${marker.labels[0]}${suffix}`;
-      tick.appendChild(title);
-      eventLayer.appendChild(tick);
+    }
+
+    if (current.activeEvent) {
+      eventDetail.style.display = "block";
+      eventDetail.style.left = `${Math.min(95, Math.max(5, current.activeEvent.unit * 100))}%`;
+      const count = current.activeEvent.count > 1 ? ` · ${current.activeEvent.count} events` : "";
+      const detail = `frame ${current.activeEvent.frame} · ${current.activeEvent.labels[0]}${count}`;
+      if (eventDetail.textContent !== detail) eventDetail.textContent = detail;
+    } else {
+      eventDetail.style.display = "none";
     }
   };
 
@@ -251,23 +345,56 @@ export function mountScrubber() {
     const playheadPct = current.playheadUnit * 100;
     const previewPct = current.previewEndUnit * 100;
     const futureWidth = Math.max(previewPct - playheadPct, 0);
-    const previewVisible = state.preview.enabled && current.paused;
+    const previewVisible =
+      state.preview.enabled && current.paused && current.recordingAvailable;
 
     playhead.style.left = `${playheadPct}%`;
-    played.setAttribute("width", String(current.playheadUnit * 1000));
+    playhead.style.display = current.recordingAvailable ? "block" : "none";
+    recorded.setAttribute("x", String(current.recordedStartUnit * 1000));
+    recorded.setAttribute(
+      "width",
+      String(Math.max(current.recordedEndUnit - current.recordedStartUnit, 0) * 1000)
+    );
+    played.setAttribute("x", String(current.recordedStartUnit * 1000));
+    played.setAttribute(
+      "width",
+      String(
+        Math.max(
+          Math.min(current.playheadUnit, current.recordedEndUnit) - current.recordedStartUnit,
+          0
+        ) * 1000
+      )
+    );
     future.setAttribute("x", String(current.playheadUnit * 1000));
     future.setAttribute("width", String(previewVisible ? futureWidth * 10 : 0));
     previewHandle.style.left = `${previewPct}%`;
     previewHandle.style.display = previewVisible ? "block" : "none";
     previewHandle.classList.toggle("clipped", current.previewClippedFrames > 0);
+    previewHandle.classList.toggle(
+      "fully-clipped",
+      previewVisible && current.previewFrames > 0 && previewPct <= playheadPct
+    );
+    playhead.classList.toggle(
+      "outside",
+      current.playheadClippedBefore || current.playheadClippedAfter
+    );
 
     overflow.style.display = previewVisible && current.previewClippedFrames > 0 ? "block" : "none";
     overflow.textContent = `+${current.previewClippedFrames}`;
 
     playhead.setAttribute("aria-valuemin", String(current.viewport.lo));
-    playhead.setAttribute("aria-valuemax", String(current.viewport.hi));
+    playhead.setAttribute(
+      "aria-valuemax",
+      String(Math.max(current.viewport.hi, current.selectedFrame))
+    );
     playhead.setAttribute("aria-valuenow", String(current.selectedFrame));
-    playhead.setAttribute("aria-valuetext", `frame ${current.selectedFrame}`);
+    playhead.setAttribute(
+      "aria-valuetext",
+      `frame ${current.selectedFrame}` +
+        (current.playheadClippedBefore || current.playheadClippedAfter
+          ? `, outside the frozen viewport ${current.viewport.lo} to ${current.viewport.hi}`
+          : "")
+    );
 
     previewHandle.setAttribute(
       "aria-valuemin",
@@ -284,12 +411,18 @@ export function mountScrubber() {
         (current.previewClippedFrames ? `, ${current.previewClippedFrames} frames clipped` : "")
     );
 
-    label.innerHTML =
-      `${current.selectedFrame}` +
-      (state.preview.enabled ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
-      ` / ${current.viewport.hi}`;
+    label.innerHTML = current.recordingAvailable
+      ? `${current.selectedFrame}` +
+        (current.playheadClippedBefore || current.playheadClippedAfter
+          ? ` <span class="out">outside</span>`
+          : "") +
+        (state.preview.enabled ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
+        ` / ${Math.round(current.viewport.hi)}`
+      : "reload boundary · Step or Resume";
     pause.textContent = current.paused ? "▶" : "⏸";
+    pause.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
     extrapolate.classList.toggle("on", state.preview.enabled);
+    extrapolate.setAttribute("aria-pressed", String(state.preview.enabled));
     renderMarkers(current);
   };
 
@@ -342,7 +475,6 @@ export function mountScrubber() {
   rail.addEventListener("pointermove", (event) => {
     if (rail.hasPointerCapture(event.pointerId)) requestSeek(frameAtPointer(event));
   });
-
   const seekKey = (event) => {
     const current = view();
     if (!current) return;
@@ -423,6 +555,7 @@ export function mountScrubber() {
     model: () => state,
     view,
     events: () => state.events,
+    selectEvent: (id) => dispatch({ type: "event-selected", id }),
     setPreview: (preview) => {
       dispatch({ type: "preview-changed", preview });
       syncInputs();
@@ -434,12 +567,18 @@ export function mountScrubber() {
 
   const update = () => {
     if (pendingSeek !== null) {
-      functor_lang_seek_scene(pendingSeek);
+      functor_lang_seek_scene(pendingSeek.frame, pendingSeek.id);
       pendingSeek = null;
     }
-    const eventsJson = functor_lang_timeline_events();
-    if (eventsJson !== lastEventsJson) {
-      lastEventsJson = eventsJson;
+    const seekResult = functor_lang_scrub_seek_result();
+    if (seekResult.length === 2 && seekResult[0] !== lastSeekResultId) {
+      lastSeekResultId = seekResult[0];
+      dispatch({ type: "seek-resolved", id: seekResult[0], frame: seekResult[1] });
+    }
+    const eventsGeneration = functor_lang_timeline_events_gen();
+    if (eventsGeneration !== lastEventsGeneration) {
+      lastEventsGeneration = eventsGeneration;
+      const eventsJson = functor_lang_timeline_events();
       try {
         dispatch({ type: "events-published", events: JSON.parse(eventsJson) });
       } catch {
@@ -449,17 +588,26 @@ export function mountScrubber() {
     const range = functor_lang_scene_range();
     if (range.length === 2) {
       el.style.display = "flex";
-      dispatch({
-        type: "runtime-published",
-        snapshot: {
-          frame: functor_lang_scene_frame(),
-          lo: range[0],
-          hi: range[1],
-          paused: functor_lang_scrub_paused(),
-        },
-      });
+      const snapshot = {
+        frame: functor_lang_scene_frame(),
+        lo: range[0],
+        hi: range[1],
+        paused: functor_lang_scrub_paused(),
+      };
+      const snapshotKey = `${snapshot.frame}:${snapshot.lo}:${snapshot.hi}:${snapshot.paused}`;
+      if (snapshotKey !== lastRuntimeSnapshotKey) {
+        lastRuntimeSnapshotKey = snapshotKey;
+        dispatch({ type: "runtime-published", snapshot });
+      }
     } else {
-      el.style.display = "none";
+      const paused = functor_lang_scrub_paused();
+      if (paused && state.runtime) {
+        el.style.display = "flex";
+        if (state.recordingAvailable) dispatch({ type: "recording-cleared" });
+      } else {
+        el.style.display = "none";
+      }
+      lastRuntimeSnapshotKey = "";
     }
     raf = requestAnimationFrame(update);
   };

@@ -54,12 +54,23 @@ test("the logical preview remains full length while its rendering clips", () => 
 
 test("an optimistic seek is held until the runtime acknowledges it", () => {
   let state = publish(createTimelineState(), 100, 200, true);
-  state = reduceTimeline(state, { type: "seek-requested", frame: 150 });
+  state = reduceTimeline(state, { type: "seek-requested", id: 1, frame: 150 });
   state = publish(state, 100, 200, true);
   assert.equal(deriveTimelineView(state).selectedFrame, 150);
   state = publish(state, 150, 200, true);
   assert.equal(state.requestedFrame, null);
+  assert.equal(state.requestedSeekId, null);
   assert.equal(deriveTimelineView(state).selectedFrame, 150);
+});
+
+test("a resolved seek reconciles a clamped or refused optimistic target", () => {
+  let state = publish(createTimelineState(), 100, 200, true);
+  state = reduceTimeline(state, { type: "seek-requested", id: 7, frame: 150 });
+  state = reduceTimeline(state, { type: "seek-resolved", id: 6, frame: 100 });
+  assert.equal(deriveTimelineView(state).selectedFrame, 150, "ignore an older result");
+  state = reduceTimeline(state, { type: "seek-resolved", id: 7, frame: 100 });
+  assert.equal(state.requestedFrame, null);
+  assert.equal(deriveTimelineView(state).selectedFrame, 100);
 });
 
 test("invalid preview edits retain the previous canonical configuration", () => {
@@ -94,4 +105,54 @@ test("timeline events are filtered and clustered within the viewport", () => {
   assert.equal(markers[0].category, "input");
   assert.equal(markers[0].count, 2);
   assert.equal(markers[1].category, "reload");
+});
+
+test("stepping past a frozen paused endpoint preserves the logical selected frame", () => {
+  let state = publish(createTimelineState(), 300, 300, false);
+  state = publish(state, 300, 300, true);
+  state = publish(state, 301, 301, true);
+  const view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 0, hi: 300 });
+  assert.equal(view.selectedFrame, 301);
+  assert.equal(view.playheadUnit, 1);
+  assert.equal(view.playheadClippedAfter, true);
+});
+
+test("a shortened branch paints only the still-recorded part of a frozen viewport", () => {
+  let state = publish(createTimelineState(), 300, 300, true);
+  state = reduceTimeline(state, { type: "seek-requested", id: 1, frame: 150 });
+  state = reduceTimeline(state, { type: "seek-resolved", id: 1, frame: 150 });
+  state = publish(state, 151, 151, true);
+  const view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 0, hi: 300 });
+  assert.equal(view.recordedStartUnit, 0);
+  assert.equal(view.recordedEndUnit, 151 / 300);
+});
+
+test("clearing recording keeps the frozen transport view but disables seeking", () => {
+  let state = publish(createTimelineState(), 300, 300, true);
+  state = reduceTimeline(state, { type: "recording-cleared" });
+  state = reduceTimeline(state, { type: "seek-requested", id: 1, frame: 100 });
+  const view = deriveTimelineView(state);
+  assert.equal(view.recordingAvailable, false);
+  assert.equal(view.recordedStartUnit, 0);
+  assert.equal(view.recordedEndUnit, 0);
+  assert.equal(state.requestedFrame, null);
+});
+
+test("hover takes precedence over persistent marker selection", () => {
+  let state = publish(createTimelineState(), 100, 100, true);
+  state = reduceTimeline(state, {
+    type: "events-published",
+    events: [
+      { id: 1, frame: 20, kind: "key-down", label: "Space down" },
+      { id: 2, frame: 80, kind: "reload-ok", label: "hot reload" },
+    ],
+  });
+  state = reduceTimeline(state, { type: "event-selected", id: 1 });
+  assert.equal(deriveTimelineView(state).activeEvent.id, 1);
+  state = reduceTimeline(state, { type: "event-hovered", id: 2 });
+  assert.equal(deriveTimelineView(state).activeEvent.id, 2);
+  state = reduceTimeline(state, { type: "event-hovered", id: null });
+  assert.equal(deriveTimelineView(state).activeEvent.id, 1);
 });
