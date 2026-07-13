@@ -35,6 +35,7 @@ export function createTimelineState(preview = {}) {
     requestedFrame: null,
     followLive: true,
     preview: normalizePreviewConfig(preview),
+    events: [],
   };
 }
 
@@ -96,6 +97,12 @@ export function reduceTimeline(state, action) {
         preview: normalizePreviewConfig(action.preview, state.preview),
       };
 
+    case "events-published":
+      return {
+        ...state,
+        events: Array.isArray(action.events) ? action.events : state.events,
+      };
+
     case "preview-end-requested": {
       if (state.selectedFrame === null || !Number.isFinite(action.frame)) return state;
       const seconds = (action.frame - state.selectedFrame) / TIMELINE_FPS;
@@ -152,6 +159,7 @@ export function deriveTimelineView(state) {
     : 0;
   const previewEndFrame = selectedFrame + previewFrames;
   const visiblePreviewEndFrame = Math.min(previewEndFrame, state.viewport.hi);
+  const eventMarkers = clusterTimelineEvents(state.events, state.viewport);
 
   return {
     viewport: state.viewport,
@@ -165,5 +173,37 @@ export function deriveTimelineView(state) {
     visiblePreviewEndFrame,
     previewEndUnit: frameToUnit(visiblePreviewEndFrame, state.viewport),
     previewClippedFrames: Math.max(previewEndFrame - state.viewport.hi, 0),
+    eventMarkers,
   };
+}
+
+export function clusterTimelineEvents(events, viewport, bucketCount = 250) {
+  if (!viewport || viewport.hi < viewport.lo) return [];
+  const buckets = new Map();
+  for (const event of events) {
+    if (!event || !Number.isFinite(event.frame)) continue;
+    if (event.frame < viewport.lo || event.frame > viewport.hi) continue;
+    const category = String(event.kind).startsWith("reload") ? "reload" : "input";
+    const unit = frameToUnit(event.frame, viewport);
+    const bucket = Math.round(unit * bucketCount);
+    const key = `${category}:${bucket}`;
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.lastFrame = event.frame;
+      existing.labels.push(event.label);
+    } else {
+      buckets.set(key, {
+        id: event.id,
+        frame: event.frame,
+        lastFrame: event.frame,
+        kind: event.kind,
+        category,
+        count: 1,
+        labels: [event.label],
+        unit,
+      });
+    }
+  }
+  return [...buckets.values()].sort((a, b) => a.frame - b.frame);
 }

@@ -389,7 +389,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
 // --- 9. Time-travel scrubber drives/observes the player via __scrub. ----------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  await page.goto(`${BASE}/sandbox.html`);
+  await page.goto(`${BASE}/sandbox.html?example=bounce`);
   await page.waitForFunction(
     () => window.__sandbox && window.__sandbox.status().state === "live",
     { timeout: 30000 }
@@ -420,6 +420,34 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   await sleep(500);
   const r1 = await player.evaluate(() => window.__scrub.range());
   check("scrubber range grows while running", r1[1] > r0[1], `${r0} -> ${r1}`);
+
+  // Markers come from the authoritative runtime log: a real recorded key edge,
+  // followed by a real hot-reload boundary from the editor bridge.
+  await player.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "Space" }));
+  });
+  await player.waitForFunction(
+    () => window.__scrub.events().some((event) => event.kind === "key-down"),
+    { timeout: 3000 }
+  );
+  const inputMarker = await player.evaluate(
+    () => !!document.querySelector("#scrub-events .scrub-event.input")
+  );
+  check("timeline renders recorded input markers", inputMarker);
+
+  await page.evaluate(() =>
+    window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// timeline reload marker`)
+  );
+  await player.waitForFunction(
+    () => window.__scrub.events().some((event) => event.kind === "reload-ok"),
+    { timeout: 5000 }
+  );
+  const reloadMarker = await player.evaluate(
+    () => !!document.querySelector("#scrub-events .scrub-event.reload")
+  );
+  check("timeline renders successful hot-reload boundaries", reloadMarker);
+  await player.waitForFunction(() => window.__scrub.range().length === 2, { timeout: 3000 });
 
   // Pause freezes both the frame counter AND the pixels.
   await player.evaluate(() => window.__scrub.togglePause());

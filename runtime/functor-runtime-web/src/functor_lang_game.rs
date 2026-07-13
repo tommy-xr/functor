@@ -567,6 +567,13 @@ impl GameProducer for FunctorLangWebGame {
         self.recorder.scene_frame_range()
     }
 
+    fn recorded_inputs_at(
+        &self,
+        rendered_frame: u64,
+    ) -> Vec<functor_runtime_common::RecordedInput> {
+        self.recorder.inputs_at(rendered_frame).to_vec()
+    }
+
     fn current_scene_tts(&self) -> Option<f64> {
         self.recorder.current_scene_frame_tts()
     }
@@ -1143,6 +1150,141 @@ thread_local! {
 }
 
 const SCRUB_CONTROLS_CAP: usize = 256;
+
+#[derive(Clone)]
+struct TimelineMarker {
+    id: u64,
+    frame: u64,
+    kind: &'static str,
+    label: String,
+}
+
+#[derive(Default)]
+struct TimelineLog {
+    markers: Vec<TimelineMarker>,
+    next_id: u64,
+    input_cursor: Option<u64>,
+    cached_json: String,
+    dirty: bool,
+}
+
+impl TimelineLog {
+    fn push(&mut self, frame: u64, kind: &'static str, label: String) {
+        self.markers.push(TimelineMarker {
+            id: self.next_id,
+            frame,
+            kind,
+            label,
+        });
+        self.next_id += 1;
+        const CAP: usize = 4096;
+        if self.markers.len() > CAP {
+            self.markers.drain(..self.markers.len() - CAP);
+        }
+        self.dirty = true;
+    }
+
+    fn retain_range(&mut self, lo: u64, hi: u64) {
+        let old_len = self.markers.len();
+        self.markers
+            .retain(|marker| marker.frame >= lo && marker.frame <= hi);
+        self.dirty |= self.markers.len() != old_len;
+    }
+
+    fn json(&mut self) -> &str {
+        if self.dirty || self.cached_json.is_empty() {
+            let markers: Vec<_> = self
+                .markers
+                .iter()
+                .map(|marker| {
+                    serde_json::json!({
+                        "id": marker.id,
+                        "frame": marker.frame,
+                        "kind": marker.kind,
+                        "label": marker.label,
+                    })
+                })
+                .collect();
+            self.cached_json = serde_json::to_string(&markers).unwrap_or_else(|_| "[]".to_string());
+            self.dirty = false;
+        }
+        &self.cached_json
+    }
+}
+
+thread_local! {
+    static TIMELINE_LOG: RefCell<TimelineLog> = RefCell::new(TimelineLog::default());
+}
+
+fn input_marker(input: &InputEvent) -> (&'static str, String) {
+    match input {
+        InputEvent::Key { code, is_down } => {
+            let name = functor_runtime_common::Key::from_i32(*code)
+                .map(|key| key.name())
+                .unwrap_or_else(|| format!("key {code}"));
+            let edge = if *is_down { "down" } else { "up" };
+            (
+                if *is_down { "key-down" } else { "key-up" },
+                format!("{name} {edge}"),
+            )
+        }
+        InputEvent::MouseMove { x, y } => ("mouse-move", format!("mouse move ({x}, {y})")),
+        InputEvent::MouseWheel { delta } => ("mouse-wheel", format!("mouse wheel {delta:+}")),
+        InputEvent::UiEvent(event) => ("ui-input", format!("UI {event:?}")),
+    }
+}
+
+/// Copy newly recorded inputs into the DOM timeline's compact marker log. The
+/// producer's recorder is authoritative: inputs discarded while paused never
+/// appear, and replayable inputs land on their exact rendered frame.
+pub fn publish_timeline_inputs(game: &dyn GameProducer) {
+    let Some((lo, hi)) = game.scene_frame_range() else {
+        return;
+    };
+    TIMELINE_LOG.with(|log| {
+        let mut log = log.borrow_mut();
+        if log.input_cursor.is_some_and(|cursor| cursor > hi) {
+            // A resumed scrub branched away the old future.
+            log.input_cursor = Some(hi);
+        }
+        let start = log
+            .input_cursor
+            .map_or(lo, |cursor| cursor.saturating_add(1).max(lo));
+        if start <= hi {
+            for frame in start..=hi {
+                for input in game.recorded_inputs_at(frame) {
+                    let (kind, label) = input_marker(&input);
+                    log.push(frame, kind, label);
+                }
+            }
+        }
+        log.input_cursor = Some(hi);
+        log.retain_range(lo, hi);
+    });
+}
+
+/// Record a reload boundary. Successful reloads reset model snapshots, so the
+/// marker belongs to the next monotonic frame; failures mark the attempted
+/// boundary without changing the running program.
+pub fn publish_timeline_reload(frame: u64, ok: bool, message: &str) {
+    TIMELINE_LOG.with(|log| {
+        log.borrow_mut().push(
+            frame,
+            if ok { "reload-ok" } else { "reload-error" },
+            if ok {
+                "hot reload".to_string()
+            } else {
+                format!("reload failed: {message}")
+            },
+        );
+    });
+}
+
+/// Runtime → page: JSON array of `{id, frame, kind, label}` markers.
+#[wasm_bindgen]
+pub fn functor_lang_timeline_events() -> String {
+    TIMELINE_LOG.with(|log| log.borrow_mut().json().to_string())
+}
 
 fn push_scrub(control: ScrubControl) {
     SCRUB_CONTROLS.with(|c| {

@@ -11,6 +11,7 @@ import {
   functor_lang_scrub_paused,
   functor_lang_scrub_set_preview,
   functor_lang_scrub_set_preview_config,
+  functor_lang_timeline_events,
 } from "./pkg/functor_runtime_web.js";
 import {
   PREVIEW_SECONDS_MAX,
@@ -59,6 +60,10 @@ const STYLE = `
 #scrub-recorded { fill: rgba(65, 216, 230, 0.30); }
 #scrub-played { fill: var(--sb-accent); opacity: 0.62; }
 #scrub-future { fill: var(--sb-future); opacity: 0.9; }
+.scrub-event { pointer-events: none; }
+.scrub-event.input { fill: #ffd166; }
+.scrub-event.reload { fill: #b994ff; }
+.scrub-event.reload-error { fill: #ff6b7d; }
 .scrub-handle {
   position: absolute; top: 15px; z-index: 3; width: 14px; height: 20px;
   box-sizing: border-box; padding: 0 !important; transform: translate(-50%, -50%) !important;
@@ -119,6 +124,7 @@ const HTML = `
       <rect id="scrub-recorded" x="0" y="12" width="1000" height="6" rx="3" />
       <rect id="scrub-played" x="0" y="12" width="0" height="6" rx="3" />
       <rect id="scrub-future" x="0" y="11" width="0" height="8" rx="3" />
+      <g id="scrub-events"></g>
     </svg>
     <button id="scrub-playhead" class="scrub-handle" role="slider"
       aria-label="Selected frame" aria-orientation="horizontal"></button>
@@ -165,6 +171,7 @@ export function mountScrubber() {
   const playhead = $("scrub-playhead");
   const previewHandle = $("scrub-preview-handle");
   const overflow = $("scrub-overflow");
+  const eventLayer = $("scrub-events");
   const extrapolate = $("scrub-extrapolate");
   const mode = $("scrub-mode");
   const win = $("scrub-win");
@@ -172,6 +179,8 @@ export function mountScrubber() {
 
   let state = createTimelineState();
   let pendingSeek = null;
+  let lastEventsJson = "";
+  let markerRenderKey = "";
   let raf = 0;
 
   const dispatch = (action) => {
@@ -203,6 +212,36 @@ export function mountScrubber() {
     const rect = rail.getBoundingClientRect();
     const unit = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
     return unitToFrame(unit, current.viewport);
+  };
+
+  const renderMarkers = (current) => {
+    const key =
+      `${current.viewport.lo}:${current.viewport.hi}:` +
+      current.eventMarkers.map((marker) => `${marker.id}:${marker.count}`).join(",");
+    if (key === markerRenderKey) return;
+    markerRenderKey = key;
+    eventLayer.replaceChildren();
+    const ns = "http://www.w3.org/2000/svg";
+    for (const marker of current.eventMarkers) {
+      const tick = document.createElementNS(ns, "rect");
+      const x = marker.unit * 1000;
+      const reload = marker.category === "reload";
+      tick.setAttribute("x", String(x - (reload ? 3 : 2)));
+      tick.setAttribute("y", reload ? "1" : "21");
+      tick.setAttribute("width", reload ? "6" : "4");
+      tick.setAttribute("height", reload ? "9" : "7");
+      tick.setAttribute("rx", reload ? "2" : "1");
+      tick.setAttribute(
+        "class",
+        `scrub-event ${marker.category}${marker.kind === "reload-error" ? " reload-error" : ""}`
+      );
+      tick.dataset.eventId = String(marker.id);
+      const title = document.createElementNS(ns, "title");
+      const suffix = marker.count > 1 ? ` (+${marker.count - 1} nearby)` : "";
+      title.textContent = `frame ${marker.frame}: ${marker.labels[0]}${suffix}`;
+      tick.appendChild(title);
+      eventLayer.appendChild(tick);
+    }
   };
 
   const render = () => {
@@ -251,6 +290,7 @@ export function mountScrubber() {
       ` / ${current.viewport.hi}`;
     pause.textContent = current.paused ? "▶" : "⏸";
     extrapolate.classList.toggle("on", state.preview.enabled);
+    renderMarkers(current);
   };
 
   const beginAbsoluteDrag = (handle, move) => {
@@ -382,6 +422,7 @@ export function mountScrubber() {
     step: () => functor_lang_scrub_step(),
     model: () => state,
     view,
+    events: () => state.events,
     setPreview: (preview) => {
       dispatch({ type: "preview-changed", preview });
       syncInputs();
@@ -395,6 +436,15 @@ export function mountScrubber() {
     if (pendingSeek !== null) {
       functor_lang_seek_scene(pendingSeek);
       pendingSeek = null;
+    }
+    const eventsJson = functor_lang_timeline_events();
+    if (eventsJson !== lastEventsJson) {
+      lastEventsJson = eventsJson;
+      try {
+        dispatch({ type: "events-published", events: JSON.parse(eventsJson) });
+      } catch {
+        // A malformed marker payload must not stop the runtime poll loop.
+      }
     }
     const range = functor_lang_scene_range();
     if (range.length === 2) {

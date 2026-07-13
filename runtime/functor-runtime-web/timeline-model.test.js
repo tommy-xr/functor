@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  clusterTimelineEvents,
   createTimelineState,
   deriveTimelineView,
   normalizePreviewConfig,
@@ -77,4 +78,20 @@ test("resuming returns the viewport to the live recorded extent", () => {
   assert.equal(deriveTimelineView(state).viewport.hi, 200);
   state = publish(state, 241, 241, false);
   assert.equal(deriveTimelineView(state).viewport.hi, 241);
+});
+
+test("timeline events are filtered and clustered within the viewport", () => {
+  const markers = clusterTimelineEvents(
+    [
+      { id: 1, frame: 9, kind: "key-down", label: "Space down" },
+      { id: 2, frame: 20, kind: "key-down", label: "W down" },
+      { id: 3, frame: 20, kind: "key-up", label: "W up" },
+      { id: 4, frame: 80, kind: "reload-ok", label: "hot reload" },
+    ],
+    { lo: 10, hi: 100 }
+  );
+  assert.equal(markers.length, 2);
+  assert.equal(markers[0].category, "input");
+  assert.equal(markers[0].count, 2);
+  assert.equal(markers[1].category, "reload");
 });

@@ -278,16 +278,27 @@ fn apply_pending_reload(game: &mut dyn GameProducer) {
     let Some((push, id)) = PENDING_RELOAD.with(|p| p.borrow_mut().take()) else {
         return;
     };
+    let marker_frame = game
+        .current_scene_frame()
+        .or_else(|| game.scene_frame_range().map(|(_, hi)| hi))
+        .unwrap_or(0)
+        .saturating_add(1);
     let outcome = match push {
         PendingPush::Source(source) => game.reload_source(&source),
         PendingPush::Project(files) => game.reload_project(&files),
     };
     match outcome {
         Ok(status) => {
+            functor_lang_game::publish_timeline_reload(marker_frame, true, &status);
             hide_error_overlay();
             post_reload_result(true, &status, id);
         }
         Err(message) => {
+            functor_lang_game::publish_timeline_reload(
+                marker_frame.saturating_sub(1),
+                false,
+                &message,
+            );
             show_error_overlay(&format!("[functor-lang] reload error: {message}"));
             post_reload_result(false, &message, id);
         }
@@ -1466,6 +1477,7 @@ async fn run_async() -> Result<(), JsValue> {
 
             // Publish the scrubber state for the DOM slider to poll (the UI
             // itself is native HTML in index-functor-lang.html, outside the canvas).
+            functor_lang_game::publish_timeline_inputs(&**game);
             functor_lang_game::publish_scrub_view(
                 game.current_scene_frame(),
                 game.scene_frame_range(),
