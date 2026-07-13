@@ -444,7 +444,8 @@ a:hover {
 
 /* ---------------------------------------------------------------- sandbox */
 
-.sandbox-page {
+.sandbox-page,
+.ide-page {
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -482,7 +483,9 @@ a:hover {
 }
 
 #example-picker,
-#reset {
+#reset,
+#download,
+#restart {
   font-family: var(--font-mono);
   font-size: 0.85rem;
   color: var(--text);
@@ -492,11 +495,15 @@ a:hover {
   padding: 6px 10px;
 }
 
-#reset {
+#reset,
+#download,
+#restart {
   cursor: pointer;
 }
 
-#reset:hover {
+#reset:hover,
+#download:hover,
+#restart:hover {
   border-color: var(--cyan);
   color: var(--cyan);
 }
@@ -598,6 +605,149 @@ a:hover {
   .editor-pane {
     border-right: none;
     border-bottom: 1px solid var(--line);
+  }
+}
+
+/* --------------------------------------------------------------------- ide */
+
+/* Three panes: file sidebar | editor | preview. Reuses .editor-pane,
+   #editor, .preview-pane, #player, #status-log, .status-pill from the
+   sandbox rules above. */
+.ide-split {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 200px minmax(300px, 40%) 1fr;
+  min-height: 0;
+}
+
+.file-pane {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--bg-panel);
+  min-height: 0;
+}
+
+.file-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-pane-title {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+#new-file {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+}
+
+#new-file:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.file-list {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 0 12px;
+}
+
+.file-row.active {
+  background: var(--bg-raised);
+  box-shadow: inset 2px 0 0 var(--pink);
+}
+
+.file-name {
+  flex: 1;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text);
+  background: none;
+  border: 0;
+  padding: 8px 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-row.active .file-name {
+  color: var(--cyan);
+}
+
+.file-delete {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--text-dim);
+  background: none;
+  border: 0;
+  padding: 2px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.file-delete:hover {
+  color: var(--red);
+}
+
+.file-pane-note {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.file-pane-note code {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.editor-tab {
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--cyan);
+}
+
+@media (max-width: 900px) {
+  .ide-split {
+    grid-template-columns: 150px 1fr;
+    grid-template-rows: 1fr 300px;
+  }
+  .file-pane {
+    grid-row: span 2;
+  }
+  .preview-pane {
+    border-top: 1px solid var(--line);
   }
 }
 

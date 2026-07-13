@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>functor IDE — build a Functor Lang game in the browser</title>
+    <meta
+      name="description"
+      content="A browser IDE for Functor Lang: multi-file editing, a live-reloading preview, and download your project as a zip."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="ide-page">
+    <header class="site-header">
+      <a class="wordmark" href="./">FUNCTOR<span class="wordmark-accent">//IDE</span></a>
+      <div class="sandbox-controls">
+        <button id="download" type="button" title="Download the project as a .zip">
+          ↓ project.zip
+        </button>
+        <button id="restart" type="button" title="Reload the preview with a fresh model">
+          ↻ restart
+        </button>
+        <span id="status" class="status-pill" data-state="busy">◌ loading…</span>
+      </div>
+      <nav class="site-nav">
+        <a href="sandbox.html">Sandbox</a>
+        <a href="ide.html" aria-current="page">IDE</a>
+        <a href="docs.html">Docs</a>
+        <a href="https://github.com/tommy-xr/functor">GitHub ↗</a>
+      </nav>
+    </header>
+
+    <main class="ide-split">
+      <aside class="file-pane">
+        <div class="file-pane-head">
+          <span class="file-pane-title">Files</span>
+          <button id="new-file" type="button" title="New .fun file">+</button>
+        </div>
+        <div id="file-list" class="file-list"></div>
+        <p class="file-pane-note">
+          Every <code>.fun</code> is a module (<code>file = module</code>).
+          <code>game.fun</code> is the entry.
+        </p>
+      </aside>
+      <section class="editor-pane">
+        <div class="editor-tab"><span id="active-file">game.fun</span></div>
+        <div id="editor"></div>
+        <pre id="status-log" hidden></pre>
+      </section>
+      <section class="preview-pane">
+        <iframe id="player" title="live game preview" allow="pointer-lock"></iframe>
+      </section>
+    </main>
+
+    <script type="module" src="assets/ide.js"></script>
+  </body>
+</html>

@@ -16,7 +16,7 @@ const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = `${site}dist`;
 
-const PAGES = ["index.html", "sandbox.html", "player.html", "docs.html", "styles.css"];
+const PAGES = ["index.html", "sandbox.html", "ide.html", "player.html", "docs.html", "styles.css"];
 
 const PKG = `${root}runtime/functor-runtime-web/pkg`;
 const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
@@ -80,7 +80,7 @@ if (langPkgPresent) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`, `${site}src/docs.js`, `${site}src/hero.js`],
+  entryPoints: [`${site}src/sandbox.js`, `${site}src/ide.js`, `${site}src/docs.js`, `${site}src/hero.js`],
   bundle: true,
   minify: true,
   format: "esm",
