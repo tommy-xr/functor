@@ -19,116 +19,20 @@
         font: 12px/1 monospace; padding: 6px 10px; cursor: pointer;
         color: #ddd; background: rgba(20,20,24,0.72);
         border: 1px solid rgba(255,255,255,0.15); border-radius: 6px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35); /* depth — matches the scrubber buttons */
+        transition: box-shadow 0.12s ease, background 0.12s ease, transform 0.12s ease;
       }
-      #mouselook:hover { background: rgba(40,40,48,0.85); }
-      /* The time-travel scrubber — native DOM OUTSIDE the canvas, so its
-         controls never fight the game's pointer handling (docs/time-travel.md
-         T3). Hidden until the runtime has recorded some history. */
-      #scrubber {
-        position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
-        z-index: 10; display: none; align-items: center; gap: 10px;
-        font: 12px/1 monospace; color: #eee; padding: 8px 12px 16px;
-        background: rgba(20,20,24,0.82); border-radius: 8px;
-        border: 1px solid rgba(255,255,255,0.14);
+      #mouselook:hover {
+        background: rgba(40,40,48,0.85);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5); transform: translateY(-1px);
       }
-      #scrubber button {
-        font: 12px/1 monospace; color: #eee; cursor: pointer;
-        background: rgba(80,80,90,0.6); border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 5px; padding: 5px 9px;
-      }
-      #scrubber button:hover { background: rgba(110,110,125,0.7); }
-      /* Frame counter: tiny, faded, tucked right under the timeline rail and
-         centered on IT (not the panel) — positioned, so digit growth never
-         reflows the controls. */
-      #scrub-label {
-        position: absolute; top: calc(100% + 1px); left: 50%;
-        transform: translateX(-50%);
-        opacity: 0.5; font-size: 9px; white-space: nowrap; pointer-events: none;
-      }
-      /* The timeline rail: the range input spans the RECORDED part; the
-         translucent strip marks [handle, handle + preview window] — the rail's
-         domain extends past the recorded end while a preview is on. */
-      #scrub-rail { position: relative; display: flex; align-items: center; width: 340px; }
-      #scrub-slider { width: 100%; accent-color: #e0803a; }
-      #scrub-future {
-        position: absolute; height: 5px; top: 50%; transform: translateY(-50%);
-        border-radius: 2px; background: rgba(64,217,255,0.8);
-        pointer-events: none; display: none;
-      }
-      /* The future segment's end cap: drag to resize the forward window in
-         place. Hangs BELOW the track so it never fights the seek thumb. */
-      #scrub-future-cap {
-        position: absolute; width: 8px; height: 14px; top: 50%;
-        transform: translateY(-50%);
-        border-radius: 2px; background: rgba(64,217,255,0.95);
-        cursor: ew-resize; display: none; touch-action: none;
-      }
-      #scrub-future-cap:hover { background: rgba(150,236,255,1); }
-      #scrub-label .fut { color: rgba(64,217,255,0.85); }
-      #scrubber label { display: flex; align-items: center; gap: 4px; }
-      #scrubber input[type="number"] {
-        width: 42px; font: 12px/1 monospace; color: #eee;
-        background: rgba(80,80,90,0.6); border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 5px; padding: 4px 5px;
-      }
-      /* Future preview (docs/time-travel.md T6/T6d): mode selector; the shared
-         window/samples knobs live in the ⚙ popover. */
-      #scrub-preview {
-        font: 12px/1 monospace; color: #eee;
-        background: rgba(80,80,90,0.6); border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 5px; padding: 4px 5px;
-      }
-      #scrub-adv { position: relative; }
-      #scrub-adv > summary {
-        list-style: none; cursor: pointer; font-size: 14px; padding: 4px 6px;
-        background: rgba(80,80,90,0.6); border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 5px; user-select: none;
-      }
-      #scrub-adv > summary::-webkit-details-marker { display: none; }
-      #scrub-adv[open] > summary { background: rgba(110,110,125,0.7); }
-      #scrub-adv-pop {
-        position: absolute; bottom: 130%; right: 0; z-index: 11;
-        display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
-        background: rgba(20,20,24,0.92); border-radius: 8px;
-        border: 1px solid rgba(255,255,255,0.14); white-space: nowrap;
-      }
+      /* The time-travel scrubber is the shared component (scrubber.js); it
+         injects its own styles (the calm site theme). */
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
-    <div id="scrubber">
-      <button id="scrub-pause">Pause</button>
-      <span id="scrub-rail">
-        <input id="scrub-slider" type="range" min="0" max="0" value="0" step="1" />
-        <span id="scrub-future"></span>
-        <span id="scrub-future-cap" title="Drag to resize the preview window"></span>
-        <span id="scrub-label">time-travel</span>
-      </span>
-      <button id="scrub-step">Step ▸</button>
-      <label title="Extrapolate the future while paused: forward-simulate the game and overlay where everything is headed (docs/time-travel.md T6)">
-        <input id="scrub-extrapolate" type="checkbox" checked />extrapolate
-      </label>
-      <details id="scrub-adv">
-        <summary title="Extrapolation settings">⚙</summary>
-        <div id="scrub-adv-pop">
-          <label title="What the extrapolation shows: trail dots, scene-space strobe copies, both, or the screen-space ghost compositor">show
-            <select id="scrub-mode">
-              <option value="1">trail</option>
-              <option value="2">strobe</option>
-              <option value="3" selected>both</option>
-              <option value="4">ghost</option>
-            </select>
-          </label>
-          <label title="How far ahead the preview projects">window
-            <input id="scrub-win" type="number" step="0.5" min="0.5" max="5" value="2" />s
-          </label>
-          <label title="Strobe copies per second — the trail samples finer; density holds as the window resizes (ghost composites at most 8 total)">rate
-            <input id="scrub-rate" type="number" min="1" max="30" value="5" />/s
-          </label>
-        </div>
-      </details>
-    </div>
     <script type="module">
 
       import init, {
@@ -142,17 +46,13 @@
         functor_lang_is_running,
         functor_lang_set_source,
         functor_lang_set_project,
-        functor_lang_scene_frame,
-        functor_lang_scene_range,
-        functor_lang_seek_scene,
-        functor_lang_scrub_toggle_pause,
-        functor_lang_scrub_step,
-        functor_lang_scrub_paused,
-        functor_lang_scrub_set_preview,
-        functor_lang_scrub_set_preview_config,
         functor_lang_inspector_trace_gen,
         functor_lang_inspector_trace,
       } from "./pkg/functor_runtime_web.js";
+      // The time-travel scrubber is the shared component, served next to pkg/
+      // by the dev server (see runtime/functor-runtime-web/scrubber.js). It
+      // wires the functor_lang_scrub_* exports itself.
+      import { mountScrubber } from "./scrubber.js";
 
       // The Functor Lang entry file, substituted in by the CLI's dev server (see
       // cli/src/util/wasm_dev_server.rs). Must be set before init(): the
@@ -286,88 +186,18 @@
         });
       };
 
-      // The time-travel scrubber (docs/time-travel.md T3). Native DOM controls
-      // drive the runtime through the `functor_lang_scrub_*` exports and poll the
-      // published view state each frame to track the handle. Coalesce drags to
-      // one seek per frame, and don't fight the user's drag by writing the
-      // slider value while they hold it.
-      const setupScrubber = () => {
-        const el = document.getElementById("scrubber");
-        const label = document.getElementById("scrub-label");
-        const pause = document.getElementById("scrub-pause");
-        const slider = document.getElementById("scrub-slider");
-        const step = document.getElementById("scrub-step");
-        const future = document.getElementById("scrub-future");
-        const futureCap = document.getElementById("scrub-future-cap");
-
-        let scrubbing = false;
-        let pendingSeek = null;
-        // Paused-scene inspector (visual-debugger PR2b): the runtime bumps a
-        // generation counter only when the trace CONTENT changes (on pause, or
-        // when the paused frame changes). We poll it in the same per-frame loop
-        // and relay each change to the hosting frame — the VS Code live-preview
-        // webview, which forwards it to the LSP as `functor/inspector/trace`.
+      // Relay a changed paused-scene inspector trace to the hosting frame — the
+      // VS Code live-preview webview, which forwards it to the LSP as
+      // `functor/inspector/trace` (visual-debugger PR2b). The runtime bumps a
+      // generation counter only when the trace CONTENT changes (on pause, or
+      // when the paused frame changes); we poll it once per frame. This lives
+      // on the runtime page only — the site player has no inspector to feed.
+      // Posting to `window.parent` is harmless when not embedded (it resolves
+      // to this window, which has no production listener). Kept OUT of the
+      // shared scrubber component (scrubber.js), which the site also uses.
+      const setupInspectorRelay = () => {
         let lastTraceGen = -1;
-        slider.addEventListener("pointerdown", () => (scrubbing = true));
-        window.addEventListener("pointerup", () => (scrubbing = false));
-        slider.addEventListener("input", () => (pendingSeek = Number(slider.value)));
-        pause.addEventListener("click", () => functor_lang_scrub_toggle_pause());
-        step.addEventListener("click", () => functor_lang_scrub_step());
-
-        // Future extrapolation (docs/time-travel.md T6/T6d): ONE switch on the
-        // bar (default ON — pausing shows trail+strobe out of the box); the
-        // mode / window / rate live in the ⚙ popover. JS owns the UI state and
-        // pushes the EFFECTIVE mode (0 while unchecked). Pushed once at setup
-        // too: the browser may restore form state across a reload while the
-        // fresh runtime starts at the defaults.
-        const extrapolate = document.getElementById("scrub-extrapolate");
-        const mode = document.getElementById("scrub-mode");
-        const win = document.getElementById("scrub-win");
-        const rate = document.getElementById("scrub-rate");
-        const pushPreview = () =>
-          functor_lang_scrub_set_preview(extrapolate.checked ? +mode.value : 0);
-        const pushConfig = () =>
-          functor_lang_scrub_set_preview_config(+win.value, +rate.value);
-        extrapolate.addEventListener("change", pushPreview);
-        mode.addEventListener("change", pushPreview);
-        win.addEventListener("input", pushConfig);
-        rate.addEventListener("input", pushConfig);
-        pushPreview();
-        pushConfig();
-
-        // Drag the cyan segment's end cap to resize the forward window in
-        // place — the ⚙ window input's direct-manipulation twin.
-        let capDrag = null; // { x: pointerdown clientX, w: window at start }
-        futureCap.addEventListener("pointerdown", (e) => {
-          e.preventDefault();
-          futureCap.setPointerCapture(e.pointerId);
-          capDrag = { x: e.clientX, w: +win.value };
-        });
-        futureCap.addEventListener("pointermove", (e) => {
-          if (!capDrag) return;
-          const inset = 7;
-          const travel = slider.offsetWidth - 2 * inset;
-          const domain = +slider.max - +slider.min;
-          if (travel <= 0 || domain <= 0) return;
-          const framesPerPx = domain / travel;
-          const w = Math.min(
-            5,
-            Math.max(0.5, capDrag.w + ((e.clientX - capDrag.x) * framesPerPx) / 60)
-          );
-          win.value = w.toFixed(1);
-          pushConfig();
-        });
-        futureCap.addEventListener("pointerup", () => (capDrag = null));
-
-        const update = () => {
-          if (pendingSeek !== null) {
-            functor_lang_seek_scene(pendingSeek);
-            pendingSeek = null;
-          }
-          // Relay a changed inspector trace to the hosting frame. Posting to
-          // `window.parent` is harmless when not embedded (it resolves to this
-          // window, which has no production listener); the VS Code webview
-          // whitelists `functor-inspector-trace` and forwards it to the LSP.
+        const poll = () => {
           const traceGen = functor_lang_inspector_trace_gen();
           if (traceGen !== lastTraceGen) {
             lastTraceGen = traceGen;
@@ -378,61 +208,9 @@
               // A malformed doc (shouldn't happen) must not kill the poll loop.
             }
           }
-          const range = functor_lang_scene_range(); // [] or [lo, hi]
-          if (range.length === 2) {
-            el.style.display = "flex";
-            const lo = range[0], hi = range[1];
-            slider.min = lo;
-            slider.max = hi;
-            const frame = functor_lang_scene_frame();
-            if (!scrubbing) slider.value = frame; // don't tug the handle mid-drag
-            // The rail's domain includes the preview window: the handle can be
-            // dragged INTO the cyan segment — a seek beyond the recorded end
-            // steps the game forward, input-free (the runtime animates the
-            // catch-up). The counter's cyan `+N` is the numeric twin.
-            const span = hi - lo;
-            const futureFrames = extrapolate.checked
-              ? Math.round(+win.value * 60)
-              : 0;
-            slider.max = hi + futureFrames;
-            // The predicted-frames count sits WITH the current frame:
-            // `227 +120 / 227`.
-            label.innerHTML =
-              `${frame | 0}` +
-              (futureFrames > 0 ? ` <span class="fut">+${futureFrames}</span>` : "") +
-              ` / ${hi | 0}`;
-            pause.textContent = functor_lang_scrub_paused() ? "Resume" : "Pause";
-            if (futureFrames > 0 && span > 0) {
-              // The cyan segment [handle, handle + window] plus its draggable
-              // end cap. Anchored to the THUMB (the visual handle, including
-              // mid-drag) and starting at its right edge, so the cyan never
-              // paints over the orange traversed track or the thumb itself.
-              const inset = 7;
-              const travel = slider.offsetWidth - 2 * inset;
-              const domain = hi + futureFrames - lo;
-              const thumb = +slider.value;
-              const thumbPx = inset + ((thumb - lo) / domain) * travel;
-              const leftPx = thumbPx + inset;
-              const endPx = Math.min(
-                thumbPx + (futureFrames / domain) * travel,
-                inset + travel
-              );
-              const widthPx = Math.max(endPx - leftPx, 0);
-              future.style.left = `${leftPx}px`;
-              future.style.width = `${widthPx}px`;
-              future.style.display = "block";
-              futureCap.style.left = `${endPx - 4}px`;
-              futureCap.style.display = "block";
-            } else {
-              future.style.display = "none";
-              futureCap.style.display = "none";
-            }
-          } else {
-            el.style.display = "none"; // nothing recorded yet
-          }
-          requestAnimationFrame(update);
+          requestAnimationFrame(poll);
         };
-        requestAnimationFrame(update);
+        requestAnimationFrame(poll);
       };
 
       // Editor live-preview bridge (docs/functor-lang.md D4): a hosting page (the
@@ -485,7 +263,8 @@
         const deterministic = new URLSearchParams(window.location.search).has("fixed-time");
         if (!deterministic) {
           setupInput();
-          setupScrubber();
+          mountScrubber();
+          setupInspectorRelay();
         }
         setupSetSource();
       });

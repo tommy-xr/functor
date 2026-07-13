@@ -22,14 +22,17 @@ use std::collections::BTreeSet;
 use std::io::Error;
 use std::path::{Path, PathBuf};
 
-use super::wasm_dev_server::{project_file_urls, render_functor_lang_index, JS_FILE_1, WASM_FILE};
+use super::wasm_dev_server::{
+    project_file_urls, render_functor_lang_index, JS_FILE_1, SCRUBBER_JS, WASM_FILE,
+};
 
 /// Names at the project root the exporter owns in the bundle: its output dir
-/// and the runtime files it writes. Project files with these names are
+/// and the runtime files it writes (the index page, the `pkg/` wasm bundle,
+/// and the shared `scrubber.js` component). Project files with these names are
 /// skipped (and reported via [`WasmExport::shadowed`]) rather than merged —
 /// merging a project `pkg/` with the runtime's would leave stray files
 /// beside the wasm bundle.
-const RESERVED_ROOT: &[&str] = &["dist", "index.html", "pkg"];
+const RESERVED_ROOT: &[&str] = &["dist", "index.html", "pkg", "scrubber.js"];
 
 /// Extensions the runtime fetches at runtime: models (plus the external
 /// buffers/images a non-embedded `.gltf` references), audio, textures.
@@ -108,6 +111,7 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
 
     // The runtime files go in last so nothing in the project can shadow them.
     std::fs::write(out.join("index.html"), render_functor_lang_index(entry, &files))?;
+    std::fs::write(out.join("scrubber.js"), SCRUBBER_JS)?;
     let pkg = out.join("pkg");
     std::fs::create_dir_all(&pkg)?;
     std::fs::write(pkg.join("functor_runtime_web.js"), JS_FILE_1)?;
@@ -117,7 +121,7 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
         out_dir: out,
         file_count: stats.files,
         project_bytes: stats.bytes,
-        runtime_bytes: (JS_FILE_1.len() + WASM_FILE.len()) as u64,
+        runtime_bytes: (JS_FILE_1.len() + WASM_FILE.len() + SCRUBBER_JS.len()) as u64,
         missing_assets: missing_asset_references(root, entry),
         shadowed,
         skipped_symlinks: stats.skipped_symlinks,
@@ -299,6 +303,10 @@ mod tests {
         assert!(index.contains("\"pieces.fun\""), "sibling module in the file list");
         assert!(!fs::read(out.join("pkg/functor_runtime_web_bg.wasm")).unwrap().is_empty());
         assert!(!fs::read(out.join("pkg/functor_runtime_web.js")).unwrap().is_empty());
+        assert!(
+            fs::read_to_string(out.join("scrubber.js")).unwrap().contains("mountScrubber"),
+            "the shared scrubber component ships with the bundle"
+        );
         assert!(out.join("game.fun").is_file());
         assert!(out.join("pieces.fun").is_file());
         assert!(out.join("model.glb").is_file());
@@ -356,17 +364,19 @@ let g = "pkg/tex.png"
     }
 
     #[test]
-    fn hidden_sibling_modules_fail_the_export() {
+    fn hidden_sibling_modules_are_skipped_not_bundled() {
         let dir = TestDir::new("hidden-module");
         dir.write("game.fun", "let init = 0");
-        // Listed by project_files (it's a sibling *.fun) but excluded by the
-        // copy's hidden rule — exporting would bake a 404 into the index.
+        // A dot-prefixed sibling (an editor temp file like `.#game.fun`) is
+        // filtered by project loading (functor_lang::project skips non-loadable
+        // stems), so it's neither listed in the index nor copied. The export
+        // succeeds with only the entry — the hidden file never reaches it.
         dir.write(".hidden.fun", "let ghost = 1");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let err = export_functor_lang_wasm(&wd, "game.fun").unwrap_err();
-        assert!(err.to_string().contains(".hidden.fun"), "{err}");
-        assert!(!dir.path().join("dist").exists(), "failed before any write");
+        let export = export_functor_lang_wasm(&wd, "game.fun").unwrap();
+        assert_eq!(export.file_count, 1, "only game.fun ships");
+        assert!(!export.out_dir.join(".hidden.fun").exists(), "hidden sibling not bundled");
     }
 
     #[cfg(unix)]
