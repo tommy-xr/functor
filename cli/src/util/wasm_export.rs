@@ -23,7 +23,8 @@ use std::io::Error;
 use std::path::{Path, PathBuf};
 
 use super::wasm_dev_server::{
-    project_file_urls, render_functor_lang_index, JS_FILE_1, SCRUBBER_JS, WASM_FILE,
+    project_file_urls, render_functor_lang_index, JS_FILE_1, SCRUBBER_JS, TIMELINE_MODEL_JS,
+    WASM_FILE,
 };
 
 /// Names at the project root the exporter owns in the bundle: its output dir
@@ -32,7 +33,13 @@ use super::wasm_dev_server::{
 /// skipped (and reported via [`WasmExport::shadowed`]) rather than merged —
 /// merging a project `pkg/` with the runtime's would leave stray files
 /// beside the wasm bundle.
-const RESERVED_ROOT: &[&str] = &["dist", "index.html", "pkg", "scrubber.js"];
+const RESERVED_ROOT: &[&str] = &[
+    "dist",
+    "index.html",
+    "pkg",
+    "scrubber.js",
+    "timeline-model.js",
+];
 
 /// Extensions the runtime fetches at runtime: models (plus the external
 /// buffers/images a non-embedded `.gltf` references), audio, textures.
@@ -112,6 +119,7 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
     // The runtime files go in last so nothing in the project can shadow them.
     std::fs::write(out.join("index.html"), render_functor_lang_index(entry, &files))?;
     std::fs::write(out.join("scrubber.js"), SCRUBBER_JS)?;
+    std::fs::write(out.join("timeline-model.js"), TIMELINE_MODEL_JS)?;
     let pkg = out.join("pkg");
     std::fs::create_dir_all(&pkg)?;
     std::fs::write(pkg.join("functor_runtime_web.js"), JS_FILE_1)?;
@@ -121,7 +129,10 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
         out_dir: out,
         file_count: stats.files,
         project_bytes: stats.bytes,
-        runtime_bytes: (JS_FILE_1.len() + WASM_FILE.len() + SCRUBBER_JS.len()) as u64,
+        runtime_bytes: (JS_FILE_1.len()
+            + WASM_FILE.len()
+            + SCRUBBER_JS.len()
+            + TIMELINE_MODEL_JS.len()) as u64,
         missing_assets: missing_asset_references(root, entry),
         shadowed,
         skipped_symlinks: stats.skipped_symlinks,
@@ -306,6 +317,12 @@ mod tests {
         assert!(
             fs::read_to_string(out.join("scrubber.js")).unwrap().contains("mountScrubber"),
             "the shared scrubber component ships with the bundle"
+        );
+        assert!(
+            fs::read_to_string(out.join("timeline-model.js"))
+                .unwrap()
+                .contains("deriveTimelineView"),
+            "the scrubber's functional core ships with the bundle"
         );
         assert!(out.join("game.fun").is_file());
         assert!(out.join("pieces.fun").is_file());

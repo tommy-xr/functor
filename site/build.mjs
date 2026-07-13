@@ -23,6 +23,7 @@ const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
 // The shared time-travel scrubber, imported by player.html (served next to it,
 // like pkg/). Single source in the runtime crate — copied, never duplicated.
 const SCRUBBER = `${root}runtime/functor-runtime-web/scrubber.js`;
+const TIMELINE_MODEL = `${root}runtime/functor-runtime-web/timeline-model.js`;
 
 // The editor's in-browser language intelligence (diagnostics/hover), a separate
 // small wasm bundle built by `npm run build:lang-wasm`. Optional: the site must
@@ -62,6 +63,7 @@ for (const file of PKG_FILES) {
   await cp(`${PKG}/${file}`, `${dist}/pkg/${file}`);
 }
 await cp(SCRUBBER, `${dist}/scrubber.js`);
+await cp(TIMELINE_MODEL, `${dist}/timeline-model.js`);
 for (const [name, path] of Object.entries(EXAMPLES)) {
   await cp(path, `${dist}/examples/${name}.fun`);
 }
