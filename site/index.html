@@ -91,24 +91,6 @@
         title="Open this program live in the sandbox"
         target="_blank"
         >▶ try it</a></pre>
-      <ul class="lang-bullets">
-        <li>
-          There is no <code>if</code>/<code>else</code> — the conditional is a bool-literal
-          <code>match</code> on <code>true</code>/<code>false</code>.
-        </li>
-        <li>
-          Pipelines thread last: <code>x |> f(a)</code> is <code>f(a, x)</code>, so every prelude
-          function takes its subject last.
-        </li>
-        <li>
-          File = module: every sibling <code>.fun</code> is a module, and a <code>.funi</code>
-          interface file types the host's values.
-        </li>
-        <li>
-          Gradual Hindley–Milner types: real inference with let-polymorphism, annotations
-          optional and diagnostics on demand.
-        </li>
-      </ul>
     </section>
 
     <section class="differentiators">
@@ -133,8 +115,7 @@
           <h2>Pure MVU + honest effects</h2>
           <p>
             A game is pure Model–View–Update. Effects are values too — randomness, time, network —
-            performed by the shell and folded back through <code>update</code>, so a fake runner
-            makes every run deterministic.
+            performed by the shell and folded back through <code>update</code>.
           </p>
         </div>
         <div class="feature">
