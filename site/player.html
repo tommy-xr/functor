@@ -84,6 +84,7 @@
         functor_lang_mouse_wheel,
         functor_lang_is_running,
         functor_lang_set_source,
+        functor_lang_set_project,
         functor_lang_scene_frame,
         functor_lang_scene_range,
         functor_lang_seek_scene,
@@ -103,15 +104,22 @@
       // push, which deliberately preserves the running model.
       const src = params.get("src");
       const requested = params.get("game");
+      // ?project=inline: the HOSTING page owns the whole file set (the IDE)
+      // and delivers it by postMessage — nothing is fetched. The boot is
+      // deferred until the first `functor-lang-set-project` arrives (see the
+      // bottom of this script), so no game path is set here.
+      const inlineProject = params.get("project") === "inline";
       // Same-origin relative paths only: reject absolute/protocol-relative
       // URLs so the page can't be pointed at a third-party source.
       const game =
         requested && !requested.startsWith("/") && !requested.includes(":")
           ? requested
           : "examples/hero.fun";
-      window.__functorLangGamePath = src
-        ? "data:text/plain;base64," + src.replace(/-/g, "+").replace(/_/g, "/")
-        : game.split("/").map(encodeURIComponent).join("/");
+      if (!inlineProject) {
+        window.__functorLangGamePath = src
+          ? "data:text/plain;base64," + src.replace(/-/g, "+").replace(/_/g, "/")
+          : game.split("/").map(encodeURIComponent).join("/");
+      }
 
       // Map a browser KeyboardEvent.code to the canonical key code expected by
       // the game (functor_runtime_common::Key as i32). Keep in sync with
@@ -230,47 +238,109 @@
         requestAnimationFrame(update);
       };
 
-      // The live-edit seam: the hosting page (the sandbox) posts the full
-      // .fun source and the runtime hot-swaps it, model preserved. Pushes are
-      // accepted only from the HOSTING frame; replies go only to the sender.
-      const setupSetSource = () => {
-        window.addEventListener("message", (event) => {
-          if (event.source !== window.parent) return;
-          const data = event.data;
-          if (!data) return;
-          // Handshake: a `functor-lang-preview-hello` from the hosting bridge asks
-          // us to re-announce readiness (its listener may have attached after our
-          // one-shot ready fired). Reply only once we're actually live; before
-          // that, the one-shot announce below covers this direction.
-          if (data.type === "functor-lang-preview-hello") {
-            if (functor_lang_is_running()) {
-              window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
-            }
+      // The live-edit seam: the hosting page (the sandbox / the IDE) posts
+      // .fun source (`functor-lang-set-source`) or a whole file set
+      // (`functor-lang-set-project`, the IDE) and the runtime hot-swaps it,
+      // model preserved. ONE listener, installed synchronously below, so no
+      // push is lost in the async init() → producer-ready window (a
+      // fast-typing IDE pushes exactly there); pushes that arrive before the
+      // producer runs are queued and replayed once it does. Pushes are
+      // accepted only from the HOSTING frame; replies go to the sender.
+      //
+      // Trust model: we gate on `event.source === window.parent` but not
+      // `event.origin` — the same model as the long-standing set-source seam.
+      // A framing page can push arbitrary Functor Lang, but it runs only in the
+      // sandboxed interpreter (no JS eval), so inline set-project is no more
+      // powerful than set-source. An origin allowlist, if ever added, must
+      // cover both.
+      const validFiles = (files) =>
+        Array.isArray(files) && files.length > 0 &&
+        files.every((f) => f && typeof f.path === "string" && f.path && typeof f.source === "string");
+
+      const postResult = (id, ok, message) =>
+        window.parent.postMessage(
+          { type: "functor-lang-set-source-result", ok, message, ...(id !== undefined ? { id } : {}) },
+          "*"
+        );
+
+      // Route a push to the wasm export. The frame loop applies it at a safe
+      // point (never mid-frame) and posts a `functor-lang-set-source-result`
+      // back with the outcome (a broken push keeps the old program); the
+      // optional correlation id is echoed so the sender can drop stale replies.
+      const applyPush = (data) => {
+        const id = typeof data.id === "number" ? data.id : undefined;
+        if (data.type === "functor-lang-set-source" && typeof data.source === "string") {
+          functor_lang_set_source(data.source, id);
+        } else if (data.type === "functor-lang-set-project") {
+          if (!validFiles(data.files)) {
+            postResult(id, false, "malformed project push: expected a non-empty array of {path, source}");
             return;
           }
-          if (data.type !== "functor-lang-set-source" || typeof data.source !== "string") return;
-          // Queue the source; the wasm frame loop applies it at a safe point
-          // (never mid-frame) and posts an `functor-lang-set-source-result` back to the
-          // hosting frame with the outcome (a broken push keeps the old program).
-          // The push's optional correlation id is echoed in the result so the
-          // sender can discard stale replies; id-less pushes work as before.
-          functor_lang_set_source(data.source, typeof data.id === "number" ? data.id : undefined);
-        });
-        // Announce once the PRODUCER is installed (not just the wasm module):
-        // run_async still has to fetch the source, so poll functor_lang_is_running().
-        if (window.parent !== window) {
-          const announce = () => {
-            if (functor_lang_is_running()) {
-              window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
-            } else {
-              setTimeout(announce, 50);
-            }
-          };
-          announce();
+          functor_lang_set_project(data.files, id);
         }
       };
 
-      init().then(() => {
+      const pushQueue = [];
+      let booted = false; // inline: has the first valid project kicked off boot()?
+
+      window.addEventListener("message", (event) => {
+        if (event.source !== window.parent) return;
+        const data = event.data;
+        if (!data) return;
+        // Handshake: a `functor-lang-preview-hello` from the hosting bridge asks
+        // us to re-announce readiness (its listener may have attached after our
+        // one-shot ready fired). Reply only once we're actually live.
+        if (data.type === "functor-lang-preview-hello") {
+          if (functor_lang_is_running()) {
+            window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
+          }
+          return;
+        }
+        if (data.type !== "functor-lang-set-source" && data.type !== "functor-lang-set-project") return;
+
+        // Inline mode: the FIRST valid project boots the player from memory
+        // (the runtime reads __functorLangProjectSources instead of fetching).
+        // A malformed first push is rejected but keeps the handshake open, so
+        // the host can retry — it does NOT consume the boot.
+        if (inlineProject && !booted) {
+          if (data.type !== "functor-lang-set-project") return; // wait for a project
+          if (!validFiles(data.files)) {
+            postResult(
+              typeof data.id === "number" ? data.id : undefined,
+              false,
+              "malformed project push: expected a non-empty array of {path, source}"
+            );
+            return;
+          }
+          booted = true;
+          window.__functorLangProjectSources = data.files;
+          // Only to satisfy run_async's entry guard; the sources come from
+          // __functorLangProjectSources above, so this path is never fetched.
+          window.__functorLangGamePath = String(data.files[0].path);
+          boot();
+          return; // the initial project IS the boot, not a hot-swap push
+        }
+
+        // Producer already up → apply now; else queue for replay after it boots.
+        if (functor_lang_is_running()) applyPush(data);
+        else pushQueue.push(data);
+      });
+
+      // Announce readiness once the PRODUCER is installed (init() resolving
+      // only means the wasm module loaded; run_async still has to build the
+      // producer), then replay anything queued during that window.
+      const announceWhenReady = () => {
+        if (!functor_lang_is_running()) {
+          setTimeout(announceWhenReady, 50);
+          return;
+        }
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
+        }
+        while (pushQueue.length) applyPush(pushQueue.shift());
+      };
+
+      const boot = () => init().then(() => {
         // In a deterministic capture (?fixed-time), don't wire up input — a
         // stray mouse move would turn the camera — and skip the scrubber
         // entirely, so its chrome never appears in a golden capture. Hide the
@@ -285,8 +355,17 @@
           setupInput();
           if (!scrubberOff) setupScrubber();
         }
-        setupSetSource();
+        announceWhenReady();
       });
+
+      if (inlineProject) {
+        // Tell the host the listener is armed — it then pushes the initial
+        // project, which boots the player. (A message sent while the page was
+        // still parsing would be lost, so the host waits for this.)
+        window.parent.postMessage({ type: "functor-lang-project-waiting" }, "*");
+      } else {
+        boot();
+      }
     </script>
   </body>
 </html>

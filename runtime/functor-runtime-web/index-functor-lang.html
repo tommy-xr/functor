@@ -141,6 +141,7 @@
         functor_lang_ui_wants_keyboard,
         functor_lang_is_running,
         functor_lang_set_source,
+        functor_lang_set_project,
         functor_lang_scene_frame,
         functor_lang_scene_range,
         functor_lang_seek_scene,
@@ -445,11 +446,19 @@
         window.addEventListener("message", (event) => {
           if (event.source !== window.parent) return;
           const data = event.data;
-          if (!data || data.type !== "functor-lang-set-source" || typeof data.source !== "string") return;
-          // Queue the source; the wasm frame loop applies it at a safe point
+          if (!data) return;
+          // Queue the push; the wasm frame loop applies it at a safe point
           // (never mid-frame) and posts back an `functor-lang-set-source-result` message
           // with the outcome — so a broken push keeps the old program running.
-          functor_lang_set_source(data.source);
+          if (data.type === "functor-lang-set-source" && typeof data.source === "string") {
+            functor_lang_set_source(data.source);
+          } else if (data.type === "functor-lang-set-project" && Array.isArray(data.files)) {
+            // The multi-file sibling (a host that owns every file, e.g. the
+            // site IDE): whole file set replaced, same result message. Forward
+            // the optional correlation id so stale-result matching works (the
+            // Rust side validates the array shape and rejects a malformed set).
+            functor_lang_set_project(data.files, typeof data.id === "number" ? data.id : undefined);
+          }
         });
         // Tell the hosting frame the push seam is live — the editor panel
         // flushes the current buffer on this (edits made while the server
