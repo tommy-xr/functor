@@ -403,6 +403,13 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     () => !!document.getElementById("scrubber")
   );
   check("sandbox player has the scrubber element", sandboxHasScrubber);
+  const customHandles = await player.evaluate(() =>
+    ["scrub-playhead", "scrub-preview-handle"].every((id) => {
+      const handle = document.getElementById(id);
+      return handle?.getAttribute("role") === "slider" && handle.tabIndex === 0;
+    })
+  );
+  check("scrubber exposes two keyboard-focusable slider handles", customHandles);
 
   await player.waitForFunction(() => window.__scrub.range().length === 2, {
     timeout: 10000,
@@ -424,6 +431,23 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   const h1 = await regionHash(player);
   check("pause freezes the frame counter", f0 === f1, `${f0} -> ${f1}`);
   check("pause freezes the pixels", h0 === h1, `hash ${h0} -> ${h1}`);
+
+  // Preview duration changes the logical second endpoint, but never the paused
+  // viewport. At the live tail the endpoint is clipped and advertised as such.
+  const previewBefore = await player.evaluate(() => window.__scrub.view());
+  await player.evaluate(() => window.__scrub.setPreview({ enabled: true, seconds: 5 }));
+  const previewAfter = await player.evaluate(() => window.__scrub.view());
+  check(
+    "preview changes keep the paused timeline domain fixed",
+    previewBefore.viewport.lo === previewAfter.viewport.lo &&
+      previewBefore.viewport.hi === previewAfter.viewport.hi,
+    `${JSON.stringify(previewBefore.viewport)} -> ${JSON.stringify(previewAfter.viewport)}`
+  );
+  check(
+    "off-rail extrapolation is clipped without shortening the logical preview",
+    previewAfter.previewEndFrame > previewAfter.viewport.hi && previewAfter.previewClippedFrames > 0,
+    JSON.stringify(previewAfter)
+  );
 
   // Seek snaps to a frame within the range.
   const rng = await player.evaluate(() => window.__scrub.range());
