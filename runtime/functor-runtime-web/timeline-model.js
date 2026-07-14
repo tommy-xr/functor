@@ -84,7 +84,10 @@ export function reduceTimeline(state, action) {
         const span = Math.max(continuity.span, recorded.hi - recorded.lo);
         const hi = Math.max(continuity.anchorHi, recorded.hi);
         viewport = { lo: hi - span, hi };
-        if (recorded.lo <= viewport.lo) {
+        // A middle branch may leave unavailable history on BOTH sides. Keep
+        // the old visual span until the new recording covers the whole window;
+        // clearing as soon as the prefix is covered collapses 0–200 to 0–76.
+        if (recorded.lo <= viewport.lo && recorded.hi >= viewport.hi) {
           continuity = null;
           viewport = recorded;
         }

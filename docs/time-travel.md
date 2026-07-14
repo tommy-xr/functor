@@ -45,13 +45,20 @@ on both the desktop runner and the web/VSCode preview. Exercised by
 - **Reload is conditionally a history boundary.** Plain-data model snapshots
   carry no module IR, so their coupled model/physics/time history remains
   seekable under the new program — the common constant-tweak workflow keeps its
-  full rewind window. If any retained model contains a callable or opaque host
-  value, the old generation cannot safely cross the edit: the rebound live scene
-  seeds a new seekable generation at the same frame and the UI marks older
-  frames as unavailable. Preserved snapshots are **new code over old data**, not
+  full rewind window. Before swapping code, a scrubbed reload whose history
+  contains a callable or opaque host value commits the selected frame as a
+  conservative boundary. If the unsafe values existed only in the discarded
+  future, the remaining plain-data prefix stays seekable; if an unsafe value
+  remains at or before the selected frame, the rebound live scene seeds a new
+  one-frame generation there and the UI marks the rest unavailable. Preserved
+  snapshots are **new code over old data**, not
   a replay: a draw-only constant changes the whole retained past immediately,
   while a constant used by `tick` changes state evolution only after playback
-  resumes.
+  resumes. When the retained history and authoritative live model are entirely
+  reload-safe plain data, reloading while scrubbed is non-destructive: the
+  selected frame and recorded future both remain seekable. Resume is still the
+  explicit branch point that discards that future, while the slider keeps its
+  prior visual span as the new branch fills it.
   "Rewind shows the earlier *code* version" (the harder frontier
   where code-bearing snapshots retain or replay old code) remains deferred.
 - **`tts` is a game clock, not a wall clock.** Both shells own a shared
@@ -324,6 +331,45 @@ them with weights. Fork+overlay is K=2 at (0.5, 0.5) from two branches; ghosting
 is K=N at `1/N` from one branch stepped forward. Build the compositor once and
 both land; the old polyline/trail primitive becomes an optional later "precise
 single-path read," not a prerequisite.
+
+## Deferred follow-ups: keep and reconstruct the old future
+
+Today's stripe after Resume has a specific meaning: the selected frame became a
+branch point, so the old suffix is no longer part of the authoritative run. The
+slider keeps its old scale while new cyan history replaces that suffix, but the
+old suffix itself is discarded. Two follow-ups can turn that honest placeholder
+into a more powerful authoring tool:
+
+1. **Persistent forks / ghost history (T5).** Instead of truncating the old
+   suffix, retain it as an immutable alternative branch identified by its fork
+   frame and code generation. Keep one branch authoritative, render alternatives
+   dimmed or as ghosts, and let the user inspect, compare, switch to, or delete a
+   branch explicitly. The ordinary linear scrubber should remain simple; branch
+   controls appear only after a fork exists.
+2. **Full event and effect record/replay (T7–T8).** Extend the frame log beyond
+   keyboard/pointer input to include every non-reproducible inbound value and
+   every outbound effect: subscription deliveries, HTTP/WebSocket requests and
+   responses, audio commands/completions, random/time results, and physics query
+   results. Replay supplies recorded inbound results and suppresses real outbound
+   work, so scrubbing or rebuilding history never repeats a purchase, request,
+   message, or sound.
+
+Together these enable **reconstruction under edited code**: restore a keyframe
+(or `init`), replay recorded inputs and effect results through the new program,
+and retain the former run as a comparison branch. Same-code replay can consume
+results positionally. Replay after an edit must match effects by stable identity
+and place a visible divergence marker when the new program asks for a result the
+log cannot supply; it must never silently fall back to performing the live
+effect. Replaying literally from frame zero additionally requires retaining the
+initial model/code revision and all environmental inputs, so keyframe-based
+reconstruction is the incremental first step.
+
+The functional core should expose branch/event-log transitions as pure data and
+tests; shells own persistence, actual effect execution, branch selection, and
+the overlay/compositor. Required headless tests are: no duplicate side effects,
+byte-identical same-code replay, deterministic branch reconstruction from a
+keyframe, explicit divergence under a changed effect stream, and bounded branch
+retention.
 
 ## LLM-native angle
 

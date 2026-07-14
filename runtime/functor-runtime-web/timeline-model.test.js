@@ -171,6 +171,23 @@ test("an unsafe reload in the middle stripes both discarded sides", () => {
   assert.equal(view.hasUnavailableHistory, true);
 });
 
+test("a resumed middle branch keeps the old total until it is refilled", () => {
+  let state = publish(createTimelineState(), 75, 200, true);
+  state = publish(state, 76, 76, false, 0, 1);
+
+  let view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 0, hi: 200 });
+  assert.equal(view.recordedEndUnit, 76 / 200);
+  assert.equal(view.unavailableAfterStartUnit, 76 / 200);
+  assert.equal(view.hasUnavailableHistory, true);
+
+  state = publish(state, 200, 200, false, 0, 1);
+  view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 0, hi: 200 });
+  assert.equal(view.hasUnavailableHistory, false);
+  assert.equal(state.continuity, null);
+});
+
 test("live frames replace a reload stripe without collapsing the visual scale", () => {
   let state = publish(createTimelineState(), 300, 300, false);
   state = publish(state, 300, 300, false, 300, 1);

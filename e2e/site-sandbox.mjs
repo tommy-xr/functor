@@ -670,19 +670,23 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     branchMarkersAreAuthoritative
   );
 
-  // A successful reload while scrubbed keeps the selected frame as the visible
-  // boundary. This plain-data model retains its pre-reload branch history.
+  // A safe reload while scrubbed is non-destructive: it keeps the selected
+  // cursor AND the complete recorded future. Step/Resume branches later.
   await player.waitForFunction(() => !window.__scrub.paused(), { timeout: 3000 });
   await player.waitForFunction(() => {
     const range = window.__scrub.range();
     return range.length === 2 && range[1] - range[0] >= 4;
   });
-  const reloadWhileScrubbed = await player.evaluate(() => ({
-    hi: window.__scrub.range()[1],
-    lastId: Math.max(-1, ...window.__scrub.events().map((event) => event.id)),
-  }));
   await player.evaluate(() => window.__scrub.togglePause());
   await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  // Capture the domain only after Pause has taken effect. Frames can still be
+  // published between the earlier running-state probe and this boundary.
+  const reloadWhileScrubbed = await player.evaluate(() => ({
+    hi: window.__scrub.range()[1],
+    viewportHi: window.__scrub.view().viewport.hi,
+    hadUnavailableHistory: window.__scrub.view().hasUnavailableHistory,
+    lastId: Math.max(-1, ...window.__scrub.events().map((event) => event.id)),
+  }));
   await player.evaluate((hi) => window.__scrub.seek(hi - 2), reloadWhileScrubbed.hi);
   await player.waitForFunction(
     (hi) => window.__scrub.frame() === hi - 2,
@@ -720,12 +724,12 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   check("reload boundary keeps the visible Step/Resume transport", reloadTransportIsVisible);
   const safeReloadView = await player.evaluate(() => window.__scrub.view());
   check(
-    "paused plain-data reload keeps its selected frame and retained past",
+    "paused plain-data reload keeps its selected frame and complete future",
     safeReloadView.selectedFrame === selectedBeforeReload &&
       safeReloadView.recorded.lo < selectedBeforeReload &&
-      safeReloadView.recorded.hi === selectedBeforeReload &&
-      safeReloadView.unavailableEndUnit === 0 &&
-      safeReloadView.unavailableAfterStartUnit < 1,
+      safeReloadView.recorded.hi === reloadWhileScrubbed.hi &&
+      safeReloadView.viewport.hi === reloadWhileScrubbed.viewportHi &&
+      safeReloadView.hasUnavailableHistory === reloadWhileScrubbed.hadUnavailableHistory,
     JSON.stringify(safeReloadView)
   );
   await player.locator("#scrub-step").click();
@@ -734,12 +738,15 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     paused: window.__scrub.paused(),
     frame: window.__scrub.frame(),
     range: window.__scrub.range(),
+    view: window.__scrub.view(),
   }));
   check(
-    "stepping after a scrubbed reload records its boundary",
-    postReloadStep.range.length === 2 &&
-      postReloadStep.range[0] <= scrubbedReloadMarker.frame &&
-      scrubbedReloadMarker.frame <= postReloadStep.range[1],
+    "stepping after a safe reload branches without shrinking the visual total",
+      postReloadStep.range.length === 2 &&
+      postReloadStep.range[1] === selectedBeforeReload + 1 &&
+      postReloadStep.view.viewport.hi === reloadWhileScrubbed.viewportHi &&
+      postReloadStep.view.hasUnavailableHistory &&
+      postReloadStep.view.unavailableAfterStartUnit < 1,
     JSON.stringify({ postReloadStep, scrubConsole: scrubConsole.slice(-8) })
   );
   const preservedRailStartsAtHistoryFloor = await player.evaluate(
@@ -750,7 +757,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     preservedRailStartsAtHistoryFloor
   );
   check(
-    "reload while scrubbed branches from the selected frame",
+    "reload while scrubbed marks the selected frame without branching",
     scrubbedReloadMarker.frame === selectedBeforeReload,
     JSON.stringify({ reloadWhileScrubbed, scrubbedReloadMarker })
   );

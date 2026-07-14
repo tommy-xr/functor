@@ -265,18 +265,15 @@ impl SceneRecorder {
         &mut self,
         rebound_model: &Value,
         physics_fixed_frame: u64,
+        live_model_was_safe: bool,
     ) -> ReloadHistory {
         let current_frame = self.current_scene_frame();
-        self.scrub_pos = None;
-        if self
-            .model_history
-            .snapshots
-            .iter()
-            .all(Value::is_reload_safe_snapshot)
-        {
+        if live_model_was_safe && self.reload_history_is_safe() {
             // Input can update the live model while paused, without producing
             // a new recorded frame. Make the snapshot at the visible cursor
             // match that authoritative live state before retaining history.
+            // Keep `scrub_pos`: reload is non-destructive, and Resume remains
+            // the operation that branches away the recorded future.
             if let Some(frame) = current_frame {
                 self.model_history.replace(frame, rebound_model);
                 self.world_frame_history
@@ -285,6 +282,7 @@ impl SceneRecorder {
             return ReloadHistory::Preserved;
         }
 
+        self.scrub_pos = None;
         let Some((frame, tts)) = current_frame.map(|frame| {
             let tts = *self.tts_history.seek(frame);
             (frame, tts)
@@ -304,15 +302,51 @@ impl SceneRecorder {
         ReloadHistory::RestartedAt(frame)
     }
 
+    /// Whether every retained model snapshot is independent of the loaded
+    /// module and can therefore remain seekable across a hot reload.
+    pub fn reload_history_is_safe(&self) -> bool {
+        self.model_history
+            .snapshots
+            .iter()
+            .all(Value::is_reload_safe_snapshot)
+    }
+
+    /// Classify and, when necessary, branch the coupled timeline before the
+    /// producer rebinds its authoritative live model. The live model may have
+    /// changed without a recorded frame while paused, so it participates in
+    /// the safety decision independently of the snapshot ring.
+    ///
+    /// Branching normally restores the selected snapshot into `model`; retain
+    /// and restore the authoritative live value around that operation so a
+    /// paused update is not silently lost. The returned live-model flag must be
+    /// passed to [`Self::finish_reload`] after rebinding.
+    pub fn prepare_reload(
+        &mut self,
+        model: &mut Value,
+        physics: &mut SteppedPhysics,
+        physics_frame: &mut u64,
+        has_physics: bool,
+    ) -> bool {
+        let live_model_is_safe = model.is_reload_safe_snapshot();
+        if !self.reload_history_is_safe() || !live_model_is_safe {
+            let authoritative_model = model.clone();
+            self.commit_scrub_before_reload(model, physics, physics_frame, has_physics);
+            *model = authoritative_model;
+        }
+        live_model_is_safe
+    }
+
     /// Monotonic revision for destructive branch/reload boundaries.
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// Commit a non-destructive scrub before a reload evaluates whether the
-    /// snapshot rings can survive. This preserves the state the user is
-    /// inspecting and, critically, branches the physics timeline in lockstep
-    /// before `scrub_pos` disappears.
+    /// Commit a non-destructive scrub before an UNSAFE reload replaces the
+    /// snapshot generation. Safe plain-data reloads must not call this: they
+    /// retain both the selected cursor and its recorded future until Resume.
+    /// For an unsafe reload this preserves the state the user is inspecting
+    /// and branches the physics timeline in lockstep before `scrub_pos`
+    /// disappears.
     pub fn commit_scrub_before_reload(
         &mut self,
         model: &mut Value,
@@ -713,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_data_reload_while_scrubbed_preserves_the_branched_history() {
+    fn plain_data_reload_while_scrubbed_preserves_the_full_future_until_resume() {
         let mut rec = SceneRecorder::new();
         for frame in 0..5u64 {
             rec.record(&Value::Number(frame as f64), 0, frame as f64);
@@ -724,21 +758,22 @@ mod tests {
         rec.seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek");
 
-        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false);
-        assert_eq!(rec.scene_frame_range(), Some((0, 2)));
-        assert_eq!(rec.next_frame(), 3);
         let generation = rec.generation();
+        assert!(rec.reload_history_is_safe());
         assert_eq!(
-            rec.finish_reload(&model, physics_frame),
+            rec.finish_reload(&model, physics_frame, true),
             ReloadHistory::Preserved
         );
-        assert_eq!(rec.scene_frame_range(), Some((0, 2)));
+        assert_eq!(rec.scene_frame_range(), Some((0, 4)));
+        assert_eq!(rec.current_scene_frame(), Some(2));
+        assert_eq!(rec.scrub_render_tts(), Some(2.0));
         assert_eq!(rec.generation(), generation);
-        assert_eq!(
-            rec.next_frame(),
-            3,
-            "reload resumes after the selected branch"
-        );
+        assert_eq!(rec.next_frame(), 5, "reload must not branch the future");
+
+        assert!(rec.commit_scrub_if_resuming(&mut model, &mut physics, &mut physics_frame, false));
+        assert_eq!(rec.scene_frame_range(), Some((0, 2)));
+        assert_eq!(rec.next_frame(), 3);
+        assert_ne!(rec.generation(), generation, "Resume commits the branch");
     }
 
     #[test]
@@ -749,7 +784,10 @@ mod tests {
         // Paused input may update the live model without advancing/recording a
         // frame. Reload must not leave frame 0 pointing at the stale value.
         let live_model = Value::Number(99.0);
-        assert_eq!(rec.finish_reload(&live_model, 0), ReloadHistory::Preserved);
+        assert_eq!(
+            rec.finish_reload(&live_model, 0, true),
+            ReloadHistory::Preserved
+        );
 
         let mut restored = Value::Number(0.0);
         let mut physics = SteppedPhysics::new();
@@ -771,11 +809,12 @@ mod tests {
         let mut physics_frame = 0;
         rec.seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek");
+        assert!(!rec.reload_history_is_safe());
         rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false);
         let generation = rec.generation();
 
         assert_eq!(
-            rec.finish_reload(&model, physics_frame),
+            rec.finish_reload(&model, physics_frame, false),
             ReloadHistory::RestartedAt(2)
         );
         assert_eq!(rec.scene_frame_range(), Some((2, 2)));
@@ -794,6 +833,69 @@ mod tests {
     }
 
     #[test]
+    fn unsafe_values_only_in_the_discarded_future_keep_the_safe_prefix() {
+        let stored_closure = closure_model();
+        let mut rec = SceneRecorder::new();
+        for frame in 0..3u64 {
+            rec.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        for frame in 3..5u64 {
+            rec.record(&stored_closure, 0, frame as f64);
+        }
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        rec.seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek");
+
+        assert!(!rec.reload_history_is_safe());
+        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false);
+        assert_eq!(rec.scene_frame_range(), Some((0, 2)));
+        assert!(rec.reload_history_is_safe());
+
+        assert_eq!(
+            rec.finish_reload(&model, physics_frame, true),
+            ReloadHistory::Preserved
+        );
+        assert_eq!(rec.scene_frame_range(), Some((0, 2)));
+        assert_eq!(rec.current_scene_frame(), Some(2));
+    }
+
+    #[test]
+    fn unsafe_authoritative_live_model_forces_a_boundary_without_losing_it() {
+        let mut rec = SceneRecorder::new();
+        for frame in 0..5u64 {
+            rec.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        rec.seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek");
+
+        // Simulate a paused update that changed the authoritative model without
+        // recording another frame. Preparing the reload may branch history,
+        // but must not overwrite this live value with frame 2's snapshot.
+        model = closure_model();
+        let live_before = model.to_string();
+        let live_model_was_safe = rec.prepare_reload(
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+        );
+        assert!(!live_model_was_safe);
+        assert_eq!(model.to_string(), live_before);
+        assert_eq!(rec.scene_frame_range(), Some((0, 2)));
+
+        assert_eq!(
+            rec.finish_reload(&model, physics_frame, live_model_was_safe),
+            ReloadHistory::RestartedAt(2)
+        );
+        assert_eq!(rec.scene_frame_range(), Some((2, 2)));
+    }
+
+    #[test]
     fn first_class_constructor_history_starts_a_new_generation() {
         let constructor = Value::Ctor {
             name: Rc::from("Pair"),
@@ -804,7 +906,7 @@ mod tests {
         let generation = rec.generation();
 
         assert_eq!(
-            rec.finish_reload(&constructor, 0),
+            rec.finish_reload(&constructor, 0, false),
             ReloadHistory::RestartedAt(0)
         );
         assert_ne!(rec.generation(), generation);
@@ -851,7 +953,7 @@ mod tests {
         // A hot reload keeps both the plain-data model ring and input log.
         let generation = rec.generation();
         assert_eq!(
-            rec.finish_reload(&Value::Number(0.0), 0),
+            rec.finish_reload(&Value::Number(0.0), 0, true),
             ReloadHistory::Preserved
         );
         assert_eq!(rec.generation(), generation);
