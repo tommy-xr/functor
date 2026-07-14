@@ -489,6 +489,32 @@ impl PreviewMode {
     }
 }
 
+/// The render work selected by an interactive extrapolation control. Pause is
+/// deliberately not an input: playing advances the projection anchor while
+/// pausing freezes it. Catch-up seeks suppress the expensive dry run until the
+/// requested frame arrives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InteractivePreview {
+    pub trail: bool,
+    pub strobe: bool,
+    pub ghost: bool,
+}
+
+pub fn interactive_preview(
+    mode: PreviewMode,
+    enabled: bool,
+    catching_up: bool,
+) -> InteractivePreview {
+    if !enabled || catching_up {
+        return InteractivePreview::default();
+    }
+    InteractivePreview {
+        trail: mode.wants_trail(),
+        strobe: mode.wants_strobe(),
+        ghost: mode.wants_ghost(),
+    }
+}
+
 /// What [`scene_preview`] should compute.
 pub struct PreviewOptions {
     /// Forward-sim divisions (samples). Not bound by the screen-space
@@ -554,6 +580,34 @@ mod tests {
 
     fn ball_at(x: f32, y: f32) -> Scene3D {
         Scene3D::sphere().transform(Matrix4::from_translation(vec3(x, y, 0.0)))
+    }
+
+    #[test]
+    fn interactive_preview_is_enabled_by_the_toggle_not_by_pause() {
+        assert_eq!(
+            interactive_preview(PreviewMode::Both, true, false),
+            InteractivePreview {
+                trail: true,
+                strobe: true,
+                ghost: false,
+            }
+        );
+        assert_eq!(
+            interactive_preview(PreviewMode::Ghost, true, false),
+            InteractivePreview {
+                trail: false,
+                strobe: false,
+                ghost: true,
+            }
+        );
+        assert_eq!(
+            interactive_preview(PreviewMode::Both, false, false),
+            InteractivePreview::default()
+        );
+        assert_eq!(
+            interactive_preview(PreviewMode::Both, true, true),
+            InteractivePreview::default()
+        );
     }
 
     // A group holding a mover (sphere 0) and a static sphere (sphere 1).

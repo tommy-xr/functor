@@ -102,8 +102,8 @@ pub use renderer::*;
 pub use skybox::SkyboxDescription;
 pub use scene3d::*;
 pub use trajectory::{
-    overlay, scene_preview, trajectory_trail, PreviewMode, PreviewOptions, ScenePreview,
-    StrobeOptions,
+    interactive_preview, overlay, scene_preview, trajectory_trail, InteractivePreview,
+    PreviewMode, PreviewOptions, ScenePreview, StrobeOptions,
 };
 pub use viewport::*;
 
