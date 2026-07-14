@@ -24,6 +24,16 @@ test("live playback keeps the selected frame at the recorded endpoint", () => {
   assert.equal(view.playheadUnit, 1);
 });
 
+test("live extrapolation follows the recorded endpoint by a fixed window", () => {
+  let state = publish(createTimelineState({ enabled: true, seconds: 2 }), 10, 10, false);
+  state = publish(state, 11, 11, false);
+  const view = deriveTimelineView(state);
+  assert.equal(view.selectedFrame, 11);
+  assert.equal(view.previewEndFrame, 131);
+  assert.equal(view.previewEndUnit, 1);
+  assert.equal(view.previewClippedFrames, 120);
+});
+
 test("pausing captures a viewport that preview changes cannot resize", () => {
   let state = publish(createTimelineState(), 300, 300, false);
   state = publish(state, 300, 300, true);

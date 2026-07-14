@@ -893,8 +893,8 @@ pub fn run(args: Args) {
         let mut scrubber_visible = args.scrubber;
         // Future-preview (docs/time-travel.md T6/T6d) state, driven
         // interactively from the scrubber's "extrapolate" switch and ⚙ popover
-        // (mode / window / rate). Extrapolation defaults ON — pausing shows
-        // trail+strobe out of the box (the demo default) — and the launch
+        // (mode / window / rate). Extrapolation defaults ON with trail+strobe
+        // out of the box (the demo default), and the launch
         // flags pick the mode; they stay authoritative while the overlay is
         // hidden (the headless-capture escape hatch), where they may also
         // COMBINE (--ghost --trajectory composes the trail into the strobe).
@@ -912,16 +912,24 @@ pub fn run(args: Args) {
         // --trajectory/--strobe preview cache. The 32-division forward-sim is
         // the expensive part, and while PAUSED its anchor (scene frame + tts) is
         // frozen — so reuse the computed preview while the anchor key matches,
-        // but still refresh every TRAIL_REFRESH_FRAMES so a hot-reload's edited
-        // code re-projects within ~half a second (the anchor can't see a code
-        // edit). Live play changes the key every frame, so it recomputes like
-        // --ghost does.
-        const TRAIL_REFRESH_FRAMES: u32 = 30;
+        // but still refresh after a bounded number of frames so a hot-reload's
+        // edited code re-projects within ~half a second (the anchor can't see a
+        // code edit). While live, the last projection remains visible between
+        // wall-clock refreshes so continuous extrapolation bounds repeated work.
+        const PAUSED_PREVIEW_REUSE_FRAMES: u32 = 30;
+        const LIVE_PREVIEW_INTERVAL_SECONDS: f32 = 0.1;
         let mut trail_cache: Option<(
-            (Option<u64>, u32, bool, bool, usize, u32),
+            (Option<u64>, u32, bool, bool, bool, usize, u32),
             functor_runtime_common::ScenePreview,
         )> = None;
         let mut trail_refresh: u32 = 0;
+        let mut next_live_trail_refresh: f32 = 0.0;
+        let mut ghost_cache: Option<(
+            (Option<u64>, u32, bool, usize, u32),
+            Vec<(Frame, FrameTime)>,
+        )> = None;
+        let mut ghost_refresh: u32 = 0;
+        let mut next_live_ghost_refresh: f32 = 0.0;
 
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
@@ -1299,31 +1307,23 @@ Escape again to quit"
             // Drive the ghost from the interactive toggle when the overlay is up,
             // and from the `--ghost` launch flag when it's hidden (the headless
             // capture path — F2 demo, goldens, tests — is byte-for-byte
-            // unchanged). Interactive ghost only renders while PAUSED: the
-            // strobe is a preview of a frozen frame's future, and
-            // forward-stepping the scene N times every LIVE frame tanks the
-            // framerate (the "can't move with the scrubber open" bug).
-            // `is_paused()` is false under --fixed-time, so the headless
-            // `args.ghost` capture branch is unaffected. Computed HERE, above
-            // the scene-diff preview, because the preview's gating reads it.
+            // unchanged). Computed HERE, above the scene-diff preview, because
+            // the preview's gating reads it.
             // One wanted-set drives every future preview (docs/time-travel.md
             // T6/T6d): the scene-diff trail/strobe overlays AND the
             // screen-space ghost compositor. With the overlay up, the
-            // scrubber's selector picks ONE mode, and only while PAUSED
-            // (forward-stepping every LIVE frame tanks the framerate); with the
-            // overlay hidden the launch flags drive it — several may combine
+            // scrubber's selector picks ONE mode. Its anchor follows the live
+            // tail while playing and freezes when paused. With the overlay
+            // hidden the launch flags drive it — several may combine
             // there (--ghost --trajectory composes the trail into the strobe) —
             // so headless captures are byte-for-byte unchanged.
             let (trail_wanted, strobe_wanted, ghost_active) = if scrubber_visible {
-                if clock.is_paused() && extrapolate_on {
-                    (
-                        preview_mode.wants_trail(),
-                        preview_mode.wants_strobe(),
-                        preview_mode.wants_ghost(),
-                    )
-                } else {
-                    (false, false, false)
-                }
+                let selected = functor_runtime_common::interactive_preview(
+                    preview_mode,
+                    extrapolate_on,
+                    clock.pending_frames() > 0,
+                );
+                (selected.trail, selected.strobe, selected.ghost)
             } else {
                 (args.trajectory, args.strobe, args.ghost)
             };
@@ -1365,15 +1365,30 @@ Escape again to quit"
                 let key = (
                     game.current_scene_frame(),
                     time.tts.to_bits(),
+                    clock.is_paused(),
                     trail_wanted,
                     strobe_wanted,
                     divisions,
                     window.to_bits(),
                 );
-                let cache_hit = trail_refresh > 0
-                    && trail_cache.as_ref().is_some_and(|(k, _)| *k == key);
+                let interactive_live = scrubber_visible && !clock.is_paused();
+                let cache_hit = trail_cache.as_ref().is_some_and(|(k, _)| {
+                    if interactive_live {
+                        elapsed_time < next_live_trail_refresh
+                            && trail_refresh == 0
+                            && !k.2
+                            && k.3 == key.3
+                            && k.4 == key.4
+                            && k.5 == key.5
+                            && k.6 == key.6
+                    } else {
+                        trail_refresh > 0 && *k == key
+                    }
+                });
                 if cache_hit {
-                    trail_refresh -= 1;
+                    if !interactive_live {
+                        trail_refresh -= 1;
+                    }
                     trail_cache.as_ref().map(|(_, p)| p.clone())
                 } else {
                     // Under --input-script the live loop keeps consuming the
@@ -1432,12 +1447,19 @@ Escape again to quit"
                             }),
                         },
                     );
-                    trail_refresh = TRAIL_REFRESH_FRAMES;
+                    if interactive_live {
+                        trail_refresh = 0;
+                        next_live_trail_refresh =
+                            start_time.elapsed().as_secs_f32() + LIVE_PREVIEW_INTERVAL_SECONDS;
+                    } else {
+                        trail_refresh = PAUSED_PREVIEW_REUSE_FRAMES;
+                    }
                     trail_cache = Some((key, p.clone()));
                     Some(p)
                 }
             } else {
                 trail_cache = None;
+                next_live_trail_refresh = 0.0;
                 None
             };
 
@@ -1489,8 +1511,57 @@ Escape again to quit"
                             .map(|f| script.get(&f).cloned().unwrap_or_default())
                             .collect()
                     });
-                game.ghost_frames(divisions, dt, time.tts as f64, script_slice.as_deref())
+                if scrubber_visible {
+                    let key = (
+                        game.current_scene_frame(),
+                        time.tts.to_bits(),
+                        clock.is_paused(),
+                        divisions,
+                        ghost_window.to_bits(),
+                    );
+                    let cache_hit = ghost_cache.as_ref().is_some_and(|(k, _)| {
+                        if clock.is_paused() {
+                            ghost_refresh > 0 && *k == key
+                        } else {
+                            elapsed_time < next_live_ghost_refresh
+                                && !k.2
+                                && k.3 == key.3
+                                && k.4 == key.4
+                        }
+                    });
+                    if cache_hit {
+                        if clock.is_paused() {
+                            ghost_refresh -= 1;
+                        }
+                        ghost_cache
+                            .as_ref()
+                            .map(|(_, frames)| frames.clone())
+                            .unwrap_or_default()
+                    } else {
+                        let frames = game.ghost_frames(
+                            divisions,
+                            dt,
+                            time.tts as f64,
+                            script_slice.as_deref(),
+                        );
+                        if clock.is_paused() {
+                            ghost_refresh = PAUSED_PREVIEW_REUSE_FRAMES;
+                        } else {
+                            ghost_refresh = 0;
+                            next_live_ghost_refresh =
+                                start_time.elapsed().as_secs_f32() + LIVE_PREVIEW_INTERVAL_SECONDS;
+                        }
+                        ghost_cache = Some((key, frames.clone()));
+                        frames
+                    }
+                } else {
+                    ghost_cache = None;
+                    next_live_ghost_refresh = 0.0;
+                    game.ghost_frames(divisions, dt, time.tts as f64, script_slice.as_deref())
+                }
             } else {
+                ghost_cache = None;
+                next_live_ghost_refresh = 0.0;
                 Vec::new()
             };
             // The trail composes with --ghost's screen-space strobe by riding IN

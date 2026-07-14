@@ -165,7 +165,7 @@ const HTML = `
     <span id="scrub-event-detail" role="status"></span>
     <span id="scrub-label"><span id="scrub-count"></span></span>
   </span>
-  <button id="scrub-extrapolate" title="Extrapolate the paused game into the future">🔮</button>
+  <button id="scrub-extrapolate" title="Extrapolate the game into the future">🔮</button>
   <details id="scrub-adv">
     <summary title="Extrapolation settings">⚙</summary>
     <div id="scrub-adv-pop">
@@ -359,7 +359,7 @@ export function mountScrubber() {
     const playheadPct = current.playheadUnit * 100;
     const previewPct = current.previewEndUnit * 100;
     const futureWidth = Math.max(previewPct - playheadPct, 0);
-    const previewVisible = state.preview.enabled && current.paused;
+    const previewVisible = state.preview.enabled;
 
     playhead.style.left = `${playheadPct}%`;
     playhead.style.display = "block";

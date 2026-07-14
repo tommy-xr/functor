@@ -446,6 +446,36 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   const r1 = await player.evaluate(() => window.__scrub.range());
   check("scrubber range grows while running", r1[1] > r0[1], `${r0} -> ${r1}`);
 
+  // Extrapolation is a live mode: its second handle follows the advancing tail
+  // by a fixed logical window. Pausing freezes the anchor; it does not enable
+  // the control or the renderer.
+  await player.evaluate(() => window.__scrub.setPreview({ enabled: true, seconds: 2 }));
+  await player.waitForFunction(
+    () => getComputedStyle(document.getElementById("scrub-preview-handle")).display === "block",
+    { timeout: 3000 }
+  );
+  const livePreview0 = await player.evaluate(() => window.__scrub.view());
+  await sleep(300);
+  const livePreview1 = await player.evaluate(() => ({
+    view: window.__scrub.view(),
+    handleVisible:
+      getComputedStyle(document.getElementById("scrub-preview-handle")).display === "block",
+    endpointClipped: document
+      .getElementById("scrub-preview-handle")
+      .classList.contains("fully-clipped"),
+  }));
+  check(
+    "live extrapolation keeps its pink endpoint tracking the live tail",
+    !livePreview0.paused &&
+      !livePreview1.view.paused &&
+      livePreview1.handleVisible &&
+      livePreview1.endpointClipped &&
+      livePreview1.view.selectedFrame > livePreview0.selectedFrame &&
+      livePreview0.previewEndFrame - livePreview0.selectedFrame === 120 &&
+      livePreview1.view.previewEndFrame - livePreview1.view.selectedFrame === 120,
+    JSON.stringify({ livePreview0, livePreview1 })
+  );
+
   // Markers come from the authoritative runtime log: a real recorded key edge,
   // followed by a real hot-reload boundary from the editor bridge.
   await player.evaluate(() => {

@@ -1164,16 +1164,25 @@ async fn run_async() -> Result<(), JsValue> {
         // from the ⚙ popover. Same anchor cache as the desktop shell: while
         // paused the anchor (scene frame + tts) is frozen, so reuse the
         // computed preview; the refresh bound re-projects a pushed source edit
-        // within ~half a second.
+        // within ~half a second. Live projections remain painted every frame
+        // but refresh on a wall-clock cadence that bounds repeated dry runs.
         let mut preview_mode = functor_runtime_common::PreviewMode::Off;
         let mut preview_window: f32 = 2.0;
         let mut preview_rate: usize = 5;
-        const PREVIEW_REFRESH_FRAMES: u32 = 30;
+        const PAUSED_PREVIEW_REUSE_FRAMES: u32 = 30;
+        const LIVE_PREVIEW_INTERVAL_MS: f32 = 100.0;
         let mut preview_cache: Option<(
-            (Option<u64>, u32, bool, bool, usize, u32),
+            (Option<u64>, u32, bool, bool, bool, usize, u32),
             functor_runtime_common::ScenePreview,
         )> = None;
         let mut preview_refresh: u32 = 0;
+        let mut next_live_preview_refresh: f32 = 0.0;
+        let mut ghost_cache: Option<(
+            (Option<u64>, u32, bool, usize, u32),
+            Vec<(Frame, FrameTime)>,
+        )> = None;
+        let mut ghost_refresh: u32 = 0;
+        let mut next_live_ghost_refresh: f32 = 0.0;
 
         *g.borrow_mut() = Some(Closure::new(move || {
             // The frame's exclusive borrow of the shared producer.
@@ -1290,33 +1299,49 @@ async fn run_async() -> Result<(), JsValue> {
 
             // Scene-diff preview (docs/time-travel.md T6): the DOM preview
             // <select>'s trail/strobe overlays, from ONE shared forward-sim —
-            // `scene_preview`, the same step the desktop shell runs. The web
-            // scrubber is always visible, so like the ghost it renders only
-            // while PAUSED. Script inputs are `None`: web has no --input-script.
+            // `scene_preview`, the same step the desktop shell runs. While live,
+            // its anchor follows the newest frame; pausing freezes that anchor
+            // instead of enabling the preview. Script inputs are `None`: web has
+            // no --input-script.
             // While a drag-into-the-future catch-up is draining, skip preview
             // and ghost recomputes (the anchor moves every frame — a full
             // forward-sim per frame would throttle the catch-up to a crawl);
             // they snap back in on arrival.
             let catching_up = clock.pending_frames() > 0;
-            let paused = clock.is_paused() && !catching_up;
-            let trail_wanted = preview_mode.wants_trail() && paused;
+            let selected =
+                functor_runtime_common::interactive_preview(preview_mode, true, catching_up);
+            let trail_wanted = selected.trail;
             // The selector is single-valued, so a strobe mode and the ghost
             // compositor can never be on together (the double-ghost hazard the
             // desktop flag path still guards against).
-            let strobe_wanted = preview_mode.wants_strobe() && paused;
+            let strobe_wanted = selected.strobe;
             let preview = if trail_wanted || strobe_wanted {
                 let key = (
                     game.current_scene_frame(),
                     frame_time.tts.to_bits(),
+                    clock.is_paused(),
                     trail_wanted,
                     strobe_wanted,
                     preview_rate,
                     preview_window.to_bits(),
                 );
-                let cache_hit = preview_refresh > 0
-                    && preview_cache.as_ref().is_some_and(|(k, _)| *k == key);
+                let cache_hit = preview_cache.as_ref().is_some_and(|(k, _)| {
+                    if clock.is_paused() {
+                        preview_refresh > 0 && *k == key
+                    } else {
+                        now < next_live_preview_refresh
+                            && preview_refresh == 0
+                            && !k.2
+                            && k.3 == key.3
+                            && k.4 == key.4
+                            && k.5 == key.5
+                            && k.6 == key.6
+                    }
+                });
                 if cache_hit {
-                    preview_refresh -= 1;
+                    if clock.is_paused() {
+                        preview_refresh -= 1;
+                    }
                     preview_cache.as_ref().map(|(_, p)| p.clone())
                 } else {
                     // The SIM samples fine (~20/s — the trail's smooth-arc
@@ -1349,12 +1374,19 @@ async fn run_async() -> Result<(), JsValue> {
                             }),
                         },
                     );
-                    preview_refresh = PREVIEW_REFRESH_FRAMES;
+                    if clock.is_paused() {
+                        preview_refresh = PAUSED_PREVIEW_REUSE_FRAMES;
+                    } else {
+                        preview_refresh = 0;
+                        next_live_preview_refresh =
+                            performance.now() as f32 + LIVE_PREVIEW_INTERVAL_MS;
+                    }
                     preview_cache = Some((key, p.clone()));
                     Some(p)
                 }
             } else {
                 preview_cache = None;
+                next_live_preview_refresh = 0.0;
                 None
             };
 
@@ -1383,26 +1415,60 @@ async fn run_async() -> Result<(), JsValue> {
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
 
             // Forward-ghosting (docs/time-travel.md T6d): when the preview
-            // selector is on `ghost` AND the clock is paused, forward-step the
-            // scene over the ⚙ popover's window in up to 8 slices and composite
-            // them at equal weight, so moving elements strobe across their
-            // future and static geometry stays solid. `None` = the
-            // recorded-log/coast path (web has no --input-script). Empty
-            // (→ this arm skipped) leaves live rendering unchanged.
-            //
-            // Gated on `is_paused()` to match the desktop shell: the strobe is a
-            // preview of a FROZEN frame's future, and forward-stepping the scene N
-            // times every LIVE rAF frame would starve the wasm render loop (the
-            // interpreter forward-step is costly on WebGL2). Pause via the DOM
-            // scrubber to see it.
-            let ghosts = if preview_mode.wants_ghost() && clock.is_paused() && !catching_up {
+            // selector is on `ghost`, forward-step the scene over the ⚙
+            // popover's window in up to 8 slices and composite them at equal
+            // weight, so moving elements strobe across their future and static
+            // geometry stays solid. While live the anchor advances each frame;
+            // pausing freezes it. `None` = the recorded-log/coast path (web has
+            // no --input-script). Empty (→ this arm skipped) leaves live
+            // rendering unchanged.
+            let ghosts = if selected.ghost {
                 // The ⚙ popover's rate × window, clamped to the compositor's
                 // 8-target cap.
                 let divisions = ((preview_rate as f32 * preview_window).round() as usize)
                     .clamp(1, 8);
                 let dt = preview_window / divisions as f32;
-                game.ghost_frames(divisions, dt, frame_time.tts as f64, None)
+                let key = (
+                    game.current_scene_frame(),
+                    frame_time.tts.to_bits(),
+                    clock.is_paused(),
+                    divisions,
+                    preview_window.to_bits(),
+                );
+                let cache_hit = ghost_cache.as_ref().is_some_and(|(k, _)| {
+                    if clock.is_paused() {
+                        ghost_refresh > 0 && *k == key
+                    } else {
+                        now < next_live_ghost_refresh
+                            && ghost_refresh == 0
+                            && !k.2
+                            && k.3 == key.3
+                            && k.4 == key.4
+                    }
+                });
+                if cache_hit {
+                    if clock.is_paused() {
+                        ghost_refresh -= 1;
+                    }
+                    ghost_cache
+                        .as_ref()
+                        .map(|(_, frames)| frames.clone())
+                        .unwrap_or_default()
+                } else {
+                    let frames = game.ghost_frames(divisions, dt, frame_time.tts as f64, None);
+                    if clock.is_paused() {
+                        ghost_refresh = PAUSED_PREVIEW_REUSE_FRAMES;
+                    } else {
+                        ghost_refresh = 0;
+                        next_live_ghost_refresh =
+                            performance.now() as f32 + LIVE_PREVIEW_INTERVAL_MS;
+                    }
+                    ghost_cache = Some((key, frames.clone()));
+                    frames
+                }
             } else {
+                ghost_cache = None;
+                next_live_ghost_refresh = 0.0;
                 Vec::new()
             };
 
