@@ -42,11 +42,18 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   `world_frame_history` maps each rendered frame to the fixed frame the world
   ended at. The master clock is the **rendered frame** (every game has one, even
   with no physics hook).
-- **Reload is a history boundary.** Snapshots can hold closures bound to the old
-  module, so the rings reset on hot-reload (the live model is rebound; snapshots
-  are not). "Rewind shows the earlier *code* version" (the hard frontier from the
-  prior-art notes) is deferred — the interpreter *could* do it by keeping old
-  modules alive, but that's future work.
+- **Reload is conditionally a history boundary.** Plain-data model snapshots
+  carry no module IR, so their coupled model/physics/time history remains
+  seekable under the new program — the common constant-tweak workflow keeps its
+  full rewind window. If any retained model contains a callable or opaque host
+  value, the old generation cannot safely cross the edit: the rebound live scene
+  seeds a new seekable generation at the same frame and the UI marks older
+  frames as unavailable. Preserved snapshots are **new code over old data**, not
+  a replay: a draw-only constant changes the whole retained past immediately,
+  while a constant used by `tick` changes state evolution only after playback
+  resumes.
+  "Rewind shows the earlier *code* version" (the harder frontier
+  where code-bearing snapshots retain or replay old code) remains deferred.
 - **`tts` is a game clock, not a wall clock.** Both shells own a shared
   `GameClock` (`functor_runtime_common::game_clock`) that produces each frame's
   `FrameTime`. Live, it ACCUMULATES the real frame delta (`game_time += dts`);
@@ -248,7 +255,7 @@ Seeding RNG is what moves it from the record column to the recompute column (the
 seed becomes one more plain-data timeline entry). **Direction is the whole rule:**
 inputs and effect *responses* are inbound and get replayed; effects are outbound
 and get suppressed. Because the log is plain data it **survives a hot reload**,
-even though the model snapshots (old-module closures) do not — which is exactly
+even though code-bearing model snapshots do not — which is exactly
 what lets "tweak a constant, replay my recorded inputs, see if the jump now
 clears the chasm" work.
 

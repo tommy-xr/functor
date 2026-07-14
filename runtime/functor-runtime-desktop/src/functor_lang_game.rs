@@ -509,13 +509,10 @@ impl FunctorLangGame {
         // the next render's `ui(model)` rebuilds it against the new one. A
         // click landing in the gap resolves an unknown slot and is dropped.
         self.ui_handlers.clear();
-        // Reload is a model-history BOUNDARY: the retained snapshots can hold
-        // closures bound to the old module, so — unlike the live model, which
-        // `rebind_value` migrates above — they can't safely cross a reload. The
-        // recorder keeps its rendered-frame clock monotonic so recording resumes
-        // consecutively. (Rebinding snapshots to preserve rewind ACROSS an edit
-        // is deferred to when that feature is built — docs/time-travel.md.)
-        self.recorder.reset_on_reload();
+        // Plain-data snapshots remain seekable under the new program. A model
+        // history containing callable or opaque host values instead starts a new
+        // generation anchored at this rebound live frame.
+        self.recorder.finish_reload(&self.model, self.physics_frame);
         report.rebound
     }
 
@@ -1428,12 +1425,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Hot reload is a model-history boundary (xreview): the ring is reset so
-    /// it never retains old-module snapshots, while `rendered_frame` stays
-    /// monotonic so recording resumes CONSECUTIVELY after the reload (a stale
-    /// non-consecutive record would panic in `History::record`).
+    /// Plain-data model history carries no module IR, so it remains seekable
+    /// across a hot reload and recording resumes consecutively.
     #[test]
-    fn hot_reload_resets_history_and_recording_resumes() {
+    fn hot_reload_preserves_plain_data_history_and_recording_resumes() {
         let dir = std::env::temp_dir()
             .join(format!("functor-lang-game-test-{}-history-reload", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1449,19 +1444,20 @@ mod tests {
         }
         assert_eq!(game.recorder.scene_frame_range(), Some((0, 2)));
 
-        // Push a fresh (compatible) source: the model is rebound and KEPT, but
-        // the history ring is reset.
+        // Push a fresh source: the model is rebound and the plain-data history
+        // remains available under the new program.
         game.reload_source(src).expect("reload should succeed");
         assert_eq!(
             game.recorder.scene_frame_range(),
-            None,
-            "reload must reset the model history"
+            Some((0, 2)),
+            "plain-data history should survive the reload"
         );
+        game.seek_scene_to(0).expect("old frame remains seekable");
 
-        // Recording resumes at the current (monotonic) rendered frame — the
-        // fresh ring re-bases there, so no non-consecutive panic.
+        // Return to the live tail, then recording continues monotonically.
+        game.seek_scene_to(2).expect("seek live tail");
         game.tick(FrameTime { tts: 0.0, dts: 0.016 });
-        assert_eq!(game.recorder.scene_frame_range(), Some((3, 3)));
+        assert_eq!(game.recorder.scene_frame_range(), Some((0, 3)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -6,7 +6,8 @@
 //! through B's session.
 
 use functor_lang::ir::Module;
-use functor_lang::{rebind_value, NoHost, RunOutcome, Session, Tracing, Value};
+use functor_lang::{rebind_value, HostData, NoHost, RunOutcome, Session, Tracing, Value};
+use std::rc::Rc;
 
 fn module(src: &str) -> Module {
     functor_lang::lower(functor_lang::parse(src).expect("parse")).expect("lower")
@@ -194,6 +195,82 @@ fn plain_data_is_preserved() {
     assert_eq!(report.rebound, 0);
     assert!(report.warnings.is_empty());
     assert_eq!(rebound.to_string(), stored.to_string());
+    assert!(stored.is_reload_safe_snapshot());
+}
+
+#[test]
+fn stored_closures_make_a_snapshot_reload_unsafe() {
+    let module = module(&format!(
+        "{APPLY}let mul = (k) => (x) => x * k\nlet main = () => {{ nested: [mul(3.0)] }}"
+    ));
+    let stored = main_value(&module);
+    assert!(!stored.is_reload_safe_snapshot());
+}
+
+#[test]
+fn first_class_constructors_rebind_arity_and_make_snapshots_unsafe() {
+    let a = module("type Pair = | Pair(left: float)\nlet main = () => Pair");
+    let b = module("type Pair = | Pair(left: float, right: float)\nlet main = () => Pair");
+    let stored = main_value(&a);
+    assert!(!stored.is_reload_safe_snapshot());
+    assert!(matches!(&stored, Value::Ctor { arity: 1, .. }));
+
+    let (rebound, report) = rebind_value(&stored, &a, &b);
+    assert!(report.warnings.is_empty());
+    assert!(matches!(rebound, Value::Ctor { arity: 2, .. }));
+}
+
+#[test]
+fn constructor_rebind_normalizes_nullary_and_saturated_values() {
+    let unary = module("type Slot = | Slot(value: float)\nlet main = () => Slot");
+    let nullary = module("type Slot = | Slot\nlet main = () => Slot");
+    let (rebound, report) = rebind_value(&main_value(&unary), &unary, &nullary);
+    assert!(report.warnings.is_empty());
+    assert!(matches!(rebound, Value::Variant { ref args, .. } if args.is_empty()));
+
+    let pair = module("type Pair = | Pair(left: float, right: float)\nlet main = () => Pair(1.0)");
+    let single = module("type Pair = | Pair(left: float)\nlet main = () => Pair(1.0)");
+    let (rebound, report) = rebind_value(&main_value(&pair), &pair, &single);
+    assert!(report.warnings.is_empty());
+    assert!(matches!(rebound, Value::Variant { ref args, .. } if args.len() == 1));
+}
+
+#[test]
+fn constructor_rebind_keeps_an_over_applied_partial_with_a_warning() {
+    let src = |body: &str, fields: &str| {
+        format!(
+            "{APPLY}type Triple = | Triple(f: (float) => float, {fields})\n\
+             let behavior = (x) => {body}\n\
+             let main = () => Triple(behavior, 2.0)"
+        )
+    };
+    let triple = module(&src("x + 1.0", "b: float, c: float"));
+    let single = module(&src("x + 10.0", ""));
+    let stored = main_value(&triple);
+    let (rebound, report) = rebind_value(&stored, &triple, &single);
+    assert_eq!(report.rebound, 1, "applied closure should still rebind");
+    assert_eq!(report.warnings.len(), 1, "warnings: {:?}", report.warnings);
+    assert!(report.warnings[0].contains("2 applied argument(s)"));
+    let Value::Partial(partial) = rebound else {
+        panic!("expected retained partial")
+    };
+    assert!(matches!(partial.callee, Value::Ctor { arity: 3, .. }));
+    assert_eq!(num(&apply(&single, partial.applied[0].clone(), 1.0)), 11.0);
+}
+
+#[test]
+fn opaque_host_values_are_reload_unsafe_unless_the_host_opts_in() {
+    struct Opaque;
+    impl HostData for Opaque {
+        fn type_name(&self) -> &'static str {
+            "Opaque"
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    assert!(!Value::HostData(Rc::new(Opaque)).is_reload_safe_snapshot());
 }
 
 // --- Review-driven cases (Codex + Claude adversarial probes) ---

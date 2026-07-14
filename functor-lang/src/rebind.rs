@@ -93,6 +93,8 @@ struct ModuleIndex {
     by_stable: HashMap<String, LambdaInfo>,
     stable_by_expr: HashMap<u32, String>,
     binder_kinds: HashMap<u32, BinderKind>,
+    /// Canonical constructor name to the arity declared by this module.
+    ctors: HashMap<String, usize>,
 }
 
 /// Rebind every closure reachable from `value`: closures created by
@@ -111,12 +113,12 @@ fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut Rebind
         Value::Number(_)
         | Value::String(_)
         | Value::Bool(_)
-        | Value::Ctor { .. }
         | Value::Builtin(_)
         | Value::HostFn(_)
         // Host values are opaque to the language; they cannot hold Functor Lang
         // closures.
         | Value::HostData(_) => value.clone(),
+        Value::Ctor { name, arity } => rebind_ctor(name, *arity, old, new, report),
         Value::List(items) => Value::List(Rc::new(
             items.iter().map(|v| walk(v, old, new, report)).collect(),
         )),
@@ -134,18 +136,119 @@ fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut Rebind
             args: Rc::new(args.iter().map(|v| walk(v, old, new, report)).collect()),
         },
         Value::Closure(closure) => rebind_closure(closure, old, new, report),
-        // Rebind the captured callee and the already-applied args. (The count
-        // still needed is derived from the rebound callee's arity at display
-        // time, so a hot-reload that changes it can never leave a stale count.)
-        Value::Partial(partial) => Value::Partial(Rc::new(crate::value::Partial {
-            callee: walk(&partial.callee, old, new, report),
-            applied: partial
-                .applied
-                .iter()
-                .map(|v| walk(v, old, new, report))
-                .collect(),
-        })),
+        Value::Partial(partial) => rebind_partial(partial, old, new, report),
     }
+}
+
+fn rebind_ctor(
+    name: &Rc<str>,
+    arity: usize,
+    old: &ModuleIndex,
+    new: &ModuleIndex,
+    report: &mut RebindReport,
+) -> Value {
+    // As with closures, only identify a value that agrees with the module we
+    // are actually replacing. This prevents a constructor kept across an
+    // earlier reload from being silently matched to a later declaration that
+    // happens to reuse its name.
+    if old.ctors.get(name.as_ref()) != Some(&arity) {
+        report.warnings.push(format!(
+            "stored constructor `{name}` predates the previous reload; keeping its old arity"
+        ));
+        return Value::Ctor {
+            name: name.clone(),
+            arity,
+        };
+    }
+
+    let Some(&new_arity) = new.ctors.get(name.as_ref()) else {
+        report.warnings.push(format!(
+            "stored constructor `{name}` has no match after the edit; keeping its old arity"
+        ));
+        return Value::Ctor {
+            name: name.clone(),
+            arity,
+        };
+    };
+
+    if new_arity == 0 {
+        Value::Variant {
+            ctor: name.clone(),
+            args: Rc::new(Vec::new()),
+        }
+    } else {
+        Value::Ctor {
+            name: name.clone(),
+            arity: new_arity,
+        }
+    }
+}
+
+fn rebind_partial(
+    partial: &Rc<crate::value::Partial>,
+    old: &ModuleIndex,
+    new: &ModuleIndex,
+    report: &mut RebindReport,
+) -> Value {
+    let callee = walk(&partial.callee, old, new, report);
+
+    let constructor_fallback = if let Value::Ctor { name, arity } = &callee {
+        (partial.applied.len() > *arity).then(|| {
+            format!(
+                "stored partial constructor `{name}` has {} applied argument(s), but the edited constructor takes {arity}; keeping its old arity",
+                partial.applied.len()
+            )
+        })
+    } else if let (Value::Ctor { name, .. }, Value::Variant { ctor, args }) =
+        (&partial.callee, &callee)
+    {
+        (!args.is_empty() || !partial.applied.is_empty()).then(|| {
+            format!(
+                "stored partial constructor `{name}` has {} applied argument(s), but the edited constructor `{ctor}` is nullary; keeping its old arity",
+                partial.applied.len()
+            )
+        })
+    } else {
+        None
+    };
+
+    let applied: Vec<Value> = partial
+        .applied
+        .iter()
+        .map(|value| walk(value, old, new, report))
+        .collect();
+
+    if let Some(warning) = constructor_fallback {
+        report.warnings.push(warning);
+        return Value::Partial(Rc::new(crate::value::Partial {
+            callee: partial.callee.clone(),
+            applied,
+        }));
+    }
+    if matches!(
+        (&partial.callee, &callee),
+        (Value::Ctor { .. }, Value::Variant { args, .. }) if args.is_empty()
+    ) {
+        return callee;
+    }
+
+    // Constructor arity is part of edited source. Normalize to the same value
+    // shape evaluation would have produced under the new declaration rather
+    // than manufacturing a zero-arity Ctor or a saturated Partial.
+    if let Value::Ctor { name, arity } = &callee {
+        return match applied.len().cmp(arity) {
+            std::cmp::Ordering::Less => {
+                Value::Partial(Rc::new(crate::value::Partial { callee, applied }))
+            }
+            std::cmp::Ordering::Equal => Value::Variant {
+                ctor: name.clone(),
+                args: Rc::new(applied),
+            },
+            std::cmp::Ordering::Greater => unreachable!("constructor shrink handled above"),
+        };
+    }
+
+    Value::Partial(Rc::new(crate::value::Partial { callee, applied }))
 }
 
 fn rebind_closure(
@@ -256,7 +359,17 @@ fn index_module(module: &Module) -> ModuleIndex {
         by_stable: HashMap::new(),
         stable_by_expr: HashMap::new(),
         binder_kinds: HashMap::new(),
+        ctors: HashMap::new(),
     };
+    for ty in &module.types {
+        if let crate::ast::TypeBody::Variants(variants) = &ty.body {
+            for variant in variants {
+                index
+                    .ctors
+                    .insert(variant.name.clone(), variant.fields.len());
+            }
+        }
+    }
     for def in &module.defs {
         let mut path: Vec<String> = Vec::new();
         collect(&def.value, &def.name, &mut path, &mut index);

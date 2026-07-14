@@ -396,11 +396,10 @@ impl FunctorLangWebGame {
         // The widget handler table holds msgs/taggers into the OLD session;
         // the next render's `ui(model)` rebuilds it against the new one.
         self.ui_handlers.clear();
-        // Reload is a model-history BOUNDARY (see the desktop producer): the
-        // retained snapshots can hold old-module closures, so they can't cross
-        // a reload; the recorder keeps its rendered-frame clock monotonic so
-        // recording resumes consecutively.
-        self.recorder.reset_on_reload();
+        // Plain-data snapshots remain seekable under the new program. A model
+        // history containing callable or opaque host values instead starts a new
+        // generation anchored at this rebound live frame.
+        self.recorder.finish_reload(&self.model, self.physics_frame);
         self.has_ui = loaded.has_ui;
         if !self.has_ui {
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
@@ -582,10 +581,6 @@ impl GameProducer for FunctorLangWebGame {
 
     fn scene_timeline_generation(&self) -> u64 {
         self.recorder.generation()
-    }
-
-    fn next_scene_frame(&self) -> Option<u64> {
-        Some(self.recorder.next_frame())
     }
 
     fn current_scene_tts(&self) -> Option<f64> {
@@ -1160,10 +1155,11 @@ pub enum ScrubControl {
 
 thread_local! {
     static SCRUB_CONTROLS: RefCell<Vec<ScrubControl>> = const { RefCell::new(Vec::new()) };
-    /// Published each frame for the page's slider: `(frame, lo, hi, paused)`.
+    /// Published each frame for the page's slider:
+    /// `(frame, lo, hi, paused, history generation)`.
     /// `frame`/`lo`/`hi` are `-1.0` when nothing is recorded yet.
-    static SCRUB_VIEW: RefCell<(f64, f64, f64, bool)> =
-        const { RefCell::new((-1.0, -1.0, -1.0, false)) };
+    static SCRUB_VIEW: RefCell<(f64, f64, f64, bool, u64)> =
+        const { RefCell::new((-1.0, -1.0, -1.0, false, 0)) };
     /// Latest completed seek as `(request id, authoritative applied frame)`.
     /// The DOM uses this acknowledgement to retire optimistic handle state even
     /// when the runtime clamps or refuses a request.
@@ -1333,9 +1329,8 @@ pub fn publish_timeline_inputs(game: &dyn GameProducer) {
     });
 }
 
-/// Record a reload boundary. Successful reloads reset model snapshots, so the
-/// marker belongs to the next monotonic frame; failures mark the attempted
-/// boundary without changing the running program.
+/// Record a reload boundary at the scene frame that remained current through
+/// the swap. Failures mark the attempted boundary without changing the program.
 pub fn publish_timeline_reload(frame: u64, ok: bool, message: &str) {
     TIMELINE_LOG.with(|log| {
         log.borrow_mut().push(
@@ -1379,12 +1374,17 @@ pub fn take_scrub_controls() -> Vec<ScrubControl> {
 }
 
 /// Publish this frame's scrubber state for the page to poll.
-pub fn publish_scrub_view(frame: Option<u64>, range: Option<(u64, u64)>, paused: bool) {
+pub fn publish_scrub_view(
+    frame: Option<u64>,
+    range: Option<(u64, u64)>,
+    paused: bool,
+    generation: u64,
+) {
     let f = frame.map(|f| f as f64).unwrap_or(-1.0);
     let (lo, hi) = range
         .map(|(l, h)| (l as f64, h as f64))
         .unwrap_or((-1.0, -1.0));
-    SCRUB_VIEW.with(|v| *v.borrow_mut() = (f, lo, hi, paused));
+    SCRUB_VIEW.with(|v| *v.borrow_mut() = (f, lo, hi, paused, generation));
 }
 
 /// Page → runtime: toggle pause (pin/unpin the clock).
@@ -1454,7 +1454,7 @@ pub fn functor_lang_scene_frame() -> f64 {
 /// Runtime → page: the seekable window as `[lo, hi]`, or `[]` if empty.
 #[wasm_bindgen]
 pub fn functor_lang_scene_range() -> Vec<f64> {
-    let (_, lo, hi, _) = SCRUB_VIEW.with(|v| *v.borrow());
+    let (_, lo, hi, _, _) = SCRUB_VIEW.with(|v| *v.borrow());
     if lo < 0.0 {
         vec![]
     } else {
@@ -1466,6 +1466,12 @@ pub fn functor_lang_scene_range() -> Vec<f64> {
 #[wasm_bindgen]
 pub fn functor_lang_scrub_paused() -> bool {
     SCRUB_VIEW.with(|v| v.borrow().3)
+}
+
+/// Runtime → page: current seekable-history generation.
+#[wasm_bindgen]
+pub fn functor_lang_scene_generation() -> f64 {
+    SCRUB_VIEW.with(|v| v.borrow().4 as f64)
 }
 
 // --- Paused-scene inspector ↔ DOM bridge (visual-debugger PR2b) --------------
