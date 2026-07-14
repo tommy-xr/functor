@@ -21,6 +21,7 @@ import {
   PREVIEW_SECONDS_MIN,
   TIMELINE_FPS,
   createTimelineState,
+  describeRecordedAvailability,
   deriveTimelineView,
   reduceTimeline,
   unitToFrame,
@@ -413,12 +414,14 @@ export function mountScrubber() {
       String(Math.max(current.recorded.hi, current.selectedFrame))
     );
     playhead.setAttribute("aria-valuenow", String(current.selectedFrame));
+    const availability = describeRecordedAvailability(current);
     playhead.setAttribute(
       "aria-valuetext",
       `frame ${current.selectedFrame}` +
         (current.playheadClippedBefore || current.playheadClippedAfter
           ? `, outside the frozen viewport ${current.viewport.lo} to ${current.viewport.hi}`
-          : "")
+          : "") +
+        (availability ? `, ${availability}` : "")
     );
 
     previewHandle.setAttribute(
@@ -442,8 +445,7 @@ export function mountScrubber() {
         ? ` <span class="out">outside</span>`
         : "") +
       (state.preview.enabled ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
-      ` / ${Math.round(current.viewport.hi)}` +
-      (current.hasUnavailableHistory ? ` <span class="out">· reload boundary</span>` : "");
+      ` / ${Math.round(current.viewport.hi)}`;
     pause.textContent = current.paused ? "▶" : "⏸";
     pause.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
     extrapolate.classList.toggle("on", state.preview.enabled);

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   clusterTimelineEvents,
   createTimelineState,
+  describeRecordedAvailability,
   deriveTimelineView,
   normalizePreviewConfig,
   reduceTimeline,
@@ -140,6 +141,10 @@ test("clearing recording keeps the frozen transport view but disables seeking", 
   assert.equal(view.unavailableEndUnit, 1);
   assert.equal(view.hasUnavailableHistory, true);
   assert.equal(state.requestedFrame, null);
+  assert.equal(
+    describeRecordedAvailability(view),
+    "no recorded history is currently available"
+  );
 });
 
 test("a paused reload keeps its frame and viewport while marking old history unavailable", () => {
@@ -169,6 +174,10 @@ test("an unsafe reload in the middle stripes both discarded sides", () => {
   assert.equal(view.unavailableEndUnit, 0.4);
   assert.equal(view.unavailableAfterStartUnit, 0.4);
   assert.equal(view.hasUnavailableHistory, true);
+  assert.equal(
+    describeRecordedAvailability(view),
+    "recorded frames 120 to 120; striped history outside that range is unavailable"
+  );
 });
 
 test("a resumed middle branch keeps the old total until it is refilled", () => {

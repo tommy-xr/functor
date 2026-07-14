@@ -821,6 +821,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
       ),
       playheadVisible: getComputedStyle(document.getElementById("scrub-playhead")).display,
       previewVisible: getComputedStyle(document.getElementById("scrub-preview-handle")).display,
+      playheadValueText: document.getElementById("scrub-playhead").getAttribute("aria-valuetext"),
       label: document.getElementById("scrub-count").textContent,
       reloadFrame: window.__scrub.events().findLast((event) => event.kind === "reload-ok").frame,
     };
@@ -841,14 +842,19 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     JSON.stringify(afterReload)
   );
   check(
-    "unavailable history is striped while both handles remain visible",
+    "unavailable history stays striped without cluttering the frame counter",
     afterReload.view.hasUnavailableHistory &&
       afterReload.stripeWidth > 0 &&
       afterReload.stripeAfterWidth > 0 &&
       afterReload.playheadVisible === "block" &&
       afterReload.previewVisible === "block" &&
+      afterReload.playheadValueText.includes(
+        `recorded frames ${beforeReload.frame} to ${beforeReload.frame}`
+      ) &&
+      afterReload.playheadValueText.includes("striped history") &&
+      afterReload.playheadValueText.includes("unavailable") &&
       afterReload.label.includes(String(beforeReload.frame)) &&
-      afterReload.label.includes("reload boundary"),
+      !afterReload.label.includes("reload boundary"),
     JSON.stringify(afterReload)
   );
 
