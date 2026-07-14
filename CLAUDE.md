@@ -36,6 +36,12 @@ These shape how features should be built. Weigh changes against them.
 4. **Fast inner loop.** Iterating and experimenting must be extremely fast for both humans and
    LLMs. Protect hot-reload, keep build steps minimal, and don't regress dev-loop latency.
 
+## Pull requests
+
+Prefix every PR title with a Conventional Commits-style type, optionally followed by a scope:
+`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `perf:`, `build:`, `ci:`, or `chore:`. For example,
+`fix: preserve the timeline across hot reloads` or `feat(web): add timeline event markers`.
+
 ## Architecture
 
 **The MVU loop (Elm-style).** A game is a set of top-level Functor Lang bindings the runner looks up by
