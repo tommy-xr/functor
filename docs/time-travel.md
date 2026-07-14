@@ -7,7 +7,7 @@ scrub, rewind, replay, branch — plus the authoring experiences those unlock. I
 generalizes the physics `Timeline` (`docs/physics.md` Phase 6 / #215) from the
 Rapier world to the entire MVU model.
 
-## What shipped (as of 2026-07-05)
+## What shipped (as of 2026-07-13)
 
 You can pause a running Functor Lang game and **drag a timeline scrubber to any recorded
 frame** — the whole scene (MVU `model` *and* physics world) restores together —
@@ -27,8 +27,8 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   you drag back *and* forth; the future is branched only when play resumes.
 - **Live triggers.** Desktop debug server `POST /rewind {"frame":N}` (#225); an
   egui scrubber overlay on desktop (`~` console toggle, hidden by default); a
-  **native DOM** scrubber on web (index-functor-lang.html, outside the canvas — see the
-  design note below).
+  custom DOM/SVG timeline on web (index-functor-lang.html, outside the canvas —
+  see the design note below).
 - **PRs:** `History` primitive #218, per-frame model recording #219, coupled
   seek #222, `POST /rewind` #225, the scrubber + web parity #226.
 
@@ -62,9 +62,13 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   accumulation, pause, and rebase — the deterministic golden-capture path.
 - **Shared logic, platform-native UI.** The `SceneRecorder` (the hard part) is
   shared; the *UI surface* is per-platform: egui-in-canvas on desktop (no DOM
-  there), **native DOM on web** (`functor_lang_scrub_*` wasm exports drive it). The web
-  DOM scrubber sits *outside* the game canvas, so its widgets never fight the
-  canvas's pointer-lock — a cleaner fit than mirroring desktop's egui onto web.
+  there), a custom SVG timeline with accessible DOM handles on web
+  (`functor_lang_scrub_*` wasm exports drive it). The web scrubber sits *outside*
+  the game canvas, so its widgets never fight the canvas's pointer-lock.
+- **Viewport is not history extent.** Web keeps recorded extent, visible
+  viewport, selected frame, and extrapolation endpoint as separate values. A
+  pause freezes the viewport; moving either handle never resizes it. A logical
+  future beyond the viewport is clipped at the edge and reported as overflow.
 
 It builds directly on three existing threads and should be read alongside them:
 `docs/physics.md` (the `Simulatable`/`Timeline` seam this generalizes),
@@ -157,13 +161,11 @@ overlay out of Functor's own UI primitives (dogfooding the interactive-UI
 feature), but that couples shipping the tool to shipping a general UI-actions
 capability. Instead:
 
-- **The scrubber is a shell-side egui panel** — a timeline bar, transport
-  (play/pause/step), a scrub handle, a frame counter — that drives the generic
-  `Timeline` directly. It renders in **both** shells because egui already runs in
-  both, needs **no game-facing API**, and requires no game to opt in. "Always
-  exposed in the browser / VSCode plugin" comes for free: the VSCode live preview
-  is just `functor run wasm` in a webview, so a shell-owned overlay in the web
-  runtime *is* the VSCode overlay — one implementation, both surfaces.
+- **The scrubber is shell-owned** — an egui panel on desktop and the shared
+  DOM/SVG timeline on web. Both drive the generic `Timeline` directly, need no
+  game-facing API, and require no game to opt in. "Always exposed in the browser
+  / VSCode plugin" comes for free: the VSCode live preview is `functor run wasm`
+  in a webview, so the shared web component serves both surfaces.
 - **Interactive Functor Lang UI (buttons with actions) is a separate feature.** Functor Lang
   closures are storable, so a `Button { label, onClick }` `View` variant is
   natural; it needs egui fed real pointer input and a return channel into
@@ -333,11 +335,11 @@ the project's "design for agent verifiability" rule.
 | --- | --- | --- |
 | **T1. Coupled model+world recorder** | `History<T>` snapshot ring + `SceneRecorder`; per-frame model + physics-fixed-frame recording; `rewind_scene_to`/`seek_scene_to` exact-or-refused; live `POST /rewind`. Landed as a snapshot-ring + shared rendered-frame clock rather than a single frame `Simulatable` (see the design note). Headless integration tests. | **Shipped** (#218/#219/#222/#225) |
 | **T2. Pointer/click input plumbing** | Feed real pointer `RawInput` to egui (desktop); DOM mouse for the web scrubber. `.interactable(false)` dropped for the scrubber panel. | **Shipped** (#226) |
-| **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** native DOM outside the canvas + "🖱 mouse look" button. | **Shipped** (#226) |
+| **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** custom DOM/SVG timeline with two accessible handles, a frozen paused viewport, input/reload markers, and the "🖱 mouse look" button. | **Shipped** (#226 + follow-up) |
 | **T4. Interactive Functor Lang `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable Functor Lang closure); egui hit-tests and dispatches back into `update`. Independent of the scrubber (which is shell-owned) — a general game-UI capability. | Not started |
 | **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; a **screen-space compositor** (new fullscreen average pass at the tail of `render_frame`, reusing the double-buffered `RenderTargetBuffers`) renders each scene to its own target and averages them (K=2, weights 0.5/0.5). Shares its whole implementation with T6. | Not started |
 | **T6. Forward-ghosting (trajectory preview)** | A frame-indexed **input log** in the recorder (plain data, survives reload) + a headless deterministic forward-step (replay inputs, suppress effects) + the T5 compositor at K=N, `1/N` weights; wire to hot-reload for the tweak-a-constant loop; slider once T4 lands. The *Inventing on Principle* demo — no trail primitive needed. | Not started |
-| **T7. Event timeline** | Record inputs *and* effects as one plain-data event log keyed by frame (inputs in / effects out); render them as markers on the scrubber; use the log to suppress-on-replay. The event-sourcing spine the earlier phases already imply. | Not started |
+| **T7. Event timeline** | Record inputs *and* effects as one plain-data event log keyed by frame (inputs in / effects out); render them as markers on the scrubber; use the log to suppress-on-replay. Web now renders recorded inputs and reload boundaries; effect/coeffect markers and a unified cross-shell protocol remain. | **In progress** |
 | **T8. Coeffect record/replay** | Record & replay effect *responses* (http/ws) so a recorded window re-runs faithfully. Pure replay is positional/exact; replay-under-a-tweak needs identity-matching + a visible **divergence marker** when a changed model asks for an un-recorded response (never fire live). | Later |
 
 T1–T3 (the whole-game scrubber) are shipped. T5–T6 are the showstopper authoring

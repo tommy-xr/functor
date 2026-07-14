@@ -201,6 +201,11 @@ pub struct SceneRecorder {
     input_history: History<Vec<RecordedInput>>,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
+    /// Bumps whenever existing recorded frames may have been replaced or a
+    /// reload starts a new snapshot generation. Timeline marker consumers use
+    /// this to rebuild from authoritative input history instead of guessing a
+    /// branch from range movement.
+    generation: u64,
     /// While dragging: the frame the scrubber has non-destructively seeked to.
     /// `Some` = "scrubbing" (future intact); committed on resume.
     scrub_pos: Option<u64>,
@@ -220,6 +225,7 @@ impl SceneRecorder {
             tts_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             input_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             rendered_frame: 0,
+            generation: 0,
             scrub_pos: None,
         }
     }
@@ -235,7 +241,33 @@ impl SceneRecorder {
         self.model_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         self.world_frame_history = History::bounded(DEFAULT_HISTORY_FRAMES);
         self.tts_history = History::bounded(DEFAULT_HISTORY_FRAMES);
+        self.generation = self.generation.wrapping_add(1);
         self.scrub_pos = None;
+    }
+
+    /// Monotonic revision for destructive branch/reload boundaries.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Commit a non-destructive scrub before a reload discards the snapshot
+    /// rings. This preserves the state the user is inspecting and, critically,
+    /// branches the physics timeline in lockstep before `scrub_pos` disappears.
+    pub fn commit_scrub_before_reload(
+        &mut self,
+        model: &mut Value,
+        physics: &mut SteppedPhysics,
+        physics_frame: &mut u64,
+        has_physics: bool,
+    ) {
+        if let Some(frame) = self.scrub_pos {
+            let _ = self.rewind_scene_to(frame, model, physics, physics_frame, has_physics);
+        }
+    }
+
+    /// Rendered frame at which the next settled model will be recorded.
+    pub fn next_frame(&self) -> u64 {
+        self.rendered_frame
     }
 
     /// Record the settled `model`, the world's current fixed frame, and the
@@ -392,6 +424,7 @@ impl SceneRecorder {
         // future consistently across all four rings (docs/time-travel.md T6b).
         self.input_history.truncate_from(frame + 1);
         self.rendered_frame = frame + 1;
+        self.generation = self.generation.wrapping_add(1);
         self.scrub_pos = None;
         let clamped = if frame == target {
             String::new()
@@ -604,6 +637,26 @@ mod tests {
         assert_eq!(rec.scrub_render_tts(), Some(40.0));
     }
 
+    #[test]
+    fn reload_while_scrubbed_branches_before_resetting_snapshots() {
+        let mut rec = SceneRecorder::new();
+        for frame in 0..5u64 {
+            rec.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        rec.seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek");
+
+        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false);
+        assert_eq!(rec.scene_frame_range(), Some((0, 2)));
+        assert_eq!(rec.next_frame(), 3);
+        rec.reset_on_reload();
+        assert_eq!(rec.scene_frame_range(), None);
+        assert_eq!(rec.next_frame(), 3, "reload resumes after the selected branch");
+    }
+
     // --- the input log: record → read back, and survive a reload (T6b) ---
 
     #[test]
@@ -637,7 +690,9 @@ mod tests {
 
         // A hot reload drops the model ring but KEEPS the input log (plain data
         // survives reload, docs/time-travel.md).
+        let generation = rec.generation();
         rec.reset_on_reload();
+        assert_ne!(rec.generation(), generation, "reload bumps the generation");
         assert_eq!(rec.scene_frame_range(), None, "model ring reset on reload");
         assert_eq!(rec.inputs_at(0).len(), 1, "input log survives the reload");
         assert_eq!(rec.inputs_at(2).len(), 2, "input log survives the reload");

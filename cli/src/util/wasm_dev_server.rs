@@ -16,6 +16,8 @@ pub(crate) const JS_FILE_1: &[u8] =
 // (and by the site's player.html). Served at /scrubber.js next to pkg/.
 pub(crate) const SCRUBBER_JS: &[u8] =
     include_bytes!("../../../runtime/functor-runtime-web/scrubber.js");
+pub(crate) const TIMELINE_MODEL_JS: &[u8] =
+    include_bytes!("../../../runtime/functor-runtime-web/timeline-model.js");
 
 /// The standard inline-script defense: JSON escaping is not HTML escaping, so a
 /// `</script>` inside a substituted literal would terminate the page's script
@@ -113,6 +115,13 @@ impl WasmDevServer {
                     .body(SCRUBBER_JS.to_vec())
             })
             .boxed();
+        let route_timeline_model = warp::path!("timeline-model.js")
+            .map(|| {
+                Response::builder()
+                    .header("Content-Type", "application/javascript")
+                    .body(TIMELINE_MODEL_JS.to_vec())
+            })
+            .boxed();
 
         // Route to serve files from the specified working directory
         let route_filesystem = warp::fs::dir(wd);
@@ -121,7 +130,11 @@ impl WasmDevServer {
         // and the index page + `.fun` source are re-generated per run — without
         // it, switching samples (each serving its source at the same
         // `/game.fun` URL) can show a stale game from the browser cache.
-        let static_routes = route_index.or(route_js1).or(route_wasm).or(route_scrubber);
+        let static_routes = route_index
+            .or(route_js1)
+            .or(route_wasm)
+            .or(route_scrubber)
+            .or(route_timeline_model);
         let routes = static_routes
             .or(route_filesystem)
             .with(warp::reply::with::header("cache-control", "no-store"));

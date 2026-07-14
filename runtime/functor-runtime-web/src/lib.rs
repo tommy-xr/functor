@@ -278,16 +278,29 @@ fn apply_pending_reload(game: &mut dyn GameProducer) {
     let Some((push, id)) = PENDING_RELOAD.with(|p| p.borrow_mut().take()) else {
         return;
     };
+    let selected_frame = game
+        .current_scene_frame()
+        .or_else(|| game.scene_frame_range().map(|(_, hi)| hi))
+        .unwrap_or(0);
     let outcome = match push {
         PendingPush::Source(source) => game.reload_source(&source),
         PendingPush::Project(files) => game.reload_project(&files),
     };
     match outcome {
         Ok(status) => {
+            let next_recorded_frame = game
+                .next_scene_frame()
+                .unwrap_or_else(|| selected_frame.saturating_add(1));
+            functor_lang_game::publish_timeline_reload(next_recorded_frame, true, &status);
             hide_error_overlay();
             post_reload_result(true, &status, id);
         }
         Err(message) => {
+            functor_lang_game::publish_timeline_reload(
+                selected_frame,
+                false,
+                &message,
+            );
             show_error_overlay(&format!("[functor-lang] reload error: {message}"));
             post_reload_result(false, &message, id);
         }
@@ -1195,7 +1208,10 @@ async fn run_async() -> Result<(), JsValue> {
                         preview_window = window.clamp(0.5, 5.0);
                         preview_rate = rate.clamp(1, 30);
                     }
-                    functor_lang_game::ScrubControl::SeekTo(f) => {
+                    functor_lang_game::ScrubControl::SeekTo {
+                        frame: f,
+                        request_id,
+                    } => {
                         let newest = game.scene_frame_range().map(|(_, h)| h);
                         match newest {
                             Some(h) if f > h => {
@@ -1220,6 +1236,10 @@ async fn run_async() -> Result<(), JsValue> {
                                 clock.pause();
                             }
                         }
+                        functor_lang_game::publish_scrub_seek_result(
+                            request_id,
+                            game.current_scene_frame(),
+                        );
                     }
                 }
             }
@@ -1466,6 +1486,7 @@ async fn run_async() -> Result<(), JsValue> {
 
             // Publish the scrubber state for the DOM slider to poll (the UI
             // itself is native HTML in index-functor-lang.html, outside the canvas).
+            functor_lang_game::publish_timeline_inputs(&**game);
             functor_lang_game::publish_scrub_view(
                 game.current_scene_frame(),
                 game.scene_frame_range(),

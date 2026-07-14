@@ -351,6 +351,12 @@ impl FunctorLangWebGame {
     /// right through a reload. Returns the number of stored closures rebound,
     /// for the status line.
     fn swap_in(&mut self, loaded: Loaded) -> usize {
+        self.recorder.commit_scrub_before_reload(
+            &mut self.model,
+            &mut self.physics_rt,
+            &mut self.physics_frame,
+            self.has_physics,
+        );
         let (model, report) = functor_lang::rebind_value(&self.model, &self.module, &loaded.module);
         self.model = model;
         for warning in &report.warnings {
@@ -565,6 +571,21 @@ impl GameProducer for FunctorLangWebGame {
 
     fn scene_frame_range(&self) -> Option<(u64, u64)> {
         self.recorder.scene_frame_range()
+    }
+
+    fn recorded_inputs_at(
+        &self,
+        rendered_frame: u64,
+    ) -> Vec<functor_runtime_common::RecordedInput> {
+        self.recorder.inputs_at(rendered_frame).to_vec()
+    }
+
+    fn scene_timeline_generation(&self) -> u64 {
+        self.recorder.generation()
+    }
+
+    fn next_scene_frame(&self) -> Option<u64> {
+        Some(self.recorder.next_frame())
     }
 
     fn current_scene_tts(&self) -> Option<f64> {
@@ -1124,7 +1145,10 @@ pub fn drain_input(game: &mut dyn GameProducer, deliver: bool) {
 pub enum ScrubControl {
     TogglePause,
     Step,
-    SeekTo(u64),
+    SeekTo {
+        frame: u64,
+        request_id: u32,
+    },
     /// Future-preview mode (docs/time-travel.md T6/T6d), pushed by the DOM
     /// preview `<select>` (PreviewMode wire index: 0 off / 1 trail / 2 strobe /
     /// 3 both / 4 ghost). The frame loop owns the preview state.
@@ -1140,9 +1164,204 @@ thread_local! {
     /// `frame`/`lo`/`hi` are `-1.0` when nothing is recorded yet.
     static SCRUB_VIEW: RefCell<(f64, f64, f64, bool)> =
         const { RefCell::new((-1.0, -1.0, -1.0, false)) };
+    /// Latest completed seek as `(request id, authoritative applied frame)`.
+    /// The DOM uses this acknowledgement to retire optimistic handle state even
+    /// when the runtime clamps or refuses a request.
+    static SCRUB_SEEK_RESULT: RefCell<Option<(u32, f64)>> = const { RefCell::new(None) };
 }
 
 const SCRUB_CONTROLS_CAP: usize = 256;
+
+#[derive(Clone)]
+struct TimelineMarker {
+    id: u64,
+    frame: u64,
+    kind: &'static str,
+    label: String,
+}
+
+#[derive(Default)]
+struct TimelineLog {
+    markers: Vec<TimelineMarker>,
+    next_id: u64,
+    input_cursor: Option<u64>,
+    input_generation: Option<u64>,
+    cached_json: String,
+    dirty: bool,
+    revision: u32,
+}
+
+impl TimelineLog {
+    fn changed(&mut self) {
+        self.dirty = true;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn push(&mut self, frame: u64, kind: &'static str, label: String) {
+        self.markers.push(TimelineMarker {
+            id: self.next_id,
+            frame,
+            kind,
+            label,
+        });
+        self.next_id += 1;
+        const CAP: usize = 4096;
+        if self.markers.len() > CAP {
+            self.markers.drain(..self.markers.len() - CAP);
+        }
+        self.changed();
+    }
+
+    fn retain_range(&mut self, lo: u64, hi: u64) {
+        let old_len = self.markers.len();
+        self.markers
+            .retain(|marker| marker.frame >= lo && marker.frame <= hi);
+        if self.markers.len() != old_len {
+            self.changed();
+        }
+    }
+
+    fn truncate_from(&mut self, frame: u64) {
+        let old_len = self.markers.len();
+        self.markers.retain(|marker| marker.frame < frame);
+        if self.markers.len() != old_len {
+            self.changed();
+        }
+    }
+
+    fn reset_inputs(&mut self) {
+        let old_len = self.markers.len();
+        self.markers.retain(|marker| marker.kind.starts_with("reload-"));
+        if self.markers.len() != old_len {
+            self.changed();
+        }
+        self.input_cursor = None;
+    }
+
+    fn json(&mut self) -> &str {
+        if self.dirty || self.cached_json.is_empty() {
+            let markers: Vec<_> = self
+                .markers
+                .iter()
+                .map(|marker| {
+                    serde_json::json!({
+                        "id": marker.id,
+                        "frame": marker.frame,
+                        "kind": marker.kind,
+                        "label": marker.label,
+                    })
+                })
+                .collect();
+            self.cached_json = serde_json::to_string(&markers).unwrap_or_else(|_| "[]".to_string());
+            self.dirty = false;
+        }
+        &self.cached_json
+    }
+}
+
+thread_local! {
+    static TIMELINE_LOG: RefCell<TimelineLog> = RefCell::new(TimelineLog::default());
+}
+
+fn input_marker(input: &InputEvent) -> (&'static str, String) {
+    match input {
+        InputEvent::Key { code, is_down } => {
+            let name = functor_runtime_common::Key::from_i32(*code)
+                .map(|key| key.name())
+                .unwrap_or_else(|| format!("key {code}"));
+            let edge = if *is_down { "down" } else { "up" };
+            (
+                if *is_down { "key-down" } else { "key-up" },
+                format!("{name} {edge}"),
+            )
+        }
+        InputEvent::MouseMove { x, y } => ("mouse-move", format!("mouse move ({x}, {y})")),
+        InputEvent::MouseWheel { delta } => ("mouse-wheel", format!("mouse wheel {delta:+}")),
+        InputEvent::UiEvent(event) => ("ui-input", format!("UI {event:?}")),
+    }
+}
+
+/// Copy newly recorded inputs into the DOM timeline's compact marker log. The
+/// producer's recorder is authoritative: inputs discarded while paused never
+/// appear, and replayable inputs land on their exact rendered frame.
+pub fn publish_timeline_inputs(game: &dyn GameProducer) {
+    let Some((lo, hi)) = game.scene_frame_range() else {
+        return;
+    };
+    TIMELINE_LOG.with(|log| {
+        let mut log = log.borrow_mut();
+        let generation = game.scene_timeline_generation();
+        if log.input_generation != Some(generation) {
+            // A branch can replace frames without making `hi` move backward
+            // (for example, one frame from the old tail). Rebuild input markers
+            // from the authoritative recorder instead of inferring from range.
+            log.reset_inputs();
+            log.input_generation = Some(generation);
+        }
+        if log.input_cursor.is_some_and(|cursor| cursor > hi) {
+            // A resumed scrub rewrote `hi`, the first frame on the new branch.
+            // Drop the discarded branch including its stale marker at `hi`,
+            // then rescan that authoritative replacement frame below.
+            log.truncate_from(hi);
+            log.input_cursor = hi.checked_sub(1);
+        }
+        let start = log
+            .input_cursor
+            .map_or(lo, |cursor| cursor.saturating_add(1).max(lo));
+        if start <= hi {
+            for frame in start..=hi {
+                let mut last_mouse_move = None;
+                for input in game.recorded_inputs_at(frame) {
+                    if matches!(&input, InputEvent::MouseMove { .. }) {
+                        // Pointer-lock mouselook can emit several moves per
+                        // rendered frame. One marker still says "input here"
+                        // without multiplying bridge payload and DOM hits.
+                        last_mouse_move = Some(input);
+                        continue;
+                    }
+                    let (kind, label) = input_marker(&input);
+                    log.push(frame, kind, label);
+                }
+                if let Some(input) = last_mouse_move {
+                    let (kind, label) = input_marker(&input);
+                    log.push(frame, kind, label);
+                }
+            }
+        }
+        log.input_cursor = Some(hi);
+        log.retain_range(lo, hi);
+    });
+}
+
+/// Record a reload boundary. Successful reloads reset model snapshots, so the
+/// marker belongs to the next monotonic frame; failures mark the attempted
+/// boundary without changing the running program.
+pub fn publish_timeline_reload(frame: u64, ok: bool, message: &str) {
+    TIMELINE_LOG.with(|log| {
+        log.borrow_mut().push(
+            frame,
+            if ok { "reload-ok" } else { "reload-error" },
+            if ok {
+                "hot reload".to_string()
+            } else {
+                format!("reload failed: {message}")
+            },
+        );
+    });
+}
+
+/// Runtime → page: JSON array of `{id, frame, kind, label}` markers.
+#[wasm_bindgen]
+pub fn functor_lang_timeline_events() -> String {
+    TIMELINE_LOG.with(|log| log.borrow_mut().json().to_string())
+}
+
+/// Runtime → page: cheap marker-log revision. The DOM fetches the JSON only
+/// when this changes instead of cloning it over the WASM boundary every rAF.
+#[wasm_bindgen]
+pub fn functor_lang_timeline_events_gen() -> u32 {
+    TIMELINE_LOG.with(|log| log.borrow().revision)
+}
 
 fn push_scrub(control: ScrubControl) {
     SCRUB_CONTROLS.with(|c| {
@@ -1197,10 +1416,33 @@ pub fn functor_lang_scrub_set_preview_config(window: f32, rate: usize) {
 
 /// Page → runtime: non-destructively scrub to a rendered frame (slider drag).
 #[wasm_bindgen]
-pub fn functor_lang_seek_scene(frame: f64) {
+pub fn functor_lang_seek_scene(frame: f64, request_id: u32) {
     if frame >= 0.0 {
-        push_scrub(ScrubControl::SeekTo(frame as u64));
+        push_scrub(ScrubControl::SeekTo {
+            frame: frame as u64,
+            request_id,
+        });
     }
+}
+
+/// Publish a completed seek's authoritative frame for the DOM's optimistic
+/// state reconciler. Kept separate from [`SCRUB_VIEW`] so ordinary playback
+/// publications do not masquerade as seek acknowledgements.
+pub fn publish_scrub_seek_result(request_id: u32, frame: Option<u64>) {
+    SCRUB_SEEK_RESULT.with(|result| {
+        *result.borrow_mut() = Some((request_id, frame.map_or(-1.0, |frame| frame as f64)));
+    });
+}
+
+/// Runtime → page: latest `[requestId, appliedFrame]`, or `[]` before any seek.
+#[wasm_bindgen]
+pub fn functor_lang_scrub_seek_result() -> Vec<f64> {
+    SCRUB_SEEK_RESULT.with(|result| {
+        result
+            .borrow()
+            .map(|(request_id, frame)| vec![request_id as f64, frame])
+            .unwrap_or_default()
+    })
 }
 
 /// Runtime → page: the current handle frame (`-1` if nothing recorded).

@@ -76,3 +76,9 @@ jobs:
 
       - name: Run wasm smoke
         run: npm run test:wasm-smoke
+
+      - name: Run scrubber model tests
+        run: npm run test:scrubber
+
+      - name: Run site sandbox browser tests
+        run: npm run test:site
