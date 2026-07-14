@@ -52,6 +52,18 @@ let draw = (model, tts: Float) =>
     Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(1.0, 0.2, 0.8))
 `;
 
+// A model that deliberately retains a module-bound closure. Its old snapshots
+// must not cross a hot reload, but the timeline should keep its frame/viewport
+// and show the unavailable prefix rather than collapsing or disappearing.
+const CLOSURE_HISTORY = `let offset = (k) => (x) => x + k
+let init = { t: 0.0, behavior: offset(1.0) }
+let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Scene.cube() |> Scene.rotateY(Angle.radians(model.t)) |> Scene.emissive(0.2, 0.8, 1.0))
+`;
+
 // A float-model program for the language-intelligence checks: every top-level
 // def has a knowable type (no record-typed `init` — a record's type stays
 // Unknown and earns no lens), so all four defs get a signature codelens; the
@@ -456,6 +468,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     accessibleInputMarkers > 0
   );
 
+  const rangeBeforeSafeReload = await player.evaluate(() => window.__scrub.range());
   await page.evaluate(() =>
     window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// timeline reload marker`)
   );
@@ -467,6 +480,13 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     () => !!document.querySelector("#scrub-events .scrub-event.reload")
   );
   check("timeline renders successful hot-reload boundaries", reloadMarker);
+  const rangeAfterSafeReload = await player.evaluate(() => window.__scrub.range());
+  check(
+    "plain-data history remains seekable across a hot reload",
+    rangeAfterSafeReload[0] === rangeBeforeSafeReload[0] &&
+      rangeAfterSafeReload[1] >= rangeBeforeSafeReload[1],
+    `${rangeBeforeSafeReload} -> ${rangeAfterSafeReload}`
+  );
   await player.waitForFunction(
     () => {
       const range = window.__scrub.range();
@@ -650,9 +670,8 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     branchMarkersAreAuthoritative
   );
 
-  // A successful reload while scrubbed still resumes at the recorder's next
-  // monotonic frame, so its boundary marker must not be anchored to the older
-  // selected frame and then pruned from the new history.
+  // A successful reload while scrubbed keeps the selected frame as the visible
+  // boundary. This plain-data model retains its pre-reload branch history.
   await player.waitForFunction(() => !window.__scrub.paused(), { timeout: 3000 });
   await player.waitForFunction(() => {
     const range = window.__scrub.range();
@@ -670,6 +689,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     reloadWhileScrubbed.hi,
     { timeout: 3000 }
   );
+  const selectedBeforeReload = reloadWhileScrubbed.hi - 2;
   await page.evaluate(() =>
     window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// reload while scrubbed marker`)
   );
@@ -698,6 +718,16 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     );
   });
   check("reload boundary keeps the visible Step/Resume transport", reloadTransportIsVisible);
+  const safeReloadView = await player.evaluate(() => window.__scrub.view());
+  check(
+    "paused plain-data reload keeps its selected frame and retained past",
+    safeReloadView.selectedFrame === selectedBeforeReload &&
+      safeReloadView.recorded.lo < selectedBeforeReload &&
+      safeReloadView.recorded.hi === selectedBeforeReload &&
+      safeReloadView.unavailableEndUnit === 0 &&
+      safeReloadView.unavailableAfterStartUnit < 1,
+    JSON.stringify(safeReloadView)
+  );
   await player.locator("#scrub-step").click();
   await sleep(500);
   const postReloadStep = await player.evaluate(() => ({
@@ -712,23 +742,121 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
       scrubbedReloadMarker.frame <= postReloadStep.range[1],
     JSON.stringify({ postReloadStep, scrubConsole: scrubConsole.slice(-8) })
   );
-  const playedRailStartsAtRecordedBoundary = await player.evaluate(
-    () => Number(document.getElementById("scrub-played").getAttribute("x")) > 0
+  const preservedRailStartsAtHistoryFloor = await player.evaluate(
+    () => Number(document.getElementById("scrub-played").getAttribute("x")) === 0
   );
   check(
-    "played rail does not paint history before the reload boundary",
-    playedRailStartsAtRecordedBoundary
+    "preserved history keeps its cyan rail before the reload boundary",
+    preservedRailStartsAtHistoryFloor
   );
   check(
     "reload while scrubbed branches from the selected frame",
-    scrubbedReloadMarker.frame === reloadWhileScrubbed.hi - 1,
+    scrubbedReloadMarker.frame === selectedBeforeReload,
     JSON.stringify({ reloadWhileScrubbed, scrubbedReloadMarker })
   );
 
   await page.close();
 }
 
-// --- 10. The editor language-intelligence wasm analyzes source in-browser. -----
+// --- 10. Closure-bearing reloads retain UI continuity at a safe boundary. ---
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const b64u = Buffer.from(CLOSURE_HISTORY).toString("base64url");
+  await page.goto(`${BASE}/sandbox.html#src=${b64u}`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+  const player = playerFrame(page);
+  await player.waitForFunction(
+    () => window.__scrub?.range().length === 2 && window.__scrub.range()[1] >= 30,
+    { timeout: 10000 }
+  );
+  await player.evaluate(() => window.__scrub.togglePause());
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  await player.evaluate(() => window.__scrub.setPreview({ enabled: true, seconds: 2 }));
+  const reloadTarget = await player.evaluate(() => {
+    const [lo, hi] = window.__scrub.range();
+    return Math.round(lo + (hi - lo) * 0.4);
+  });
+  await player.evaluate((frame) => window.__scrub.seek(frame), reloadTarget);
+  await player.waitForFunction(
+    (frame) => window.__scrub.frame() === frame,
+    reloadTarget,
+    { timeout: 3000 }
+  );
+  const beforeReload = await player.evaluate(() => ({
+    frame: window.__scrub.frame(),
+    view: window.__scrub.view(),
+    lastId: Math.max(-1, ...window.__scrub.events().map((event) => event.id)),
+  }));
+
+  await page.evaluate(() =>
+    window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// closure history boundary`)
+  );
+  await player.waitForFunction(
+    (lastId) =>
+      window.__scrub.events().some(
+        (event) => event.id > lastId && event.kind === "reload-ok"
+      ),
+    beforeReload.lastId,
+    { timeout: 5000 }
+  );
+  const afterReload = await player.evaluate(() => {
+    const view = window.__scrub.view();
+    return {
+      frame: window.__scrub.frame(),
+      range: window.__scrub.range(),
+      view,
+      stripeWidth: Number(document.getElementById("scrub-unavailable").getAttribute("width")),
+      stripeAfterWidth: Number(
+        document.getElementById("scrub-unavailable-after").getAttribute("width")
+      ),
+      playheadVisible: getComputedStyle(document.getElementById("scrub-playhead")).display,
+      previewVisible: getComputedStyle(document.getElementById("scrub-preview-handle")).display,
+      label: document.getElementById("scrub-count").textContent,
+      reloadFrame: window.__scrub.events().findLast((event) => event.kind === "reload-ok").frame,
+    };
+  });
+  check(
+    "closure reload keeps the paused frame and frozen viewport",
+    afterReload.frame === beforeReload.frame &&
+      afterReload.view.selectedFrame === beforeReload.view.selectedFrame &&
+      afterReload.view.viewport.lo === beforeReload.view.viewport.lo &&
+      afterReload.view.viewport.hi === beforeReload.view.viewport.hi,
+    JSON.stringify({ beforeReload, afterReload })
+  );
+  check(
+    "closure reload seeds a one-frame seekable generation at the boundary",
+    afterReload.range[0] === beforeReload.frame &&
+      afterReload.range[1] === beforeReload.frame &&
+      afterReload.reloadFrame === beforeReload.frame,
+    JSON.stringify(afterReload)
+  );
+  check(
+    "unavailable history is striped while both handles remain visible",
+    afterReload.view.hasUnavailableHistory &&
+      afterReload.stripeWidth > 0 &&
+      afterReload.stripeAfterWidth > 0 &&
+      afterReload.playheadVisible === "block" &&
+      afterReload.previewVisible === "block" &&
+      afterReload.label.includes(String(beforeReload.frame)) &&
+      afterReload.label.includes("reload boundary"),
+    JSON.stringify(afterReload)
+  );
+
+  await player.evaluate((frame) => window.__scrub.seek(frame), beforeReload.view.viewport.lo);
+  await sleep(150);
+  const refusedOldSeek = await player.evaluate(() => window.__scrub.frame());
+  check(
+    "striped pre-reload frames are not seekable",
+    refusedOldSeek === beforeReload.frame,
+    `${beforeReload.view.viewport.lo} -> ${refusedOldSeek}`
+  );
+  await page.close();
+}
+
+// --- 11. The editor language-intelligence wasm analyzes source in-browser. -----
 // Commits 7-8 wire this into the CodeMirror editor (diagnostics/hover); here we
 // just smoke-test the bundle loads and `functor_lang_analyze` reports errors on
 // a bad source and none on a clean one.

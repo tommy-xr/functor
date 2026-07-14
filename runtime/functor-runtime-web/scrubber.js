@@ -4,6 +4,7 @@
 
 import {
   functor_lang_scene_frame,
+  functor_lang_scene_generation,
   functor_lang_scene_range,
   functor_lang_seek_scene,
   functor_lang_scrub_seek_result,
@@ -59,6 +60,7 @@ const STYLE = `
 }
 #scrub-timeline { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 #scrub-track-bg { fill: rgba(155, 148, 179, 0.18); }
+.scrub-unavailable { fill: url(#scrub-unavailable-pattern); }
 #scrub-recorded { fill: rgba(65, 216, 230, 0.30); }
 #scrub-played { fill: var(--sb-accent); opacity: 0.62; }
 #scrub-future { fill: var(--sb-future); opacity: 0.9; }
@@ -139,7 +141,16 @@ const HTML = `
   <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
     <svg id="scrub-timeline" viewBox="0 0 1000 30" preserveAspectRatio="none"
       role="group" aria-label="Timeline event markers">
+      <defs>
+        <pattern id="scrub-unavailable-pattern" width="12" height="12"
+          patternUnits="userSpaceOnUse" patternTransform="rotate(20)">
+          <rect width="12" height="12" fill="rgba(8, 7, 14, 0.72)" />
+          <rect width="4" height="12" fill="rgba(155, 148, 179, 0.30)" />
+        </pattern>
+      </defs>
       <rect id="scrub-track-bg" x="0" y="12" width="1000" height="6" rx="3" aria-hidden="true" />
+      <rect id="scrub-unavailable" class="scrub-unavailable" x="0" y="12" width="0" height="6" rx="3" aria-hidden="true" />
+      <rect id="scrub-unavailable-after" class="scrub-unavailable" x="1000" y="12" width="0" height="6" rx="3" aria-hidden="true" />
       <rect id="scrub-recorded" x="0" y="12" width="1000" height="6" rx="3" aria-hidden="true" />
       <rect id="scrub-played" x="0" y="12" width="0" height="6" rx="3" aria-hidden="true" />
       <rect id="scrub-future" x="0" y="11" width="0" height="8" rx="3" aria-hidden="true" />
@@ -186,6 +197,8 @@ export function mountScrubber() {
   const pause = $("scrub-pause");
   const step = $("scrub-step");
   const label = $("scrub-count");
+  const unavailable = $("scrub-unavailable");
+  const unavailableAfter = $("scrub-unavailable-after");
   const recorded = $("scrub-recorded");
   const played = $("scrub-played");
   const future = $("scrub-future");
@@ -345,11 +358,23 @@ export function mountScrubber() {
     const playheadPct = current.playheadUnit * 100;
     const previewPct = current.previewEndUnit * 100;
     const futureWidth = Math.max(previewPct - playheadPct, 0);
-    const previewVisible =
-      state.preview.enabled && current.paused && current.recordingAvailable;
+    const previewVisible = state.preview.enabled && current.paused;
 
     playhead.style.left = `${playheadPct}%`;
-    playhead.style.display = current.recordingAvailable ? "block" : "none";
+    playhead.style.display = "block";
+    unavailable.setAttribute(
+      "width",
+      String(current.hasUnavailableHistory ? current.unavailableEndUnit * 1000 : 0)
+    );
+    unavailableAfter.setAttribute("x", String(current.unavailableAfterStartUnit * 1000));
+    unavailableAfter.setAttribute(
+      "width",
+      String(
+        current.hasUnavailableHistory
+          ? Math.max(1 - current.unavailableAfterStartUnit, 0) * 1000
+          : 0
+      )
+    );
     recorded.setAttribute("x", String(current.recordedStartUnit * 1000));
     recorded.setAttribute(
       "width",
@@ -382,10 +407,10 @@ export function mountScrubber() {
     overflow.style.display = previewVisible && current.previewClippedFrames > 0 ? "block" : "none";
     overflow.textContent = `+${current.previewClippedFrames}`;
 
-    playhead.setAttribute("aria-valuemin", String(current.viewport.lo));
+    playhead.setAttribute("aria-valuemin", String(current.recorded.lo));
     playhead.setAttribute(
       "aria-valuemax",
-      String(Math.max(current.viewport.hi, current.selectedFrame))
+      String(Math.max(current.recorded.hi, current.selectedFrame))
     );
     playhead.setAttribute("aria-valuenow", String(current.selectedFrame));
     playhead.setAttribute(
@@ -411,14 +436,14 @@ export function mountScrubber() {
         (current.previewClippedFrames ? `, ${current.previewClippedFrames} frames clipped` : "")
     );
 
-    label.innerHTML = current.recordingAvailable
-      ? `${current.selectedFrame}` +
-        (current.playheadClippedBefore || current.playheadClippedAfter
-          ? ` <span class="out">outside</span>`
-          : "") +
-        (state.preview.enabled ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
-        ` / ${Math.round(current.viewport.hi)}`
-      : "reload boundary · Step or Resume";
+    label.innerHTML =
+      `${current.selectedFrame}` +
+      (current.playheadClippedBefore || current.playheadClippedAfter
+        ? ` <span class="out">outside</span>`
+        : "") +
+      (state.preview.enabled ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
+      ` / ${Math.round(current.viewport.hi)}` +
+      (current.hasUnavailableHistory ? ` <span class="out">· reload boundary</span>` : "");
     pause.textContent = current.paused ? "▶" : "⏸";
     pause.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
     extrapolate.classList.toggle("on", state.preview.enabled);
@@ -486,8 +511,8 @@ export function mountScrubber() {
       ArrowUp: current.selectedFrame + steps,
       PageDown: current.selectedFrame - TIMELINE_FPS,
       PageUp: current.selectedFrame + TIMELINE_FPS,
-      Home: current.viewport.lo,
-      End: current.viewport.hi,
+      Home: current.recorded.lo,
+      End: current.recorded.hi,
     };
     if (!(event.key in targets)) return;
     event.preventDefault();
@@ -593,8 +618,11 @@ export function mountScrubber() {
         lo: range[0],
         hi: range[1],
         paused: functor_lang_scrub_paused(),
+        generation: functor_lang_scene_generation(),
       };
-      const snapshotKey = `${snapshot.frame}:${snapshot.lo}:${snapshot.hi}:${snapshot.paused}`;
+      const snapshotKey =
+        `${snapshot.frame}:${snapshot.lo}:${snapshot.hi}:` +
+        `${snapshot.paused}:${snapshot.generation}`;
       if (snapshotKey !== lastRuntimeSnapshotKey) {
         lastRuntimeSnapshotKey = snapshotKey;
         dispatch({ type: "runtime-published", snapshot });

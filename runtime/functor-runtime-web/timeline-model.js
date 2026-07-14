@@ -32,6 +32,7 @@ export function createTimelineState(preview = {}) {
     runtime: null,
     recordingAvailable: false,
     viewport: null,
+    continuity: null,
     selectedFrame: null,
     requestedFrame: null,
     requestedSeekId: null,
@@ -49,26 +50,44 @@ const validSnapshot = (snapshot) =>
   Number.isFinite(snapshot.hi) &&
   snapshot.hi >= snapshot.lo;
 
-const rangesOverlap = (a, b) => a && b && a.hi >= b.lo && b.hi >= a.lo;
-
 export function reduceTimeline(state, action) {
   switch (action.type) {
     case "runtime-published": {
       const snapshot = action.snapshot;
       if (!validSnapshot(snapshot)) return state;
 
-      const recorded = { lo: snapshot.lo, hi: snapshot.hi };
+      const runtime = {
+        ...snapshot,
+        generation: finiteOr(snapshot.generation, state.runtime?.generation ?? 0),
+      };
+      const recorded = { lo: runtime.lo, hi: runtime.hi };
       let viewport = state.viewport;
+      let continuity = state.continuity;
+      const generationChanged =
+        state.runtime !== null && runtime.generation !== state.runtime.generation;
 
-      // A reload resets the seekable model-history window around a new monotonic
-      // frame. If the old viewport no longer intersects it, the new recording is
-      // the only honest domain.
-      if (!rangesOverlap(viewport, recorded)) viewport = recorded;
+      if (!viewport) viewport = recorded;
+      if (generationChanged) {
+        // Keep the visual scale continuous while a new seekable generation
+        // replaces the old one. As new frames arrive, the old-width window
+        // advances normally and its unavailable striped prefix rolls away.
+        continuity = {
+          span: Math.max(viewport.hi - viewport.lo, recorded.hi - recorded.lo),
+          anchorHi: viewport.hi,
+        };
+      }
 
-      if (snapshot.paused) {
+      if (runtime.paused) {
         // Pause captures the viewport exactly once. Subsequent history/config /
         // selection updates cannot resize it.
-        if (!viewport) viewport = recorded;
+      } else if (continuity) {
+        const span = Math.max(continuity.span, recorded.hi - recorded.lo);
+        const hi = Math.max(continuity.anchorHi, recorded.hi);
+        viewport = { lo: hi - span, hi };
+        if (recorded.lo <= viewport.lo) {
+          continuity = null;
+          viewport = recorded;
+        }
       } else {
         viewport = recorded;
       }
@@ -81,9 +100,10 @@ export function reduceTimeline(state, action) {
 
       return {
         ...state,
-        runtime: snapshot,
+        runtime,
         recordingAvailable: true,
         viewport,
+        continuity,
         requestedFrame,
         requestedSeekId,
         selectedFrame,
@@ -202,6 +222,13 @@ export function deriveTimelineView(state) {
   const recordedEndFrame = state.recordingAvailable
     ? clamp(state.runtime.hi, state.viewport.lo, state.viewport.hi)
     : state.viewport.lo;
+  const unavailableEndFrame = state.recordingAvailable
+    ? clamp(state.runtime.lo, state.viewport.lo, state.viewport.hi)
+    : state.viewport.hi;
+  const unavailableAfterStartFrame =
+    state.recordingAvailable && state.continuity
+      ? clamp(state.runtime.hi, state.viewport.lo, state.viewport.hi)
+      : state.viewport.hi;
   const activeEventId = state.hoveredEventId ?? state.selectedEventId;
   const activeEvent = eventMarkers.find((marker) => marker.id === activeEventId) ?? null;
 
@@ -211,6 +238,12 @@ export function deriveTimelineView(state) {
     recordingAvailable: state.recordingAvailable,
     recordedStartUnit: frameToUnit(recordedStartFrame, state.viewport),
     recordedEndUnit: frameToUnit(recordedEndFrame, state.viewport),
+    unavailableEndUnit: frameToUnit(unavailableEndFrame, state.viewport),
+    unavailableAfterStartUnit: frameToUnit(unavailableAfterStartFrame, state.viewport),
+    hasUnavailableHistory:
+      !state.recordingAvailable ||
+      state.runtime.lo > state.viewport.lo ||
+      (state.continuity !== null && state.runtime.hi < state.viewport.hi),
     paused: state.runtime.paused,
     selectedFrame,
     visibleSelectedFrame,

@@ -8,10 +8,10 @@ import {
   reduceTimeline,
 } from "./timeline-model.js";
 
-const publish = (state, frame, hi, paused, lo = 0) =>
+const publish = (state, frame, hi, paused, lo = 0, generation = 0) =>
   reduceTimeline(state, {
     type: "runtime-published",
-    snapshot: { frame, lo, hi, paused },
+    snapshot: { frame, lo, hi, paused, generation },
   });
 
 test("live playback keeps the selected frame at the recorded endpoint", () => {
@@ -137,7 +137,66 @@ test("clearing recording keeps the frozen transport view but disables seeking", 
   assert.equal(view.recordingAvailable, false);
   assert.equal(view.recordedStartUnit, 0);
   assert.equal(view.recordedEndUnit, 0);
+  assert.equal(view.unavailableEndUnit, 1);
+  assert.equal(view.hasUnavailableHistory, true);
   assert.equal(state.requestedFrame, null);
+});
+
+test("a paused reload keeps its frame and viewport while marking old history unavailable", () => {
+  let state = publish(createTimelineState({ enabled: true }), 300, 300, true);
+  state = publish(state, 300, 300, true, 300, 1);
+  const view = deriveTimelineView(state);
+  assert.equal(view.selectedFrame, 300);
+  assert.deepEqual(view.viewport, { lo: 0, hi: 300 });
+  assert.equal(view.recordedStartUnit, 1);
+  assert.equal(view.recordedEndUnit, 1);
+  assert.equal(view.unavailableEndUnit, 1);
+  assert.equal(view.unavailableAfterStartUnit, 1);
+  assert.equal(view.hasUnavailableHistory, true);
+  assert.equal(view.previewFrames, 120);
+});
+
+test("an unsafe reload in the middle stripes both discarded sides", () => {
+  let state = publish(createTimelineState(), 300, 300, true);
+  state = reduceTimeline(state, { type: "seek-requested", id: 1, frame: 120 });
+  state = reduceTimeline(state, { type: "seek-resolved", id: 1, frame: 120 });
+  state = publish(state, 120, 120, true, 120, 1);
+
+  const view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 0, hi: 300 });
+  assert.equal(view.recordedStartUnit, 0.4);
+  assert.equal(view.recordedEndUnit, 0.4);
+  assert.equal(view.unavailableEndUnit, 0.4);
+  assert.equal(view.unavailableAfterStartUnit, 0.4);
+  assert.equal(view.hasUnavailableHistory, true);
+});
+
+test("live frames replace a reload stripe without collapsing the visual scale", () => {
+  let state = publish(createTimelineState(), 300, 300, false);
+  state = publish(state, 300, 300, false, 300, 1);
+  assert.deepEqual(deriveTimelineView(state).viewport, { lo: 0, hi: 300 });
+
+  state = publish(state, 301, 301, false, 300, 1);
+  let view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 1, hi: 301 });
+  assert.equal(view.unavailableEndUnit, 299 / 300);
+  assert.equal(view.unavailableAfterStartUnit, 1);
+
+  state = publish(state, 600, 600, false, 300, 1);
+  view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 300, hi: 600 });
+  assert.equal(view.hasUnavailableHistory, false);
+  assert.equal(state.continuity, null);
+});
+
+test("a safe reload generation leaves the full seekable history unchanged", () => {
+  let state = publish(createTimelineState(), 300, 300, true, 0, 4);
+  state = publish(state, 300, 300, true, 0, 4);
+  const view = deriveTimelineView(state);
+  assert.deepEqual(view.viewport, { lo: 0, hi: 300 });
+  assert.equal(view.recordedStartUnit, 0);
+  assert.equal(view.recordedEndUnit, 1);
+  assert.equal(view.hasUnavailableHistory, false);
 });
 
 test("hover takes precedence over persistent marker selection", () => {
