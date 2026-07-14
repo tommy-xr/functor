@@ -266,6 +266,12 @@ export function deriveTimelineView(state) {
   };
 }
 
+export function describeRecordedAvailability(view) {
+  if (!view?.recordingAvailable) return "no recorded history is currently available";
+  if (!view.hasUnavailableHistory) return "";
+  return `recorded frames ${Math.round(view.recorded.lo)} to ${Math.round(view.recorded.hi)}; striped history outside that range is unavailable`;
+}
+
 export function clusterTimelineEvents(events, viewport, bucketCount = 250) {
   if (!viewport || viewport.hi < viewport.lo) return [];
   const buckets = new Map();
