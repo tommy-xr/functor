@@ -29,12 +29,14 @@
 
 use std::time::Instant;
 
+use functor_lang::project::SourceMap;
+use functor_lang::{Session, Value};
+use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, take_ui_handlers,
     view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
     UiHandler,
 };
-use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_push, journal_swap, FrameCtx, JournalEntry, Provenance, Reporter,
     SpanSource,
@@ -44,8 +46,6 @@ use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
-use functor_lang::project::SourceMap;
-use functor_lang::{Session, Value};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -223,8 +223,9 @@ fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String>
     // Inject the host prelude `.funi` interfaces so `Scene.*` (etc.) typecheck
     // against real types (docs/functor-lang-interfaces.md). Check-time only — the FunctorHost still
     // provides the actual runtime values.
-    let project = functor_lang::project::load_with_prelude(entry, &overrides, &functor_prelude::modules())
-        .map_err(|e| format!("cannot load {}", e.render()))?;
+    let project =
+        functor_lang::project::load_with_prelude(entry, &overrides, &functor_prelude::modules())
+            .map_err(|e| format!("cannot load {}", e.render()))?;
     // Type diagnostics are advisory in the dev loop: print, keep going.
     for diag in project.check() {
         eprintln!(
@@ -340,7 +341,8 @@ fn entry_mtime(stamp: &[(PathBuf, SystemTime)]) -> Option<SystemTime> {
 }
 
 fn project_stamp(path: &str) -> Vec<(PathBuf, SystemTime)> {
-    let files = functor_lang::project::project_files(std::path::Path::new(path)).unwrap_or_default();
+    let files =
+        functor_lang::project::project_files(std::path::Path::new(path)).unwrap_or_default();
     files
         .into_iter()
         .map(|file| {
@@ -453,7 +455,7 @@ impl FunctorLangGame {
     /// tick right through a reload. Returns the number of stored closures
     /// rebound, for the status line.
     fn swap_in(&mut self, loaded: Loaded) -> usize {
-        self.recorder.commit_scrub_before_reload(
+        let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_frame,
@@ -471,7 +473,8 @@ impl FunctorLangGame {
         self.last_frame_journal.clear();
         self.cached_trace = None;
         journal_swap(); // discard any partial current-frame journal
-        self.reporter.set_source(SpanSource::Project(loaded.sources));
+        self.reporter
+            .set_source(SpanSource::Project(loaded.sources));
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
@@ -509,13 +512,11 @@ impl FunctorLangGame {
         // the next render's `ui(model)` rebuilds it against the new one. A
         // click landing in the gap resolves an unknown slot and is dropped.
         self.ui_handlers.clear();
-        // Reload is a model-history BOUNDARY: the retained snapshots can hold
-        // closures bound to the old module, so — unlike the live model, which
-        // `rebind_value` migrates above — they can't safely cross a reload. The
-        // recorder keeps its rendered-frame clock monotonic so recording resumes
-        // consecutively. (Rebinding snapshots to preserve rewind ACROSS an edit
-        // is deferred to when that feature is built — docs/time-travel.md.)
-        self.recorder.reset_on_reload();
+        // Plain-data snapshots remain seekable under the new program. A model
+        // history containing callable or opaque host values instead starts a new
+        // generation anchored at this rebound live frame.
+        self.recorder
+            .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
         report.rebound
     }
 
@@ -552,7 +553,6 @@ impl FunctorLangGame {
             self.swap_ns = 0;
         }
     }
-
 }
 
 impl Game for FunctorLangGame {
@@ -1008,20 +1008,22 @@ AudioScene.empty), got {}",
         functor_runtime_common::net::drain_commands_json()
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
-        self.ctx().deliver_http_result(functor_runtime_common::net::HttpResult {
-            token: token as u64,
-            status: status as u16,
-            body: body.into_bytes(),
-            error: None,
-        });
+        self.ctx()
+            .deliver_http_result(functor_runtime_common::net::HttpResult {
+                token: token as u64,
+                status: status as u16,
+                body: body.into_bytes(),
+                error: None,
+            });
     }
     fn net_push_http_error(&mut self, token: i32, message: String) {
-        self.ctx().deliver_http_result(functor_runtime_common::net::HttpResult {
-            token: token as u64,
-            status: 0,
-            body: Vec::new(),
-            error: Some(message),
-        });
+        self.ctx()
+            .deliver_http_result(functor_runtime_common::net::HttpResult {
+                token: token as u64,
+                status: 0,
+                body: Vec::new(),
+                error: Some(message),
+            });
     }
     fn audio_drain_commands(&self) -> String {
         // One-shot commands (Effect.play/playAt/playThen), performed by the
@@ -1038,16 +1040,20 @@ AudioScene.empty), got {}",
         functor_runtime_common::net::drain_conn_commands_json()
     }
     fn net_push_connected(&mut self, key: String, conn: i32) {
-        self.ctx().deliver_net_event(key, NetEventKind::Connected, conn, String::new());
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Connected, conn, String::new());
     }
     fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
-        self.ctx().deliver_net_event(key, NetEventKind::Message, conn, text);
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Message, conn, text);
     }
     fn net_push_disconnected(&mut self, key: String, conn: i32) {
-        self.ctx().deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
     }
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
-        self.ctx().deliver_net_event(key, NetEventKind::Error, conn, message);
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Error, conn, message);
     }
     fn audio_push_finished(&mut self, token: i32) {
         self.ctx().deliver_audio_completion(token as u64);
@@ -1182,7 +1188,8 @@ mod tests {
         let _guard = NET_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use functor_runtime_common::net::{drain_conn_commands, ConnCommand};
         const BIND: &str = "127.0.0.1:9001";
-        let dir = std::env::temp_dir().join(format!("functor-lang-net-server-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-net-server-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1249,7 +1256,10 @@ mod tests {
     /// a whole project since B8 — a shared temp dir would drag stray `.fun`
     /// files in as sibling modules) and return `load_game`'s error.
     fn load_err(name: &str, src: &str) -> String {
-        let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-{name}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let path = dir.join("game.fun");
@@ -1302,7 +1312,10 @@ mod tests {
     /// per file). [Codex Medium — B8 review]
     #[test]
     fn pushed_entry_survives_sibling_reloads() {
-        let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-push", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-push",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let entry = dir.join("game.fun");
@@ -1395,8 +1408,10 @@ mod tests {
             }
         }
 
-        let dir =
-            std::env::temp_dir().join(format!("functor-lang-game-test-{}-history", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-history",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
@@ -1412,7 +1427,10 @@ mod tests {
         assert_eq!(game.recorder.scene_frame_range(), None);
 
         for _ in 0..5 {
-            game.tick(FrameTime { tts: 0.0, dts: 0.016 });
+            game.tick(FrameTime {
+                tts: 0.0,
+                dts: 0.016,
+            });
         }
 
         // Five rendered frames, indexed 0..4; recording left the live model
@@ -1428,14 +1446,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Hot reload is a model-history boundary (xreview): the ring is reset so
-    /// it never retains old-module snapshots, while `rendered_frame` stays
-    /// monotonic so recording resumes CONSECUTIVELY after the reload (a stale
-    /// non-consecutive record would panic in `History::record`).
+    /// Plain-data model history carries no module IR, so a reload while
+    /// scrubbed keeps the selected cursor and full future. Resume—not reload—
+    /// commits the branch and recording continues consecutively.
     #[test]
-    fn hot_reload_resets_history_and_recording_resumes() {
-        let dir = std::env::temp_dir()
-            .join(format!("functor-lang-game-test-{}-history-reload", std::process::id()));
+    fn hot_reload_preserves_a_plain_data_scrub_and_future_until_resume() {
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-history-reload",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let src = "let init = { n: 0.0 }\n\
@@ -1445,23 +1464,30 @@ mod tests {
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         for _ in 0..3 {
-            game.tick(FrameTime { tts: 0.0, dts: 0.016 });
+            game.tick(FrameTime {
+                tts: 0.0,
+                dts: 0.016,
+            });
         }
         assert_eq!(game.recorder.scene_frame_range(), Some((0, 2)));
+        game.seek_scene_to(0).expect("scrub before reload");
 
-        // Push a fresh (compatible) source: the model is rebound and KEPT, but
-        // the history ring is reset.
+        // Push a fresh source: the model is rebound and the plain-data history
+        // remains available under the new program without moving the cursor.
         game.reload_source(src).expect("reload should succeed");
         assert_eq!(
             game.recorder.scene_frame_range(),
-            None,
-            "reload must reset the model history"
+            Some((0, 2)),
+            "plain-data history should survive the reload"
         );
+        assert_eq!(game.current_scene_frame(), Some(0));
 
-        // Recording resumes at the current (monotonic) rendered frame — the
-        // fresh ring re-bases there, so no non-consecutive panic.
-        game.tick(FrameTime { tts: 0.0, dts: 0.016 });
-        assert_eq!(game.recorder.scene_frame_range(), Some((3, 3)));
+        // Resume commits the branch from frame 0, then records frame 1.
+        game.tick(FrameTime {
+            tts: 0.0,
+            dts: 0.016,
+        });
+        assert_eq!(game.recorder.scene_frame_range(), Some((0, 1)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1492,8 +1518,10 @@ mod tests {
         // Isolate the physics world from any prior test on this thread.
         physics::remove_world(physics::DEFAULT_WORLD);
 
-        let dir = std::env::temp_dir()
-            .join(format!("functor-lang-game-test-{}-coupled", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-coupled",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
@@ -1508,7 +1536,10 @@ mod tests {
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
-        let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
+        let dt = FrameTime {
+            tts: 0.0,
+            dts: physics::FIXED_DT,
+        };
         // Frames 0..3 (4 ticks): the ball falls under gravity, n counts up.
         for _ in 0..4 {
             game.tick(dt.clone());
@@ -1520,7 +1551,10 @@ mod tests {
         }
         let y_at_9 = ball_y();
         assert_eq!(n_of(&game.model), 10.0);
-        assert!(y_at_3 > y_at_9, "ball should have fallen further by frame 9");
+        assert!(
+            y_at_3 > y_at_9,
+            "ball should have fallen further by frame 9"
+        );
 
         // Rewind the WHOLE scene to rendered frame 3.
         let status = game.rewind_scene_to(3).expect("rewind should succeed");
@@ -1579,14 +1613,20 @@ mod tests {
         assert_eq!(game.scene_frame_range(), Some((0, 4)));
 
         // Live (not scrubbing): render draws at the real clock — eye.x == 42.0.
-        let live = game.render(FrameTime { tts: 42.0, dts: 1.0 });
+        let live = game.render(FrameTime {
+            tts: 42.0,
+            dts: 1.0,
+        });
         assert_eq!(live.camera.eye[0], 42.0, "live render uses the real clock");
 
         // Scrub back to frame 1 (recorded tts = 2.0). Even though render is
         // handed a bogus live tts, `draw` must run at the RECORDED tts, so the
         // tts-driven camera rewinds to eye.x == 2.0 — the bug this fixes.
         game.seek_scene_to(1).expect("seek 1");
-        let scrubbed = game.render(FrameTime { tts: 99.0, dts: 0.0 });
+        let scrubbed = game.render(FrameTime {
+            tts: 99.0,
+            dts: 0.0,
+        });
         assert_eq!(
             scrubbed.camera.eye[0], 2.0,
             "scrubbed frame must render at its recorded tts, not the live clock"
@@ -1612,7 +1652,10 @@ mod tests {
             }
         }
         physics::remove_world(physics::DEFAULT_WORLD);
-        let dir = std::env::temp_dir().join(format!("functor-lang-game-test-{}-scrub", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-scrub",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
@@ -1626,7 +1669,10 @@ mod tests {
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
-        let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
+        let dt = FrameTime {
+            tts: 0.0,
+            dts: physics::FIXED_DT,
+        };
         for _ in 0..10 {
             game.tick(dt.clone());
         }
@@ -1637,9 +1683,17 @@ mod tests {
         game.seek_scene_to(3).expect("seek 3");
         assert_eq!(n_of(&game.model), 4.0);
         assert_eq!(game.current_scene_frame(), Some(3));
-        assert_eq!(game.scene_frame_range(), Some((0, 9)), "seek must not truncate");
+        assert_eq!(
+            game.scene_frame_range(),
+            Some((0, 9)),
+            "seek must not truncate"
+        );
         game.seek_scene_to(7).expect("seek 7");
-        assert_eq!(n_of(&game.model), 8.0, "can scrub FORWARD again (non-destructive)");
+        assert_eq!(
+            n_of(&game.model),
+            8.0,
+            "can scrub FORWARD again (non-destructive)"
+        );
         assert_eq!(game.scene_frame_range(), Some((0, 9)));
         game.seek_scene_to(2).expect("seek 2");
         assert_eq!(n_of(&game.model), 3.0);
@@ -1648,8 +1702,16 @@ mod tests {
         // is discarded, and recording continues at frame 3.
         game.tick(dt.clone());
         assert_eq!(game.current_scene_frame(), Some(3), "no longer scrubbing");
-        assert_eq!(game.scene_frame_range(), Some((0, 3)), "future branched away");
-        assert_eq!(n_of(&game.model), 4.0, "model advanced from the scrubbed frame");
+        assert_eq!(
+            game.scene_frame_range(),
+            Some((0, 3)),
+            "future branched away"
+        );
+        assert_eq!(
+            n_of(&game.model),
+            4.0,
+            "model advanced from the scrubbed frame"
+        );
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1671,8 +1733,10 @@ mod tests {
         }
 
         physics::remove_world(physics::DEFAULT_WORLD);
-        let dir =
-            std::env::temp_dir().join(format!("functor-lang-game-test-{}-latest", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-latest",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
@@ -1686,17 +1750,25 @@ mod tests {
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
-        let dt = FrameTime { tts: 0.0, dts: physics::FIXED_DT };
+        let dt = FrameTime {
+            tts: 0.0,
+            dts: physics::FIXED_DT,
+        };
         for _ in 0..8 {
             game.tick(dt.clone());
         }
         let y_before = ball_y();
 
         // Latest recorded frame is 7 (0..7).
-        let status = game.rewind_scene_to(7).expect("rewind to latest should succeed");
+        let status = game
+            .rewind_scene_to(7)
+            .expect("rewind to latest should succeed");
         assert!(status.contains("frame 7"), "unexpected status: {status}");
         // World untouched (no physics seek), model still current.
-        assert!((ball_y() - y_before).abs() < 1e-6, "latest-frame rewind moved the world");
+        assert!(
+            (ball_y() - y_before).abs() < 1e-6,
+            "latest-frame rewind moved the world"
+        );
         assert_eq!(game.recorder.scene_frame_range(), Some((0, 7)));
 
         physics::remove_world(physics::DEFAULT_WORLD);
@@ -1721,7 +1793,8 @@ mod tests {
         // physics test on this thread — start from an empty world.
         physics::remove_world(physics::DEFAULT_WORLD);
 
-        let dir = std::env::temp_dir().join(format!("functor-lang-fwd-step-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-fwd-step-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
@@ -1804,7 +1877,11 @@ mod tests {
         assert_eq!(forward.len(), DIVISIONS, "division count");
         // The scene genuinely evolves: the world moves across the window and the
         // ball lands (a Contact folds `hits` up through `update`).
-        assert_ne!(live[0].1, live[N - 1].1, "world should move over the window");
+        assert_ne!(
+            live[0].1,
+            live[N - 1].1,
+            "world should move over the window"
+        );
         assert!(
             game.model.to_string().contains("hits: ")
                 && !game.model.to_string().contains("hits: 0"),
@@ -1816,7 +1893,11 @@ mod tests {
         for (div, (fwd_m, fwd_w)) in forward.iter().enumerate() {
             let live_idx = (div + 1) * STEPS_PER_DIV - 1;
             let (live_m, live_w) = &live[live_idx];
-            assert_eq!(fwd_m.to_string(), *live_m, "model diverged at division {div}");
+            assert_eq!(
+                fwd_m.to_string(),
+                *live_m,
+                "model diverged at division {div}"
+            );
             assert_eq!(fwd_w, live_w, "world diverged at division {div}");
         }
 
@@ -1876,7 +1957,10 @@ mod tests {
         let fork_tts = tts;
         // The fork is pre-jump: grounded, running, still well left of the chasm.
         assert_eq!(field(&fork_model, "grounded"), 1.0, "fork must be grounded");
-        assert!(field(&fork_model, "x") < -3.0, "fork must be left of the edge");
+        assert!(
+            field(&fork_model, "x") < -3.0,
+            "fork must be left of the edge"
+        );
 
         // Phase 2: the live continuation — run to the edge and JUMP at the last
         // grounded frame before walking off (the optimal launch), then land. This
@@ -1908,8 +1992,10 @@ mod tests {
         let up_events: usize = inputs
             .iter()
             .flatten()
-            .filter(|e| matches!(e, functor_runtime_common::RecordedInput::Key { code, is_down }
-                if *code == Key::Up as i32 && *is_down))
+            .filter(|e| {
+                matches!(e, functor_runtime_common::RecordedInput::Key { code, is_down }
+                if *code == Key::Up as i32 && *is_down)
+            })
             .count();
         assert_eq!(up_events, 1, "exactly one recorded jump");
 
@@ -2022,7 +2108,11 @@ mod tests {
             (field(&game.model, "x") - recorded[S as usize].0).abs() < 1e-9,
             "scrubbed model must be the recorded frame S"
         );
-        assert_eq!(field(&game.model, "grounded"), 1.0, "S is pre-jump / grounded");
+        assert_eq!(
+            field(&game.model, "grounded"),
+            1.0,
+            "S is pre-jump / grounded"
+        );
 
         // Resolve the fork EXACTLY as `ghost_frames(script_inputs = None)` does.
         let k = game.current_scene_frame().unwrap();
@@ -2067,7 +2157,10 @@ mod tests {
             );
         }
         // The strobe visibly shows the JUMP: some division rose above the ground.
-        assert!(peak_y > 0.5, "the ghost should show the jump arc, peak y = {peak_y}");
+        assert!(
+            peak_y > 0.5,
+            "the ghost should show the jump arc, peak y = {peak_y}"
+        );
     }
 
     /// Regression (xreview): under the fixed-timestep loop a live input can be
@@ -2215,7 +2308,10 @@ mod tests {
         assert_eq!(kicked.len(), DIVISIONS);
         let coast_x = ghosts.last().unwrap().0.scene.xform.w.x;
         let kicked_x = kicked.last().unwrap().0.scene.xform.w.x;
-        assert!(coast_x.abs() < 1e-3, "coast ghost stays centered: {coast_x}");
+        assert!(
+            coast_x.abs() < 1e-3,
+            "coast ghost stays centered: {coast_x}"
+        );
         assert!(
             kicked_x > 1.0,
             "the replayed kick must move the projected ball: {kicked_x}"
@@ -2337,10 +2433,8 @@ mod tests {
     /// does NOT leak into the resume frame's journal as a phantom.
     #[test]
     fn paused_injected_input_folds_into_the_trace_not_the_resume_frame() {
-        let dir = std::env::temp_dir().join(format!(
-            "functor-inspector-input-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("functor-inspector-input-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("game.fun"), INSPECTOR_GAME).unwrap();
@@ -2373,8 +2467,7 @@ mod tests {
         // Resume (a real frame runs): the new frame's journal replaces
         // everything — no phantom input carried over from the paused injection.
         game.tick(FrameTime { dts: 0.1, tts: 0.6 });
-        let resumed: serde_json::Value =
-            serde_json::from_str(&game.inspector_trace(true)).unwrap();
+        let resumed: serde_json::Value = serde_json::from_str(&game.inspector_trace(true)).unwrap();
         let entries: Vec<&str> = resumed["invocations"]
             .as_array()
             .unwrap()

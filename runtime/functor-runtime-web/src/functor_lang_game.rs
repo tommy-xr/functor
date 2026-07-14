@@ -21,6 +21,8 @@
 
 use std::cell::RefCell;
 
+use functor_lang::project::SourceMap;
+use functor_lang::{Session, Value};
 use functor_runtime_common::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, contains_effect, frame_value,
     take_ui_handlers, view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind,
@@ -35,8 +37,6 @@ use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::{Frame, FrameTime};
-use functor_lang::project::SourceMap;
-use functor_lang::{Session, Value};
 use wasm_bindgen::prelude::*;
 
 pub struct FunctorLangWebGame {
@@ -175,8 +175,9 @@ fn load_source(sources: &[(String, String)]) -> Result<Loaded, String> {
     // interfaces so `Scene.*` (etc.) typecheck against real types — the exact
     // path the desktop producer runs (docs/functor-lang-interfaces.md). Check-time only; the
     // FunctorHost still provides the actual runtime values.
-    let project = functor_lang::project::load_sources_with_prelude(pairs, &functor_prelude::modules())
-        .map_err(|e| format!("cannot load {}", e.render()))?;
+    let project =
+        functor_lang::project::load_sources_with_prelude(pairs, &functor_prelude::modules())
+            .map_err(|e| format!("cannot load {}", e.render()))?;
     let module = project.module;
     let source_map = project.sources;
     // Type diagnostics are advisory in the dev loop: warn, keep going
@@ -184,11 +185,19 @@ fn load_source(sources: &[(String, String)]) -> Result<Loaded, String> {
     // project file they land in.
     for diag in functor_lang::check(&module) {
         web_sys::console::warn_1(
-            &format!("warning: {}", source_map.render(diag.span.start, &diag.message)).into(),
+            &format!(
+                "warning: {}",
+                source_map.render(diag.span.start, &diag.message)
+            )
+            .into(),
         );
     }
-    let session = Session::load(&module, &mut FunctorHost)
-        .map_err(|f| format!("cannot load {}", source_map.render(f.error.span.start, &f.error.message)))?;
+    let session = Session::load(&module, &mut FunctorHost).map_err(|f| {
+        format!(
+            "cannot load {}",
+            source_map.render(f.error.span.start, &f.error.message)
+        )
+    })?;
     // The producer contract is knowable at load — fail here, not once per
     // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
     // right arity.
@@ -351,7 +360,7 @@ impl FunctorLangWebGame {
     /// right through a reload. Returns the number of stored closures rebound,
     /// for the status line.
     fn swap_in(&mut self, loaded: Loaded) -> usize {
-        self.recorder.commit_scrub_before_reload(
+        let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_frame,
@@ -369,7 +378,8 @@ impl FunctorLangWebGame {
         self.last_frame_journal.clear();
         self.cached_trace = None;
         journal_swap(); // discard any partial current-frame journal
-        self.reporter.set_source(SpanSource::Project(loaded.sources));
+        self.reporter
+            .set_source(SpanSource::Project(loaded.sources));
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
@@ -396,11 +406,11 @@ impl FunctorLangWebGame {
         // The widget handler table holds msgs/taggers into the OLD session;
         // the next render's `ui(model)` rebuilds it against the new one.
         self.ui_handlers.clear();
-        // Reload is a model-history BOUNDARY (see the desktop producer): the
-        // retained snapshots can hold old-module closures, so they can't cross
-        // a reload; the recorder keeps its rendered-frame clock monotonic so
-        // recording resumes consecutively.
-        self.recorder.reset_on_reload();
+        // Plain-data snapshots remain seekable under the new program. A model
+        // history containing callable or opaque host values instead starts a new
+        // generation anchored at this rebound live frame.
+        self.recorder
+            .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
         self.has_ui = loaded.has_ui;
         if !self.has_ui {
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
@@ -582,10 +592,6 @@ impl GameProducer for FunctorLangWebGame {
 
     fn scene_timeline_generation(&self) -> u64 {
         self.recorder.generation()
-    }
-
-    fn next_scene_frame(&self) -> Option<u64> {
-        Some(self.recorder.next_frame())
     }
 
     fn current_scene_tts(&self) -> Option<f64> {
@@ -837,20 +843,22 @@ AudioScene.empty), got {}",
         functor_runtime_common::net::drain_commands_json()
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
-        self.ctx().deliver_http_result(functor_runtime_common::net::HttpResult {
-            token: token as u64,
-            status: status as u16,
-            body: body.into_bytes(),
-            error: None,
-        });
+        self.ctx()
+            .deliver_http_result(functor_runtime_common::net::HttpResult {
+                token: token as u64,
+                status: status as u16,
+                body: body.into_bytes(),
+                error: None,
+            });
     }
     fn net_push_http_error(&mut self, token: i32, message: String) {
-        self.ctx().deliver_http_result(functor_runtime_common::net::HttpResult {
-            token: token as u64,
-            status: 0,
-            body: Vec::new(),
-            error: Some(message),
-        });
+        self.ctx()
+            .deliver_http_result(functor_runtime_common::net::HttpResult {
+                token: token as u64,
+                status: 0,
+                body: Vec::new(),
+                error: Some(message),
+            });
     }
     fn audio_drain_commands(&self) -> String {
         // One-shot commands (Effect.play/playAt/playThen); the page's Web Audio
@@ -867,16 +875,20 @@ AudioScene.empty), got {}",
         functor_runtime_common::net::drain_conn_commands_json()
     }
     fn net_push_connected(&mut self, key: String, conn: i32) {
-        self.ctx().deliver_net_event(key, NetEventKind::Connected, conn, String::new());
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Connected, conn, String::new());
     }
     fn net_push_conn_message(&mut self, key: String, conn: i32, text: String) {
-        self.ctx().deliver_net_event(key, NetEventKind::Message, conn, text);
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Message, conn, text);
     }
     fn net_push_disconnected(&mut self, key: String, conn: i32) {
-        self.ctx().deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Disconnected, conn, String::new());
     }
     fn net_push_conn_error(&mut self, key: String, conn: i32, message: String) {
-        self.ctx().deliver_net_event(key, NetEventKind::Error, conn, message);
+        self.ctx()
+            .deliver_net_event(key, NetEventKind::Error, conn, message);
     }
     fn audio_push_finished(&mut self, token: i32) {
         self.ctx().deliver_audio_completion(token as u64);
@@ -1155,15 +1167,19 @@ pub enum ScrubControl {
     SetPreview(u32),
     /// The ⚙ popover's shared forward window (seconds) + samples-per-second
     /// rate, pushed by the DOM inputs on change.
-    SetPreviewConfig { window: f32, rate: usize },
+    SetPreviewConfig {
+        window: f32,
+        rate: usize,
+    },
 }
 
 thread_local! {
     static SCRUB_CONTROLS: RefCell<Vec<ScrubControl>> = const { RefCell::new(Vec::new()) };
-    /// Published each frame for the page's slider: `(frame, lo, hi, paused)`.
+    /// Published each frame for the page's slider:
+    /// `(frame, lo, hi, paused, history generation)`.
     /// `frame`/`lo`/`hi` are `-1.0` when nothing is recorded yet.
-    static SCRUB_VIEW: RefCell<(f64, f64, f64, bool)> =
-        const { RefCell::new((-1.0, -1.0, -1.0, false)) };
+    static SCRUB_VIEW: RefCell<(f64, f64, f64, bool, u64)> =
+        const { RefCell::new((-1.0, -1.0, -1.0, false, 0)) };
     /// Latest completed seek as `(request id, authoritative applied frame)`.
     /// The DOM uses this acknowledgement to retire optimistic handle state even
     /// when the runtime clamps or refuses a request.
@@ -1231,7 +1247,8 @@ impl TimelineLog {
 
     fn reset_inputs(&mut self) {
         let old_len = self.markers.len();
-        self.markers.retain(|marker| marker.kind.starts_with("reload-"));
+        self.markers
+            .retain(|marker| marker.kind.starts_with("reload-"));
         if self.markers.len() != old_len {
             self.changed();
         }
@@ -1333,9 +1350,8 @@ pub fn publish_timeline_inputs(game: &dyn GameProducer) {
     });
 }
 
-/// Record a reload boundary. Successful reloads reset model snapshots, so the
-/// marker belongs to the next monotonic frame; failures mark the attempted
-/// boundary without changing the running program.
+/// Record a reload boundary at the scene frame that remained current through
+/// the swap. Failures mark the attempted boundary without changing the program.
 pub fn publish_timeline_reload(frame: u64, ok: bool, message: &str) {
     TIMELINE_LOG.with(|log| {
         log.borrow_mut().push(
@@ -1379,12 +1395,17 @@ pub fn take_scrub_controls() -> Vec<ScrubControl> {
 }
 
 /// Publish this frame's scrubber state for the page to poll.
-pub fn publish_scrub_view(frame: Option<u64>, range: Option<(u64, u64)>, paused: bool) {
+pub fn publish_scrub_view(
+    frame: Option<u64>,
+    range: Option<(u64, u64)>,
+    paused: bool,
+    generation: u64,
+) {
     let f = frame.map(|f| f as f64).unwrap_or(-1.0);
     let (lo, hi) = range
         .map(|(l, h)| (l as f64, h as f64))
         .unwrap_or((-1.0, -1.0));
-    SCRUB_VIEW.with(|v| *v.borrow_mut() = (f, lo, hi, paused));
+    SCRUB_VIEW.with(|v| *v.borrow_mut() = (f, lo, hi, paused, generation));
 }
 
 /// Page → runtime: toggle pause (pin/unpin the clock).
@@ -1454,7 +1475,7 @@ pub fn functor_lang_scene_frame() -> f64 {
 /// Runtime → page: the seekable window as `[lo, hi]`, or `[]` if empty.
 #[wasm_bindgen]
 pub fn functor_lang_scene_range() -> Vec<f64> {
-    let (_, lo, hi, _) = SCRUB_VIEW.with(|v| *v.borrow());
+    let (_, lo, hi, _, _) = SCRUB_VIEW.with(|v| *v.borrow());
     if lo < 0.0 {
         vec![]
     } else {
@@ -1466,6 +1487,12 @@ pub fn functor_lang_scene_range() -> Vec<f64> {
 #[wasm_bindgen]
 pub fn functor_lang_scrub_paused() -> bool {
     SCRUB_VIEW.with(|v| v.borrow().3)
+}
+
+/// Runtime → page: current seekable-history generation.
+#[wasm_bindgen]
+pub fn functor_lang_scene_generation() -> f64 {
+    SCRUB_VIEW.with(|v| v.borrow().4 as f64)
 }
 
 // --- Paused-scene inspector ↔ DOM bridge (visual-debugger PR2b) --------------

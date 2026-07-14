@@ -288,10 +288,11 @@ fn apply_pending_reload(game: &mut dyn GameProducer) {
     };
     match outcome {
         Ok(status) => {
-            let next_recorded_frame = game
-                .next_scene_frame()
-                .unwrap_or_else(|| selected_frame.saturating_add(1));
-            functor_lang_game::publish_timeline_reload(next_recorded_frame, true, &status);
+            // The live scene remains on the selected/current frame across the
+            // swap. Mark that exact boundary; using the next frame makes a
+            // paused marker sit outside the seekable range and get pruned.
+            let reload_frame = game.current_scene_frame().unwrap_or(selected_frame);
+            functor_lang_game::publish_timeline_reload(reload_frame, true, &status);
             hide_error_overlay();
             post_reload_result(true, &status, id);
         }
@@ -1491,6 +1492,7 @@ async fn run_async() -> Result<(), JsValue> {
                 game.current_scene_frame(),
                 game.scene_frame_range(),
                 clock.is_paused(),
+                game.scene_timeline_generation(),
             );
 
             // Publish the paused-inspector trace for the page's poll loop

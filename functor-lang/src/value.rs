@@ -60,6 +60,13 @@ pub trait HostData {
     /// Shown as `<{type_name}>` in run/trace output and error messages.
     fn type_name(&self) -> &'static str;
     fn as_any(&self) -> &dyn std::any::Any;
+    /// Whether this opaque value is safe to retain in a model snapshot across
+    /// a module reload. Conservative by default: host values such as effects,
+    /// subscriptions, and UI trees may contain Functor Lang taggers/messages
+    /// that the generic value walker cannot inspect.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        false
+    }
 }
 
 /// A lambda value: its IR params/body (shared with the [`crate::ir::Module`])
@@ -194,7 +201,11 @@ impl fmt::Display for Value {
                     Value::Builtin(b) => crate::eval::builtin_arity(*b),
                     _ => p.applied.len(),
                 };
-                write!(f, "<partial {} more>", arity.saturating_sub(p.applied.len()))
+                write!(
+                    f,
+                    "<partial {} more>",
+                    arity.saturating_sub(p.applied.len())
+                )
             }
             Value::Builtin(b) => write!(f, "<builtin {}>", builtin_name(*b)),
             Value::HostFn(path) => write!(f, "<host {path}>"),
@@ -204,6 +215,33 @@ impl fmt::Display for Value {
 }
 
 impl Value {
+    /// Whether a retained snapshot is independent of a loaded Functor module.
+    ///
+    /// Closures (including a partially-applied closure) hold `Rc`s into the
+    /// module IR that created them. First-class constructors also carry the
+    /// arity declared by that module. Plain immutable data is safe; callable
+    /// values are conservatively excluded, and opaque host values decide
+    /// through [`HostData`].
+    pub fn is_reload_safe_snapshot(&self) -> bool {
+        match self {
+            Value::List(items) | Value::Tuple(items) => {
+                items.iter().all(Value::is_reload_safe_snapshot)
+            }
+            Value::Record(fields) => fields
+                .iter()
+                .all(|(_, value)| value.is_reload_safe_snapshot()),
+            Value::Variant { args, .. } => args.iter().all(Value::is_reload_safe_snapshot),
+            Value::Closure(_) => false,
+            Value::Partial(partial) => {
+                partial.callee.is_reload_safe_snapshot()
+                    && partial.applied.iter().all(Value::is_reload_safe_snapshot)
+            }
+            Value::Number(_) | Value::String(_) | Value::Bool(_) => true,
+            Value::Ctor { .. } | Value::Builtin(_) | Value::HostFn(_) => false,
+            Value::HostData(data) => data.is_reload_safe_snapshot(),
+        }
+    }
+
     /// What kind of value this is, for error messages ("cannot call a number").
     pub fn kind_name(&self) -> &'static str {
         match self {

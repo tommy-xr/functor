@@ -697,10 +697,26 @@ The model shows live at the
 debug server's `GET /state`. **Hot reload is on by default**: saving the
 `.fun` file reloads it in ~1 frame with the model preserved (a broken edit
 keeps the old program running; an edited `init` takes effect on restart).
+The time-travel history also survives the reload when every retained model is
+plain data (the usual constant-tweak case), so old frames are immediately
+rewindable under the new program. These are old data snapshots interpreted by
+new code, not a retroactive replay: draw-only tweaks affect every retained
+frame, while `tick` changes affect evolution after resume. A history containing
+a callable or opaque host value makes the selected frame a reload boundary. An
+unsafe discarded future is dropped while a remaining plain-data prefix stays
+seekable; if the retained prefix is also unsafe, a new one-frame generation
+starts at the selected frame. Unavailable frames remain visible as stripes
+rather than silently implying they are safe to restore.
+When the retained history and authoritative live model are entirely reload-safe
+plain data, pausing on an earlier frame and reloading keeps the selected cursor
+and the entire recorded future. Resume remains the explicit branch point: it
+discards that future, while the scrubber holds its prior visual span until the
+new branch fills it.
 Closures **stored in the model** rebind too: they adopt the edited code
 with their captured values carried over (matched by the enclosing def's
 name; a closure whose def was renamed/deleted keeps its old body with a
-loud `[functor-lang] reload:` warning).
+loud `[functor-lang] reload:` warning). First-class variant constructors
+stored in the model likewise adopt the edited declaration's arity.
 
 Transforms wrap in Group nodes: the **outer call applies last in world
 space** — `s |> Scene.rotateY(r) |> Scene.translate(x, 0.0, 0.0)` rotates in
