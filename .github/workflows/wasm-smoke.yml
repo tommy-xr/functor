@@ -83,6 +83,12 @@ jobs:
       - name: Run wasm smoke
         run: npm run test:wasm-smoke
 
+      # Remote (URL) asset loading in the browser: builds a wasm bundle that
+      # loads a good URL and a 404 URL from a localhost CORS server and asserts
+      # the real fetches (200 / 404) + graceful fallback. Hermetic — no network.
+      - name: Run wasm remote-asset e2e
+        run: npm run test:wasm-remote-assets
+
       - name: Run scrubber model tests
         run: npm run test:scrubber
 
