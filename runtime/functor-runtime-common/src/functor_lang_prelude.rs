@@ -930,10 +930,6 @@ const PATHS: &[&str] = &[
     "Anim.mask",
     "Anim.rotate",
     "Texture.file",
-    "Angle.degrees",
-    "Angle.radians",
-    "Color.rgb",
-    "Vec3.make",
     "Camera.lookAt",
     "Camera.firstPerson",
     "Light.ambient",
@@ -945,12 +941,9 @@ const PATHS: &[&str] = &[
     "Frame.createLit",
     "Frame.withRenderTarget",
     "Frame.withFog",
-    "Fog.linear",
-    "Fog.exp",
     "Frame.withSkybox",
     "Frame.withClearColor",
     "Skybox.files",
-    "RenderTarget.named",
     "RenderTarget.sized",
     "Scene.screen",
     "Ui.text",
@@ -958,16 +951,9 @@ const PATHS: &[&str] = &[
     "Ui.column",
     "Ui.row",
     "Ui.panel",
-    "Ui.topLeft",
-    "Ui.topRight",
-    "Ui.bottomLeft",
-    "Ui.bottomRight",
-    "Ui.center",
     "Ui.button",
     "Ui.slider",
     "Ui.textInput",
-    "Time.seconds",
-    "Time.millis",
     "Sub.none",
     "Sub.every",
     "Sub.batch",
@@ -976,7 +962,6 @@ const PATHS: &[&str] = &[
     "Effect.now",
     "Effect.random",
     "Effect.batch",
-    "Physics.tag",
     "Physics.box",
     "Physics.sphere",
     "Physics.capsule",
@@ -1013,9 +998,122 @@ const PATHS: &[&str] = &[
     "AudioScene.empty",
 ];
 
+/// The typed external registry (see [`crate::host_registry`]) — consulted
+/// BEFORE the legacy `match path` below, so externals migrate arm-by-arm.
+/// New externals should be registered here, not added as match arms; the
+/// drift test asserts `.funi` signatures ≡ (registry ∪ legacy `PATHS`).
+pub(crate) fn registry() -> &'static crate::host_registry::Registry {
+    static REGISTRY: std::sync::OnceLock<crate::host_registry::Registry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut reg = crate::host_registry::Registry::default();
+        register_branded_constructors(&mut reg);
+        register_ui_anchors(&mut reg);
+        reg
+    })
+}
+
+/// The branded-value constructors — the first module migrated off the legacy
+/// match (the registry proof). Each is one registration: arity/usage errors
+/// and argument conversion (with the per-type teaching errors) are derived.
+fn register_branded_constructors(reg: &mut crate::host_registry::Registry) {
+    reg.fn1("Angle.degrees", "Angle.degrees(n)", |n: f64| {
+        FunctorLangAngle(Angle::from_degrees(n as f32))
+    });
+    reg.fn1("Angle.radians", "Angle.radians(n)", |n: f64| {
+        FunctorLangAngle(Angle::from_radians(n as f32))
+    });
+    reg.fn1("Time.seconds", "Time.seconds(n)", FunctorLangDuration);
+    reg.fn1("Time.millis", "Time.millis(n)", |n: f64| {
+        FunctorLangDuration(n / 1000.0)
+    });
+    reg.fn3("Color.rgb", "Color.rgb(r, g, b)", |r: f64, g: f64, b: f64| {
+        FunctorLangColor((r as f32, g as f32, b as f32))
+    });
+    reg.fn3("Vec3.make", "Vec3.make(x, y, z)", |x: f64, y: f64, z: f64| {
+        FunctorLangVec3((x as f32, y as f32, z as f32))
+    });
+    // Identity at runtime — the tag brand is check-time only (physics.funi).
+    // Rc<str> in and out: allocation-neutral in a per-frame physics hook.
+    reg.fn1("Physics.tag", "Physics.tag(\"name\")", |name: std::rc::Rc<str>| {
+        Value::String(name)
+    });
+    const RT_NAMED: &str = "RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
+piped through RenderTarget.sized";
+    reg.fn1("RenderTarget.named", RT_NAMED, |name: String| {
+        if name.is_empty() {
+            Err(format!("usage: {RT_NAMED}"))
+        } else {
+            Ok(FunctorLangRenderTarget(RenderTargetDescriptor::new(name)))
+        }
+    });
+    reg.fn3(
+        "Fog.linear",
+        "Fog.linear(near, far, color)",
+        |near: f64, far: f64, color: FunctorLangColor| {
+            if near < 0.0 {
+                return Err(format!("Fog.linear near must not be negative, got {near}"));
+            }
+            if far <= 0.0 {
+                return Err(format!("Fog.linear far must be positive, got {far}"));
+            }
+            if far <= near {
+                return Err(format!(
+                    "Fog.linear: far ({far}) must be greater than near ({near})"
+                ));
+            }
+            let (r, g, b) = color.0;
+            Ok(FunctorLangFog(Fog::linear(near as f32, far as f32, r, g, b)))
+        },
+    );
+    reg.fn2(
+        "Fog.exp",
+        "Fog.exp(density, color)",
+        |density: f64, color: FunctorLangColor| {
+            if density <= 0.0 {
+                return Err(format!("Fog.exp density must be positive, got {density}"));
+            }
+            let (r, g, b) = color.0;
+            Ok(FunctorLangFog(Fog::exp(density as f32, r, g, b)))
+        },
+    );
+}
+
+crate::host_returnable!(
+    FunctorLangAngle,
+    FunctorLangDuration,
+    FunctorLangColor,
+    FunctorLangVec3,
+    FunctorLangRenderTarget,
+    FunctorLangFog,
+    FunctorLangUiAnchor,
+);
+
+fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
+    reg.fn0("Ui.topLeft", "Ui.topLeft()", || FunctorLangUiAnchor(ui::Anchor::TopLeft));
+    reg.fn0("Ui.topRight", "Ui.topRight()", || {
+        FunctorLangUiAnchor(ui::Anchor::TopRight)
+    });
+    reg.fn0("Ui.bottomLeft", "Ui.bottomLeft()", || {
+        FunctorLangUiAnchor(ui::Anchor::BottomLeft)
+    });
+    reg.fn0("Ui.bottomRight", "Ui.bottomRight()", || {
+        FunctorLangUiAnchor(ui::Anchor::BottomRight)
+    });
+    reg.fn0("Ui.center", "Ui.center()", || FunctorLangUiAnchor(ui::Anchor::Center));
+}
+
+/// Colors convert through the registry with the same teaching error the
+/// legacy `color_of` extractor gives — written once, on the type.
+impl crate::host_registry::FromArg for FunctorLangColor {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        color_of(value, path, span).map(FunctorLangColor)
+    }
+}
+
 impl Host for FunctorHost {
     fn provides(&self, path: &str) -> bool {
-        PATHS.contains(&path)
+        registry().provides(path) || PATHS.contains(&path)
     }
 
     fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<Value, RunError> {
@@ -1026,6 +1124,11 @@ impl Host for FunctorHost {
                 span,
             })
         };
+        // The typed external registry dispatches first; the match below is
+        // the not-yet-migrated remainder (see crate::host_registry).
+        if let Some(result) = registry().call(path, &args, span) {
+            return result;
+        }
         match path {
             // Constructors take no arguments — reject any, so a guessed
             // `Scene.cube(size)` fails loud instead of silently ignoring it.
@@ -1380,34 +1483,6 @@ the game dir",
                 }
                 _ => usage("Scene.translate(v, scene)"),
             },
-            // An opaque 3-vector. Every position/direction parameter
-            // requires one — never three bare floats.
-            "Vec3.make" => match args.as_slice() {
-                [x, y, z] => Ok(host(FunctorLangVec3((
-                    num(x, span)? as f32,
-                    num(y, span)? as f32,
-                    num(z, span)? as f32,
-                )))),
-                _ => usage("Vec3.make(x, y, z)"),
-            },
-            // An opaque RGB color (channels normally 0..1; emissive/HDR uses
-            // may exceed 1). Every color-taking parameter requires one.
-            "Color.rgb" => match args.as_slice() {
-                [r, g, b] => Ok(host(FunctorLangColor((
-                    num(r, span)? as f32,
-                    num(g, span)? as f32,
-                    num(b, span)? as f32,
-                )))),
-                _ => usage("Color.rgb(r, g, b)"),
-            },
-            "Angle.degrees" => match args.as_slice() {
-                [n] => Ok(host(FunctorLangAngle(Angle::from_degrees(num(n, span)? as f32)))),
-                _ => usage("Angle.degrees(n)"),
-            },
-            "Angle.radians" => match args.as_slice() {
-                [n] => Ok(host(FunctorLangAngle(Angle::from_radians(num(n, span)? as f32)))),
-                _ => usage("Angle.radians(n)"),
-            },
             "Scene.rotateX" | "Scene.rotateY" | "Scene.rotateZ" => match args.as_slice() {
                 [angle, scene] => {
                     let angle: cgmath::Rad<f32> = angle_of(angle, path, span)?.into();
@@ -1586,10 +1661,6 @@ the game dir",
             // model/journal, and structurally comparable with the tags inside
             // rayHit/collisionEvent records. The empty tag is the zeroed
             // rayHit-miss / "no body" sentinel, so no non-empty validation.
-            "Physics.tag" => match args.as_slice() {
-                [Value::String(_)] => Ok(args[0].clone()),
-                _ => usage("Physics.tag(\"name\")"),
-            },
             "Physics.box" => match args.as_slice() {
                 [w, h, d] => Ok(host(FunctorLangShape(physics::Shape::Cuboid {
                     extents: [
@@ -1959,15 +2030,6 @@ the Net.HttpResponse, got {}",
                 }
                 _ => usage("Physics.transformed(tag, scene)"),
             },
-            "RenderTarget.named" => match args.as_slice() {
-                [Value::String(name)] if !name.is_empty() => Ok(host(FunctorLangRenderTarget(
-                    RenderTargetDescriptor::new(name.to_string()),
-                ))),
-                _ => usage(
-                    "RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
-piped through RenderTarget.sized",
-                ),
-            },
             // Target LAST (subject-last), so it pipes:
             // `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
             "RenderTarget.sized" => match args.as_slice() {
@@ -2002,32 +2064,6 @@ frame's main pass",
                     ))))
                 }
                 _ => usage("Frame.withRenderTarget(target, targetFrame, frame)"),
-            },
-            "Fog.linear" => match args.as_slice() {
-                [near, far, color] => {
-                    let near = non_negative_num(near, span, "Fog.linear near")?;
-                    let far = positive_num(far, span, "Fog.linear far")?;
-                    if far <= near {
-                        return err(format!(
-                            "Fog.linear: far ({far}) must be greater than near ({near})"
-                        ));
-                    }
-                    let (r, g, b) = color_of(color, path, span)?;
-                    Ok(host(FunctorLangFog(Fog::linear(near as f32, far as f32, r, g, b))))
-                }
-                _ => usage("Fog.linear(near, far, color)"),
-            },
-            "Fog.exp" => match args.as_slice() {
-                [density, color] => {
-                    let (r, g, b) = color_of(color, path, span)?;
-                    Ok(host(FunctorLangFog(Fog::exp(
-                        positive_num(density, span, "Fog.exp density")? as f32,
-                        r,
-                        g,
-                        b,
-                    ))))
-                }
-                _ => usage("Fog.exp(density, color)"),
             },
             // Frame LAST (subject-last), so it pipes: `Frame.createLit(…) |> Frame.withFog(fog)`.
             "Frame.withFog" => match args.as_slice() {
@@ -2178,26 +2214,6 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                 }
                 _ => usage("Ui.panel(anchor, view)"),
             },
-            "Ui.topLeft" => match args.as_slice() {
-                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::TopLeft))),
-                _ => usage("Ui.topLeft()"),
-            },
-            "Ui.topRight" => match args.as_slice() {
-                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::TopRight))),
-                _ => usage("Ui.topRight()"),
-            },
-            "Ui.bottomLeft" => match args.as_slice() {
-                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::BottomLeft))),
-                _ => usage("Ui.bottomLeft()"),
-            },
-            "Ui.bottomRight" => match args.as_slice() {
-                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::BottomRight))),
-                _ => usage("Ui.bottomRight()"),
-            },
-            "Ui.center" => match args.as_slice() {
-                [] => Ok(host(FunctorLangUiAnchor(ui::Anchor::Center))),
-                _ => usage("Ui.center()"),
-            },
             "Ui.row" => match args.as_slice() {
                 [Value::List(items)] => {
                     let mut views = Vec::with_capacity(items.len());
@@ -2276,14 +2292,6 @@ the new text, got {}",
                     other.kind_name()
                 )),
                 _ => usage("Ui.textInput(value, tagger) — tagger: (newText) => msg"),
-            },
-            "Time.seconds" => match args.as_slice() {
-                [n] => Ok(host(FunctorLangDuration(num(n, span)?))),
-                _ => usage("Time.seconds(n)"),
-            },
-            "Time.millis" => match args.as_slice() {
-                [n] => Ok(host(FunctorLangDuration(num(n, span)? / 1000.0))),
-                _ => usage("Time.millis(n)"),
             },
             "Sub.none" => match args.as_slice() {
                 [] => Ok(host(FunctorLangSub(SubTree::None))),
@@ -3646,7 +3654,16 @@ mod tests {
             }
         }
 
-        let paths: BTreeSet<String> = PATHS.iter().map(|p| p.to_string()).collect();
+        let legacy: BTreeSet<String> = PATHS.iter().map(|p| p.to_string()).collect();
+        let registered: BTreeSet<String> =
+            registry().paths().map(|p| p.to_string()).collect();
+        let overlap: Vec<&String> = legacy.intersection(&registered).collect();
+        assert!(
+            overlap.is_empty(),
+            "externals both registered and in the legacy PATHS (remove the \
+legacy entry): {overlap:?}"
+        );
+        let paths: BTreeSet<String> = legacy.union(&registered).cloned().collect();
 
         let phantom: Vec<&String> = signatures.difference(&paths).collect();
         assert!(
@@ -3661,6 +3678,33 @@ mod tests {
             "host externals in PATHS with no `.funi` signature — an interface-only \
 module is CLOSED, so games referencing these break at load: {missing:?}"
         );
+
+        // Registered arities must match the `.funi` signatures' parameter
+        // counts — the registry's usage text and the interface cannot teach
+        // different shapes. (A `.funi` function type parses as the reserved
+        // name `=>` with params + return as args.)
+        let mut funi_arity: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (module, src) in functor_prelude::modules() {
+            let program = functor_lang::parse_interface(&src).expect("parsed above");
+            for item in &program.items {
+                if let functor_lang::ast::Item::Sig(sig) = item {
+                    let arity = if sig.ty.name == "=>" {
+                        sig.ty.args.len() - 1
+                    } else {
+                        0
+                    };
+                    funi_arity.insert(format!("{module}.{}", sig.name), arity);
+                }
+            }
+        }
+        for (path, arity) in registry().arities() {
+            assert_eq!(
+                funi_arity.get(path),
+                Some(&arity),
+                "registered arity for `{path}` must match its .funi signature"
+            );
+        }
     }
 
     // The C1 verify criterion (docs/functor-lang.md): an .fun snippet emits exactly
@@ -4339,8 +4383,20 @@ it once with RenderTarget.named(\"…\") and pass that value at both sites"
             fail("let main = () => RenderTarget.named(\"x\") |> RenderTarget.sized(-1.0, 4.0)"),
             "RenderTarget.sized width must be positive, got -1"
         );
+        // A wrong-TYPE argument gets the precise conversion error (the
+        // registry rule — matching how number-taking arms always behaved);
+        // arity mistakes and empty names still teach the full usage line.
         assert_eq!(
             fail("let main = () => RenderTarget.named(3.0)"),
+            "expected a string, got a number"
+        );
+        assert_eq!(
+            fail("let main = () => RenderTarget.named(\"a\", \"b\")"),
+            "usage: RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
+piped through RenderTarget.sized"
+        );
+        assert_eq!(
+            fail("let main = () => RenderTarget.named(\"\")"),
             "usage: RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
 piped through RenderTarget.sized"
         );

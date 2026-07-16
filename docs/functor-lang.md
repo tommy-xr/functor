@@ -324,6 +324,24 @@ snapshots — no GPU, fully agent-verifiable.
       velocities stored in the model survive hot-reload time travel.
       Component accessors and vector math (`Vec3.add`/`scale`/`length`, and
       Vec2/Vec4) are deliberately deferred until an API returns a Vec3.
+- [x] **Typed external registry** (2026-07-16; prelude-infra track, PR 1).
+      The generalized Functor Lang ↔ Rust bridge: hosts REGISTER externals as
+      typed closures (`host_registry.rs`) instead of hand-writing `match
+      path` arms — arity/usage errors derive from the registered signature,
+      argument conversion (and each branded type's teaching error) lives
+      once on the type via `FromArg`, and returns convert via
+      `IntoHostResult` (incl. `Result<_, String>` domain validation, span
+      attached). Dispatch consults the registry FIRST and falls back to the
+      legacy match, so externals migrate arm-by-arm with no flag day; the
+      drift test now asserts `.funi` signatures ≡ (registry ∪ legacy PATHS),
+      disjoint. First migrated module: the ten branded-value constructors
+      (Angle/Time/Color/Vec3/Physics.tag/RenderTarget.named/Fog). One
+      deliberate behavior unification: a wrong-TYPE argument now always gets
+      the precise conversion error ("expected a string, got a number") where
+      string-pattern arms used to fall through to the usage line; arity
+      mistakes still teach usage. Golden-verified behavior-neutral
+      otherwise. This is the seam future third-party/native extension
+      modules plug into (a `.funi` + a set of registered host functions).
 - [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade
