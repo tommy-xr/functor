@@ -128,6 +128,12 @@ fn build_invocations(
         let bindings: Vec<serde_json::Value> = inv
             .bindings
             .iter()
+            // Binder sites only for now: the recorder also captures reference
+            // sites (RecordedSite::Ref), but shipping them without the wire's
+            // site/preview fields would flood the editor with undifferentiated
+            // full-value overlays. Trace v2 (the next inspector PR) serializes
+            // site/kind/preview and lifts this filter.
+            .filter(|b| b.site == functor_lang::RecordedSite::Binder)
             .filter_map(|b| {
                 span_to_file(sources, b.span).map(|(file, start, end)| {
                     serde_json::json!({

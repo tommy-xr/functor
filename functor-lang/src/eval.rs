@@ -59,9 +59,12 @@ const MAX_EVAL_DEPTH: usize = 128;
 pub const MAX_TRACE_EVENTS: usize = 10_000;
 
 /// Recorder caps (see [`Recorder`] / [`Session::call_recorded`]). Distinct
-/// binding *sites* per armed invocation, and total binding *events* (a loop
-/// re-binding one site counts each time). A breach stops recording and flags
-/// `truncated`; evaluation itself is never affected.
+/// *sites* per armed invocation — PER SITE CLASS (binders and references
+/// budget separately, so a reference-heavy body can't starve the binder
+/// record) — and total *events* (a loop re-hitting one site counts each
+/// time). A site-class breach stops NEW sites of that class only; the event
+/// breach stops recording entirely. Both flag `truncated`; evaluation itself
+/// is never affected.
 pub const MAX_RECORDED_SITES: usize = 1024;
 pub const MAX_RECORDED_BINDINGS: usize = 100_000;
 
@@ -116,6 +119,9 @@ pub struct RecordedInvocation {
     pub entry: String,
     /// `Display` of the returned value.
     pub result: String,
+    /// Depth-limited one-line preview of the returned value
+    /// ([`Value::preview`]) — what an editor shows inline.
+    pub result_preview: String,
     /// One entry per distinct binding site reached, in first-seen order.
     pub bindings: Vec<RecordedBinding>,
     /// The recorder hit a cap during this call — `bindings` is partial (but
@@ -123,35 +129,77 @@ pub struct RecordedInvocation {
     pub truncated: bool,
 }
 
-/// One binding site's last observed value. A site is a `let` binding, a
-/// lambda/function parameter, or a match-pattern variable; nested calls' sites
-/// appear here too (flat — spans disambiguate them). `value` is the LAST
-/// value bound at the site and `count` how many times it bound (a loop, e.g.
-/// `List.fold`, re-binds a site each iteration).
+/// How a recorded value renders in an editor: a `Primitive` is short and
+/// complete (its preview IS its full rendering — show inline as-is); a
+/// `Composite` has structure (show the depth-limited preview inline and the
+/// full `value` on hover). See [`Value::is_primitive`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecordedKind {
+    Primitive,
+    Composite,
+}
+
+/// What kind of site observed the value: a `Binder` (a `let` binding, a
+/// lambda/function parameter, or a match-pattern variable) or a `Ref` — a
+/// READ of a local or module-level name, so every line that *uses* a
+/// variable carries its value too. Reference sites skip callable values (a
+/// call's callee name is not data worth overlaying).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecordedSite {
+    Binder,
+    Ref,
+}
+
+/// One site's last observed value: `Binder` sites (a `let` binding, a
+/// lambda/function parameter, a match-pattern variable) plus `Ref` sites
+/// (variable reads); nested calls' sites appear here too (flat — spans
+/// disambiguate them). `value` is the LAST value seen at the site and
+/// `count` how many times it was seen (a loop, e.g. `List.fold`, re-binds
+/// and re-reads a site each iteration).
 pub struct RecordedBinding {
     pub name: String,
     /// Byte range into the loaded source. NOTE: [`Span`] carries no file — a
     /// multi-file project loads as one concatenated source, so mapping this
     /// range back to (file, offset) is the producer's job (see the visual-
     /// debugger wire contract). For a `let` this is the `let [mut] name =`
-    /// region (as `goto`/`hover` report binder names); for a param or match
-    /// var it is the name's own span.
+    /// region (as `goto`/`hover` report binder names); for a param, match
+    /// var, or reference it is the name's own span.
     pub span: Span,
-    /// `Display` of the last value bound here.
+    /// `Display` of the last value seen here.
     pub value: String,
+    /// Depth-limited one-line preview of that value ([`Value::preview`]);
+    /// equals `value` when `kind` is `Primitive`.
+    pub preview: String,
+    /// Whether `value` is short/complete or structured — the editor's
+    /// inline-vs-hover policy input.
+    pub kind: RecordedKind,
+    /// Binder or reference — see [`RecordedSite`].
+    pub site: RecordedSite,
     pub count: u32,
 }
 
-/// The per-call binding-site recorder — armed by [`Session::call_recorded`],
+/// A recorder site key. Binder sites key by [`BindingId`] (unique per site
+/// in a module; a loop re-enters the same site's id); reference sites key by
+/// the reference expression's start offset — unique among references, since
+/// no two name reads start at the same byte.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SiteKey {
+    Binding(u32),
+    Ref(usize),
+}
+
+/// The per-call site recorder — armed by [`Session::call_recorded`],
 /// mirroring the [`Tracing`] mode: an `Option<Recorder>` on the interpreter,
-/// checked cheaply at binding sites only (a `None` test when off). Keyed by
-/// [`BindingId`] (unique per site in a module; a loop re-enters the same
-/// site's id), it keeps the last value + hit count per site. On a cap breach
-/// it sets `truncated` and stops recording — evaluation continues untouched.
+/// checked cheaply at binding and reference sites only (a `None` test when
+/// off). It keeps the last value + hit count per site. On a cap breach it
+/// sets `truncated` and stops recording — evaluation continues untouched.
 struct Recorder {
     bindings: Vec<RecordedBinding>,
-    /// `BindingId` raw → index into `bindings`.
-    index: HashMap<u32, usize>,
+    /// Site key → index into `bindings`.
+    index: HashMap<SiteKey, usize>,
+    /// Distinct sites so far, per class (see [`MAX_RECORDED_SITES`]).
+    binder_sites: usize,
+    ref_sites: usize,
     events: usize,
     truncated: bool,
 }
@@ -161,36 +209,58 @@ impl Recorder {
         Recorder {
             bindings: Vec::new(),
             index: HashMap::new(),
+            binder_sites: 0,
+            ref_sites: 0,
             events: 0,
             truncated: false,
         }
     }
 
-    /// Record a value bound at `binding`'s site. Once `truncated`, a no-op.
-    fn record(&mut self, binding: u32, name: &str, span: Span, value: &Value) {
-        if self.truncated {
+    /// Record a value observed at a site. The event cap is a hard stop; a
+    /// site-class cap only refuses NEW sites of that class — existing sites
+    /// keep updating and the other class keeps recording, so a
+    /// reference-heavy body can't starve the binder record.
+    fn record(&mut self, key: SiteKey, site: RecordedSite, name: &str, span: Span, value: &Value) {
+        if self.events >= MAX_RECORDED_BINDINGS {
+            self.truncated = true;
             return;
         }
         self.events += 1;
-        if self.events > MAX_RECORDED_BINDINGS {
+        if let Some(&idx) = self.index.get(&key) {
+            let slot = &mut self.bindings[idx];
+            slot.value = value.to_string();
+            slot.preview = value.preview();
+            slot.kind = recorded_kind(value);
+            slot.count += 1;
+            return;
+        }
+        let sites = match site {
+            RecordedSite::Binder => &mut self.binder_sites,
+            RecordedSite::Ref => &mut self.ref_sites,
+        };
+        if *sites >= MAX_RECORDED_SITES {
             self.truncated = true;
             return;
         }
-        if let Some(&idx) = self.index.get(&binding) {
-            let slot = &mut self.bindings[idx];
-            slot.value = value.to_string();
-            slot.count += 1;
-        } else if self.bindings.len() >= MAX_RECORDED_SITES {
-            self.truncated = true;
-        } else {
-            self.index.insert(binding, self.bindings.len());
-            self.bindings.push(RecordedBinding {
-                name: name.to_string(),
-                span,
-                value: value.to_string(),
-                count: 1,
-            });
-        }
+        *sites += 1;
+        self.index.insert(key, self.bindings.len());
+        self.bindings.push(RecordedBinding {
+            name: name.to_string(),
+            span,
+            value: value.to_string(),
+            preview: value.preview(),
+            kind: recorded_kind(value),
+            site,
+            count: 1,
+        });
+    }
+}
+
+fn recorded_kind(value: &Value) -> RecordedKind {
+    if value.is_primitive() {
+        RecordedKind::Primitive
+    } else {
+        RecordedKind::Composite
     }
 }
 
@@ -379,6 +449,7 @@ impl Session {
         let invocation = RecordedInvocation {
             entry: name.to_string(),
             result: result.to_string(),
+            result_preview: result.preview(),
             bindings: recorder.bindings,
             truncated: recorder.truncated,
         };
@@ -468,7 +539,28 @@ evaluation depth."
     /// [`Recorder`].
     fn record_binding(&mut self, binding: BindingId, name: &str, span: Span, value: &Value) {
         if let Some(recorder) = &mut self.recorder {
-            recorder.record(binding.0, name, span, value);
+            recorder.record(SiteKey::Binding(binding.0), RecordedSite::Binder, name, span, value);
+        }
+    }
+
+    /// Record a value READ at a reference site (a `Local`/`Global` name use),
+    /// when the recorder is armed — the same cheap `None` check otherwise.
+    /// Callable values are skipped: a call's callee name (`helper(m)`,
+    /// `xs |> sum`) is not data worth overlaying, and skipping it halves the
+    /// noise at the source.
+    fn record_ref(&mut self, name: &str, span: Span, value: &Value) {
+        if let Some(recorder) = &mut self.recorder {
+            if matches!(
+                value,
+                Value::Closure(_)
+                    | Value::Ctor { .. }
+                    | Value::Partial(_)
+                    | Value::Builtin(_)
+                    | Value::HostFn(_)
+            ) {
+                return;
+            }
+            recorder.record(SiteKey::Ref(span.start), RecordedSite::Ref, name, span, value);
         }
     }
 
@@ -477,15 +569,23 @@ evaluation depth."
             ExprKind::Number(n) => Ok(Value::Number(*n)),
             ExprKind::String(s) => Ok(Value::String(Rc::from(s.as_str()))),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
-            ExprKind::Local { binding, name } => env.lookup(*binding).ok_or_else(|| RunError {
-                // Unreachable if lowering is correct; fail loud rather than UB.
-                message: format!("internal: unbound local `{name}`"),
-                span: expr.span,
-            }),
-            ExprKind::Global(name) => self.globals.get(name).cloned().ok_or_else(|| RunError {
-                message: format!("global `{name}` used before its definition"),
-                span: expr.span,
-            }),
+            ExprKind::Local { binding, name } => {
+                let value = env.lookup(*binding).ok_or_else(|| RunError {
+                    // Unreachable if lowering is correct; fail loud rather than UB.
+                    message: format!("internal: unbound local `{name}`"),
+                    span: expr.span,
+                })?;
+                self.record_ref(name, expr.span, &value);
+                Ok(value)
+            }
+            ExprKind::Global(name) => {
+                let value = self.globals.get(name).cloned().ok_or_else(|| RunError {
+                    message: format!("global `{name}` used before its definition"),
+                    span: expr.span,
+                })?;
+                self.record_ref(name, expr.span, &value);
+                Ok(value)
+            }
             ExprKind::External(path) => {
                 let joined = path.join(".");
                 match builtin(path) {
@@ -573,16 +673,20 @@ evaluation depth."
                 }
                 Ok(Value::Record(Rc::new(out)))
             }
-            ExprKind::LocalMut { binding, name } => self
-                .mut_slots
-                .get(&binding.0)
-                .and_then(|stack| stack.last())
-                .cloned()
-                .ok_or_else(|| RunError {
-                    // Unreachable if lowering is correct; fail loud.
-                    message: format!("internal: dead mut slot `{name}`"),
-                    span: expr.span,
-                }),
+            ExprKind::LocalMut { binding, name } => {
+                let value = self
+                    .mut_slots
+                    .get(&binding.0)
+                    .and_then(|stack| stack.last())
+                    .cloned()
+                    .ok_or_else(|| RunError {
+                        // Unreachable if lowering is correct; fail loud.
+                        message: format!("internal: dead mut slot `{name}`"),
+                        span: expr.span,
+                    })?;
+                self.record_ref(name, expr.span, &value);
+                Ok(value)
+            }
             ExprKind::Let {
                 binding,
                 name,

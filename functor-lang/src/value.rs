@@ -130,6 +130,109 @@ impl Env {
     }
 }
 
+/// Preview caps (see [`Value::preview`]): the longest string shown unelided,
+/// and how many list/tuple elements and record fields render before `…`.
+const MAX_PREVIEW_STRING: usize = 40;
+const MAX_PREVIEW_ITEMS: usize = 4;
+const MAX_PREVIEW_FIELDS: usize = 6;
+
+impl Value {
+    /// Whether this value renders short and complete on one line — the
+    /// editor shows primitives inline in full, while composites get the
+    /// depth-limited [`Value::preview`] inline and the full `Display` on
+    /// hover. Callables and host data count as primitive: their `Display` is
+    /// already a short opaque tag (`<fn(x)>`, `<ctor Circle>`). Empty
+    /// collections are primitive too (`[]` is complete).
+    pub fn is_primitive(&self) -> bool {
+        match self {
+            Value::Number(_) | Value::Bool(_) => true,
+            // The cap is CHARACTERS; `take(N+1)` bounds the count work.
+            Value::String(s) => s.chars().take(MAX_PREVIEW_STRING + 1).count() <= MAX_PREVIEW_STRING,
+            Value::Variant { args, .. } => args.is_empty(),
+            Value::List(items) => items.is_empty(),
+            Value::Record(fields) => fields.is_empty(),
+            Value::Tuple(_) => false, // never empty (two elements minimum)
+            Value::Ctor { .. }
+            | Value::Closure(_)
+            | Value::Partial(_)
+            | Value::Builtin(_)
+            | Value::HostFn(_)
+            | Value::HostData(_) => true,
+        }
+    }
+
+    /// A one-line, depth-limited preview: scalars in full (long strings
+    /// capped), ONE level of structure with nested composites elided to `…`,
+    /// and long collections elided after a few items. The full rendering is
+    /// `Display`; a primitive's preview equals it.
+    pub fn preview(&self) -> String {
+        self.preview_at(0)
+    }
+
+    fn preview_at(&self, depth: usize) -> String {
+        // Below the top level, only scalar-shaped values still render —
+        // nested structure elides.
+        if depth >= 1 && !self.is_primitive() {
+            return "…".to_string();
+        }
+        match self {
+            Value::String(s) if !self.is_primitive() => {
+                // Cap at MAX_PREVIEW_STRING CHARACTERS; the trailing ellipsis
+                // (inside the quotes) marks the cut. Pop exactly the closing
+                // delimiter — a trim would also eat an escaped quote at the cut.
+                let cut = s
+                    .char_indices()
+                    .nth(MAX_PREVIEW_STRING)
+                    .map(|(i, _)| i)
+                    .unwrap_or(s.len());
+                let mut out = format!("{:?}", &s[..cut]);
+                out.pop();
+                out.push('…');
+                out.push('"');
+                out
+            }
+            Value::List(items) => {
+                let shown: Vec<String> = items
+                    .iter()
+                    .take(MAX_PREVIEW_ITEMS)
+                    .map(|v| v.preview_at(depth + 1))
+                    .collect();
+                let tail = if items.len() > MAX_PREVIEW_ITEMS { ", …" } else { "" };
+                format!("[{}{tail}]", shown.join(", "))
+            }
+            Value::Tuple(items) => {
+                let shown: Vec<String> = items
+                    .iter()
+                    .take(MAX_PREVIEW_ITEMS)
+                    .map(|v| v.preview_at(depth + 1))
+                    .collect();
+                let tail = if items.len() > MAX_PREVIEW_ITEMS { ", …" } else { "" };
+                format!("({}{tail})", shown.join(", "))
+            }
+            Value::Record(fields) => {
+                let shown: Vec<String> = fields
+                    .iter()
+                    .take(MAX_PREVIEW_FIELDS)
+                    .map(|(name, value)| format!("{name}: {}", value.preview_at(depth + 1)))
+                    .collect();
+                let tail = if fields.len() > MAX_PREVIEW_FIELDS { ", …" } else { "" };
+                format!("{{ {}{tail} }}", shown.join(", "))
+            }
+            Value::Variant { ctor, args } if !args.is_empty() => {
+                let shown: Vec<String> = args
+                    .iter()
+                    .take(MAX_PREVIEW_ITEMS)
+                    .map(|v| v.preview_at(depth + 1))
+                    .collect();
+                let tail = if args.len() > MAX_PREVIEW_ITEMS { ", …" } else { "" };
+                format!("{ctor}({}{tail})", shown.join(", "))
+            }
+            // Every remaining shape is primitive: `Display` is already short.
+            other => other.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
