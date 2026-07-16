@@ -1192,6 +1192,14 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     outputLines.some((l) => l.includes("model preserved")),
     JSON.stringify(outputLines.slice(-4))
   );
+  // Runtime lines carry a `[Frame N | HH:MM:SS]` preamble (the game was
+  // already running when the hot-swap re-evaluated the Debug.log).
+  const probeLine = outputLines.find((l) => l.includes("status-probe")) || "";
+  check(
+    "output lines carry a [Frame N | time] preamble",
+    /^\[Frame \d+ \| \d{2}:\d{2}:\d{2}\]/.test(probeLine),
+    probeLine
+  );
 
   await page.close();
 }

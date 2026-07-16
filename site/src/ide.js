@@ -200,7 +200,7 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || data.type !== "functor-lang-console") return;
   if (event.source !== els.player.contentWindow) return;
-  statusBar.appendOutput(data.level, data.message);
+  statusBar.appendOutput(data.level, data.message, data.frame ?? null);
 });
 
 const setDoc = (source) => {

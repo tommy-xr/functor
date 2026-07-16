@@ -988,6 +988,11 @@ a:hover {
   color: var(--text-dim);
 }
 
+.output-preamble {
+  color: #6c6685;
+  font-size: 0.9em;
+}
+
 .output-line.output-warn {
   color: var(--amber);
 }

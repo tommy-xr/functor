@@ -102,6 +102,17 @@ export const createStatusBar = ({ host }) => {
   };
   setProblems([]);
 
+  // Each line carries a `[Frame N | HH:MM:SS]` preamble — the game frame it
+  // was emitted on (when the runtime had one) and the wall clock. The clock is
+  // stamped at append time, not at the rAF flush, so a coalesced burst keeps
+  // each line's true arrival time.
+  const clock = (date) => {
+    const two = (n) => String(n).padStart(2, "0");
+    return `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
+  };
+  const preamble = (frame, time) =>
+    frame == null ? `[${time}]` : `[Frame ${frame} | ${time}]`;
+
   // Appends are rAF-coalesced: a per-frame `Debug.log` in tick/draw arrives
   // ~60/sec, and appending each line individually would force a layout read
   // (scrollHeight) per message while the panel is open. One DOM flush per
@@ -118,10 +129,14 @@ export const createStatusBar = ({ host }) => {
     // A burst larger than the cap only ever shows its tail — skip the rest.
     const lines = pending.slice(-MAX_OUTPUT_LINES);
     pending = [];
-    for (const { level, text } of lines) {
+    for (const { level, text, frame, time } of lines) {
       const line = document.createElement("div");
       line.className = `output-line output-${level}`;
-      line.textContent = text;
+      const stamp = document.createElement("span");
+      stamp.className = "output-preamble";
+      stamp.textContent = preamble(frame, time);
+      line.appendChild(stamp);
+      line.appendChild(document.createTextNode(` ${text}`));
       outputList.appendChild(line);
     }
     while (outputList.childElementCount > MAX_OUTPUT_LINES) {
@@ -130,8 +145,10 @@ export const createStatusBar = ({ host }) => {
     if (atBottom) outputList.scrollTop = outputList.scrollHeight;
   };
 
-  const appendOutput = (level, text) => {
-    pending.push({ level, text });
+  // `frame` is the game frame the line belongs to (null when the runtime had
+  // none to offer — boot lines, host-side reload errors).
+  const appendOutput = (level, text, frame = null) => {
+    pending.push({ level, text, frame, time: clock(new Date()) });
     if (!flushScheduled) {
       flushScheduled = true;
       requestAnimationFrame(flushOutput);

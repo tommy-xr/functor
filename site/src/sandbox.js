@@ -64,7 +64,7 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || data.type !== "functor-lang-console") return;
   if (event.source !== frame.contentWindow) return;
-  statusBar.appendOutput(data.level, data.message);
+  statusBar.appendOutput(data.level, data.message, data.frame ?? null);
 });
 
 // Set while loadExample replaces the buffer programmatically: that content is
