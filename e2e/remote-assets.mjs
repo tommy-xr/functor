@@ -31,17 +31,20 @@
 //   - the browser issued a GET to the good URL and got 200 (URL passthrough +
 //     CORS + the fetch really fired inside the wasm runtime);
 //   - the browser issued a GET to the 404 URL and got 404;
-//   - the draw-error overlay is NOT showing afterward — the 404 degraded to the
-//     fallback asset; it did not hang the loop or panic the glTF pipeline.
+//   - (hermetic case) a "soft 404" — HTTP 200 whose body is an HTML error
+//     page — FAILS the load: the magic-byte guard refuses to feed HTML to the
+//     glTF parser (wasm parity with the native guard);
+//   - each failed asset shows up as a console.error — the web runtime's
+//     RuntimeEvent sink (a failed asset used to fall back to `eprintln!`,
+//     which goes nowhere in a browser: totally invisible);
+//   - the draw-error overlay is NOT showing afterward — failures degraded to
+//     the fallback asset; nothing hung the loop or panicked the glTF pipeline.
 //
-// Why observe the network rather than an in-page "loaded" signal: on wasm a
-// failed asset load emits a RuntimeEvent::AssetError that currently falls back
-// to `eprintln!` (events.rs) — which goes NOWHERE in a browser. So there is no
-// console signal for load success/failure today; the real fetch, seen by
-// Playwright, IS the ground truth (see the report for that observability gap).
-// This is intentionally an end-to-end NETWORK test, not a glTF-decode test:
-// decoding of local assets is already covered by the wasm golden suite; what
-// was untested is the remote URL round-trip in a real browser.
+// Network observation (Playwright response events) remains the ground truth
+// for "the fetch really happened"; the console signal is the ground truth for
+// "and a human/agent can SEE what failed". This is intentionally an
+// end-to-end NETWORK test, not a glTF-decode test: decoding of local assets
+// is already covered by the wasm golden suite.
 //
 // Optional live-CDN case: with FUNCTOR_REMOTE_E2E_NETWORK=1, also loads a real
 // asset from https://assets.babylonjs.com. OFF by default (needs the internet
@@ -81,9 +84,11 @@ function minimalGlb() {
   return Buffer.concat([header, chunkHeader, json]);
 }
 
-// A permissive-CORS "CDN": /model.glb serves a real glb; everything else 404s.
-// Every response carries Access-Control-Allow-Origin: * so the game page (a
-// different origin) can fetch cross-origin, and a 404 is CORS-visible too.
+// A permissive-CORS "CDN": /model.glb serves a real glb, /soft404.glb serves
+// the classic CDN failure — HTTP 200 with an HTML error page — and everything
+// else 404s. Every response carries Access-Control-Allow-Origin: * so the game
+// page (a different origin) can fetch cross-origin, and failures are
+// CORS-visible too.
 function startAssetServer() {
   const glb = minimalGlb();
   const server = http.createServer((req, res) => {
@@ -91,6 +96,9 @@ function startAssetServer() {
     if (req.url === "/model.glb") {
       res.writeHead(200, { "Content-Type": "model/gltf-binary" });
       res.end(glb);
+    } else if (req.url === "/soft404.glb") {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end("<html><body>totally not a model</body></html>");
     } else {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("not found");
@@ -136,18 +144,22 @@ function startBundleServer(dir) {
   });
 }
 
-// A temp Functor Lang project whose draw loads a good URL and a 404 URL, built into a
-// self-contained wasm bundle. Both assets fetch once (the asset handle is
-// cached), so the browser makes exactly one request per URL.
-function buildBundle(goodUrl, badUrl) {
+// A temp Functor Lang project whose draw loads a good URL, a 404 URL, and (when the
+// case provides one) a soft-404 URL, built into a self-contained wasm bundle.
+// Each asset fetches once (the asset handle is cached), so the browser makes
+// exactly one request per URL.
+function buildBundle(goodUrl, badUrl, softUrl) {
   const dir = mkdtempSync(join(tmpdir(), "functor-remote-e2e-"));
   writeFileSync(
     join(dir, "functor.json"),
     JSON.stringify({ language: "functor-lang", entry: "game.fun" }, null, 2),
   );
+  const soft = softUrl
+    ? `\n      Scene.model("${softUrl}") |> Scene.translate(0.0 - 3.0, 0.0, 0.0),`
+    : "";
   writeFileSync(
     join(dir, "game.fun"),
-    `// Generated e2e fixture: load one URL model that resolves and one that 404s.
+    `// Generated e2e fixture: URL models that resolve, 404, and soft-404.
 let init = { frame: 0.0 }
 
 let tick = (model, dt, tts) => { model with frame: model.frame + 1.0 }
@@ -157,7 +169,7 @@ let draw = (model, tts) =>
     Camera.lookAt(0.0, 2.0, 0.0 - 6.0, 0.0, 0.0, 0.0),
     Scene.group([
       Scene.model("${goodUrl}"),
-      Scene.model("${badUrl}") |> Scene.translate(3.0, 0.0, 0.0),
+      Scene.model("${badUrl}") |> Scene.translate(3.0, 0.0, 0.0),${soft}
     ]))
 `,
   );
@@ -171,8 +183,8 @@ let draw = (model, tts) =>
   return { dir, webDir: join(dir, "dist", "web") };
 }
 
-async function runCase({ goodUrl, badUrl, label }) {
-  const { dir, webDir } = buildBundle(goodUrl, badUrl);
+async function runCase({ goodUrl, badUrl, softUrl, label }) {
+  const { dir, webDir } = buildBundle(goodUrl, badUrl, softUrl);
   const { server: bundleServer, port: bundlePort } = await startBundleServer(webDir);
   const base = `http://127.0.0.1:${bundlePort}`;
   const browser = await chromium.launch({
@@ -194,7 +206,7 @@ async function runCase({ goodUrl, badUrl, label }) {
     // The ground truth: every response the browser actually received for a URL
     // the game asked for.
     page.on("response", (r) => {
-      if (r.url() === goodUrl || r.url() === badUrl) {
+      if (r.url() === goodUrl || r.url() === badUrl || r.url() === softUrl) {
         responses.push({ url: r.url(), status: r.status() });
       }
     });
@@ -231,6 +243,47 @@ async function runCase({ goodUrl, badUrl, label }) {
       throw new Error(`[${label}] 404 URL returned ${bad.status}, expected 404`);
     }
 
+    // Failed assets must be VISIBLE: the web runtime's RuntimeEvent sink turns
+    // each AssetError into a console.error naming the asset. (Before the sink,
+    // failures fell back to eprintln! — nothing in a browser.)
+    const assetError = (url) =>
+      log.some(
+        (m) => m.startsWith("error:") && m.includes(url) && m.includes("failed to load"),
+      );
+    if (!assetError(badUrl)) {
+      throw new Error(
+        `[${label}] no console.error for the 404 asset ${badUrl}. Log tail: ${log
+          .slice(-8)
+          .join(" | ")}`,
+      );
+    }
+
+    if (softUrl) {
+      const soft = responses.find((r) => r.url === softUrl);
+      if (!soft || soft.status !== 200) {
+        throw new Error(
+          `[${label}] soft-404 URL should have returned 200 (got ${soft?.status}) — the case needs a 200-with-HTML body`,
+        );
+      }
+      // The magic-byte guard must fail the load (HTML never reaches the glTF
+      // parser) and say so in the console.
+      if (!assetError(softUrl)) {
+        throw new Error(
+          `[${label}] no console.error for the soft-404 asset ${softUrl} — the wasm magic-byte guard did not reject the HTML body. Log tail: ${log
+            .slice(-8)
+            .join(" | ")}`,
+        );
+      }
+    }
+
+    // Nothing may have thrown uncaught in the page — a wasm panic surfaces as
+    // a pageerror, and a dead frame loop would otherwise pass the checks below
+    // silently.
+    const pageErrors = log.filter((m) => m.startsWith("pageerror:"));
+    if (pageErrors.length > 0) {
+      throw new Error(`[${label}] uncaught page error(s): ${pageErrors.join(" | ")}`);
+    }
+
     // The 404 must have degraded to the fallback asset — NOT crashed the frame
     // loop or the glTF pipeline. A persistent draw error leaves the red overlay
     // up; check it's hidden.
@@ -251,7 +304,9 @@ async function runCase({ goodUrl, badUrl, label }) {
     }
 
     console.log(
-      `PASS  ${label} — good ${good.status} (${goodUrl}), bad ${bad.status} (${badUrl}), overlay hidden`,
+      `PASS  ${label} — good ${good.status} (${goodUrl}), bad ${bad.status} (${badUrl})${
+        softUrl ? ", soft-404 rejected by magic guard" : ""
+      }, console errors present, overlay hidden`,
     );
   } finally {
     await browser.close();
@@ -271,6 +326,7 @@ async function main() {
       label: "hermetic (localhost CORS server)",
       goodUrl: `${origin}/model.glb`,
       badUrl: `${origin}/missing.glb`,
+      softUrl: `${origin}/soft404.glb`,
     });
   } catch (e) {
     failures++;
