@@ -570,19 +570,28 @@ Ui.textInput(value, tagger)                                // INTERACTIVE contro
                                                            //   `examples/ui` showcases every
                                                            //   widget in one panel
 
+Physics.tag("name")                                        // BRANDED body identity (the
+                                                           //   RenderTarget rule): declare
+                                                           //   once, use the VALUE at every
+                                                           //   site. Check-time only — at
+                                                           //   runtime a tag IS its string
+                                                           //   (plain data; == with event
+                                                           //   tags works). A bare string
+                                                           //   where a tag goes is a check
+                                                           //   error
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
-Physics.dynamic("tag", shape)                              // simulated body
-Physics.kinematic("tag", shape) / Physics.fixed("tag", shape)
+Physics.dynamic(tag, shape)                                // simulated body
+Physics.kinematic(tag, shape) / Physics.fixed(tag, shape)
 body |> Physics.at(x, y, z)                                // body-last: pipes
 body |> Physics.velocity(vx, vy, vz)
 body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
 body |> Physics.sensor                                     // overlap-only, no forces
 Physics.scene(gx, gy, gz, [body, …])                       // what `physics` returns
-Physics.position("tag")                                    // {x, y, z} of the LIVE body
-scene |> Physics.transformed("tag")                        // scene at the body's live pose
-Physics.applyImpulse("tag", x, y, z)                       // -> Effect (fire-and-forget)
-Physics.applyForce("tag", x, y, z)                         //   force lasts ONE stepped frame
-Physics.setVelocity("tag", x, y, z) / Physics.teleport("tag", x, y, z)
+Physics.position(tag)                                      // {x, y, z} of the LIVE body
+scene |> Physics.transformed(tag)                          // scene at the body's live pose
+Physics.applyImpulse(tag, x, y, z)                         // -> Effect (fire-and-forget)
+Physics.applyForce(tag, x, y, z)                           //   force lasts ONE stepped frame
+Physics.setVelocity(tag, x, y, z) / Physics.teleport(tag, x, y, z)
 Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)   // -> Effect (QUERY): tagger gets
                                                            //   {hit, x, y, z, nx, ny, nz,
                                                            //    distance, tag} — hit: false
@@ -601,7 +610,7 @@ Re-declaring an *unchanged* body leaves the simulation alone; *changing*
 its declared position teleports it (the divergence rule, docs/physics.md).
 
 Physics **command effects** are returned beside the model like any effect
-— `(model, Physics.applyImpulse("ball", 0.0, 5.0, 0.0))` — but carry no
+— `(model, Physics.applyImpulse(ballTag, 0.0, 5.0, 0.0))` — but carry no
 tagger: nothing folds back through `update`; observe outcomes via the
 physics reads. Commands queue at perform time and apply at the next
 stepped frame's first substep, **after reconcile** — so declaring a body
@@ -628,9 +637,10 @@ testable with no world at all.
 
 `Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
 `Sub.batch`; it requires `update`). Every contact begin/end from this
-frame's physics step arrives post-step as `{started: bool, a: Text,
-b: Text, sensor: bool}` — `a`/`b` are the pair's tags in rapier's
-(deterministic) order, so check both; `sensor: true` marks an overlap with
+frame's physics step arrives post-step as `{started: bool, a: Physics.tag,
+b: Physics.tag, sensor: bool}` — `a`/`b` are the pair's tags in rapier's
+(deterministic) order, so check both (compare against your declared tag
+VALUES: `e.a == ballTag` — tags are strings underneath, so `==` works); `sensor: true` marks an overlap with
 a `Physics.sensor` body (no contact forces). Events for a pair whose body
 was despawned this frame are dropped (there is nothing left to name), and
 a frame's undelivered events never carry over.

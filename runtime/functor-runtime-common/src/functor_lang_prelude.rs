@@ -947,6 +947,7 @@ const PATHS: &[&str] = &[
     "Effect.now",
     "Effect.random",
     "Effect.batch",
+    "Physics.tag",
     "Physics.box",
     "Physics.sphere",
     "Physics.capsule",
@@ -1545,6 +1546,17 @@ the game dir",
             // Shapes are values, bodies are tag + shape + piped attributes,
             // and the optional game hook `physics = (model) => Physics.scene(…)`
             // declares the world each frame.
+            //
+            // `Physics.tag` is the branded body identity — check-time only
+            // (physics.funi types it as the abstract `Physics.tag`), so at
+            // runtime a tag IS its string: identity here, plain data in the
+            // model/journal, and structurally comparable with the tags inside
+            // rayHit/collisionEvent records. The empty tag is the zeroed
+            // rayHit-miss / "no body" sentinel, so no non-empty validation.
+            "Physics.tag" => match args.as_slice() {
+                [Value::String(_)] => Ok(args[0].clone()),
+                _ => usage("Physics.tag(\"name\")"),
+            },
             "Physics.box" => match args.as_slice() {
                 [w, h, d] => Ok(host(FunctorLangShape(physics::Shape::Cuboid {
                     extents: [
@@ -1585,7 +1597,7 @@ the game dir",
                 _ => usage(&format!("{path}(tag, shape)")),
             },
             // Body LAST (subject-last), so they pipe:
-            // `Physics.dynamic("crate", Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
+            // `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
             "Physics.at" | "Physics.velocity" => match args.as_slice() {
                 [x, y, z, body] => match body_of(body) {
                     Some(inner) => {
@@ -1672,11 +1684,11 @@ the game dir",
                 _ => usage("Physics.position(tag)"),
             },
             // Scene LAST (subject-last), so it pipes: the way Functor Lang draws a physics body —
-            // `Scene.cube() |> Scene.lit(…) |> Physics.transformed("crate-1")`
+            // `Scene.cube() |> Scene.lit(…) |> Physics.transformed(crateTag)`
             // places the visual at the body's live pose (position + rotation).
             // Command EFFECTS (docs/physics.md Phase 3): fire-and-forget,
             // returned beside the model like any effect —
-            // `(model, Physics.applyImpulse("ball", 0.0, 5.0, 0.0))`.
+            // `(model, Physics.applyImpulse(ballTag, 0.0, 5.0, 0.0))`.
             // Performing one queues it on the singleton world; it applies at
             // the next stepped frame's first substep, AFTER reconcile — so a
             // body declared and commanded in the same frame works.
@@ -3808,6 +3820,38 @@ Color.rgb(r, g, b)"
             fail("let main = () => Color.rgb(1.0, \"x\", 0.0)"),
             "expected a number, got a string"
         );
+    }
+
+    // [strong-typing track] the physics tag brand has teeth at CHECK time:
+    // physics.funi types every tag parameter as the abstract `Physics.tag`,
+    // so a bare string is a build error. Runtime stays erased — a tag IS its
+    // string — so /state, the journal, and event-tag equality are unchanged.
+    #[test]
+    fn bare_strings_are_not_physics_tags() {
+        let dir =
+            std::env::temp_dir().join(format!("functor-physics-tag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("game.fun"),
+            "let bad = () => Physics.position(\"ball\")\n\
+             let good = () => Physics.position(Physics.tag(\"ball\"))\n",
+        )
+        .unwrap();
+        let project = functor_lang::project::load_with_prelude(
+            &dir.join("game.fun"),
+            &Default::default(),
+            &functor_prelude::modules(),
+        )
+        .unwrap_or_else(|e| panic!("loads: {}", e.render()));
+        let diags: Vec<String> = project.check().into_iter().map(|d| d.message).collect();
+        assert_eq!(
+            diags,
+            vec![
+                "argument 1 of `Physics.position`: expected Physics.tag, got string".to_string()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // A Color stored in the model is plain enough to survive hot reload —
