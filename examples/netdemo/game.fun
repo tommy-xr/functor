@@ -52,4 +52,4 @@ let draw = (m: Model, tts: float) =>
     Camera.firstPerson(
       0.0, 0.0, -5.0,
       Angle.radians(0.0), Angle.radians(0.0), Angle.degrees(60.0)),
-    Scene.cube() |> Scene.emissive(0.2, 0.9, 0.6))
+    Scene.cube() |> Scene.emissive(Color.rgb(0.2, 0.9, 0.6)))

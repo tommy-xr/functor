@@ -104,7 +104,7 @@ let moving = (b) => speedSq(b) > 0.05
 let ghost = (b) =>
   Scene.sphere()
     |> Scene.scale(0.07)
-    |> Scene.emissive(0.25, 0.85, 1.0)
+    |> Scene.emissive(Color.rgb(0.25, 0.85, 1.0))
     |> Scene.translate(b.pos.x, b.pos.y, b.pos.z)
 
 // The moving balls of one future model, as a group of ghost dots.
@@ -120,13 +120,13 @@ let trail = (model) =>
 let ballView = (b) =>
   Scene.sphere()
     |> Scene.scale(0.3)
-    |> Scene.lit(1.0, 0.45, 0.2)
+    |> Scene.lit(Color.rgb(1.0, 0.45, 0.2))
     |> Scene.translate(b.pos.x, b.pos.y, b.pos.z)
 
 let ground =
   Scene.plane()
     |> Scene.scale(24.0)
-    |> Scene.lit(0.14, 0.15, 0.2)
+    |> Scene.lit(Color.rgb(0.14, 0.15, 0.2))
 
 let draw = (model, tts) =>
   let cam = Camera.lookAt(0.0, 6.0, 15.0, 0.0, 3.0, 0.0) in
@@ -136,6 +136,6 @@ let draw = (model, tts) =>
     trail(model)
   ]) in
   Frame.createLit(cam, scene, [
-    Light.ambient(0.3, 0.3, 0.35),
-    Light.directional(-0.4, -1.0, -0.3, 1.0, 1.0, 1.0, 1.0)
+    Light.ambient(Color.rgb(0.3, 0.3, 0.35)),
+    Light.directional(-0.4, -1.0, -0.3, Color.rgb(1.0, 1.0, 1.0), 1.0)
   ])

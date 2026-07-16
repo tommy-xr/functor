@@ -36,7 +36,7 @@ let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt * Piec
 let draw = (model, tts: Float) =>
   Frame.create(
     Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
-    Scene.sphere() |> Scene.emissive(0.1, 1.0, Pieces.glow) |> Scene.scale(2.0))
+    Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, Pieces.glow)) |> Scene.scale(2.0))
 `;
 
 const project = (pieces) => [

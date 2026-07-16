@@ -136,7 +136,7 @@ let physics = (model) =>                       // OPTIONAL game hook
 
 let draw = (model, tts) =>
   Frame.create(camera,
-    Scene.cube() |> Scene.lit(0.8, 0.5, 0.2) |> Physics.transformed("crate"))
+    Scene.cube() |> Scene.lit(Color.rgb(0.8, 0.5, 0.2)) |> Physics.transformed("crate"))
 ```
 
 Functor Lang dissolves the read-back boundary problem outright: the interpreter runs in

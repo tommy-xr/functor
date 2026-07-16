@@ -55,6 +55,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Frame",
     "Light",
     "Fog",
+    "Color",
     "Skybox",
     "Angle",
     "Texture",

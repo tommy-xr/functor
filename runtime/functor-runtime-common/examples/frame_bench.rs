@@ -146,7 +146,7 @@ let draw = (m: float, tts: float) =>
     Scene.sphere()
     |> Scene.scale(16.0)
     |> Scene.translate(0.0, 9.0, 78.0)
-    |> Scene.emissive(1.0, 0.82, 0.6) in
+    |> Scene.emissive(Color.rgb(1.0, 0.82, 0.6)) in
   let sky =
     Scene.quad()
     |> Scene.scaleXYZ(500.0, 280.0, 1.0)

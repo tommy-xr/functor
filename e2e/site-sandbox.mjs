@@ -38,7 +38,7 @@ let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
 let draw = (model, tts: Float) =>
   Frame.create(
     Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
-    Scene.sphere() |> Scene.emissive(0.1, 1.0, 0.2) |> Scene.scale(2.0))
+    Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)) |> Scene.scale(2.0))
 `;
 const BROKEN = "let init = {\n";
 
@@ -50,7 +50,7 @@ let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt 
 let draw = (model, tts: Float) =>
   Frame.create(
     Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
-    Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(1.0, 0.2, 0.8))
+    Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8)))
 `;
 
 // A model that deliberately retains a module-bound closure. Its old snapshots
@@ -62,7 +62,7 @@ let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
 let draw = (model, tts: Float) =>
   Frame.create(
     Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
-    Scene.cube() |> Scene.rotateY(Angle.radians(model.t)) |> Scene.emissive(0.2, 0.8, 1.0))
+    Scene.cube() |> Scene.rotateY(Angle.radians(model.t)) |> Scene.emissive(Color.rgb(0.2, 0.8, 1.0)))
 `;
 
 // A float-model program for the language-intelligence checks: every top-level
@@ -77,7 +77,7 @@ let tick = (model, dt: Float, tts: Float) => model + dt
 let draw = (model, tts: Float) =>
   Frame.create(
     Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
-    Scene.sphere() |> Scene.emissive(0.1, 1.0, 0.2)
+    Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2))
       |> Scene.rotateY(Angle.radians(model)) |> Scene.scale(speed))
 `;
 
@@ -242,8 +242,8 @@ const playerFrame = (page) => {
   // A green edit: recolor the dots' emissive to pure green. The scene must
   // hot-swap with the model preserved (the wave keeps rolling) — no reload.
   const greenRegion = region.replace(
-    /Scene\.emissive\([^)]*\)/,
-    "Scene.emissive(0.1, 1.0, 0.2)"
+    /Scene\.emissive\(Color\.rgb\([^)]*\)\)/,
+    "Scene.emissive(Color.rgb(0.1, 1.0, 0.2))"
   );
   await page.evaluate((s) => window.__hero.setRegion(s), greenRegion);
   await page.waitForFunction(

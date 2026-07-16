@@ -11,7 +11,7 @@
 // The skybox faces are not checked in — run `npm run fetch:assets` first.
 // While they load, the fog color shows in place of the sky.
 
-let fog = Fog.linear(6.0, 26.0, 0.93, 0.95, 0.96)
+let fog = Fog.linear(6.0, 26.0, Color.rgb(0.93, 0.95, 0.96))
 
 let sky = Skybox.files(
   "TropicalSunnyDay_px.jpg", "TropicalSunnyDay_nx.jpg",
@@ -21,19 +21,19 @@ let sky = Skybox.files(
 // One pillar at depth i (world z = i * 3), staggered left/right.
 let pillar = (i: float) =>
   Scene.cube()
-    |> Scene.lit(0.75, 0.55, 0.4)
+    |> Scene.lit(Color.rgb(0.75, 0.55, 0.4))
     |> Scene.translate(Math.sin(i * 1.7) * 4.0, 0.5, i * 3.0)
 
 // An emissive glow weaving through the colonnade.
 let drifter = (tts: float) =>
   Scene.sphere()
     |> Scene.scale(0.5)
-    |> Scene.emissive(1.0, 0.6, 0.2)
+    |> Scene.emissive(Color.rgb(1.0, 0.6, 0.2))
     |> Scene.translate(Math.cos(tts * 0.6) * 3.0, 1.4, 8.0 + Math.sin(tts * 0.6) * 7.0)
 
 let lights = () => [
-  Light.ambient(0.16, 0.17, 0.2),
-  Light.directional(0.4, -1.0, 0.3, 1.0, 0.96, 0.88, 0.85) |> Light.castShadows,
+  Light.ambient(Color.rgb(0.16, 0.17, 0.2)),
+  Light.directional(0.4, -1.0, 0.3, Color.rgb(1.0, 0.96, 0.88), 0.85) |> Light.castShadows,
 ]
 
 let init = {}
@@ -43,7 +43,7 @@ let draw = (m, tts: float) =>
   Frame.createLit(
     Camera.lookAt(0.0, 2.4, -6.0, 0.0, 1.0, 8.0),
     Scene.group([
-      Scene.plane() |> Scene.scale(70.0) |> Scene.lit(0.5, 0.55, 0.52),
+      Scene.plane() |> Scene.scale(70.0) |> Scene.lit(Color.rgb(0.5, 0.55, 0.52)),
       Scene.group([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0] |> List.map(pillar)),
       drifter(tts),
     ]),

@@ -61,10 +61,10 @@ let physics = (model) =>
 // latest touch glows (a Physics.events Contact set `hot`).
 let crateVisual = (model, i) =>
   (match crateTag(i) == model.hot with
-   | true => Scene.cube() |> Scene.emissive(1.0, 0.45, 0.15)
+   | true => Scene.cube() |> Scene.emissive(Color.rgb(1.0, 0.45, 0.15))
    | false =>
      Scene.cube()
-       |> Scene.lit(Math.clamp01(0.55 + 0.09 * i), Math.clamp01(0.42 - 0.04 * i), 0.28))
+       |> Scene.lit(Color.rgb(Math.clamp01(0.55 + 0.09 * i), Math.clamp01(0.42 - 0.04 * i), 0.28)))
     |> Physics.transformed(crateTag(i))
 
 // The message ADT: ctor taggers wrap each async result in its own arm —
@@ -148,11 +148,11 @@ let draw = (model, tts) =>
   Frame.createLit(
     Camera.lookAt(10.5, 7.5, -10.5, 0.0, 0.8, 0.0),
     Scene.group([
-      Scene.plane() |> Scene.scale(24.0) |> Scene.lit(0.55, 0.58, 0.62),
-      Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(0.95, 0.35, 0.25) |> Physics.transformed("ball"),
+      Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.55, 0.58, 0.62)),
+      Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(Color.rgb(0.95, 0.35, 0.25)) |> Physics.transformed("ball"),
       Scene.group(List.range(crateCount) |> List.map((i) => crateVisual(model, i))),
     ]),
     [
-      Light.ambient(0.12, 0.12, 0.15),
-      Light.directional(0.5, -1.0, 0.35, 1.0, 0.98, 0.95, 0.9) |> Light.castShadows,
+      Light.ambient(Color.rgb(0.12, 0.12, 0.15)),
+      Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.98, 0.95), 0.9) |> Light.castShadows,
     ])
