@@ -35,3 +35,8 @@ mod xreal;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use run::{run, Args};
+
+// The remote-asset fetcher install, re-exported for the end-to-end test in
+// tests/remote_assets.rs (the run loops install it themselves).
+#[cfg(not(target_arch = "wasm32"))]
+pub use net_dispatch::install_remote_asset_fetcher;

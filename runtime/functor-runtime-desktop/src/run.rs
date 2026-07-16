@@ -658,6 +658,7 @@ fn run_headless(
     // games is the whole point of a headless runner. Audio is omitted (no device
     // context), but queued audio commands are still drained so they don't pile up.
     let http_client = reqwest::Client::new();
+    net_dispatch::install_remote_asset_fetcher(http_client.clone());
     let (net_tx, net_rx) = std::sync::mpsc::channel::<net_dispatch::NetResult>();
     let (ws_tx, ws_rx) = std::sync::mpsc::channel::<ws_host::HostNetEvent>();
     let mut ws_manager = ws_host::WsManager::new(ws_tx);
@@ -984,6 +985,9 @@ pub fn run(args: Args) {
         // returns over this channel and is pushed back into the game on the main
         // thread, keeping all dylib calls on one thread.
         let http_client = reqwest::Client::new();
+        // Remote (URL) asset paths download through the same client (see
+        // net_dispatch::install_remote_asset_fetcher).
+        net_dispatch::install_remote_asset_fetcher(http_client.clone());
         let (net_tx, net_rx) = std::sync::mpsc::channel::<net_dispatch::NetResult>();
 
         // WebSocket connections. Commands (connect/send/close) are drained each

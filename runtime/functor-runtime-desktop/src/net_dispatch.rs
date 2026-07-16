@@ -23,6 +23,44 @@ pub enum NetResult {
     },
 }
 
+/// Install the desktop remote-asset fetcher: URL asset paths (`Scene.model` /
+/// `Texture.file` on an http(s) locator) download through this client on tokio
+/// tasks, landing in the asset system's channel-backed future. Must be called
+/// from inside the tokio runtime — the handle is captured here so fetches can
+/// be spawned from whichever thread polls assets.
+pub fn install_remote_asset_fetcher(client: reqwest::Client) {
+    let handle = tokio::runtime::Handle::current();
+    functor_runtime_common::io::set_remote_fetcher(move |url, tx| {
+        let client = client.clone();
+        handle.spawn(async move {
+            let _ = tx.send(fetch_asset_bytes(&client, &url).await);
+        });
+    });
+}
+
+/// GET one remote asset. Mirrors the wasm fetch rule: an HTTP error status is a
+/// FAILED load — the 404 page's body must not reach the glTF/PNG parser — so
+/// the asset system serves the fallback instead.
+async fn fetch_asset_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    // Generous total timeout: big assets on slow links are legitimate, but a
+    // stalled endpoint must not leave the asset Loading (fallback) forever
+    // with no error event.
+    let resp = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(300))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("reading body: {e}"))
+}
+
 fn to_method(method: HttpMethod) -> reqwest::Method {
     match method {
         HttpMethod::Get => reqwest::Method::GET,
@@ -121,6 +159,41 @@ mod tests {
             }
             NetResult::Error { message, .. } => panic!("unexpected error: {message}"),
         }
+    }
+
+    /// A server that answers every request with the given status and body.
+    fn spawn_status_server(status: u16, body: &'static str) -> u16 {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let _ =
+                    req.respond(tiny_http::Response::from_string(body).with_status_code(status));
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn asset_fetch_returns_body_bytes() {
+        let port = spawn_status_server(200, "glb-bytes");
+        let client = reqwest::Client::new();
+        let bytes = fetch_asset_bytes(&client, &format!("http://127.0.0.1:{port}/a.glb"))
+            .await
+            .expect("fetch should succeed");
+        assert_eq!(bytes, b"glb-bytes");
+    }
+
+    #[tokio::test]
+    async fn asset_fetch_fails_on_http_error_status() {
+        // The 404 body must NOT come back as asset bytes (it would be fed to
+        // the glTF parser); an error routes to the fallback asset instead.
+        let port = spawn_status_server(404, "<html>not found</html>");
+        let client = reqwest::Client::new();
+        let err = fetch_asset_bytes(&client, &format!("http://127.0.0.1:{port}/a.glb"))
+            .await
+            .expect_err("404 must fail the load");
+        assert!(err.contains("404"), "error was: {err}");
     }
 
     #[tokio::test]
