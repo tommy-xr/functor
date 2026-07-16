@@ -170,7 +170,7 @@ let litRow = () =>
     Scene.cylinder() |> Scene.translate(0.0, -2.5, 0.0),
     Scene.sphere() |> Scene.scale(0.7) |> Scene.translate(-2.0, 1.0, 2.0),
     Scene.cube() |> Scene.translate(2.0, 1.0, 2.0),
-  ]) |> Scene.lit(0.85, 0.85, 0.9)
+  ]) |> Scene.lit(Color.rgb(0.85, 0.85, 0.9))
 
 let draw = (model, tts) =>
   Frame.createLit(
@@ -183,7 +183,7 @@ let draw = (model, tts) =>
       litRow(),
       // Self-lit neon sphere, rendered fullbright (emissive material).
       Scene.sphere() |> Scene.scale(0.5) |> Scene.translate(0.0, 2.3, 2.0)
-        |> Scene.emissive(1.0, 0.2, 0.8),
+        |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8)),
       // The glowing grid-texture sign quad (emissive texture, fullbright).
       Scene.quad() |> Scene.scale(1.2) |> Scene.translate(0.0, 0.3, 1.5)
         |> Scene.emissiveTexture(gridTexture),
@@ -192,8 +192,8 @@ let draw = (model, tts) =>
     // A low blue-ish ambient plus a warm "sun" angled down from the upper
     // right; lit surfaces shade by orientation, emissive ones stay bright.
     [
-      Light.ambient(0.2, 0.2, 0.28),
-      Light.directional(-0.5, -1.0, -0.35, 1.0, 0.96, 0.85, 1.1) |> Light.castShadows,
+      Light.ambient(Color.rgb(0.2, 0.2, 0.28)),
+      Light.directional(-0.5, -1.0, -0.35, Color.rgb(1.0, 0.96, 0.85), 1.1) |> Light.castShadows,
     ])
 
 let join = (parts) => parts |> List.fold((acc, s) => Text.concat(acc, s), "")
@@ -205,7 +205,7 @@ let f0 = (n) => Text.fixed(n, 0.0)
 let ui = (model) =>
   Ui.column([
     Ui.text("functor · hello"),
-    Ui.textColor(1.0, 0.85, 0.4,
+    Ui.textColor(Color.rgb(1.0, 0.85, 0.4),
       join(["eye  ", f1(model.eye.x), " ", f1(model.eye.y), " ", f1(model.eye.z)])),
     Ui.text(join(["look  yaw ", f0(model.yaw), "  pitch ", f0(model.pitch)])),
     Ui.text(Text.concat("frame ", f0(model.counter))),

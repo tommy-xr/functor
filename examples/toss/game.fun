@@ -67,13 +67,13 @@ let tick = (model, dt, tts) =>
 let ballView = (b) =>
   Scene.sphere()
     |> Scene.scale(0.3)
-    |> Scene.lit(1.0, 0.45, 0.2)
+    |> Scene.lit(Color.rgb(1.0, 0.45, 0.2))
     |> Scene.translate(b.pos.x, b.pos.y, b.pos.z)
 
 let ground =
   Scene.plane()
     |> Scene.scale(24.0)
-    |> Scene.lit(0.14, 0.15, 0.2)
+    |> Scene.lit(Color.rgb(0.14, 0.15, 0.2))
 
 let draw = (model, tts) =>
   let cam = Camera.lookAt(0.0, 6.0, 15.0, 0.0, 3.0, 0.0) in
@@ -82,6 +82,6 @@ let draw = (model, tts) =>
     model.balls |> List.map(ballView) |> Scene.group
   ]) in
   Frame.createLit(cam, scene, [
-    Light.ambient(0.3, 0.3, 0.35),
-    Light.directional(-0.4, -1.0, -0.3, 1.0, 1.0, 1.0, 1.0)
+    Light.ambient(Color.rgb(0.3, 0.3, 0.35)),
+    Light.directional(-0.4, -1.0, -0.3, Color.rgb(1.0, 1.0, 1.0), 1.0)
   ])

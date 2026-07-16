@@ -20,7 +20,7 @@ let waveY = (t: float, ix: float, iz: float): float =>
 let dot = (t, ix, iz) =>
   let depth = iz / gridRows in
   Scene.cube()
-    |> Scene.emissive(1.0 - 0.4 * depth, 0.15 + 0.1 * depth, 0.85 - 0.2 * depth)
+    |> Scene.emissive(Color.rgb(1.0 - 0.4 * depth, 0.15 + 0.1 * depth, 0.85 - 0.2 * depth))
     |> Scene.rotateY(Angle.radians(t * 0.7 + ix + iz))
     |> Scene.scale(0.21 + 0.07 * Math.sin(t * 3.0 + ix * 0.9 + iz * 0.6))
     |> Scene.translate(
@@ -38,7 +38,7 @@ let grid = (t) =>
 // The retro sun, low over the horizon, breathing slowly.
 let sun = (t) =>
   Scene.sphere()
-    |> Scene.emissive(1.0, 0.36 + 0.08 * Math.sin(t * 1.7), 0.5)
+    |> Scene.emissive(Color.rgb(1.0, 0.36 + 0.08 * Math.sin(t * 1.7), 0.5))
     |> Scene.scale(6.5)
     |> Scene.translate(0.0, 3.2, 40.0)
 
@@ -47,14 +47,14 @@ let sun = (t) =>
 // +Z and the camera looks down +Z, so rotate it to face the viewer.
 let sky = () =>
   Scene.quad()
-    |> Scene.emissive(0.06, 0.015, 0.14)
+    |> Scene.emissive(Color.rgb(0.06, 0.015, 0.14))
     |> Scene.rotateY(Angle.degrees(180.0))
     |> Scene.scale(130.0)
     |> Scene.translate(0.0, 0.0, 55.0)
 
 let ground = () =>
   Scene.plane()
-    |> Scene.color(0.045, 0.01, 0.1)
+    |> Scene.color(Color.rgb(0.045, 0.01, 0.1))
     |> Scene.scale(90.0)
     |> Scene.translate(0.0, -0.9, 20.0)
 

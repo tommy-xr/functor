@@ -126,9 +126,9 @@ let draw = (m: Model, tts: float) =>
       Scene.cube()
       |> Scene.scale(0.6)
       |> Scene.translate(p.x, 0.0, p.z)
-      |> Scene.lit(r, g, b)) in
+      |> Scene.lit(Color.rgb(r, g, b))) in
   let ground =
-    Scene.plane() |> Scene.scale(2.0 * arena) |> Scene.lit(0.18, 0.2, 0.28) in
+    Scene.plane() |> Scene.scale(2.0 * arena) |> Scene.lit(Color.rgb(0.18, 0.2, 0.28)) in
   let scene = Scene.group([ground, ..playerNodes]) in
   // Top-down-ish view so player movement stays on screen.
   let camera =
@@ -137,5 +137,5 @@ let draw = (m: Model, tts: float) =>
       Angle.radians(0.0), Angle.radians(-1.2), Angle.degrees(70.0)) in
   Frame.createLit(
     camera, scene,
-    [ Light.ambient(0.35, 0.35, 0.42),
-      Light.directional(-0.4, -1.0, -0.35, 1.0, 0.95, 0.85, 1.1) ])
+    [ Light.ambient(Color.rgb(0.35, 0.35, 0.42)),
+      Light.directional(-0.4, -1.0, -0.35, Color.rgb(1.0, 0.95, 0.85), 1.1) ])

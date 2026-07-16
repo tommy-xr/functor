@@ -282,6 +282,17 @@ snapshots — no GPU, fully agent-verifiable.
       server's wire format (`{"type":"key","key":"w"}`) is unchanged.
       Key values are plain data (nullary variants), so a key stored in the
       model snapshots and hot-reloads like any field.
+- [x] **Branded `Color` values** (2026-07-16; strong-typing track). The Angle
+      rule applied to color: `Color.rgb(r, g, b)` makes an opaque `Color.t`,
+      and every color parameter — `Scene.color`/`lit`/`emissive`/
+      `litNormalMapped`, all four `Light.*` constructors, `Fog.linear`/`exp`,
+      `Frame.withClearColor`, `Ui.textColor` — takes a Color VALUE, never
+      three bare floats, so channel swaps and argument miscounts are
+      unrepresentable. A bare number gets a teaching error ("wrap the
+      channels: Color.rgb(r, g, b)"); the pre-Color three-float spelling
+      gets the new usage line. Colors are first-class: name a palette once
+      (`let neonPink = Color.rgb(…)`) and reuse it across materials, lights,
+      fog, and UI.
 - [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade
@@ -335,7 +346,8 @@ snapshots — no GPU, fully agent-verifiable.
       (`List.map(fn, list)`, `List.fold(fn, init, list)`, `Text.split(sep, s)`,
       `Text.join(sep, list)`, `List.grid(fn, rows, cols)`, and every scene/body/
       frame/target/source transform — `scene |> Scene.color(r,g,b)` now resolves
-      to `Scene.color(r, g, b, scene)`). Pipes and signatures flip together, so
+      to `Scene.color(r, g, b, scene)`; colors have since been branded —
+      see the strong-typing track's `Color` entry). Pipes and signatures flip together, so
       existing piped code is untouched: the visually-rich pipe-heavy examples
       (`lighting`, `synthwave`, `primitives`, `physics`) render **byte-identical**
       before/after (`--fixed-time` PNG `cmp`), and the `functor-lang bench` saturated +
@@ -523,7 +535,7 @@ Starts once A2 + B3 exist.
       - [x] **C4b-4. Fog** (done 2026-07-04): prelude grows the
         distance-fog surface over the engine feature — branded
         `Fog.linear(near, far, r, g, b)` / `Fog.exp(density, r, g, b)`
-        values (degenerate parameters — near < 0, far <= near,
+        (the color channels since branded as a `Color.t`) values (degenerate parameters — near < 0, far <= near,
         density <= 0 — are teaching errors at construction) and
         `Frame.withFog(frame, fog)`. Fog applies to every forward
         material including emissive (fog occludes glow) and drives the

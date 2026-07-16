@@ -22,7 +22,7 @@
 //!    List builtins: List.range(rows) |> List.map((r) => List.range(cols)
 //!    |> List.map((c) => f(r, c))) — F#'s `heightmapFn`, in user space)
 //! Scene.group([scene, …])                                   -> Scene
-//! Scene.color(r, g, b, scene)                               -> Scene
+//! Scene.color(color, scene)                                 -> Scene
 //! Scene.translate(x, y, z, scene)                           -> Scene
 //! Scene.rotateX/rotateY/rotateZ(angle, scene)               -> Scene
 //! Angle.degrees(n) / Angle.radians(n)                       -> Angle
@@ -52,14 +52,14 @@
 //! Scene.screen(target, scene)                               -> Scene
 //!   (the reader: an emissive "screen" surface showing the target's texture;
 //!    an id no frame declares shows magenta and warns once)
-//! Fog.linear(near, far, r, g, b) / Fog.exp(density, r, g, b) -> Fog
+//! Fog.linear(near, far, color) / Fog.exp(density, color)    -> Fog
 //! Frame.withFog(fog, frame)                                  -> Frame
 //!   (frame-level distance fog on every forward material, emissive included —
 //!    fog occludes glow; the fog color is also the pass's clear color)
-//! Frame.withClearColor(r, g, b, frame)                       -> Frame
+//! Frame.withClearColor(color, frame)                         -> Frame
 //!   (explicit background clear color, overriding the fog-color default; it
 //!    only paints the background, not fog blending)
-//! Ui.text(s) / Ui.textColor(r, g, b, s)                     -> View
+//! Ui.text(s) / Ui.textColor(color, s)                       -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
 //! Ui.topLeft() / topRight() / bottomLeft() / bottomRight()  -> Anchor
@@ -112,7 +112,7 @@
 //!
 //! Scene-consuming functions take the scene LAST, so they compose with
 //! `|>` (the piped value is appended — thread-last; see `functor_lang`'s lowering docs):
-//! `Scene.cube() |> Scene.color(1.0, 0.0, 0.0) |> Scene.translate(2.0, 0.0, 0.0)`.
+//! `Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.translate(2.0, 0.0, 0.0)`.
 //!
 //! # Transform semantics (deliberate — see the Milestone-0 quirks)
 //!
@@ -585,6 +585,12 @@ impl HostData for FunctorLangAnim {
 /// discipline, carried across the boundary).
 pub struct FunctorLangAngle(pub Angle);
 
+/// An RGB color as an opaque Functor Lang value — made by `Color.rgb(r, g, b)`.
+/// Material/light/fog/UI color parameters accept ONLY this, never three bare
+/// floats, so channel swaps and argument miscounts are unrepresentable (the
+/// Angle rule, applied to color).
+pub struct FunctorLangColor(pub (f32, f32, f32));
+
 /// A [`RenderTargetDescriptor`] as an opaque Functor Lang value — declared once via
 /// `RenderTarget.named` and used at both sites: the writer
 /// (`Frame.withRenderTarget`) and the reader (`Scene.screen`). Both accept
@@ -693,6 +699,22 @@ impl HostData for FunctorLangEffect {
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+impl HostData for FunctorLangColor {
+    fn type_name(&self) -> &'static str {
+        "Color"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    // Three module-independent f32s — no taggers, no closures. A Color
+    // stored in the model must not invalidate hot-reload time-travel
+    // history (colors were plain floats before the brand; this preserves
+    // that reload behavior and keeps "name a palette once" model-friendly).
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
     }
 }
 
@@ -883,6 +905,7 @@ const PATHS: &[&str] = &[
     "Texture.file",
     "Angle.degrees",
     "Angle.radians",
+    "Color.rgb",
     "Camera.lookAt",
     "Camera.firstPerson",
     "Light.ambient",
@@ -1224,16 +1247,13 @@ least 2 rows, each an equal-length list of at least 2 numbers",
                 }
                 _ => usage("Scene.group([scene, …])"),
             },
-            // Scene LAST (subject-last), so they pipe: `Scene.cube() |> Scene.lit(r, g, b)`.
+            // Scene LAST (subject-last), so they pipe:
+            // `Scene.cube() |> Scene.lit(Color.rgb(r, g, b))`.
             "Scene.lit" | "Scene.emissive" => match args.as_slice() {
-                [r, g, b, scene] => {
-                    let (r, g, b) = (
-                        num(r, span)? as f32,
-                        num(g, span)? as f32,
-                        num(b, span)? as f32,
-                    );
+                [color, scene] => {
+                    let (r, g, b) = color_of(color, path, span)?;
                     let Some(scene) = scene_of(scene) else {
-                        return usage(&format!("{path}(r, g, b, scene)"));
+                        return usage(&format!("{path}(color, scene)"));
                     };
                     let material = if path == "Scene.lit" {
                         MaterialDescription::lit(r, g, b, 1.0)
@@ -1245,7 +1265,7 @@ least 2 rows, each an equal-length list of at least 2 numbers",
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage(&format!("{path}(r, g, b, scene)")),
+                _ => usage(&format!("{path}(color, scene)")),
             },
             // An image texture by file path (relative to the game dir), the
             // Functor Lang face of F#'s `Texture.file`. Loading is the shells' asset
@@ -1288,43 +1308,39 @@ the game dir",
             // and specular play across the bumps. `(r, g, b)` is the albedo
             // tint; the normal map is a Texture value (alpha fixed at 1.0).
             "Scene.litNormalMapped" => match args.as_slice() {
-                [r, g, b, normal, scene] => {
+                [color, normal, scene] => {
                     let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.litNormalMapped(r, g, b, normalMap, scene)");
+                        return usage("Scene.litNormalMapped(color, normalMap, scene)");
                     };
+                    let (r, g, b) = color_of(color, path, span)?;
                     let normal = texture_of(normal, path, span)?;
                     scene_value(Scene3D {
                         obj: SceneObject::Material(
-                            MaterialDescription::lit_normal_mapped(
-                                num(r, span)? as f32,
-                                num(g, span)? as f32,
-                                num(b, span)? as f32,
-                                1.0,
-                                normal.clone(),
-                            ),
+                            MaterialDescription::lit_normal_mapped(r, g, b, 1.0, normal.clone()),
                             vec![scene.clone()],
                         ),
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage("Scene.litNormalMapped(r, g, b, normalMap, scene)"),
+                _ => usage("Scene.litNormalMapped(color, normalMap, scene)"),
             },
-            // Scene LAST (subject-last), so it pipes: `Scene.cube() |> Scene.color(r, g, b)`.
+            // Scene LAST (subject-last), so it pipes:
+            // `Scene.cube() |> Scene.color(Color.rgb(r, g, b))`.
             "Scene.color" => match args.as_slice() {
-                [r, g, b, scene] => {
-                    let (r, g, b) = (num(r, span)?, num(g, span)?, num(b, span)?);
+                [color, scene] => {
+                    let (r, g, b) = color_of(color, path, span)?;
                     let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.color(r, g, b, scene)");
+                        return usage("Scene.color(color, scene)");
                     };
                     scene_value(Scene3D {
                         obj: SceneObject::Material(
-                            MaterialDescription::color(r as f32, g as f32, b as f32, 1.0),
+                            MaterialDescription::color(r, g, b, 1.0),
                             vec![scene.clone()],
                         ),
                         xform: Matrix4::from_scale(1.0),
                     })
                 }
-                _ => usage("Scene.color(r, g, b, scene)"),
+                _ => usage("Scene.color(color, scene)"),
             },
             "Scene.translate" => match args.as_slice() {
                 [x, y, z, scene] => {
@@ -1336,6 +1352,16 @@ the game dir",
                     wrap_transform(scene, xform, "Scene.translate(x, y, z, scene)", span)
                 }
                 _ => usage("Scene.translate(x, y, z, scene)"),
+            },
+            // An opaque RGB color (channels normally 0..1; emissive/HDR uses
+            // may exceed 1). Every color-taking parameter requires one.
+            "Color.rgb" => match args.as_slice() {
+                [r, g, b] => Ok(host(FunctorLangColor((
+                    num(r, span)? as f32,
+                    num(g, span)? as f32,
+                    num(b, span)? as f32,
+                )))),
+                _ => usage("Color.rgb(r, g, b)"),
             },
             "Angle.degrees" => match args.as_slice() {
                 [n] => Ok(host(FunctorLangAngle(Angle::from_degrees(num(n, span)? as f32)))),
@@ -1412,44 +1438,50 @@ the game dir",
                 ),
             },
             "Light.ambient" => match args.as_slice() {
-                [r, g, b] => Ok(host(FunctorLangLight(Light::ambient(
-                    num(r, span)? as f32,
-                    num(g, span)? as f32,
-                    num(b, span)? as f32,
-                )))),
-                _ => usage("Light.ambient(r, g, b)"),
+                [color] => {
+                    let (r, g, b) = color_of(color, path, span)?;
+                    Ok(host(FunctorLangLight(Light::ambient(r, g, b))))
+                }
+                _ => usage("Light.ambient(color)"),
             },
             "Light.directional" => match args.as_slice() {
-                [dx, dy, dz, r, g, b, intensity] => Ok(host(FunctorLangLight(Light::directional(
-                    num(dx, span)? as f32,
-                    num(dy, span)? as f32,
-                    num(dz, span)? as f32,
-                    num(r, span)? as f32,
-                    num(g, span)? as f32,
-                    num(b, span)? as f32,
-                    num(intensity, span)? as f32,
-                )))),
-                _ => usage("Light.directional(dx, dy, dz, r, g, b, intensity)"),
+                [dx, dy, dz, color, intensity] => {
+                    let (r, g, b) = color_of(color, path, span)?;
+                    Ok(host(FunctorLangLight(Light::directional(
+                        num(dx, span)? as f32,
+                        num(dy, span)? as f32,
+                        num(dz, span)? as f32,
+                        r,
+                        g,
+                        b,
+                        num(intensity, span)? as f32,
+                    ))))
+                }
+                _ => usage("Light.directional(dx, dy, dz, color, intensity)"),
             },
             "Light.point" => match args.as_slice() {
-                [px, py, pz, r, g, b, intensity, range] => Ok(host(FunctorLangLight(Light::point(
-                    num(px, span)? as f32,
-                    num(py, span)? as f32,
-                    num(pz, span)? as f32,
-                    num(r, span)? as f32,
-                    num(g, span)? as f32,
-                    num(b, span)? as f32,
-                    num(intensity, span)? as f32,
-                    num(range, span)? as f32,
-                )))),
-                _ => usage("Light.point(px, py, pz, r, g, b, intensity, range)"),
+                [px, py, pz, color, intensity, range] => {
+                    let (r, g, b) = color_of(color, path, span)?;
+                    Ok(host(FunctorLangLight(Light::point(
+                        num(px, span)? as f32,
+                        num(py, span)? as f32,
+                        num(pz, span)? as f32,
+                        r,
+                        g,
+                        b,
+                        num(intensity, span)? as f32,
+                        num(range, span)? as f32,
+                    ))))
+                }
+                _ => usage("Light.point(px, py, pz, color, intensity, range)"),
             },
             // A cone of light from (px,py,pz) aimed along (dx,dy,dz), soft-edged
             // at `coneAngle` (an Angle from the axis) with falloff to `range`.
             // Shadow-casting when piped through `Light.castShadows`.
             "Light.spot" => match args.as_slice() {
-                [px, py, pz, dx, dy, dz, r, g, b, intensity, range, cone] => {
+                [px, py, pz, dx, dy, dz, color, intensity, range, cone] => {
                     let cone: cgmath::Rad<f32> = angle_of(cone, path, span)?.into();
+                    let (r, g, b) = color_of(color, path, span)?;
                     Ok(host(FunctorLangLight(Light::spot(
                         num(px, span)? as f32,
                         num(py, span)? as f32,
@@ -1457,16 +1489,16 @@ the game dir",
                         num(dx, span)? as f32,
                         num(dy, span)? as f32,
                         num(dz, span)? as f32,
-                        num(r, span)? as f32,
-                        num(g, span)? as f32,
-                        num(b, span)? as f32,
+                        r,
+                        g,
+                        b,
                         num(intensity, span)? as f32,
                         num(range, span)? as f32,
                         cone.0,
                     ))))
                 }
                 _ => usage(
-                    "Light.spot(px, py, pz, dx, dy, dz, r, g, b, intensity, range, coneAngle)",
+                    "Light.spot(px, py, pz, dx, dy, dz, color, intensity, range, coneAngle)",
                 ),
             },
             // Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
@@ -1943,7 +1975,7 @@ frame's main pass",
                 _ => usage("Frame.withRenderTarget(target, targetFrame, frame)"),
             },
             "Fog.linear" => match args.as_slice() {
-                [near, far, r, g, b] => {
+                [near, far, color] => {
                     let near = non_negative_num(near, span, "Fog.linear near")?;
                     let far = positive_num(far, span, "Fog.linear far")?;
                     if far <= near {
@@ -1951,24 +1983,22 @@ frame's main pass",
                             "Fog.linear: far ({far}) must be greater than near ({near})"
                         ));
                     }
-                    Ok(host(FunctorLangFog(Fog::linear(
-                        near as f32,
-                        far as f32,
-                        num(r, span)? as f32,
-                        num(g, span)? as f32,
-                        num(b, span)? as f32,
-                    ))))
+                    let (r, g, b) = color_of(color, path, span)?;
+                    Ok(host(FunctorLangFog(Fog::linear(near as f32, far as f32, r, g, b))))
                 }
-                _ => usage("Fog.linear(near, far, r, g, b)"),
+                _ => usage("Fog.linear(near, far, color)"),
             },
             "Fog.exp" => match args.as_slice() {
-                [density, r, g, b] => Ok(host(FunctorLangFog(Fog::exp(
-                    positive_num(density, span, "Fog.exp density")? as f32,
-                    num(r, span)? as f32,
-                    num(g, span)? as f32,
-                    num(b, span)? as f32,
-                )))),
-                _ => usage("Fog.exp(density, r, g, b)"),
+                [density, color] => {
+                    let (r, g, b) = color_of(color, path, span)?;
+                    Ok(host(FunctorLangFog(Fog::exp(
+                        positive_num(density, span, "Fog.exp density")? as f32,
+                        r,
+                        g,
+                        b,
+                    ))))
+                }
+                _ => usage("Fog.exp(density, color)"),
             },
             // Frame LAST (subject-last), so it pipes: `Frame.createLit(…) |> Frame.withFog(fog)`.
             "Frame.withFog" => match args.as_slice() {
@@ -2014,19 +2044,19 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
             // `frame |> Frame.withClearColor(r, g, b)`. Sets the background
             // clear color explicitly, overriding the fog-color default.
             "Frame.withClearColor" => match args.as_slice() {
-                [r, g, b, frame] => {
-                    let (r, g, b) = (num(r, span)?, num(g, span)?, num(b, span)?);
+                [color, frame] => {
+                    let (r, g, b) = color_of(color, path, span)?;
                     let Some(inner) = frame_value(frame) else {
-                        return usage("Frame.withClearColor(r, g, b, frame)");
+                        return usage("Frame.withClearColor(color, frame)");
                     };
                     Ok(host(FunctorLangFrame(Frame::with_clear_color(
                         inner.clone(),
-                        r as f32,
-                        g as f32,
-                        b as f32,
+                        r,
+                        g,
+                        b,
                     ))))
                 }
-                _ => usage("Frame.withClearColor(r, g, b, frame)"),
+                _ => usage("Frame.withClearColor(color, frame)"),
             },
             // Scene LAST (subject-last), so it pipes: `Scene.quad() |> Scene.screen(feed)` —
             // an emissive (fullbright, screens glow) surface showing the
@@ -2074,16 +2104,15 @@ paths (+X, -X, +Y, -Y, +Z, -Z)",
                 _ => usage("Ui.text(\"…\")"),
             },
             "Ui.textColor" => match args.as_slice() {
-                [r, g, b, Value::String(s)] => Ok(host(FunctorLangView(View::Text {
-                    text: s.to_string(),
-                    color: ui::rgb_u8(
-                        num(r, span)? as f32,
-                        num(g, span)? as f32,
-                        num(b, span)? as f32,
-                    ),
-                    font: None,
-                }))),
-                _ => usage("Ui.textColor(r, g, b, \"…\")"),
+                [color, Value::String(s)] => {
+                    let (r, g, b) = color_of(color, path, span)?;
+                    Ok(host(FunctorLangView(View::Text {
+                        text: s.to_string(),
+                        color: ui::rgb_u8(r, g, b),
+                        font: None,
+                    })))
+                }
+                _ => usage("Ui.textColor(color, \"…\")"),
             },
             "Ui.column" => match args.as_slice() {
                 [Value::List(items)] => {
@@ -2345,6 +2374,33 @@ Angle.degrees(…) or Angle.radians(…)"
         }),
         other => Err(RunError {
             message: format!("{what}: expected an Angle, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
+/// Extract an RGB color — color-taking functions accept ONLY Color values,
+/// so bare numbers get a teaching error instead of a silent channel guess
+/// (the [`angle_of`] rule, applied to color).
+fn color_of(value: &Value, what: &str, span: Span) -> Result<(f32, f32, f32), RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<FunctorLangColor>()
+            .map(|c| c.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected a Color, got {}", value.kind_name()),
+                span,
+            }),
+        Value::Number(_) => Err(RunError {
+            message: format!(
+                "{what}: expected a Color, got a bare number — wrap the channels: \
+Color.rgb(r, g, b)"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected a Color, got {}", other.kind_name()),
             span,
         }),
     }
@@ -3330,7 +3386,7 @@ fn fog_of<'a>(value: &'a Value, what: &str, span: Span) -> Result<&'a Fog, RunEr
         Value::Number(_) => Err(RunError {
             message: format!(
                 "{what}: expected a Fog, got a bare number — build one with \
-Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
+Fog.linear(near, far, color) or Fog.exp(density, color)"
             ),
             span,
         }),
@@ -3496,7 +3552,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
             "let main = () =>\n\
              Frame.create(\n\
                Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
-               Scene.cube() |> Scene.color(1.0, 0.0, 0.0) |> Scene.translate(2.0, 0.0, 0.0))",
+               Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.translate(2.0, 0.0, 0.0))",
         );
         // Outermost node: a Group carrying the translation…
         let SceneObject::Group(children) = &frame.scene.obj else {
@@ -3556,7 +3612,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     #[test]
     fn mapped_group_builds_n_children() {
         let frame = frame_of(
-            "let cubeAt = (i) => Scene.cube() |> Scene.color(1.0, 0.5, 0.2) |> Scene.translate(i, 0.0, 0.0)\n\
+            "let cubeAt = (i) => Scene.cube() |> Scene.color(Color.rgb(1.0, 0.5, 0.2)) |> Scene.translate(i, 0.0, 0.0)\n\
              let main = () =>\n\
              Frame.create(\n\
                Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
@@ -3633,13 +3689,13 @@ the game dir"
              Frame.createLit(
                Camera.firstPerson(0.0, 3.5, -8.0, Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
                Scene.group([
-                 Scene.plane() |> Scene.scale(24.0) |> Scene.lit(0.6, 0.6, 0.62),
-                 Scene.sphere() |> Scene.emissive(1.0, 0.3, 0.25),
+                 Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.6, 0.6, 0.62)),
+                 Scene.sphere() |> Scene.emissive(Color.rgb(1.0, 0.3, 0.25)),
                ]),
                [
-                 Light.ambient(0.1, 0.1, 0.13),
-                 Light.directional(0.5, -1.0, 0.35, 1.0, 0.98, 0.95, 0.85) |> Light.castShadows,
-                 Light.point(1.0, 2.2, 0.0, 1.0, 0.3, 0.25, 1.4, 4.0),
+                 Light.ambient(Color.rgb(0.1, 0.1, 0.13)),
+                 Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
+                 Light.point(1.0, 2.2, 0.0, Color.rgb(1.0, 0.3, 0.25), 1.4, 4.0),
                ])",
         );
         assert_eq!(frame.lights.len(), 3);
@@ -3660,9 +3716,9 @@ the game dir"
              let main = () =>\n\
              Frame.createLit(\n\
                Camera.firstPerson(0.0, 3.0, -8.0, Angle.radians(0.0), Angle.radians(-0.25), Angle.degrees(60.0)),\n\
-               Scene.cube() |> Scene.litNormalMapped(0.9, 0.9, 0.92, bumps),\n\
+               Scene.cube() |> Scene.litNormalMapped(Color.rgb(0.9, 0.9, 0.92), bumps),\n\
                [\n\
-                 Light.spot(0.0, 7.0, 5.0, 0.0, -1.0, -0.5, 1.0, 1.0, 0.95, 5.0, 18.0, Angle.radians(0.5))\n\
+                 Light.spot(0.0, 7.0, 5.0, 0.0, -1.0, -0.5, Color.rgb(1.0, 1.0, 0.95), 5.0, 18.0, Angle.radians(0.5))\n\
                    |> Light.castShadows,\n\
                ])",
         );
@@ -3691,7 +3747,8 @@ the game dir"
     #[test]
     fn prelude_errors_are_spanned() {
         let module = functor_lang::lower(
-            functor_lang::parse("let main = () => Scene.color(1.0, \"x\", 0.0, Scene.cube())").unwrap(),
+            functor_lang::parse("let main = () => Scene.color(Color.rgb(1.0, \"x\", 0.0), Scene.cube())")
+                .unwrap(),
         )
         .unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
@@ -3715,6 +3772,57 @@ the game dir"
             "Scene.rotateY: expected an Angle, got a bare number — say which unit: \
 Angle.degrees(…) or Angle.radians(…)"
         );
+    }
+
+    // [strong-typing track] color parameters refuse bare numbers with a
+    // teaching error — channel swaps and arg miscounts are unrepresentable
+    // (the Angle rule, applied to color).
+    #[test]
+    fn bare_numbers_are_not_colors() {
+        let fail = |src: &str| {
+            let module = functor_lang::lower(functor_lang::parse(src).unwrap()).unwrap();
+            functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .expect("should fail")
+                .error
+                .message
+        };
+        // A bare number where the Color goes gets the teaching error…
+        assert_eq!(
+            fail("let main = () => Scene.cube() |> Scene.lit(0.5)"),
+            "Scene.lit: expected a Color, got a bare number — wrap the channels: \
+Color.rgb(r, g, b)"
+        );
+        assert_eq!(
+            fail("let main = () => Light.ambient(0.1)"),
+            "Light.ambient: expected a Color, got a bare number — wrap the channels: \
+Color.rgb(r, g, b)"
+        );
+        // …and the pre-Color three-float spelling teaches the new shape.
+        assert_eq!(
+            fail("let main = () => Scene.cube() |> Scene.lit(0.5, 0.5, 0.5)"),
+            "usage: Scene.lit(color, scene)"
+        );
+        // Color.rgb itself still validates its channels.
+        assert_eq!(
+            fail("let main = () => Color.rgb(1.0, \"x\", 0.0)"),
+            "expected a number, got a string"
+        );
+    }
+
+    // A Color stored in the model is plain enough to survive hot reload —
+    // colors were bare floats before the brand, and a palette field must not
+    // invalidate the time-travel history (unlike taggers-carrying host
+    // values, which stay conservatively unsafe).
+    #[test]
+    fn colors_are_reload_safe_snapshots() {
+        let color = eval("let main = () => Color.rgb(0.1, 0.2, 0.3)");
+        assert!(color.is_reload_safe_snapshot());
+        let in_model = eval("let main = () => { tint: Color.rgb(0.1, 0.2, 0.3), hp: 3.0 }");
+        assert!(in_model.is_reload_safe_snapshot());
+        // The conservative default still holds for tagger-carrying values.
+        let sub = eval("let main = () => Sub.every(Time.seconds(1.0), 3.0)");
+        assert!(!sub.is_reload_safe_snapshot());
     }
 
     // Scene.animate pipes after Scene.model and lands the expression on the
@@ -3937,14 +4045,14 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
              Frame.createLit(\n\
                Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0),\n\
                Scene.group([\n\
-                 Scene.plane() |> Scene.lit(0.6, 0.6, 0.6),\n\
+                 Scene.plane() |> Scene.lit(Color.rgb(0.6, 0.6, 0.6)),\n\
                  Scene.quad() |> Scene.screen(feed),\n\
                ]),\n\
-               [Light.ambient(0.1, 0.1, 0.1)])\n\
+               [Light.ambient(Color.rgb(0.1, 0.1, 0.1))])\n\
              |> Frame.withRenderTarget(feed, Frame.createLit(\n\
                   Camera.lookAt(0.0, 4.0, -6.0, 0.0, 0.5, 0.0),\n\
-                  Scene.cube() |> Scene.lit(0.8, 0.2, 0.2),\n\
-                  [Light.ambient(0.2, 0.2, 0.2)]))",
+                  Scene.cube() |> Scene.lit(Color.rgb(0.8, 0.2, 0.2)),\n\
+                  [Light.ambient(Color.rgb(0.2, 0.2, 0.2))]))",
         );
         assert_eq!(frame.render_targets.len(), 1);
         let pass = &frame.render_targets[0];
@@ -4027,7 +4135,7 @@ piped through RenderTarget.sized"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
-             |> Frame.withFog(Fog.linear(4.0, 30.0, 0.5, 0.6, 0.7))",
+             |> Frame.withFog(Fog.linear(4.0, 30.0, Color.rgb(0.5, 0.6, 0.7)))",
         );
         assert_eq!(frame.fog, Some(Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7)));
         let json = serde_json::to_string(&frame).expect("serialize");
@@ -4043,7 +4151,7 @@ piped through RenderTarget.sized"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
-             |> Frame.withClearColor(0.2, 0.4, 0.6)",
+             |> Frame.withClearColor(Color.rgb(0.2, 0.4, 0.6))",
         );
         assert_eq!(frame.clear_color, Some([0.2, 0.4, 0.6]));
         assert_eq!(frame.resolved_clear_color(), [0.2, 0.4, 0.6]);
@@ -4060,8 +4168,8 @@ piped through RenderTarget.sized"
         let both = frame_of(
             "let main = () => \
              Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube()) \
-             |> Frame.withFog(Fog.linear(4.0, 30.0, 0.5, 0.6, 0.7)) \
-             |> Frame.withClearColor(0.0, 0.0, 0.0)",
+             |> Frame.withFog(Fog.linear(4.0, 30.0, Color.rgb(0.5, 0.6, 0.7))) \
+             |> Frame.withClearColor(Color.rgb(0.0, 0.0, 0.0))",
         );
         assert_eq!(both.resolved_clear_color(), [0.0, 0.0, 0.0]);
     }
@@ -4084,16 +4192,16 @@ piped through RenderTarget.sized"
 Scene.cube()) |> Frame.withFog(0.5)"
             ),
             "Frame.withFog: expected a Fog, got a bare number — build one with \
-Fog.linear(near, far, r, g, b) or Fog.exp(density, r, g, b)"
+Fog.linear(near, far, color) or Fog.exp(density, color)"
         );
         // Degenerate parameters are teaching errors at construction, not
         // silent bad renders.
         assert_eq!(
-            fail("let main = () => Fog.linear(10.0, 5.0, 0.5, 0.5, 0.5)"),
+            fail("let main = () => Fog.linear(10.0, 5.0, Color.rgb(0.5, 0.5, 0.5))"),
             "Fog.linear: far (5) must be greater than near (10)"
         );
         assert_eq!(
-            fail("let main = () => Fog.exp(-1.0, 0.5, 0.5, 0.5)"),
+            fail("let main = () => Fog.exp(-1.0, Color.rgb(0.5, 0.5, 0.5))"),
             "Fog.exp density must be positive, got -1"
         );
     }
@@ -5136,7 +5244,7 @@ the game dir"
             "let main = () =>\n\
              Ui.column([\n\
                Ui.text(\"functor · hello\"),\n\
-               Ui.textColor(1.0, 0.85, 0.4, \"eye  0.0 0.0 -5.0\"),\n\
+               Ui.textColor(Color.rgb(1.0, 0.85, 0.4), \"eye  0.0 0.0 -5.0\"),\n\
              ]) |> Ui.panel(Ui.topLeft())",
         );
         let view = view_value(&value).expect("main should return a View");
@@ -5916,8 +6024,13 @@ the new text, got a number"
 with Ui.topLeft()"
         );
         assert_eq!(
-            run_fail("let main = () => Ui.textColor(1.0, \"x\", 0.0, \"a\")"),
+            run_fail("let main = () => Ui.textColor(Color.rgb(1.0, \"x\", 0.0), \"a\")"),
             "expected a number, got a string"
+        );
+        // The pre-Color four-float spelling teaches the new shape.
+        assert_eq!(
+            run_fail("let main = () => Ui.textColor(1.0, 0.85, 0.4, \"a\")"),
+            "usage: Ui.textColor(color, \"…\")"
         );
     }
 

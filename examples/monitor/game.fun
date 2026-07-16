@@ -21,37 +21,37 @@ let pan = (tts: float) => Math.sin(tts * 0.5) * 0.5
 let orbiter = (tts: float) =>
   Scene.sphere()
     |> Scene.scale(0.45)
-    |> Scene.emissive(1.0, 0.55, 0.15)
+    |> Scene.emissive(Color.rgb(1.0, 0.55, 0.15))
     |> Scene.translate(Math.cos(tts * 0.8) * 3.0, 0.6, 3.0 + Math.sin(tts * 0.8) * 2.0)
 
 // The courtyard both cameras film.
 let courtyard = (tts: float) =>
   Scene.group([
-    Scene.plane() |> Scene.scale(22.0) |> Scene.lit(0.55, 0.6, 0.55),
-    Scene.cube() |> Scene.lit(0.85, 0.3, 0.25) |> Scene.translate(-2.4, 0.5, 2.0),
+    Scene.plane() |> Scene.scale(22.0) |> Scene.lit(Color.rgb(0.55, 0.6, 0.55)),
+    Scene.cube() |> Scene.lit(Color.rgb(0.85, 0.3, 0.25)) |> Scene.translate(-2.4, 0.5, 2.0),
     Scene.cube()
       |> Scene.scale(0.7)
       |> Scene.rotateY(Angle.degrees(30.0))
-      |> Scene.lit(0.3, 0.5, 0.9)
+      |> Scene.lit(Color.rgb(0.3, 0.5, 0.9))
       |> Scene.translate(2.2, 0.35, 3.4),
-    Scene.cylinder() |> Scene.lit(0.9, 0.8, 0.3) |> Scene.translate(0.5, 0.5, 5.2),
+    Scene.cylinder() |> Scene.lit(Color.rgb(0.9, 0.8, 0.3)) |> Scene.translate(0.5, 0.5, 5.2),
     orbiter(tts),
   ])
 
 let lights = () => [
-  Light.ambient(0.12, 0.12, 0.15),
-  Light.directional(0.4, -1.0, 0.3, 1.0, 0.97, 0.9, 0.9) |> Light.castShadows,
+  Light.ambient(Color.rgb(0.12, 0.12, 0.15)),
+  Light.directional(0.4, -1.0, 0.3, Color.rgb(1.0, 0.97, 0.9), 0.9) |> Light.castShadows,
 ]
 
 // The visible camera prop: a head with a lens (a cylinder's axis is Y;
 // rotateX aims it along +Z), yawed by the SAME pan driving the feed camera.
 let cameraGadget = (tts: float) =>
   Scene.group([
-    Scene.cube() |> Scene.scale(0.45) |> Scene.lit(0.25, 0.25, 0.28),
+    Scene.cube() |> Scene.scale(0.45) |> Scene.lit(Color.rgb(0.25, 0.25, 0.28)),
     Scene.cylinder()
       |> Scene.scale(0.2)
       |> Scene.rotateX(Angle.degrees(90.0))
-      |> Scene.lit(0.1, 0.1, 0.1)
+      |> Scene.lit(Color.rgb(0.1, 0.1, 0.1))
       |> Scene.translate(0.0, 0.0, 0.35),
   ])
     |> Scene.rotateY(Angle.radians(pan(tts)))
@@ -75,7 +75,7 @@ let feedFrame = (tts: float) =>
 // a mirrored feed.
 let monitor = () =>
   Scene.group([
-    Scene.cube() |> Scene.scale(2.4) |> Scene.lit(0.08, 0.08, 0.09),
+    Scene.cube() |> Scene.scale(2.4) |> Scene.lit(Color.rgb(0.08, 0.08, 0.09)),
     Scene.quad()
       |> Scene.screen(feed)
       |> Scene.rotateY(Angle.degrees(180.0))

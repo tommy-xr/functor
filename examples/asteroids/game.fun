@@ -345,7 +345,7 @@ let starfield = () =>
     let glow = 0.45 + glow01 * 0.55 in
     Scene.plane()
       |> Scene.scale(0.14 + size01 * 0.14)
-      |> Scene.emissive(glow, glow, glow * 1.08)
+      |> Scene.emissive(Color.rgb(glow, glow, glow * 1.08))
       |> Scene.translate((x01 * 2.0 - 1.0) * (worldX + 8.0),
                          0.0 - 4.0,
                          (z01 * 2.0 - 1.0) * (worldZ + 8.0)))
@@ -362,13 +362,13 @@ let rockScene = (a, tts) =>
                       r * (0.75 + w2 * 0.5),
                       r * (0.75 + w3 * 0.5))
     |> Scene.rotateY(Angle.radians(tts * a.spin))
-    |> Scene.lit(0.62, 0.55, 0.47)
+    |> Scene.lit(Color.rgb(0.62, 0.55, 0.47))
     |> Scene.translate(a.x, 0.0, a.z)
 
 let bulletScene = (b) =>
   Scene.sphere()
     |> Scene.scale(0.14)
-    |> Scene.emissive(1.0, 0.9, 0.3)
+    |> Scene.emissive(Color.rgb(1.0, 0.9, 0.3))
     |> Scene.translate(b.x, 0.0, b.z)
 
 // The ship: Kenney's craft_racer (CC0, see ASSETS.md; fetched, not checked
@@ -380,7 +380,7 @@ let shipBody = (thrusting) =>
      | true => [Scene.cube()
                   |> Scene.scaleXYZ(0.16, 0.16, 0.6)
                   |> Scene.translate(0.0, 0.0, 0.0 - 0.85)
-                  |> Scene.emissive(1.0, 0.55, 0.1)]
+                  |> Scene.emissive(Color.rgb(1.0, 0.55, 0.1))]
      | false => []) in
   Scene.group(Lib.append([
     // Kenney crafts model nose-toward--Z; flip to face our +Z forward.
@@ -411,7 +411,7 @@ let pressEnter = (tts, z) =>
   | true => [Font.word(0.3, 0.0, z,
                [Font.gP, Font.gR, Font.gE, Font.gS, Font.gS, Font.gSpace,
                 Font.gE, Font.gN, Font.gT, Font.gE, Font.gR])
-               |> Scene.emissive(0.92, 0.92, 0.92)]
+               |> Scene.emissive(Color.rgb(0.92, 0.92, 0.92))]
   | false => []
 
 // Titles float at y=2.5, above the rock plane, so a drifting rock passes
@@ -423,17 +423,17 @@ let titleScenes = (model, tts) =>
      | Menu =>
        [Font.word(0.72, 0.0, 0.0 - 6.0,
           [Font.gA, Font.gS, Font.gT, Font.gE, Font.gR, Font.gO, Font.gI, Font.gD, Font.gS])
-          |> Scene.emissive(0.55, 1.0, 0.65),
+          |> Scene.emissive(Color.rgb(0.55, 1.0, 0.65)),
         ..pressEnter(tts, 0.0 - 1.5)]
      | Won =>
        [Font.word(0.55, 0.0, 0.0 - 5.0,
           [Font.gY, Font.gO, Font.gU, Font.gSpace, Font.gW, Font.gI, Font.gN])
-          |> Scene.emissive(0.55, 1.0, 0.65),
+          |> Scene.emissive(Color.rgb(0.55, 1.0, 0.65)),
         ..pressEnter(tts, 0.0 - 1.5)]
      | Lost =>
        [Font.word(0.55, 0.0, 0.0 - 5.0,
           [Font.gG, Font.gA, Font.gM, Font.gE, Font.gSpace, Font.gO, Font.gV, Font.gE, Font.gR])
-          |> Scene.emissive(1.0, 0.45, 0.35),
+          |> Scene.emissive(Color.rgb(1.0, 0.45, 0.35)),
         ..pressEnter(tts, 0.0 - 1.5)]) in
   screens |> List.map((s) => s |> Scene.translate(0.0, 2.5, 0.0))
 
@@ -450,12 +450,12 @@ let draw = (model, tts) =>
     Scene.group([Scene.group(starfield()), Scene.group(rocks),
                  Scene.group(bullets), Scene.group(ship),
                  Scene.group(titleScenes(model, tts))]),
-    [Light.ambient(0.3, 0.3, 0.38),
-     Light.directional(-0.45, -1.0, -0.3, 1.0, 0.97, 0.9, 1.1)])
+    [Light.ambient(Color.rgb(0.3, 0.3, 0.38)),
+     Light.directional(-0.45, -1.0, -0.3, Color.rgb(1.0, 0.97, 0.9), 1.1)])
     // Distance fog starting past the whole scene: nothing in play is
     // fogged, but the pass's clear color becomes deep space (there is no
     // Frame.clearColor — see the findings log).
-    |> Frame.withFog(Fog.linear(80.0, 160.0, 0.01, 0.012, 0.035))
+    |> Frame.withFog(Fog.linear(80.0, 160.0, Color.rgb(0.01, 0.012, 0.035)))
 
 // ---------- sound ----------
 // One-shots (laser/explosions) fire as Effects above; the thrust loop is
@@ -474,7 +474,7 @@ let f0 = (n) => Text.fixed(n, 0.0)
 
 let hudUi = (model) =>
   Ui.column([
-    Ui.textColor(1.0, 0.9, 0.3, Text.concat("SCORE  ", f0(model.score))),
+    Ui.textColor(Color.rgb(1.0, 0.9, 0.3), Text.concat("SCORE  ", f0(model.score))),
     Ui.text(Text.concat("LIVES  ", f0(model.lives))),
     Ui.text(Text.concat("WAVE   ", Text.concat(f0(model.wave), Text.concat(" / ", f0(finalWave))))),
   ]) |> Ui.panel(Ui.topLeft())
@@ -491,7 +491,7 @@ let menuUi = (model) =>
 
 let endUi = (title, model) =>
   Ui.column([
-    Ui.textColor(1.0, 0.5, 0.4, title),
+    Ui.textColor(Color.rgb(1.0, 0.5, 0.4), title),
     Ui.text(Text.concat("Final score  ", f0(model.score))),
     Ui.text(""),
     Ui.text("R or Enter to play again, M for menu"),

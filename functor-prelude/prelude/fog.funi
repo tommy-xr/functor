@@ -4,5 +4,6 @@
 // The opaque fog handle (`Fog.t` from game code).
 type t
 
-let linear : (float, float, float, float, float) => t
-let exp : (float, float, float, float) => t
+// near, far, color / density, color.
+let linear : (float, float, Color.t) => t
+let exp : (float, Color.t) => t

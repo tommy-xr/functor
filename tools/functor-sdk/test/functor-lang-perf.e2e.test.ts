@@ -69,12 +69,12 @@ let marker = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
   let p = pointPos(i, tts) in
   Scene.sphere()
     |> Scene.scale(0.15)
-    |> Scene.emissive(r, g, b)
+    |> Scene.emissive(Color.rgb(r, g, b))
     |> Scene.translate(p.x, p.y, p.z)
 
 let pointLight = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
   let p = pointPos(i, tts) in
-  Light.point(p.x, p.y, p.z, r, g, b, 1.4, 6.0)
+  Light.point(p.x, p.y, p.z, Color.rgb(r, g, b), 1.4, 6.0)
 
 // Spiral placement: radius and angle both derive from the index (no
 // mod/floor in the language yet); spin and bob derive from the phase.
@@ -92,14 +92,14 @@ let draw = (m, tts: Float) =>
       0.0, 9.0, -16.0,
       Angle.radians(0.0), Angle.radians(-0.5), Angle.degrees(60.0)),
     Scene.group([
-      Scene.plane() |> Scene.scale(30.0) |> Scene.lit(0.6, 0.6, 0.62),
-      m.entities |> List.map(shapeFor) |> Scene.group |> Scene.lit(0.9, 0.9, 0.9),
+      Scene.plane() |> Scene.scale(30.0) |> Scene.lit(Color.rgb(0.6, 0.6, 0.62)),
+      m.entities |> List.map(shapeFor) |> Scene.group |> Scene.lit(Color.rgb(0.9, 0.9, 0.9)),
       marker(0.0, tts, 1.0, 0.3, 0.25),
       marker(1.0, tts, 0.35, 0.5, 1.0),
     ]),
     [
-      Light.ambient(0.1, 0.1, 0.13),
-      Light.directional(0.5, -1.0, 0.35, 1.0, 0.98, 0.95, 0.85) |> Light.castShadows,
+      Light.ambient(Color.rgb(0.1, 0.1, 0.13)),
+      Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
       pointLight(0.0, tts, 1.0, 0.3, 0.25),
       pointLight(1.0, tts, 0.35, 0.5, 1.0),
     ])
