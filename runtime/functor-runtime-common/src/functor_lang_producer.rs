@@ -750,7 +750,7 @@ to receive their messages; dropping them"
                     return steps;
                 }
                 None => self.reporter.report_once(format!(
-                    "[functor-lang] physics must return Physics.scene(gx, gy, gz, [body, …]), got {}",
+                    "[functor-lang] physics must return Physics.scene(gravity, [body, …]), got {}",
                     value.kind_name()
                 )),
             },
@@ -1390,7 +1390,7 @@ mod tests {
         let subscriptions = (m: Model) => Sub.every(Time.seconds(1.0), Tick)\n\
         let tick = (m: Model, dt: Float, tts: Float) => m\n\
         let draw = (m: Model, tts: Float) =>\n\
-          Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())\n";
+          Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
 
     fn inspector_session() -> (Session, Value) {
         let project = functor_lang::project::load_single_source("game", INSPECTOR_SRC)

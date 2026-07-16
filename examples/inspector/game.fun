@@ -35,6 +35,6 @@ let tick = (model: Model, dt: Float, tts: Float) => model
 
 let draw = (model: Model, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 1.5, -4.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.radians(tts)),
   )

@@ -140,22 +140,22 @@ let draw = (m: float, tts: float) =>
   let terrain =
     Scene.heightmap(List.grid((r, c) => terrainHeight(phase, r, c), rows, cols))
     |> Scene.scaleXYZ(terrainSize, 1.0, terrainSize)
-    |> Scene.translate(0.0, -2.0, 0.0)
+    |> Scene.translate(Vec3.make(0.0, -2.0, 0.0))
     |> Scene.emissiveTexture(gridTexture) in
   let sun =
     Scene.sphere()
     |> Scene.scale(16.0)
-    |> Scene.translate(0.0, 9.0, 78.0)
+    |> Scene.translate(Vec3.make(0.0, 9.0, 78.0))
     |> Scene.emissive(Color.rgb(1.0, 0.82, 0.6)) in
   let sky =
     Scene.quad()
     |> Scene.scaleXYZ(500.0, 280.0, 1.0)
-    |> Scene.translate(0.0, 60.0, 84.0)
+    |> Scene.translate(Vec3.make(0.0, 60.0, 84.0))
     |> Scene.emissiveTexture(skyTexture) in
   let scene = Scene.group([sky, sun, terrain]) in
   Frame.create(
     Camera.firstPerson(
-      0.0, 5.0, -12.0,
+      Vec3.make(0.0, 5.0, -12.0),
       Angle.radians(0.0), Angle.radians(-0.05), Angle.degrees(70.0)),
     scene)
 "#

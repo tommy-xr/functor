@@ -64,7 +64,7 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
 let tick = (m, dt, tts) => m
 let draw = (m, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube()
       |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8))
       |> Scene.rotateY(Angle.radians(tts)))</pre>
@@ -106,7 +106,7 @@ let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
 
 let draw = (model, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere()
       |> Scene.emissive(Color.rgb(1.0, 0.3, 0.8))
       |> Scene.scale(1.0 + 0.2 * Math.sin(model.spin * 4.0)))</pre>
@@ -129,10 +129,10 @@ let tick = (model, dt, tts) => model
 
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(0.0, 2.0, -8.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube()
       |> Scene.emissive(Color.rgb(0.2, 0.9, 1.0))
-      |> Scene.translate(model.x, 0.0, 0.0))</pre>
+      |> Scene.translate(Vec3.make(model.x, 0.0, 0.0)))</pre>
           <p>
             And physics is declarative — describe the bodies each frame; the runtime reconciles
             and steps the world:
@@ -143,17 +143,17 @@ let tick = (m, dt, tts) => m
 let ballTag = Physics.tag("ball")
 
 let physics = (m) =>
-  Physics.scene(0.0, -9.81, 0.0, [
+  Physics.scene(Vec3.make(0.0, -9.81, 0.0), [
     Physics.fixed(Physics.tag("ground"), Physics.box(20.0, 0.4, 20.0))
-      |> Physics.at(0.0, -0.2, 0.0),
+      |> Physics.at(Vec3.make(0.0, -0.2, 0.0)),
     Physics.dynamic(ballTag, Physics.sphere(0.5))
-      |> Physics.at(0.3, 4.0, 0.0)
+      |> Physics.at(Vec3.make(0.3, 4.0, 0.0))
       |> Physics.restitution(0.8),
   ])
 
 let draw = (m, tts) =>
   Frame.createLit(
-    Camera.lookAt(0.0, 3.0, -8.0, 0.0, 1.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 3.0, -8.0), Vec3.make(0.0, 1.0, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(20.0) |> Scene.lit(Color.rgb(0.4, 0.45, 0.55)),
       Scene.sphere()
@@ -163,7 +163,7 @@ let draw = (m, tts) =>
     ]),
     [
       Light.ambient(Color.rgb(0.15, 0.15, 0.2)),
-      Light.directional(0.4, -1.0, 0.3, Color.rgb(1.0, 0.95, 0.9), 0.9) |> Light.castShadows,
+      Light.directional(Vec3.make(0.4, -1.0, 0.3), Color.rgb(1.0, 0.95, 0.9), 0.9) |> Light.castShadows,
     ])</pre>
         </section>
 
@@ -331,7 +331,7 @@ let span = (a, b) =>
               <tr><td><code>scene |> Scene.color(Color.rgb(r, g, b))</code></td><td>flat unlit color</td></tr>
               <tr><td><code>scene |> Scene.lit(Color.rgb(r, g, b))</code></td><td>diffuse + specular (needs lights)</td></tr>
               <tr><td><code>scene |> Scene.emissive(Color.rgb(r, g, b))</code></td><td>unlit glow</td></tr>
-              <tr><td><code>scene |> Scene.translate(x, y, z)</code></td><td rowspan="3">transforms wrap outward: the <em>outer</em> call applies last in world space — <code>s |> rotateY(r) |> translate(x, 0.0, 0.0)</code> rotates in place, then moves</td></tr>
+              <tr><td><code>scene |> Scene.translate(Vec3.make(x, y, z))</code></td><td rowspan="3">transforms wrap outward: the <em>outer</em> call applies last in world space — <code>s |> rotateY(r) |> translate(Vec3.make(x, 0.0, 0.0))</code> rotates in place, then moves</td></tr>
               <tr><td><code>scene |> Scene.rotateX/Y/Z(angle)</code></td></tr>
               <tr><td><code>scene |> Scene.scale(k)</code></td></tr>
             </tbody>
@@ -345,11 +345,11 @@ let span = (a, b) =>
           <h3>Camera, lights, frames</h3>
           <table>
             <tbody>
-              <tr><td><code>Camera.lookAt(ex, ey, ez, tx, ty, tz)</code></td><td>up = +Y, fov 45°</td></tr>
-              <tr><td><code>Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)</code></td><td>all three are Angles; yaw 0 / pitch 0 looks down +Z</td></tr>
+              <tr><td><code>Camera.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))</code></td><td>up = +Y, fov 45°</td></tr>
+              <tr><td><code>Camera.firstPerson(Vec3.make(ex, ey, ez), yaw, pitch, fov)</code></td><td>all three are Angles; yaw 0 / pitch 0 looks down +Z</td></tr>
               <tr><td><code>Light.ambient(Color.rgb(r, g, b))</code></td><td></td></tr>
-              <tr><td><code>Light.directional(dx, dy, dz, Color.rgb(r, g, b), intensity)</code></td><td><code>|> Light.castShadows</code> for a shadowed key light</td></tr>
-              <tr><td><code>Light.point(px, py, pz, Color.rgb(r, g, b), intensity, range)</code></td><td></td></tr>
+              <tr><td><code>Light.directional(Vec3.make(dx, dy, dz), Color.rgb(r, g, b), intensity)</code></td><td><code>|> Light.castShadows</code> for a shadowed key light</td></tr>
+              <tr><td><code>Light.point(Vec3.make(px, py, pz), Color.rgb(r, g, b), intensity, range)</code></td><td></td></tr>
               <tr><td><code>Frame.create(camera, scene)</code></td><td>what <code>draw</code> returns</td></tr>
               <tr><td><code>Frame.createLit(camera, scene, [light, …])</code></td><td>lit + shadowed</td></tr>
             </tbody>
@@ -385,8 +385,8 @@ let span = (a, b) =>
             <tbody>
               <tr><td><code>Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)</code></td><td>shapes; box takes <em>full</em> extents</td></tr>
               <tr><td><code>Physics.dynamic(tag, shape)</code></td><td>simulated; also <code>kinematic</code> / <code>fixed</code>; tags are <code>Physics.tag("name")</code> values</td></tr>
-              <tr><td><code>body |> Physics.at(x, y, z)</code></td><td>spawn pose; also <code>velocity</code>, <code>mass</code>, <code>friction</code>, <code>restitution</code>, <code>sensor</code></td></tr>
-              <tr><td><code>Physics.scene(gx, gy, gz, [body, …])</code></td><td>what the <code>physics</code> hook returns</td></tr>
+              <tr><td><code>body |> Physics.at(Vec3.make(x, y, z))</code></td><td>spawn pose; also <code>velocity</code>, <code>mass</code>, <code>friction</code>, <code>restitution</code>, <code>sensor</code></td></tr>
+              <tr><td><code>Physics.scene(Vec3.make(gx, gy, gz), [body, …])</code></td><td>what the <code>physics</code> hook returns</td></tr>
               <tr><td><code>Physics.position(tag)</code></td><td><code>{x, y, z}</code> of the live body</td></tr>
               <tr><td><code>scene |> Physics.transformed(tag)</code></td><td>draw a scene at the body's live pose</td></tr>
             </tbody>

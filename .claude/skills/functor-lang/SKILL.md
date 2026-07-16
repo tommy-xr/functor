@@ -190,7 +190,7 @@ let grab = (s) =>
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude namespace (Net, Key, Random, List, Text, Math, Debug, Scene,
-  Anim, Camera, Frame, Light, Fog, Color, Skybox, Angle, Texture, Time, Sub,
+  Anim, Camera, Frame, Light, Fog, Color, Vec3, Skybox, Angle, Texture, Time, Sub,
   Effect, Physics, RenderTarget, Ui, AudioSource, AudioScene) is a load
   error — rename the file.
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -387,6 +387,12 @@ Color.rgb(r, g, b)                                         // Color VALUES only 
                                                            //   Angle rule): every color
                                                            //   parameter below takes one —
                                                            //   never three bare floats
+Vec3.make(x, y, z)                                         // Vec3 VALUES only: every
+                                                           //   position/direction/velocity/
+                                                           //   gravity parameter below takes
+                                                           //   one. Reads (Physics.position,
+                                                           //   rayHit) still hand back plain
+                                                           //   {x, y, z} records
 scene |> Scene.color(color)                                // scene-last: pipes
 scene |> Scene.lit(color)                                  // diffuse+specular
 scene |> Scene.litNormalMapped(color, normalTex)           // + tangent-space
@@ -395,7 +401,7 @@ scene |> Scene.litNormalMapped(color, normalTex)           // + tangent-space
                                                            //   bumps catch the
                                                            //   lights/specular
 scene |> Scene.emissive(color)                             // unlit glow
-scene |> Scene.translate(x, y, z)
+scene |> Scene.translate(v)
 scene |> Scene.rotateX(angle) / rotateY / rotateZ          // Angle VALUES only:
 Angle.degrees(60.0) / Angle.radians(1.57)                  //   never bare numbers
 scene |> Scene.scale(k)                                    // uniform
@@ -456,11 +462,11 @@ anim |> Anim.rotate("jointName", ax, ay, az)               // additive local XYZ
                                                            //   fully driven (masks BENEATH
                                                            //   this node can't drop it; an
                                                            //   enclosing mask still can)
-Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
-Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)           // all three: Angles
-Light.ambient(color) / Light.point(px, py, pz, color, intensity, range)
-Light.directional(dx, dy, dz, color, intensity) |> Light.castShadows
-Light.spot(px, py, pz, dx, dy, dz, color, intensity, range, coneAngle)
+Camera.lookAt(eye, target)                                 // two Vec3s; up=+Y, fov 45°
+Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles for the rest
+Light.ambient(color) / Light.point(pos, color, intensity, range)
+Light.directional(dir, color, intensity) |> Light.castShadows
+Light.spot(pos, dir, color, intensity, range, coneAngle)
                                                            // cone from pos
                                                            //   along dir;
                                                            //   coneAngle is an
@@ -517,12 +523,12 @@ Effect.send(connId, text)                                  // send on an open co
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
 
 Effect.play(sound)                                         // one-shot: fire-and-forget,
-Effect.playAt(sound, x, y, z)                              //   non-spatial / positioned
+Effect.playAt(sound, pos)                                  //   non-spatial / positioned
 Effect.playThen(sound, msg)                                // one-shot; delivers msg (a VALUE,
                                                            //   not a tagger) through `update`
                                                            //   when the sound FINISHES
 AudioSource.ambient(key, sound)                            // soundScape voice: non-spatial bed
-AudioSource.at(key, sound, x, y, z)                        //   / positioned emitter (key =
+AudioSource.at(key, sound, pos)                            //   / positioned emitter (key =
                                                            //   cross-frame identity)
 source |> AudioSource.gain(g)                              // source-last: linear gain (1.0=full)
 AudioScene.create([source, …]) / AudioScene.empty()       // what `soundScape` returns
@@ -582,17 +588,17 @@ Physics.tag("name")                                        // BRANDED body ident
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
 Physics.dynamic(tag, shape)                                // simulated body
 Physics.kinematic(tag, shape) / Physics.fixed(tag, shape)
-body |> Physics.at(x, y, z)                                // body-last: pipes
-body |> Physics.velocity(vx, vy, vz)
+body |> Physics.at(v)                                      // body-last: pipes
+body |> Physics.velocity(v)
 body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
 body |> Physics.sensor                                     // overlap-only, no forces
-Physics.scene(gx, gy, gz, [body, …])                       // what `physics` returns
+Physics.scene(gravity, [body, …])                          // what `physics` returns
 Physics.position(tag)                                      // {x, y, z} of the LIVE body
 scene |> Physics.transformed(tag)                          // scene at the body's live pose
-Physics.applyImpulse(tag, x, y, z)                         // -> Effect (fire-and-forget)
-Physics.applyForce(tag, x, y, z)                           //   force lasts ONE stepped frame
-Physics.setVelocity(tag, x, y, z) / Physics.teleport(tag, x, y, z)
-Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)   // -> Effect (QUERY): tagger gets
+Physics.applyImpulse(tag, v)                               // -> Effect (fire-and-forget)
+Physics.applyForce(tag, v)                                 //   force lasts ONE stepped frame
+Physics.setVelocity(tag, v) / Physics.teleport(tag, v)
+Physics.raycast(origin, dir, maxDist, tagger)              // -> Effect (QUERY): tagger gets
                                                            //   {hit, x, y, z, nx, ny, nz,
                                                            //    distance, tag} — hit: false
                                                            //   (zeroed) for a miss
@@ -610,7 +616,7 @@ Re-declaring an *unchanged* body leaves the simulation alone; *changing*
 its declared position teleports it (the divergence rule, docs/physics.md).
 
 Physics **command effects** are returned beside the model like any effect
-— `(model, Physics.applyImpulse(ballTag, 0.0, 5.0, 0.0))` — but carry no
+— `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))` — but carry no
 tagger: nothing folds back through `update`; observe outcomes via the
 physics reads. Commands queue at perform time and apply at the next
 stepped frame's first substep, **after reconcile** — so declaring a body
@@ -675,7 +681,7 @@ let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
                                             // second element is an Effect value
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
                                             // OPTIONAL, but requires update
-let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …])  // OPTIONAL
+let physics = (model) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [body, …])  // OPTIONAL
 let ui = (model) => Ui.column([…]) |> Ui.panel(Ui.topLeft())  // OPTIONAL; the 2D HUD,
                                             // drawn over the frame. Ui.button clicks
                                             // arrive as msgs through `update`
@@ -753,7 +759,7 @@ loud `[functor-lang] reload:` warning). First-class variant constructors
 stored in the model likewise adopt the edited declaration's arity.
 
 Transforms wrap in Group nodes: the **outer call applies last in world
-space** — `s |> Scene.rotateY(r) |> Scene.translate(x, 0.0, 0.0)` rotates in
+space** — `s |> Scene.rotateY(r) |> Scene.translate(Vec3.make(x, 0.0, 0.0))` rotates in
 place, then moves (the order the source reads). Engine values (`<Scene>`,
 `<Camera>`, `<Frame>`) are opaque: they can be passed around but not
 inspected, compared, or serialized.

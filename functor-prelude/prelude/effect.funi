@@ -19,6 +19,6 @@ let httpGet : (string, (Net.HttpResponse) => 'msg) => t
 let httpPost : (string, string, (Net.HttpResponse) => 'msg) => t
 // Fire-and-forget audio one-shots. `play` is non-spatial; `playAt` positioned.
 let play : (string) => t
-let playAt : (string, float, float, float) => t
+let playAt : (string, Vec3.t) => t
 // Play once and deliver `'msg` (a message VALUE, not a tagger) when it finishes.
 let playThen : (string, 'msg) => t

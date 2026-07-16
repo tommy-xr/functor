@@ -37,14 +37,14 @@ let subscriptions = (m) => Sub.batch([
   Sub.every(Time.millis(1000.0), Echo),
 ])
 let draw = (m, tts) =>
-  Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+  Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
 
 // The same game with no subscriptions/update — the reload starting point.
 const unsubscribed = `let init = { beats: 0.0, echoes: 0.0 }
 let tick = (m, dt, tts) => m
 let draw = (m, tts) =>
-  Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+  Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
 
 /** A named Float field of the runner's `/state` model (Functor Lang Value display). */

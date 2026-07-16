@@ -42,7 +42,7 @@ let screen : (RenderTarget.t, t) => t
 let animate : (Anim.t, t) => t
 
 // Transforms.
-let translate : (float, float, float, t) => t
+let translate : (Vec3.t, t) => t
 let scale : (float, t) => t
 let scaleXYZ : (float, float, float, t) => t
 let rotateX : (Angle.t, t) => t

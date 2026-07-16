@@ -24,9 +24,9 @@ let dot = (t, ix, iz) =>
     |> Scene.rotateY(Angle.radians(t * 0.7 + ix + iz))
     |> Scene.scale(0.21 + 0.07 * Math.sin(t * 3.0 + ix * 0.9 + iz * 0.6))
     |> Scene.translate(
-         (ix - (gridCols - 1.0) / 2.0) * spacing,
+         Vec3.make((ix - (gridCols - 1.0) / 2.0) * spacing,
          waveY(t, ix, iz),
-         iz * spacing)
+         iz * spacing))
 // </editable>
 
 let row = (t, iz) =>
@@ -40,7 +40,7 @@ let sun = (t) =>
   Scene.sphere()
     |> Scene.emissive(Color.rgb(1.0, 0.36 + 0.08 * Math.sin(t * 1.7), 0.5))
     |> Scene.scale(6.5)
-    |> Scene.translate(0.0, 3.2, 40.0)
+    |> Scene.translate(Vec3.make(0.0, 3.2, 40.0))
 
 // A flat backdrop quad well behind the sun: it fills the frame with the
 // night-sky violet (the renderer has no clear-color hook). A quad's front is
@@ -50,13 +50,13 @@ let sky = () =>
     |> Scene.emissive(Color.rgb(0.06, 0.015, 0.14))
     |> Scene.rotateY(Angle.degrees(180.0))
     |> Scene.scale(130.0)
-    |> Scene.translate(0.0, 0.0, 55.0)
+    |> Scene.translate(Vec3.make(0.0, 0.0, 55.0))
 
 let ground = () =>
   Scene.plane()
     |> Scene.color(Color.rgb(0.045, 0.01, 0.1))
     |> Scene.scale(90.0)
-    |> Scene.translate(0.0, -0.9, 20.0)
+    |> Scene.translate(Vec3.make(0.0, -0.9, 20.0))
 
 let init = { t: 0.0 }
 
@@ -64,5 +64,5 @@ let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(0.0, 3.4, -13.0, 0.0, 1.8, 12.0),
+    Camera.lookAt(Vec3.make(0.0, 3.4, -13.0), Vec3.make(0.0, 1.8, 12.0)),
     Scene.group([sky(), ground(), sun(model.t), grid(model.t)]))

@@ -37,7 +37,7 @@ const GREEN = `let init = { t: 0.0 }
 let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
 let draw = (model, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)) |> Scene.scale(2.0))
 `;
 const BROKEN = "let init = {\n";
@@ -49,7 +49,7 @@ const INLINE_SPIN = `let init = { spin: 0.0 }
 let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt }
 let draw = (model, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8)))
 `;
 
@@ -61,7 +61,7 @@ let init = { t: 0.0, behavior: offset(1.0) }
 let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
 let draw = (model, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.radians(model.t)) |> Scene.emissive(Color.rgb(0.2, 0.8, 1.0)))
 `;
 
@@ -76,7 +76,7 @@ let init = 0.0
 let tick = (model, dt: Float, tts: Float) => model + dt
 let draw = (model, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2))
       |> Scene.rotateY(Angle.radians(model)) |> Scene.scale(speed))
 `;
@@ -934,7 +934,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     const clean = JSON.parse(
       mod.functor_lang_analyze(
         "let draw = (model, tts: Float) =>\n" +
-          "  Frame.create(Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n"
+          "  Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n"
       )
     );
     return { bad, clean };

@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn valid_program_with_prelude_is_clean() {
         let src = "let draw = (model, tts: Float) =>\n  \
-            Frame.create(Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())\n";
+            Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
         let out = parse(&analyze_json(src));
         assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0, "{out}");
         // Inlays/lenses come only from the user file — never from the injected
@@ -667,7 +667,7 @@ mod tests {
     // Single-file analyze errors on the unknown `Palette`; the project variant
     // resolves it — the reason the `_project` API exists.
     const GAME: &str = "let draw = (model, tts: Float) =>\n  \
-        Frame.create(Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0), \
+        Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), \
         Scene.sphere() |> Scene.emissive(Color.rgb(0.15, 1.0, Palette.glow)))\n";
     const PALETTE: &str = "let glow = 0.85\nlet sky = 0.18\n";
 

@@ -39,7 +39,7 @@ let crateTag = (i) => Physics.tag(Text.concat("crate-", Text.fromFloat(i)))
 
 let crateBody = (drop, i) =>
   Physics.dynamic(crateTag(i), Physics.box(1.0, 1.0, 1.0))
-    |> Physics.at(scatterX(drop, i), 3.0 + i * 1.3, scatterZ(drop, i))
+    |> Physics.at(Vec3.make(scatterX(drop, i), 3.0 + i * 1.3, scatterZ(drop, i)))
     |> Physics.friction(0.6)
     |> Physics.restitution(0.2)
 
@@ -50,17 +50,17 @@ let crateBody = (drop, i) =>
 // resting bodies.
 let bodyAt = (drop, i) =>
   match i with
-  | 0.0 => Physics.fixed(groundTag, Physics.box(24.0, 0.4, 24.0)) |> Physics.at(0.0, -0.2, 0.0)
+  | 0.0 => Physics.fixed(groundTag, Physics.box(24.0, 0.4, 24.0)) |> Physics.at(Vec3.make(0.0, -0.2, 0.0))
   | 1.0 =>
     // Nearly-vertical drop beside the crates (the small drop-dependent wobble
     // keeps SPACE's re-drop teleport firing), so the ball settles in frame.
     (Physics.dynamic(ballTag, Physics.sphere(0.6))
-      |> Physics.at(3.2 + scatterX(drop, 9.0) * 0.2, 5.5, 0.5 + scatterZ(drop, 9.0) * 0.2)
+      |> Physics.at(Vec3.make(3.2 + scatterX(drop, 9.0) * 0.2, 5.5, 0.5 + scatterZ(drop, 9.0) * 0.2))
       |> Physics.restitution(0.55))
   | n => crateBody(drop, n - 2.0)
 
 let physics = (model) =>
-  Physics.scene(0.0, -9.81, 0.0,
+  Physics.scene(Vec3.make(0.0, -9.81, 0.0),
     List.range(crateCount + 2.0) |> List.map((i) => bodyAt(model.drop, i)))
 
 // Tints stay in 0..1 for any crateCount thanks to clamp01; the ball's
@@ -99,7 +99,7 @@ let input = (model, key, isDown) =>
   | Key.K =>
     (match isDown with
      | true => model
-     | false => (model, Physics.applyImpulse(ballTag, -2.6, 5.0, -0.4)))
+     | false => (model, Physics.applyImpulse(ballTag, Vec3.make(-2.6, 5.0, -0.4))))
   | Key.R =>
     (match isDown with
      | true => model
@@ -108,8 +108,8 @@ let input = (model, key, isDown) =>
        // arguments are ordinary expressions of the model. The tagger is the
        // GotHit constructor: the result record arrives wrapped in Msg.
        (model,
-        Physics.raycast(scatterX(model.drop, 0.0), 8.0, scatterZ(model.drop, 0.0),
-                        0.0, -1.0, 0.0, 20.0, GotHit)))
+        Physics.raycast(Vec3.make(scatterX(model.drop, 0.0), 8.0, scatterZ(model.drop, 0.0)),
+                        Vec3.make(0.0, -1.0, 0.0), 20.0, GotHit)))
   | _ => model
 
 // Contact events name both tags in rapier's pair order — find the ball's
@@ -136,7 +136,7 @@ let update = (model, msg) =>
      | true =>
        (match hit.tag == groundTag with
         | true => model
-        | false => (model, Physics.applyImpulse(hit.tag, 0.0, 6.0, 0.0))))
+        | false => (model, Physics.applyImpulse(hit.tag, Vec3.make(0.0, 6.0, 0.0)))))
   | Contact(e) =>
     (match e.started with
      | false => model
@@ -152,7 +152,7 @@ let update = (model, msg) =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(10.5, 7.5, -10.5, 0.0, 0.8, 0.0),
+    Camera.lookAt(Vec3.make(10.5, 7.5, -10.5), Vec3.make(0.0, 0.8, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.55, 0.58, 0.62)),
       Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(Color.rgb(0.95, 0.35, 0.25)) |> Physics.transformed(ballTag),
@@ -160,5 +160,5 @@ let draw = (model, tts) =>
     ]),
     [
       Light.ambient(Color.rgb(0.12, 0.12, 0.15)),
-      Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.98, 0.95), 0.9) |> Light.castShadows,
+      Light.directional(Vec3.make(0.5, -1.0, 0.35), Color.rgb(1.0, 0.98, 0.95), 0.9) |> Light.castShadows,
     ])

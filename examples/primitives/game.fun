@@ -19,9 +19,9 @@ let pointPos = (i: float, tts: float) =>
 // Near-white lit surfaces so the colored point lights tint them.
 let whiteShapes = () =>
   Scene.group([
-    Scene.sphere() |> Scene.scale(0.8) |> Scene.translate(-2.2, 0.8, 0.0),
-    Scene.cube() |> Scene.translate(2.2, 0.5, 0.0),
-    Scene.cylinder() |> Scene.translate(0.0, 0.5, 2.2),
+    Scene.sphere() |> Scene.scale(0.8) |> Scene.translate(Vec3.make(-2.2, 0.8, 0.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(2.2, 0.5, 0.0)),
+    Scene.cylinder() |> Scene.translate(Vec3.make(0.0, 0.5, 2.2)),
   ]) |> Scene.lit(Color.rgb(0.9, 0.9, 0.9))
 
 // An emissive marker sphere at a point light's position.
@@ -30,11 +30,11 @@ let marker = (i: float, tts: float, r: float, g: float, b: float) =>
   Scene.sphere()
     |> Scene.scale(0.15)
     |> Scene.emissive(Color.rgb(r, g, b))
-    |> Scene.translate(p.x, p.y, p.z)
+    |> Scene.translate(Vec3.make(p.x, p.y, p.z))
 
 let pointLight = (i: float, tts: float, r: float, g: float, b: float) =>
   let p = pointPos(i, tts) in
-  Light.point(p.x, p.y, p.z, Color.rgb(r, g, b), 1.4, 4.0)
+  Light.point(Vec3.make(p.x, p.y, p.z), Color.rgb(r, g, b), 1.4, 4.0)
 
 let init = {}
 
@@ -43,7 +43,7 @@ let tick = (m, dt, tts) => m
 let draw = (m, tts: float) =>
   Frame.createLit(
     Camera.firstPerson(
-      0.0, 3.5, -8.0,
+      Vec3.make(0.0, 3.5, -8.0),
       Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.6, 0.6, 0.62)),
@@ -53,7 +53,7 @@ let draw = (m, tts: float) =>
     ]),
     [
       Light.ambient(Color.rgb(0.1, 0.1, 0.13)),
-      Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
+      Light.directional(Vec3.make(0.5, -1.0, 0.35), Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
       pointLight(0.0, tts, 1.0, 0.3, 0.25),
       pointLight(1.0, tts, 0.35, 0.5, 1.0),
     ])

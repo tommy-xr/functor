@@ -1,0 +1,13 @@
+// vec3.funi — the `Vec3` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+
+// The opaque 3-vector handle (`Vec3.t` from game code): a position, direction,
+// velocity, or gravity. The Angle rule applied to space — every spatial
+// parameter takes a Vec3 VALUE, never three bare floats, so arity slips and
+// float interleaving mistakes (a color channel absorbed into a position)
+// are unrepresentable. Reads that hand
+// vectors BACK to the game (`Physics.position`, `rayHit`) stay plain
+// `{x, y, z}` records, so components remain accessible for game math.
+type t
+
+let make : (float, float, float) => t

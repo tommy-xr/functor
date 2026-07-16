@@ -23,7 +23,7 @@
 //!    |> List.map((c) => f(r, c))) — F#'s `heightmapFn`, in user space)
 //! Scene.group([scene, …])                                   -> Scene
 //! Scene.color(color, scene)                                 -> Scene
-//! Scene.translate(x, y, z, scene)                           -> Scene
+//! Scene.translate(Vec3.make(x, y, z), scene)                           -> Scene
 //! Scene.rotateX/rotateY/rotateZ(angle, scene)               -> Scene
 //! Angle.degrees(n) / Angle.radians(n)                       -> Angle
 //!   (rotations and camera angles take Angle VALUES, never bare numbers —
@@ -37,7 +37,7 @@
 //!   (a diffuse-lit textured surface — F#'s `Material.litTexture`)
 //! Scene.emissiveTexture(texture, scene)                     -> Scene
 //!   (a self-lit textured surface, fullbright — F#'s `Material.emissiveTexture`)
-//! Camera.lookAt(ex, ey, ez, tx, ty, tz)                     -> Camera
+//! Camera.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
 //! RenderTarget.named(id)                                    -> RenderTarget
@@ -94,13 +94,13 @@
 //!
 //! Physics.box(w, h, d) / sphere(r) / capsule(hh, r)         -> Shape
 //! Physics.dynamic/kinematic/fixed(tag, shape)               -> Body
-//! Physics.at/velocity(x, y, z, body)                        -> Body
+//! Physics.at/velocity(v, body)                        -> Body
 //! Physics.mass/friction/restitution(n, body)                -> Body
 //! Physics.sensor(body)                                      -> Body
-//! Physics.scene(gx, gy, gz, [body, …])                      -> PhysicsScene
+//! Physics.scene(Vec3.make(gx, gy, gz), [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
 //! Physics.transformed(tag, scene)                           -> Scene
-//! Physics.applyImpulse/applyForce/setVelocity/teleport(tag, x, y, z)
+//! Physics.applyImpulse/applyForce/setVelocity/teleport(tag, v)
 //!                                                           -> Effect
 //! ```
 //!
@@ -112,7 +112,7 @@
 //!
 //! Scene-consuming functions take the scene LAST, so they compose with
 //! `|>` (the piped value is appended — thread-last; see `functor_lang`'s lowering docs):
-//! `Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.translate(2.0, 0.0, 0.0)`.
+//! `Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.translate(Vec3.make(2.0, 0.0, 0.0))`.
 //!
 //! # Transform semantics (deliberate — see the Milestone-0 quirks)
 //!
@@ -127,7 +127,7 @@
 //! - `Scene3D::transform` right-multiplies (`self.xform * xform`), making
 //!   `translate(rotateY(x))` apply the translation *first*. Wrapping makes
 //!   each transform a parent node instead, so the outer call is applied last
-//!   in world space: `s |> Scene.rotateY(r) |> Scene.translate(x, 0, 0)` rotates in
+//!   in world space: `s |> Scene.rotateY(r) |> Scene.translate(Vec3.make(x, 0, 0))` rotates in
 //!   place, *then* moves — the order the source reads.
 
 use cgmath::Matrix4;
@@ -591,6 +591,12 @@ pub struct FunctorLangAngle(pub Angle);
 /// Angle rule, applied to color).
 pub struct FunctorLangColor(pub (f32, f32, f32));
 
+/// A 3-component vector as an opaque Functor Lang value — made by
+/// `Vec3.make(x, y, z)`. Position/direction parameters accept ONLY this,
+/// never three bare floats, so arity slips and float-interleaving mistakes
+/// are unrepresentable (the Angle rule, applied to space).
+pub struct FunctorLangVec3(pub (f32, f32, f32));
+
 /// A [`RenderTargetDescriptor`] as an opaque Functor Lang value — declared once via
 /// `RenderTarget.named` and used at both sites: the writer
 /// (`Frame.withRenderTarget`) and the reader (`Scene.screen`). Both accept
@@ -713,6 +719,20 @@ impl HostData for FunctorLangColor {
     // stored in the model must not invalidate hot-reload time-travel
     // history (colors were plain floats before the brand; this preserves
     // that reload behavior and keeps "name a palette once" model-friendly).
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
+impl HostData for FunctorLangVec3 {
+    fn type_name(&self) -> &'static str {
+        "Vec3"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    // Same plain-f32 reasoning as Color: a spawn point or velocity stored
+    // in the model must not invalidate hot-reload time-travel history.
     fn is_reload_safe_snapshot(&self) -> bool {
         true
     }
@@ -906,6 +926,7 @@ const PATHS: &[&str] = &[
     "Angle.degrees",
     "Angle.radians",
     "Color.rgb",
+    "Vec3.make",
     "Camera.lookAt",
     "Camera.firstPerson",
     "Light.ambient",
@@ -1344,15 +1365,22 @@ the game dir",
                 _ => usage("Scene.color(color, scene)"),
             },
             "Scene.translate" => match args.as_slice() {
-                [x, y, z, scene] => {
-                    let xform = Matrix4::from_translation(cgmath::vec3(
-                        num(x, span)? as f32,
-                        num(y, span)? as f32,
-                        num(z, span)? as f32,
-                    ));
-                    wrap_transform(scene, xform, "Scene.translate(x, y, z, scene)", span)
+                [v, scene] => {
+                    let (x, y, z) = vec3_of(v, path, span)?;
+                    let xform = Matrix4::from_translation(cgmath::vec3(x, y, z));
+                    wrap_transform(scene, xform, "Scene.translate(v, scene)", span)
                 }
-                _ => usage("Scene.translate(x, y, z, scene)"),
+                _ => usage("Scene.translate(v, scene)"),
+            },
+            // An opaque 3-vector. Every position/direction parameter
+            // requires one — never three bare floats.
+            "Vec3.make" => match args.as_slice() {
+                [x, y, z] => Ok(host(FunctorLangVec3((
+                    num(x, span)? as f32,
+                    num(y, span)? as f32,
+                    num(z, span)? as f32,
+                )))),
+                _ => usage("Vec3.make(x, y, z)"),
             },
             // An opaque RGB color (channels normally 0..1; emissive/HDR uses
             // may exceed 1). Every color-taking parameter requires one.
@@ -1406,35 +1434,30 @@ the game dir",
                 _ => usage("Scene.scaleXYZ(x, y, z, scene)"),
             },
             "Camera.lookAt" => match args.as_slice() {
-                [ex, ey, ez, tx, ty, tz] => Ok(host(FunctorLangCamera(Camera::look_at(
-                    [
-                        num(ex, span)? as f32,
-                        num(ey, span)? as f32,
-                        num(ez, span)? as f32,
-                    ],
-                    [
-                        num(tx, span)? as f32,
-                        num(ty, span)? as f32,
-                        num(tz, span)? as f32,
-                    ],
-                    [0.0, 1.0, 0.0],
-                    Angle::from_degrees(45.0),
-                )))),
-                _ => usage("Camera.lookAt(ex, ey, ez, tx, ty, tz)"),
+                [eye, target] => {
+                    let (ex, ey, ez) = vec3_of(eye, "Camera.lookAt eye", span)?;
+                    let (tx, ty, tz) = vec3_of(target, "Camera.lookAt target", span)?;
+                    Ok(host(FunctorLangCamera(Camera::look_at(
+                        [ex, ey, ez],
+                        [tx, ty, tz],
+                        [0.0, 1.0, 0.0],
+                        Angle::from_degrees(45.0),
+                    ))))
+                }
+                _ => usage("Camera.lookAt(eye, target) — Vec3 values (Vec3.make)"),
             },
             "Camera.firstPerson" => match args.as_slice() {
-                [ex, ey, ez, yaw, pitch, fov] => Ok(host(FunctorLangCamera(Camera::first_person(
-                    [
-                        num(ex, span)? as f32,
-                        num(ey, span)? as f32,
-                        num(ez, span)? as f32,
-                    ],
-                    angle_of(yaw, "Camera.firstPerson yaw", span)?,
-                    angle_of(pitch, "Camera.firstPerson pitch", span)?,
-                    angle_of(fov, "Camera.firstPerson fov", span)?,
-                )))),
+                [eye, yaw, pitch, fov] => {
+                    let (ex, ey, ez) = vec3_of(eye, "Camera.firstPerson eye", span)?;
+                    Ok(host(FunctorLangCamera(Camera::first_person(
+                        [ex, ey, ez],
+                        angle_of(yaw, "Camera.firstPerson yaw", span)?,
+                        angle_of(pitch, "Camera.firstPerson pitch", span)?,
+                        angle_of(fov, "Camera.firstPerson fov", span)?,
+                    ))))
+                }
                 _ => usage(
-                    "Camera.firstPerson(ex, ey, ez, yaw, pitch, fov) — Angle values \
+                    "Camera.firstPerson(eye, yaw, pitch, fov) — a Vec3 eye and Angle values \
 (Angle.degrees/Angle.radians)",
                 ),
             },
@@ -1446,27 +1469,29 @@ the game dir",
                 _ => usage("Light.ambient(color)"),
             },
             "Light.directional" => match args.as_slice() {
-                [dx, dy, dz, color, intensity] => {
+                [dir, color, intensity] => {
+                    let (dx, dy, dz) = vec3_of(dir, path, span)?;
                     let (r, g, b) = color_of(color, path, span)?;
                     Ok(host(FunctorLangLight(Light::directional(
-                        num(dx, span)? as f32,
-                        num(dy, span)? as f32,
-                        num(dz, span)? as f32,
+                        dx,
+                        dy,
+                        dz,
                         r,
                         g,
                         b,
                         num(intensity, span)? as f32,
                     ))))
                 }
-                _ => usage("Light.directional(dx, dy, dz, color, intensity)"),
+                _ => usage("Light.directional(dir, color, intensity)"),
             },
             "Light.point" => match args.as_slice() {
-                [px, py, pz, color, intensity, range] => {
+                [pos, color, intensity, range] => {
+                    let (px, py, pz) = vec3_of(pos, path, span)?;
                     let (r, g, b) = color_of(color, path, span)?;
                     Ok(host(FunctorLangLight(Light::point(
-                        num(px, span)? as f32,
-                        num(py, span)? as f32,
-                        num(pz, span)? as f32,
+                        px,
+                        py,
+                        pz,
                         r,
                         g,
                         b,
@@ -1474,22 +1499,24 @@ the game dir",
                         num(range, span)? as f32,
                     ))))
                 }
-                _ => usage("Light.point(px, py, pz, color, intensity, range)"),
+                _ => usage("Light.point(pos, color, intensity, range)"),
             },
             // A cone of light from (px,py,pz) aimed along (dx,dy,dz), soft-edged
             // at `coneAngle` (an Angle from the axis) with falloff to `range`.
             // Shadow-casting when piped through `Light.castShadows`.
             "Light.spot" => match args.as_slice() {
-                [px, py, pz, dx, dy, dz, color, intensity, range, cone] => {
+                [pos, dir, color, intensity, range, cone] => {
                     let cone: cgmath::Rad<f32> = angle_of(cone, path, span)?.into();
+                    let (px, py, pz) = vec3_of(pos, "Light.spot position", span)?;
+                    let (dx, dy, dz) = vec3_of(dir, "Light.spot direction", span)?;
                     let (r, g, b) = color_of(color, path, span)?;
                     Ok(host(FunctorLangLight(Light::spot(
-                        num(px, span)? as f32,
-                        num(py, span)? as f32,
-                        num(pz, span)? as f32,
-                        num(dx, span)? as f32,
-                        num(dy, span)? as f32,
-                        num(dz, span)? as f32,
+                        px,
+                        py,
+                        pz,
+                        dx,
+                        dy,
+                        dz,
                         r,
                         g,
                         b,
@@ -1498,9 +1525,7 @@ the game dir",
                         cone.0,
                     ))))
                 }
-                _ => usage(
-                    "Light.spot(px, py, pz, dx, dy, dz, color, intensity, range, coneAngle)",
-                ),
+                _ => usage("Light.spot(pos, dir, color, intensity, range, coneAngle)"),
             },
             // Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
             "Light.castShadows" => match args.as_slice() {
@@ -1597,24 +1622,21 @@ the game dir",
                 _ => usage(&format!("{path}(tag, shape)")),
             },
             // Body LAST (subject-last), so they pipe:
-            // `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
+            // `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0))`.
             "Physics.at" | "Physics.velocity" => match args.as_slice() {
-                [x, y, z, body] => match body_of(body) {
+                [vec, body] => match body_of(body) {
                     Some(inner) => {
-                        let v = [
-                            num(x, span)? as f32,
-                            num(y, span)? as f32,
-                            num(z, span)? as f32,
-                        ];
+                        let (x, y, z) = vec3_of(vec, path, span)?;
+                        let v = [x, y, z];
                         Ok(host(FunctorLangBody(if path == "Physics.at" {
                             inner.clone().at(v)
                         } else {
                             inner.clone().with_velocity(v)
                         })))
                     }
-                    None => usage(&format!("{path}(x, y, z, body)")),
+                    None => usage(&format!("{path}(v, body)")),
                 },
-                _ => usage(&format!("{path}(x, y, z, body)")),
+                _ => usage(&format!("{path}(v, body)")),
             },
             "Physics.mass" | "Physics.friction" | "Physics.restitution" => match args.as_slice() {
                 [n, body] => match body_of(body) {
@@ -1641,12 +1663,9 @@ the game dir",
                 _ => usage("Physics.sensor(body)"),
             },
             "Physics.scene" => match args.as_slice() {
-                [gx, gy, gz, Value::List(items)] => {
-                    let gravity = [
-                        num(gx, span)? as f32,
-                        num(gy, span)? as f32,
-                        num(gz, span)? as f32,
-                    ];
+                [g, Value::List(items)] => {
+                    let (gx, gy, gz) = vec3_of(g, "Physics.scene gravity", span)?;
+                    let gravity = [gx, gy, gz];
                     let mut bodies = Vec::with_capacity(items.len());
                     for item in items.iter() {
                         match body_of(item) {
@@ -1663,7 +1682,7 @@ the game dir",
                         gravity, bodies,
                     ))))
                 }
-                _ => usage("Physics.scene(gx, gy, gz, [body, …])"),
+                _ => usage("Physics.scene(Vec3.make(gx, gy, gz), [body, …])"),
             },
             // Reads of the LIVE stepped world (the singleton, world 0). Functor Lang
             // runs in the same process as the world the shell steps, so these
@@ -1688,19 +1707,16 @@ the game dir",
             // places the visual at the body's live pose (position + rotation).
             // Command EFFECTS (docs/physics.md Phase 3): fire-and-forget,
             // returned beside the model like any effect —
-            // `(model, Physics.applyImpulse(ballTag, 0.0, 5.0, 0.0))`.
+            // `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))`.
             // Performing one queues it on the singleton world; it applies at
             // the next stepped frame's first substep, AFTER reconcile — so a
             // body declared and commanded in the same frame works.
             "Physics.applyImpulse" | "Physics.applyForce" | "Physics.setVelocity"
             | "Physics.teleport" => match args.as_slice() {
-                [Value::String(tag), x, y, z] => {
+                [Value::String(tag), vec] => {
                     let tag = tag.to_string();
-                    let v = [
-                        num(x, span)? as f32,
-                        num(y, span)? as f32,
-                        num(z, span)? as f32,
-                    ];
+                    let (x, y, z) = vec3_of(vec, path, span)?;
+                    let v = [x, y, z];
                     let command = match path {
                         "Physics.applyImpulse" => {
                             physics::PhysicsCommand::ApplyImpulse { tag, impulse: v }
@@ -1715,25 +1731,18 @@ the game dir",
                     };
                     Ok(host(FunctorLangEffect(EffectTree::Physics(command))))
                 }
-                _ => usage(&format!("{path}(tag, x, y, z)")),
+                _ => usage(&format!("{path}(tag, v)")),
             },
             // Query EFFECT (docs/physics.md Phase 4): deferred until after
             // the frame's physics step, then the tagger receives the result
             // record `{hit, x, y, z, nx, ny, nz, distance, tag}` (hit: false
             // with zeroed fields for a miss) — fresh, same-frame.
             "Physics.raycast" => match args.as_slice() {
-                [ox, oy, oz, dx, dy, dz, max_dist, tagger @ (Value::Closure(_) | Value::Ctor { .. })] =>
-                {
-                    let origin = [
-                        num(ox, span)? as f32,
-                        num(oy, span)? as f32,
-                        num(oz, span)? as f32,
-                    ];
-                    let dir = [
-                        num(dx, span)? as f32,
-                        num(dy, span)? as f32,
-                        num(dz, span)? as f32,
-                    ];
+                [o, d, max_dist, tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
+                    let (ox, oy, oz) = vec3_of(o, "Physics.raycast origin", span)?;
+                    let (dx, dy, dz) = vec3_of(d, "Physics.raycast direction", span)?;
+                    let origin = [ox, oy, oz];
+                    let dir = [dx, dy, dz];
                     if dir == [0.0, 0.0, 0.0] {
                         return err("Physics.raycast: the direction must not be zero".to_string());
                     }
@@ -1746,12 +1755,12 @@ the game dir",
                         tagger: tagger.clone(),
                     })))
                 }
-                [_, _, _, _, _, _, _, other] => err(format!(
-                    "Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger): the tagger \
+                [_, _, _, other] => err(format!(
+                    "Physics.raycast(origin, dir, maxDist, tagger): the tagger \
                      must be a function of the result record, got {}",
                     other.kind_name()
                 )),
-                _ => usage("Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)"),
+                _ => usage("Physics.raycast(origin, dir, maxDist, tagger)"),
             },
             // Collision-event SUB (docs/physics.md Phase 5): what
             // `subscriptions` returns (alone or in Sub.batch). The tagger
@@ -1852,15 +1861,14 @@ the Net.HttpResponse, got {}",
                 _ => usage("Effect.play(sound)"),
             },
             "Effect.playAt" => match args.as_slice() {
-                [Value::String(sound), x, y, z] => Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
-                    sound: sound.to_string(),
-                    position: Some([
-                        num(x, span)? as f32,
-                        num(y, span)? as f32,
-                        num(z, span)? as f32,
-                    ]),
-                }))),
-                _ => usage("Effect.playAt(sound, x, y, z)"),
+                [Value::String(sound), v] => {
+                    let (x, y, z) = vec3_of(v, path, span)?;
+                    Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
+                        sound: sound.to_string(),
+                        position: Some([x, y, z]),
+                    })))
+                }
+                _ => usage("Effect.playAt(sound, v)"),
             },
             // Play once and deliver `msg` (a message VALUE, not a tagger) when
             // the sound finishes — see EffectTree::PlayAudioThen. Any value is a
@@ -1882,16 +1890,17 @@ the Net.HttpResponse, got {}",
                 _ => usage("AudioSource.ambient(key, sound)"),
             },
             "AudioSource.at" => match args.as_slice() {
-                [Value::String(key), Value::String(sound), x, y, z] => {
+                [Value::String(key), Value::String(sound), v] => {
+                    let (x, y, z) = vec3_of(v, path, span)?;
                     Ok(host(FunctorLangAudioSource(crate::audio::AudioSource::at(
                         key.to_string(),
                         sound.to_string(),
-                        num(x, span)? as f32,
-                        num(y, span)? as f32,
-                        num(z, span)? as f32,
+                        x,
+                        y,
+                        z,
                     ))))
                 }
-                _ => usage("AudioSource.at(key, sound, x, y, z)"),
+                _ => usage("AudioSource.at(key, sound, v)"),
             },
             // Source LAST (subject-last) so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
             "AudioSource.gain" => match args.as_slice() {
@@ -2413,6 +2422,33 @@ Color.rgb(r, g, b)"
         }),
         other => Err(RunError {
             message: format!("{what}: expected a Color, got {}", other.kind_name()),
+            span,
+        }),
+    }
+}
+
+/// Extract a 3-vector — position/direction parameters accept ONLY Vec3
+/// values, so bare numbers get a teaching error instead of a silent axis
+/// guess (the [`angle_of`] rule, applied to space).
+fn vec3_of(value: &Value, what: &str, span: Span) -> Result<(f32, f32, f32), RunError> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<FunctorLangVec3>()
+            .map(|v| v.0)
+            .ok_or_else(|| RunError {
+                message: format!("{what}: expected a Vec3, got {}", value.kind_name()),
+                span,
+            }),
+        Value::Number(_) => Err(RunError {
+            message: format!(
+                "{what}: expected a Vec3, got a bare number — wrap the components: \
+Vec3.make(x, y, z)"
+            ),
+            span,
+        }),
+        other => Err(RunError {
+            message: format!("{what}: expected a Vec3, got {}", other.kind_name()),
             span,
         }),
     }
@@ -3549,7 +3585,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     fn functor_lang_snippet_emits_protocol_frame() {
         let frame = frame_of(
             "let main = () =>\n\
-             Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())",
+             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
         );
         let json = serde_json::to_string(&frame).expect("serialize");
         // Camera: eye/target as given, up +Y, 45° fov, protocol defaults.
@@ -3571,8 +3607,8 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
-               Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.translate(2.0, 0.0, 0.0))",
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.translate(Vec3.make(2.0, 0.0, 0.0)))",
         );
         // Outermost node: a Group carrying the translation…
         let SceneObject::Group(children) = &frame.scene.obj else {
@@ -3594,8 +3630,8 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
-               Scene.cube() |> Scene.rotateY(Angle.degrees(90.0)) |> Scene.translate(3.0, 0.0, 0.0))",
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.cube() |> Scene.rotateY(Angle.degrees(90.0)) |> Scene.translate(Vec3.make(3.0, 0.0, 0.0)))",
         );
         // World composition for nested Groups is parent-first:
         // world = T * R, so a cube corner rotates about the cube's own origin
@@ -3619,7 +3655,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.cube() |> Scene.scaleXYZ(2.0, 3.0, 4.0))",
         );
         // The wrapper Group carries a non-uniform scale on its diagonal — the
@@ -3632,10 +3668,10 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     #[test]
     fn mapped_group_builds_n_children() {
         let frame = frame_of(
-            "let cubeAt = (i) => Scene.cube() |> Scene.color(Color.rgb(1.0, 0.5, 0.2)) |> Scene.translate(i, 0.0, 0.0)\n\
+            "let cubeAt = (i) => Scene.cube() |> Scene.color(Color.rgb(1.0, 0.5, 0.2)) |> Scene.translate(Vec3.make(i, 0.0, 0.0))\n\
              let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.group([0.0, 1.0, 2.0] |> List.map(cubeAt)))",
         );
         let SceneObject::Group(children) = &frame.scene.obj else {
@@ -3656,8 +3692,8 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
-               Scene.model(\"shark.glb\") |> Scene.scale(0.002) |> Scene.translate(3.0, 1.0, 3.0))",
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.model(\"shark.glb\") |> Scene.scale(0.002) |> Scene.translate(Vec3.make(3.0, 1.0, 3.0)))",
         );
         // Outermost: the translate wrapper; inside it, the scale wrapper;
         // inside that, the Model node itself.
@@ -3707,15 +3743,15 @@ the game dir"
         let frame = frame_of(
             "let main = () =>
              Frame.createLit(
-               Camera.firstPerson(0.0, 3.5, -8.0, Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
+               Camera.firstPerson(Vec3.make(0.0, 3.5, -8.0), Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
                Scene.group([
                  Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.6, 0.6, 0.62)),
                  Scene.sphere() |> Scene.emissive(Color.rgb(1.0, 0.3, 0.25)),
                ]),
                [
                  Light.ambient(Color.rgb(0.1, 0.1, 0.13)),
-                 Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
-                 Light.point(1.0, 2.2, 0.0, Color.rgb(1.0, 0.3, 0.25), 1.4, 4.0),
+                 Light.directional(Vec3.make(0.5, -1.0, 0.35), Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
+                 Light.point(Vec3.make(1.0, 2.2, 0.0), Color.rgb(1.0, 0.3, 0.25), 1.4, 4.0),
                ])",
         );
         assert_eq!(frame.lights.len(), 3);
@@ -3735,10 +3771,10 @@ the game dir"
             "let bumps = Texture.file(\"bumps-normal.png\")\n\
              let main = () =>\n\
              Frame.createLit(\n\
-               Camera.firstPerson(0.0, 3.0, -8.0, Angle.radians(0.0), Angle.radians(-0.25), Angle.degrees(60.0)),\n\
+               Camera.firstPerson(Vec3.make(0.0, 3.0, -8.0), Angle.radians(0.0), Angle.radians(-0.25), Angle.degrees(60.0)),\n\
                Scene.cube() |> Scene.litNormalMapped(Color.rgb(0.9, 0.9, 0.92), bumps),\n\
                [\n\
-                 Light.spot(0.0, 7.0, 5.0, 0.0, -1.0, -0.5, Color.rgb(1.0, 1.0, 0.95), 5.0, 18.0, Angle.radians(0.5))\n\
+                 Light.spot(Vec3.make(0.0, 7.0, 5.0), Vec3.make(0.0, -1.0, -0.5), Color.rgb(1.0, 1.0, 0.95), 5.0, 18.0, Angle.radians(0.5))\n\
                    |> Light.castShadows,\n\
                ])",
         );
@@ -3860,6 +3896,51 @@ Color.rgb(r, g, b)"
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // [strong-typing track] spatial parameters refuse bare numbers with a
+    // teaching error — axis transposition and eye/target swaps are
+    // unrepresentable (the Angle rule, applied to space).
+    #[test]
+    fn bare_numbers_are_not_vec3s() {
+        let fail = |src: &str| {
+            let module = functor_lang::lower(functor_lang::parse(src).unwrap()).unwrap();
+            functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .expect("should fail")
+                .error
+                .message
+        };
+        assert_eq!(
+            fail("let main = () => Scene.cube() |> Scene.translate(1.0)"),
+            "Scene.translate: expected a Vec3, got a bare number — wrap the components: \
+Vec3.make(x, y, z)"
+        );
+        // The pre-Vec3 spelling teaches the new shape.
+        assert_eq!(
+            fail("let main = () => Scene.cube() |> Scene.translate(1.0, 2.0, 3.0)"),
+            "usage: Scene.translate(v, scene)"
+        );
+        assert_eq!(
+            fail(
+                "let main = () => Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), 0.0)"
+            ),
+            "Camera.lookAt target: expected a Vec3, got a bare number — wrap the components: \
+Vec3.make(x, y, z)"
+        );
+        // Vec3.make itself still validates its components.
+        assert_eq!(
+            fail("let main = () => Vec3.make(1.0, \"x\", 0.0)"),
+            "expected a number, got a string"
+        );
+    }
+
+    // A Vec3 stored in the model (a spawn point, a velocity) survives hot
+    // reload, like Color.
+    #[test]
+    fn vec3s_are_reload_safe_snapshots() {
+        let v = eval("let main = () => Vec3.make(0.1, 0.2, 0.3)");
+        assert!(v.is_reload_safe_snapshot());
     }
 
     // A Color stored in the model is plain enough to survive hot reload —
@@ -4045,11 +4126,11 @@ Anim.clip(\"walk\", tts)"
     #[test]
     fn degrees_and_radians_agree() {
         let deg = frame_of(
-            "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+            "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube() |> Scene.rotateY(Angle.degrees(90.0)))",
         );
         let rad = frame_of(
-            "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+            "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         );
         assert_eq!(
@@ -4095,14 +4176,14 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
             "let feed = RenderTarget.named(\"security\") |> RenderTarget.sized(256.0, 128.0)\n\
              let main = () =>\n\
              Frame.createLit(\n\
-               Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0),\n\
+               Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)),\n\
                Scene.group([\n\
                  Scene.plane() |> Scene.lit(Color.rgb(0.6, 0.6, 0.6)),\n\
                  Scene.quad() |> Scene.screen(feed),\n\
                ]),\n\
                [Light.ambient(Color.rgb(0.1, 0.1, 0.1))])\n\
              |> Frame.withRenderTarget(feed, Frame.createLit(\n\
-                  Camera.lookAt(0.0, 4.0, -6.0, 0.0, 0.5, 0.0),\n\
+                  Camera.lookAt(Vec3.make(0.0, 4.0, -6.0), Vec3.make(0.0, 0.5, 0.0)),\n\
                   Scene.cube() |> Scene.lit(Color.rgb(0.8, 0.2, 0.2)),\n\
                   [Light.ambient(Color.rgb(0.2, 0.2, 0.2))]))",
         );
@@ -4130,7 +4211,7 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0),\n\
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.quad() |> Scene.screen(RenderTarget.named(\"feed\")))",
         );
         let json = serde_json::to_string(&frame.scene).expect("serialize");
@@ -4162,9 +4243,9 @@ with RenderTarget.named(\"…\") and pass that value at both sites"
         );
         assert_eq!(
             fail(
-                "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+                "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube()) |> Frame.withRenderTarget(\"feed\", Frame.create(\
-Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube()))"
+Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube()))"
             ),
             "Frame.withRenderTarget: expected a RenderTarget, got a bare string — declare \
 it once with RenderTarget.named(\"…\") and pass that value at both sites"
@@ -4186,7 +4267,7 @@ piped through RenderTarget.sized"
     fn functor_lang_snippet_declares_fog() {
         let frame = frame_of(
             "let main = () =>\n\
-             Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
+             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
              |> Frame.withFog(Fog.linear(4.0, 30.0, Color.rgb(0.5, 0.6, 0.7)))",
         );
         assert_eq!(frame.fog, Some(Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7)));
@@ -4202,7 +4283,7 @@ piped through RenderTarget.sized"
     fn functor_lang_snippet_declares_clear_color() {
         let frame = frame_of(
             "let main = () =>\n\
-             Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
+             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
              |> Frame.withClearColor(Color.rgb(0.2, 0.4, 0.6))",
         );
         assert_eq!(frame.clear_color, Some([0.2, 0.4, 0.6]));
@@ -4212,14 +4293,14 @@ piped through RenderTarget.sized"
         // with fog it's the fog color; withClearColor overrides even that.
         let plain = frame_of(
             "let main = () => \
-             Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())",
+             Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
         );
         assert_eq!(plain.clear_color, None);
         assert_eq!(plain.resolved_clear_color(), [0.1, 0.2, 0.3]);
 
         let both = frame_of(
             "let main = () => \
-             Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube()) \
+             Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube()) \
              |> Frame.withFog(Fog.linear(4.0, 30.0, Color.rgb(0.5, 0.6, 0.7))) \
              |> Frame.withClearColor(Color.rgb(0.0, 0.0, 0.0))",
         );
@@ -4240,7 +4321,7 @@ piped through RenderTarget.sized"
         };
         assert_eq!(
             fail(
-                "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+                "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube()) |> Frame.withFog(0.5)"
             ),
             "Frame.withFog: expected a Fog, got a bare number — build one with \
@@ -4266,7 +4347,7 @@ Fog.linear(near, far, color) or Fog.exp(density, color)"
             "let sky = Skybox.files(\"px.jpg\", \"nx.jpg\", \"py.jpg\", \"ny.jpg\", \
 \"pz.jpg\", \"nz.jpg\")\n\
              let main = () =>\n\
-             Frame.create(Camera.lookAt(0.0, 2.0, -8.0, 0.0, 1.0, 0.0), Scene.cube())\n\
+             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
              |> Frame.withSkybox(sky)",
         );
         let sky = frame.skybox.as_ref().expect("skybox set");
@@ -4294,7 +4375,7 @@ Fog.linear(near, far, color) or Fog.exp(density, color)"
         };
         assert_eq!(
             fail(
-                "let main = () => Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), \
+                "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube()) |> Frame.withSkybox(\"sky.jpg\")"
             ),
             "Frame.withSkybox: expected a Skybox, got a bare string — build one with \
@@ -4316,11 +4397,11 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
     fn functor_lang_snippet_declares_a_physics_scene() {
         let value = eval(
             "let crate1 = Physics.dynamic(\"crate-1\", Physics.box(1.0, 1.0, 1.0))\n\
-             |> Physics.at(0.0, 5.0, 0.0)\n\
-             |> Physics.velocity(1.0, 0.0, 0.0)\n\
+             |> Physics.at(Vec3.make(0.0, 5.0, 0.0))\n\
+             |> Physics.velocity(Vec3.make(1.0, 0.0, 0.0))\n\
              |> Physics.mass(2.0)\n\
              |> Physics.restitution(0.5)\n\
-             let main = () => Physics.scene(0.0, -9.81, 0.0, [\n\
+             let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
                Physics.fixed(\"ground\", Physics.box(20.0, 0.2, 20.0)),\n\
                crate1,\n\
                Physics.kinematic(\"door\", Physics.capsule(1.0, 0.3)) |> Physics.sensor,\n\
@@ -4344,8 +4425,8 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
     fn physics_reads_see_the_stepped_world() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
         let declare = eval(
-            "let main = () => Physics.scene(0.0, -9.81, 0.0, [\n\
-               Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(0.0, 5.0, 0.0)])",
+            "let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
+               Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0))])",
         );
         let scene = physics_scene_value(&declare)
             .expect("a PhysicsScene")
@@ -4415,7 +4496,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
 
             // A suppressed drain (the dry-run forward-step) under the scope
             // queues the command on the SCOPED world…
-            let effect = eval("let main = () => Physics.applyImpulse(\"ball\", 2.0, 0.0, 0.0)");
+            let effect = eval("let main = () => Physics.applyImpulse(\"ball\", Vec3.make(2.0, 0.0, 0.0))");
             let Value::HostData(data) = &effect else {
                 panic!("expected an Effect");
             };
@@ -4499,7 +4580,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
     #[test]
     fn physics_command_effects_queue_and_apply() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
-        let effect = eval("let main = () => Physics.applyImpulse(\"ball\", 2.0, 0.0, 0.0)");
+        let effect = eval("let main = () => Physics.applyImpulse(\"ball\", Vec3.make(2.0, 0.0, 0.0))");
         let Value::HostData(data) = &effect else {
             panic!("expected an Effect");
         };
@@ -4580,7 +4661,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
     #[test]
     fn non_finite_numbers_are_rejected_at_the_boundary() {
         let module = functor_lang::lower(
-            functor_lang::parse("let main = () => Scene.translate(1.0 / 0.0, 0.0, 0.0, Scene.cube())")
+            functor_lang::parse("let main = () => Scene.translate(Vec3.make(1.0 / 0.0, 0.0, 0.0), Scene.cube())")
                 .unwrap(),
         )
         .unwrap();
@@ -4751,7 +4832,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         // `update` swaps the model for the hit record (tagger = a closure, so
         // the record itself is the message).
         let src = "let update = (m, msg) => msg\n\
-                   let main = () => Physics.raycast(0.0, 5.0, 0.0, 0.0, -1.0, 0.0, 100.0, (hit) => hit)";
+                   let main = () => Physics.raycast(Vec3.make(0.0, 5.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 100.0, (hit) => hit)";
         let module = functor_lang::lower(functor_lang::parse(src).unwrap()).unwrap();
         let session = functor_lang::Session::load(&module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
@@ -5155,7 +5236,7 @@ Time.seconds(…) or Time.millis(…)"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),\n\
+               Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.heightmap([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]]))",
         );
         let SceneObject::Geometry(Shape::Heightmap {
@@ -5183,7 +5264,7 @@ Time.seconds(…) or Time.millis(…)"
             "let ripple = (r, c) => 0.05 * (Math.sin(c * 0.5) + Math.cos(r * 0.5))\n\
              let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),\n\
+               Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.heightmap(\n\
                  List.range(4.0) |> List.map((r) =>\n\
                    List.range(4.0) |> List.map((c) => ripple(r, c)))))",
@@ -5242,7 +5323,7 @@ row 1 has 3"
              let grid = Texture.file(\"grid.png\")\n\
              let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0),\n\
+               Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.group([\n\
                  Scene.plane() |> Scene.litTexture(dirt),\n\
                  Scene.quad() |> Scene.emissiveTexture(grid),\n\
@@ -5663,7 +5744,7 @@ the new text, got a number"
         let src = "\
             let init = 0.0\n\
             let shoot = Effect.play(\"gunshot.wav\")\n\
-            let blast = Effect.playAt(\"explosion.wav\", 5.0, 0.5, -2.0)\n";
+            let blast = Effect.playAt(\"explosion.wav\", Vec3.make(5.0, 0.5, -2.0))\n";
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
@@ -5801,7 +5882,7 @@ the new text, got a number"
             let soundScape = (m) =>\n\
               AudioScene.create([\n\
                 AudioSource.ambient(\"wind\", \"wind-loop.wav\") |> AudioSource.gain(0.35),\n\
-                AudioSource.at(\"fountain\", \"water.wav\", 5.0, 0.5, 0.0)\n\
+                AudioSource.at(\"fountain\", \"water.wav\", Vec3.make(5.0, 0.5, 0.0))\n\
               ])\n";
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load: {}", e.render()));

@@ -92,9 +92,9 @@ let handPose = (c) =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(0.0, 0.25, -0.65, 0.0, 0.1, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 0.25, -0.65), Vec3.make(0.0, 0.1, 0.0)),
     Scene.group([
-      Scene.plane() |> Scene.scale(6.0) |> Scene.translate(0.0, -0.25, 0.0)
+      Scene.plane() |> Scene.scale(6.0) |> Scene.translate(Vec3.make(0.0, -0.25, 0.0))
         |> Scene.lit(Color.rgb(0.42, 0.47, 0.55)),
       // The glove renders at its authored size (~0.2 units — a real hand):
       // authored palm-down with the fingers along +Z, so tip it up to show
@@ -105,7 +105,7 @@ let draw = (model, tts) =>
     ]),
     [
       Light.ambient(Color.rgb(0.45, 0.45, 0.5)),
-      Light.directional(-0.4, -0.8, 0.6, Color.rgb(1.0, 0.96, 0.9), 1.1) |> Light.castShadows,
+      Light.directional(Vec3.make(-0.4, -0.8, 0.6), Color.rgb(1.0, 0.96, 0.9), 1.1) |> Light.castShadows,
     ])
 
 let ui = (model) =>

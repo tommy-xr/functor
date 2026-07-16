@@ -132,9 +132,9 @@ let crateTag = Physics.tag("crate")            // branded identity: declared onc
                                                // the VALUE used at every site
 
 let physics = (model) =>                       // OPTIONAL game hook
-  Physics.scene(0.0, -9.81, 0.0, [
+  Physics.scene(Vec3.make(0.0, -9.81, 0.0), [
     Physics.fixed(Physics.tag("ground"), Physics.box(20.0, 0.2, 20.0)),
-    Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0),
+    Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0)),
   ])
 
 let draw = (model, tts) =>
@@ -205,7 +205,7 @@ module PhysicsScene =
 ```
 
 **Commands — plain-data effects.** *Shipped (Phase 3) on the Functor Lang surface as B6
-effect variants* — `Physics.applyImpulse(tag, x, y, z)` etc. (tags are branded
+effect variants* — `Physics.applyImpulse(tag, Vec3.make(x, y, z))` etc. (tags are branded
 `Physics.tag("name")` values), returned beside
 the model; tagger-less (outcomes are observed via the physics reads). Commands
 queue at perform time and apply **after the frame's reconcile, before its first
@@ -223,7 +223,7 @@ module Physics =
 ```
 
 **Queries — tagger effects.** *Shipped (Phase 4) on the Functor Lang surface*:
-`Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)` — the tagger
+`Physics.raycast(Vec3.make(ox, oy, oz), Vec3.make(dx, dy, dz), maxDist, tagger)` — the tagger
 receives `{hit: Bool, x, y, z, nx, ny, nz, distance, tag}`. Queries are
 **deferred**: held through the frame's pre-step effect drains and performed
 right after the physics step, their messages folding through a second

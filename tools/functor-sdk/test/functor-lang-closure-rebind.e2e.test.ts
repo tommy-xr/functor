@@ -21,7 +21,7 @@ const game = (body: string) => `let makeSpin = (k) => (dt) => ${body}
 let init = { vel: makeSpin(2.0), x: 0.0 }
 let tick = (m, dt, tts) => { m with x: m.x + m.vel(dt) }
 let draw = (m, tts) =>
-  Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+  Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
 
 function xOf(model: string): number {

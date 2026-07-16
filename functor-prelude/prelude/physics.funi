@@ -48,16 +48,16 @@ let kinematic : (tag, shape) => body
 let fixed : (tag, shape) => body
 
 // body LAST (subject-last), so they pipe:
-// `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
-let at : (float, float, float, body) => body
-let velocity : (float, float, float, body) => body
+// `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0))`.
+let at : (Vec3.t, body) => body
+let velocity : (Vec3.t, body) => body
 let mass : (float, body) => body
 let friction : (float, body) => body
 let restitution : (float, body) => body
 let sensor : (body) => body
 
-// The world (gx, gy, gz, bodies).
-let scene : (float, float, float, List<body>) => world
+// The world (gravity, bodies).
+let scene : (Vec3.t, List<body>) => world
 
 // Reads of the LIVE stepped world (in-process, no boundary).
 let position : (tag) => position
@@ -66,14 +66,14 @@ let position : (tag) => position
 // `Scene.cube() |> Physics.transformed(crateTag)`.
 let transformed : (tag, Scene.t) => Scene.t
 
-// Command EFFECTS (tag, x, y, z).
-let applyImpulse : (tag, float, float, float) => Effect.t
-let applyForce : (tag, float, float, float) => Effect.t
-let setVelocity : (tag, float, float, float) => Effect.t
-let teleport : (tag, float, float, float) => Effect.t
+// Command EFFECTS (tag, v).
+let applyImpulse : (tag, Vec3.t) => Effect.t
+let applyForce : (tag, Vec3.t) => Effect.t
+let setVelocity : (tag, Vec3.t) => Effect.t
+let teleport : (tag, Vec3.t) => Effect.t
 
-// Query EFFECT: ox, oy, oz, dx, dy, dz, maxDist, tagger.
-let raycast : (float, float, float, float, float, float, float, (rayHit) => 'msg) => Effect.t
+// Query EFFECT: origin, dir, maxDist, tagger.
+let raycast : (Vec3.t, Vec3.t, float, (rayHit) => 'msg) => Effect.t
 
 // Collision-event SUB (what `subscriptions` returns).
 let events : ((collisionEvent) => 'msg) => Sub.t

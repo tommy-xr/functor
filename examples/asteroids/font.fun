@@ -34,7 +34,7 @@ let glyphCubes = (gx, gz, s, rows) =>
       let (cx, out2) = acc2 in
       (cx + s,
        (match c > 0.5 with
-        | true => [Scene.cube() |> Scene.scale(s * 0.9) |> Scene.translate(cx, 0.0, rz), ..out2]
+        | true => [Scene.cube() |> Scene.scale(s * 0.9) |> Scene.translate(Vec3.make(cx, 0.0, rz)), ..out2]
         | false => out2)),
       (gx, out)) in
     let (ignored, out3) = rowFolded in
