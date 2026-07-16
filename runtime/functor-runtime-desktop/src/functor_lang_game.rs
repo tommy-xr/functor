@@ -786,19 +786,15 @@ impl Game for FunctorLangGame {
 
     fn key_event(&mut self, code: i32, is_down: bool) {
         // The optional `input` entry point: (model, key, isDown) => model.
-        // Keys cross as their canonical names ("W", "Up", "Space") — the same
-        // spelling the debug server and SDK use.
+        // Keys cross as the built-in `Key` module's variants (`Key.W`,
+        // `Key.Up`, `Key.Num0`), so games match constructors, not strings.
         if !self.has_input {
             return;
         }
-        let Some(key) = functor_runtime_common::Key::from_i32(code) else {
-            return;
+        let Some(key_value) = functor_runtime_common::key_input_value(code) else {
+            return; // unrecognized code / Key::Unknown — never delivered.
         };
-        let args = vec![
-            self.model.clone(),
-            Value::String(std::rc::Rc::from(key.name().as_str())),
-            Value::Bool(is_down),
-        ];
+        let args = vec![self.model.clone(), key_value, Value::Bool(is_down)];
         journal_push("input", &args, Provenance::Input);
         match self.session.call("input", args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
@@ -2226,7 +2222,7 @@ mod tests {
              let tick = (m, dt, tts) => m\n\
              let input = (m, key, isDown) =>\n\
                match key with\n\
-               | \"K\" =>\n\
+               | Key.K =>\n\
                  (match isDown with\n\
                   | true => (m, Physics.applyImpulse(\"ball\", 6.0, 0.0, 0.0))\n\
                   | false => m)\n\
@@ -2347,7 +2343,7 @@ mod tests {
           | Tick => ({ m with ticks: m.ticks + 1.0 }, Effect.now((t) => GotTime(t)))\n\
           | GotTime(t) => { m with lastTime: t }\n\
         let subscriptions = (m: Model) => Sub.every(Time.seconds(1.0), Tick)\n\
-        let input = (m: Model, key: String, isDown: Bool) => { m with ticks: m.ticks + 100.0 }\n\
+        let input = (m: Model, key: Key.t, isDown: Bool) => { m with ticks: m.ticks + 100.0 }\n\
         let tick = (m: Model, dt: Float, tts: Float) => m\n\
         let draw = (m: Model, tts: Float) =>\n\
           Frame.create(Camera.lookAt(0.0, 0.0, -5.0, 0.0, 0.0, 0.0), Scene.cube())\n";
@@ -2460,7 +2456,7 @@ mod tests {
             .iter()
             .find(|i| i["entry"] == "input")
             .expect("injected input invocation");
-        assert_eq!(input["provenance"], serde_json::json!("input: W down"));
+        assert_eq!(input["provenance"], serde_json::json!("input: Key.W down"));
         assert_eq!(input["count"], serde_json::json!(1));
         assert!(!input["bindings"].as_array().unwrap().is_empty());
 

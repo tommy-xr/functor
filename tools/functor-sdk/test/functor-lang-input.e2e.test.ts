@@ -7,7 +7,8 @@ import { test } from "node:test";
 import { findRepoRoot, FunctorRunner } from "../src/index.js";
 
 // C4: key events reach the Functor Lang model through the optional `input` entry
-// point — (model, key, isDown) => model, keys as canonical names.
+// point — (model, key, isDown) => model, keys as the built-in `Key` module's
+// variants (Key.Up, Key.W, …).
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
@@ -41,12 +42,12 @@ test(
     const model = async () => (await runner.state()).model;
     assert.match(await model(), /presses: 0/, "no input yet");
 
-    // A press+release is two events; the key crosses as its canonical name.
+    // A press+release is two events; the key crosses as its `Key.*` variant.
     await runner.keyDown("up");
     await runner.keyUp("up");
     await runner.step();
     const after = await model();
     assert.match(after, /presses: 2/, `expected two events in: ${after}`);
-    assert.match(after, /last: "Up"/, `expected canonical key name in: ${after}`);
+    assert.match(after, /last: Key.Up/, `expected the Key variant in: ${after}`);
   },
 );

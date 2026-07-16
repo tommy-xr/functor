@@ -103,8 +103,10 @@ impl Key {
         Key::ALL.into_iter().find(|k| *k as i32 == value)
     }
 
-    /// The canonical name a game's `input` hook receives: `"W"`, `"Up"`,
-    /// `"Space"` — and bare digits (`"1"`, not `"Num1"`) for the digit row.
+    /// The key's short display name — `"W"`, `"Up"`, `"Space"`, bare digits
+    /// (`"1"`, not `"Num1"`) — for human-facing labels like the web timeline's
+    /// input markers. Games no longer see this: the `input` hook receives the
+    /// built-in `Key` module's variant (see [`Key::ctor_tag`]).
     pub fn name(self) -> String {
         let digit = self as i32 - Key::Num0 as i32;
         if (0..=9).contains(&digit) {
@@ -113,6 +115,31 @@ impl Key {
             format!("{self:?}")
         }
     }
+
+    /// The built-in `Key` module's constructor tag for this key (`"Key.W"`,
+    /// `"Key.Num0"`) — the `Value::Variant` ctor the producers hand a game's
+    /// `input` hook. `None` for `Unknown`, which is never delivered. Keep in
+    /// sync with `KEY_MODULE_SRC` in `functor_lang::project` (guarded by that
+    /// crate's tests and `ctor_tags_cover_the_module` here).
+    pub fn ctor_tag(self) -> Option<String> {
+        match self {
+            Key::Unknown => None,
+            _ => Some(format!("Key.{self:?}")),
+        }
+    }
+}
+
+/// The `Value` a game's `input` hook receives for a raw key code: the built-in
+/// `Key` module's variant (`Key.W`). `None` for an unrecognized code or
+/// `Key::Unknown` — the event is dropped, never delivered. The ONE conversion
+/// every delivery path shares (desktop, web, and the time-travel replay in
+/// `functor_lang_producer`), so live input and replay cannot drift.
+pub fn key_input_value(code: i32) -> Option<functor_lang::Value> {
+    let tag = Key::from_i32(code)?.ctor_tag()?;
+    Some(functor_lang::Value::Variant {
+        ctor: std::rc::Rc::from(tag.as_str()),
+        args: std::rc::Rc::new(Vec::new()),
+    })
 }
 
 #[cfg(test)]
@@ -127,6 +154,45 @@ mod tests {
         // Digits are bare — the name a game's `input` hook matches on.
         assert_eq!(Key::Num0.name(), "0");
         assert_eq!(Key::Num9.name(), "9");
+    }
+
+    #[test]
+    fn ctor_tags_are_canonical() {
+        assert_eq!(Key::W.ctor_tag().as_deref(), Some("Key.W"));
+        assert_eq!(Key::Up.ctor_tag().as_deref(), Some("Key.Up"));
+        // Digits keep the identifier spelling (ctor names can't be bare digits).
+        assert_eq!(Key::Num0.ctor_tag().as_deref(), Some("Key.Num0"));
+        // Unknown is filtered before dispatch — no constructor exists for it.
+        assert_eq!(Key::Unknown.ctor_tag(), None);
+        // Every deliverable key has a tag.
+        for key in Key::ALL.into_iter().skip(1) {
+            assert!(key.ctor_tag().is_some());
+        }
+    }
+
+    /// Drift guard: every deliverable `Key` maps to a constructor the
+    /// built-in `Key` module actually declares, and the module declares
+    /// nothing else — this enum and `KEY_MODULE_SRC` (functor_lang::project)
+    /// must move together.
+    #[test]
+    fn ctor_tags_cover_the_module() {
+        let project = functor_lang::project::load_single_source("game", "let x = 0.0\n")
+            .unwrap_or_else(|e| panic!("empty project loads: {}", e.render()));
+        let key_ty = project
+            .module
+            .types
+            .iter()
+            .find(|t| t.name == "Key.t")
+            .expect("the built-in Key module is injected");
+        let declared: std::collections::BTreeSet<String> = match &key_ty.body {
+            functor_lang::ast::TypeBody::Variants(variants) => {
+                variants.iter().map(|v| v.name.clone()).collect()
+            }
+            _ => panic!("Key.t must be a variant type"),
+        };
+        let expected: std::collections::BTreeSet<String> =
+            Key::ALL.into_iter().filter_map(|k| k.ctor_tag()).collect();
+        assert_eq!(declared, expected, "Key enum and KEY_MODULE_SRC drifted");
     }
 
     #[test]

@@ -19,14 +19,14 @@ let init = {
 
 let setHeld = (held, key, isDown) =>
   match key with
-  | "W" => { held with forward: isDown }
-  | "Up" => { held with forward: isDown }
-  | "S" => { held with back: isDown }
-  | "Down" => { held with back: isDown }
-  | "A" => { held with left: isDown }
-  | "Left" => { held with left: isDown }
-  | "D" => { held with right: isDown }
-  | "Right" => { held with right: isDown }
+  | Key.W => { held with forward: isDown }
+  | Key.Up => { held with forward: isDown }
+  | Key.S => { held with back: isDown }
+  | Key.Down => { held with back: isDown }
+  | Key.A => { held with left: isDown }
+  | Key.Left => { held with left: isDown }
+  | Key.D => { held with right: isDown }
+  | Key.Right => { held with right: isDown }
   | _ => held
 
 let input = (model, key, isDown) =>

@@ -36,7 +36,7 @@ use crate::functor_lang_prelude::{
     take_http_tagger, take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree,
     FunctorHost, NetEventKind, UiHandler,
 };
-use crate::input::{Key, RecordedInput};
+use crate::input::RecordedInput;
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
 use crate::timetravel::SceneRecorder;
@@ -111,7 +111,9 @@ impl Provenance {
             }
             Provenance::Input => {
                 let key = match args.get(1) {
-                    Some(Value::String(s)) => s.to_string(),
+                    // The `Key.*` variant the producers deliver (displays as
+                    // its canonical tag, `Key.W`).
+                    Some(v @ Value::Variant { .. }) => v.to_string(),
                     _ => String::new(),
                 };
                 let dir = match args.get(2) {
@@ -594,16 +596,12 @@ impl FrameCtx<'_> {
     fn replay_input(&mut self, event: RecordedInput, ui_handlers: &[UiHandler]) {
         let (entry, args) = match event {
             RecordedInput::Key { code, is_down } => {
-                let Some(key) = Key::from_i32(code) else {
-                    return;
+                let Some(key_value) = crate::key_input_value(code) else {
+                    return; // unrecognized code / Key::Unknown — dropped, like live.
                 };
                 (
                     "input",
-                    vec![
-                        self.model.clone(),
-                        Value::String(std::rc::Rc::from(key.name().as_str())),
-                        Value::Bool(is_down),
-                    ],
+                    vec![self.model.clone(), key_value, Value::Bool(is_down)],
                 )
             }
             RecordedInput::MouseMove { x, y } => (

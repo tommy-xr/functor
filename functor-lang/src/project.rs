@@ -44,6 +44,7 @@ use crate::CheckError;
 /// colliding with one is a load-time error.
 const PROTECTED_NAMESPACES: &[&str] = &[
     "Net",
+    "Key",
     "List",
     "Text",
     "Math",
@@ -127,6 +128,21 @@ const RANDOM_MODULE_SRC: &str = "type Seed\n\
      let step : (Seed) => (float, Seed)\n\
      let range : (float, float, Seed) => (float, Seed)\n\
      let fork : (float, Seed) => Seed\n";
+
+/// The built-in `Key` module (injected beside `Net` in [`link`]): the variant
+/// the `input` hook's `key` parameter carries — `Key.W`, `Key.Up`,
+/// `Key.Num0` … — so a key typo is a check-time unknown-constructor error
+/// instead of a silently dead string arm. The shells build matching
+/// `Key.*` values (`functor_runtime_common::Key::ctor_tag`); `Unknown` is
+/// filtered before dispatch and deliberately has no constructor here. Keep in
+/// sync with the `Key` enum in `functor_runtime_common::input` (the digit row
+/// is `Num0`..`Num9` — constructor names must be identifiers).
+const KEY_MODULE_SRC: &str = "type t =\n\
+     | A | B | C | D | E | F | G | H | I | J | K | L | M\n\
+     | N | O | P | Q | R | S | T | U | V | W | X | Y | Z\n\
+     | Up | Down | Left | Right\n\
+     | Space | Enter | Escape\n\
+     | Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9\n";
 
 pub struct SourceFile {
     pub path: PathBuf,
@@ -483,6 +499,17 @@ fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         path: PathBuf::from("<builtin>/Random.funi"),
         module: "Random".to_string(),
         src: RANDOM_MODULE_SRC.to_string(),
+        base,
+    });
+
+    // The built-in `Key` module — the `input` hook's key variant (see
+    // KEY_MODULE_SRC).
+    let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
+    files.push(SourceFile {
+        interface: false,
+        path: PathBuf::from("<builtin>/Key.fun"),
+        module: "Key".to_string(),
+        src: KEY_MODULE_SRC.to_string(),
         base,
     });
 

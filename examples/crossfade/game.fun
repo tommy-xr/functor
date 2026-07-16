@@ -42,12 +42,12 @@ let input = (model, key, isDown) =>
   | false => model
   | true =>
     match key with
-    | "0" => { model with auto: true, timer: 2.5 }
-    | "1" => trigger(model, "idle")
-    | "2" => trigger(model, "agree")
-    | "3" => trigger(model, "headShake")
-    | "4" => trigger(model, "sneak_pose")
-    | "5" => trigger(model, "run")
+    | Key.Num0 => { model with auto: true, timer: 2.5 }
+    | Key.Num1 => trigger(model, "idle")
+    | Key.Num2 => trigger(model, "agree")
+    | Key.Num3 => trigger(model, "headShake")
+    | Key.Num4 => trigger(model, "sneak_pose")
+    | Key.Num5 => trigger(model, "run")
     | _ => model
 
 let tick = (model, dt, tts) =>

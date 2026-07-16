@@ -270,6 +270,18 @@ snapshots — no GPU, fully agent-verifiable.
       checker's External seam an interface signature now takes precedence
       over a builtin scheme — the injected `.funi` is what brands the
       builtins.
+- [x] **Typed input keys (`Key.t`)** (2026-07-16; strong-typing track). The
+      `input` hook's `key` parameter is the built-in `Key` module's variant
+      (`<builtin>/Key.fun`, injected beside `Net`): `Key.A`..`Key.Z`,
+      arrows, `Space`/`Enter`/`Escape`, and the digit row as
+      `Key.Num0`..`Key.Num9` — a key typo is a load/check-time error where
+      the old string spelling silently never matched. All three producers
+      (desktop, web, and the shared replay path in `functor_lang_producer`)
+      build the same `Key.*` variant from the raw i32 code, so live input,
+      the time-travel forward-step, and the journal agree; the debug
+      server's wire format (`{"type":"key","key":"w"}`) is unchanged.
+      Key values are plain data (nullary variants), so a key stored in the
+      model snapshots and hot-reloads like any field.
 - [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade
@@ -457,7 +469,8 @@ Starts once A2 + B3 exist.
       rendering.
       - [x] **C4a. Input + CLI wiring.** Optional `input` entry point —
         `(model, key, isDown) => model`, keys as canonical names ("W",
-        "Up") — validated at load when present, reload-aware. And
+        "Up"; since typed as the `Key.t` variant — see the strong-typing
+        track entry) — validated at load when present, reload-aware. And
         `functor.json` grows `"language": "functor-lang"` (+ optional `entry`,
         default `game.fun`): `functor build` = parse+lower+**check as
         errors** (the strict gate; the runner keeps them warnings),

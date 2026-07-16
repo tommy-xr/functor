@@ -83,18 +83,18 @@ let tick = (model, dt, tts) => model
 // is needed; arms mix plain-model and (model, effect) returns freely.
 let input = (model, key, isDown) =>
   match key with
-  | "Space" =>
+  | Key.Space =>
     (match isDown with
      | false => { model with spaceHeld: false }
      | true =>
        (match model.spaceHeld with
         | true => model
         | false => { model with drop: model.drop + 1.0, spaceHeld: true }))
-  | "K" =>
+  | Key.K =>
     (match isDown with
      | true => model
      | false => (model, Physics.applyImpulse("ball", -2.6, 5.0, -0.4)))
-  | "R" =>
+  | Key.R =>
     (match isDown with
      | true => model
      | false =>

@@ -65,17 +65,17 @@ let subscriptions = (m: Model) => Sub.connect(serverUrl, toMsg)
 let tick = (m: Model, dt: float, tts: float) => m
 
 // WASD -> a velocity string the server understands; other keys send nothing.
-let velocityFor = (key: string): string =>
+let velocityFor = (key: Key.t): string =>
   match key with
-  | "W" => "0 1"
-  | "S" => "0 -1"
-  | "A" => "-1 0"
-  | "D" => "1 0"
+  | Key.W => "0 1"
+  | Key.S => "0 -1"
+  | Key.A => "-1 0"
+  | Key.D => "1 0"
   | _ => ""
 
 // Key down sends the direction; key release sends a stop. Both need the live
 // connection id, so nothing is sent until the socket has opened.
-let input = (m: Model, key: string, isDown: bool) =>
+let input = (m: Model, key: Key.t, isDown: bool) =>
   match m.conn with
   | Offline => m
   | Online(id) =>
