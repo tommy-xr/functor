@@ -10,8 +10,9 @@ import { StateEffect } from "@codemirror/state";
 import { indentWithTab } from "@codemirror/commands";
 import { startCompletion, acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
-import { setupLangIntel, analyzeCached, completeAt, resetIntel } from "./lang-intel.js";
+import { setupLangIntel, analyzeCached, completeAt, resetIntel, onDiagnostics } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
+import { createStatusBar } from "./status-bar.js";
 
 const EXAMPLES = [
   { id: "hero", label: "Neon grid" },
@@ -36,6 +37,8 @@ const setStatus = (state, text, detail = "") => {
   statusLog.hidden = detail === "";
 };
 
+const statusBar = createStatusBar({ host: document.getElementById("statusbar") });
+
 const bridge = new PlayerBridge(frame, {
   onReloading: () => setStatus("busy", "◌ reloading…"),
   onLive: () => setStatus("live", "● live"),
@@ -48,7 +51,20 @@ const bridge = new PlayerBridge(frame, {
     } else {
       setStatus("error", "✖ error", message);
     }
+    // Failed reloads also land in the Output panel — the pill is transient,
+    // the panel keeps the history. (Successes already arrive there via the
+    // runtime's own "[functor-lang] reloaded …" console line.)
+    if (!ok) statusBar.appendOutput("error", message);
   },
+});
+
+// Runtime console traces (Functor Lang `Debug.log` and friends), forwarded by the
+// player page — see the console hook in player.html. Guarded to OUR iframe.
+window.addEventListener("message", (event) => {
+  const data = event.data;
+  if (!data || data.type !== "functor-lang-console") return;
+  if (event.source !== frame.contentWindow) return;
+  statusBar.appendOutput(data.level, data.message);
 });
 
 // Set while loadExample replaces the buffer programmatically: that content is
@@ -77,6 +93,30 @@ const view = new EditorView({
 const langReady = setupLangIntel().then((extensions) => {
   if (extensions.length) view.dispatch({ effects: StateEffect.appendConfig.of(extensions) });
   return extensions.length > 0;
+});
+
+// Each lint pass refreshes the Problems panel; clicking a problem jumps the
+// editor to it. Positions re-clamp at click time (the doc may have moved on).
+onDiagnostics((diags) => {
+  statusBar.setProblems(
+    diags.map((d) => {
+      const line = view.state.doc.lineAt(Math.min(d.from, view.state.doc.length));
+      return {
+        severity: d.severity,
+        message: d.message,
+        loc: `game.fun ${line.number}:${d.from - line.from + 1}`,
+        jump: () => {
+          const len = view.state.doc.length;
+          const from = Math.min(d.from, len);
+          view.dispatch({
+            selection: { anchor: from, head: Math.max(from, Math.min(d.to, len)) },
+            scrollIntoView: true,
+          });
+          view.focus();
+        },
+      };
+    })
+  );
 });
 
 window.__lang = {

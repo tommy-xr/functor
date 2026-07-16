@@ -11,8 +11,9 @@ import { indentWithTab } from "@codemirror/commands";
 import { acceptCompletion, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { StateEffect } from "@codemirror/state";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
-import { setupLangIntel, setLangContext, resetIntel, refreshIntel } from "./lang-intel.js";
+import { setupLangIntel, setLangContext, resetIntel, refreshIntel, onDiagnostics } from "./lang-intel.js";
 import { ProjectBridge } from "./project-bridge.js";
+import { createStatusBar } from "./status-bar.js";
 import { zipFiles } from "./zip.js";
 
 const STORAGE_KEY = "functor-ide-project-v1";
@@ -162,6 +163,46 @@ const langReady = setupLangIntel().then((extensions) => {
   return extensions.length > 0;
 });
 
+const statusBar = createStatusBar({ host: document.getElementById("statusbar") });
+
+// Each lint pass (of the ACTIVE file — the per-document model) refreshes the
+// Problems panel; clicking a problem jumps the editor to it. Positions
+// re-clamp at click time (the doc may have moved on).
+onDiagnostics((diags) => {
+  const file = project.active;
+  statusBar.setProblems(
+    diags.map((d) => {
+      const line = view.state.doc.lineAt(Math.min(d.from, view.state.doc.length));
+      return {
+        severity: d.severity,
+        message: d.message,
+        loc: `${file} ${line.number}:${d.from - line.from + 1}`,
+        jump: () => {
+          // A row can outlive its file (delete + the debounce window).
+          if (!project.files.some((f) => f.path === file)) return;
+          if (project.active !== file) openFile(file);
+          const len = view.state.doc.length;
+          const from = Math.min(d.from, len);
+          view.dispatch({
+            selection: { anchor: from, head: Math.max(from, Math.min(d.to, len)) },
+            scrollIntoView: true,
+          });
+          view.focus();
+        },
+      };
+    })
+  );
+});
+
+// Runtime console traces (Functor Lang `Debug.log` and friends), forwarded by the
+// player page — see the console hook in player.html. Guarded to OUR iframe.
+window.addEventListener("message", (event) => {
+  const data = event.data;
+  if (!data || data.type !== "functor-lang-console") return;
+  if (event.source !== els.player.contentWindow) return;
+  statusBar.appendOutput(data.level, data.message);
+});
+
 const setDoc = (source) => {
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
@@ -186,6 +227,10 @@ const bridge = new ProjectBridge(els.player, {
     } else {
       setStatus("error", "✖ error", message);
     }
+    // Failed reloads also land in the Output panel — the pill is transient,
+    // the panel keeps the history. (Successes already arrive there via the
+    // runtime's own "[functor-lang] reloaded …" console line.)
+    if (!ok) statusBar.appendOutput("error", message);
   },
 });
 
@@ -229,6 +274,9 @@ const renderFileList = () => {
 
 const openFile = (path) => {
   if (path === project.active) return;
+  // A stale caller (e.g. a problem row outliving a delete) must not point
+  // `active` at a file that no longer exists.
+  if (!project.files.some((f) => f.path === path)) return;
   // Save the live buffer into the outgoing file before switching.
   const current = activeFile();
   if (current) current.source = view.state.doc.toString();

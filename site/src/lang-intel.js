@@ -111,6 +111,13 @@ export const completeAt = (src, offset) => {
 const peekCached = (docString) =>
   analyzeFn && cacheKey(docString, projectArgs(docString)) === lastKey ? lastResult : null;
 
+// The host page can observe each lint pass's diagnostics (the status bar's
+// Problems panel) — called with the same clamped list the linter gets.
+let diagnosticsListener = null;
+export const onDiagnostics = (fn) => {
+  diagnosticsListener = fn;
+};
+
 // analyze offsets are whole-document UTF-16 — CodeMirror's native unit — so
 // they map straight across; clamp defensively to the current doc length.
 const toDiagnostics = (view) => {
@@ -120,13 +127,17 @@ const toDiagnostics = (view) => {
   // field to re-read it (the initial doc lands here too, so inlays/lenses show
   // on load — not only after the first edit).
   scheduleRefresh(view);
-  if (!result || !Array.isArray(result.diagnostics)) return [];
   const len = doc.length;
-  return result.diagnostics.map((d) => {
-    const from = Math.max(0, Math.min(d.from | 0, len));
-    let to = Math.max(from, Math.min(d.to | 0, len));
-    return { from, to, severity: d.severity || "error", message: d.message || "" };
-  });
+  const diagnostics =
+    !result || !Array.isArray(result.diagnostics)
+      ? []
+      : result.diagnostics.map((d) => {
+          const from = Math.max(0, Math.min(d.from | 0, len));
+          const to = Math.max(from, Math.min(d.to | 0, len));
+          return { from, to, severity: d.severity || "error", message: d.message || "" };
+        });
+  if (diagnosticsListener) diagnosticsListener(diagnostics);
+  return diagnostics;
 };
 
 // --- Hover types --------------------------------------------------------------

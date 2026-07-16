@@ -236,6 +236,26 @@ try {
     if (underlined > 0) console.log("type error draws a lint underline ✓");
     else fail("no lint underline for a type error");
 
+    // The status bar's Problems tab mirrors the same pass, naming the file.
+    const problemsTab = page.locator('.statusbar-tab[data-tab="problems"]');
+    const flaggedTab = await poll(
+      async () => ((await problemsTab.textContent()) || "").trim(),
+      (t) => t.includes("1 problem")
+    );
+    if (flaggedTab.includes("1 problem")) console.log("problems tab counts the type error ✓");
+    else fail(`problems tab out of sync: ${flaggedTab}`);
+    await problemsTab.click();
+    const rowText = await poll(
+      async () => {
+        const row = page.locator(".problem-row");
+        return (await row.count()) ? (await row.first().textContent()) || "" : "";
+      },
+      (t) => t.includes("game.fun")
+    );
+    if (rowText.includes("game.fun")) console.log("problems row names the active file ✓");
+    else fail(`problem row missing the file: ${rowText}`);
+    await problemsTab.click(); // close the panel again
+
     await page.evaluate((src) => window.__ide.setActiveSource(src), gameSource);
     const cleared = await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n === 0);
     if (cleared === 0) console.log("fixing the type error clears the underline ✓");

@@ -872,3 +872,130 @@ a:hover {
     gap: 12px;
   }
 }
+
+/* ---- Status bar (sandbox + IDE): Problems / Output panels ---------------- */
+
+.statusbar {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: var(--bg-panel);
+  font-family: var(--font-mono);
+}
+
+.statusbar-strip {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.statusbar-tab {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.statusbar-tab:hover {
+  color: var(--text);
+}
+
+.statusbar-tab.active {
+  color: var(--cyan);
+  box-shadow: inset 0 2px 0 var(--cyan);
+}
+
+.statusbar-tab.has-problems {
+  color: var(--red);
+}
+
+.statusbar-tab.has-problems.active {
+  color: var(--red);
+  box-shadow: inset 0 2px 0 var(--red);
+}
+
+.statusbar-panel {
+  height: 180px;
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+}
+
+.statusbar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.statusbar-empty {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.problem-row {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.problem-row:hover {
+  background: var(--bg-raised);
+}
+
+.problem-icon.severity-error {
+  color: var(--red);
+}
+
+.problem-icon.severity-warning {
+  color: var(--amber);
+}
+
+.problem-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.problem-loc {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.output-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim);
+}
+
+.output-line.output-warn {
+  color: var(--amber);
+}
+
+.output-line.output-error {
+  color: var(--red);
+}
+
+.output-line.output-info {
+  color: var(--text);
+}

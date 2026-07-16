@@ -161,6 +161,11 @@ multi-file.
       [const-tweaker](https://github.com/tversteeg/const-tweaker). (Functor Lang hot-reload
       already rebinds edited top-level values live; this is the finer-grained,
       no-reload knob.)
+- [ ] IDE status bar: project-wide Problems. The panel currently mirrors the
+      per-document lint pass (active file only), so a type error in a
+      non-active sibling is invisible while the preview is red. Collect by
+      running `functor_lang_analyze_project` once per file (the export's documented
+      contract) on the same debounce.
 
 ## Audio
 
