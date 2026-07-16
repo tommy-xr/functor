@@ -1,7 +1,10 @@
-// Live language intelligence for the sandbox editor: loads the small
+// Live language intelligence for the sandbox and IDE editors: loads the small
 // functor-lang analysis wasm (built by `npm run build:lang-wasm`, copied to
 // dist/pkg/ by build.mjs) and turns its type diagnostics into CodeMirror lint
-// underlines, plus hover types, inlay hints, and signature codelenses.
+// underlines, plus hover types, inlay hints, and signature codelenses. The
+// sandbox analyzes its single buffer; the IDE registers a context provider
+// (setLangContext) so every pass runs over the whole file set with sibling
+// modules resolved.
 // Optional by design — if the pkg is absent or fails to init, the setup
 // resolves to [] and the editor works exactly as before (no analysis, no
 // console spam beyond one info line).
@@ -13,7 +16,7 @@
 // has filled it, so inlays/lenses lag the doc by the lint debounce (acceptable
 // and cheaper than a second scheduler) instead of re-analyzing on every key.
 
-import { linter } from "@codemirror/lint";
+import { forceLinting, linter } from "@codemirror/lint";
 import { Decoration, EditorView, ViewPlugin, WidgetType, hoverTooltip } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 import { functorLangLanguage } from "./functor-lang.js";
@@ -25,9 +28,41 @@ const PKG_URL = "/pkg/functor_lang_wasm.js";
 let analyzeFn = null; // (src) => JSON string, set once the wasm is ready
 let hoverFn = null; // (src, offset) => JSON string ("" when nothing to show)
 let completeFn = null; // (src, offset) => JSON string, set once the wasm is ready
+let analyzeProjectFn = null; // (filesJson, active) => JSON string
+let hoverProjectFn = null; // (filesJson, active, offset) => JSON string
+let completeProjectFn = null; // (filesJson, active, offset) => JSON string
 let resetFn = null; // () => void, clears the wasm completion cache
-let lastDoc = null;
+let lastKey = null;
 let lastResult = null;
+
+// The multi-file seam (the IDE): the host registers a provider returning the
+// whole file set (`[{ path, source }]`, entry first) plus the active path;
+// every analysis then runs project-wide — sibling modules resolve — with the
+// active file's source swapped for the live editor doc. Null (the sandbox
+// default) keeps the single-file calls.
+let contextFn = null;
+
+export const setLangContext = (fn) => {
+  contextFn = fn;
+};
+
+// The `*_project` call args for the live `docString`, or null in single-file
+// mode (no provider, or a provider mid-teardown returning junk).
+const projectArgs = (docString) => {
+  if (!contextFn) return null;
+  const { active, files } = contextFn() ?? {};
+  if (!active || !Array.isArray(files)) return null;
+  const withLive = files.map((f) => ({
+    path: f.path,
+    source: f.path === active ? docString : f.source,
+  }));
+  return { filesJson: JSON.stringify(withLive), active };
+};
+
+// The memo key covers everything an analysis depends on: in project mode the
+// serialized file set + active path (so a file switch or sibling edit is a
+// fresh analysis), in single-file mode just the doc.
+const cacheKey = (docString, args) => (args ? `${args.active}\x00${args.filesJson}` : docString);
 
 // Clear the wasm completion last-good cache — called by the sandbox when the
 // editor document is wholly replaced (example switch, inline load, reset) so
@@ -37,18 +72,22 @@ export const resetIntel = () => {
   if (resetFn) resetFn();
 };
 
-// Run analyze at most once per distinct doc string. Returns the parsed
+// Run analyze at most once per distinct (doc, context) key. Returns the parsed
 // `{ diagnostics, inlays, lenses }`, or null when the wasm isn't loaded.
 export const analyzeCached = (docString) => {
   if (!analyzeFn) return null;
-  if (docString === lastDoc) return lastResult;
+  const args = projectArgs(docString);
+  const key = cacheKey(docString, args);
+  if (key === lastKey) return lastResult;
   let result;
   try {
-    result = JSON.parse(analyzeFn(docString));
+    result = JSON.parse(
+      args ? analyzeProjectFn(args.filesJson, args.active) : analyzeFn(docString)
+    );
   } catch {
     result = { diagnostics: [], inlays: [], lenses: [] };
   }
-  lastDoc = docString;
+  lastKey = key;
   lastResult = result;
   return result;
 };
@@ -70,7 +109,7 @@ export const completeAt = (src, offset) => {
 // it never triggers an analyze of its own (the lint source is the sole caller
 // that fills the cache).
 const peekCached = (docString) =>
-  analyzeFn && docString === lastDoc ? lastResult : null;
+  analyzeFn && cacheKey(docString, projectArgs(docString)) === lastKey ? lastResult : null;
 
 // analyze offsets are whole-document UTF-16 — CodeMirror's native unit — so
 // they map straight across; clamp defensively to the current doc length.
@@ -97,7 +136,11 @@ const hoverTypes = hoverTooltip((view, pos) => {
   if (!hoverFn) return null;
   let info;
   try {
-    info = JSON.parse(hoverFn(view.state.doc.toString(), pos) || "");
+    const doc = view.state.doc.toString();
+    const args = projectArgs(doc);
+    info = JSON.parse(
+      (args ? hoverProjectFn(args.filesJson, args.active, pos) : hoverFn(doc, pos)) || ""
+    );
   } catch {
     return null;
   }
@@ -146,7 +189,13 @@ const functorCompletions = (context) => {
   if (!context.explicit && !afterDot && !word) return null;
   let items;
   try {
-    items = JSON.parse(completeFn(context.state.doc.toString(), context.pos)).items;
+    const doc = context.state.doc.toString();
+    const args = projectArgs(doc);
+    items = JSON.parse(
+      args
+        ? completeProjectFn(args.filesJson, args.active, context.pos)
+        : completeFn(doc, context.pos)
+    ).items;
   } catch {
     return null;
   }
@@ -238,6 +287,28 @@ const buildDecorations = (state) => {
 // A signal to re-derive decorations from the (freshly filled) cache.
 const refreshDecorations = StateEffect.define();
 
+// A signal to drop all decorations NOW (file switch / topology change): the
+// current set belongs to the outgoing context, and the keep-on-stale rule
+// below would otherwise show it against the incoming doc until the debounced
+// lint pass lands.
+const clearDecorations = StateEffect.define();
+
+// The editor now shows a different document or file-set shape (IDE file
+// switch, file create/delete): drop the outgoing decorations immediately and
+// force a fresh lint pass — a topology change alone doesn't change the doc,
+// so the linter would otherwise never rerun. The effect trips the linter's
+// `needsRefresh` (forceLinting alone only flushes an already-pending query);
+// safe before setup resolves (the effect is simply unhandled without it).
+export const refreshIntel = (view) => {
+  view.dispatch({ effects: clearDecorations.of(null) });
+  forceLinting(view);
+};
+
+// True when a transaction carries the clear signal — the linter must re-query
+// even though the doc is unchanged (the analysis context changed under it).
+const contextChanged = (update) =>
+  update.transactions.some((tr) => tr.effects.some((e) => e.is(clearDecorations)));
+
 // Fired from the lint source after it fills the cache; a rAF avoids dispatching
 // mid-update. Only refreshes when the cache is current, so a keystroke landing
 // in the same frame doesn't clear the decorations.
@@ -271,6 +342,7 @@ const decorationField = StateField.define({
         const built = buildDecorations(tr.state);
         if (built) decos = built; // null == stale cache: keep the mapped set
       }
+      if (effect.is(clearDecorations)) decos = Decoration.none;
     }
     return decos;
   },
@@ -361,13 +433,19 @@ export const setupLangIntel = async () => {
     if (
       typeof mod.functor_lang_analyze !== "function" ||
       typeof mod.functor_lang_hover !== "function" ||
-      typeof mod.functor_lang_complete !== "function"
+      typeof mod.functor_lang_complete !== "function" ||
+      typeof mod.functor_lang_analyze_project !== "function" ||
+      typeof mod.functor_lang_hover_project !== "function" ||
+      typeof mod.functor_lang_complete_project !== "function"
     ) {
       throw new Error("functor-lang-wasm is missing an expected export");
     }
     analyzeFn = mod.functor_lang_analyze;
     hoverFn = mod.functor_lang_hover;
     completeFn = mod.functor_lang_complete;
+    analyzeProjectFn = mod.functor_lang_analyze_project;
+    hoverProjectFn = mod.functor_lang_hover_project;
+    completeProjectFn = mod.functor_lang_complete_project;
     // reset is optional — an older bundle without it just skips cache clearing.
     resetFn = typeof mod.functor_lang_reset === "function" ? mod.functor_lang_reset : null;
   } catch {
@@ -377,7 +455,7 @@ export const setupLangIntel = async () => {
     return [];
   }
   return [
-    linter(toDiagnostics, { delay: 300 }),
+    linter(toDiagnostics, { delay: 300, needsRefresh: contextChanged }),
     hoverTypes,
     decorationField,
     initialRefresh,

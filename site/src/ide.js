@@ -8,7 +8,10 @@
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
+import { acceptCompletion, closeCompletion, startCompletion } from "@codemirror/autocomplete";
+import { StateEffect } from "@codemirror/state";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
+import { setupLangIntel, setLangContext, resetIntel, refreshIntel } from "./lang-intel.js";
 import { ProjectBridge } from "./project-bridge.js";
 import { zipFiles } from "./zip.js";
 
@@ -91,7 +94,14 @@ function loadProject() {
       stored.files.some((f) => f.path === ENTRY);
     if (valid) {
       const active = stored.files.some((f) => f.path === stored.active) ? stored.active : ENTRY;
-      return { files: stored.files, active };
+      // The loader's contract (preview AND language analysis): the ENTRY is
+      // files[0] — its module is the program root. Every mutation here keeps
+      // that order, but a hand-edited localStorage could reorder.
+      const files = [
+        ...stored.files.filter((f) => f.path === ENTRY),
+        ...stored.files.filter((f) => f.path !== ENTRY),
+      ];
+      return { files, active };
     }
   } catch {
     // fall through to the starter
@@ -142,10 +152,26 @@ const view = new EditorView({
   ],
 });
 
+// Live language intelligence (diagnostics/hover/completion/inlays), shared
+// with the sandbox but project-aware here: the context provider hands the
+// whole file set + the active path, so sibling modules resolve (Palette.glow
+// from palette.fun). Degrades silently when the pkg is absent.
+setLangContext(() => ({ active: project.active, files: project.files }));
+const langReady = setupLangIntel().then((extensions) => {
+  if (extensions.length) view.dispatch({ effects: StateEffect.appendConfig.of(extensions) });
+  return extensions.length > 0;
+});
+
 const setDoc = (source) => {
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
+  // Wholesale document replacement (file switch, delete, e2e seam): the
+  // outgoing file's decorations are meaningless on this buffer — drop them now
+  // and force a fresh pass rather than waiting out the lint debounce. The wasm
+  // completion cache is NOT cleared: it holds the same project, and completion
+  // passes the active module per call.
+  refreshIntel(view);
 };
 
 // ---------------------------------------------------------------- preview
@@ -243,9 +269,16 @@ const deleteFile = (path) => {
   if (path === ENTRY) return;
   if (!window.confirm(`Delete ${path}? This can't be undone.`)) return;
   project.files = project.files.filter((f) => f.path !== path);
+  // The deleted module must leave the completion candidates (the wasm
+  // last-good cache still holds it until the next clean load).
+  resetIntel();
   if (project.active === path) {
     project.active = ENTRY;
     setDoc(activeFile().source);
+  } else {
+    // Topology changed under an unchanged buffer: without a doc change the
+    // linter never reruns, leaving diagnostics/inlays/lenses stale forever.
+    refreshIntel(view);
   }
   renderFileList();
   schedulePush();
@@ -316,4 +349,23 @@ window.__ide = {
     message: els.status.title,
     detail: els.statusLog.textContent,
   }),
+  // Replace the active buffer, place the cursor, and open the completion popup
+  // (explicit trigger) — the sandbox's seam, minus any push (programmaticEdit
+  // suppresses the mirror-and-push listener).
+  triggerComplete(source, cursor) {
+    closeCompletion(view);
+    programmaticEdit = true;
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: source },
+      selection: { anchor: cursor },
+    });
+    programmaticEdit = false;
+    view.focus();
+    startCompletion(view);
+  },
+  acceptCompletion: () => acceptCompletion(view),
 };
+
+// Whether language analysis is available (false = degraded, pkg absent) — the
+// same readiness seam the sandbox exposes for e2e.
+window.__lang = { ready: langReady };

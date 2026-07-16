@@ -8,13 +8,17 @@
 //   4. a broken edit reports the error and the old program keeps running;
 //   5. a good edit recovers to "live";
 //   6. a new file adds a module and the preview stays live;
-//   7. Download builds a real .zip (valid EOCD signature, one entry per file).
+//   7. Download builds a real .zip (valid EOCD signature, one entry per file);
+//   8. project-aware language intelligence: the starter's cross-module
+//      references earn lenses, `Palette.` completes to the sibling's members,
+//      and a type error underlines then clears.
 //
-// Run manually (needs the wasm bundle):
+// Run manually (needs both wasm bundles):
 //   wasm-pack build runtime/functor-runtime-web --target=web   # once
+//   npm run build:lang-wasm                                    # once
 //   node e2e/ide-page.mjs
 import { spawn, spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
@@ -37,6 +41,17 @@ const BROKEN_PALETTE = `let glow =
 const built = spawnSync("node", ["site/build.mjs"], { cwd: ROOT, stdio: "inherit" });
 if (built.status !== 0) {
   console.error("FAIL: site build failed");
+  process.exit(1);
+}
+
+// The language-intel pkg is REQUIRED by this suite (same rule as
+// site-sandbox.mjs): the checks in section 8 must not silently skip.
+try {
+  await access(`${ROOT}site/dist/pkg/functor_lang_wasm.js`);
+} catch {
+  console.error(
+    "FAIL: site/dist/pkg/functor_lang_wasm.js missing — build it first: npm run build:lang-wasm"
+  );
   process.exit(1);
 }
 
@@ -131,6 +146,131 @@ try {
     console.log(`download is a valid zip with ${entryCount} entries incl. functor.json ✓`);
   } else {
     fail(`bad zip: EOCD=${hasEOCD} entries=${entryCount} manifest=${hasManifest} entry=${hasEntry}`);
+  }
+
+  // 8. Project-aware language intelligence. `__lang.ready` resolves once the
+  // analysis wasm is up; the pkg is guaranteed present (startup check), so
+  // not-ready is a failure, never a skip.
+  const langReady = await page.evaluate(() => window.__lang && window.__lang.ready);
+  if (!langReady) {
+    fail("language analysis not ready (__lang.ready is false)");
+  } else {
+    const poll = async (fn, pred, timeout = 8000) => {
+      const deadline = Date.now() + timeout;
+      for (;;) {
+        const v = await fn();
+        if (pred(v)) return v;
+        if (Date.now() > deadline) return v;
+        await sleep(150);
+      }
+    };
+
+    // (a) The entry's cross-module program earns ITS signature lenses — the
+    // analysis ran project-wide (a single-file pass has no sibling Palette).
+    // Assert content, not mere presence: a stale lens mapped over from another
+    // buffer would count but not read `draw`.
+    await page.evaluate(() => window.__ide.openFile("game.fun"));
+    const gameSource = await page.evaluate(
+      () => window.__ide.files().find((f) => f.path === "game.fun").source
+    );
+    const lensTexts = await poll(
+      () => page.locator(".cm-lens").allTextContents(),
+      (ts) => ts.some((t) => t.startsWith("draw"))
+    );
+    if (lensTexts.some((t) => t.startsWith("draw"))) {
+      console.log("entry file shows draw's signature lens ✓");
+    } else {
+      fail(`no draw lens on game.fun: ${JSON.stringify(lensTexts)}`);
+    }
+
+    // (b) Dot-completion on the SIBLING module offers its members — the
+    // capability the project-aware wasm API adds. Open-and-wait with retries
+    // (the sandbox's pattern: a popup open can be swallowed by a lagging
+    // transaction, so a single-shot trigger flakes).
+    const openCompletion = async (source, cursor, pred) => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await page.evaluate(
+          ({ s, c }) => window.__ide.triggerComplete(s, c),
+          { s: source, c: cursor }
+        );
+        const t0 = Date.now();
+        while (Date.now() - t0 < 2500) {
+          const labels = await page.evaluate(() =>
+            [...document.querySelectorAll(".cm-tooltip-autocomplete .cm-completionLabel")].map(
+              (el) => el.textContent
+            )
+          );
+          if (pred(labels)) return labels;
+          await sleep(150);
+        }
+      }
+      return [];
+    };
+
+    // Prime the wasm last-good cache: an explicit completion on the CLEAN
+    // buffer loads the project (file switches reset the cache). Waiting for
+    // its popup proves the query actually ran. The probe is then a broken
+    // buffer (trailing dot) answered from that cache — the offset contract,
+    // same as real typing.
+    const primed = await openCompletion(gameSource, gameSource.length, (ls) => ls.length > 0);
+    if (!primed.length) fail("prime completion never opened on the clean buffer");
+    const probe = `${gameSource}let probe = Palette.`;
+    const labels = await openCompletion(probe, probe.length, (ls) => ls.includes("glow"));
+    if (labels.includes("glow") && labels.includes("sky")) {
+      console.log("Palette. completes to the sibling's members (glow, sky) ✓");
+    } else {
+      fail(`sibling members not offered: ${JSON.stringify(labels)}`);
+    }
+
+    // (c) A type error in the active file underlines, and fixing it clears —
+    // the lint loop works against the project-wide pass. Restore the clean
+    // buffer first (the completion probe left a broken one, which would
+    // underline on its own and mask this check).
+    await page.evaluate((src) => window.__ide.setActiveSource(src), gameSource);
+    await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n === 0);
+    await page.evaluate(
+      (src) => window.__ide.setActiveSource(src),
+      `${gameSource}let oops = (x: Float) => x + "type error"\n`
+    );
+    const underlined = await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n > 0);
+    if (underlined > 0) console.log("type error draws a lint underline ✓");
+    else fail("no lint underline for a type error");
+
+    await page.evaluate((src) => window.__ide.setActiveSource(src), gameSource);
+    const cleared = await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n === 0);
+    if (cleared === 0) console.log("fixing the type error clears the underline ✓");
+    else fail(`underline did not clear (count=${cleared})`);
+
+    if (await waitStatus("live", "after intel checks")) {
+      console.log("language intelligence keeps the preview live ✓");
+    }
+
+    // (d) Deleting a referenced sibling re-analyzes the OPEN file without an
+    // edit (the forced lint pass on a topology change — without it the linter
+    // never reruns): a sibling constant of the wrong type errors inside an
+    // UNCALLED function in game.fun (uncalled so the preview stays live —
+    // type diagnostics are advisory); deleting the sibling makes the module
+    // Unknown (tolerated) and the underline must clear, no edit involved.
+    await page.evaluate(() => window.__ide.newFile("colors.fun", 'let bad = "nope"\n'));
+    await page.evaluate(() => window.__ide.openFile("game.fun"));
+    await page.evaluate(
+      (src) => window.__ide.setActiveSource(src),
+      `${gameSource}let tinted = (s) => s |> Scene.emissive(0.1, 0.2, Colors.bad)\n`
+    );
+    const flagged = await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n > 0);
+    if (flagged > 0) console.log("wrong-typed sibling constant underlines in the entry ✓");
+    else fail("no underline for a wrong-typed sibling reference");
+
+    page.on("dialog", (d) => d.accept());
+    await page.click('.file-delete[title="Delete colors.fun"]');
+    const afterDelete = await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n === 0);
+    if (afterDelete === 0) console.log("deleting the sibling re-analyzes and clears the underline ✓");
+    else fail(`underline survived the sibling delete (count=${afterDelete})`);
+
+    await page.evaluate((src) => window.__ide.setActiveSource(src), gameSource);
+    if (await waitStatus("live", "after delete-sibling checks")) {
+      console.log("delete-sibling checks keep the preview live ✓");
+    }
   }
 
   console.log(process.exitCode ? "RESULT: FAIL" : "RESULT: PASS");
