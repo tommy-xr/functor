@@ -11,7 +11,15 @@ import { indentWithTab } from "@codemirror/commands";
 import { acceptCompletion, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { StateEffect } from "@codemirror/state";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
-import { setupLangIntel, setLangContext, resetIntel, refreshIntel, onDiagnostics } from "./lang-intel.js";
+import {
+  setupLangIntel,
+  setLangContext,
+  resetIntel,
+  refreshIntel,
+  onDiagnostics,
+  wireLiveTrace,
+  refreshLiveValues,
+} from "./lang-intel.js";
 import { ProjectBridge } from "./project-bridge.js";
 import { createStatusBar } from "./status-bar.js";
 import { zipFiles } from "./zip.js";
@@ -203,6 +211,12 @@ window.addEventListener("message", (event) => {
   statusBar.appendOutput(data.level, data.message, data.frame ?? null);
 });
 
+// The paused-inspector trace (live values in the editor + the executions
+// picker), relayed by the player on pause / paused-frame change. A file
+// switch keeps the trace — refreshLiveValues re-gates against the newly
+// opened buffer's hash (openFile below calls it after setDoc).
+wireLiveTrace(view, statusBar, els.player, langReady);
+
 const setDoc = (source) => {
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
@@ -285,6 +299,9 @@ const openFile = (path) => {
   setDoc(next ? next.source : "");
   renderFileList();
   saveProject();
+  // The paused trace carries per-file hashes: re-gate the live overlay
+  // against the newly opened buffer (the doc swap just cleared it).
+  refreshLiveValues(view);
 };
 
 // A valid sibling filename: `<name>.fun`, a bare module stem (no path

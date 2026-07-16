@@ -1004,3 +1004,26 @@ a:hover {
 .output-line.output-info {
   color: var(--text);
 }
+
+.exec-row {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.exec-row:hover {
+  background: var(--bg-raised);
+}
+
+.exec-row.selected {
+  color: var(--cyan);
+}

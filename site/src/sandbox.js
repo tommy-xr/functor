@@ -10,7 +10,15 @@ import { StateEffect } from "@codemirror/state";
 import { indentWithTab } from "@codemirror/commands";
 import { startCompletion, acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
-import { setupLangIntel, analyzeCached, completeAt, resetIntel, onDiagnostics } from "./lang-intel.js";
+import {
+  setupLangIntel,
+  analyzeCached,
+  completeAt,
+  resetIntel,
+  onDiagnostics,
+  wireLiveTrace,
+  currentLiveHints,
+} from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 import { createStatusBar } from "./status-bar.js";
 
@@ -67,6 +75,7 @@ window.addEventListener("message", (event) => {
   statusBar.appendOutput(data.level, data.message, data.frame ?? null);
 });
 
+
 // Set while loadExample replaces the buffer programmatically: that content is
 // exactly what the fresh iframe is about to fetch, so pushing it back would
 // be a redundant reload (and would mislabel a fresh load as a hot reload).
@@ -94,6 +103,10 @@ const langReady = setupLangIntel().then((extensions) => {
   if (extensions.length) view.dispatch({ effects: StateEffect.appendConfig.of(extensions) });
   return extensions.length > 0;
 });
+
+// The paused-inspector trace (live values in the editor + the executions
+// picker), relayed by the player on pause / paused-frame change.
+wireLiveTrace(view, statusBar, frame, langReady);
 
 // Each lint pass refreshes the Problems panel; clicking a problem jumps the
 // editor to it. Positions re-clamp at click time (the doc may have moved on).
@@ -123,6 +136,7 @@ window.__lang = {
   ready: langReady,
   analyze: (source) => analyzeCached(source),
   complete: (source, offset) => completeAt(source, offset),
+  liveHints: () => currentLiveHints(),
 };
 
 const setDoc = (source) => {
@@ -231,6 +245,7 @@ window.__sandbox = {
   setSource(source) {
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   },
+  source: () => view.state.doc.toString(),
   status: () => ({
     state: statusPill.dataset.state,
     text: statusPill.textContent,

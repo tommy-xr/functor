@@ -1204,6 +1204,89 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   await page.close();
 }
 
+// --- 12c. Live values while paused (the inspector overlay). --------------------
+// Pausing via the player's scrubber relays the trace to the page; the editor
+// grows cyan `= value` live inlays next to binders AND variable reads, the
+// executions tab lists the frame's entry-point runs (tick + the synthesized
+// draw), and any edit clears the overlay instantly (hash gate).
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+  await page.waitForFunction(() => window.__lang && window.__lang.ready, { timeout: 15000 });
+
+  const waitFor = async (fn, pred, timeout = 10000) => {
+    const t0 = Date.now();
+    for (;;) {
+      const v = await fn();
+      if (pred(v)) return v;
+      if (Date.now() - t0 > timeout) return v;
+      await sleep(150);
+    }
+  };
+
+  // Let a few frames run, then pause via the real scrubber button.
+  await sleep(800);
+  await playerFrame(page).evaluate(() => document.getElementById("scrub-pause")?.click());
+
+  // Live inlays appear (the relay → setLiveTrace → hash gate → overlay path).
+  const liveCount = await waitFor(() => page.locator(".cm-live-value").count(), (n) => n > 0);
+  check("pausing shows live-value inlays in the editor", liveCount > 0, `count=${liveCount}`);
+  const liveTexts = await page.locator(".cm-live-value").allTextContents();
+  check(
+    "live inlays carry `= value` previews",
+    liveTexts.every((t) => t.startsWith("= ")) && liveTexts.length > 0,
+    JSON.stringify(liveTexts.slice(0, 4))
+  );
+
+  // Position invariant: every hint's name span slices to exactly its name.
+  // hero.fun's comments contain multibyte characters (em dashes) BEFORE the
+  // bindings, so this fails loudly if the trace's UTF-8 byte offsets ever
+  // reach the editor unconverted.
+  const misplaced = await page.evaluate(() => {
+    const doc = window.__sandbox.source();
+    return window.__lang
+      .liveHints()
+      .filter((h) => doc.slice(h.nameStart, h.nameEnd) !== h.name)
+      .map((h) => `${h.name}@${h.nameStart}=${JSON.stringify(doc.slice(h.nameStart, h.nameEnd))}`);
+  });
+  check("live hints sit exactly on their names (byte→UTF-16)", misplaced.length === 0, JSON.stringify(misplaced));
+
+  // The executions picker lists the frame's runs, draw included.
+  const execTab = page.locator('.statusbar-tab[data-tab="executions"]');
+  const tabText = ((await execTab.textContent()) || "").trim();
+  check("executions tab counts the paused frame's runs", /⏸ \d+ executions/.test(tabText), tabText);
+  await execTab.click();
+  const rows = await waitFor(
+    () => page.locator(".exec-row").allTextContents(),
+    (rs) => rs.some((r) => r.startsWith("draw"))
+  );
+  check(
+    "executions list includes tick and the synthesized draw",
+    rows.some((r) => r.startsWith("tick")) && rows.some((r) => r.startsWith("draw")),
+    JSON.stringify(rows)
+  );
+
+  // Resuming play clears the overlay (the runtime's unpaused stub bumps the
+  // trace generation; stale inlays over a running game would be lies).
+  await playerFrame(page).evaluate(() => document.getElementById("scrub-pause")?.click());
+  const resumed = await waitFor(() => page.locator(".cm-live-value").count(), (n) => n === 0, 6000);
+  check("resuming clears the live overlay", resumed === 0, `count=${resumed}`);
+
+  // Pause again: the overlay returns, then an edit clears it instantly —
+  // stale values must never drift over moved text (hash gate).
+  await playerFrame(page).evaluate(() => document.getElementById("scrub-pause")?.click());
+  await waitFor(() => page.locator(".cm-live-value").count(), (n) => n > 0);
+  await page.evaluate((s) => window.__sandbox.setSource(s), `${GREEN}// paused edit\n`);
+  const cleared = await waitFor(() => page.locator(".cm-live-value").count(), (n) => n === 0, 4000);
+  check("editing clears the live overlay (hash gate)", cleared === 0, `count=${cleared}`);
+
+  await page.close();
+}
+
 // --- 13. Scope-aware autocomplete in the editor (commit 8b). ------------------
 // The completion source is backed by the wasm's scope-aware `complete`, driven
 // through the __sandbox.triggerComplete seam (insert text + set cursor + open
