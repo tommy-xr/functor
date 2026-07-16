@@ -18,6 +18,19 @@ impl AssetCache {
         }
     }
 
+    /// Every asset path with loaded bytes — the set the asset hot-reload
+    /// watcher stats each frame.
+    pub fn loaded_paths(&self) -> Vec<String> {
+        self.bytes_cache.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// Forget the cached bytes for `path` so the next load re-reads the file
+    /// (asset hot-reload). Pipelines cache decoded handles separately — evict
+    /// there too (`SceneContext::evict_asset` does both).
+    pub fn evict(&self, path: &str) {
+        self.bytes_cache.lock().unwrap().remove(path);
+    }
+
     pub fn load_asset_with_pipeline<T: 'static>(
         self: &Arc<Self>,
         pipeline: Arc<BuiltAssetPipeline<T>>,

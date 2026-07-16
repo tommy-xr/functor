@@ -38,6 +38,14 @@ impl<TRuntimeAsset> BuiltAssetPipeline<TRuntimeAsset> {
             .borrow_mut()
             .insert(asset_name.to_owned(), asset.clone());
     }
+
+    /// Drop the cached handle for `asset_name` so the next lookup rebuilds it
+    /// from (re-read) bytes — asset hot-reload. Scenes still holding the old
+    /// handle keep rendering the old decode until their next draw resolves the
+    /// path again (the very next frame, in practice).
+    pub fn evict(&self, asset_name: &str) {
+        self.asset_cache.borrow_mut().remove(asset_name);
+    }
 }
 
 impl<TRuntimeAsset> AssetPipeline<TRuntimeAsset> for BuiltAssetPipeline<TRuntimeAsset> {

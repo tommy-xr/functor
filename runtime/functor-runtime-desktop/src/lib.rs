@@ -19,6 +19,8 @@ pub mod functor_lang_game;
 // `cfg(not(wasm32))` target section, so they are gated to native builds. The
 // wasm-visible surface stays exactly `game` + `functor_lang_game` (the producers).
 #[cfg(not(target_arch = "wasm32"))]
+mod asset_watch;
+#[cfg(not(target_arch = "wasm32"))]
 mod audio;
 #[cfg(not(target_arch = "wasm32"))]
 mod debug_server;

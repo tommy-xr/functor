@@ -22,10 +22,20 @@ impl AssetPipeline<Model> for ModelPipeline {
         &self,
         bytes: Vec<u8>,
         _asset_cache: &AssetCache,
-        _context: crate::asset::AssetPipelineContext,
+        context: crate::asset::AssetPipelineContext,
     ) -> Model {
         let cursor = Cursor::new(bytes);
-        let gltf = gltf::Gltf::from_slice(cursor.get_ref()).unwrap();
+        // Unparseable bytes fall back to the empty model, never a panic:
+        // asset hot-reload can catch a file mid-write, and the render thread
+        // polls asset futures (a panic aborts the runtime). The next save
+        // reloads it again.
+        let gltf = match gltf::Gltf::from_slice(cursor.get_ref()) {
+            Ok(gltf) => gltf,
+            Err(e) => {
+                eprintln!("[model] cannot parse glTF: {e}");
+                return self.unloaded_asset(context);
+            }
+        };
         let document = gltf.document;
         let blob = gltf.blob;
 
@@ -386,4 +396,23 @@ fn process_animations(document: &gltf::Document, buffers: &[gltf::buffer::Data])
     }
     // panic!("animations");
     animations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asset::AssetPipelineContext;
+
+    // Unparseable bytes must become the empty model, not a panic (asset
+    // hot-reload can catch a .glb mid-write; the render thread polls asset
+    // futures — a panic aborts the runtime).
+    #[test]
+    fn corrupt_glb_falls_back_instead_of_panicking() {
+        let model = ModelPipeline.process(
+            b"<html>not a model</html>".to_vec(),
+            &AssetCache::new(),
+            AssetPipelineContext {},
+        );
+        assert!(model.meshes.is_empty());
+    }
 }
