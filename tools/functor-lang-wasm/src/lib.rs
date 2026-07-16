@@ -6,11 +6,17 @@
 //! PARENT page (the engine runs in an iframe), so this is its own tiny bundle
 //! rather than a slice of the multi-MB engine wasm.
 //!
-//! Two exports, both returning JSON strings so the JS side needs no schema:
+//! The exports all return JSON strings so the JS side needs no schema:
 //!
 //! - [`functor_lang_analyze`] runs ONE load/check pass and reports all three of
 //!   diagnostics, inlay hints, and code lenses.
 //! - [`functor_lang_hover`] answers a single hover at an offset.
+//! - [`functor_lang_complete`] answers completion candidates at an offset.
+//! - The `*_project` variants ([`functor_lang_analyze_project`], …) take the
+//!   WHOLE file set (`[{ "path", "source" }]`, entry first — the IDE's
+//!   multi-file case) plus the active file's path, so cross-module references
+//!   (`Palette.glow` from a sibling `palette.fun`) resolve instead of erroring.
+//!   Results are for the active file only, in ITS local offsets.
 //!
 //! **Positions are UTF-16 code units**, matching CodeMirror (and JS string)
 //! indexing: byte offsets from the parser are converted here in Rust, exactly
@@ -75,15 +81,65 @@ pub fn functor_lang_reset() {
     reset_cache();
 }
 
+/// Project-aware [`functor_lang_analyze`]: `files_json` is the whole file set
+/// (`[{ "path": str, "source": str }]`, entry first), `active` the path whose
+/// diagnostics/inlays/lenses to report, in its local UTF-16 offsets.
+///
+/// The report is PER-FILE, matching the LSP's per-document model: a sibling's
+/// parse/link error surfaces as a banner (it fails the whole pass), but a
+/// sibling's TYPE error belongs to that file's own report — collect
+/// project-wide problems by calling this once per file. An `active` not
+/// present in `files_json` yields the empty result.
+#[wasm_bindgen]
+pub fn functor_lang_analyze_project(files_json: &str, active: &str) -> String {
+    analyze_project_json(files_json, active)
+}
+
+/// Project-aware [`functor_lang_hover`]: `offset` is UTF-16, local to `active`.
+#[wasm_bindgen]
+pub fn functor_lang_hover_project(files_json: &str, active: &str, offset: f64) -> String {
+    hover_project_json(files_json, active, offset.max(0.0) as usize)
+}
+
+/// Project-aware [`functor_lang_complete`]: `offset` is UTF-16, local to
+/// `active` (whose source in `files_json` is the LIVE buffer).
+#[wasm_bindgen]
+pub fn functor_lang_complete_project(files_json: &str, active: &str, offset: f64) -> String {
+    complete_project_json(files_json, active, offset.max(0.0) as usize)
+}
+
 /// See [`functor_lang_analyze`]. Pure — the tested seam.
 pub fn analyze_json(src: &str) -> String {
-    let project = match load(src) {
+    analyze_impl(single(src), Path::new(USER_FILE))
+}
+
+/// See [`functor_lang_analyze_project`]. Pure — the tested seam. A malformed
+/// `files_json` yields an empty analysis, never an exception.
+pub fn analyze_project_json(files_json: &str, active: &str) -> String {
+    let Some(sources) = parse_files(files_json) else {
+        return empty_analysis();
+    };
+    analyze_impl(sources, Path::new(active))
+}
+
+fn analyze_impl(sources: Vec<(PathBuf, String)>, active: &Path) -> String {
+    // An `active` outside the set is a caller bug — the empty result, never a
+    // report against some other file. The clone keeps the source for
+    // load-error mapping (`load_sources` consumes the set).
+    let Some(active_src) = sources
+        .iter()
+        .find(|(path, _)| path == active)
+        .map(|(_, src)| src.clone())
+    else {
+        return empty_analysis();
+    };
+    let project = match load_sources(sources) {
         Ok(project) => project,
         // A parse/link failure surfaces as one diagnostic at the reported
         // point, not an error.
-        Err(err) => return load_error_json(src, err),
+        Err(err) => return load_error_json(active, &active_src, err),
     };
-    let Some(file) = project.sources.file_by_path(Path::new(USER_FILE)) else {
+    let Some(file) = project.sources.file_by_path(active) else {
         return empty_analysis();
     };
     let (diags, types) = project.check_with_types();
@@ -123,10 +179,22 @@ pub fn analyze_json(src: &str) -> String {
 
 /// See [`functor_lang_hover`]. Pure — the tested seam. `offset` is UTF-16.
 pub fn hover_json(src: &str, offset: usize) -> String {
-    let Ok(project) = load(src) else {
+    hover_impl(single(src), Path::new(USER_FILE), offset)
+}
+
+/// See [`functor_lang_hover_project`]. Pure — the tested seam.
+pub fn hover_project_json(files_json: &str, active: &str, offset: usize) -> String {
+    let Some(sources) = parse_files(files_json) else {
         return String::new();
     };
-    let Some(file) = project.sources.file_by_path(Path::new(USER_FILE)) else {
+    hover_impl(sources, Path::new(active), offset)
+}
+
+fn hover_impl(sources: Vec<(PathBuf, String)>, active: &Path, offset: usize) -> String {
+    let Ok(project) = load_sources(sources) else {
+        return String::new();
+    };
+    let Some(file) = project.sources.file_by_path(active) else {
         return String::new();
     };
     let byte = file.base + from_u16(&file.src, offset);
@@ -164,8 +232,31 @@ const MAX_ITEMS: usize = 200;
 /// language crate wants is LOCAL to `src`, so it converts straight from UTF-16
 /// with no `file.base`.
 pub fn complete_json(src: &str, offset: usize) -> String {
-    let byte = from_u16(src, offset);
-    if let Ok(project) = load(src) {
+    complete_impl(single(src), Path::new(USER_FILE), offset)
+}
+
+/// See [`functor_lang_complete_project`]. Pure — the tested seam.
+pub fn complete_project_json(files_json: &str, active: &str, offset: usize) -> String {
+    let Some(sources) = parse_files(files_json) else {
+        return empty_completion();
+    };
+    complete_impl(sources, Path::new(active), offset)
+}
+
+fn complete_impl(sources: Vec<(PathBuf, String)>, active: &Path, offset: usize) -> String {
+    // The active file's source IS the live buffer (the offset contract:
+    // context from the live text, candidates from a possibly-stale project).
+    // An `active` outside the set is a caller bug — empty items, not
+    // entry-scope candidates against an empty buffer.
+    let Some(live) = sources
+        .iter()
+        .find(|(path, _)| path == active)
+        .map(|(_, src)| src.clone())
+    else {
+        return empty_completion();
+    };
+    let byte = from_u16(&live, offset);
+    if let Ok(project) = load_sources(sources) {
         LAST_GOOD.with(|cell| *cell.borrow_mut() = Some(project));
     }
     LAST_GOOD.with(|cell| {
@@ -173,7 +264,15 @@ pub fn complete_json(src: &str, offset: usize) -> String {
         let Some(project) = borrow.as_ref() else {
             return empty_completion();
         };
-        let items = functor_lang::complete::complete(project, &project.entry, src, byte);
+        // Complete in the active file's module scope; a file the cached
+        // project doesn't know (just created, buffer still broken) falls back
+        // to the entry module.
+        let module = project
+            .sources
+            .file_by_path(active)
+            .map(|file| file.module.clone())
+            .unwrap_or_else(|| project.entry.clone());
+        let items = functor_lang::complete::complete(project, &module, &live, byte);
         completion_json(&items)
     })
 }
@@ -218,23 +317,46 @@ fn kind_str(kind: CompletionKind) -> &'static str {
     }
 }
 
-/// Load `src` as a single-file project with the host prelude injected (so
-/// `Scene.*` / `Camera.*` / … typecheck), mirroring the LSP.
-fn load(src: &str) -> Result<Project, project::ProjectError> {
-    project::load_sources_with_prelude(
-        vec![(PathBuf::from(USER_FILE), src.to_string())],
-        &functor_prelude::modules(),
-    )
+/// The single-file wrappers' file set: `src` as the one `game.fun`.
+fn single(src: &str) -> Vec<(PathBuf, String)> {
+    vec![(PathBuf::from(USER_FILE), src.to_string())]
 }
 
-/// A load failure → one diagnostic at its reported point. The `ProjectError`
-/// gives a 1-based (line, col) in the user file (base 0); convert it to a
-/// zero-width UTF-16 offset.
-fn load_error_json(src: &str, err: project::ProjectError) -> String {
-    let byte = line_col_to_byte(src, err.line, err.col);
-    let at = utf16_len(&src[..byte.min(src.len())]);
+/// Load a file set as a project with the host prelude injected (so `Scene.*` /
+/// `Camera.*` / … typecheck), mirroring the LSP.
+fn load_sources(sources: Vec<(PathBuf, String)>) -> Result<Project, project::ProjectError> {
+    project::load_sources_with_prelude(sources, &functor_prelude::modules())
+}
+
+/// Parse the `*_project` file-set payload: a JSON array of
+/// `{ "path": str, "source": str }`, entry first. `None` on any malformation
+/// (the callers degrade to their empty result — never an exception).
+fn parse_files(files_json: &str) -> Option<Vec<(PathBuf, String)>> {
+    let parsed: Value = serde_json::from_str(files_json).ok()?;
+    let mut sources = Vec::new();
+    for entry in parsed.as_array()? {
+        sources.push((
+            PathBuf::from(entry.get("path")?.as_str()?),
+            entry.get("source")?.as_str()?.to_string(),
+        ));
+    }
+    (!sources.is_empty()).then_some(sources)
+}
+
+/// A load failure → one diagnostic in the ACTIVE file. An error in the active
+/// file lands at its reported point (the `ProjectError`'s 1-based (line, col)
+/// converted to a zero-width UTF-16 offset); one in a sibling file can't be
+/// underlined here, so it lands zero-width at the top with the file named in
+/// the message.
+fn load_error_json(active: &Path, active_src: &str, err: project::ProjectError) -> String {
+    let (at, message) = if err.path == active {
+        let byte = line_col_to_byte(active_src, err.line, err.col);
+        (utf16_len(&active_src[..byte.min(active_src.len())]), err.message)
+    } else {
+        (0, format!("{}: {}", err.path.display(), err.message))
+    };
     json!({
-        "diagnostics": [{ "from": at, "to": at, "message": err.message, "severity": "error" }],
+        "diagnostics": [{ "from": at, "to": at, "message": message, "severity": "error" }],
         "inlays": [],
         "lenses": [],
     })
@@ -506,6 +628,134 @@ mod tests {
             cleared["items"].as_array().unwrap().is_empty(),
             "empty cache → empty items: {cleared}"
         );
+    }
+
+    // --- Project-aware (multi-file) variants -----------------------------------
+
+    // The IDE's two-file starter shape: game.fun references a sibling module.
+    // Single-file analyze errors on the unknown `Palette`; the project variant
+    // resolves it — the reason the `_project` API exists.
+    const GAME: &str = "let draw = (model, tts: Float) =>\n  \
+        Frame.create(Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0), \
+        Scene.sphere() |> Scene.emissive(0.15, 1.0, Palette.glow))\n";
+    const PALETTE: &str = "let glow = 0.85\nlet sky = 0.18\n";
+
+    fn files_json(files: &[(&str, &str)]) -> String {
+        Value::Array(
+            files
+                .iter()
+                .map(|(path, source)| json!({ "path": path, "source": source }))
+                .collect(),
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn project_analyze_resolves_sibling_modules() {
+        // Project: the sibling links, the active file is clean, and every
+        // lens/inlay is reported in ACTIVE-file-local offsets.
+        let files = files_json(&[("game.fun", GAME), ("palette.fun", PALETTE)]);
+        let out = parse(&analyze_project_json(&files, "game.fun"));
+        assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0, "{out}");
+        for lens in out["lenses"].as_array().unwrap() {
+            let from = lens["from"].as_u64().unwrap() as usize;
+            assert!(from <= utf16_len(GAME), "lens outside the active file: {lens}");
+        }
+
+        // The observable difference from the single-file pass: the sibling
+        // member RESOLVES. Single-file, `Palette` is tolerated but Unknown;
+        // with the project, `Palette.glow` types as float.
+        let member = GAME.find("Palette.glow").unwrap() + "Palette.".len();
+        let offset = utf16_len(&GAME[..member]);
+        let single = parse(&hover_json(GAME, offset));
+        assert!(single["text"].as_str().unwrap().contains("Unknown"), "{single}");
+        let project = parse(&hover_project_json(&files, "game.fun", offset));
+        assert!(project["text"].as_str().unwrap().contains("float"), "{project}");
+    }
+
+    // Analyzing the SECOND file (base > 0) reports offsets local to it, and a
+    // type error in it is flagged there — not filtered as foreign.
+    #[test]
+    fn project_analyze_reports_active_file_locally() {
+        let bad_palette = "let glow = 1.0 + \"x\"\n";
+        let files = files_json(&[("game.fun", "let unused = 1.0\n"), ("palette.fun", bad_palette)]);
+        let out = parse(&analyze_project_json(&files, "palette.fun"));
+        let diags = out["diagnostics"].as_array().unwrap();
+        assert_eq!(diags.len(), 1, "{out}");
+        let from = diags[0]["from"].as_u64().unwrap() as usize;
+        let to = diags[0]["to"].as_u64().unwrap() as usize;
+        assert!(from < to && to <= utf16_len(bad_palette), "span {from}..{to}: {out}");
+    }
+
+    // A PARSE failure in a sibling breaks the whole project pass; it surfaces
+    // in the active file as a zero-width diagnostic at the top naming the file.
+    #[test]
+    fn project_sibling_parse_error_names_the_file() {
+        let files = files_json(&[("game.fun", "let ok = 1.0\n"), ("palette.fun", "let broken = {\n")]);
+        let out = parse(&analyze_project_json(&files, "game.fun"));
+        let diags = out["diagnostics"].as_array().unwrap();
+        assert_eq!(diags.len(), 1, "{out}");
+        assert_eq!(diags[0]["from"], 0);
+        assert_eq!(diags[0]["to"], 0);
+        assert!(
+            diags[0]["message"].as_str().unwrap().contains("palette.fun"),
+            "{out}"
+        );
+    }
+
+    // Hover in the second file (base > 0) answers in ITS local offsets: hover
+    // a USE of `glow` and the returned span maps back onto that identifier.
+    #[test]
+    fn project_hover_in_second_file() {
+        let palette = "let glow = 0.85\nlet bright = glow + 0.1\n";
+        let files = files_json(&[("game.fun", "let unused = 1.0\n"), ("palette.fun", palette)]);
+        let use_at = palette.rfind("glow").unwrap();
+        let out = hover_project_json(&files, "palette.fun", utf16_len(&palette[..use_at]));
+        assert!(!out.is_empty(), "expected a hover for `glow`");
+        let v = parse(&out);
+        let from = from_u16(palette, v["from"].as_u64().unwrap() as usize);
+        let to = from_u16(palette, v["to"].as_u64().unwrap() as usize);
+        assert_eq!(&palette[from..to], "glow");
+        assert!(v["text"].as_str().unwrap().contains("float"), "{out}");
+    }
+
+    // Dot-completion on a SIBLING module offers its members.
+    #[test]
+    fn project_completion_offers_sibling_members() {
+        reset_cache();
+        let live = format!("{GAME}let more = Palette.");
+        let files = files_json(&[("game.fun", GAME), ("palette.fun", PALETTE)]);
+        // Prime the cache with the clean project…
+        complete_project_json(&files, "game.fun", 0);
+        // …then complete the live (broken: trailing dot) buffer.
+        let live_files = files_json(&[("game.fun", &live), ("palette.fun", PALETTE)]);
+        let out = parse(&complete_project_json(&live_files, "game.fun", utf16_len(&live)));
+        let names = labels(&out);
+        assert!(names.contains(&"glow".to_string()), "{names:?}");
+        assert!(names.contains(&"sky".to_string()), "{names:?}");
+    }
+
+    // An `active` path not present in the file set is a caller bug: every
+    // variant answers with its empty result — notably completion must NOT
+    // fall back to entry-scope candidates against an empty buffer.
+    #[test]
+    fn project_unknown_active_is_empty() {
+        reset_cache();
+        let files = files_json(&[("game.fun", GAME), ("palette.fun", PALETTE)]);
+        let out = parse(&analyze_project_json(&files, "typo.fun"));
+        assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0, "{out}");
+        assert_eq!(out["lenses"].as_array().unwrap().len(), 0, "{out}");
+        assert_eq!(hover_project_json(&files, "typo.fun", 4), "");
+        assert_eq!(complete_project_json(&files, "typo.fun", 0), empty_completion());
+    }
+
+    // A malformed files payload degrades to the empty result, never a panic.
+    #[test]
+    fn project_malformed_payload_degrades() {
+        let out = parse(&analyze_project_json("not json", "game.fun"));
+        assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
+        assert_eq!(complete_project_json("[]", "game.fun", 0), empty_completion());
+        assert_eq!(hover_project_json("[{\"path\": 1}]", "game.fun", 0), "");
     }
 
     // Hover round-trips on a non-ASCII line: the returned span's UTF-16 offsets
