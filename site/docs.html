@@ -140,11 +140,13 @@ let draw = (model, tts) =>
           <pre class="functor-lang runnable">let init = {}
 let tick = (m, dt, tts) => m
 
+let ballTag = Physics.tag("ball")
+
 let physics = (m) =>
   Physics.scene(0.0, -9.81, 0.0, [
-    Physics.fixed("ground", Physics.box(20.0, 0.4, 20.0))
+    Physics.fixed(Physics.tag("ground"), Physics.box(20.0, 0.4, 20.0))
       |> Physics.at(0.0, -0.2, 0.0),
-    Physics.dynamic("ball", Physics.sphere(0.5))
+    Physics.dynamic(ballTag, Physics.sphere(0.5))
       |> Physics.at(0.3, 4.0, 0.0)
       |> Physics.restitution(0.8),
   ])
@@ -157,7 +159,7 @@ let draw = (m, tts) =>
       Scene.sphere()
         |> Scene.scale(0.5)
         |> Scene.lit(Color.rgb(1.0, 0.4, 0.6))
-        |> Physics.transformed("ball"),
+        |> Physics.transformed(ballTag),
     ]),
     [
       Light.ambient(Color.rgb(0.15, 0.15, 0.2)),
@@ -382,11 +384,11 @@ let span = (a, b) =>
           <table>
             <tbody>
               <tr><td><code>Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)</code></td><td>shapes; box takes <em>full</em> extents</td></tr>
-              <tr><td><code>Physics.dynamic("tag", shape)</code></td><td>simulated; also <code>kinematic</code> / <code>fixed</code></td></tr>
+              <tr><td><code>Physics.dynamic(tag, shape)</code></td><td>simulated; also <code>kinematic</code> / <code>fixed</code>; tags are <code>Physics.tag("name")</code> values</td></tr>
               <tr><td><code>body |> Physics.at(x, y, z)</code></td><td>spawn pose; also <code>velocity</code>, <code>mass</code>, <code>friction</code>, <code>restitution</code>, <code>sensor</code></td></tr>
               <tr><td><code>Physics.scene(gx, gy, gz, [body, …])</code></td><td>what the <code>physics</code> hook returns</td></tr>
-              <tr><td><code>Physics.position("tag")</code></td><td><code>{x, y, z}</code> of the live body</td></tr>
-              <tr><td><code>scene |> Physics.transformed("tag")</code></td><td>draw a scene at the body's live pose</td></tr>
+              <tr><td><code>Physics.position(tag)</code></td><td><code>{x, y, z}</code> of the live body</td></tr>
+              <tr><td><code>scene |> Physics.transformed(tag)</code></td><td>draw a scene at the body's live pose</td></tr>
             </tbody>
           </table>
           <p>

@@ -293,6 +293,21 @@ snapshots — no GPU, fully agent-verifiable.
       gets the new usage line. Colors are first-class: name a palette once
       (`let neonPink = Color.rgb(…)`) and reuse it across materials, lights,
       fog, and UI.
+- [x] **Branded physics tags (`Physics.tag`)** (2026-07-16; strong-typing
+      track). The RenderTarget rule applied to physics identity:
+      `Physics.tag("name")` makes an abstract `Physics.tag`, and every tag
+      site — `dynamic`/`kinematic`/`fixed` declarations, `position`/
+      `transformed` reads, the four command effects, and the tags inside
+      `rayHit`/`collisionEvent` records — carries the brand, so a bare
+      string is a check-time error. Like `Random.Seed` the brand is erased:
+      at runtime a tag IS its string (identity constructor), so tags stored
+      in the model stay plain data, `/state`/journal display is unchanged,
+      and event-tag equality (`e.a == ballTag`) keeps working structurally.
+      The declare-once idiom (`let ballTag = Physics.tag("ball")`) makes the
+      declaration/read/command sites share one value. Runtime semantics are
+      untouched (reads still error loud on unknown tags; commands still warn
+      quietly, since a body may legitimately despawn with a command in
+      flight — the brand retires the TYPO class at build time instead).
 - [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade

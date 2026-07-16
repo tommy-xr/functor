@@ -29,7 +29,13 @@ let crateCount = 5.0
 let scatterX = (drop, i) => Math.sin(i * 12.9898 + drop * 3.7) * 1.6
 let scatterZ = (drop, i) => Math.cos(i * 78.2330 + drop * 1.3) * 1.6
 
-let crateTag = (i) => Text.concat("crate-", Text.fromFloat(i))
+// Branded body identities — declared once, used as the VALUE at every site
+// (declaration, reads, commands, event comparisons). noTag is the "ball not
+// involved" sentinel matching the engine's zeroed-miss convention.
+let groundTag = Physics.tag("ground")
+let ballTag = Physics.tag("ball")
+let noTag = Physics.tag("")
+let crateTag = (i) => Physics.tag(Text.concat("crate-", Text.fromFloat(i)))
 
 let crateBody = (drop, i) =>
   Physics.dynamic(crateTag(i), Physics.box(1.0, 1.0, 1.0))
@@ -44,11 +50,11 @@ let crateBody = (drop, i) =>
 // resting bodies.
 let bodyAt = (drop, i) =>
   match i with
-  | 0.0 => Physics.fixed("ground", Physics.box(24.0, 0.4, 24.0)) |> Physics.at(0.0, -0.2, 0.0)
+  | 0.0 => Physics.fixed(groundTag, Physics.box(24.0, 0.4, 24.0)) |> Physics.at(0.0, -0.2, 0.0)
   | 1.0 =>
     // Nearly-vertical drop beside the crates (the small drop-dependent wobble
     // keeps SPACE's re-drop teleport firing), so the ball settles in frame.
-    (Physics.dynamic("ball", Physics.sphere(0.6))
+    (Physics.dynamic(ballTag, Physics.sphere(0.6))
       |> Physics.at(3.2 + scatterX(drop, 9.0) * 0.2, 5.5, 0.5 + scatterZ(drop, 9.0) * 0.2)
       |> Physics.restitution(0.55))
   | n => crateBody(drop, n - 2.0)
@@ -73,7 +79,7 @@ type Msg<'h, 'e> =
   | GotHit(hit: 'h)
   | Contact(ev: 'e)
 
-let init = { drop: 0.0, spaceHeld: false, hot: "" }
+let init = { drop: 0.0, spaceHeld: false, hot: noTag }
 
 let tick = (model, dt, tts) => model
 
@@ -93,7 +99,7 @@ let input = (model, key, isDown) =>
   | Key.K =>
     (match isDown with
      | true => model
-     | false => (model, Physics.applyImpulse("ball", -2.6, 5.0, -0.4)))
+     | false => (model, Physics.applyImpulse(ballTag, -2.6, 5.0, -0.4)))
   | Key.R =>
     (match isDown with
      | true => model
@@ -107,14 +113,14 @@ let input = (model, key, isDown) =>
   | _ => model
 
 // Contact events name both tags in rapier's pair order — find the ball's
-// partner (or "" when the ball isn't involved).
+// partner (or noTag when the ball isn't involved).
 let otherOf = (e) =>
-  match e.a == "ball" with
+  match e.a == ballTag with
   | true => e.b
   | false =>
-    (match e.b == "ball" with
+    (match e.b == ballTag with
      | true => e.a
-     | false => "")
+     | false => noTag)
 
 let subscriptions = (model) => Physics.events(Contact)
 
@@ -128,7 +134,7 @@ let update = (model, msg) =>
     (match hit.hit with
      | false => model
      | true =>
-       (match hit.tag == "ground" with
+       (match hit.tag == groundTag with
         | true => model
         | false => (model, Physics.applyImpulse(hit.tag, 0.0, 6.0, 0.0))))
   | Contact(e) =>
@@ -136,11 +142,11 @@ let update = (model, msg) =>
      | false => model
      | true =>
        let other = otherOf(e) in
-       (match other == "" with
+       (match other == noTag with
         | true => model
         | false =>
           // Touching the slab isn't interesting — only crates glow.
-          (match other == "ground" with
+          (match other == groundTag with
            | true => model
            | false => { model with hot: other })))
 
@@ -149,7 +155,7 @@ let draw = (model, tts) =>
     Camera.lookAt(10.5, 7.5, -10.5, 0.0, 0.8, 0.0),
     Scene.group([
       Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.55, 0.58, 0.62)),
-      Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(Color.rgb(0.95, 0.35, 0.25)) |> Physics.transformed("ball"),
+      Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(Color.rgb(0.95, 0.35, 0.25)) |> Physics.transformed(ballTag),
       Scene.group(List.range(crateCount) |> List.map((i) => crateVisual(model, i))),
     ]),
     [
