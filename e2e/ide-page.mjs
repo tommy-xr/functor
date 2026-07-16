@@ -207,13 +207,9 @@ try {
       return [];
     };
 
-    // Prime the wasm last-good cache: an explicit completion on the CLEAN
-    // buffer loads the project (file switches reset the cache). Waiting for
-    // its popup proves the query actually ran. The probe is then a broken
-    // buffer (trailing dot) answered from that cache — the offset contract,
-    // same as real typing.
-    const primed = await openCompletion(gameSource, gameSource.length, (ls) => ls.length > 0);
-    if (!primed.length) fail("prime completion never opened on the clean buffer");
+    // NO cache priming: the lint heartbeat's analyze pass primes the
+    // completion cache from the clean buffer on its own — the probe (a
+    // broken buffer, trailing dot) must answer from it, same as real typing.
     const probe = `${gameSource}let probe = Palette.`;
     const labels = await openCompletion(probe, probe.length, (ls) => ls.includes("glow"));
     if (labels.includes("glow") && labels.includes("sky")) {

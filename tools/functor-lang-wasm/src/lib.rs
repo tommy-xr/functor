@@ -174,7 +174,15 @@ fn analyze_impl(sources: Vec<(PathBuf, String)>, active: &Path) -> String {
         })
         .collect();
 
-    json!({ "diagnostics": diagnostics, "inlays": inlays, "lenses": lenses }).to_string()
+    let doc = json!({ "diagnostics": diagnostics, "inlays": inlays, "lenses": lenses }).to_string();
+    // The analyze pass is the editor's heartbeat (the debounced lint runs it
+    // on every edit): a clean load also refreshes the completion last-good
+    // cache, so dot-completion on a just-broken buffer answers from the
+    // freshest clean program. Without this, completion had NO candidates
+    // until a query happened to run while the buffer was loadable — the
+    // "no completions until the value is fully typed" gap.
+    LAST_GOOD.with(|cell| *cell.borrow_mut() = Some(project));
+    doc
 }
 
 /// See [`functor_lang_hover`]. Pure — the tested seam. `offset` is UTF-16.
@@ -579,6 +587,29 @@ mod tests {
         let out = complete_after("let main = () => 1.0", "le");
         assert!(labels(&out).contains(&"let".to_string()), "{:?}", labels(&out));
         assert_eq!(item(&out, "let")["kind"], "keyword");
+    }
+
+    // The analyze pass (the editor's debounced lint heartbeat) primes the
+    // completion cache: a broken buffer completes WITHOUT any prior
+    // clean-buffer completion query — the "no completions until the value is
+    // fully typed" regression.
+    #[test]
+    fn analyze_primes_the_completion_cache() {
+        reset_cache();
+        let clean = "let alpha = 1.0\nlet main = () => alpha";
+        analyze_json(clean); // lint pass only — no completion ever ran
+        let broken = "let alpha = 1.0\nlet main = () => alpha\nal";
+        let out = parse(&complete_json(broken, utf16_len(broken)));
+        assert!(labels(&out).contains(&"alpha".to_string()), "{:?}", labels(&out));
+
+        // The project variant primes identically (the IDE's multi-file pass).
+        reset_cache();
+        let files = files_json(&[("game.fun", clean), ("palette.fun", "let glow = 0.85\n")]);
+        analyze_project_json(&files, "game.fun");
+        let broken_files =
+            files_json(&[("game.fun", broken), ("palette.fun", "let glow = 0.85\n")]);
+        let out = parse(&complete_project_json(&broken_files, "game.fun", utf16_len(broken)));
+        assert!(labels(&out).contains(&"alpha".to_string()), "{:?}", labels(&out));
     }
 
     // An empty cache (nothing ever loaded) answers with empty items, never an

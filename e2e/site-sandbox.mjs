@@ -1222,10 +1222,9 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     check("autocomplete: language analysis is ready", false, "__lang not ready");
     await page.close();
   } else {
-    // Prime the wasm last-good cache with a valid program (via the __lang seam —
-    // no doc change, no push), so dot-completion works even while the live
-    // buffer is mid-edit.
-    await page.evaluate((s) => window.__lang.complete(s, 0), GREEN);
+    // NO cache priming: the lint heartbeat's analyze pass primes the
+    // completion cache on its own — dot-completion on a mid-edit (broken)
+    // buffer must answer from the last clean analyze, same as real typing.
 
     // Open the popup and wait until its option labels satisfy `pred`; retries
     // the trigger — under load a popup open can be swallowed by a lagging
