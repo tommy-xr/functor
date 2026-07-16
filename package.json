@@ -17,6 +17,7 @@
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",
     "test:wasm-smoke": "node e2e/wasm-smoke.mjs",
+    "test:wasm-remote-assets": "node e2e/remote-assets.mjs",
     "test:inspector-emit": "node e2e/inspector-emit.mjs",
     "test:scrubber": "node --test runtime/functor-runtime-web/timeline-model.test.js",
     "site:build": "node site/build.mjs",
