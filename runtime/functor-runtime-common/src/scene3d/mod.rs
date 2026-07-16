@@ -92,6 +92,21 @@ struct CompositeUniforms {
 }
 
 impl SceneContext {
+    /// Drop every cached decode of `path` so the next draw reloads it from
+    /// disk — asset hot-reload (pair with `AssetCache::evict` for the bytes).
+    /// A skybox using the path as a face rebuilds too (its cache key is the
+    /// six face paths joined with '\n'). GPU objects hydrated from the old
+    /// decode are not freed (renderables have no Drop yet) — a dev-loop leak
+    /// bounded by save count, the same class as the render-target TODO above.
+    pub fn evict_asset(&self, path: &str) {
+        self.model_pipeline.evict(path);
+        self.texture_pipeline.evict(path);
+        self.raw_image_pipeline.evict(path);
+        self.skyboxes
+            .borrow_mut()
+            .retain(|faces, _| !faces.split('\n').any(|face| face == path));
+    }
+
     pub fn new() -> SceneContext {
         SceneContext {
             cube: RefCell::new(geometry::Cube::create()),

@@ -7,7 +7,10 @@ pub enum PixelFormat {
 }
 
 pub trait TextureFormat {
-    fn load(&self, buffer: &std::vec::Vec<u8>) -> TextureData;
+    /// Decode, or explain why not. Corrupt bytes are an Err, never a panic —
+    /// asset hot-reload can catch a file mid-write, and the render thread
+    /// polls asset futures (a panic aborts the runtime).
+    fn load(&self, buffer: &std::vec::Vec<u8>) -> Result<TextureData, String>;
 }
 
 pub struct FormatUsingImageCrate {
@@ -15,18 +18,18 @@ pub struct FormatUsingImageCrate {
 }
 
 impl TextureFormat for FormatUsingImageCrate {
-    fn load(&self, buffer: &std::vec::Vec<u8>) -> TextureData {
+    fn load(&self, buffer: &std::vec::Vec<u8>) -> Result<TextureData, String> {
         let img = image::load_from_memory_with_format(buffer, self.image_format)
-            .expect("Failed to load texture");
+            .map_err(|e| e.to_string())?;
         let mut data = img.to_rgba8().into_raw();
         apply_color_key(&mut data, img.width(), img.height());
 
-        TextureData {
+        Ok(TextureData {
             bytes: data,
             width: img.width(),
             height: img.height(),
             format: PixelFormat::RGBA,
-        }
+        })
     }
 }
 

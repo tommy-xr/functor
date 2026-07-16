@@ -20,7 +20,9 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
-use crate::{audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal};
+use crate::{
+    asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
+};
 
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
@@ -957,6 +959,10 @@ pub fn run(args: Args) {
         use glfw::Context;
 
         let asset_cache = Arc::new(AssetCache::new());
+        // Asset hot-reload state: mtime stamps for every loaded asset file
+        // (see the check next to `check_hot_reload` in the frame loop).
+        let mut asset_watcher = asset_watch::AssetWatcher::new();
+        let mut last_asset_poll = Instant::now();
 
         let scene_context = SceneContext::new();
 
@@ -1055,6 +1061,20 @@ pub fn run(args: Args) {
             }
 
             game.check_hot_reload(time.clone());
+
+            // Asset hot-reload, the twin of the .fun check above: a model/
+            // texture saved on disk is evicted from the caches so the next
+            // draw re-reads and re-decodes it. Throttled: unlike the handful
+            // of .fun files, the asset set is unbounded (a stat per asset per
+            // poll), and 4Hz is plenty for a save-and-look loop.
+            if last_asset_poll.elapsed().as_millis() >= 250 {
+                last_asset_poll = Instant::now();
+                for path in asset_watcher.changed(asset_cache.loaded_paths()) {
+                    log::info!("asset '{}' changed on disk; reloading", path);
+                    asset_cache.evict(&path);
+                    scene_context.evict_asset(&path);
+                }
+            }
 
             glfw.poll_events();
             // When time is pinned (`--fixed-time` or the debug server's /time),
