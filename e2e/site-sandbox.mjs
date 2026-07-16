@@ -25,6 +25,7 @@
 //   wasm-pack build runtime/functor-runtime-web --target=web   # once
 //   node e2e/site-sandbox.mjs
 import { spawn, spawnSync } from "node:child_process";
+import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
@@ -90,6 +91,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Build, then serve.
 const build = spawnSync("node", ["site/build.mjs"], { cwd: ROOT, stdio: "inherit" });
 if (build.status !== 0) process.exit(build.status ?? 1);
+
+// The language-intel pkg is REQUIRED by this suite. build.mjs treats it as
+// optional (a site can ship without analysis), but the checks below must not
+// silently skip — that is exactly how the editor once shipped degraded while
+// CI stayed green.
+try {
+  await access(`${ROOT}site/dist/pkg/functor_lang_wasm.js`);
+} catch {
+  console.error(
+    "site/dist/pkg/functor_lang_wasm.js missing — build it first: npm run build:lang-wasm"
+  );
+  process.exit(1);
+}
 
 // A occupied port would make serve.mjs die while the readiness probe below
 // happily talks to whatever else is listening — fail loud instead.
@@ -911,7 +925,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     try {
       mod = await import("/pkg/functor_lang_wasm.js");
     } catch {
-      return null; // pkg not built — degraded config, skip below
+      return null; // fails below — the pkg is guaranteed present (startup check)
     }
     await mod.default(); // init the wasm
     // A type error: adding a string to a float.
@@ -926,9 +940,8 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     return { bad, clean };
   });
   if (!result) {
-    console.log("SKIP: language wasm analyzes source in-browser — pkg not built");
+    check("language wasm analyzes source in-browser", false, "the pkg failed to import/init");
     await page.close();
-    // Nothing further to assert in the degraded config.
   } else {
   const d = result.bad.diagnostics;
   const sane =
@@ -962,14 +975,14 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     { timeout: 30000 }
   );
 
-  // Await the analysis wasm's readiness (resolves to false when the pkg is
-  // absent — then the whole lint block is skipped so the suite stays green in
-  // both configurations).
+  // Await the analysis wasm's readiness. The pkg is guaranteed present (the
+  // startup check), so not-ready here means it failed to load/init — a failure,
+  // never a skip.
   const langAvailable = await page.evaluate(
     () => window.__lang && window.__lang.ready
   );
   if (!langAvailable) {
-    console.log("SKIP: live diagnostics — language analysis pkg not built (__lang not ready)");
+    check("live diagnostics: language analysis is ready", false, "__lang not ready");
     await page.close();
   } else {
     const lintCount = () => page.locator(".cm-lintRange-error").count();
@@ -1021,7 +1034,6 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
 // The intel program loads fresh via #src=; once the analysis pkg is ready the
 // editor grows inline `: float` inlays, a signature codelens above each def,
 // and a hover tooltip — all while the push loop keeps the status pill live.
-// SKIPs (like the lint block) when the analysis pkg isn't built.
 {
   const b64u = Buffer.from(INTEL_SRC).toString("base64url");
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -1033,7 +1045,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
 
   const langAvailable = await page.evaluate(() => window.__lang && window.__lang.ready);
   if (!langAvailable) {
-    console.log("SKIP: hover/inlay/codelens — language analysis pkg not built (__lang not ready)");
+    check("hover/inlay/codelens: language analysis is ready", false, "__lang not ready");
     await page.close();
   } else {
     // The signature lens appears once per top-level def; count them in the source.
@@ -1108,7 +1120,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
 // The completion source is backed by the wasm's scope-aware `complete`, driven
 // through the __sandbox.triggerComplete seam (insert text + set cursor + open
 // the popup). That seam is guarded to NOT push, so the status pill stays live
-// throughout. SKIPs (like the lint/hover blocks) when the analysis pkg is absent.
+// throughout.
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(`${BASE}/sandbox.html`);
@@ -1119,7 +1131,7 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
 
   const langAvailable = await page.evaluate(() => window.__lang && window.__lang.ready);
   if (!langAvailable) {
-    console.log("SKIP: autocomplete — language analysis pkg not built (__lang not ready)");
+    check("autocomplete: language analysis is ready", false, "__lang not ready");
     await page.close();
   } else {
     // Prime the wasm last-good cache with a valid program (via the __lang seam —
