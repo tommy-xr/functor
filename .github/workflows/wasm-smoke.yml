@@ -71,6 +71,12 @@ jobs:
         run: wasm-pack build --target=web
         working-directory: runtime/functor-runtime-web
 
+      # The editor's language intelligence — without it, test:site silently
+      # SKIPs every lang-intel check (lint/hover/completion) instead of
+      # exercising them.
+      - name: Build language analysis wasm
+        run: npm run build:lang-wasm
+
       - name: Build functor CLI
         run: cargo build --bin functor
 

@@ -46,6 +46,12 @@ jobs:
         run: wasm-pack build --target=web
         working-directory: runtime/functor-runtime-web
 
+      # The editor's language intelligence (diagnostics/hover/completion).
+      # site:build treats a missing pkg as optional and skips it, so without
+      # this step the deployed editor silently ships with no language services.
+      - name: Build language analysis wasm
+        run: npm run build:lang-wasm
+
       - name: Build site
         run: npm run site:build
 
