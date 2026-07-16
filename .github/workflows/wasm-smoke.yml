@@ -88,3 +88,6 @@ jobs:
 
       - name: Run site sandbox browser tests
         run: npm run test:site
+
+      - name: Run IDE page browser tests
+        run: npm run test:ide-page
