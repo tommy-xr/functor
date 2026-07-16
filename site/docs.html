@@ -121,8 +121,8 @@ let input = (model, key, isDown) =>
   | false => model
   | true =>
     (match key with
-     | "A" => { model with x: model.x - 0.5 }
-     | "D" => { model with x: model.x + 0.5 }
+     | Key.A => { model with x: model.x - 0.5 }
+     | Key.D => { model with x: model.x + 0.5 }
      | _ => model)
 
 let tick = (model, dt, tts) => model

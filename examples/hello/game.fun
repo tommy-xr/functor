@@ -71,14 +71,14 @@ let init = {
 // key-ups flow through here; repeats just re-set the same flag.
 let setHeld = (held, key, isDown) =>
   match key with
-  | "W" => { held with up: isDown }
-  | "Up" => { held with up: isDown }
-  | "S" => { held with down: isDown }
-  | "Down" => { held with down: isDown }
-  | "A" => { held with left: isDown }
-  | "Left" => { held with left: isDown }
-  | "D" => { held with right: isDown }
-  | "Right" => { held with right: isDown }
+  | Key.W => { held with up: isDown }
+  | Key.Up => { held with up: isDown }
+  | Key.S => { held with down: isDown }
+  | Key.Down => { held with down: isDown }
+  | Key.A => { held with left: isDown }
+  | Key.Left => { held with left: isDown }
+  | Key.D => { held with right: isDown }
+  | Key.Right => { held with right: isDown }
   | _ => held
 
 let input = (model, key, isDown) =>

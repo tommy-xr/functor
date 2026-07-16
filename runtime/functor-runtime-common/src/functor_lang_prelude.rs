@@ -5830,7 +5830,12 @@ the new text, got a number"
                 .collect()
         }
         let event = |kind, id: u64, text: &str| net_event_value(kind, id, text).to_functor_lang();
-        let key = |k: &str| Value::String(std::rc::Rc::from(k));
+        // Keys are the built-in `Key` module's variants (`Key.W`), as the
+        // producers deliver them.
+        let key = |k: &str| Value::Variant {
+            ctor: std::rc::Rc::from(format!("Key.{k}").as_str()),
+            args: std::rc::Rc::new(Vec::new()),
+        };
 
         // subscriptions declares an OUTBOUND connection (not a listener).
         let subs = call(&session, "subscriptions", vec![session.global("init").unwrap()]);

@@ -641,19 +641,15 @@ impl GameProducer for FunctorLangWebGame {
 
     fn key_event(&mut self, code: i32, is_down: bool) {
         // The optional `input` entry point: (model, key, isDown) => model.
-        // Keys cross as their canonical names ("W", "Up", "Space") — the same
-        // spelling the desktop producer and SDK use.
+        // Keys cross as the built-in `Key` module's variants (`Key.W`,
+        // `Key.Up`, `Key.Num0`) — mirrors the desktop producer.
         if !self.has_input {
             return;
         }
-        let Some(key) = functor_runtime_common::Key::from_i32(code) else {
-            return;
+        let Some(key_value) = functor_runtime_common::key_input_value(code) else {
+            return; // unrecognized code / Key::Unknown — never delivered.
         };
-        let args = vec![
-            self.model.clone(),
-            Value::String(std::rc::Rc::from(key.name().as_str())),
-            Value::Bool(is_down),
-        ];
+        let args = vec![self.model.clone(), key_value, Value::Bool(is_down)];
         match self.session.call("input", args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("input", &err),

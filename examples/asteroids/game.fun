@@ -196,19 +196,19 @@ let update = (model, msg) =>
 // ---------- input ----------
 let setHeld = (held, key, isDown) =>
   match key with
-  | "Left" => { held with left: isDown }
-  | "A" => { held with left: isDown }
-  | "Right" => { held with right: isDown }
-  | "D" => { held with right: isDown }
-  | "Up" => { held with thrust: isDown }
-  | "W" => { held with thrust: isDown }
+  | Key.Left => { held with left: isDown }
+  | Key.A => { held with left: isDown }
+  | Key.Right => { held with right: isDown }
+  | Key.D => { held with right: isDown }
+  | Key.Up => { held with thrust: isDown }
+  | Key.W => { held with thrust: isDown }
   | _ => held
 
 let startPressed = (key, isDown) =>
-  Lib.and(isDown, Lib.or(key == "Enter", key == "Space"))
+  Lib.and(isDown, Lib.or(key == Key.Enter, key == Key.Space))
 
 let restartPressed = (key, isDown) =>
-  Lib.and(isDown, Lib.or(key == "Enter", key == "R"))
+  Lib.and(isDown, Lib.or(key == Key.Enter, key == Key.R))
 
 // Spawn a bullet at the ship's nose, inheriting the ship's velocity.
 let fire = (model) =>
@@ -226,11 +226,11 @@ let fire = (model) =>
 let inputPlaying = (model, key, isDown) =>
   let m = { model with held: setHeld(model.held, key, isDown) } in
   match key with
-  | "Space" =>
+  | Key.Space =>
     (match isDown with
      | true => (match m.fireHeld with | true => m | false => fire(m))
      | false => { m with fireHeld: false })
-  | "M" => (match isDown with | true => { m with phase: Menu } | false => m)
+  | Key.M => (match isDown with | true => { m with phase: Menu } | false => m)
   | _ => m
 
 let input = (model, key, isDown) =>
@@ -243,7 +243,7 @@ let input = (model, key, isDown) =>
   | _ =>
     (match restartPressed(key, isDown) with
      | true => (model, Effect.random(Seeded))
-     | false => (match Lib.and(key == "M", isDown) with
+     | false => (match Lib.and(key == Key.M, isDown) with
                  | true => { model with phase: Menu }
                  | false => model))
 

@@ -61,14 +61,14 @@ let init = {
 // key-ups flow through here; repeats just re-set the same flag.
 let setHeld = (held, key, isDown) =>
   match key with
-  | "W" => { held with up: isDown }
-  | "Up" => { held with up: isDown }
-  | "S" => { held with down: isDown }
-  | "Down" => { held with down: isDown }
-  | "A" => { held with left: isDown }
-  | "Left" => { held with left: isDown }
-  | "D" => { held with right: isDown }
-  | "Right" => { held with right: isDown }
+  | Key.W => { held with up: isDown }
+  | Key.Up => { held with up: isDown }
+  | Key.S => { held with down: isDown }
+  | Key.Down => { held with down: isDown }
+  | Key.A => { held with left: isDown }
+  | Key.Left => { held with left: isDown }
+  | Key.D => { held with right: isDown }
+  | Key.Right => { held with right: isDown }
   | _ => held
 
 // Spacebar fires a one-shot sound, with a message delivered when it ends. Only
@@ -104,8 +104,8 @@ let fireBang = (model, isDown) =>
 
 let input = (model, key, isDown) =>
   match key with
-  | "Space" => fireGun(model, isDown)
-  | "B" => fireBang(model, isDown)
+  | Key.Space => fireGun(model, isDown)
+  | Key.B => fireBang(model, isDown)
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
 let clamp = (v, lo, hi) =>

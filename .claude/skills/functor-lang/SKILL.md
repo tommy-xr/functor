@@ -189,14 +189,22 @@ let grab = (s) =>
   (they evaluate first); siblings may reference the entry (`Game.foo`) if
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
-  builtin/prelude namespace (Net, List, Text, Math, Debug, Scene, Anim, Camera,
-  Frame, Light, Fog, Skybox, Angle, Texture, Time, Sub, Effect, Physics,
-  RenderTarget, Ui, AudioSource, AudioScene) is a load error — rename the file.
+  builtin/prelude namespace (Net, Key, Random, List, Text, Math, Debug, Scene,
+  Anim, Camera, Frame, Light, Fog, Skybox, Angle, Texture, Time, Sub, Effect,
+  Physics, RenderTarget, Ui, AudioSource, AudioScene) is a load error —
+  rename the file.
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
   | Connected(id: float) | Message(id: float, text: string) |
   Disconnected(id: float) | Error(id: float, text: string)`. A `Sub.connect`/
   `Sub.listen` tagger receives these — `match ev with | Net.Connected(id)
   => …` — with no declaration needed.
+- **`Key` is a built-in module**: `Key.t`, the variant the `input` hook's
+  `key` parameter carries — `Key.A`..`Key.Z`, `Key.Up`/`Down`/`Left`/`Right`,
+  `Key.Space`/`Enter`/`Escape`, and the digit row as `Key.Num0`..`Key.Num9`
+  (NOT bare digits). Match constructors (`| Key.W =>`) or compare
+  (`key == Key.Enter`); a typo (`Key.Enterr`) is a load-time error — the
+  reason keys stopped being strings. `Random` is likewise built-in (the
+  abstract `Random.Seed` — see the Random builtins above).
 - Constructor names must be unique per MODULE (not per project); values
   from a non-entry module display with their canonical tag
   (`Utils.Circle(2)` in run/trace/`/state` output). The entry's own names
@@ -642,7 +650,9 @@ A runner-hosted game (`functor -d <project-dir> run native`, with
 let init = { … }                       // the initial model (a value)
 let tick = (model, dt, tts) => model'  // per-frame step
 let draw = (model, tts) => Frame.create(camera, scene)
-let input = (model, key, isDown) => model'  // OPTIONAL; key = "W"/"Up"/"Space"/"0".."9"
+let input = (model, key, isDown) => model'  // OPTIONAL; key: Key.t — match
+                                            // | Key.W / Key.Up / Key.Space /
+                                            // Key.Num0..Num9 (never strings)
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
 let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants

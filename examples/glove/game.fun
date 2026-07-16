@@ -26,12 +26,12 @@ let input = (model, key, isDown) =>
   | false => model
   | true =>
     match key with
-    | "1" => preset(model, 0.0, 0.0, 0.0, 0.0, 0.0)   // open
-    | "2" => preset(model, 1.0, 1.0, 1.0, 1.0, 1.0)   // fist
-    | "3" => preset(model, 0.9, 0.0, 1.0, 1.0, 1.0)   // point
-    | "4" => preset(model, 0.0, 1.0, 1.0, 1.0, 1.0)   // thumbs-up
-    | "5" => preset(model, 0.55, 0.6, 0.0, 0.0, 0.0)  // pinch
-    | "0" => { model with auto: true }
+    | Key.Num1 => preset(model, 0.0, 0.0, 0.0, 0.0, 0.0)   // open
+    | Key.Num2 => preset(model, 1.0, 1.0, 1.0, 1.0, 1.0)   // fist
+    | Key.Num3 => preset(model, 0.9, 0.0, 1.0, 1.0, 1.0)   // point
+    | Key.Num4 => preset(model, 0.0, 1.0, 1.0, 1.0, 1.0)   // thumbs-up
+    | Key.Num5 => preset(model, 0.55, 0.6, 0.0, 0.0, 0.0)  // pinch
+    | Key.Num0 => { model with auto: true }
     | _ => model
 
 // Auto mode: a staggered wave rippling across the fingers.

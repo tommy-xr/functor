@@ -812,7 +812,8 @@ fn single_file_project_adds_only_the_builtin_modules() {
         assert!(proj_types.contains(&ty.name.as_str()));
     }
     // The ONLY additions are the built-in modules': Net's canonicalized
-    // `Net.NetEvent` / `Net.HttpResponse` and Random's abstract `Random.Seed`.
+    // `Net.NetEvent` / `Net.HttpResponse`, Random's abstract `Random.Seed`,
+    // and the input-key variant `Key.t`.
     assert!(
         proj_types.contains(&"Net.NetEvent") && proj_types.contains(&"Net.HttpResponse"),
         "the built-in Net module must be injected: {proj_types:?}"
@@ -821,10 +822,46 @@ fn single_file_project_adds_only_the_builtin_modules() {
         proj_types.contains(&"Random.Seed"),
         "the built-in Random module must be injected: {proj_types:?}"
     );
+    assert!(
+        proj_types.contains(&"Key.t"),
+        "the built-in Key module must be injected: {proj_types:?}"
+    );
     assert_eq!(
         proj_types.len(),
-        plain.types.len() + 3,
-        "no types beyond the entry's + Net's two + Random.Seed"
+        plain.types.len() + 4,
+        "no types beyond the entry's + Net's two + Random.Seed + Key.t"
+    );
+}
+
+/// The built-in `Key` module: the `input` hook's key variant. Qualified
+/// constructors work in patterns and expressions, keys compare structurally,
+/// and a typo (`Key.Enterr`) is a load-time unknown-member error — the whole
+/// point of retiring the string spelling.
+#[test]
+fn builtin_key_module_is_matchable() {
+    let src = "let dir = (k: Key.t): float =>\n\
+               match k with\n\
+               | Key.Left => 0.0 - 1.0\n\
+               | Key.Right => 1.0\n\
+               | Key.Num0 => 0.5\n\
+               | _ => 0.0\n\
+               let main = () => (dir(Key.Left), dir(Key.Num0), Key.Space == Key.Space)\n";
+    let project = load("key-module", &[("game.fun", src)]);
+    assert!(project.check().is_empty(), "checks clean");
+    let record = functor_lang::run(&project.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("runs: {}", f.error.message));
+    match record.outcome {
+        RunOutcome::Main(value) => assert_eq!(value.to_string(), "(-1, 0.5, true)"),
+        RunOutcome::Bindings(_) => panic!("expected main's value"),
+    }
+
+    let err = load_err(
+        "key-module-typo",
+        &[("game.fun", "let f = (k) => match k with | Key.Enterr => 1.0 | _ => 0.0\n")],
+    );
+    assert!(
+        err.contains("module `Key` has no constructor `Enterr`"),
+        "a key typo is a load error: {err}"
     );
 }
 

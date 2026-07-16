@@ -25,10 +25,10 @@ let input = (model, key, isDown) =>
   | false => model
   | true =>
     match key with
-    | "1" => { model with target: 0.0, auto: false }
-    | "2" => { model with target: 0.5, auto: false }
-    | "3" => { model with target: 1.0, auto: false }
-    | "0" => { model with auto: true, pointerDrivesHead: false }
+    | Key.Num1 => { model with target: 0.0, auto: false }
+    | Key.Num2 => { model with target: 0.5, auto: false }
+    | Key.Num3 => { model with target: 1.0, auto: false }
+    | Key.Num0 => { model with auto: true, pointerDrivesHead: false }
     | _ => model
 
 // Pointer position (window pixels) -> head aim: the pointer's offset from

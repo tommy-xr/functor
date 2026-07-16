@@ -207,7 +207,7 @@ mod tests {
         let tick = (m: Model, dt: Float, tts: Float) =>\n\
           let bumped = m.n + dt in\n\
           { n: bumped }\n\
-        let input = (m: Model, key: String, isDown: Bool) =>\n\
+        let input = (m: Model, key: Key.t, isDown: Bool) =>\n\
           let step = 1.0 in\n\
           { n: m.n + step }\n";
 
@@ -257,7 +257,14 @@ mod tests {
             },
             JournalEntry {
                 entry: "input",
-                args: vec![model.clone(), Value::String(Rc::from("W")), Value::Bool(true)],
+                args: vec![
+                    model.clone(),
+                    Value::Variant {
+                        ctor: Rc::from("Key.W"),
+                        args: Rc::new(Vec::new()),
+                    },
+                    Value::Bool(true),
+                ],
                 provenance: Provenance::Input,
             },
         ];
@@ -306,7 +313,7 @@ mod tests {
         let input = invs.iter().find(|i| i["entry"] == "input").unwrap();
         assert_eq!(input["index"], serde_json::json!(0));
         assert_eq!(input["count"], serde_json::json!(1));
-        assert_eq!(input["provenance"], serde_json::json!("input: W down"));
+        assert_eq!(input["provenance"], serde_json::json!("input: Key.W down"));
         assert!(!input["bindings"].as_array().unwrap().is_empty());
     }
 }

@@ -90,13 +90,13 @@ let jump = (model, isDown) =>
 
 let input = (model, key, isDown) =>
   match key with
-  | "Left" => { model with leftHeld: isDown }
-  | "A" => { model with leftHeld: isDown }
-  | "Right" => { model with rightHeld: isDown }
-  | "D" => { model with rightHeld: isDown }
-  | "Up" => jump(model, isDown)
-  | "W" => jump(model, isDown)
-  | "Space" => jump(model, isDown)
+  | Key.Left => { model with leftHeld: isDown }
+  | Key.A => { model with leftHeld: isDown }
+  | Key.Right => { model with rightHeld: isDown }
+  | Key.D => { model with rightHeld: isDown }
+  | Key.Up => jump(model, isDown)
+  | Key.W => jump(model, isDown)
+  | Key.Space => jump(model, isDown)
   | _ => model
 
 let tick = (model, dt, tts) =>
