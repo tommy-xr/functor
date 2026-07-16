@@ -62,7 +62,7 @@ screenshot run has no reason to grab your mouse.
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
 | `GET /state` | runtime state JSON: `frame`, `tts`, `viewport`, `input` (structured `held_keys` + `mouse`), `model` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
-| `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations (per-binding-site values + result) replayed while paused; `{ "paused": false, "invocations": [] }` while playing |
+| `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing |
 | `POST /input` | inject input (see below) |
 | `POST /time` | control the frame clock (see below) |
 | `POST /reload-source` | swap game logic from the request body (see below) |

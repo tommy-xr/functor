@@ -57,7 +57,8 @@ pub struct Invocation {
     pub bindings: Vec<Binding>,
 }
 
-/// One binding site's last recorded value.
+/// One site's last recorded value — a binder (let/param/match) or a variable
+/// reference (trace v2).
 pub struct Binding {
     pub name: String,
     /// Trace-relative file name (e.g. `game.fun`).
@@ -65,9 +66,14 @@ pub struct Binding {
     /// Byte offsets **into that file's own text** (per-file local).
     pub start: usize,
     pub end: usize,
-    /// `Display` text of the (last) bound value.
+    /// `Display` text of the (last) value.
     pub value: String,
-    /// Times this site bound during the invocation (loops > 1); `value` is last.
+    /// Depth-limited one-line preview — what renders inline (`value` moves to
+    /// hover). Equals `value` on a v1 trace (no preview field) or a primitive.
+    pub preview: String,
+    /// `"binder"` or `"ref"` (v1 traces: `"binder"`).
+    pub site: String,
+    /// Times this site was seen during the invocation (loops > 1); `value` is last.
     pub count: usize,
 }
 
@@ -117,12 +123,18 @@ impl Invocation {
 
 impl Binding {
     fn from_json(v: &Value) -> Option<Binding> {
+        let value = v["value"].as_str().unwrap_or("").to_string();
+        // v1 traces carry no preview/site — default to the full value and
+        // binder, which reproduces the v1 rendering exactly.
+        let preview = v["preview"].as_str().map(str::to_string).unwrap_or_else(|| value.clone());
         Some(Binding {
             name: v["name"].as_str()?.to_string(),
             file: v["file"].as_str()?.to_string(),
             start: v["start"].as_u64()? as usize,
             end: v["end"].as_u64()? as usize,
-            value: v["value"].as_str().unwrap_or("").to_string(),
+            value,
+            preview,
+            site: v["site"].as_str().unwrap_or("binder").to_string(),
             count: v["count"].as_u64().unwrap_or(1).max(1) as usize,
         })
     }
@@ -182,8 +194,13 @@ fn selected_invocation<'a>(
 
 /// Live-value inlay hints for `file_name`'s `source`, from the selected
 /// execution of each entry point. Empty (silently) when the source hash does
-/// not match the trace. Hints are deduplicated by offset so a helper shared
-/// across two selected invocations doesn't double up.
+/// not match the trace.
+///
+/// Renders the depth-limited `preview` (the full `value` is hover's job) and
+/// keeps ONE hint per (line, name): a binder site beats a reference site,
+/// and among references the first in reading order wins — so `m + m` shows
+/// `m`'s value once, and a line that binds `x` doesn't also annotate its
+/// reads of `x`.
 pub fn live_hints(
     trace: &TraceDoc,
     file_name: &str,
@@ -193,26 +210,110 @@ pub fn live_hints(
     if !source_matches(trace, file_name, source) {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
+    // (line, name) → the winning binding + its render offset.
+    let mut chosen: std::collections::HashMap<(usize, String), (&Binding, usize)> =
+        std::collections::HashMap::new();
     for entry in distinct_entries(trace) {
         let Some((inv, _, _)) = selected_invocation(trace, &entry, selected) else {
             continue;
         };
         for b in &inv.bindings {
-            let offset = hint_offset(source, b);
-            if b.file != file_name || !seen.insert(offset) {
+            if b.file != file_name {
                 continue;
             }
-            let label = if b.count > 1 {
-                format!("= {} (×{})", b.value, b.count)
-            } else {
-                format!("= {}", b.value)
-            };
-            out.push(LiveHint { offset, label });
+            let offset = hint_offset(source, b);
+            let line = line_of(source, offset);
+            match chosen.entry((line, b.name.clone())) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert((b, offset));
+                }
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    let (cur, cur_offset) = *slot.get();
+                    let wins = match (b.site.as_str(), cur.site.as_str()) {
+                        ("binder", "ref") => true,
+                        ("ref", "binder") => false,
+                        _ => offset < cur_offset,
+                    };
+                    if wins {
+                        slot.insert((b, offset));
+                    }
+                }
+            }
         }
     }
+    let mut out: Vec<LiveHint> = chosen
+        .into_values()
+        .map(|(b, offset)| {
+            let label = if b.count > 1 {
+                format!("= {} (×{})", b.preview, b.count)
+            } else {
+                format!("= {}", b.preview)
+            };
+            LiveHint { offset, label }
+        })
+        .collect();
+    out.sort_by_key(|h| h.offset);
+    out.dedup_by_key(|h| h.offset);
     out
+}
+
+/// The live value under `offset` in `file_name` — the hover half of the
+/// inline-vs-hover policy: inline shows the elided `preview`, hover shows the
+/// FULL `value`. Picks the narrowest recorded site whose name span contains
+/// the offset, from the selected executions; `None` on a hash mismatch or
+/// when nothing recorded there.
+pub fn live_hover(
+    trace: &TraceDoc,
+    file_name: &str,
+    source: &str,
+    offset: usize,
+    selected: &dyn Fn(&str) -> usize,
+) -> Option<String> {
+    if !source_matches(trace, file_name, source) {
+        return None;
+    }
+    let mut best: Option<(&Binding, usize)> = None; // (binding, name-span width)
+    for entry in distinct_entries(trace) {
+        let Some((inv, _, _)) = selected_invocation(trace, &entry, selected) else {
+            continue;
+        };
+        for b in &inv.bindings {
+            if b.file != file_name {
+                continue;
+            }
+            // The name-precise span: a `let` binder's span is the whole
+            // `let name =` region, so locate the name inside it (as
+            // hint_offset does); refs/params are already name-precise.
+            // Half-open: hovering the character AT name_end (the operator or
+            // space after the name) is not hovering the name.
+            let name_end = hint_offset(source, b);
+            let name_start = name_end.saturating_sub(b.name.len());
+            if offset < name_start || offset >= name_end {
+                continue;
+            }
+            let width = name_end - name_start;
+            if best.map(|(_, w)| width < w).unwrap_or(true) {
+                best = Some((b, width));
+            }
+        }
+    }
+    best.map(|(b, _)| {
+        if b.count > 1 {
+            format!("{} = {} (×{})", b.name, b.value, b.count)
+        } else {
+            format!("{} = {}", b.name, b.value)
+        }
+    })
+}
+
+/// The 0-based line of `offset` in `source`.
+fn line_of(source: &str, offset: usize) -> usize {
+    source
+        .as_bytes()
+        .iter()
+        .take(offset.min(source.len()))
+        .filter(|&&b| b == b'\n')
+        .count()
 }
 
 /// Execution-picker lenses for the entry-point defs in `file_name`. `entry_defs`
@@ -251,20 +352,50 @@ pub fn picker_lenses(
 
 /// Where to render a binding's `= value` hint: **just after the binder name**.
 ///
-/// Per the PR1 contract, a binding's span is name-precise only for lambda/match
-/// binders; a `let` binder's span is the whole `let [mut] name =` **region**, so
-/// its `end` sits after the `=`, not after the name. We therefore locate the
-/// `name` text within the span (`rfind`, so the binder — not a `let`/`mut`
-/// keyword — wins) and place the hint right after it, falling back to the span
-/// end when the source slice is unusable or the name isn't found.
+/// Per the PR1 contract, a binding's span is name-precise only for lambda/
+/// match binders and references; a `let` binder's span is the whole
+/// `let [mut] name =` **region**, so its `end` sits after the `=`, not after
+/// the name. We locate the name by scanning FORWARD past the keywords (a
+/// comment inside the region can contain the name too — a backwards search
+/// would hit it), with `rfind` as the last-resort fallback, and place the
+/// hint right after it; span end when the source slice is unusable.
 fn hint_offset(source: &str, b: &Binding) -> usize {
     match source.get(b.start..b.end) {
-        Some(region) => match region.rfind(&b.name) {
+        Some(region) => match binder_name_at(region, &b.name) {
             Some(i) => b.start + i + b.name.len(),
             None => b.end,
         },
         None => b.end,
     }
+}
+
+/// The byte offset of the binder `name` within its recorded span text — 0 for
+/// a name-precise span, the post-keyword position for a `let [mut] name =`
+/// region (skipping `let`/`mut`/whitespace, never searching backwards past a
+/// comment), else a whole-region `rfind` as the defensive fallback.
+fn binder_name_at(region: &str, name: &str) -> Option<usize> {
+    let at_name = |i: usize| {
+        region[i..].starts_with(name)
+            && !region[i + name.len()..]
+                .chars()
+                .next()
+                .map(|c| c.is_alphanumeric() || c == '_')
+                .unwrap_or(false)
+    };
+    if at_name(0) {
+        return Some(0);
+    }
+    let mut i = 0;
+    for keyword in ["let", "mut"] {
+        if region[i..].starts_with(keyword) {
+            i += keyword.len();
+            i += region[i..].len() - region[i..].trim_start().len();
+            if at_name(i) {
+                return Some(i);
+            }
+        }
+    }
+    region.rfind(name)
 }
 
 /// Distinct entry names in first-seen order.
@@ -386,6 +517,164 @@ mod tests {
 
     fn no_selection() -> impl Fn(&str) -> usize {
         |_| 0
+    }
+
+    #[test]
+    fn v2_previews_render_inline_and_full_values_hover() {
+        let src = "let tick = (m, dt, tts) =>\n  m\n";
+        let start = src.find('m').unwrap();
+        let end = start + 1;
+        let trace = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "tick dt=0.016",
+                "ghost": false, "result": "0",
+                "bindings": [{
+                    "name": "m", "file": "game.fun", "start": start, "end": end,
+                    "value": "{ pos: { x: 1, y: 2 }, hp: 3 }",
+                    "preview": "{ pos: …, hp: 3 }",
+                    "kind": "composite", "site": "binder", "count": 1
+                }]
+            }]),
+        );
+        // Inline shows the elided preview…
+        let hints = live_hints(&trace, "game.fun", src, &no_selection());
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].label, "= { pos: …, hp: 3 }");
+        // …and hover on the name shows the full value.
+        let hover = live_hover(&trace, "game.fun", src, start, &no_selection());
+        assert_eq!(hover.as_deref(), Some("m = { pos: { x: 1, y: 2 }, hp: 3 }"));
+        // Off the name: nothing. Half-open: the character AT name_end (the
+        // `,` after `m`) is not the name either.
+        assert!(live_hover(&trace, "game.fun", src, src.len() - 1, &no_selection()).is_none());
+        assert!(live_hover(&trace, "game.fun", src, end, &no_selection()).is_none());
+    }
+
+    #[test]
+    fn one_hint_per_line_and_name_binder_wins() {
+        // `x` appears three times on the body line: the binder plus two reads.
+        // Exactly one hint renders for it, at the binder.
+        let src = "let tick = (m, dt, tts) =>\n  let x = m in x\n";
+        let region_start = src.find("let x").unwrap();
+        let name_pos = region_start + "let ".len();
+        let value_pos = region_start + src[region_start..].find("m in").unwrap();
+        let read_pos = src.rfind('x').unwrap();
+        let trace = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "p",
+                "ghost": false, "result": "0",
+                "bindings": [
+                    { "name": "x", "file": "game.fun",
+                      "start": region_start, "end": value_pos,
+                      "value": "7", "preview": "7", "kind": "primitive",
+                      "site": "binder", "count": 1 },
+                    { "name": "x", "file": "game.fun",
+                      "start": read_pos, "end": read_pos + 1,
+                      "value": "7", "preview": "7", "kind": "primitive",
+                      "site": "ref", "count": 1 }
+                ]
+            }]),
+        );
+        let hints = live_hints(&trace, "game.fun", src, &no_selection());
+        assert_eq!(hints.len(), 1, "one hint per (line, name): {:?}",
+            hints.iter().map(|h| h.offset).collect::<Vec<_>>());
+        assert_eq!(hints[0].offset, name_pos + 1, "the binder wins");
+    }
+
+    #[test]
+    fn reference_sites_annotate_their_own_lines() {
+        // A read on a DIFFERENT line than its binder gets its own hint.
+        let src = "let tick = (m, dt, tts) =>\n  m\n";
+        let param_pos = src.find('m').unwrap();
+        let read_pos = src.rfind('m').unwrap();
+        let trace = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "p",
+                "ghost": false, "result": "0",
+                "bindings": [
+                    { "name": "m", "file": "game.fun",
+                      "start": param_pos, "end": param_pos + 1,
+                      "value": "5", "preview": "5", "kind": "primitive",
+                      "site": "binder", "count": 1 },
+                    { "name": "m", "file": "game.fun",
+                      "start": read_pos, "end": read_pos + 1,
+                      "value": "5", "preview": "5", "kind": "primitive",
+                      "site": "ref", "count": 1 }
+                ]
+            }]),
+        );
+        let hints = live_hints(&trace, "game.fun", src, &no_selection());
+        assert_eq!(hints.len(), 2, "binder line + read line");
+        assert!(hints.iter().any(|h| h.offset == read_pos + 1));
+    }
+
+    #[test]
+    fn hint_lands_on_the_binder_not_a_later_occurrence_in_the_region() {
+        // `let t: Float =` — the region text contains a later `t` (inside
+        // `Float`); a backwards search would land the hint there. The forward
+        // scan puts it after the BINDER name.
+        let src = "let tick = (m, dt, tts) =>\n  let t: Float = 1.0 in t\n";
+        let region_start = src.find("let t:").unwrap();
+        let value_pos = region_start + src[region_start..].find("1.0").unwrap();
+        let trace = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "p",
+                "ghost": false, "result": "1",
+                "bindings": [{
+                    "name": "t", "file": "game.fun",
+                    "start": region_start, "end": value_pos,
+                    "value": "1", "preview": "1", "kind": "primitive",
+                    "site": "binder", "count": 1
+                }]
+            }]),
+        );
+        let hints = live_hints(&trace, "game.fun", src, &no_selection());
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].offset, region_start + "let t".len());
+    }
+
+    #[test]
+    fn v1_traces_without_preview_fields_still_render() {
+        // Back-compat: no preview/kind/site → preview defaults to the value,
+        // site to binder — byte-identical to the v1 rendering.
+        let src = "let tick = (m, dt, tts) =>\n  m\n";
+        let start = src.find('m').unwrap();
+        let trace = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "p",
+                "ghost": false, "result": "0",
+                "bindings": [{
+                    "name": "m", "file": "game.fun", "start": start, "end": start + 1,
+                    "value": "42", "count": 1
+                }]
+            }]),
+        );
+        let hints = live_hints(&trace, "game.fun", src, &no_selection());
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].label, "= 42");
+    }
+
+    #[test]
+    fn live_hover_gates_on_the_source_hash() {
+        let src = "let tick = (m, dt, tts) =>\n  m\n";
+        let start = src.find('m').unwrap();
+        let trace = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "p",
+                "ghost": false, "result": "0",
+                "bindings": [{
+                    "name": "m", "file": "game.fun", "start": start, "end": start + 1,
+                    "value": "42", "count": 1
+                }]
+            }]),
+        );
+        let edited = format!("{src} ");
+        assert!(live_hover(&trace, "game.fun", &edited, start, &no_selection()).is_none());
     }
 
     #[test]

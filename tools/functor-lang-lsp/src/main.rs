@@ -181,9 +181,20 @@ fn run(
             }
             ("textDocument/hover", Some(id)) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                // The type hover merged with the live value under the cursor
+                // (trace v2's inline-vs-hover policy: previews render inline,
+                // the FULL value lives here).
                 let result = documents
                     .contains_key(uri)
-                    .then(|| hover(uri, &documents, &params["position"]))
+                    .then(|| {
+                        hover_with_live(
+                            uri,
+                            &documents,
+                            trace.as_ref(),
+                            &selected,
+                            &params["position"],
+                        )
+                    })
                     .flatten()
                     .unwrap_or(Value::Null);
                 write_message(
@@ -432,6 +443,53 @@ fn hover(uri: &str, documents: &HashMap<String, String>, position: &Value) -> Op
         "contents": { "kind": "markdown", "value": format!("```functor\n{hover_text}\n```") },
         "range": range,
     }))
+}
+
+/// The type hover merged with the live value under the cursor. Either half
+/// can be absent: a live value with no type hover still answers (values show
+/// even when the buffer doesn't check — the live-hint precedent), and vice
+/// versa. The live value renders FIRST (it's the immediate question when
+/// paused), the type after.
+fn hover_with_live(
+    uri: &str,
+    documents: &HashMap<String, String>,
+    trace: Option<&TraceDoc>,
+    selected: &HashMap<String, usize>,
+    position: &Value,
+) -> Option<Value> {
+    let type_hover = hover(uri, documents, position);
+    let live = live_hover_text(uri, documents, trace, selected, position);
+    match (type_hover, live) {
+        (Some(mut h), Some(live)) => {
+            let existing = h["contents"]["value"].as_str().unwrap_or("").to_string();
+            h["contents"]["value"] =
+                json!(format!("```functor\n{live}\n```\n\n{existing}"));
+            Some(h)
+        }
+        (h @ Some(_), None) => h,
+        (None, Some(live)) => Some(json!({
+            "contents": { "kind": "markdown", "value": format!("```functor\n{live}\n```") },
+        })),
+        (None, None) => None,
+    }
+}
+
+/// The live value under the cursor, from the trace (hash-gated, selected
+/// executions) — mirrors `live_inlay_hints`' file/offset mapping.
+fn live_hover_text(
+    uri: &str,
+    documents: &HashMap<String, String>,
+    trace: Option<&TraceDoc>,
+    selected: &HashMap<String, usize>,
+    position: &Value,
+) -> Option<String> {
+    let trace = trace?;
+    let path = uri_to_path(uri)?;
+    let file_name = match_trace_file(trace, &path)?;
+    let source = source_text(uri, documents, &path);
+    let offset = position_to_offset(&source, position)?;
+    let select = |entry: &str| selected.get(entry).copied().unwrap_or(0);
+    inspector::live_hover(trace, &file_name, &source, offset, &select)
 }
 
 /// Answer a definition request: load the project, resolve the reference at

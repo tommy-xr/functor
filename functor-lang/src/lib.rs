@@ -36,7 +36,7 @@ pub use lower::lower;
 pub use parser::{parse, parse_interface};
 pub use rebind::{rebind_value, RebindReport};
 pub use span::{line_col, Span};
-pub use trace::set_trace_sink;
+pub use trace::{set_trace_sink, suppress as suppress_trace};
 pub use types::{check, check_with_scopes_and_types, check_with_types, ExprTypes};
 pub use value::{HostData, Value};
 

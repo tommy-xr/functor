@@ -90,6 +90,9 @@ pub enum Provenance {
     HttpResponse,
     AudioFinished,
     UiEvent,
+    /// The frame's pure render pass — never journaled during play; the trace
+    /// builder synthesizes one draw invocation against the frozen model.
+    Draw,
 }
 
 impl Provenance {
@@ -132,6 +135,7 @@ impl Provenance {
             Provenance::HttpResponse => format!("http response: {}", msg()),
             Provenance::AudioFinished => format!("audio finished: {}", msg()),
             Provenance::UiEvent => format!("ui event: {}", msg()),
+            Provenance::Draw => "draw".to_string(),
         }
     }
 }

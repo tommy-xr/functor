@@ -2647,6 +2647,14 @@ pub fn take_ui_handlers() -> Vec<UiHandler> {
     UI_HANDLERS.with(|h| std::mem::take(&mut *h.borrow_mut()))
 }
 
+/// Put a saved handler table back — the inspector-replay bracket: replaying a
+/// journaled call (or draw) that evaluates `Ui.*` pushes handlers the NEXT
+/// real `ui` pass would take as its own, shifting every slot. The replay
+/// saves with [`take_ui_handlers`], runs, drops what it pushed, and restores.
+pub fn restore_ui_handlers(handlers: Vec<UiHandler>) {
+    UI_HANDLERS.with(|h| *h.borrow_mut() = handlers);
+}
+
 #[derive(Clone, Copy)]
 pub enum NetEventKind {
     Connected,

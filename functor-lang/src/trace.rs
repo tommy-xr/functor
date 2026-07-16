@@ -33,10 +33,38 @@ pub fn set_trace_sink(sink: Sink) {
     *SINK.write().unwrap() = Some(sink);
 }
 
+thread_local! {
+    /// See [`suppress`] — true while a paused-inspector replay runs on this
+    /// thread.
+    static SUPPRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A scope with `Debug.log` emission suppressed on this thread — the paused
+/// inspector's replay seam: a journaled call re-runs to record values, and its
+/// `Debug.log` lines already emitted live at frame time, so re-emitting would
+/// duplicate every line on each trace build. RAII so an early return can't
+/// leave the thread muted.
+pub fn suppress() -> SuppressGuard {
+    SUPPRESSED.with(|s| s.set(true));
+    SuppressGuard
+}
+
+pub struct SuppressGuard;
+
+impl Drop for SuppressGuard {
+    fn drop(&mut self) {
+        SUPPRESSED.with(|s| s.set(false));
+    }
+}
+
 /// Emit one already-formatted `Debug.log` line (`"label: value"`). With a sink
 /// installed it routes there; otherwise — plain `functor-lang run`, tests, a bare
-/// interpreter — it prints to stdout, the interpreter's only renderer.
+/// interpreter — it prints to stdout, the interpreter's only renderer. Silent
+/// inside a [`suppress`] scope (inspector replay).
 pub fn emit(message: String) {
+    if SUPPRESSED.with(|s| s.get()) {
+        return;
+    }
     match SINK.read().unwrap().as_ref() {
         Some(sink) => sink(message),
         None => println!("{message}"),

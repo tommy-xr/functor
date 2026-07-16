@@ -814,19 +814,23 @@ AudioScene.empty), got {}",
     /// VS Code live-preview as a `functor-inspector-trace` postMessage.
     fn inspector_trace(&mut self, paused: bool) -> String {
         if !paused {
-            return build_trace_doc(false, 0, 0.0, &self.source_hashes, &[], &self.session);
+            return build_trace_doc(false, 0, 0.0, &self.source_hashes, &[], None, &self.session);
         }
         if let Some(cached) = &self.cached_trace {
             return cached.clone();
         }
         let frame = self.recorder.current_scene_frame().unwrap_or(0);
         let tts = self.recorder.current_scene_frame_tts().unwrap_or(0.0);
+        // Draw is pure and never journaled; the builder replays it once
+        // against the frozen model so the render pass is inspectable too.
+        let draw_args = vec![self.model.clone(), Value::Number(tts)];
         let json = build_trace_doc(
             true,
             frame,
             tts,
             &self.source_hashes,
             &self.last_frame_journal,
+            Some(&draw_args),
             &self.session,
         );
         self.cached_trace = Some(json.clone());
