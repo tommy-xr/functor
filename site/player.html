@@ -51,11 +51,57 @@
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
     <script type="module">
 
+      // Forward console traces to the embedding page's Output panel. Functor Lang
+      // `Debug.log` routes to console.log INSIDE this iframe (see the web
+      // runtime's trace sink) — invisible unless devtools are open on the
+      // frame. Installed before the wasm loads so boot-time logs are caught.
+      // SAME-ORIGIN parents only (the sandbox/IDE): unlike the inbound
+      // protocol, this channel carries game-visible data outward, and a
+      // third-party page framing the player must not receive it — so the
+      // guard, and location.origin (never "*") as the target.
+      const sameOriginParent = (() => {
+        if (window.parent === window) return false;
+        try {
+          return window.parent.location.origin === window.location.origin;
+        } catch {
+          return false; // cross-origin parent: reading its location throws
+        }
+      })();
+      if (sameOriginParent) {
+        for (const level of ["log", "warn", "error"]) {
+          const original = console[level].bind(console);
+          console[level] = (...args) => {
+            original(...args);
+            try {
+              // Stamp the game frame the line was emitted on. Throws before
+              // init() (no wasm yet) and reads -1 before anything is
+              // recorded — both become null (the panel then shows time only).
+              // Safe mid-tick: the export is a one-shot read of a small cell
+              // the runtime only writes in a non-held assignment.
+              let frame = null;
+              try {
+                const f = functor_lang_scene_frame();
+                if (f >= 0) frame = f;
+              } catch {
+                /* pre-init */
+              }
+              window.parent.postMessage(
+                { type: "functor-lang-console", level, message: args.map(String).join(" "), frame },
+                window.location.origin
+              );
+            } catch {
+              /* an unclonable edge must never break logging */
+            }
+          };
+        }
+      }
+
       import init, {
         functor_lang_key_event,
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
         functor_lang_is_running,
+        functor_lang_scene_frame,
         functor_lang_set_source,
         functor_lang_set_project,
       } from "./pkg/functor_runtime_web.js";

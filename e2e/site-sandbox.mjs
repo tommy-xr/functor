@@ -1116,6 +1116,94 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   }
 }
 
+// --- 12b. Status bar: Problems + Output. ---------------------------------------
+// The bottom strip's Problems tab mirrors the lint pass (count + clickable
+// rows that jump the editor), and the Output panel receives runtime console
+// traces (`Debug.log`, forwarded from the player iframe) plus reload results.
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+
+  const problemsTab = page.locator('.statusbar-tab[data-tab="problems"]');
+  const outputTab = page.locator('.statusbar-tab[data-tab="output"]');
+  const tabText = async (tab) => ((await tab.textContent()) || "").trim();
+  const waitFor = async (fn, pred, timeout = 8000) => {
+    const t0 = Date.now();
+    for (;;) {
+      const v = await fn();
+      if (pred(v)) return v;
+      if (Date.now() - t0 > timeout) return v;
+      await sleep(150);
+    }
+  };
+
+  // A type error fills the Problems tab and panel.
+  const BAD = `${GREEN}let oops = (x: Float) => x + "status bar"\n`;
+  await page.evaluate((s) => window.__sandbox.setSource(s), BAD);
+  const flagged = await waitFor(() => tabText(problemsTab), (t) => t.includes("1 problem"));
+  check("problems tab counts the type error", flagged.includes("1 problem"), flagged);
+
+  await problemsTab.click();
+  const row = page.locator(".problem-row");
+  const rowText = await waitFor(
+    async () => ((await row.count()) ? await row.first().textContent() : ""),
+    (t) => t.includes("game.fun")
+  );
+  check(
+    "problems panel lists the diagnostic with its location",
+    rowText.includes("float") && rowText.includes("game.fun"),
+    rowText
+  );
+
+  // Clicking the row jumps + focuses the editor.
+  await row.first().click();
+  const focused = await page.evaluate(() =>
+    document.activeElement ? document.activeElement.classList.contains("cm-content") : false
+  );
+  check("clicking a problem focuses the editor", focused);
+
+  // Fixing the error empties the tab back out.
+  await page.evaluate((s) => window.__sandbox.setSource(s), GREEN);
+  const cleared = await waitFor(() => tabText(problemsTab), (t) => t.includes("0 problems"));
+  check("fixing the error resets the problems tab", cleared.includes("0 problems"), cleared);
+
+  // A top-level Debug.log fires on the hot-swap and lands in Output (the
+  // player forwards its console), alongside the reload-result lines.
+  await page.evaluate(
+    (s) => window.__sandbox.setSource(s),
+    `${GREEN}let boot = Debug.log("status-probe", 42.0)\n`
+  );
+  await outputTab.click();
+  const outputLines = await waitFor(
+    () => page.locator(".output-line").allTextContents(),
+    (lines) => lines.some((l) => l.includes("status-probe"))
+  );
+  check(
+    "Debug.log reaches the Output panel",
+    outputLines.some((l) => l.includes("status-probe")),
+    JSON.stringify(outputLines.slice(-4))
+  );
+  check(
+    "reload results reach the Output panel",
+    outputLines.some((l) => l.includes("model preserved")),
+    JSON.stringify(outputLines.slice(-4))
+  );
+  // Runtime lines carry a `[Frame N | HH:MM:SS]` preamble (the game was
+  // already running when the hot-swap re-evaluated the Debug.log).
+  const probeLine = outputLines.find((l) => l.includes("status-probe")) || "";
+  check(
+    "output lines carry a [Frame N | time] preamble",
+    /^\[Frame \d+ \| \d{2}:\d{2}:\d{2}\]/.test(probeLine),
+    probeLine
+  );
+
+  await page.close();
+}
+
 // --- 13. Scope-aware autocomplete in the editor (commit 8b). ------------------
 // The completion source is backed by the wasm's scope-aware `complete`, driven
 // through the __sandbox.triggerComplete seam (insert text + set cursor + open
