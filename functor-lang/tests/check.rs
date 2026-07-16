@@ -229,12 +229,32 @@ fn math_builtins_check() {
     assert_eq!(message, "argument 2 of `Math.mod`: expected float, got string");
 }
 
-// `Random.step`/`Random.range` are typed builtins: the seed is a float and the
-// result is a `(float, float)` tuple, so a destructuring `let` checks cleanly.
+// `Random.step`/`Random.range` are typed builtins whose seed is the injected
+// `Random` module's abstract `Random.Seed`: made by `Random.seed`/`Random.fork`
+// and threaded back out of `step`/`range` — never a bare number.
 #[test]
 fn random_step_typechecks() {
-    assert_clean("let x = () => let (v, s) = Random.step(1.0) in v + s");
-    assert_clean("let x = () => let (v, s) = Random.range(0.0, 10.0, 1.0) in v + s");
+    assert_clean("let x = () => let (v, s) = Random.step(Random.seed(1.0)) in (v + 1.0, s)");
+    assert_clean(
+        "let x = () => let (v, _) = Random.range(0.0, 10.0, Random.seed(1.0)) in v + 1.0",
+    );
+    // The threaded nextSeed is itself a Seed…
+    assert_clean("let x = () => let (_, s) = Random.step(Random.seed(1.0)) in Random.step(s)");
+    // …and so is a per-entity fork (subject-LAST, so it pipes).
+    assert_clean("let x = (i: float) => Random.seed(9.0) |> Random.fork(i) |> Random.step");
+}
+
+// The brand cuts both ways: a bare number is not a Seed, and a Seed is not a
+// number (the old `baseSeed + i` arithmetic now points at `Random.fork`).
+#[test]
+fn random_seed_is_branded() {
+    let (message, _, _) = single_diag("let x = () => Random.step(1.0)");
+    assert_eq!(
+        message,
+        "argument 1 of `Random.step`: expected Random.Seed, got float"
+    );
+    let (message, _, _) = single_diag("let x = () => Random.seed(1.0) + 1.0");
+    assert_eq!(message, "`+` needs float operands, got Random.Seed");
 }
 
 #[test]
@@ -242,7 +262,7 @@ fn random_step_rejects_non_float_seed() {
     let (message, _, _) = single_diag("let x = () => Random.step(\"s\")");
     assert_eq!(
         message,
-        "argument 1 of `Random.step`: expected float, got string"
+        "argument 1 of `Random.step`: expected Random.Seed, got string"
     );
 }
 

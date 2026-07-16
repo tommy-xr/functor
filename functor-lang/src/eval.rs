@@ -1460,6 +1460,24 @@ most 1000000 cells"
                 }
                 _ => err("Random.step(seed) expects one finite number".to_string()),
             },
+            // `Random.seed(n)` — make a Seed from any finite number by
+            // hashing its BITS (see `seed_counter`); the branded entry point
+            // to the PRNG. At runtime a Seed is a plain number (the brand is
+            // check-time only), which keeps seeds plain data for time-travel
+            // snapshots, hot-reload preservation, and `/state`.
+            Builtin::RandomSeed => match args.as_slice() {
+                [Value::Number(n)] if n.is_finite() => Ok(Value::Number(seed_counter(*n) as f64)),
+                _ => err("Random.seed(n) expects one finite number".to_string()),
+            },
+            // `Random.fork(i, seed)` — the seed of decorrelated child stream
+            // `i`: the typed form of the old `baseSeed + i` per-entity idiom.
+            // Subject-LAST, so it pipes: `model.seed |> Random.fork(i)`.
+            Builtin::RandomFork => match args.as_slice() {
+                [Value::Number(i), Value::Number(seed)] if i.is_finite() && seed.is_finite() => {
+                    Ok(Value::Number(fork_seed(*i, *seed)))
+                }
+                _ => err("Random.fork(i, seed) expects two finite numbers".to_string()),
+            },
             // Convenience: `Random.range(lo, hi, seed) => (value, nextSeed)`
             // with value in [lo, hi) for lo <= hi (one `Random.step` draw
             // rescaled).
@@ -1765,6 +1783,7 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::MathMin
         | Builtin::MathMax
         | Builtin::MathPow
+        | Builtin::RandomFork
         | Builtin::DebugLog => 2,
         Builtin::ListRange
         | Builtin::ListMaximum
@@ -1784,7 +1803,7 @@ pub fn builtin_arity(b: Builtin) -> usize {
         // `Math.pi` resolves straight to a number in `eval` (it's a constant,
         // never a callable value), so this arity is never consulted.
         Builtin::MathPi => 0,
-        | Builtin::RandomStep => 1,
+        Builtin::RandomSeed | Builtin::RandomStep => 1,
     }
 }
 
@@ -1822,8 +1841,10 @@ pub enum Builtin {
     TextJoin,
     TextParseFloat,
     MathClamp01,
+    RandomSeed,
     RandomStep,
     RandomRange,
+    RandomFork,
     DebugLog,
 }
 
@@ -1844,8 +1865,6 @@ pub enum Builtin {
 ///
 /// Returns `(value, nextSeed)` with `value` in `[0, 1)`.
 fn random_step(seed: f64) -> (f64, f64) {
-    const MASK52: u64 = (1u64 << 52) - 1;
-    const TWO52: f64 = 4_503_599_627_370_496.0; // 2^52
     // Odd 52-bit golden-ratio gamma — a large stride with full period 2^52.
     const GAMMA: u64 = 0x9E37_79B9_7F4A_7;
 
@@ -1858,15 +1877,48 @@ fn random_step(seed: f64) -> (f64, f64) {
     let counter = seed.rem_euclid(TWO52) as u64 & MASK52;
     let next = counter.wrapping_add(GAMMA) & MASK52;
 
-    // The splitmix64 finalizer avalanches the (52-bit) Weyl state into 64 bits.
-    let mut z = next;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
+    // The finalizer avalanches the (52-bit) Weyl state into 64 bits.
+    let z = mix64(next);
 
     // Top 53 bits → a double in [0, 1) (the standard splitmix64→f64 mapping).
     let value = (z >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0); // 2^53
     (value, next as f64)
+}
+
+const MASK52: u64 = (1u64 << 52) - 1;
+const TWO52: f64 = 4_503_599_627_370_496.0; // 2^52
+
+/// The splitmix64 finalizer — shared by [`random_step`], [`seed_counter`],
+/// and [`fork_seed`].
+fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// `Random.seed(n)` — fold any finite f64 into a counter by hashing its BIT
+/// PATTERN, not its integer value. `random_step`'s raw fold truncates
+/// fractional seeds, so every seed in `[0, 1)` — exactly what the documented
+/// `Effect.random` seeding idiom delivers — collapsed to counter 0 (the same
+/// stream every run). Hashing the bits gives every distinct float a
+/// decorrelated starting point.
+fn seed_counter(n: f64) -> u64 {
+    // `+ 0.0` normalizes -0.0 to +0.0 so the two equal zeros seed alike.
+    mix64((n + 0.0).to_bits()) & MASK52
+}
+
+/// `Random.fork(i, seed)` — the seed of child stream `i`, hash-combined so
+/// ANY float index names a distinct decorrelated stream (no truncation edge
+/// cases). The typed replacement for the old `baseSeed + i` arithmetic,
+/// which an opaque seed no longer permits.
+fn fork_seed(i: f64, seed: f64) -> f64 {
+    // Offsetting the index bits domain-separates the combine: mix64(0) == 0,
+    // so without it the all-zero corner `Random.fork(0.0, Random.seed(0.0))`
+    // would fix-point back to the parent seed.
+    const FORK_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+    let counter = seed.rem_euclid(TWO52) as u64 & MASK52;
+    let index = mix64((i + 0.0).to_bits().wrapping_add(FORK_GAMMA));
+    (mix64(counter ^ index) & MASK52) as f64
 }
 
 /// Resolve an [`ExprKind::External`] path against the registry.
@@ -1905,8 +1957,10 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Math.max" => Builtin::MathMax,
         "Math.pow" => Builtin::MathPow,
         "Math.pi" => Builtin::MathPi,
+        "Random.seed" => Builtin::RandomSeed,
         "Random.step" => Builtin::RandomStep,
         "Random.range" => Builtin::RandomRange,
+        "Random.fork" => Builtin::RandomFork,
         "Debug.log" => Builtin::DebugLog,
         _ => return None,
     })
@@ -1947,8 +2001,10 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::MathMax => "Math.max",
         Builtin::MathPow => "Math.pow",
         Builtin::MathPi => "Math.pi",
+        Builtin::RandomSeed => "Random.seed",
         Builtin::RandomStep => "Random.step",
         Builtin::RandomRange => "Random.range",
+        Builtin::RandomFork => "Random.fork",
         Builtin::DebugLog => "Debug.log",
     }
 }
@@ -2086,6 +2142,56 @@ mod random_tests {
                     i + 1
                 );
             }
+        }
+    }
+
+    /// `Random.seed` hashes the float's BITS: fractional seeds — notably the
+    /// `Effect.random` idiom's [0, 1) output, which the raw counter fold
+    /// truncates to 0 — must land on distinct counters.
+    #[test]
+    fn seed_counter_spreads_fractional_seeds() {
+        let seeds = [0.0, 0.42, 0.84, 0.999, 1.0, 5.0, -0.42, -5.0];
+        let counters: Vec<u64> = seeds.iter().map(|&s| super::seed_counter(s)).collect();
+        let mut sorted = counters.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seeds.len(), "seed counters collapsed: {counters:?}");
+        // -0.0 == +0.0, so the two equal zeros must seed alike…
+        assert_eq!(super::seed_counter(-0.0), super::seed_counter(0.0));
+        // …and every counter round-trips exactly through the language's f64s.
+        for &c in &counters {
+            assert_eq!(c as f64 as u64, c);
+            assert!(c < 1u64 << 52);
+        }
+    }
+
+    /// The all-zero corner: `mix64(0) == 0`, so `Random.seed(0.0)` is counter
+    /// 0 — and an undecorated hash-combine would make `fork(0.0, that)`
+    /// fix-point back to the parent. The FORK_GAMMA offset breaks the cycle.
+    #[test]
+    fn fork_of_zero_seed_leaves_the_parent() {
+        let zero = super::seed_counter(0.0) as f64;
+        let child = super::fork_seed(0.0, zero);
+        assert_ne!(child, zero, "fork(0, seed(0)) must not echo the parent");
+        // And the child's stream diverges from the parent's.
+        assert_ne!(random_step(child).0, random_step(zero).0);
+    }
+
+    /// `Random.fork(i, seed)` — distinct, deterministic, in-range child seeds
+    /// for distinct stream indices (including fractional ones — no
+    /// truncation collisions like `fork(0.5) == fork(0.0)`).
+    #[test]
+    fn fork_names_distinct_child_streams() {
+        let seed = super::seed_counter(5.0) as f64;
+        let indices: Vec<f64> = (0..64).map(|i| i as f64).chain([0.5, 1.5, -1.0]).collect();
+        let children: Vec<f64> = indices.iter().map(|&i| super::fork_seed(i, seed)).collect();
+        let mut sorted = children.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.dedup();
+        assert_eq!(sorted.len(), children.len(), "fork child seeds collided");
+        for (&i, &c) in indices.iter().zip(&children) {
+            assert_eq!(c, super::fork_seed(i, seed), "fork is deterministic");
+            assert!(c >= 0.0 && c < (1u64 << 52) as f64 && c == c.trunc());
         }
     }
 

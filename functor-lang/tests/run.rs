@@ -665,7 +665,7 @@ fn new_builtins_evaluate() {
 #[test]
 fn random_step_is_pure_and_deterministic() {
     let src = "let main = () =>\n  \
-        let (a, s1) = Random.step(42.0) in\n  \
+        let (a, s1) = Random.step(Random.seed(42.0)) in\n  \
         let (b, _) = Random.step(s1) in\n  \
         (a == a, a < 1.0, a == b)";
     // Same seed → same value (a==a), value in [0,1), a fresh draw differs.
@@ -679,8 +679,9 @@ fn random_range_rescales_step_draw() {
     // range(0,10,seed) == step(seed).value * 10 — the rescale relationship,
     // checked deterministically without hardcoding a float.
     let src = "let main = () =>\n  \
-        let (u, _) = Random.step(7.0) in\n  \
-        let (v, _) = Random.range(0.0, 10.0, 7.0) in\n  \
+        let s = Random.seed(7.0) in\n  \
+        let (u, _) = Random.step(s) in\n  \
+        let (v, _) = Random.range(0.0, 10.0, s) in\n  \
         (v == u * 10.0, u < 1.0)";
     assert_eq!(main_result(src), "(true, true)");
 }
@@ -691,13 +692,15 @@ fn random_range_rescales_step_draw() {
 fn random_range_edge_bounds() {
     // lo == hi → exactly lo (lerp lo*(1-u)+lo*u == lo).
     assert_eq!(
-        main_result("let main = () => let (v, _) = Random.range(5.0, 5.0, 1.0) in v == 5.0"),
+        main_result(
+            "let main = () => let (v, _) = Random.range(5.0, 5.0, Random.seed(1.0)) in v == 5.0"
+        ),
         "true",
     );
     // Negative bounds stay inside [-2, -1) — v < hi is the tight guarantee;
     // the loose lower bound just confirms no inf/NaN leak.
     let neg = "let main = () =>\n  \
-        let (v, _) = Random.range(-2.0, -1.0, 3.0) in\n  \
+        let (v, _) = Random.range(-2.0, -1.0, Random.seed(3.0)) in\n  \
         (-2.5 < v, v < -1.0)";
     assert_eq!(main_result(neg), "(true, true)");
 }
@@ -706,6 +709,23 @@ fn random_range_edge_bounds() {
 fn random_step_rejects_non_number() {
     let (message, _, _) = run_err("let main = () => Random.step(\"x\")");
     assert!(message.starts_with("Random.step(seed) expects"));
+}
+
+/// `Random.seed` hashes the float's BITS, so fractional seeds — what the
+/// `Effect.random` seeding idiom delivers, all in [0, 1) — give distinct
+/// streams (the raw counter fold truncates them all to 0), and
+/// `Random.fork(i, seed)` names decorrelated per-entity child streams.
+#[test]
+fn random_seed_and_fork_give_distinct_streams() {
+    let src = "let main = () =>\n  \
+        let (a, _) = Random.step(Random.seed(0.42)) in\n  \
+        let (b, _) = Random.step(Random.seed(0.84)) in\n  \
+        let (c, _) = Random.step(Random.seed(0.0)) in\n  \
+        let s = Random.seed(5.0) in\n  \
+        let (f0, _) = Random.step(Random.fork(0.0, s)) in\n  \
+        let (f1, _) = Random.step(s |> Random.fork(1.0)) in\n  \
+        (a == b, a == c, b == c, f0 == f1)";
+    assert_eq!(main_result(src), "(false, false, false, false)");
 }
 
 /// `Text.fixed(n, decimals)` — the F# `sprintf "%.1f"` shape (HUD text):
