@@ -256,6 +256,20 @@ snapshots — no GPU, fully agent-verifiable.
       REFUSE bare numbers with a teaching error — degree/radian confusion
       is unrepresentable, matching the F# side's `Math.Angle` discipline.
       Tier 2 (F#-style units of measure with unit algebra) rides on B7.
+- [x] **Branded `Random.Seed`** (2026-07-16; the strong-typing track's first
+      slice). A built-in `Random` interface module (`<builtin>/Random.funi`,
+      injected beside `Net`) declares an abstract `Seed`: `Random.seed(n)`
+      makes one (hashing the float's BITS, so `Effect.random`'s fractional
+      [0, 1) output no longer collapses every run onto counter 0),
+      `Random.fork(i, seed)` derives per-entity child streams (the typed
+      successor of `baseSeed + i`), and `step`/`range` take and return
+      `Seed`s. Enforcement is CHECK-TIME only — at runtime a seed stays a
+      plain number, so seeds remain plain data for time-travel snapshots,
+      hot-reload preservation, and `/state` (docs/time-travel.md's "the seed
+      is one more plain-data timeline entry" invariant holds). At the
+      checker's External seam an interface signature now takes precedence
+      over a builtin scheme — the injected `.funi` is what brands the
+      builtins.
 - [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade

@@ -787,10 +787,11 @@ let bad = f() + 1.0
 /// lowering (the backward-compatibility pin: bare names, IDs from zero,
 /// spans from zero).
 #[test]
-fn single_file_project_adds_only_the_builtin_net_module() {
-    // A project always includes the built-in `Net` prelude module (so any
-    // game can `match ev with | Net.Connected(id) => …`), so its merged IR
-    // is plain lowering's defs/types PLUS Net's — nothing else changes.
+fn single_file_project_adds_only_the_builtin_modules() {
+    // A project always includes the built-in `Net` and `Random` prelude
+    // modules (so any game can `match ev with | Net.Connected(id) => …` and
+    // seed the PRNG), so its merged IR is plain lowering's defs/types PLUS
+    // theirs — nothing else changes.
     let src = "type Shape = | Circle(radius: float) | Point\n\
                let area = (s: Shape): float =>\n\
                match s with | Circle(r) => 3.14 * r * r | Point => 0.0\n\
@@ -810,16 +811,57 @@ fn single_file_project_adds_only_the_builtin_net_module() {
     for ty in &plain.types {
         assert!(proj_types.contains(&ty.name.as_str()));
     }
-    // The ONLY additions are the Net module's (canonicalized `Net.NetEvent`
-    // and `Net.HttpResponse`).
+    // The ONLY additions are the built-in modules': Net's canonicalized
+    // `Net.NetEvent` / `Net.HttpResponse` and Random's abstract `Random.Seed`.
     assert!(
         proj_types.contains(&"Net.NetEvent") && proj_types.contains(&"Net.HttpResponse"),
         "the built-in Net module must be injected: {proj_types:?}"
     );
+    assert!(
+        proj_types.contains(&"Random.Seed"),
+        "the built-in Random module must be injected: {proj_types:?}"
+    );
     assert_eq!(
         proj_types.len(),
-        plain.types.len() + 2,
-        "no types beyond the entry's + Net.NetEvent + Net.HttpResponse"
+        plain.types.len() + 3,
+        "no types beyond the entry's + Net's two + Random.Seed"
+    );
+}
+
+/// The four `Random.*` builtins are typed from two places that must not
+/// drift: the injected interface module's signatures (project loads — the
+/// authoritative path) and `builtin_signature` (the fallback for bare
+/// single-file checks with no project env). The same correct use must be
+/// clean through both, and the same misuse must produce the SAME diagnostic.
+#[test]
+fn random_signatures_agree_between_interface_and_builtin_fallback() {
+    let ok = "let ok = () =>\n\
+              let (v, s) = Random.step(Random.seed(1.0)) in\n\
+              let (w, s2) = Random.range(0.0, 1.0, s |> Random.fork(2.0)) in\n\
+              (v + w, s2)\n";
+    let bad = "let bad = () => Random.step(1.0)\n";
+
+    // Signature path: a loaded project injects `<builtin>/Random.funi`.
+    let via_project = |name: &str, src: &str| -> Vec<String> {
+        load(name, &[("game.fun", src)])
+            .check()
+            .into_iter()
+            .map(|d| d.message)
+            .collect()
+    };
+    // Builtin-scheme path: bare parse + lower + check, no project env.
+    let via_builtin = |src: &str| -> Vec<String> {
+        let module = functor_lang::lower(functor_lang::parse(src).expect("parses")).expect("lowers");
+        functor_lang::check(&module).into_iter().map(|d| d.message).collect()
+    };
+
+    assert_eq!(via_project("rand-parity-ok", ok), Vec::<String>::new());
+    assert_eq!(via_builtin(ok), Vec::<String>::new());
+    let project_diag = via_project("rand-parity-bad", bad);
+    assert_eq!(project_diag, via_builtin(bad));
+    assert_eq!(
+        project_diag,
+        vec!["argument 1 of `Random.step`: expected Random.Seed, got float".to_string()]
     );
 }
 

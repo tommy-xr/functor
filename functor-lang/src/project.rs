@@ -115,6 +115,19 @@ const NET_MODULE_SRC: &str = "type NetEvent =\n\
      | Response(status: Float, body: String)\n\
      | Failure(error: String)\n";
 
+/// The built-in `Random` interface module (injected beside `Net` in [`link`]).
+/// `Seed` is an abstract type — the brand that keeps PRNG seeds out of
+/// arithmetic — while at runtime a seed stays a plain number (plain data for
+/// time-travel snapshots and hot-reload). The values are builtins
+/// ([`crate::eval::Builtin`]); these signatures both type them (the checker
+/// prefers a signature over a builtin scheme) and keep the qualified names
+/// resolving now that a `Random` module exists.
+const RANDOM_MODULE_SRC: &str = "type Seed\n\
+     let seed : (float) => Seed\n\
+     let step : (Seed) => (float, Seed)\n\
+     let range : (float, float, Seed) => (float, Seed)\n\
+     let fork : (float, Seed) => Seed\n";
+
 pub struct SourceFile {
     pub path: PathBuf,
     /// The module name derived from the file name.
@@ -459,6 +472,17 @@ fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         path: PathBuf::from("<builtin>/Net.fun"),
         module: "Net".to_string(),
         src: NET_MODULE_SRC.to_string(),
+        base,
+    });
+
+    // The built-in `Random` interface module — the abstract `Seed` type and
+    // the signatures that brand the Random builtins (see RANDOM_MODULE_SRC).
+    let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
+    files.push(SourceFile {
+        interface: true,
+        path: PathBuf::from("<builtin>/Random.funi"),
+        module: "Random".to_string(),
+        src: RANDOM_MODULE_SRC.to_string(),
         base,
     });
 

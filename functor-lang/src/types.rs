@@ -349,6 +349,9 @@ pub fn builtin_signature(b: Builtin) -> Type {
     fn func(params: Vec<Type>, ret: Type) -> Type {
         Fn(params, Box::new(ret))
     }
+    fn seed() -> Type {
+        Variant("Random.Seed".to_string(), Vec::new())
+    }
     match b {
         // Generic slots are Var(0)/Var(1); every use site instantiates
         // them fresh (B7), so element types genuinely flow through.
@@ -430,10 +433,19 @@ pub fn builtin_signature(b: Builtin) -> Type {
         | Builtin::MathPow => func(vec![Float, Float], Float),
         // Math.pi : Float — a constant, not a function.
         Builtin::MathPi => Float,
-        // Random.step : (Float) => (Float, Float) — (value in [0,1), nextSeed)
-        Builtin::RandomStep => func(vec![Float], Tuple(vec![Float, Float])),
-        // Random.range : (Float, Float, Float) => (Float, Float) — (value in [lo,hi), nextSeed)
-        Builtin::RandomRange => func(vec![Float, Float, Float], Tuple(vec![Float, Float])),
+        // Random.* — seeds are BRANDED: `Random.Seed` is the injected
+        // `Random` interface module's abstract type (see
+        // `crate::project::RANDOM_MODULE_SRC`). These schemes are the
+        // fallback behind those injected signatures (a signature wins at the
+        // External seam) — keep the two in sync.
+        // Random.seed : (Float) => Seed
+        Builtin::RandomSeed => func(vec![Float], seed()),
+        // Random.step : (Seed) => (Float, Seed) — (value in [0,1), nextSeed)
+        Builtin::RandomStep => func(vec![seed()], Tuple(vec![Float, seed()])),
+        // Random.range : (Float, Float, Seed) => (Float, Seed) — (value in [lo,hi), nextSeed)
+        Builtin::RandomRange => func(vec![Float, Float, seed()], Tuple(vec![Float, seed()])),
+        // Subject-LAST. Random.fork : (Float, Seed) => Seed — child stream i
+        Builtin::RandomFork => func(vec![Float, seed()], seed()),
         // Subject-LAST. Debug.log : (String, 'a) => 'a — label first, subject
         // last; logs `label: subject` and returns the subject unchanged (Var(0)
         // is generic, so it's transparent in a pipe).
@@ -1491,19 +1503,20 @@ missing {missing}. Did you forget an argument?"
                 // letrec rule).
                 None => self.globals.get(name).cloned().unwrap_or(Type::Unknown),
             },
-            // An unregistered external is a runtime concern (the module set
-            // may grow); the checker only knows the builtins' signatures.
-            ExprKind::External(path) => match builtin(path) {
-                Some(b) => {
-                    let sig = builtin_signature(b);
-                    let mut vars = Vec::new();
-                    free_vars_of(&sig, &mut vars);
-                    self.instantiate(&Scheme { vars, ty: sig })
-                }
-                // An interface (`.funi`) signature gives a host external a real
-                // type; otherwise it stays the gradual seam (`Unknown`).
-                None => match self.signatures.get(&path.join(".")).cloned() {
-                    Some(scheme) => self.instantiate(&scheme),
+            // An interface (`.funi`) signature is authoritative when present
+            // (the injected `Random` module types its builtins this way);
+            // otherwise a builtin's own scheme applies, and an external
+            // neither declares is the gradual seam (`Unknown` — the module
+            // set may grow at runtime).
+            ExprKind::External(path) => match self.signatures.get(&path.join(".")).cloned() {
+                Some(scheme) => self.instantiate(&scheme),
+                None => match builtin(path) {
+                    Some(b) => {
+                        let sig = builtin_signature(b);
+                        let mut vars = Vec::new();
+                        free_vars_of(&sig, &mut vars);
+                        self.instantiate(&Scheme { vars, ty: sig })
+                    }
                     None => Type::Unknown,
                 },
             },

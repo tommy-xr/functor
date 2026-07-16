@@ -39,11 +39,10 @@ type Msg =
   | StartClicked
   | RestartClicked
 
-// ---------- deterministic "randomness" ----------
-// Math has no floor/frac/random, so scaled-sin noise stands in: a
-// deterministic value in roughly [0,1] from a seed and a stream index.
-let noise = (seed, n) =>
-  Math.sin(seed * 127.1 + n * 311.7) * 0.5 + 0.5
+// ---------- deterministic randomness ----------
+// The model carries a Random.Seed; per-entity streams fork off it
+// (`seed |> Random.fork(i)`) and draws thread the returned nextSeed, so
+// every run seeded by the same Effect.random result replays exactly.
 
 // ---------- spawning ----------
 let radiusOf = (size) =>
@@ -61,19 +60,23 @@ let pointsFor = (size) =>
 let waveRocks = (wave) => 2.0 + wave
 
 // A large rock on a ring around the center (never on the ship), drifting
-// in a noise-picked direction with a noise-picked spin.
+// in a randomly-picked direction with a random spin. Rock n draws from its
+// own forked stream, and the last nextSeed becomes the rock's OWN seed
+// (its shape wobble and, on destruction, its children derive from it).
 let spawnRock = (seed, n) =>
-  let ang = noise(seed, n) * 6.28318 in
-  let ring = 8.0 + noise(seed, n + 17.0) * 6.0 in
-  let dir = noise(seed, n + 31.0) * 6.28318 in
-  let speed = 1.5 + noise(seed, n + 47.0) * 2.0 in
+  let s0 = seed |> Random.fork(n) in
+  let (ang, s1) = Random.range(0.0, 6.28318, s0) in
+  let (ring, s2) = Random.range(8.0, 14.0, s1) in
+  let (dir, s3) = Random.range(0.0, 6.28318, s2) in
+  let (speed, s4) = Random.range(1.5, 3.5, s3) in
+  let (spin, s5) = Random.range(0.0 - 1.5, 1.5, s4) in
   { x: Math.sin(ang) * ring,
     z: Math.cos(ang) * ring,
     vx: Math.sin(dir) * speed,
     vz: Math.cos(dir) * speed,
     size: 3.0,
-    spin: noise(seed, n + 5.0) * 3.0 - 1.5,
-    seed: noise(seed, n + 3.0) }
+    spin: spin,
+    seed: s5 }
 
 let spawnWave = (seed, count) =>
   List.range(count) |> List.map((n) => spawnRock(seed, n))
@@ -88,14 +91,14 @@ let init = {
   phase: Menu,
   ship: newShip,
   bullets: [],
-  asteroids: spawnWave(0.42, 5.0),   // the menu's drifting backdrop
+  asteroids: spawnWave(Random.seed(0.42), 5.0),   // the menu's drifting backdrop
   score: 0.0,
   lives: 3.0,
   wave: 1.0,
   held: { left: false, right: false, thrust: false },
   fireHeld: false,
   shield: 0.0,
-  seed: 0.42,
+  seed: Random.seed(0.42),
 }
 
 // ---------- geometry helpers ----------
@@ -141,22 +144,27 @@ let assignHits = (bullets, rocks) =>
 
 // ---------- splitting ----------
 // A destroyed rock (sizes 3/2) splits into two children of the next size
-// down, flung off the parent's course by opposite noise-picked angles.
+// down, flung off the parent's course by opposite randomly-kicked angles.
+// Each child forks its own stream off the parent's seed by salt.
 let childRock = (a, ang, salt) =>
   let v = rotVec(a.vx * 1.35, a.vz * 1.35, ang) in
+  let (spin, childSeed) = Random.range(0.0 - 2.0, 2.0, a.seed |> Random.fork(salt)) in
   { x: a.x,
     z: a.z,
     vx: v.x,
     vz: v.z,
     size: a.size - 1.0,
-    spin: noise(a.seed, salt + 9.0) * 4.0 - 2.0,
-    seed: noise(a.seed, salt) }
+    spin: spin,
+    seed: childSeed }
 
 let splitRock = (a) =>
   match a.size with
   | 1.0 => []
-  | _ => [childRock(a, 0.7 + noise(a.seed, 7.0), 1.7),
-          childRock(a, 0.0 - (0.7 + noise(a.seed, 8.0)), 2.3)]
+  | _ =>
+    let (kickA, ks) = Random.step(a.seed |> Random.fork(7.0)) in
+    let (kickB, _) = Random.step(ks) in
+    [childRock(a, 0.7 + kickA, 1.7),
+     childRock(a, 0.0 - (0.7 + kickB), 2.3)]
 
 // ---------- effects ----------
 let fxOf = (list) =>
@@ -181,7 +189,7 @@ let freshRun = (model, seed) =>
 
 let update = (model, msg) =>
   match msg with
-  | Seeded(r) => freshRun(model, r)
+  | Seeded(r) => freshRun(model, Random.seed(r))
   | StartClicked => (model, Effect.random(Seeded))
   | RestartClicked => (model, Effect.random(Seeded))
 
@@ -305,7 +313,7 @@ let tickPlaying = (model, dt, tts) =>
      | [] =>
        (match model.wave < finalWave with
         | true =>
-          (let nextSeed = noise(model.seed, tts) in
+          (let (_, nextSeed) = Random.step(model.seed) in
            ({ base with wave: model.wave + 1.0,
                         seed: nextSeed,
                         shield: Lib.floorAt(1.5, shield),
@@ -324,25 +332,35 @@ let tick = (model, dt, tts) =>
 
 // ---------- rendering ----------
 // Stars as tiny upward-facing planes (spheres this small render as
-// speckle clusters from overhead). Brightness varies by noise.
+// speckle clusters from overhead). Star n draws glow, size, and position
+// from its own forked stream — decorrelated by construction, no clumping.
+let starSeed = Random.seed(9.1)
+
 let starfield = () =>
   List.range(60.0) |> List.map((n) =>
-    let glow = 0.45 + noise(9.1, n) * 0.55 in
+    let (glow01, s1) = Random.step(starSeed |> Random.fork(n)) in
+    let (size01, s2) = Random.step(s1) in
+    let (x01, s3) = Random.step(s2) in
+    let (z01, _) = Random.step(s3) in
+    let glow = 0.45 + glow01 * 0.55 in
     Scene.plane()
-      |> Scene.scale(0.14 + noise(7.7, n) * 0.14)
+      |> Scene.scale(0.14 + size01 * 0.14)
       |> Scene.emissive(glow, glow, glow * 1.08)
-      // Decorrelated index scales — the same n-step in both axes walks a
-      // closed curve and the stars visibly clump.
-      |> Scene.translate((noise(3.1, n) * 2.0 - 1.0) * (worldX + 8.0),
+      |> Scene.translate((x01 * 2.0 - 1.0) * (worldX + 8.0),
                          0.0 - 4.0,
-                         (noise(5.3, n * 1.37 + 11.0) * 2.0 - 1.0) * (worldZ + 8.0)))
+                         (z01 * 2.0 - 1.0) * (worldZ + 8.0)))
 
+// The rock's shape wobble draws from its own seed — pure, so the shape is
+// stable frame to frame.
 let rockScene = (a, tts) =>
   let r = radiusOf(a.size) in
+  let (w1, s1) = Random.step(a.seed) in
+  let (w2, s2) = Random.step(s1) in
+  let (w3, _) = Random.step(s2) in
   Scene.sphere()
-    |> Scene.scaleXYZ(r * (0.75 + noise(a.seed, 1.0) * 0.5),
-                      r * (0.75 + noise(a.seed, 2.0) * 0.5),
-                      r * (0.75 + noise(a.seed, 3.0) * 0.5))
+    |> Scene.scaleXYZ(r * (0.75 + w1 * 0.5),
+                      r * (0.75 + w2 * 0.5),
+                      r * (0.75 + w3 * 0.5))
     |> Scene.rotateY(Angle.radians(tts * a.spin))
     |> Scene.lit(0.62, 0.55, 0.47)
     |> Scene.translate(a.x, 0.0, a.z)

@@ -326,18 +326,28 @@ positively: `Math.mod(-1.0, 8.0)` == `7.0`, the wraparound games want;
 `b == 0.0` → NaN) ·
 `Math.min(a, b)` · `Math.max(a, b)` · `Math.pow(base, exp)` (`base ^ exp`) ·
 `Math.pi` (a constant `float` VALUE, not a call — write `Math.pi`, never
-`Math.pi()`) · `Debug.log(label, value)` — `(string, 'a) => 'a`: an Elm-style trace. Logs
+`Math.pi()`) ·
+`Random.seed(n)` → `Seed` — make a seed. Seeds are **`Random.Seed`**, an
+abstract BRANDED type (annotate as `Random.Seed`): a bare number where a
+`Seed` is expected (`Random.step(42.0)`) and seed arithmetic (`seed + i`)
+are check-time errors. `Random.seed` hashes the float's BITS, so any finite
+float — `Random.seed(0.42)` from an `Effect.random` result as much as
+`Random.seed(42.0)` — is a valid, distinct starting point. At runtime a
+seed is still plain data (a number), so it snapshots, hot-reloads, and
+time-travels like any model field ·
 `Random.step(seed)` → `(value, nextSeed)` — pure seeded PRNG: `value` in
 `[0, 1)`, deterministic (same seed → same stream), no effect round-trip.
-Thread `nextSeed` through the model to advance the stream
+Thread `nextSeed` (itself a `Seed`) through the model to advance the stream
 (`let (v, s2) = Random.step(model.seed) in …`). Seed the stream once at
-init via `Effect.random`/`Effect.now` (or a fixed constant for a
-reproducible run). Because it's a builtin it also runs under plain
-`functor-lang run`. Adjacent seeds give **decorrelated** streams with no
-short-prefix overlap (a splitmix64 avalanche over a Weyl counter — this is the
-fix for the sin-hash noise whose correlated streams were a visual bug), so
-`baseSeed + i` per entity is safe. Seeds fold mod 2^52, so any finite seed
-(including negatives) is a valid distinct starting point.
+init via `Effect.random`/`Effect.now` + `Random.seed(r)` (or a fixed
+`Random.seed(42.0)` for a reproducible run). Because it's a builtin it also
+runs under plain `functor-lang run`. Distinct seeds give **decorrelated**
+streams with no short-prefix overlap (a splitmix64 avalanche over a Weyl
+counter — the fix for the sin-hash noise whose correlated streams were a
+visual bug) ·
+`Random.fork(i, seed)` → `Seed` — the seed of decorrelated child stream `i`
+(per-entity streams: `model.seed |> Random.fork(i)`; subject-LAST, any
+float index). The typed successor of the old `baseSeed + i` arithmetic ·
 `Random.range(lo, hi, seed)` → `(value, nextSeed)` is the one convenience:
 one draw rescaled into `[lo, hi)` (for `lo <= hi`) · `Debug.log(label, value)` —
 `(string, 'a) => 'a`: an Elm-style trace. Logs
