@@ -340,7 +340,26 @@ const playerFrame = (page) => {
 }
 
 // --- 6. Every example loads and ticks cleanly. ---------------------------------
-for (const example of ["hero", "primitives", "bounce", "monitor"]) {
+// Derived from the live picker (not a hardcoded list) so a newly-added example
+// is covered automatically — this is the guard that a repo example still runs
+// on wasm once it's wired into the sandbox dropdown.
+const examples = await (async () => {
+  const page = await browser.newPage();
+  await page.goto(`${BASE}/sandbox.html`);
+  await page.waitForFunction(() => document.getElementById("example-picker")?.options.length > 0);
+  const ids = await page.evaluate(() =>
+    Array.from(document.getElementById("example-picker").options)
+      .map((o) => o.value)
+      .filter((v) => v !== "__inline")
+  );
+  await page.close();
+  return ids;
+})();
+check("picker exposes the expanded example set", examples.length >= 10, examples.join(", "));
+// Duplicate ids would silently overwrite each other's dist/examples/<id>.fun and
+// under-test the set — a unique-count mismatch is a real drift bug, not a nit.
+check("picker example ids are unique", new Set(examples).size === examples.length, examples.join(", "));
+for (const example of examples) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const consoleLog = [];
   page.on("console", (m) => consoleLog.push(m.text()));

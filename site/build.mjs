@@ -11,6 +11,7 @@
 import { cp, mkdir, rm, access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
+import { EXAMPLES } from "./src/examples.js";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -31,16 +32,6 @@ const TIMELINE_MODEL = `${root}runtime/functor-runtime-web/timeline-model.js`;
 // pkg is a note, not an error.
 const LANG_PKG = `${root}tools/functor-lang-wasm/pkg`;
 const LANG_PKG_FILES = ["functor_lang_wasm.js", "functor_lang_wasm_bg.wasm"];
-
-// dist/examples/<name>.fun — site-local plus the repo's Functor Lang examples.
-const EXAMPLES = {
-  hero: `${site}examples/hero.fun`,
-  primitives: `${root}examples/primitives/game.fun`,
-  // Named `bounce` (not `physics`): the flat copy makes `file = module`, and a
-  // module literally named `Physics` collides with the builtin/prelude namespace.
-  bounce: `${root}examples/physics/game.fun`,
-  monitor: `${root}examples/monitor/game.fun`,
-};
 
 try {
   await access(`${PKG}/${PKG_FILES[0]}`);
@@ -64,8 +55,8 @@ for (const file of PKG_FILES) {
 }
 await cp(SCRUBBER, `${dist}/scrubber.js`);
 await cp(TIMELINE_MODEL, `${dist}/timeline-model.js`);
-for (const [name, path] of Object.entries(EXAMPLES)) {
-  await cp(path, `${dist}/examples/${name}.fun`);
+for (const { id, source } of EXAMPLES) {
+  await cp(`${root}${source}`, `${dist}/examples/${id}.fun`);
 }
 
 // The language-intelligence wasm, if it has been built. Absent → skip (build on).

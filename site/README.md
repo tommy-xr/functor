@@ -28,6 +28,8 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
   follow-up.
 - `src/functor-lang.js` — the Functor Lang CodeMirror language + synthwave theme,
   shared by both editors.
-- `build.mjs` copies selected repo examples' `game.fun` sources (see the map in `build.mjs`)
-  at build time, so the sandbox dropdown always matches what ships in the repo.
+- `src/examples.js` is the single source of truth for the sandbox's example set
+  (id + dropdown label + repo source path). `build.mjs` copies each entry's
+  `game.fun` at build time and `src/sandbox.js` builds the dropdown from the same
+  list, so the sandbox dropdown always matches what ships in the repo.
 - Deploy: publish `site/dist` to any static host.

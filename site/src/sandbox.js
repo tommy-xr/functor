@@ -22,13 +22,7 @@ import {
 } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 import { createStatusBar } from "./status-bar.js";
-
-const EXAMPLES = [
-  { id: "hero", label: "Neon grid" },
-  { id: "primitives", label: "Primitives" },
-  { id: "bounce", label: "Physics" },
-  { id: "monitor", label: "Render targets" },
-];
+import { EXAMPLES } from "./examples.js";
 
 const frame = document.getElementById("player");
 const statusPill = document.getElementById("status");
