@@ -11,21 +11,37 @@
 
 const PUSH_DEBOUNCE_MS = 300;
 
+// A rejected edit keeps the last good program running, so an error isn't urgent.
+// Hold it back this long before surfacing it — a fix within the window (the
+// common case while typing) clears it before it ever shows.
+const ERROR_GRACE_MS = 4000;
+
 export class ProjectBridge {
   // iframe: the player element. Callbacks map protocol events to UI:
   //   onReloading()          — a push was sent (busy)
   //   onLive()               — the player booted / is ready
   //   onResult(ok, message)  — a hot-swap reply came back
-  constructor(iframe, { onReloading, onLive, onResult, debounceMs = PUSH_DEBOUNCE_MS }) {
+  constructor(
+    iframe,
+    {
+      onReloading,
+      onLive,
+      onResult,
+      debounceMs = PUSH_DEBOUNCE_MS,
+      errorGraceMs = ERROR_GRACE_MS,
+    }
+  ) {
     this.iframe = iframe;
     this.onReloading = onReloading;
     this.onLive = onLive;
     this.onResult = onResult;
     this.debounceMs = debounceMs;
+    this.errorGraceMs = errorGraceMs;
 
     this.waiting = false; // player announced project-waiting (safe to push)
     this.files = null; // latest full file set
     this.pushTimer = null;
+    this.errorTimer = null;
     // Correlates results with pushes: each push gets a fresh id, the runtime
     // echoes it, and a result for anything but the LATEST push is stale.
     this.pushId = 0;
@@ -44,7 +60,22 @@ export class ProjectBridge {
   // state until the next `functor-lang-project-waiting`.
   reset() {
     clearTimeout(this.pushTimer);
+    clearTimeout(this.errorTimer);
     this.waiting = false;
+  }
+
+  // Surface a hot-swap result — but hold errors back. A rejected edit keeps the
+  // last good program running, so the preview IS still live; show that now and
+  // only surface the error if the program stays broken past the grace window.
+  // Any success (the usual next keystroke that re-parses) clears it instantly.
+  #deliverResult(ok, message) {
+    clearTimeout(this.errorTimer);
+    if (ok) {
+      this.onResult(true, message);
+    } else {
+      this.onLive();
+      this.errorTimer = setTimeout(() => this.onResult(false, message), this.errorGraceMs);
+    }
   }
 
   #send() {
@@ -85,7 +116,7 @@ export class ProjectBridge {
       // A result whose id isn't the latest push's is stale — a newer push is
       // already in flight; its reply supersedes this one.
       if (data.id !== undefined && data.id !== this.pushId) return;
-      this.onResult(data.ok, data.message);
+      this.#deliverResult(data.ok, data.message);
     }
   }
 }
