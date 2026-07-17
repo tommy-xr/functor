@@ -17,8 +17,16 @@
 // and cheaper than a second scheduler) instead of re-analyzing on every key.
 
 import { forceLinting, linter } from "@codemirror/lint";
-import { Decoration, EditorView, ViewPlugin, WidgetType, hoverTooltip } from "@codemirror/view";
-import { StateEffect, StateField } from "@codemirror/state";
+import {
+  Decoration,
+  EditorView,
+  GutterMarker,
+  ViewPlugin,
+  WidgetType,
+  gutter,
+  hoverTooltip,
+} from "@codemirror/view";
+import { RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { functorLangLanguage } from "./functor-lang.js";
 
 // The runtime import specifier resolves to the glue esbuild leaves external
@@ -601,11 +609,115 @@ const sha256Hex = async (text) => {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
+// --- Recency gutter -----------------------------------------------------------
+// Colors each line by when it last EXECUTED, from the trace's coverage window
+// (a ±120-frame journal ring the runtime replays coverage-only at pause):
+//   now    (green) — ran on the paused frame
+//   before (cyan)  — ran only on earlier frames in the window
+//   after  (pink)  — ran on later frames (visible when scrubbed back)
+//   dark           — runnable (an expression starts there) but never ran
+// Lines with no runnable position (comments, blanks) stay unmarked. A line
+// that ran both before and after (never now) takes the NEAREST frame's color,
+// tie → before.
+
+class CovMarker extends GutterMarker {
+  constructor(state) {
+    super();
+    this.state = state;
+  }
+  eq(other) {
+    return other.state === this.state;
+  }
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = `cm-cov cm-cov-${this.state}`;
+    return el;
+  }
+}
+
+const COV_MARKERS = {
+  now: new CovMarker("now"),
+  before: new CovMarker("before"),
+  after: new CovMarker("after"),
+  dark: new CovMarker("dark"),
+};
+
+const setCoverage = StateEffect.define();
+
+const coverageField = StateField.define({
+  create: () => RangeSet.empty,
+  update(value, tr) {
+    // Same honesty rule as the value overlay: any edit clears wholesale.
+    if (tr.docChanged) return RangeSet.empty;
+    for (const effect of tr.effects) {
+      if (effect.is(setCoverage)) return effect.value;
+      if (effect.is(clearDecorations)) return RangeSet.empty;
+    }
+    return value;
+  },
+});
+
+const coverageGutter = gutter({
+  class: "cm-cov-gutter",
+  markers: (view) => view.state.field(coverageField, false) || RangeSet.empty,
+});
+
+// The per-line recency state for the current buffer, as a marker RangeSet.
+// Coverage/runnable starts are UTF-8 byte offsets (the wire) — converted
+// through the same byte→UTF-16 map as the value overlay before line lookup.
+const coverageSetFor = (fileName, source, doc) => {
+  const conv = byteToUtf16(source);
+  const at = (byte) => {
+    const off = conv ? conv[byte] ?? source.length : byte;
+    return Math.min(off, doc.length);
+  };
+  // line number → { now, before: minDistance, after: minDistance, runnable }
+  const lines = new Map();
+  const lineState = (offset) => {
+    const line = doc.lineAt(offset).number;
+    let s = lines.get(line);
+    if (!s) {
+      s = { now: false, before: 0, after: 0, runnable: false };
+      lines.set(line, s);
+    }
+    return s;
+  };
+  for (const start of (liveTrace.runnable || {})[fileName] || []) {
+    lineState(at(start)).runnable = true;
+  }
+  for (const site of (liveTrace.coverage || {})[fileName] || []) {
+    const s = lineState(at(site.start));
+    for (const frame of site.frames || []) {
+      if (frame === 0) s.now = true;
+      else if (frame < 0) s.before = s.before ? Math.max(s.before, frame) : frame;
+      else s.after = s.after ? Math.min(s.after, frame) : frame;
+    }
+  }
+  const ranges = [];
+  for (const [line, s] of lines) {
+    const state = s.now
+      ? "now"
+      : s.before && s.after
+        ? (-s.before <= s.after ? "before" : "after")
+        : s.before
+          ? "before"
+          : s.after
+            ? "after"
+            : s.runnable
+              ? "dark"
+              : null;
+    if (state) ranges.push(COV_MARKERS[state].range(doc.line(line).from));
+  }
+  ranges.sort((a, z) => a.from - z.from);
+  return RangeSet.of(ranges);
+};
+
 // Rebuild the overlay for the current buffer: async (the hash check), token-
 // guarded so a stale completion can't clobber a newer state.
 const refreshLive = async (view) => {
   const token = ++liveRefreshToken;
-  const clear = () => view.dispatch({ effects: setLiveOverlay.of([]) });
+  const clear = () =>
+    view.dispatch({ effects: [setLiveOverlay.of([]), setCoverage.of(RangeSet.empty)] });
   if (!liveTrace || !liveTrace.paused) {
     clear();
     return;
@@ -625,7 +737,12 @@ const refreshLive = async (view) => {
   }
   const sites = liveSitesFor(fileName, source);
   liveSites = sites;
-  view.dispatch({ effects: setLiveOverlay.of(liveHintsFor(sites, source)) });
+  view.dispatch({
+    effects: [
+      setLiveOverlay.of(liveHintsFor(sites, source)),
+      setCoverage.of(coverageSetFor(fileName, source, view.state.doc)),
+    ],
+  });
 };
 
 // Host seams -------------------------------------------------------------------
@@ -642,6 +759,20 @@ export const setLiveTrace = (view, trace) => {
 // hint's [nameStart, nameEnd) must slice to exactly its name in the doc,
 // which fails loudly if byte offsets ever leak through unconverted).
 export const currentLiveHints = () => liveHints;
+
+// The rendered gutter states as `{ lineNumber: state }` — the e2e seam (DOM
+// gutter elements only exist for the viewport; this reads the full set).
+export const currentCoverage = (view) => {
+  const set = view.state.field(coverageField, false);
+  const out = {};
+  if (!set) return out;
+  const iter = set.iter();
+  while (iter.value) {
+    out[view.state.doc.lineAt(iter.from).number] = iter.value.state;
+    iter.next();
+  }
+  return out;
+};
 
 // The frame's executions in order, for the host's picker UI:
 // `[{ entry, index, count, provenance, selected }]`. Empty while playing.
@@ -744,6 +875,21 @@ const intelTheme = EditorView.theme({
   ".cm-hover-live": {
     color: "#41d8e6",
   },
+  // The recency gutter: a slim execution-state bar per line. Colors match
+  // the calm theme (green live / cyan accent / pink future — the scrubber's
+  // own recency language).
+  ".cm-cov-gutter": {
+    width: "4px",
+  },
+  ".cm-cov": {
+    width: "4px",
+    height: "100%",
+    borderRadius: "1px",
+  },
+  ".cm-cov-now": { background: "#6fdc92" },
+  ".cm-cov-before": { background: "rgba(65, 216, 230, 0.55)" },
+  ".cm-cov-after": { background: "rgba(232, 88, 184, 0.55)" },
+  ".cm-cov-dark": { background: "rgba(233, 230, 242, 0.14)" },
   // Codelenses: a dimmed signature line above the def.
   ".cm-lens": {
     fontFamily: mono,
@@ -821,6 +967,8 @@ export const setupLangIntel = async () => {
     hoverTypes,
     decorationField,
     liveField,
+    coverageField,
+    coverageGutter,
     initialRefresh,
     // Register the completion source on the language's data facet — basicSetup's
     // autocompletion() picks it up via languageDataAt (no second popup).
