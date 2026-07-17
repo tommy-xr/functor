@@ -49,7 +49,20 @@ const PUSH_DEBOUNCE_MS = 300;
 // How long to wait for the dev server to come up (first run may compile).
 const SERVER_WAIT_MS = 30000;
 
+// The extension-wide output channel ("Functor Lang" in the Output panel):
+// activation, LSP lifecycle, inspector attach/relay traffic — the first stop
+// when diagnosing "why aren't live values showing". The per-preview channel
+// ("Functor Lang Preview") stays separate: it carries the dev-server child's
+// raw stdout/stderr.
+let channel;
+const elog = (text) => {
+  if (channel) channel.appendLine(`[${new Date().toISOString().slice(11, 23)}] ${text}`);
+};
+
 function activate(context) {
+  channel = vscode.window.createOutputChannel("Functor Lang");
+  context.subscriptions.push(channel);
+  elog("extension activated");
   client = new LanguageClient(
     "functor-lang",
     "Functor Lang Language Server",
@@ -57,7 +70,10 @@ function activate(context) {
     { command: "functor-lang-lsp" },
     { documentSelector: [{ language: "functor-lang" }] }
   );
-  clientStarted = client.start();
+  clientStarted = client.start().then(
+    () => elog("language server started (functor-lang-lsp)"),
+    (e) => elog(`language server FAILED to start: ${e && e.message ? e.message : e}`)
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("functor-lang.openLivePreview", openLivePreview)
@@ -81,6 +97,7 @@ function activate(context) {
         if (!file || !client) return;
         const doc = JSON.parse(fs.readFileSync(file, "utf8"));
         await clientStarted;
+        elog(`inspector trace injected from ${file} (test hook)`);
         await client.sendNotification(inspector.TRACE, doc);
       })
     );
@@ -110,12 +127,14 @@ function activate(context) {
     inspectorState = inspector.reduce(inspectorState, { type: "attach", port: parsed.port });
     context.globalState.update(INSPECTOR_PORT_KEY, parsed.port);
     const n = inspector.attachNotification(parsed.port);
+    elog(`inspector attach: port ${parsed.port}`);
     if (client) client.sendNotification(n.notification, n.params);
     renderInspectorStatus();
   };
   const detachInspector = () => {
     inspectorState = inspector.reduce(inspectorState, { type: "detach" });
     const n = inspector.detachNotification();
+    elog("inspector detach");
     if (client) client.sendNotification(n.notification, n.params);
     renderInspectorStatus();
   };
@@ -247,6 +266,7 @@ async function openLivePreview() {
   const log = (text) => {
     if (!disposed) output.append(text);
   };
+  elog(`preview: spawning ${functorPath} run wasm for ${project.dir}`);
   const child = spawn(functorPath, ["-d", project.dir, "run", "wasm", "--no-open"], {
     cwd: project.dir,
   });
@@ -298,6 +318,11 @@ async function openLivePreview() {
     // these; unrelated messages fall through to relayTrace → null.
     const relayed = inspector.relayTrace(msg);
     if (relayed) {
+      const doc = relayed.params || {};
+      elog(
+        `inspector trace relayed from preview: paused=${doc.paused} frame=${doc.frame ?? "-"} ` +
+          `invocations=${(doc.invocations || []).length}`
+      );
       if (client) client.sendNotification(relayed.notification, relayed.params);
       return;
     }
