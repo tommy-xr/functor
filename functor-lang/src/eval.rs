@@ -124,6 +124,9 @@ pub struct RecordedInvocation {
     pub result_preview: String,
     /// One entry per distinct binding site reached, in first-seen order.
     pub bindings: Vec<RecordedBinding>,
+    /// Sorted span starts of every expression evaluated during the call —
+    /// the execution-coverage set (which lines / match arms / branches ran).
+    pub coverage: Vec<usize>,
     /// The recorder hit a cap during this call — `bindings` is partial (but
     /// `result` is exact; recording never changes evaluation).
     pub truncated: bool,
@@ -202,10 +205,19 @@ struct Recorder {
     ref_sites: usize,
     events: usize,
     truncated: bool,
+    /// Span starts of every expression evaluated under this recorder — the
+    /// execution-coverage set (which lines/arms actually ran). Distinct
+    /// starts are static program positions, so the set is bounded by program
+    /// size; [`MAX_RECORDED_BINDINGS`] caps it defensively anyway.
+    coverage: std::collections::HashSet<usize>,
+    /// When false, only coverage collects — the values pass (Display
+    /// rendering, site bookkeeping) is skipped entirely. The cheap mode for
+    /// replaying a whole window of frames just to know what ran.
+    record_values: bool,
 }
 
 impl Recorder {
-    fn new() -> Recorder {
+    fn new(record_values: bool) -> Recorder {
         Recorder {
             bindings: Vec::new(),
             index: HashMap::new(),
@@ -213,14 +225,34 @@ impl Recorder {
             ref_sites: 0,
             events: 0,
             truncated: false,
+            coverage: std::collections::HashSet::new(),
+            record_values,
         }
+    }
+
+    /// Note an expression evaluation at `start` (its span start).
+    fn cover(&mut self, start: usize) {
+        if self.coverage.len() < MAX_RECORDED_BINDINGS {
+            self.coverage.insert(start);
+        }
+    }
+
+    /// The sorted coverage set.
+    fn coverage_sorted(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = self.coverage.iter().copied().collect();
+        out.sort_unstable();
+        out
     }
 
     /// Record a value observed at a site. The event cap is a hard stop; a
     /// site-class cap only refuses NEW sites of that class — existing sites
     /// keep updating and the other class keeps recording, so a
-    /// reference-heavy body can't starve the binder record.
+    /// reference-heavy body can't starve the binder record. A no-op in
+    /// coverage-only mode.
     fn record(&mut self, key: SiteKey, site: RecordedSite, name: &str, span: Span, value: &Value) {
+        if !self.record_values {
+            return;
+        }
         if self.events >= MAX_RECORDED_BINDINGS {
             self.truncated = true;
             return;
@@ -439,21 +471,53 @@ impl Session {
             mut_slots: HashMap::new(),
             trace: Vec::new(),
             tracing: Tracing::Off,
-            recorder: Some(Recorder::new()),
+            recorder: Some(Recorder::new(true)),
             depth: 0,
             call_depth: 0,
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
         let recorder = interp.recorder.expect("armed above");
+        let coverage = recorder.coverage_sorted();
         let invocation = RecordedInvocation {
             entry: name.to_string(),
             result: result.to_string(),
             result_preview: result.preview(),
             bindings: recorder.bindings,
+            coverage,
             truncated: recorder.truncated,
         };
         Ok((result, invocation))
+    }
+
+    /// Like [`Self::call_recorded`] but COVERAGE-ONLY: returns the sorted
+    /// span starts of every expression the call evaluated, skipping the
+    /// values pass entirely (no Display rendering, no site bookkeeping) —
+    /// the cheap mode for replaying a whole window of frames just to learn
+    /// which lines/arms ran.
+    pub fn call_covered(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        host: &mut dyn Host,
+    ) -> Result<(Value, Vec<usize>), RunError> {
+        let callee = self.globals.get(name).cloned().ok_or_else(|| RunError {
+            message: format!("no top-level `let {name}` in the module"),
+            span: Span::new(0, 0),
+        })?;
+        let mut interp = Interp {
+            globals: self.globals.clone(),
+            mut_slots: HashMap::new(),
+            trace: Vec::new(),
+            tracing: Tracing::Off,
+            recorder: Some(Recorder::new(false)),
+            depth: 0,
+            call_depth: 0,
+            host,
+        };
+        let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
+        let recorder = interp.recorder.expect("armed above");
+        Ok((result, recorder.coverage_sorted()))
     }
 }
 
@@ -528,6 +592,11 @@ evaluation depth."
                 ),
                 span: expr.span,
             });
+        }
+        // Coverage: one armed-check per evaluation (a `None` test when off —
+        // the same hot-path cost class as the binding-site hook).
+        if let Some(recorder) = &mut self.recorder {
+            recorder.cover(expr.span.start);
         }
         let result = self.eval_inner(expr, env);
         self.depth -= 1;
