@@ -18,6 +18,7 @@ import {
   onDiagnostics,
   wireLiveTrace,
   currentLiveHints,
+  currentCoverage,
 } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 import { createStatusBar } from "./status-bar.js";
@@ -137,6 +138,7 @@ window.__lang = {
   analyze: (source) => analyzeCached(source),
   complete: (source, offset) => completeAt(source, offset),
   liveHints: () => currentLiveHints(),
+  coverage: () => currentCoverage(view),
 };
 
 const setDoc = (source) => {
