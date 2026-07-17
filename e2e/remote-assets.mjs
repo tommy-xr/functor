@@ -155,7 +155,7 @@ function buildBundle(goodUrl, badUrl, softUrl) {
     JSON.stringify({ language: "functor-lang", entry: "game.fun" }, null, 2),
   );
   const soft = softUrl
-    ? `\n      Scene.model("${softUrl}") |> Scene.translate(0.0 - 3.0, 0.0, 0.0),`
+    ? `\n      Scene.model("${softUrl}") |> Scene.translate(Vec3.make(0.0 - 3.0, 0.0, 0.0)),`
     : "";
   writeFileSync(
     join(dir, "game.fun"),
@@ -166,10 +166,10 @@ let tick = (model, dt, tts) => { model with frame: model.frame + 1.0 }
 
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(0.0, 2.0, 0.0 - 6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 2.0, 0.0 - 6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([
       Scene.model("${goodUrl}"),
-      Scene.model("${badUrl}") |> Scene.translate(3.0, 0.0, 0.0),${soft}
+      Scene.model("${badUrl}") |> Scene.translate(Vec3.make(3.0, 0.0, 0.0)),${soft}
     ]))
 `,
   );
