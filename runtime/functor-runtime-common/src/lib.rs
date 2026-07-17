@@ -69,6 +69,7 @@ mod light;
 pub mod material;
 pub mod math;
 pub mod functor_lang_prelude;
+pub mod host_registry;
 pub mod functor_lang_producer;
 pub mod model;
 pub mod net;

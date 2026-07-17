@@ -86,7 +86,10 @@ externals that make `Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*`
 `Sub.*` resolve to real protocol values. Both producers implement the shared
 `functor_runtime_common::protocol::GameProducer` trait the runtime loop consumes; the versioned
 logic↔runtime boundary is enumerated in `functor_runtime_common::protocol`. When you add or change
-a prelude surface, the real implementation lives in `functor_lang_prelude.rs` and both producers must wire it.
+a prelude surface, the real implementation lives in `functor_lang_prelude.rs` and both producers must wire it —
+prefer REGISTERING it in the typed external registry (`host_registry.rs` + `register_*` in
+`functor_lang_prelude.rs`: one typed closure, arity/usage/conversion errors derived) over adding a
+legacy `match path` arm; a drift test pins `.funi` signatures ≡ (registry ∪ legacy `PATHS`).
 
 **Hot-reload and state persistence.** Functor Lang hot-reload is built into the producer: it polls the
 project files' mtime each frame and on change reparses → rechecks → builds a new `Session` with
