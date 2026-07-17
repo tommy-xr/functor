@@ -512,13 +512,18 @@ Sub.assets(tagger)                                         // asset-loading prog
                                                            //   whenever the shell's snapshot
                                                            //   CHANGES (incl. the initial state
                                                            //   on frame one) — the loading-
-                                                           //   screen seam. loaded == total is
-                                                           //   "all settled"; failed lists
-                                                           //   {path, error} per failed
-                                                           //   byte-load (decode fallbacks
-                                                           //   count as loaded). Fires from
-                                                           //   snapshot changes, not the time
-                                                           //   grid; requires `update`
+                                                           //   screen seam. The settled gate is
+                                                           //   total > 0.0 && loaded +
+                                                           //   List.length(failed) == total
+                                                           //   (failures never join loaded, and
+                                                           //   frame one can deliver 0/0);
+                                                           //   failed lists {path, error} per
+                                                           //   failed byte-load (decode
+                                                           //   fallbacks count as loaded).
+                                                           //   Fires from snapshot changes, not
+                                                           //   the time grid; requires `update`.
+                                                           //   examples/loading is the
+                                                           //   reference
 Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (float) => Msg
 Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connections; tagger: (Net.NetEvent) => Msg
 Effect.send(connId, text)                                  // send on an open connection

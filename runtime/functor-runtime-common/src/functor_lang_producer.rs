@@ -753,6 +753,7 @@ to receive their messages; dropping them"
             return;
         }
         let record = asset_progress_value(&progress);
+        let mut any_delivered = false;
         for tagger in taggers {
             let msg = match self.session.apply(
                 tagger,
@@ -766,6 +767,7 @@ to receive their messages; dropping them"
                     continue;
                 }
             };
+            any_delivered = true;
             let args = vec![self.model.clone(), msg];
             journal_push("update", &args, Provenance::Subscription);
             match self.session.call("update", args, &mut FunctorHost) {
@@ -773,7 +775,12 @@ to receive their messages; dropping them"
                 Err(err) => self.reporter.frame_error("update", &err),
             }
         }
-        *self.delivered_asset_progress = Some(progress);
+        // Only mark delivered when a tagger actually received it — an
+        // erroring tagger (usually a transient hot-reload state) must not
+        // permanently swallow the snapshot.
+        if any_delivered {
+            *self.delivered_asset_progress = Some(progress);
+        }
     }
 
     /// The frame's physics phase (docs/physics.md): ask the game what bodies

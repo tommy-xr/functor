@@ -96,7 +96,10 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
         // (Sub.assets progress bars, fallback placeholders) is actually
         // visible on a machine where every load is otherwise instant.
         if let Some(kbps) = throttle_kbps() {
-            let seconds = bytes.len() as f64 / (kbps * 1024.0);
+            // Clamp to a day: an absurdly small rate must not overflow
+            // Duration (a panic on the render thread) — it just hangs the
+            // load, which is what the user asked for.
+            let seconds = (bytes.len() as f64 / (kbps * 1024.0)).min(24.0 * 3600.0);
             throttle::DelayUntil {
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds),
             }

@@ -19,9 +19,11 @@ let listen : (string, (Net.NetEvent) => 'msg) => t
 
 // One failed asset byte-load (missing file, HTTP error, bad remote body).
 type AssetFailure = { path: string, error: string }
-// The loading snapshot: `loaded == total` is "all settled" — a loading
-// screen's gate. Decode fallbacks count as loaded; only byte-load failures
-// land in `failed`.
+// The loading snapshot. The "all settled" gate — a loading screen's dismiss
+// condition — is `total > 0.0 && loaded + List.length(failed) == total`:
+// failures never join `loaded`, and frame one can deliver 0/0 before any
+// asset is referenced. Decode fallbacks count as loaded; only byte-load
+// failures land in `failed`.
 type AssetProgress = { loaded: float, total: float, failed: List<AssetFailure> }
 // Asset-loading progress: the tagger receives the snapshot whenever it
 // changes (including the initial state on the first frame).

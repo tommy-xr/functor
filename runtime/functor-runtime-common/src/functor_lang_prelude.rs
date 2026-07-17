@@ -2739,8 +2739,9 @@ fn collect_assets_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
 }
 
 /// The tagger-facing record for a `Sub.assets` progress snapshot:
-/// `{loaded, total, failed: [{path, error}, …]}`. `loaded == total` is "all
-/// settled" — a loading screen's gate.
+/// `{loaded, total, failed: [{path, error}, …]}`. The settled gate is
+/// `total > 0 && loaded + List.length(failed) == total` — failures never
+/// join `loaded`, and frame one can deliver 0/0 (see examples/loading).
 pub fn asset_progress_value(progress: &crate::asset::AssetProgress) -> Value {
     let failed: Vec<Value> = progress
         .failed

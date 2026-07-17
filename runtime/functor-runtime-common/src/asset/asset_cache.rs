@@ -9,9 +9,12 @@ use super::{AssetHandle, AssetPipeline, AssetPipelineContext, BuiltAssetPipeline
 
 /// A snapshot of asset loading, the data behind `Sub.assets`: how many
 /// distinct assets have been referenced, how many are decoded, and which
-/// byte-loads failed (missing file, HTTP error). `loaded == total` is "all
-/// settled" — a loading screen's gate. Decode failures are NOT here: the
-/// pipelines fall back (checkerboard / empty model) and count as loaded.
+/// byte-loads failed (missing file, HTTP error). The "all settled" gate — a
+/// loading screen's dismiss condition — is `total > 0 && loaded +
+/// failed.len() == total`: failures never join `loaded`, and frame one can
+/// deliver `0/0` before anything is referenced. Decode failures are NOT
+/// here: the pipelines fall back (checkerboard / empty model) and count as
+/// loaded.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct AssetProgress {
     pub loaded: usize,
