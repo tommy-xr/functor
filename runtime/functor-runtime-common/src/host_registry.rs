@@ -38,9 +38,37 @@
 //! [`HostData`]: functor_lang::HostData
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use functor_lang::value::Value;
 use functor_lang::{RunError, Span};
+
+/// The FxHash multiply-xor hasher (rustc's map hasher, inlined to stay
+/// dependency-light): registry lookups sit on the per-frame hot path — every
+/// host call hashes its path string — and SipHash measurably regressed
+/// frame_bench (~+30% us/cell), while Fx restores it. Not DoS-resistant,
+/// which is fine: keys are the fixed, host-authored external paths.
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(word)).wrapping_mul(SEED);
+        }
+    }
+    fn write_u8(&mut self, byte: u8) {
+        self.write(&[byte]);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type PathMap<V> = HashMap<&'static str, V, BuildHasherDefault<FxHasher>>;
 
 /// Convert one call argument into a typed Rust value. Implementations own the
 /// error text for a mismatched argument — including the branded types'
@@ -101,6 +129,24 @@ impl FromArg for bool {
             Value::Bool(b) => Ok(*b),
             other => Err(RunError {
                 message: format!("expected a bool, got {}", other.kind_name()),
+                span,
+            }),
+        }
+    }
+}
+
+/// A homogeneous list argument (`Scene.group([scene, …])`): each element
+/// converts through `T`'s [`FromArg`] — the leftmost failing element's typed
+/// error is reported. A non-list gets "expected a list".
+impl<T: FromArg> FromArg for Vec<T> {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        match value {
+            Value::List(items) => items
+                .iter()
+                .map(|item| T::from_arg(item, path, span))
+                .collect(),
+            other => Err(RunError {
+                message: format!("expected a list, got {}", other.kind_name()),
                 span,
             }),
         }
@@ -183,7 +229,7 @@ struct External {
 /// ([`crate::functor_lang_prelude::registry`]) and consulted before the legacy match.
 #[derive(Default)]
 pub struct Registry {
-    fns: HashMap<&'static str, External>,
+    fns: PathMap<External>,
 }
 
 /// Implements `fn1`/`fn2`/… — one registration method per arity. Each checks

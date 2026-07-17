@@ -967,27 +967,6 @@ pub fn install_debug_log_sink() {
 }
 
 const PATHS: &[&str] = &[
-    "Scene.cube",
-    "Scene.sphere",
-    "Scene.cylinder",
-    "Scene.quad",
-    "Scene.plane",
-    "Scene.model",
-    "Scene.heightmap",
-    "Scene.group",
-    "Scene.color",
-    "Scene.translate",
-    "Scene.rotateX",
-    "Scene.rotateY",
-    "Scene.rotateZ",
-    "Scene.scale",
-    "Scene.scaleXYZ",
-    "Scene.lit",
-    "Scene.emissive",
-    "Scene.litTexture",
-    "Scene.litNormalMapped",
-    "Scene.emissiveTexture",
-    "Scene.animate",
     "Anim.clip",
     "Anim.blend",
     "Anim.rest",
@@ -997,23 +976,6 @@ const PATHS: &[&str] = &[
     "Asset.model",
     "Asset.texture",
     "Asset.sound",
-    "Texture.file",
-    "Camera.lookAt",
-    "Camera.firstPerson",
-    "Light.ambient",
-    "Light.directional",
-    "Light.point",
-    "Light.spot",
-    "Light.castShadows",
-    "Frame.create",
-    "Frame.createLit",
-    "Frame.withRenderTarget",
-    "Frame.withFog",
-    "Frame.withSkybox",
-    "Frame.withClearColor",
-    "Skybox.files",
-    "RenderTarget.sized",
-    "Scene.screen",
     "Ui.text",
     "Ui.textColor",
     "Ui.column",
@@ -1077,6 +1039,11 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         let mut reg = crate::host_registry::Registry::default();
         register_branded_constructors(&mut reg);
         register_ui_anchors(&mut reg);
+        register_scene(&mut reg);
+        register_camera(&mut reg);
+        register_light(&mut reg);
+        register_frame(&mut reg);
+        register_render_resources(&mut reg);
         reg
     })
 }
@@ -1155,6 +1122,12 @@ crate::host_returnable!(
     FunctorLangRenderTarget,
     FunctorLangFog,
     FunctorLangUiAnchor,
+    FunctorLangScene,
+    FunctorLangCamera,
+    FunctorLangFrame,
+    FunctorLangLight,
+    FunctorLangTexture,
+    FunctorLangSkybox,
 );
 
 fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
@@ -1171,11 +1144,584 @@ fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
     reg.fn0("Ui.center", "Ui.center()", || FunctorLangUiAnchor(ui::Anchor::Center));
 }
 
-/// Colors convert through the registry with the same teaching error the
-/// legacy `color_of` extractor gives — written once, on the type.
+/// A material node over a scene — the shared shape of every Scene material
+/// external (`Scene.color` / `lit` / `emissive` / the texture variants /
+/// `Scene.screen`).
+fn material_scene(material: MaterialDescription, scene: FunctorLangScene) -> FunctorLangScene {
+    FunctorLangScene(Scene3D {
+        obj: SceneObject::Material(material, vec![scene.0]),
+        xform: Matrix4::from_scale(1.0),
+    })
+}
+
+/// A `Group` wrapper carrying `xform` over one scene — the transform
+/// representation the prelude uses everywhere. Wrapping makes the OUTER call
+/// apply last in world space (translate(rotateY(cube)) rotates in place then
+/// moves — the order the source reads).
+fn transformed(scene: FunctorLangScene, xform: Matrix4<f32>) -> FunctorLangScene {
+    FunctorLangScene(group(vec![scene.0], xform))
+}
+
+/// The Scene vocabulary — geometry constructors, assets, composition,
+/// materials, and transforms. Materials/transforms are scene-LAST
+/// (subject-last), so they pipe: `Scene.cube() |> Scene.lit(color)`.
+fn register_scene(reg: &mut crate::host_registry::Registry) {
+    // Primitive geometry: constructors take no arguments — the registry
+    // rejects any with the usage error, so a guessed `Scene.cube(size)`
+    // fails loud instead of silently ignoring it.
+    reg.fn0("Scene.cube", "Scene.cube()", || FunctorLangScene(Scene3D::cube()));
+    reg.fn0("Scene.sphere", "Scene.sphere()", || FunctorLangScene(Scene3D::sphere()));
+    reg.fn0("Scene.cylinder", "Scene.cylinder()", || {
+        FunctorLangScene(Scene3D::cylinder())
+    });
+    reg.fn0("Scene.quad", "Scene.quad()", || FunctorLangScene(Scene3D::quad()));
+    reg.fn0("Scene.plane", "Scene.plane()", || FunctorLangScene(Scene3D::plane()));
+    // A glTF model by file path (relative to the game dir), the Functor Lang
+    // face of F#'s `Model.file |> Graphics.Scene3D.model`. Loading is the
+    // shells' asset pipeline; a missing file logs an error and renders as
+    // the empty fallback.
+    const MODEL: &str = "Scene.model(\"file.glb\") — a non-empty glTF path relative to \
+the game dir";
+    reg.fn1("Scene.model", MODEL, |path: ModelPath| {
+        FunctorLangScene(Scene3D::model(ModelDescription {
+            handle: ModelHandle::File(path.0),
+            overrides: Vec::new(),
+            animation: None,
+        }))
+    });
+    // A subdivided XZ grid displaced by per-vertex heights — the Functor Lang
+    // face of F#'s `Scene3D.heightmap` (the protocol `Heightmap` shape). The
+    // surface is a list of ROWS (each an equal-length list of heights):
+    // Functor Lang has no floor/mod to build F#'s flat row-major array, but
+    // nested `List.range |> List.map` builds rows naturally — and the host
+    // flattens row-major, so the wire data is exactly what the F# side
+    // emits. The shape is bespoke (rows of rows, degenerate-grid checks), so
+    // it takes the raw `Value` and validates by hand.
+    const HEIGHTMAP: &str = "Scene.heightmap([[height, …], …]) — a list of at \
+least 2 rows, each an equal-length list of at least 2 numbers";
+    reg.fn1("Scene.heightmap", HEIGHTMAP, |rows: Value| {
+        let Value::List(rows) = rows else {
+            return Err(format!("usage: {HEIGHTMAP}"));
+        };
+        if rows.len() < 2 {
+            return Err(format!("usage: {HEIGHTMAP}"));
+        }
+        let mut cols: Option<usize> = None;
+        let mut heights = Vec::new();
+        for (r, row) in rows.iter().enumerate() {
+            let Value::List(row) = row else {
+                return Err(format!(
+                    "Scene.heightmap rows must be lists of numbers, got {}",
+                    row.kind_name()
+                ));
+            };
+            match cols {
+                None => {
+                    if row.len() < 2 {
+                        return Err(format!("usage: {HEIGHTMAP}"));
+                    }
+                    cols = Some(row.len());
+                    heights.reserve(rows.len() * row.len());
+                }
+                Some(cols) if row.len() != cols => {
+                    return Err(format!(
+                        "Scene.heightmap rows must all have the same length: \
+row 0 has {cols} heights, row {r} has {}",
+                        row.len()
+                    ))
+                }
+                Some(_) => {}
+            }
+            for h in row.iter() {
+                match h {
+                    Value::Number(n) if (*n as f32).is_finite() => heights.push(*n as f32),
+                    Value::Number(n) => {
+                        return Err(format!("expected a finite number, got {n}"))
+                    }
+                    other => {
+                        return Err(format!("expected a number, got {}", other.kind_name()))
+                    }
+                }
+            }
+        }
+        Ok(FunctorLangScene(Scene3D {
+            obj: SceneObject::Geometry(Shape::Heightmap {
+                rows: rows.len() as u32,
+                cols: cols.unwrap_or(0) as u32,
+                heights,
+            }),
+            xform: Matrix4::from_scale(1.0),
+        }))
+    });
+    reg.fn1(
+        "Scene.group",
+        "Scene.group([scene, …])",
+        |scenes: Vec<FunctorLangScene>| {
+            FunctorLangScene(group(
+                scenes.into_iter().map(|s| s.0).collect(),
+                Matrix4::from_scale(1.0),
+            ))
+        },
+    );
+    reg.fn2(
+        "Scene.color",
+        "Scene.color(color, scene)",
+        |color: FunctorLangColor, scene: FunctorLangScene| {
+            let (r, g, b) = color.0;
+            material_scene(MaterialDescription::color(r, g, b, 1.0), scene)
+        },
+    );
+    // lit is shaded by the frame's lights; emissive renders fullbright.
+    fn lit_or_emissive(
+        emissive: bool,
+    ) -> impl Fn(FunctorLangColor, FunctorLangScene) -> FunctorLangScene {
+        move |color, scene| {
+            let (r, g, b) = color.0;
+            let material = if emissive {
+                MaterialDescription::emissive(r, g, b, 1.0)
+            } else {
+                MaterialDescription::lit(r, g, b, 1.0)
+            };
+            material_scene(material, scene)
+        }
+    }
+    reg.fn2("Scene.lit", "Scene.lit(color, scene)", lit_or_emissive(false));
+    reg.fn2(
+        "Scene.emissive",
+        "Scene.emissive(color, scene)",
+        lit_or_emissive(true),
+    );
+    // The F# pair `Material.litTexture` / `Material.emissiveTexture`: lit is
+    // shaded by the frame's lights (white albedo tint), emissive renders
+    // fullbright (neon signage).
+    fn textured(
+        emissive: bool,
+    ) -> impl Fn(FunctorLangTexture, FunctorLangScene) -> FunctorLangScene {
+        move |texture, scene| {
+            let material = if emissive {
+                MaterialDescription::emissive_texture(texture.0)
+            } else {
+                MaterialDescription::lit_texture(texture.0)
+            };
+            material_scene(material, scene)
+        }
+    }
+    reg.fn2(
+        "Scene.litTexture",
+        "Scene.litTexture(texture, scene)",
+        textured(false),
+    );
+    reg.fn2(
+        "Scene.emissiveTexture",
+        "Scene.emissiveTexture(texture, scene)",
+        textured(true),
+    );
+    // Lit material with a tangent-space normal map perturbing the surface
+    // normal (F#'s `Material.litNormalMapped`), so the lights and specular
+    // play across the bumps. The color is the albedo tint; the normal map is
+    // a Texture value (alpha fixed at 1.0).
+    reg.fn3(
+        "Scene.litNormalMapped",
+        "Scene.litNormalMapped(color, normalMap, scene)",
+        |color: FunctorLangColor, normal: FunctorLangTexture, scene: FunctorLangScene| {
+            let (r, g, b) = color.0;
+            material_scene(
+                MaterialDescription::lit_normal_mapped(r, g, b, 1.0, normal.0),
+                scene,
+            )
+        },
+    );
+    // Scene LAST, so it pipes: `Scene.quad() |> Scene.screen(feed)` — an
+    // emissive (fullbright, screens glow) surface showing the target's
+    // texture. A target no frame declares shows magenta.
+    reg.fn2(
+        "Scene.screen",
+        "Scene.screen(target, scene)",
+        |target: FunctorLangRenderTarget, scene: FunctorLangScene| {
+            material_scene(
+                MaterialDescription::emissive_texture(TextureDescription::render_target(
+                    target.0,
+                )),
+                scene,
+            )
+        },
+    );
+    // Attach an animation expression to the Model node(s) in a scene
+    // (scene-last, so it pipes right after `Scene.model`). Without it a
+    // skinned model keeps the zero-config default: its first clip auto-plays
+    // on the game clock.
+    reg.fn2(
+        "Scene.animate",
+        "Scene.animate(anim, scene) — e.g. scene |> Scene.animate(Anim.clip(\"walk\", tts))",
+        |anim: FunctorLangAnim, scene: FunctorLangScene| {
+            FunctorLangScene(scene.0.with_animation(anim.0))
+        },
+    );
+    // Transforms (scene-last). Each wraps the scene in a Group carrying the
+    // matrix, so the OUTER call applies last in world space.
+    reg.fn2(
+        "Scene.translate",
+        "Scene.translate(v, scene)",
+        |v: FunctorLangVec3, scene: FunctorLangScene| {
+            let (x, y, z) = v.0;
+            transformed(scene, Matrix4::from_translation(cgmath::vec3(x, y, z)))
+        },
+    );
+    reg.fn2(
+        "Scene.scale",
+        "Scene.scale(k, scene)",
+        |k: f64, scene: FunctorLangScene| transformed(scene, Matrix4::from_scale(k as f32)),
+    );
+    // Non-uniform scale (the F# `Transform.scaleX/Y/Z`): stretch each axis
+    // independently — e.g. a wide, short backdrop quad, or a heightmap sized
+    // in XZ without inflating its Y heights.
+    reg.fn4(
+        "Scene.scaleXYZ",
+        "Scene.scaleXYZ(x, y, z, scene)",
+        |x: f64, y: f64, z: f64, scene: FunctorLangScene| {
+            transformed(
+                scene,
+                Matrix4::from_nonuniform_scale(x as f32, y as f32, z as f32),
+            )
+        },
+    );
+    reg.fn2(
+        "Scene.rotateX",
+        "Scene.rotateX(angle, scene)",
+        |angle: FunctorLangAngle, scene: FunctorLangScene| {
+            let angle: cgmath::Rad<f32> = angle.0.into();
+            transformed(scene, Matrix4::from_angle_x(angle))
+        },
+    );
+    reg.fn2(
+        "Scene.rotateY",
+        "Scene.rotateY(angle, scene)",
+        |angle: FunctorLangAngle, scene: FunctorLangScene| {
+            let angle: cgmath::Rad<f32> = angle.0.into();
+            transformed(scene, Matrix4::from_angle_y(angle))
+        },
+    );
+    reg.fn2(
+        "Scene.rotateZ",
+        "Scene.rotateZ(angle, scene)",
+        |angle: FunctorLangAngle, scene: FunctorLangScene| {
+            let angle: cgmath::Rad<f32> = angle.0.into();
+            transformed(scene, Matrix4::from_angle_z(angle))
+        },
+    );
+}
+
+fn register_camera(reg: &mut crate::host_registry::Registry) {
+    // Eye + target (Y-up, right-handed), a fixed 45° fov.
+    reg.fn2(
+        "Camera.lookAt",
+        "Camera.lookAt(eye, target) — Vec3 values (Vec3.make)",
+        |eye: FunctorLangVec3, target: FunctorLangVec3| {
+            let (ex, ey, ez) = eye.0;
+            let (tx, ty, tz) = target.0;
+            FunctorLangCamera(Camera::look_at(
+                [ex, ey, ez],
+                [tx, ty, tz],
+                [0.0, 1.0, 0.0],
+                Angle::from_degrees(45.0),
+            ))
+        },
+    );
+    // Eye + yaw/pitch/fov Angles: yaw = 0 / pitch = 0 looks down +Z.
+    reg.fn4(
+        "Camera.firstPerson",
+        "Camera.firstPerson(eye, yaw, pitch, fov) — a Vec3 eye and Angle values \
+(Angle.degrees/Angle.radians)",
+        |eye: FunctorLangVec3, yaw: FunctorLangAngle, pitch: FunctorLangAngle, fov: FunctorLangAngle| {
+            let (ex, ey, ez) = eye.0;
+            FunctorLangCamera(Camera::first_person([ex, ey, ez], yaw.0, pitch.0, fov.0))
+        },
+    );
+}
+
+fn register_light(reg: &mut crate::host_registry::Registry) {
+    reg.fn1(
+        "Light.ambient",
+        "Light.ambient(color)",
+        |color: FunctorLangColor| {
+            let (r, g, b) = color.0;
+            FunctorLangLight(Light::ambient(r, g, b))
+        },
+    );
+    reg.fn3(
+        "Light.directional",
+        "Light.directional(dir, color, intensity)",
+        |dir: FunctorLangVec3, color: FunctorLangColor, intensity: f64| {
+            let (dx, dy, dz) = dir.0;
+            let (r, g, b) = color.0;
+            FunctorLangLight(Light::directional(dx, dy, dz, r, g, b, intensity as f32))
+        },
+    );
+    reg.fn4(
+        "Light.point",
+        "Light.point(pos, color, intensity, range)",
+        |pos: FunctorLangVec3, color: FunctorLangColor, intensity: f64, range: f64| {
+            let (px, py, pz) = pos.0;
+            let (r, g, b) = color.0;
+            FunctorLangLight(Light::point(
+                px,
+                py,
+                pz,
+                r,
+                g,
+                b,
+                intensity as f32,
+                range as f32,
+            ))
+        },
+    );
+    // A cone of light from `pos` aimed along `dir`, soft-edged at
+    // `coneAngle` (an Angle from the axis) with falloff to `range`.
+    // Shadow-casting when piped through `Light.castShadows`.
+    reg.fn6(
+        "Light.spot",
+        "Light.spot(pos, dir, color, intensity, range, coneAngle)",
+        |pos: FunctorLangVec3,
+         dir: FunctorLangVec3,
+         color: FunctorLangColor,
+         intensity: f64,
+         range: f64,
+         cone: FunctorLangAngle| {
+            let cone: cgmath::Rad<f32> = cone.0.into();
+            let (px, py, pz) = pos.0;
+            let (dx, dy, dz) = dir.0;
+            let (r, g, b) = color.0;
+            FunctorLangLight(Light::spot(
+                px,
+                py,
+                pz,
+                dx,
+                dy,
+                dz,
+                r,
+                g,
+                b,
+                intensity as f32,
+                range as f32,
+                cone.0,
+            ))
+        },
+    );
+    // Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
+    reg.fn1(
+        "Light.castShadows",
+        "Light.castShadows(light)",
+        |light: FunctorLangLight| FunctorLangLight(light.0.cast_shadows()),
+    );
+}
+
+fn register_frame(reg: &mut crate::host_registry::Registry) {
+    reg.fn2(
+        "Frame.create",
+        "Frame.create(camera, scene)",
+        |camera: FunctorLangCamera, scene: FunctorLangScene| {
+            FunctorLangFrame(Frame::new(camera.0, scene.0))
+        },
+    );
+    reg.fn3(
+        "Frame.createLit",
+        "Frame.createLit(camera, scene, [light, …])",
+        |camera: FunctorLangCamera, scene: FunctorLangScene, lights: Vec<FunctorLangLight>| {
+            FunctorLangFrame(Frame {
+                camera: camera.0,
+                scene: scene.0,
+                lights: lights.into_iter().map(|l| l.0).collect(),
+                render_targets: vec![],
+                fog: None,
+                skybox: None,
+                clear_color: None,
+            })
+        },
+    );
+    // Frame LAST (subject-last), so they pipe:
+    // `Frame.createLit(…) |> Frame.withRenderTarget(feed, feedFrame)`.
+    reg.fn3(
+        "Frame.withRenderTarget",
+        "Frame.withRenderTarget(target, targetFrame, frame) — targetFrame \
+is a Frame.create/createLit(…) rendered into the target each frame, before \
+frame's main pass",
+        |target: FunctorLangRenderTarget, target_frame: FunctorLangFrame, frame: FunctorLangFrame| {
+            FunctorLangFrame(Frame::with_render_target(frame.0, target.0, target_frame.0))
+        },
+    );
+    reg.fn2(
+        "Frame.withFog",
+        "Frame.withFog(fog, frame)",
+        |fog: FunctorLangFog, frame: FunctorLangFrame| {
+            FunctorLangFrame(Frame::with_fog(frame.0, fog.0))
+        },
+    );
+    reg.fn2(
+        "Frame.withSkybox",
+        "Frame.withSkybox(skybox, frame)",
+        |sky: FunctorLangSkybox, frame: FunctorLangFrame| {
+            FunctorLangFrame(Frame::with_skybox(frame.0, sky.0))
+        },
+    );
+    // Sets the background clear color explicitly, overriding the fog-color
+    // default.
+    reg.fn2(
+        "Frame.withClearColor",
+        "Frame.withClearColor(color, frame)",
+        |color: FunctorLangColor, frame: FunctorLangFrame| {
+            let (r, g, b) = color.0;
+            FunctorLangFrame(Frame::with_clear_color(frame.0, r, g, b))
+        },
+    );
+}
+
+/// The render resources the Scene/Frame vocabulary consumes: image textures,
+/// render-target sizing, and skyboxes.
+fn register_render_resources(reg: &mut crate::host_registry::Registry) {
+    // An image texture by file path (relative to the game dir), the Functor Lang
+    // face of F#'s `Texture.file`. Loading is the shells' asset pipeline; a
+    // missing file logs an error and renders as the fallback texture.
+    const TEXTURE_FILE: &str = "Texture.file(\"file.png\") — a non-empty image path \
+relative to the game dir";
+    reg.fn1("Texture.file", TEXTURE_FILE, |path: String| {
+        if path.is_empty() {
+            return Err(format!("usage: {TEXTURE_FILE}"));
+        }
+        Ok(FunctorLangTexture(TextureDescription::File(path)))
+    });
+    // Target LAST (subject-last), so it pipes:
+    // `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
+    reg.fn3(
+        "RenderTarget.sized",
+        "RenderTarget.sized(width, height, target)",
+        |w: f64, h: f64, target: FunctorLangRenderTarget| {
+            if w <= 0.0 {
+                return Err(format!("RenderTarget.sized width must be positive, got {w}"));
+            }
+            if h <= 0.0 {
+                return Err(format!(
+                    "RenderTarget.sized height must be positive, got {h}"
+                ));
+            }
+            Ok(FunctorLangRenderTarget(target.0.sized(w as f32, h as f32)))
+        },
+    );
+    const SKYBOX_FILES: &str = "Skybox.files(px, nx, py, ny, pz, nz) — six non-empty face \
+paths (+X, -X, +Y, -Y, +Z, -Z)";
+    reg.fn6(
+        "Skybox.files",
+        SKYBOX_FILES,
+        |px: String, nx: String, py: String, ny: String, pz: String, nz: String| {
+            if [&px, &nx, &py, &ny, &pz, &nz].iter().any(|s| s.is_empty()) {
+                return Err(format!("usage: {SKYBOX_FILES}"));
+            }
+            Ok(FunctorLangSkybox(SkyboxDescription::new(px, nx, py, ny, pz, nz)))
+        },
+    );
+}
+
+/// Branded values convert through the registry with the same teaching errors
+/// the legacy extractors give — written once, on each type. Handle-shaped
+/// types without a teaching extractor (Scene, Light, Camera, Frame) get the
+/// uniform "{path}: expected a X, got {kind}" typed error.
 impl crate::host_registry::FromArg for FunctorLangColor {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         color_of(value, path, span).map(FunctorLangColor)
+    }
+}
+
+/// A model-asset argument: a non-empty path string, or an `Asset.model`
+/// locator (a wrong-kind asset gets `asset_path`'s teaching error) — the
+/// typed-manifest front door at the registry seam.
+struct ModelPath(String);
+
+impl crate::host_registry::FromArg for ModelPath {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        match value {
+            Value::String(p) if !p.is_empty() => Ok(ModelPath(p.to_string())),
+            v if asset_of(v).is_some() => {
+                asset_path(v, AssetKind::Model, path, span).map(ModelPath)
+            }
+            _ => Err(RunError {
+                message: "usage: Scene.model(\"file.glb\") — a non-empty glTF path \
+relative to the game dir"
+                    .to_string(),
+                span,
+            }),
+        }
+    }
+}
+
+/// Implements [`crate::host_registry::FromArg`] for a handle newtype by
+/// downcasting, with the uniform typed error.
+macro_rules! handle_arg {
+    ($($ty:ident => $name:literal),+ $(,)?) => {$(
+        impl crate::host_registry::FromArg for $ty {
+            fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+                if let Value::HostData(data) = value {
+                    if let Some(inner) = data.as_any().downcast_ref::<$ty>() {
+                        return Ok($ty(inner.0.clone()));
+                    }
+                }
+                Err(RunError {
+                    message: format!(
+                        "{path}: expected a {}, got {}",
+                        $name,
+                        value.kind_name()
+                    ),
+                    span,
+                })
+            }
+        }
+    )+};
+}
+
+handle_arg!(
+    FunctorLangScene => "Scene",
+    FunctorLangLight => "Light",
+    FunctorLangCamera => "Camera",
+    FunctorLangFrame => "Frame",
+);
+
+impl crate::host_registry::FromArg for FunctorLangAngle {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        angle_of(value, path, span).map(FunctorLangAngle)
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangVec3 {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        vec3_of(value, path, span).map(FunctorLangVec3)
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangTexture {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        texture_of(value, path, span).map(FunctorLangTexture)
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangAnim {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        anim_of(value, path, span).map(|a| FunctorLangAnim(a.clone()))
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangFog {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        fog_of(value, path, span).map(|f| FunctorLangFog(f.clone()))
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangRenderTarget {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        target_of(value, path, span).map(|t| FunctorLangRenderTarget(t.clone()))
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangSkybox {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        skybox_of(value, path, span).map(|s| FunctorLangSkybox(s.clone()))
     }
 }
 
@@ -1198,45 +1744,6 @@ impl Host for FunctorHost {
             return result;
         }
         match path {
-            // Constructors take no arguments — reject any, so a guessed
-            // `Scene.cube(size)` fails loud instead of silently ignoring it.
-            "Scene.cube" | "Scene.sphere" | "Scene.cylinder" | "Scene.quad" | "Scene.plane" => {
-                if !args.is_empty() {
-                    return usage(&format!("{path}()"));
-                }
-                scene_value(match path {
-                    "Scene.cube" => Scene3D::cube(),
-                    "Scene.sphere" => Scene3D::sphere(),
-                    "Scene.cylinder" => Scene3D::cylinder(),
-                    "Scene.quad" => Scene3D::quad(),
-                    _ => Scene3D::plane(),
-                })
-            }
-            // A glTF model by file path (relative to the game dir), the Functor Lang
-            // face of F#'s `Model.file |> Graphics.Scene3D.model`. Loading is
-            // the shells' asset pipeline, exactly as for the dylib producers;
-            // a missing file logs an error and renders as the empty fallback.
-            "Scene.model" => match args.as_slice() {
-                [Value::String(path)] if !path.is_empty() => {
-                    scene_value(Scene3D::model(ModelDescription {
-                        handle: ModelHandle::File(path.to_string()),
-                        overrides: Vec::new(),
-                        animation: None,
-                    }))
-                }
-                [v] if asset_of(v).is_some() => {
-                    let path = asset_path(v, AssetKind::Model, "Scene.model", span)?;
-                    scene_value(Scene3D::model(ModelDescription {
-                        handle: ModelHandle::File(path),
-                        overrides: Vec::new(),
-                        animation: None,
-                    }))
-                }
-                _ => usage(
-                    "Scene.model(\"file.glb\") — a non-empty glTF path relative to \
-the game dir",
-                ),
-            },
             // Typed asset locators (the typed-manifest front door): a branded
             // value naming an asset by path, constructed per KIND so a
             // wrong-kind asset is a teaching error at the consumer instead of
@@ -1262,23 +1769,6 @@ the game dir",
                     )),
                 }
             }
-            // Attach an animation expression to the Model node(s) in a scene
-            // (scene-last, so it pipes right after `Scene.model`). Without it
-            // a skinned model keeps the zero-config default: its first clip
-            // auto-plays on the game clock.
-            "Scene.animate" => match args.as_slice() {
-                [anim, scene] => {
-                    let expr = anim_of(anim, "Scene.animate", span)?.clone();
-                    match scene_of(scene) {
-                        Some(inner) => scene_value(inner.clone().with_animation(expr)),
-                        None => err(format!(
-                            "Scene.animate: expected a Scene to animate, got {}",
-                            scene.kind_name()
-                        )),
-                    }
-                }
-                _ => usage("scene |> Scene.animate(Anim.clip(\"walk\", tts))"),
-            },
             // A clip sample as a value: the named glTF clip at a playhead in
             // seconds (looping by the clip's duration). The playhead is
             // explicit — derive it from `tts` / model state — so the pose is
@@ -1401,355 +1891,6 @@ names; each covers its whole subtree (functor inspect lists a model's joints)",
 non-empty joint name and three Angle values (Angle.degrees/radians), applied as an \
 additive local XYZ rotation",
                 ),
-            },
-            // A subdivided XZ grid displaced by per-vertex heights — the Functor Lang
-            // face of F#'s `Scene3D.heightmap` (the protocol `Heightmap`
-            // shape). The surface is a list of ROWS (each an equal-length
-            // list of heights): Functor Lang has no floor/mod to build F#'s flat
-            // row-major array, but nested `List.range |> List.map` builds
-            // rows naturally — and the host flattens row-major, so the wire
-            // data is exactly what the F# side emits. Heights are sampled in
-            // user space (F#'s `heightmapFn`, minus the host trampoline the
-            // prelude can't offer: it has no session handle to apply a Functor Lang
-            // closure).
-            "Scene.heightmap" => match args.as_slice() {
-                [Value::List(rows)] => {
-                    let usage_msg = "Scene.heightmap([[height, …], …]) — a list of at \
-least 2 rows, each an equal-length list of at least 2 numbers";
-                    if rows.len() < 2 {
-                        return usage(usage_msg);
-                    }
-                    let mut cols: Option<usize> = None;
-                    let mut heights = Vec::new();
-                    for (r, row) in rows.iter().enumerate() {
-                        let Value::List(row) = row else {
-                            return err(format!(
-                                "Scene.heightmap rows must be lists of numbers, got {}",
-                                row.kind_name()
-                            ));
-                        };
-                        match cols {
-                            None => {
-                                if row.len() < 2 {
-                                    return usage(usage_msg);
-                                }
-                                cols = Some(row.len());
-                                heights.reserve(rows.len() * row.len());
-                            }
-                            Some(cols) if row.len() != cols => {
-                                return err(format!(
-                                    "Scene.heightmap rows must all have the same length: \
-row 0 has {cols} heights, row {r} has {}",
-                                    row.len()
-                                ))
-                            }
-                            Some(_) => {}
-                        }
-                        for h in row.iter() {
-                            heights.push(num(h, span)? as f32);
-                        }
-                    }
-                    scene_value(Scene3D {
-                        obj: SceneObject::Geometry(Shape::Heightmap {
-                            rows: rows.len() as u32,
-                            cols: cols.unwrap_or(0) as u32,
-                            heights,
-                        }),
-                        xform: Matrix4::from_scale(1.0),
-                    })
-                }
-                _ => usage(
-                    "Scene.heightmap([[height, …], …]) — a list of at \
-least 2 rows, each an equal-length list of at least 2 numbers",
-                ),
-            },
-            "Scene.group" => match args.as_slice() {
-                [Value::List(items)] => {
-                    let mut scenes = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        match scene_of(item) {
-                            Some(scene) => scenes.push(scene.clone()),
-                            None => {
-                                return err(format!(
-                                    "Scene.group items must be Scenes, got {}",
-                                    item.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    scene_value(group(scenes, Matrix4::from_scale(1.0)))
-                }
-                _ => usage("Scene.group([scene, …])"),
-            },
-            // Scene LAST (subject-last), so they pipe:
-            // `Scene.cube() |> Scene.lit(Color.rgb(r, g, b))`.
-            "Scene.lit" | "Scene.emissive" => match args.as_slice() {
-                [color, scene] => {
-                    let (r, g, b) = color_of(color, path, span)?;
-                    let Some(scene) = scene_of(scene) else {
-                        return usage(&format!("{path}(color, scene)"));
-                    };
-                    let material = if path == "Scene.lit" {
-                        MaterialDescription::lit(r, g, b, 1.0)
-                    } else {
-                        MaterialDescription::emissive(r, g, b, 1.0)
-                    };
-                    scene_value(Scene3D {
-                        obj: SceneObject::Material(material, vec![scene.clone()]),
-                        xform: Matrix4::from_scale(1.0),
-                    })
-                }
-                _ => usage(&format!("{path}(color, scene)")),
-            },
-            // An image texture by file path (relative to the game dir), the
-            // Functor Lang face of F#'s `Texture.file`. Loading is the shells' asset
-            // pipeline; a missing file logs an error and renders as the
-            // fallback texture.
-            "Texture.file" => match args.as_slice() {
-                [Value::String(path)] if !path.is_empty() => Ok(host(FunctorLangTexture(
-                    TextureDescription::File(path.to_string()),
-                ))),
-                _ => usage(
-                    "Texture.file(\"file.png\") — a non-empty image path relative to \
-the game dir",
-                ),
-            },
-            // Scene LAST (subject-last), so they pipe:
-            // `Scene.plane() |> Scene.litTexture(Texture.file("dirt.png"))`.
-            // The F# pair `Material.litTexture` / `Material.emissiveTexture`:
-            // lit is shaded by the frame's lights (white albedo tint),
-            // emissive renders fullbright (neon signage).
-            "Scene.litTexture" | "Scene.emissiveTexture" => match args.as_slice() {
-                [texture, scene] => {
-                    let Some(scene) = scene_of(scene) else {
-                        return usage(&format!("{path}(texture, scene)"));
-                    };
-                    let texture = texture_of(texture, path, span)?;
-                    let material = if path == "Scene.litTexture" {
-                        MaterialDescription::lit_texture(texture)
-                    } else {
-                        MaterialDescription::emissive_texture(texture)
-                    };
-                    scene_value(Scene3D {
-                        obj: SceneObject::Material(material, vec![scene.clone()]),
-                        xform: Matrix4::from_scale(1.0),
-                    })
-                }
-                _ => usage(&format!("{path}(texture, scene)")),
-            },
-            // Lit material with a tangent-space normal map perturbing the
-            // surface normal (F#'s `Material.litNormalMapped`), so the lights
-            // and specular play across the bumps. `(r, g, b)` is the albedo
-            // tint; the normal map is a Texture value (alpha fixed at 1.0).
-            "Scene.litNormalMapped" => match args.as_slice() {
-                [color, normal, scene] => {
-                    let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.litNormalMapped(color, normalMap, scene)");
-                    };
-                    let (r, g, b) = color_of(color, path, span)?;
-                    let normal = texture_of(normal, path, span)?;
-                    scene_value(Scene3D {
-                        obj: SceneObject::Material(
-                            MaterialDescription::lit_normal_mapped(r, g, b, 1.0, normal),
-                            vec![scene.clone()],
-                        ),
-                        xform: Matrix4::from_scale(1.0),
-                    })
-                }
-                _ => usage("Scene.litNormalMapped(color, normalMap, scene)"),
-            },
-            // Scene LAST (subject-last), so it pipes:
-            // `Scene.cube() |> Scene.color(Color.rgb(r, g, b))`.
-            "Scene.color" => match args.as_slice() {
-                [color, scene] => {
-                    let (r, g, b) = color_of(color, path, span)?;
-                    let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.color(color, scene)");
-                    };
-                    scene_value(Scene3D {
-                        obj: SceneObject::Material(
-                            MaterialDescription::color(r, g, b, 1.0),
-                            vec![scene.clone()],
-                        ),
-                        xform: Matrix4::from_scale(1.0),
-                    })
-                }
-                _ => usage("Scene.color(color, scene)"),
-            },
-            "Scene.translate" => match args.as_slice() {
-                [v, scene] => {
-                    let (x, y, z) = vec3_of(v, path, span)?;
-                    let xform = Matrix4::from_translation(cgmath::vec3(x, y, z));
-                    wrap_transform(scene, xform, "Scene.translate(v, scene)", span)
-                }
-                _ => usage("Scene.translate(v, scene)"),
-            },
-            "Scene.rotateX" | "Scene.rotateY" | "Scene.rotateZ" => match args.as_slice() {
-                [angle, scene] => {
-                    let angle: cgmath::Rad<f32> = angle_of(angle, path, span)?.into();
-                    let xform = match path {
-                        "Scene.rotateX" => Matrix4::from_angle_x(angle),
-                        "Scene.rotateY" => Matrix4::from_angle_y(angle),
-                        _ => Matrix4::from_angle_z(angle),
-                    };
-                    wrap_transform(scene, xform, &format!("{path}(angle, scene)"), span)
-                }
-                _ => return usage(&format!("{path}(angle, scene)")),
-            },
-            "Scene.scale" => match args.as_slice() {
-                [k, scene] => {
-                    let xform = Matrix4::from_scale(num(k, span)? as f32);
-                    wrap_transform(scene, xform, "Scene.scale(k, scene)", span)
-                }
-                _ => usage("Scene.scale(k, scene)"),
-            },
-            // Non-uniform scale (the F# `Transform.scaleX/Y/Z`): stretch each
-            // axis independently — e.g. a wide, short backdrop quad, or a
-            // heightmap sized in XZ without inflating its Y heights.
-            "Scene.scaleXYZ" => match args.as_slice() {
-                [x, y, z, scene] => {
-                    let xform = Matrix4::from_nonuniform_scale(
-                        num(x, span)? as f32,
-                        num(y, span)? as f32,
-                        num(z, span)? as f32,
-                    );
-                    wrap_transform(scene, xform, "Scene.scaleXYZ(x, y, z, scene)", span)
-                }
-                _ => usage("Scene.scaleXYZ(x, y, z, scene)"),
-            },
-            "Camera.lookAt" => match args.as_slice() {
-                [eye, target] => {
-                    let (ex, ey, ez) = vec3_of(eye, "Camera.lookAt eye", span)?;
-                    let (tx, ty, tz) = vec3_of(target, "Camera.lookAt target", span)?;
-                    Ok(host(FunctorLangCamera(Camera::look_at(
-                        [ex, ey, ez],
-                        [tx, ty, tz],
-                        [0.0, 1.0, 0.0],
-                        Angle::from_degrees(45.0),
-                    ))))
-                }
-                _ => usage("Camera.lookAt(eye, target) — Vec3 values (Vec3.make)"),
-            },
-            "Camera.firstPerson" => match args.as_slice() {
-                [eye, yaw, pitch, fov] => {
-                    let (ex, ey, ez) = vec3_of(eye, "Camera.firstPerson eye", span)?;
-                    Ok(host(FunctorLangCamera(Camera::first_person(
-                        [ex, ey, ez],
-                        angle_of(yaw, "Camera.firstPerson yaw", span)?,
-                        angle_of(pitch, "Camera.firstPerson pitch", span)?,
-                        angle_of(fov, "Camera.firstPerson fov", span)?,
-                    ))))
-                }
-                _ => usage(
-                    "Camera.firstPerson(eye, yaw, pitch, fov) — a Vec3 eye and Angle values \
-(Angle.degrees/Angle.radians)",
-                ),
-            },
-            "Light.ambient" => match args.as_slice() {
-                [color] => {
-                    let (r, g, b) = color_of(color, path, span)?;
-                    Ok(host(FunctorLangLight(Light::ambient(r, g, b))))
-                }
-                _ => usage("Light.ambient(color)"),
-            },
-            "Light.directional" => match args.as_slice() {
-                [dir, color, intensity] => {
-                    let (dx, dy, dz) = vec3_of(dir, path, span)?;
-                    let (r, g, b) = color_of(color, path, span)?;
-                    Ok(host(FunctorLangLight(Light::directional(
-                        dx,
-                        dy,
-                        dz,
-                        r,
-                        g,
-                        b,
-                        num(intensity, span)? as f32,
-                    ))))
-                }
-                _ => usage("Light.directional(dir, color, intensity)"),
-            },
-            "Light.point" => match args.as_slice() {
-                [pos, color, intensity, range] => {
-                    let (px, py, pz) = vec3_of(pos, path, span)?;
-                    let (r, g, b) = color_of(color, path, span)?;
-                    Ok(host(FunctorLangLight(Light::point(
-                        px,
-                        py,
-                        pz,
-                        r,
-                        g,
-                        b,
-                        num(intensity, span)? as f32,
-                        num(range, span)? as f32,
-                    ))))
-                }
-                _ => usage("Light.point(pos, color, intensity, range)"),
-            },
-            // A cone of light from (px,py,pz) aimed along (dx,dy,dz), soft-edged
-            // at `coneAngle` (an Angle from the axis) with falloff to `range`.
-            // Shadow-casting when piped through `Light.castShadows`.
-            "Light.spot" => match args.as_slice() {
-                [pos, dir, color, intensity, range, cone] => {
-                    let cone: cgmath::Rad<f32> = angle_of(cone, path, span)?.into();
-                    let (px, py, pz) = vec3_of(pos, "Light.spot position", span)?;
-                    let (dx, dy, dz) = vec3_of(dir, "Light.spot direction", span)?;
-                    let (r, g, b) = color_of(color, path, span)?;
-                    Ok(host(FunctorLangLight(Light::spot(
-                        px,
-                        py,
-                        pz,
-                        dx,
-                        dy,
-                        dz,
-                        r,
-                        g,
-                        b,
-                        num(intensity, span)? as f32,
-                        num(range, span)? as f32,
-                        cone.0,
-                    ))))
-                }
-                _ => usage("Light.spot(pos, dir, color, intensity, range, coneAngle)"),
-            },
-            // Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
-            "Light.castShadows" => match args.as_slice() {
-                [light] => match light_of(light) {
-                    Some(inner) => Ok(host(FunctorLangLight(inner.clone().cast_shadows()))),
-                    None => usage("Light.castShadows(light)"),
-                },
-                _ => usage("Light.castShadows(light)"),
-            },
-            "Frame.createLit" => match args.as_slice() {
-                [camera, scene, Value::List(lights)] => {
-                    let (Value::HostData(cam), Some(scene)) = (camera, scene_of(scene)) else {
-                        return usage("Frame.createLit(camera, scene, [light, …])");
-                    };
-                    let Some(camera) = cam.as_any().downcast_ref::<FunctorLangCamera>() else {
-                        return usage("Frame.createLit(camera, scene, [light, …])");
-                    };
-                    let mut lit = Vec::with_capacity(lights.len());
-                    for light in lights.iter() {
-                        match light_of(light) {
-                            Some(inner) => lit.push(inner.clone()),
-                            None => {
-                                return err(format!(
-                                    "Frame.createLit lights must be Lights, got {}",
-                                    light.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    Ok(host(FunctorLangFrame(Frame {
-                        camera: camera.0.clone(),
-                        scene: scene.clone(),
-                        lights: lit,
-                        render_targets: vec![],
-                        fog: None,
-                        skybox: None,
-                        clear_color: None,
-                    })))
-                }
-                _ => usage("Frame.createLit(camera, scene, [light, …])"),
             },
             // ── Physics (docs/physics.md; the declarative surface) ─────────
             // Shapes are values, bodies are tag + shape + piped attributes,
@@ -2169,132 +2310,6 @@ the Net.HttpResponse, got {}",
                     }
                 }
                 _ => usage("Physics.transformed(tag, scene)"),
-            },
-            // Target LAST (subject-last), so it pipes:
-            // `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
-            "RenderTarget.sized" => match args.as_slice() {
-                [w, h, target] => {
-                    let inner = target_of(target, "RenderTarget.sized", span)?;
-                    let w = positive_num(w, span, "RenderTarget.sized width")?;
-                    let h = positive_num(h, span, "RenderTarget.sized height")?;
-                    Ok(host(FunctorLangRenderTarget(
-                        inner.clone().sized(w as f32, h as f32),
-                    )))
-                }
-                _ => usage("RenderTarget.sized(width, height, target)"),
-            },
-            // Frame LAST (subject-last), so it pipes:
-            // `Frame.createLit(…) |> Frame.withRenderTarget(feed, feedFrame)`.
-            "Frame.withRenderTarget" => match args.as_slice() {
-                [target, target_frame, frame] => {
-                    let (Some(outer), Some(inner)) =
-                        (frame_value(frame), frame_value(target_frame))
-                    else {
-                        return usage(
-                            "Frame.withRenderTarget(target, targetFrame, frame) — targetFrame \
-is a Frame.create/createLit(…) rendered into the target each frame, before \
-frame's main pass",
-                        );
-                    };
-                    let target = target_of(target, "Frame.withRenderTarget", span)?;
-                    Ok(host(FunctorLangFrame(Frame::with_render_target(
-                        outer.clone(),
-                        target.clone(),
-                        inner.clone(),
-                    ))))
-                }
-                _ => usage("Frame.withRenderTarget(target, targetFrame, frame)"),
-            },
-            // Frame LAST (subject-last), so it pipes: `Frame.createLit(…) |> Frame.withFog(fog)`.
-            "Frame.withFog" => match args.as_slice() {
-                [fog, frame] => {
-                    let Some(inner) = frame_value(frame) else {
-                        return usage("Frame.withFog(fog, frame)");
-                    };
-                    let fog = fog_of(fog, "Frame.withFog", span)?;
-                    Ok(host(FunctorLangFrame(Frame::with_fog(inner.clone(), fog.clone()))))
-                }
-                _ => usage("Frame.withFog(fog, frame)"),
-            },
-            "Skybox.files" => match args.as_slice() {
-                [Value::String(px), Value::String(nx), Value::String(py), Value::String(ny), Value::String(pz), Value::String(nz)]
-                    if ![px, nx, py, ny, pz, nz].iter().any(|s| s.is_empty()) =>
-                {
-                    Ok(host(FunctorLangSkybox(SkyboxDescription::new(
-                        px.to_string(),
-                        nx.to_string(),
-                        py.to_string(),
-                        ny.to_string(),
-                        pz.to_string(),
-                        nz.to_string(),
-                    ))))
-                }
-                _ => usage(
-                    "Skybox.files(px, nx, py, ny, pz, nz) — six non-empty face \
-paths (+X, -X, +Y, -Y, +Z, -Z)",
-                ),
-            },
-            // Frame LAST (subject-last), so it pipes: `frame |> Frame.withSkybox(sky)`.
-            "Frame.withSkybox" => match args.as_slice() {
-                [sky, frame] => {
-                    let Some(inner) = frame_value(frame) else {
-                        return usage("Frame.withSkybox(skybox, frame)");
-                    };
-                    let sky = skybox_of(sky, "Frame.withSkybox", span)?;
-                    Ok(host(FunctorLangFrame(Frame::with_skybox(inner.clone(), sky.clone()))))
-                }
-                _ => usage("Frame.withSkybox(skybox, frame)"),
-            },
-            // Frame LAST (subject-last), so it pipes:
-            // `frame |> Frame.withClearColor(r, g, b)`. Sets the background
-            // clear color explicitly, overriding the fog-color default.
-            "Frame.withClearColor" => match args.as_slice() {
-                [color, frame] => {
-                    let (r, g, b) = color_of(color, path, span)?;
-                    let Some(inner) = frame_value(frame) else {
-                        return usage("Frame.withClearColor(color, frame)");
-                    };
-                    Ok(host(FunctorLangFrame(Frame::with_clear_color(
-                        inner.clone(),
-                        r,
-                        g,
-                        b,
-                    ))))
-                }
-                _ => usage("Frame.withClearColor(color, frame)"),
-            },
-            // Scene LAST (subject-last), so it pipes: `Scene.quad() |> Scene.screen(feed)` —
-            // an emissive (fullbright, screens glow) surface showing the
-            // target's texture. A target no frame declares shows magenta.
-            "Scene.screen" => match args.as_slice() {
-                [target, scene] => {
-                    let Some(scene) = scene_of(scene) else {
-                        return usage("Scene.screen(target, scene)");
-                    };
-                    let target = target_of(target, "Scene.screen", span)?;
-                    scene_value(Scene3D {
-                        obj: SceneObject::Material(
-                            MaterialDescription::emissive_texture(
-                                TextureDescription::render_target(target.clone()),
-                            ),
-                            vec![scene.clone()],
-                        ),
-                        xform: Matrix4::from_scale(1.0),
-                    })
-                }
-                _ => usage("Scene.screen(target, scene)"),
-            },
-            "Frame.create" => match args.as_slice() {
-                [camera, scene] => {
-                    let (Value::HostData(cam), Some(scene)) = (camera, scene_of(scene)) else {
-                        return usage("Frame.create(camera, scene)");
-                    };
-                    let Some(camera) = cam.as_any().downcast_ref::<FunctorLangCamera>() else {
-                        return usage("Frame.create(camera, scene)");
-                    };
-                    Ok(host(FunctorLangFrame(Frame::new(camera.0.clone(), scene.clone()))))
-                }
-                _ => usage("Frame.create(camera, scene)"),
             },
             // ── Ui (the optional `ui = (model) => …` hook) ─────────────────
             // hello's HUD vocabulary: text lines (white or colored), stacked
@@ -3478,13 +3493,6 @@ dropping the rest"
     }
 }
 
-fn light_of(value: &Value) -> Option<&Light> {
-    match value {
-        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangLight>().map(|l| &l.0),
-        _ => None,
-    }
-}
-
 fn scene_of(value: &Value) -> Option<&Scene3D> {
     match value {
         Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangScene>().map(|s| &s.0),
@@ -3764,21 +3772,6 @@ fn group(scenes: Vec<Scene3D>, xform: Matrix4<f32>) -> Scene3D {
     }
 }
 
-fn wrap_transform(
-    scene: &Value,
-    xform: Matrix4<f32>,
-    sig: &str,
-    span: Span,
-) -> Result<Value, RunError> {
-    match scene_of(scene) {
-        Some(inner) => scene_value(group(vec![inner.clone()], xform)),
-        None => Err(RunError {
-            message: format!("usage: {sig}"),
-            span,
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4018,23 +4011,21 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     }
 
     // Scene.model teaches its usage: a bare number or an empty path is a
-    // spanned error, not a silently-empty scene.
+    // spanned error, not a silently-empty scene. (Dual-accept — a path
+    // string OR an Asset.model locator — so a wrong TYPE gets the usage
+    // line naming the accepted forms, not a misleading "expected a string".)
     #[test]
     fn model_requires_a_nonempty_path_string() {
-        for src in [
-            "let main = () => Scene.model(42.0)",
-            "let main = () => Scene.model(\"\")",
-        ] {
-            let module = functor_lang::lower(functor_lang::parse(src).unwrap()).unwrap();
-            let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
-                .err()
-                .expect("should fail");
-            assert_eq!(
-                failure.error.message,
-                "usage: Scene.model(\"file.glb\") — a non-empty glTF path relative to \
+        assert_eq!(
+            run_fail("let main = () => Scene.model(42.0)"),
+            "usage: Scene.model(\"file.glb\") — a non-empty glTF path relative to \
 the game dir"
-            );
-        }
+        );
+        assert_eq!(
+            run_fail("let main = () => Scene.model(\"\")"),
+            "usage: Scene.model(\"file.glb\") — a non-empty glTF path relative to \
+the game dir"
+        );
     }
 
     // --- typed assets (Track B.1) ---
@@ -4418,7 +4409,7 @@ Vec3.make(x, y, z)"
             fail(
                 "let main = () => Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), 0.0)"
             ),
-            "Camera.lookAt target: expected a Vec3, got a bare number — wrap the components: \
+            "Camera.lookAt: expected a Vec3, got a bare number — wrap the components: \
 Vec3.make(x, y, z)"
         );
         // Vec3.make itself still validates its components.
@@ -4649,7 +4640,10 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
     #[test]
     fn every_advertised_path_dispatches() {
         let mut host = FunctorHost;
-        for path in PATHS {
+        // Legacy match arms AND registered externals — migration must not
+        // narrow this pin.
+        let all: Vec<&str> = PATHS.iter().copied().chain(registry().paths()).collect();
+        for path in all {
             let result = host.call(path, vec![Value::Bool(true)], functor_lang::Span::new(0, 0));
             let message = result.err().expect("garbage args should error").message;
             assert!(
