@@ -65,6 +65,9 @@ export const test = base.extend({
         ...process.env,
         FUNCTOR_LANG_TEST_HOOKS: "1",
         FUNCTOR_INSPECTOR_TEST_TRACE: tracePath,
+        // The live-preview command spawns `functor run wasm` — resolve the
+        // repo's freshly built CLI ahead of anything on the developer's PATH.
+        PATH: `${path.join(REPO, "target", "debug")}${path.delimiter}${process.env.PATH}`,
       },
     });
 
