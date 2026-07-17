@@ -84,3 +84,24 @@ test("statusBar derives text + toggle command from attach state", () => {
   assert.equal(attached.text, "$(debug) inspector :8077");
   assert.equal(attached.command, inspector.DETACH_COMMAND);
 });
+
+test("groupCoverage buckets lines by state and rejects junk", () => {
+  const grouped = inspector.groupCoverage({
+    uri: "file:///g.fun",
+    lines: [
+      { line: 0, state: "now" },
+      { line: 2, state: "before" },
+      { line: 3, state: "after" },
+      { line: 5, state: "dark" },
+      { line: 6, state: "mystery" }, // unknown state → dropped
+      { state: "now" }, // no line → dropped
+    ],
+  });
+  assert.deepStrictEqual(grouped, {
+    uri: "file:///g.fun",
+    groups: { now: [0], before: [2], after: [3], dark: [5] },
+  });
+  assert.strictEqual(inspector.groupCoverage(null), null);
+  assert.strictEqual(inspector.groupCoverage({ uri: 1, lines: [] }), null);
+  assert.strictEqual(inspector.groupCoverage({ uri: "u" }), null);
+});

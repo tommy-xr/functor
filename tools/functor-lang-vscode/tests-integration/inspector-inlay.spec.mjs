@@ -42,6 +42,28 @@ test("a paused trace makes a live-value inlay hint appear in the editor", async 
     editor.getByText(EXPECTED_RANGE_HINT, { exact: false }).first()
   ).toBeVisible({ timeout: 15_000 });
 
+  // The recency gutter: the trace's coverage section becomes four gutter
+  // decorations (now/before/after/dark — one per def line in the canned
+  // coverage). Monaco renders gutterIconPath decorations as glyph-margin
+  // elements with our SVGs as background images.
+  const gutterCount = await workbox
+    .locator(".glyph-margin-widgets > div, .margin-view-overlays .cgmr")
+    .filter({ has: workbox.locator(":scope") })
+    .count()
+    .catch(() => 0);
+  const gutterStyles = await workbox.evaluate(() =>
+    [...document.querySelectorAll("[class*='TextEditorDecorationType']")]
+      .map((el) => getComputedStyle(el).backgroundImage)
+      .filter((s) => s.includes("cov-"))
+  );
+  expect(
+    gutterStyles.filter((s) => s.includes("cov-")).length,
+    `gutter decorations rendered: ${JSON.stringify(gutterStyles)} (count probe: ${gutterCount})`
+  ).toBeGreaterThanOrEqual(4);
+
+  // Artifact: hints + gutter in one frame.
+  await workbox.screenshot({ path: test.info().outputPath("vscode-gutter.png") });
+
   // The hash gate: mutate the buffer so its text no longer hashes to the
   // trace's recorded source hash, and the live hint must disappear ("never wrong
   // values on wrong lines"). Any edit changes the whole-file hash.

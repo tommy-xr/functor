@@ -70,8 +70,49 @@ function activate(context) {
     { command: "functor-lang-lsp" },
     { documentSelector: [{ language: "functor-lang" }] }
   );
+  // --- Recency gutter (inspector coverage) --------------------------------
+  // Four decoration types, one per state; the LSP pushes per-line states and
+  // we repaint every visible editor for that document. All decision logic is
+  // in inspector.groupCoverage (pure, node-tested); this is thin wiring.
+  const covDecorations = {};
+  for (const state of inspector.COVERAGE_STATES) {
+    covDecorations[state] = vscode.window.createTextEditorDecorationType({
+      gutterIconPath: vscode.Uri.file(
+        path.join(context.extensionPath, "media", `cov-${state}.svg`)
+      ),
+      gutterIconSize: "contain",
+    });
+    context.subscriptions.push(covDecorations[state]);
+  }
+  // uri (string) → grouped line lists, so an editor that becomes visible
+  // later (split, tab switch) repaints from the latest push.
+  const covByUri = new Map();
+  const paintCoverage = (editor) => {
+    const grouped = covByUri.get(editor.document.uri.toString());
+    for (const state of inspector.COVERAGE_STATES) {
+      const lines = (grouped && grouped.groups[state]) || [];
+      editor.setDecorations(
+        covDecorations[state],
+        lines.map((line) => new vscode.Range(line, 0, line, 0))
+      );
+    }
+  };
+  context.subscriptions.push(
+    vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach(paintCoverage))
+  );
+
   clientStarted = client.start().then(
-    () => elog("language server started (functor-lang-lsp)"),
+    () => {
+      elog("language server started (functor-lang-lsp)");
+      client.onNotification(inspector.COVERAGE, (params) => {
+        const grouped = inspector.groupCoverage(params);
+        if (!grouped) return;
+        covByUri.set(vscode.Uri.parse(grouped.uri).toString(), grouped);
+        const total = Object.values(grouped.groups).reduce((n, l) => n + l.length, 0);
+        elog(`inspector coverage: ${total} gutter lines for ${grouped.uri}`);
+        vscode.window.visibleTextEditors.forEach(paintCoverage);
+      });
+    },
     (e) => elog(`language server FAILED to start: ${e && e.message ? e.message : e}`)
   );
 

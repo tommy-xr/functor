@@ -24,17 +24,24 @@ export const EXPECTED_HINT = `= ${CANNED_VALUE}`;
 export const RANGE_BINDING_NAME = "bumped";
 export const EXPECTED_RANGE_HINT = "= 0.1…0.61667 (×120)";
 
+// Wire offsets are BYTES into the file text, not JS string indices — the
+// fixture's header comment contains em-dashes (3 UTF-8 bytes, 1 UTF-16 unit),
+// so a bare indexOf lands hints/gutter lines visibly early. Anchor by
+// characters, convert to bytes.
+const byteAt = (source, index) => Buffer.byteLength(source.slice(0, index), "utf8");
+
 // Build the trace doc for a given game.fun source text. Places the binding at
 // the FIRST occurrence of `model` (the `update` parameter, near the top of the
 // file so its inlay hint is inside the default viewport).
 // The numeric-range binding at update's `bumped` let binder (region-shaped
 // span, `let bumped =`, per the recorder's binder-span convention).
 function rangeBinding(source) {
-  const start = source.indexOf("let bumped");
-  if (start < 0) {
+  const idx = source.indexOf("let bumped");
+  if (idx < 0) {
     throw new Error("binding 'bumped' not found in game.fun");
   }
-  const end = start + source.slice(start).indexOf("=") + 1;
+  const start = byteAt(source, idx);
+  const end = byteAt(source, idx + source.slice(idx).indexOf("=") + 1);
   return {
     name: RANGE_BINDING_NAME,
     file: "game.fun",
@@ -48,12 +55,32 @@ function rangeBinding(source) {
 }
 
 export function buildTrace(source) {
-  const start = source.indexOf(BINDING_NAME);
-  if (start < 0) {
+  const idx = source.indexOf(BINDING_NAME);
+  if (idx < 0) {
     throw new Error(`binding '${BINDING_NAME}' not found in game.fun`);
   }
+  const start = byteAt(source, idx);
   const hash = createHash("sha256").update(Buffer.from(source, "utf8")).digest("hex");
+  // Recency-gutter coverage: distinct states on four def lines. Starts are
+  // byte offsets of each def's body-ish position; the LSP folds them to lines.
+  const at = (needle) => {
+    const i = source.indexOf(needle);
+    if (i < 0) throw new Error(`coverage anchor '${needle}' not found`);
+    return byteAt(source, i);
+  };
+  const coverage = {
+    "game.fun": [
+      { start: at("let update"), frames: [0, -2] },        // now (green)
+      { start: at("let tick"), frames: [-1, -9] },          // before (cyan)
+      { start: at("let draw"), frames: [3] },               // after (pink)
+    ],
+  };
+  const runnable = {
+    "game.fun": [at("let update"), at("let tick"), at("let draw"), at("let subscriptions")],
+  }; // subscriptions never ran → dark
   return {
+    coverage,
+    runnable,
     frame: 1,
     tts: 1.0,
     paused: true,

@@ -35,6 +35,27 @@ function relayTrace(msg) {
   return { notification: TRACE, params: msg.trace };
 }
 
+// --- recency-gutter coverage ----------------------------------------------
+// The LSP pushes `functor/inspector/coverage` with per-line recency states
+// (`{ uri, lines: [{line, state}] }`). Group into per-state line lists for
+// the extension to hand to its four decoration types; unknown states are
+// dropped (a newer server must not break an older extension). Pure — the
+// tested half; extension.js does the vscode.Range/setDecorations wiring.
+const COVERAGE = "functor/inspector/coverage";
+const COVERAGE_STATES = ["now", "before", "after", "dark"];
+
+function groupCoverage(params) {
+  const groups = { now: [], before: [], after: [], dark: [] };
+  if (!params || typeof params.uri !== "string" || !Array.isArray(params.lines)) {
+    return null;
+  }
+  for (const entry of params.lines) {
+    if (!entry || typeof entry.line !== "number") continue;
+    if (COVERAGE_STATES.includes(entry.state)) groups[entry.state].push(entry.line);
+  }
+  return { uri: params.uri, groups };
+}
+
 // --- attach / detach notifications ---------------------------------------
 function attachNotification(port) {
   return { notification: ATTACH, params: { port } };
@@ -103,6 +124,9 @@ module.exports = {
   ATTACH_COMMAND,
   DETACH_COMMAND,
   relayTrace,
+  groupCoverage,
+  COVERAGE,
+  COVERAGE_STATES,
   attachNotification,
   detachNotification,
   parsePort,

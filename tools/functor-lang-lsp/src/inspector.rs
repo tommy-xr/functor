@@ -35,6 +35,17 @@ use serde_json::Value;
 pub struct TraceDoc {
     pub sources: Vec<SourceHash>,
     pub invocations: Vec<Invocation>,
+    /// Execution coverage per file: byte-start → the frame OFFSETS (relative
+    /// to the paused frame) it executed on. Trace v2's recency-gutter data.
+    pub coverage: Vec<(String, Vec<CoverageSite>)>,
+    /// The static could-run set per file (byte starts) — the "dark" baseline.
+    pub runnable: Vec<(String, Vec<usize>)>,
+}
+
+/// One covered position: a byte start and the frame offsets it ran on.
+pub struct CoverageSite {
+    pub start: usize,
+    pub frames: Vec<i64>,
 }
 
 /// The SHA-256 (hex) of one project file's text as the runtime loaded it.
@@ -100,9 +111,51 @@ impl TraceDoc {
             .iter()
             .filter_map(Invocation::from_json)
             .collect();
+        let obj_entries = |key: &str| -> Vec<(String, Vec<Value>)> {
+            v[key]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(file, arr)| {
+                            (file.clone(), arr.as_array().cloned().unwrap_or_default())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let coverage = obj_entries("coverage")
+            .into_iter()
+            .map(|(file, sites)| {
+                let sites = sites
+                    .iter()
+                    .filter_map(|site| {
+                        Some(CoverageSite {
+                            start: site["start"].as_u64()? as usize,
+                            frames: site["frames"]
+                                .as_array()?
+                                .iter()
+                                .filter_map(|f| f.as_i64())
+                                .collect(),
+                        })
+                    })
+                    .collect();
+                (file, sites)
+            })
+            .collect();
+        let runnable = obj_entries("runnable")
+            .into_iter()
+            .map(|(file, starts)| {
+                (
+                    file,
+                    starts.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect(),
+                )
+            })
+            .collect();
         Some(TraceDoc {
             sources,
             invocations,
+            coverage,
+            runnable,
         })
     }
 }
@@ -430,6 +483,83 @@ pub fn execution_count(trace: &TraceDoc, entry: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// The per-line recency-gutter states for `file_name`'s `source` — the same
+/// policy as the web editors' CodeMirror gutter (site/src/lang-intel.js):
+/// `now` (green) ran on the paused frame; `before`/`after` ran only on
+/// earlier/later frames of the window (a line that ran both sides takes the
+/// NEAREST frame, tie → before); `dark` is statically runnable but never ran.
+/// Lines with no runnable position are unmarked. 0-based lines, hash-gated
+/// like every live overlay.
+pub fn coverage_lines(
+    trace: &TraceDoc,
+    file_name: &str,
+    source: &str,
+) -> Vec<(usize, &'static str)> {
+    if !source_matches(trace, file_name, source) {
+        return Vec::new();
+    }
+    #[derive(Default, Clone)]
+    struct LineAcc {
+        now: bool,
+        // Nearest distances (positive numbers), 0 = none seen.
+        before: i64,
+        after: i64,
+        runnable: bool,
+    }
+    let line_of = |byte: usize| {
+        source.as_bytes()[..byte.min(source.len())]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+    };
+    let mut lines: std::collections::BTreeMap<usize, LineAcc> = std::collections::BTreeMap::new();
+    for (file, starts) in &trace.runnable {
+        if file != file_name {
+            continue;
+        }
+        for &start in starts {
+            lines.entry(line_of(start)).or_default().runnable = true;
+        }
+    }
+    for (file, sites) in &trace.coverage {
+        if file != file_name {
+            continue;
+        }
+        for site in sites {
+            let acc = lines.entry(line_of(site.start)).or_default();
+            for &frame in &site.frames {
+                if frame == 0 {
+                    acc.now = true;
+                } else if frame < 0 {
+                    let d = -frame;
+                    acc.before = if acc.before == 0 { d } else { acc.before.min(d) };
+                } else {
+                    acc.after = if acc.after == 0 { frame } else { acc.after.min(frame) };
+                }
+            }
+        }
+    }
+    lines
+        .into_iter()
+        .filter_map(|(line, acc)| {
+            let state = if acc.now {
+                "now"
+            } else if acc.before > 0 && acc.after > 0 {
+                if acc.before <= acc.after { "before" } else { "after" }
+            } else if acc.before > 0 {
+                "before"
+            } else if acc.after > 0 {
+                "after"
+            } else if acc.runnable {
+                "dark"
+            } else {
+                return None;
+            };
+            Some((line, state))
+        })
+        .collect()
+}
+
 /// A multi-hit numeric site's `min…max` label, `None` when the range is
 /// absent or degenerate (min == max — the plain value reads better).
 fn range_label(b: &Binding) -> Option<String> {
@@ -666,6 +796,33 @@ mod tests {
         let hints = live_hints(&trace, "game.fun", src, &no_selection());
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].offset, region_start + "let t".len());
+    }
+
+    #[test]
+    fn coverage_lines_map_the_four_gutter_states() {
+        // Four lines: ran-now, ran-before-only, ran-after-only, runnable-dark.
+        let src = "let a = 1.0\nlet b = 2.0\nlet c = 3.0\nlet d = 4.0\n";
+        let l = |n: usize| src.split('\n').take(n).map(|x| x.len() + 1).sum::<usize>();
+        let doc = json!({
+            "paused": true,
+            "sources": [ { "file": "game.fun", "hash": sha256_hex(src.as_bytes()) } ],
+            "invocations": [],
+            "coverage": { "game.fun": [
+                { "start": l(0) + 4, "frames": [-3, 0] },
+                { "start": l(1) + 4, "frames": [-2, -7] },
+                { "start": l(2) + 4, "frames": [1, 5, -4] },
+            ]},
+            "runnable": { "game.fun": [l(0) + 4, l(1) + 4, l(2) + 4, l(3) + 4] },
+        });
+        let trace = TraceDoc::from_json(&doc).unwrap();
+        let lines = coverage_lines(&trace, "game.fun", src);
+        // Line 2 ran at -4 and +1: the NEAREST frame wins → after.
+        assert_eq!(
+            lines,
+            vec![(0, "now"), (1, "before"), (2, "after"), (3, "dark")]
+        );
+        // Hash gate: an edited buffer gets nothing.
+        assert!(coverage_lines(&trace, "game.fun", &format!("{src} ")).is_empty());
     }
 
     #[test]
