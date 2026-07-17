@@ -75,17 +75,17 @@ let models = () =>
   Scene.group([
     Scene.model("https://assets.babylonjs.com/meshes/ExplodingBarrel.glb")
       |> Scene.scale(0.35)
-      |> Scene.translate(0.0, -1.2, 0.0),
+      |> Scene.translate(Vec3.make(0.0, -1.2, 0.0)),
     Scene.model("https://assets.babylonjs.com/meshes/shark.glb")
       |> Scene.scale(0.18)
       |> Scene.rotateY(Angle.degrees(200.0))
-      |> Scene.translate(-2.2, 0.7, 0.0),
+      |> Scene.translate(Vec3.make(-2.2, 0.7, 0.0)),
     // Deliberately mixed sizes (2KB box, 2.9MB barrel, 15MB shark): assets
     // settle in size order, so the staggered pop-in is visible.
     Scene.model("https://assets.babylonjs.com/meshes/box.glb")
       |> Scene.scale(0.8)
       |> Scene.rotateY(Angle.degrees(30.0))
-      |> Scene.translate(2.4, 0.2, 0.0),
+      |> Scene.translate(Vec3.make(2.4, 0.2, 0.0)),
   ])
 
 // The SPACE batch — another size ladder (1.1MB gull, 4.6MB plane, 11MB
@@ -94,16 +94,16 @@ let phase2Models = () =>
   Scene.group([
     Scene.model("https://assets.babylonjs.com/meshes/seagulf.glb")
       |> Scene.scale(0.001)
-      |> Scene.translate(-3.0, -1.6, 0.0),
+      |> Scene.translate(Vec3.make(-3.0, -1.6, 0.0)),
     Scene.model("https://assets.babylonjs.com/meshes/aerobatic_plane.glb")
       |> Scene.scale(3.0)
       |> Scene.rotateY(Angle.degrees(150.0))
-      |> Scene.translate(1.7, 2.0, 0.0),
+      |> Scene.translate(Vec3.make(1.7, 2.0, 0.0)),
     // The glTF-sample BoomBox is authored at centimeter scale (~1cm tall).
     Scene.model("https://assets.babylonjs.com/meshes/boombox.glb")
       |> Scene.scale(22.0)
       |> Scene.rotateY(Angle.degrees(180.0))
-      |> Scene.translate(0.0, 1.6, 0.0),
+      |> Scene.translate(Vec3.make(0.0, 1.6, 0.0)),
   ])
 
 // A backdrop quad and a left-anchored fill quad (quads are centered, so the
@@ -116,13 +116,13 @@ let bar = (model) =>
   Scene.group([
     Scene.quad()
       |> Scene.scaleXYZ(barWidth + 0.15, 0.35, 1.0)
-      |> Scene.color(0.12, 0.12, 0.18),
+      |> Scene.color(Color.rgb(0.12, 0.12, 0.18)),
     Scene.quad()
       |> Scene.scaleXYZ(barWidth * f, 0.22, 1.0)
-      |> Scene.translate(barWidth * (f - 1.0) * 0.5, 0.0, 0.05)
-      |> Scene.emissive(0.25, 0.9, 0.55),
+      |> Scene.translate(Vec3.make(barWidth * (f - 1.0) * 0.5, 0.0, 0.05))
+      |> Scene.emissive(Color.rgb(0.25, 0.9, 0.55)),
   ])
-    |> Scene.translate(0.0, -2.3, 0.0)
+    |> Scene.translate(Vec3.make(0.0, -2.3, 0.0))
 
 let draw = (model, tts) =>
   let base = models() in
@@ -136,11 +136,11 @@ let draw = (model, tts) =>
     else scene
   in
   Frame.createLit(
-    Camera.lookAt(0.0, 0.8, 6.0, 0.0, 0.2, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 0.8, 6.0), Vec3.make(0.0, 0.2, 0.0)),
     withBar,
     [
-      Light.ambient(0.4, 0.4, 0.45),
-      Light.directional(-0.4, -1.0, -0.5, 1.0, 0.95, 0.9, 1.1),
+      Light.ambient(Color.rgb(0.4, 0.4, 0.45)),
+      Light.directional(Vec3.make(-0.4, -1.0, -0.5), Color.rgb(1.0, 0.95, 0.9), 1.1),
     ])
 
 let ui = (model) =>
