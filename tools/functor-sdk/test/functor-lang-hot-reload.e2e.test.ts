@@ -19,7 +19,7 @@ const game = (speed: string) => `let speed = ${speed}
 let init = { spin: 0.0 }
 let tick = (m, dt, tts) => { m with spin: m.spin + dt * speed }
 let draw = (m, tts) =>
-  Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+  Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
 
 /** The spin field of the runner's `/state` model (Functor Lang Value display). */

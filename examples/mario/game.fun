@@ -120,17 +120,17 @@ let platform = (cx, width) =>
   Scene.cube()
     |> Scene.scaleXYZ(width, 2.0, 4.0)
     |> Scene.lit(Color.rgb(0.30, 0.68, 0.36))
-    |> Scene.translate(cx, groundTop - 1.0, 0.0)
+    |> Scene.translate(Vec3.make(cx, groundTop - 1.0, 0.0))
 
 let character = (model) =>
   Scene.cube()
     |> Scene.scaleXYZ(0.8, 1.2, 0.8)
     |> Scene.lit(Color.rgb(0.95, 0.35, 0.25))
-    |> Scene.translate(model.x, model.y + charHalfH, 0.0)
+    |> Scene.translate(Vec3.make(model.x, model.y + charHalfH, 0.0))
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(0.0, 3.0, 20.0, 0.0, 1.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 3.0, 20.0), Vec3.make(0.0, 1.0, 0.0)),
     Scene.group([
       // Left platform: x in [leftEdge, -chasmHalf]; right: [chasmHalf, rightEdge].
       platform((leftEdge - chasmHalf) / 2.0, -chasmHalf - leftEdge),
@@ -139,5 +139,5 @@ let draw = (model, tts) =>
     ]),
     [
       Light.ambient(Color.rgb(0.18, 0.18, 0.22)),
-      Light.directional(-0.4, -1.0, -0.5, Color.rgb(1.0, 0.98, 0.92), 0.9) |> Light.castShadows,
+      Light.directional(Vec3.make(-0.4, -1.0, -0.5), Color.rgb(1.0, 0.98, 0.92), 0.9) |> Light.castShadows,
     ])

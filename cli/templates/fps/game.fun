@@ -61,13 +61,13 @@ let tick = (model, dt, tts) =>
 
 let target = (x, z, r, g, b) =>
   Scene.cube()
-    |> Scene.translate(x, 0.75, z)
+    |> Scene.translate(Vec3.make(x, 0.75, z))
     |> Scene.lit(Color.rgb(r, g, b))
 
 let draw = (model, tts) =>
   Frame.createLit(
     Camera.firstPerson(
-      model.eye.x, model.eye.y, model.eye.z,
+      Vec3.make(model.eye.x, model.eye.y, model.eye.z),
       Angle.radians(model.yaw), Angle.radians(model.pitch), Angle.degrees(70.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(40.0) |> Scene.lit(Color.rgb(0.32, 0.34, 0.38)),
@@ -77,7 +77,7 @@ let draw = (model, tts) =>
     ]),
     [
       Light.ambient(Color.rgb(0.12, 0.12, 0.16)),
-      Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.96, 0.9), 1.0)
+      Light.directional(Vec3.make(0.5, -1.0, 0.35), Color.rgb(1.0, 0.96, 0.9), 1.0)
         |> Light.castShadows,
     ])
 

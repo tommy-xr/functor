@@ -346,9 +346,9 @@ let starfield = () =>
     Scene.plane()
       |> Scene.scale(0.14 + size01 * 0.14)
       |> Scene.emissive(Color.rgb(glow, glow, glow * 1.08))
-      |> Scene.translate((x01 * 2.0 - 1.0) * (worldX + 8.0),
+      |> Scene.translate(Vec3.make((x01 * 2.0 - 1.0) * (worldX + 8.0),
                          0.0 - 4.0,
-                         (z01 * 2.0 - 1.0) * (worldZ + 8.0)))
+                         (z01 * 2.0 - 1.0) * (worldZ + 8.0))))
 
 // The rock's shape wobble draws from its own seed — pure, so the shape is
 // stable frame to frame.
@@ -363,13 +363,13 @@ let rockScene = (a, tts) =>
                       r * (0.75 + w3 * 0.5))
     |> Scene.rotateY(Angle.radians(tts * a.spin))
     |> Scene.lit(Color.rgb(0.62, 0.55, 0.47))
-    |> Scene.translate(a.x, 0.0, a.z)
+    |> Scene.translate(Vec3.make(a.x, 0.0, a.z))
 
 let bulletScene = (b) =>
   Scene.sphere()
     |> Scene.scale(0.14)
     |> Scene.emissive(Color.rgb(1.0, 0.9, 0.3))
-    |> Scene.translate(b.x, 0.0, b.z)
+    |> Scene.translate(Vec3.make(b.x, 0.0, b.z))
 
 // The ship: Kenney's craft_racer (CC0, see ASSETS.md; fetched, not checked
 // in) with an emissive flame while thrusting. The group faces +Z at
@@ -379,7 +379,7 @@ let shipBody = (thrusting) =>
     (match thrusting with
      | true => [Scene.cube()
                   |> Scene.scaleXYZ(0.16, 0.16, 0.6)
-                  |> Scene.translate(0.0, 0.0, 0.0 - 0.85)
+                  |> Scene.translate(Vec3.make(0.0, 0.0, 0.0 - 0.85))
                   |> Scene.emissive(Color.rgb(1.0, 0.55, 0.1))]
      | false => []) in
   Scene.group(Lib.append([
@@ -388,7 +388,7 @@ let shipBody = (thrusting) =>
     // translation (kit-scene leftover) — counter it first or the body
     // renders displaced from the ship's true position.
     Scene.model("ship.glb")
-      |> Scene.translate(0.0 - 2.0, 0.0, 0.0 - 1.5)
+      |> Scene.translate(Vec3.make(0.0 - 2.0, 0.0, 0.0 - 1.5))
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.scale(1.5),
   ], flame))
@@ -401,7 +401,7 @@ let shipScenes = (model, tts) =>
   | true =>
     [shipBody(Lib.and(model.held.thrust, model.phase == Playing))
        |> Scene.rotateY(Angle.radians(model.ship.heading))
-       |> Scene.translate(model.ship.pos.x, 0.0, model.ship.pos.z)]
+       |> Scene.translate(Vec3.make(model.ship.pos.x, 0.0, model.ship.pos.z))]
 
 // Centered arcade-style screens, built from Font's emissive cube glyphs
 // in scene space (Ui panels only anchor to corners — docs/todo.md). They
@@ -435,7 +435,7 @@ let titleScenes = (model, tts) =>
           [Font.gG, Font.gA, Font.gM, Font.gE, Font.gSpace, Font.gO, Font.gV, Font.gE, Font.gR])
           |> Scene.emissive(Color.rgb(1.0, 0.45, 0.35)),
         ..pressEnter(tts, 0.0 - 1.5)]) in
-  screens |> List.map((s) => s |> Scene.translate(0.0, 2.5, 0.0))
+  screens |> List.map((s) => s |> Scene.translate(Vec3.make(0.0, 2.5, 0.0)))
 
 let draw = (model, tts) =>
   let rocks = model.asteroids |> List.map((a) => rockScene(a, tts)) in
@@ -446,12 +446,12 @@ let draw = (model, tts) =>
      | Lost => []
      | _ => shipScenes(model, tts)) in
   Frame.createLit(
-    Camera.lookAt(0.0, 46.0, 10.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 46.0, 10.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([Scene.group(starfield()), Scene.group(rocks),
                  Scene.group(bullets), Scene.group(ship),
                  Scene.group(titleScenes(model, tts))]),
     [Light.ambient(Color.rgb(0.3, 0.3, 0.38)),
-     Light.directional(-0.45, -1.0, -0.3, Color.rgb(1.0, 0.97, 0.9), 1.1)])
+     Light.directional(Vec3.make(-0.45, -1.0, -0.3), Color.rgb(1.0, 0.97, 0.9), 1.1)])
     // Distance fog starting past the whole scene: nothing in play is
     // fogged, but the pass's clear color becomes deep space (there is no
     // Frame.clearColor — see the findings log).

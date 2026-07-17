@@ -100,7 +100,7 @@ let fireBang = (model, isDown) =>
        let py = model.eye.y in
        let pz = model.eye.z + side * rz in
        let flipped = (match model.bangRight with | true => false | false => true) in
-       ({ model with bangRight: flipped, bHeld: true }, Effect.playAt("gunshot.wav", px, py, pz)))
+       ({ model with bangRight: flipped, bHeld: true }, Effect.playAt("gunshot.wav", Vec3.make(px, py, pz))))
 
 let input = (model, key, isDown) =>
   match key with
@@ -164,14 +164,14 @@ let markers = (tts: float) =>
     let (r, g, b) = pointColor(i) in
     Scene.sphere()
       |> Scene.scale(0.12)
-      |> Scene.translate(p.x, p.y, p.z)
+      |> Scene.translate(Vec3.make(p.x, p.y, p.z))
       |> Scene.emissive(Color.rgb(r, g, b)))
 
 let pointLights = (tts: float) =>
   List.range(3.0) |> List.map((i) =>
     let p = pointPos(i, tts) in
     let (r, g, b) = pointColor(i) in
-    Light.point(p.x, p.y, p.z, Color.rgb(r, g, b), 1.4, 4.0))
+    Light.point(Vec3.make(p.x, p.y, p.z), Color.rgb(r, g, b), 1.4, 4.0))
 
 let draw = (model, tts: float) =>
   // Ground + a few lit objects sitting on it (each centered at y = its
@@ -181,13 +181,13 @@ let draw = (model, tts: float) =>
     Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.6, 0.6, 0.62)) in
   let litShapes =
     Scene.group([
-      Scene.sphere() |> Scene.scale(0.8) |> Scene.translate(0.0 - 2.5, 0.8, 0.0),
-      Scene.cylinder() |> Scene.translate(0.0, 0.5, 2.5),
+      Scene.sphere() |> Scene.scale(0.8) |> Scene.translate(Vec3.make(0.0 - 2.5, 0.8, 0.0)),
+      Scene.cylinder() |> Scene.translate(Vec3.make(0.0, 0.5, 2.5)),
     ]) |> Scene.lit(Color.rgb(0.9, 0.9, 0.9)) in
   // The cube is normal-mapped, so its flat faces show the bumps.
   let cube =
     Scene.cube()
-      |> Scene.translate(2.5, 0.5, 0.0)
+      |> Scene.translate(Vec3.make(2.5, 0.5, 0.0))
       |> Scene.litNormalMapped(Color.rgb(0.9, 0.9, 0.92), bumpsTexture) in
   let objects = Scene.group([ground, litShapes, cube]) in
 
@@ -197,7 +197,7 @@ let draw = (model, tts: float) =>
     Scene.model("shark.glb")
       |> Scene.scale(0.18)
       |> Scene.rotateY(Angle.degrees(90.0))
-      |> Scene.translate(1.5, 1.8, 0.5) in
+      |> Scene.translate(Vec3.make(1.5, 1.8, 0.5)) in
 
   // The fountain: a stone basin with a glowing pool of water at `fountainPos` —
   // the source of the positioned water-loop you hear pan as you walk around it.
@@ -207,22 +207,22 @@ let draw = (model, tts: float) =>
   let basin =
     Scene.cylinder()
       |> Scene.scaleXYZ(1.4, 0.5, 1.4)
-      |> Scene.translate(0.0, 0.25, 0.0)
+      |> Scene.translate(Vec3.make(0.0, 0.25, 0.0))
       |> Scene.lit(Color.rgb(0.9, 0.9, 0.9)) in
   let water =
     Scene.sphere()
       |> Scene.scaleXYZ(0.55, 0.22, 0.55)
-      |> Scene.translate(0.0, 0.6 + bob, 0.0)
+      |> Scene.translate(Vec3.make(0.0, 0.6 + bob, 0.0))
       |> Scene.emissive(Color.rgb(0.3, 0.65, 1.0)) in
   let fountain =
     Scene.group([basin, water])
-      |> Scene.translate(fountainPos.x, 0.0, fountainPos.z) in
+      |> Scene.translate(Vec3.make(fountainPos.x, 0.0, fountainPos.z)) in
 
   let scene = Scene.group([objects, shark, fountain, ..markers(tts)]) in
 
   let camera =
     Camera.firstPerson(
-      model.eye.x, model.eye.y, model.eye.z,
+      Vec3.make(model.eye.x, model.eye.y, model.eye.z),
       Angle.radians(model.yaw), Angle.radians(model.pitch), Angle.degrees(60.0)) in
 
   // A "searchlight" spot high above, slowly sweeping across the objects — this
@@ -231,8 +231,8 @@ let draw = (model, tts: float) =>
   let sweepX = Math.sin(tts * 0.5) * 3.0 in
   let spot =
     Light.spot(
-      0.0, 7.0, 5.0,
-      sweepX - 0.0, 0.3 - 7.0, 0.0 - 5.0,
+      Vec3.make(0.0, 7.0, 5.0),
+      Vec3.make(sweepX - 0.0, 0.3 - 7.0, 0.0 - 5.0),
       Color.rgb(1.0, 1.0, 0.95), 5.0, 18.0, Angle.radians(0.5))
     |> Light.castShadows in
 
@@ -246,7 +246,7 @@ let draw = (model, tts: float) =>
     // unambiguous, so the render is identical.)
     [
       Light.ambient(Color.rgb(0.08, 0.08, 0.11)),
-      Light.directional(0.4, 0.0 - 1.0, 0.3, Color.rgb(0.9, 0.92, 1.0), 0.25),
+      Light.directional(Vec3.make(0.4, 0.0 - 1.0, 0.3), Color.rgb(0.9, 0.92, 1.0), 0.25),
       spot,
       ..pointLights(tts)
     ])
@@ -257,6 +257,6 @@ let draw = (model, tts: float) =>
 let soundScape = (model) =>
   AudioScene.create([
     AudioSource.ambient("wind", "wind-loop.wav") |> AudioSource.gain(0.35),
-    AudioSource.at("fountain", "water-loop.wav", fountainPos.x, fountainPos.y, fountainPos.z)
+    AudioSource.at("fountain", "water-loop.wav", Vec3.make(fountainPos.x, fountainPos.y, fountainPos.z))
       |> AudioSource.gain(0.8),
   ])

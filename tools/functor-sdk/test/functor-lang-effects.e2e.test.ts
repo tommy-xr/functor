@@ -31,7 +31,7 @@ let input = (m, key, isDown) =>
   | true => (m, Effect.random(Rolled))
   | false => m
 let draw = (m, tts) =>
-  Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+  Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
 
 function fieldOf(model: string, name: string): number {

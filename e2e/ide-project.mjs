@@ -35,7 +35,7 @@ const GAME = `let init = { t: 0.0 }
 let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt * Pieces.speed }
 let draw = (model, tts: Float) =>
   Frame.create(
-    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, Pieces.glow)) |> Scene.scale(2.0))
 `;
 

@@ -22,25 +22,25 @@ let orbiter = (tts: float) =>
   Scene.sphere()
     |> Scene.scale(0.45)
     |> Scene.emissive(Color.rgb(1.0, 0.55, 0.15))
-    |> Scene.translate(Math.cos(tts * 0.8) * 3.0, 0.6, 3.0 + Math.sin(tts * 0.8) * 2.0)
+    |> Scene.translate(Vec3.make(Math.cos(tts * 0.8) * 3.0, 0.6, 3.0 + Math.sin(tts * 0.8) * 2.0))
 
 // The courtyard both cameras film.
 let courtyard = (tts: float) =>
   Scene.group([
     Scene.plane() |> Scene.scale(22.0) |> Scene.lit(Color.rgb(0.55, 0.6, 0.55)),
-    Scene.cube() |> Scene.lit(Color.rgb(0.85, 0.3, 0.25)) |> Scene.translate(-2.4, 0.5, 2.0),
+    Scene.cube() |> Scene.lit(Color.rgb(0.85, 0.3, 0.25)) |> Scene.translate(Vec3.make(-2.4, 0.5, 2.0)),
     Scene.cube()
       |> Scene.scale(0.7)
       |> Scene.rotateY(Angle.degrees(30.0))
       |> Scene.lit(Color.rgb(0.3, 0.5, 0.9))
-      |> Scene.translate(2.2, 0.35, 3.4),
-    Scene.cylinder() |> Scene.lit(Color.rgb(0.9, 0.8, 0.3)) |> Scene.translate(0.5, 0.5, 5.2),
+      |> Scene.translate(Vec3.make(2.2, 0.35, 3.4)),
+    Scene.cylinder() |> Scene.lit(Color.rgb(0.9, 0.8, 0.3)) |> Scene.translate(Vec3.make(0.5, 0.5, 5.2)),
     orbiter(tts),
   ])
 
 let lights = () => [
   Light.ambient(Color.rgb(0.12, 0.12, 0.15)),
-  Light.directional(0.4, -1.0, 0.3, Color.rgb(1.0, 0.97, 0.9), 0.9) |> Light.castShadows,
+  Light.directional(Vec3.make(0.4, -1.0, 0.3), Color.rgb(1.0, 0.97, 0.9), 0.9) |> Light.castShadows,
 ]
 
 // The visible camera prop: a head with a lens (a cylinder's axis is Y;
@@ -52,11 +52,11 @@ let cameraGadget = (tts: float) =>
       |> Scene.scale(0.2)
       |> Scene.rotateX(Angle.degrees(90.0))
       |> Scene.lit(Color.rgb(0.1, 0.1, 0.1))
-      |> Scene.translate(0.0, 0.0, 0.35),
+      |> Scene.translate(Vec3.make(0.0, 0.0, 0.35)),
   ])
     |> Scene.rotateY(Angle.radians(pan(tts)))
     |> Scene.scale(0.8)
-    |> Scene.translate(0.0, 3.2, -5.0)
+    |> Scene.translate(Vec3.make(0.0, 3.2, -5.0))
 
 // What the security camera sees: its own full frame — the courtyard from the
 // gadget's mount, looking where the gadget points. (The feed deliberately
@@ -64,8 +64,8 @@ let cameraGadget = (tts: float) =>
 let feedFrame = (tts: float) =>
   Frame.createLit(
     Camera.lookAt(
-      0.0, 3.2, -5.0,
-      Math.sin(pan(tts)) * 8.0, 0.5, -5.0 + Math.cos(pan(tts)) * 8.0),
+      Vec3.make(0.0, 3.2, -5.0),
+      Vec3.make(Math.sin(pan(tts)) * 8.0, 0.5, -5.0 + Math.cos(pan(tts)) * 8.0)),
     courtyard(tts),
     lights())
 
@@ -80,17 +80,17 @@ let monitor = () =>
       |> Scene.screen(feed)
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.scale(2.0)
-      |> Scene.translate(0.0, 0.0, -1.25),
+      |> Scene.translate(Vec3.make(0.0, 0.0, -1.25)),
   ])
     |> Scene.rotateY(Angle.degrees(25.0))
-    |> Scene.translate(3.1, 1.5, -0.6)
+    |> Scene.translate(Vec3.make(3.1, 1.5, -0.6))
 
 let init = {}
 let tick = (m, dt, tts) => m
 
 let draw = (m, tts: float) =>
   Frame.createLit(
-    Camera.lookAt(0.0, 2.6, -9.5, 0.0, 1.2, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 2.6, -9.5), Vec3.make(0.0, 1.2, 0.0)),
     Scene.group([courtyard(tts), cameraGadget(tts), monitor()]),
     lights())
   |> Frame.withRenderTarget(feed, feedFrame(tts))

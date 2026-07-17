@@ -62,7 +62,7 @@ let draw = (model, tts) => Frame.create(camera, scene)
 let input = (model, key, isDown) => model'         // OPTIONAL; key: Key.t (Key.W, Key.Up, …)
 let update = (model, msg) => model'                // OPTIONAL; msgs are ADT variants
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)  // OPTIONAL timers
-let physics = (model) => Physics.scene(0.0, -9.81, 0.0, [body, …]) // OPTIONAL
+let physics = (model) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [body, …]) // OPTIONAL
 let soundScape = (model) => AudioScene.create([source, …])         // OPTIONAL looping audio
 ```
 

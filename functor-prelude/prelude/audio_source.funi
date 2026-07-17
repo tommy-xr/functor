@@ -9,7 +9,7 @@ type t
 
 // key, sound.
 let ambient : (string, string) => t
-// key, sound, x, y, z.
-let at : (string, string, float, float, float) => t
+// key, sound, pos.
+let at : (string, string, Vec3.t) => t
 // Source LAST (subject-last), so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
 let gain : (float, t) => t

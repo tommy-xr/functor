@@ -16,7 +16,7 @@ const GAME = `let init = { presses: 0.0, last: "none" }
 let input = (m, key, isDown) => { m with presses: m.presses + 1.0, last: key }
 let tick = (m, dt, tts) => m
 let draw = (m, tts) =>
-  Frame.create(Camera.lookAt(0.0, 2.0, -6.0, 0.0, 0.0, 0.0), Scene.cube())
+  Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
 
 test(

@@ -308,6 +308,22 @@ snapshots — no GPU, fully agent-verifiable.
       untouched (reads still error loud on unknown tags; commands still warn
       quietly, since a body may legitimately despawn with a command in
       flight — the brand retires the TYPO class at build time instead).
+- [x] **Branded `Vec3` values** (2026-07-16; strong-typing track). The Angle
+      rule applied to space: `Vec3.make(x, y, z)` makes an opaque `Vec3.t`,
+      and every position/direction/velocity/gravity parameter takes one —
+      `Scene.translate`, `Camera.lookAt(eye, target)` (6 floats → 2 Vec3s —
+      arity slips and float interleaving become unrepresentable, though the
+      two Vec3s themselves remain swappable) and
+      `Camera.firstPerson`, `Light.directional`/`point`/`spot`,
+      `Physics.at`/`velocity`/`scene`/the command effects/`raycast(origin,
+      dir, …)`, `Effect.playAt`, and `AudioSource.at`. Reads that hand
+      vectors BACK (`Physics.position`, `rayHit`) stay plain `{x, y, z}`
+      records so components remain accessible for game math; `Scene.scaleXYZ`
+      keeps floats (scale factors, not a spatial vector). Like Color, a Vec3
+      is reload-safe (three module-independent f32s), so spawn points and
+      velocities stored in the model survive hot-reload time travel.
+      Component accessors and vector math (`Vec3.add`/`scale`/`length`, and
+      Vec2/Vec4) are deliberately deferred until an API returns a Vec3.
 - [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade

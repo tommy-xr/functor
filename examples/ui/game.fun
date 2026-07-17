@@ -36,7 +36,7 @@ let tick = (m: Model, dt, tts) => m
 // frame source, so give it a camera over an empty group.
 let draw = (m: Model, tts) =>
   Frame.create(
-    Camera.lookAt(0.0, 1.5, -4.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([])
   )
 

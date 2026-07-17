@@ -86,7 +86,7 @@ let pose = (model, tts) =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(0.0, 1.4, -3.2, 0.0, 0.9, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 1.4, -3.2), Vec3.make(0.0, 0.9, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(10.0) |> Scene.lit(Color.rgb(0.42, 0.47, 0.55)),
       // Xbot stands ~1.8 units tall, Y-up, at authored scale; glTF forward
@@ -97,7 +97,7 @@ let draw = (model, tts) =>
     ]),
     [
       Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
-      Light.directional(-0.5, -1.0, 0.4, Color.rgb(1.0, 0.96, 0.88), 1.0) |> Light.castShadows,
+      Light.directional(Vec3.make(-0.5, -1.0, 0.4), Color.rgb(1.0, 0.96, 0.88), 1.0) |> Light.castShadows,
     ])
 
 let ui = (model) =>

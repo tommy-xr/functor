@@ -70,11 +70,11 @@ let marker = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
   Scene.sphere()
     |> Scene.scale(0.15)
     |> Scene.emissive(Color.rgb(r, g, b))
-    |> Scene.translate(p.x, p.y, p.z)
+    |> Scene.translate(Vec3.make(p.x, p.y, p.z))
 
 let pointLight = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
   let p = pointPos(i, tts) in
-  Light.point(p.x, p.y, p.z, Color.rgb(r, g, b), 1.4, 6.0)
+  Light.point(Vec3.make(p.x, p.y, p.z), Color.rgb(r, g, b), 1.4, 6.0)
 
 // Spiral placement: radius and angle both derive from the index (no
 // mod/floor in the language yet); spin and bob derive from the phase.
@@ -84,12 +84,12 @@ let shapeFor = (e) =>
   Scene.cube()
     |> Scene.scale(0.3)
     |> Scene.rotateY(Angle.radians(e.phase))
-    |> Scene.translate(Math.cos(a) * r, 0.4 + Math.sin(e.phase) * 0.2, Math.sin(a) * r)
+    |> Scene.translate(Vec3.make(Math.cos(a) * r, 0.4 + Math.sin(e.phase) * 0.2, Math.sin(a) * r))
 
 let draw = (m, tts: Float) =>
   Frame.createLit(
     Camera.firstPerson(
-      0.0, 9.0, -16.0,
+      Vec3.make(0.0, 9.0, -16.0),
       Angle.radians(0.0), Angle.radians(-0.5), Angle.degrees(60.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(30.0) |> Scene.lit(Color.rgb(0.6, 0.6, 0.62)),
@@ -99,7 +99,7 @@ let draw = (m, tts: Float) =>
     ]),
     [
       Light.ambient(Color.rgb(0.1, 0.1, 0.13)),
-      Light.directional(0.5, -1.0, 0.35, Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
+      Light.directional(Vec3.make(0.5, -1.0, 0.35), Color.rgb(1.0, 0.98, 0.95), 0.85) |> Light.castShadows,
       pointLight(0.0, tts, 1.0, 0.3, 0.25),
       pointLight(1.0, tts, 0.35, 0.5, 1.0),
     ])

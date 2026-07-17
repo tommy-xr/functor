@@ -28,7 +28,7 @@ let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
 
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(0.0, 3.5, -9.0, 0.0, 0.0, 0.0),
+    Camera.lookAt(Vec3.make(0.0, 3.5, -9.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([
       Pieces.centerpiece(model.spin, model.beat),
       Scene.group(List.range(Pieces.count) |> List.map((i) => Pieces.ringCube(model.spin, i))),

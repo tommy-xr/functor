@@ -5,11 +5,11 @@
 type t
 
 let ambient : (Color.t) => t
-// dx, dy, dz, color, intensity.
-let directional : (float, float, float, Color.t, float) => t
-// px, py, pz, color, intensity, range.
-let point : (float, float, float, Color.t, float, float) => t
-// px, py, pz, dx, dy, dz, color, intensity, range, coneAngle.
-let spot : (float, float, float, float, float, float, Color.t, float, float, Angle.t) => t
+// dir, color, intensity.
+let directional : (Vec3.t, Color.t, float) => t
+// pos, color, intensity, range.
+let point : (Vec3.t, Color.t, float, float) => t
+// pos, dir, color, intensity, range, coneAngle.
+let spot : (Vec3.t, Vec3.t, Color.t, float, float, Angle.t) => t
 // Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
 let castShadows : (t) => t

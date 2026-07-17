@@ -108,16 +108,16 @@ let draw = (m: Model, tts: float) =>
       let (r, g, b) = colorFor(p.pid) in
       Scene.cube()
       |> Scene.scale(0.6)
-      |> Scene.translate(p.x, 0.0, p.z)
+      |> Scene.translate(Vec3.make(p.x, 0.0, p.z))
       |> Scene.lit(Color.rgb(r, g, b))) in
   let ground =
     Scene.plane() |> Scene.scale(8.0) |> Scene.lit(Color.rgb(0.18, 0.2, 0.28)) in
   let scene = Scene.group([ground, ..playerNodes]) in
   let camera =
     Camera.firstPerson(
-      0.0, 9.0, -2.0,
+      Vec3.make(0.0, 9.0, -2.0),
       Angle.radians(0.0), Angle.radians(-1.2), Angle.degrees(70.0)) in
   Frame.createLit(
     camera, scene,
     [ Light.ambient(Color.rgb(0.35, 0.35, 0.42)),
-      Light.directional(-0.4, -1.0, -0.35, Color.rgb(1.0, 0.95, 0.85), 1.1) ])
+      Light.directional(Vec3.make(-0.4, -1.0, -0.35), Color.rgb(1.0, 0.95, 0.85), 1.1) ])

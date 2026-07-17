@@ -5,6 +5,7 @@
 type t
 
 // Eye + target (Y-up, right-handed), a fixed 45° fov.
-let lookAt : (float, float, float, float, float, float) => t
+// eye, target (Vec3 values — the 6-float form is retired).
+let lookAt : (Vec3.t, Vec3.t) => t
 // Eye + yaw/pitch/fov Angles: yaw = 0 / pitch = 0 looks down +Z.
-let firstPerson : (float, float, float, Angle.t, Angle.t, Angle.t) => t
+let firstPerson : (Vec3.t, Angle.t, Angle.t, Angle.t) => t

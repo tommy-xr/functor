@@ -11,7 +11,7 @@ let ringCube = (spin: float, i: float) =>
   Scene.cube()
     |> Scene.color(Color.rgb(0.25 + 0.75 * (i / count), 0.35, 0.95 - 0.65 * (i / count)))
     |> Scene.rotateY(Angle.radians(i * 0.7 + spin * 2.0))
-    |> Scene.translate(4.0, Math.sin(i + spin * 3.0) * 0.6, 0.0)
+    |> Scene.translate(Vec3.make(4.0, Math.sin(i + spin * 3.0) * 0.6, 0.0))
     |> Scene.rotateY(Angle.radians(i * tau / count + spin))
 
 // The pulsing sphere at the center of the ring.

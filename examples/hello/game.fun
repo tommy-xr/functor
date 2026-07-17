@@ -138,7 +138,7 @@ let terrain = () =>
     List.range(32.0) |> List.map((r) =>
       List.range(32.0) |> List.map((c) => ripple(r, c))))
     |> Scene.scale(30.0)
-    |> Scene.translate(0.0, -2.5, 4.0)
+    |> Scene.translate(Vec3.make(0.0, -2.5, 4.0))
     |> Scene.litTexture(dirtTexture)
 
 // A lineup of glTF samples from BabylonJS/Assets exercising the model
@@ -151,41 +151,41 @@ let models = () =>
     Scene.model("shark.glb")
       |> Scene.scale(0.2)
       |> Scene.rotateY(Angle.degrees(180.0))
-      |> Scene.translate(3.0, 1.0, 3.0),
+      |> Scene.translate(Vec3.make(3.0, 1.0, 3.0)),
     Scene.model("fish.glb")
       |> Scene.scale(0.06)
-      |> Scene.translate(-4.5, 0.8, 4.0),
+      |> Scene.translate(Vec3.make(-4.5, 0.8, 4.0)),
     Scene.model("Xbot.glb")
       |> Scene.rotateY(Angle.degrees(180.0))
-      |> Scene.translate(0.9, -0.2, 3.0),
+      |> Scene.translate(Vec3.make(0.9, -0.2, 3.0)),
     Scene.model("ExplodingBarrel.glb")
       |> Scene.scale(0.02)
-      |> Scene.translate(0.0, -1.5, 3.0),
+      |> Scene.translate(Vec3.make(0.0, -1.5, 3.0)),
   ])
 
 // A row of lit primitives in front of the lineup — Lambert shading reads
 // clearly on the sphere (and the cube's faces).
 let litRow = () =>
   Scene.group([
-    Scene.cylinder() |> Scene.translate(0.0, -2.5, 0.0),
-    Scene.sphere() |> Scene.scale(0.7) |> Scene.translate(-2.0, 1.0, 2.0),
-    Scene.cube() |> Scene.translate(2.0, 1.0, 2.0),
+    Scene.cylinder() |> Scene.translate(Vec3.make(0.0, -2.5, 0.0)),
+    Scene.sphere() |> Scene.scale(0.7) |> Scene.translate(Vec3.make(-2.0, 1.0, 2.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(2.0, 1.0, 2.0)),
   ]) |> Scene.lit(Color.rgb(0.85, 0.85, 0.9))
 
 let draw = (model, tts) =>
   Frame.createLit(
     // First-person camera: WASD moves the eye, the mouse turns yaw/pitch.
     Camera.firstPerson(
-      model.eye.x, model.eye.y, model.eye.z,
+      Vec3.make(model.eye.x, model.eye.y, model.eye.z),
       Angle.radians(model.yaw), Angle.radians(model.pitch), Angle.degrees(60.0)),
     Scene.group([
       terrain(),
       litRow(),
       // Self-lit neon sphere, rendered fullbright (emissive material).
-      Scene.sphere() |> Scene.scale(0.5) |> Scene.translate(0.0, 2.3, 2.0)
+      Scene.sphere() |> Scene.scale(0.5) |> Scene.translate(Vec3.make(0.0, 2.3, 2.0))
         |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8)),
       // The glowing grid-texture sign quad (emissive texture, fullbright).
-      Scene.quad() |> Scene.scale(1.2) |> Scene.translate(0.0, 0.3, 1.5)
+      Scene.quad() |> Scene.scale(1.2) |> Scene.translate(Vec3.make(0.0, 0.3, 1.5))
         |> Scene.emissiveTexture(gridTexture),
       models(),
     ]),
@@ -193,7 +193,7 @@ let draw = (model, tts) =>
     // right; lit surfaces shade by orientation, emissive ones stay bright.
     [
       Light.ambient(Color.rgb(0.2, 0.2, 0.28)),
-      Light.directional(-0.5, -1.0, -0.35, Color.rgb(1.0, 0.96, 0.85), 1.1) |> Light.castShadows,
+      Light.directional(Vec3.make(-0.5, -1.0, -0.35), Color.rgb(1.0, 0.96, 0.85), 1.1) |> Light.castShadows,
     ])
 
 let join = (parts) => parts |> List.fold((acc, s) => Text.concat(acc, s), "")
