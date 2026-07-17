@@ -16,6 +16,10 @@ const { LanguageClient } = require("vscode-languageclient/node");
 const inspector = require("./inspector.js");
 
 let client;
+// Resolves once the LanguageClient has started (server launched + initialized).
+// Captured only so the test-only inject command below can await readiness before
+// sending; production notification paths run long after startup.
+let clientStarted;
 // The paused-scene inspector's attach state + its status bar item. Attach
 // persists server-side until detach, so this is per-session UI state; the
 // last-used port is persisted across sessions in globalState.
@@ -45,7 +49,20 @@ const PUSH_DEBOUNCE_MS = 300;
 // How long to wait for the dev server to come up (first run may compile).
 const SERVER_WAIT_MS = 30000;
 
+// The extension-wide output channel ("Functor Lang" in the Output panel):
+// activation, LSP lifecycle, inspector attach/relay traffic — the first stop
+// when diagnosing "why aren't live values showing". The per-preview channel
+// ("Functor Lang Preview") stays separate: it carries the dev-server child's
+// raw stdout/stderr.
+let channel;
+const elog = (text) => {
+  if (channel) channel.appendLine(`[${new Date().toISOString().slice(11, 23)}] ${text}`);
+};
+
 function activate(context) {
+  channel = vscode.window.createOutputChannel("Functor Lang");
+  context.subscriptions.push(channel);
+  elog("extension activated");
   client = new LanguageClient(
     "functor-lang",
     "Functor Lang Language Server",
@@ -53,11 +70,38 @@ function activate(context) {
     { command: "functor-lang-lsp" },
     { documentSelector: [{ language: "functor-lang" }] }
   );
-  client.start();
+  clientStarted = client.start().then(
+    () => elog("language server started (functor-lang-lsp)"),
+    (e) => elog(`language server FAILED to start: ${e && e.message ? e.message : e}`)
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("functor-lang.openLivePreview", openLivePreview)
   );
+
+  // --- Test-only inspector-trace inject seam -------------------------------
+  // Gated on FUNCTOR_LANG_TEST_HOOKS so it never registers (or shows in the
+  // Command Palette — see the `when: functorLangTestHooks` menu entry) in a
+  // normal session. The E2E harness (tools/functor-lang-vscode/tests-integration)
+  // writes a wire-contract trace JSON to the file named by
+  // FUNCTOR_INSPECTOR_TEST_TRACE and invokes this command; we forward it through
+  // the SAME client.sendNotification("functor/inspector/trace", …) call the
+  // preview relay uses above — a faithful seam, not a fake.
+  if (process.env.FUNCTOR_LANG_TEST_HOOKS === "1") {
+    // Reveal the command in the palette only in this mode (see the
+    // `when: functorLangTestHooks` menu entry in package.json).
+    vscode.commands.executeCommand("setContext", "functorLangTestHooks", true);
+    context.subscriptions.push(
+      vscode.commands.registerCommand("functor-lang.inspector._injectTrace", async () => {
+        const file = process.env.FUNCTOR_INSPECTOR_TEST_TRACE;
+        if (!file || !client) return;
+        const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+        await clientStarted;
+        elog(`inspector trace injected from ${file} (test hook)`);
+        await client.sendNotification(inspector.TRACE, doc);
+      })
+    );
+  }
 
   // --- Paused-scene inspector: attach/detach + status bar -----------------
   inspectorState = inspector.initialState(context.globalState.get(INSPECTOR_PORT_KEY));
@@ -83,12 +127,14 @@ function activate(context) {
     inspectorState = inspector.reduce(inspectorState, { type: "attach", port: parsed.port });
     context.globalState.update(INSPECTOR_PORT_KEY, parsed.port);
     const n = inspector.attachNotification(parsed.port);
+    elog(`inspector attach: port ${parsed.port}`);
     if (client) client.sendNotification(n.notification, n.params);
     renderInspectorStatus();
   };
   const detachInspector = () => {
     inspectorState = inspector.reduce(inspectorState, { type: "detach" });
     const n = inspector.detachNotification();
+    elog("inspector detach");
     if (client) client.sendNotification(n.notification, n.params);
     renderInspectorStatus();
   };
@@ -220,6 +266,7 @@ async function openLivePreview() {
   const log = (text) => {
     if (!disposed) output.append(text);
   };
+  elog(`preview: spawning ${functorPath} run wasm for ${project.dir}`);
   const child = spawn(functorPath, ["-d", project.dir, "run", "wasm", "--no-open"], {
     cwd: project.dir,
   });
@@ -271,6 +318,11 @@ async function openLivePreview() {
     // these; unrelated messages fall through to relayTrace → null.
     const relayed = inspector.relayTrace(msg);
     if (relayed) {
+      const doc = relayed.params || {};
+      elog(
+        `inspector trace relayed from preview: paused=${doc.paused} frame=${doc.frame ?? "-"} ` +
+          `invocations=${(doc.invocations || []).length}`
+      );
       if (client) client.sendNotification(relayed.notification, relayed.params);
       return;
     }

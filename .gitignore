@@ -25,6 +25,10 @@ test-results
 playwright-report
 .last-run.json
 
+# VS Code binary downloaded by @vscode/test-electron for the VS Code E2E harness
+# (tools/functor-lang-vscode/tests-integration).
+.vscode-test
+
 # Binaries
 bin
 obj
