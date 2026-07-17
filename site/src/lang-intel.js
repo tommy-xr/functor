@@ -158,7 +158,22 @@ const hoverTypes = hoverTooltip((view, pos) => {
   // answer — including reads the inline dedup suppressed. Half-open bounds —
   // the character AT nameEnd is the operator/space after the name.
   const hit = liveSites.find((s) => pos >= s.nameStart && pos < s.nameEnd);
-  const live = hit ? { name: hit.b.name, value: hit.b.value, count: hit.b.count || 1, nameStart: hit.nameStart, nameEnd: hit.nameEnd } : null;
+  const live = hit
+    ? {
+        name: hit.b.name,
+        value: hit.b.value,
+        count: hit.b.count || 1,
+        range:
+          (hit.b.count || 1) > 1 &&
+          typeof hit.b.min === "number" &&
+          typeof hit.b.max === "number" &&
+          hit.b.min < hit.b.max
+            ? `${shortNumbers(String(hit.b.min))}…${shortNumbers(String(hit.b.max))}`
+            : null,
+        nameStart: hit.nameStart,
+        nameEnd: hit.nameEnd,
+      }
+    : null;
   let info;
   try {
     const doc = view.state.doc.toString();
@@ -188,7 +203,7 @@ const hoverTypes = hoverTooltip((view, pos) => {
         line.className = "cm-hover-live";
         line.textContent =
           live.count > 1
-            ? `${live.name} = ${live.value} (×${live.count})`
+            ? `${live.name} = ${live.value} (×${live.count}${live.range ? `, range ${live.range}` : ""})`
             : `${live.name} = ${live.value}`;
         dom.appendChild(line);
       }
@@ -576,13 +591,21 @@ const liveHintsFor = (sites, source) => {
   }
   return [...chosen.values()]
     .map(({ b, offset, nameStart, nameEnd }) => {
-      const preview = shortNumbers(b.preview ?? b.value);
+      // A multi-hit NUMERIC site reads as its swept range (`= 0.1…0.61
+      // (×120)`) — far more informative than the last sample; hover keeps
+      // the exact value. Degenerate ranges (a loop-constant) stay a value.
+      const range =
+        b.count > 1 && typeof b.min === "number" && typeof b.max === "number" && b.min < b.max
+          ? `${shortNumbers(String(b.min))}…${shortNumbers(String(b.max))}`
+          : null;
+      const preview = range ?? shortNumbers(b.preview ?? b.value);
       return {
         offset,
         label: b.count > 1 ? `= ${preview} (×${b.count})` : `= ${preview}`,
         name: b.name,
         value: b.value,
         count: b.count || 1,
+        range,
         nameStart,
         nameEnd,
       };

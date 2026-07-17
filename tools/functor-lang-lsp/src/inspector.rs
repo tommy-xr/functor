@@ -75,6 +75,9 @@ pub struct Binding {
     pub site: String,
     /// Times this site was seen during the invocation (loops > 1); `value` is last.
     pub count: usize,
+    /// A numeric loop site's observed range (absent for non-numeric values).
+    pub min: Option<f64>,
+    pub max: Option<f64>,
 }
 
 impl TraceDoc {
@@ -136,6 +139,8 @@ impl Binding {
             preview,
             site: v["site"].as_str().unwrap_or("binder").to_string(),
             count: v["count"].as_u64().unwrap_or(1).max(1) as usize,
+            min: v["min"].as_f64(),
+            max: v["max"].as_f64(),
         })
     }
 }
@@ -244,10 +249,12 @@ pub fn live_hints(
     let mut out: Vec<LiveHint> = chosen
         .into_values()
         .map(|(b, offset)| {
-            let label = if b.count > 1 {
-                format!("= {} (×{})", b.preview, b.count)
-            } else {
-                format!("= {}", b.preview)
+            let label = match (b.count > 1, range_label(b)) {
+                // A numeric loop site reads as its swept range, not the last
+                // sample: `= 0.1…0.61 (×120)`.
+                (true, Some(range)) => format!("= {} (×{})", range, b.count),
+                (true, None) => format!("= {} (×{})", b.preview, b.count),
+                _ => format!("= {}", b.preview),
             };
             LiveHint { offset, label }
         })
@@ -298,8 +305,9 @@ pub fn live_hover(
         }
     }
     best.map(|(b, _)| {
+        let range = range_label(b).map(|r| format!(", range {r}")).unwrap_or_default();
         if b.count > 1 {
-            format!("{} = {} (×{})", b.name, b.value, b.count)
+            format!("{} = {} (×{}{})", b.name, b.value, b.count, range)
         } else {
             format!("{} = {}", b.name, b.value)
         }
@@ -420,6 +428,30 @@ pub fn execution_count(trace: &TraceDoc, entry: &str) -> usize {
         .map(|i| i.count)
         .max()
         .unwrap_or(0)
+}
+
+/// A multi-hit numeric site's `min…max` label, `None` when the range is
+/// absent or degenerate (min == max — the plain value reads better).
+fn range_label(b: &Binding) -> Option<String> {
+    match (b.min, b.max) {
+        (Some(min), Some(max)) if min < max => Some(format!("{}…{}", short(min), short(max))),
+        _ => None,
+    }
+}
+
+/// A short numeric rendering for inline labels: ~5 significant digits, no
+/// trailing zeros — full precision stays on the last value / hover.
+fn short(x: f64) -> String {
+    if x == 0.0 || !x.is_finite() {
+        return format!("{x}");
+    }
+    let digits = (4.0 - x.abs().log10().floor()).clamp(0.0, 12.0) as usize;
+    let s = format!("{x:.digits$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
 }
 
 /// SHA-256 of `bytes` as lowercase hex. Hand-rolled (FIPS 180-4) to keep the
@@ -634,6 +666,48 @@ mod tests {
         let hints = live_hints(&trace, "game.fun", src, &no_selection());
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].offset, region_start + "let t".len());
+    }
+
+    #[test]
+    fn numeric_loop_sites_render_their_range() {
+        let src = "let tick = (m, dt, tts) =>\n  m\n";
+        let start = src.find('m').unwrap();
+        let trace = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "p",
+                "ghost": false, "result": "0",
+                "bindings": [{
+                    "name": "m", "file": "game.fun", "start": start, "end": start + 1,
+                    "value": "0.6166666666666667", "preview": "0.6166666666666667",
+                    "kind": "primitive", "site": "binder", "count": 120,
+                    "min": 0.1, "max": 0.6166666666666667
+                }]
+            }]),
+        );
+        let hints = live_hints(&trace, "game.fun", src, &no_selection());
+        assert_eq!(hints.len(), 1);
+        // The swept range replaces the last-sample preview inline…
+        assert_eq!(hints[0].label, "= 0.1…0.61667 (×120)");
+        // …and hover keeps the exact last value plus the range.
+        let hover = live_hover(&trace, "game.fun", src, start, &no_selection()).unwrap();
+        assert_eq!(hover, "m = 0.6166666666666667 (×120, range 0.1…0.61667)");
+
+        // A DEGENERATE range (a constant re-bound in a loop) stays a value.
+        let constant = trace_for(
+            src,
+            json!([{
+                "entry": "tick", "index": 0, "count": 1, "provenance": "p",
+                "ghost": false, "result": "0",
+                "bindings": [{
+                    "name": "m", "file": "game.fun", "start": start, "end": start + 1,
+                    "value": "2", "preview": "2", "kind": "primitive",
+                    "site": "binder", "count": 8, "min": 2.0, "max": 2.0
+                }]
+            }]),
+        );
+        let hints = live_hints(&constant, "game.fun", src, &no_selection());
+        assert_eq!(hints[0].label, "= 2 (×8)");
     }
 
     #[test]

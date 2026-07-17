@@ -45,8 +45,17 @@ export const test = base.extend({
     const tracePath = path.join(tmp, "trace.json");
     writeFileSync(tracePath, JSON.stringify(buildTrace(source)));
 
+    // FUNCTOR_E2E_VIDEO=1 records the whole session as .webm into the test's
+    // output dir — raw material for PR descriptions (convert to GIF for
+    // GitHub embedding, per the repo's pr-visuals convention). Off by default:
+    // recording costs a compositor thread and disk.
+    const recordVideo =
+      process.env.FUNCTOR_E2E_VIDEO === "1"
+        ? { dir: testInfo.outputPath("video"), size: { width: 1440, height: 900 } }
+        : undefined;
     const electronApp = await _electron.launch({
       executablePath: vscodePath,
+      recordVideo,
       args: [
         "--no-sandbox",
         "--disable-gpu-sandbox",

@@ -1241,6 +1241,13 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
     liveTexts.every((t) => t.startsWith("= ")) && liveTexts.length > 0,
     JSON.stringify(liveTexts.slice(0, 4))
   );
+  // The hero's dot-grid loop sites (×120) sweep numerically — a multi-hit
+  // numeric site renders its RANGE, not the last sample: `= 0…11 (×120)`.
+  check(
+    "numeric loop sites render min…max ranges",
+    liveTexts.some((t) => /^= -?[\d.]+…-?[\d.]+ \(×\d+\)$/.test(t)),
+    JSON.stringify(liveTexts.filter((t) => t.includes("×")).slice(0, 4))
+  );
 
   // Position invariant: every hint's name span slices to exactly its name.
   // hero.fun's comments contain multibyte characters (em dashes) BEFORE the

@@ -17,10 +17,36 @@ export const BINDING_NAME = "model";
 export const CANNED_VALUE = "42";
 // What the resulting inlay hint's text is (LSP renders live hints as "= value").
 export const EXPECTED_HINT = `= ${CANNED_VALUE}`;
+// A second binding on the SAME trace exercises the numeric-range rendering: a
+// multi-hit numeric site renders `= min…max (×N)` instead of the last sample.
+// Placed at `bumped` (update's let binder). The expected label pins the LSP's
+// ~5-significant-digit shortening.
+export const RANGE_BINDING_NAME = "bumped";
+export const EXPECTED_RANGE_HINT = "= 0.1…0.61667 (×120)";
 
 // Build the trace doc for a given game.fun source text. Places the binding at
 // the FIRST occurrence of `model` (the `update` parameter, near the top of the
 // file so its inlay hint is inside the default viewport).
+// The numeric-range binding at update's `bumped` let binder (region-shaped
+// span, `let bumped =`, per the recorder's binder-span convention).
+function rangeBinding(source) {
+  const start = source.indexOf("let bumped");
+  if (start < 0) {
+    throw new Error("binding 'bumped' not found in game.fun");
+  }
+  const end = start + source.slice(start).indexOf("=") + 1;
+  return {
+    name: RANGE_BINDING_NAME,
+    file: "game.fun",
+    start,
+    end,
+    value: "0.6166666666666667",
+    count: 120,
+    min: 0.1,
+    max: 0.6166666666666667,
+  };
+}
+
 export function buildTrace(source) {
   const start = source.indexOf(BINDING_NAME);
   if (start < 0) {
@@ -50,6 +76,7 @@ export function buildTrace(source) {
             value: CANNED_VALUE,
             count: 1,
           },
+          rangeBinding(source),
         ],
       },
     ],
