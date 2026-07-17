@@ -66,6 +66,7 @@ pub mod inspect;
 pub mod inspector;
 pub mod io;
 mod light;
+pub mod manifest;
 pub mod material;
 pub mod math;
 pub mod functor_lang_prelude;
