@@ -9,7 +9,7 @@
 //   inject command relays the wire-contract trace → LSP inlay-hint provider
 //   (hash-gated) → Monaco renders "= 42" next to the `model` binder.
 import { test, expect, openFile, runCommand } from "./baseTest.mjs";
-import { EXPECTED_HINT } from "./trace.mjs";
+import { EXPECTED_HINT, EXPECTED_RANGE_HINT } from "./trace.mjs";
 
 // The palette title of the guarded inject command (see extension.js).
 const INJECT_COMMAND = "Functor Lang: [test] Inject Inspector Trace";
@@ -35,6 +35,12 @@ test("a paused trace makes a live-value inlay hint appear in the editor", async 
   await expect(
     editor.getByText(EXPECTED_HINT, { exact: false }).first()
   ).toBeVisible({ timeout: 30_000 });
+
+  // The numeric-range rendering: the same trace carries a 120-hit numeric
+  // site — its hint reads as the swept range, not the last sample.
+  await expect(
+    editor.getByText(EXPECTED_RANGE_HINT, { exact: false }).first()
+  ).toBeVisible({ timeout: 15_000 });
 
   // The hash gate: mutate the buffer so its text no longer hashes to the
   // trace's recorded source hash, and the live hint must disappear ("never wrong

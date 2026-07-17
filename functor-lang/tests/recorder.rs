@@ -107,14 +107,19 @@ fn loop_site_keeps_last_value_and_counts_hits() {
     assert!(!inv.truncated);
 
     // The fold closure's params re-bind once per element: last value wins,
-    // count is the element count.
+    // count is the element count, and numeric sites fold their RANGE.
     let acc = binding(&inv, "acc");
     assert_eq!(acc.count, 3);
     assert_eq!(acc.value, "3"); // acc going into the final `acc + x` (1 + 2)
+    assert_eq!((acc.min, acc.max), (Some(0.0), Some(3.0)));
     let x = binding(&inv, "x");
     assert_eq!(x.count, 3);
     assert_eq!(x.value, "3"); // the last element
+    assert_eq!((x.min, x.max), (Some(1.0), Some(3.0)));
+    // A single-hit numeric site still carries its (degenerate) range; a
+    // non-numeric one carries none.
     assert_eq!(binding(&inv, "xs").count, 1);
+    assert_eq!(binding(&inv, "xs").min, None);
 }
 
 #[test]

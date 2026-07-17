@@ -179,6 +179,11 @@ pub struct RecordedBinding {
     /// Binder or reference — see [`RecordedSite`].
     pub site: RecordedSite,
     pub count: u32,
+    /// For NUMERIC sites hit more than once (a loop), the observed range —
+    /// the editor renders `= min…max (×N)` instead of just the last value.
+    /// `None` for non-numeric values or single hits.
+    pub min: Option<f64>,
+    pub max: Option<f64>,
 }
 
 /// A recorder site key. Binder sites key by [`BindingId`] (unique per site
@@ -264,6 +269,15 @@ impl Recorder {
             slot.preview = value.preview();
             slot.kind = recorded_kind(value);
             slot.count += 1;
+            // Numeric loop sites fold their range; a non-numeric value at a
+            // previously-numeric site (a union-typed binder) drops it.
+            if let Value::Number(n) = value {
+                slot.min = Some(slot.min.map_or(*n, |m| m.min(*n)));
+                slot.max = Some(slot.max.map_or(*n, |m| m.max(*n)));
+            } else {
+                slot.min = None;
+                slot.max = None;
+            }
             return;
         }
         let sites = match site {
@@ -276,6 +290,10 @@ impl Recorder {
         }
         *sites += 1;
         self.index.insert(key, self.bindings.len());
+        let n = match value {
+            Value::Number(n) => Some(*n),
+            _ => None,
+        };
         self.bindings.push(RecordedBinding {
             name: name.to_string(),
             span,
@@ -284,6 +302,8 @@ impl Recorder {
             kind: recorded_kind(value),
             site,
             count: 1,
+            min: n,
+            max: n,
         });
     }
 }

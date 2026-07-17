@@ -150,7 +150,7 @@ fn build_invocations(
             .iter()
             .filter_map(|b| {
                 span_to_file(sources, b.span).map(|(file, start, end)| {
-                    serde_json::json!({
+                    let mut o = serde_json::json!({
                         "name": b.name,
                         "file": file,
                         "start": start,
@@ -160,7 +160,14 @@ fn build_invocations(
                         "kind": kind_str(b.kind),
                         "site": site_str(b.site),
                         "count": b.count,
-                    })
+                    });
+                    // Numeric loop sites carry their observed range — the
+                    // editors render `= min…max (×N)` for multi-hit sites.
+                    if let (Some(min), Some(max)) = (b.min, b.max) {
+                        o["min"] = serde_json::json!(min);
+                        o["max"] = serde_json::json!(max);
+                    }
+                    o
                 })
             })
             .collect();
