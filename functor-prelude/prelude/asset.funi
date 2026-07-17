@@ -1,0 +1,19 @@
+// asset.funi — the `Asset` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//
+// Typed asset locators (the typed-manifest front door): one branded value per
+// asset KIND, so a wrong-kind asset (a sound where a model belongs) is a
+// teaching error instead of a silent fallback at draw. These per-kind
+// constructors are the PERMANENT dynamic escape hatch — the typed manifest
+// `functor import` grows into (Track B.2) will call the same ones; bare
+// strings live only at data boundaries.
+
+// The branded locator types, one per kind (`Asset.Model` from game code).
+type Model
+type Texture
+type Sound
+
+// Construct a locator from a non-empty path (relative to the game dir).
+let model : (string) => Model
+let texture : (string) => Texture
+let sound : (string) => Sound

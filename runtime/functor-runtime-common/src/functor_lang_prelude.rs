@@ -635,6 +635,71 @@ impl HostData for FunctorLangTexture {
     }
 }
 
+/// Which asset family a branded [`FunctorLangAsset`] locates. Consumers check
+/// it, so a sound asset can't slip into `Scene.model` (the Angle rule,
+/// applied per asset kind).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AssetKind {
+    Model,
+    Texture,
+    Sound,
+}
+
+impl AssetKind {
+    /// How errors name the kind: "a model asset".
+    fn noun(self) -> &'static str {
+        match self {
+            AssetKind::Model => "model",
+            AssetKind::Texture => "texture",
+            AssetKind::Sound => "sound",
+        }
+    }
+
+    /// The constructor a teaching error points at.
+    fn constructor(self) -> &'static str {
+        match self {
+            AssetKind::Model => "Asset.model(…)",
+            AssetKind::Texture => "Asset.texture(…)",
+            AssetKind::Sound => "Asset.sound(…)",
+        }
+    }
+
+    /// The example path in the constructor's usage message.
+    fn example(self) -> &'static str {
+        match self {
+            AssetKind::Model => "file.glb",
+            AssetKind::Texture => "file.png",
+            AssetKind::Sound => "file.ogg",
+        }
+    }
+}
+
+/// A typed asset locator as an opaque Functor Lang value — made by
+/// `Asset.model` / `Asset.texture` / `Asset.sound` (the typed-manifest front
+/// door). Asset-consuming functions accept it alongside the bare path string
+/// (the pre-manifest form, deprecated at B.6) and check the KIND, so a
+/// wrong-kind asset is a teaching error at the call instead of a silent
+/// fallback at draw.
+struct FunctorLangAsset {
+    kind: AssetKind,
+    path: String,
+}
+
+impl HostData for FunctorLangAsset {
+    fn type_name(&self) -> &'static str {
+        "Asset"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    // A kind tag + a path string — plain data, like Color/Vec3. Manifests
+    // get stored in models (`init = { mesh: Assets.barrel }`), and that must
+    // not invalidate hot-reload time-travel history.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
 /// A [`View`] as an opaque Functor Lang value — what the optional `ui(model)` entry
 /// point returns (`Ui.text` / `Ui.column` / `Ui.panel`). The shells lower it
 /// to the shared egui text overlay, exactly as the F# `ui` hook's tree.
@@ -929,6 +994,9 @@ const PATHS: &[&str] = &[
     "Anim.add",
     "Anim.mask",
     "Anim.rotate",
+    "Asset.model",
+    "Asset.texture",
+    "Asset.sound",
     "Texture.file",
     "Angle.degrees",
     "Angle.radians",
@@ -1053,11 +1121,44 @@ impl Host for FunctorHost {
                         animation: None,
                     }))
                 }
+                [v] if asset_of(v).is_some() => {
+                    let path = asset_path(v, AssetKind::Model, "Scene.model", span)?;
+                    scene_value(Scene3D::model(ModelDescription {
+                        handle: ModelHandle::File(path),
+                        overrides: Vec::new(),
+                        animation: None,
+                    }))
+                }
                 _ => usage(
                     "Scene.model(\"file.glb\") — a non-empty glTF path relative to \
 the game dir",
                 ),
             },
+            // Typed asset locators (the typed-manifest front door): a branded
+            // value naming an asset by path, constructed per KIND so a
+            // wrong-kind asset is a teaching error at the consumer instead of
+            // a silent fallback at draw. These are the PERMANENT dynamic
+            // constructors — the typed manifest `functor import` grows into
+            // (Track B.2) will call the same ones; strings live only at data
+            // boundaries.
+            "Asset.model" | "Asset.texture" | "Asset.sound" => {
+                let kind = match path {
+                    "Asset.model" => AssetKind::Model,
+                    "Asset.texture" => AssetKind::Texture,
+                    _ => AssetKind::Sound,
+                };
+                match args.as_slice() {
+                    [Value::String(p)] if !p.is_empty() => Ok(host(FunctorLangAsset {
+                        kind,
+                        path: p.to_string(),
+                    })),
+                    _ => usage(&format!(
+                        "{path}(\"{}\") — a non-empty {} path relative to the game dir",
+                        kind.example(),
+                        kind.noun(),
+                    )),
+                }
+            }
             // Attach an animation expression to the Model node(s) in a scene
             // (scene-last, so it pipes right after `Scene.model`). Without it
             // a skinned model keeps the zero-config default: its first clip
@@ -1322,9 +1423,9 @@ the game dir",
                     };
                     let texture = texture_of(texture, path, span)?;
                     let material = if path == "Scene.litTexture" {
-                        MaterialDescription::lit_texture(texture.clone())
+                        MaterialDescription::lit_texture(texture)
                     } else {
-                        MaterialDescription::emissive_texture(texture.clone())
+                        MaterialDescription::emissive_texture(texture)
                     };
                     scene_value(Scene3D {
                         obj: SceneObject::Material(material, vec![scene.clone()]),
@@ -1346,7 +1447,7 @@ the game dir",
                     let normal = texture_of(normal, path, span)?;
                     scene_value(Scene3D {
                         obj: SceneObject::Material(
-                            MaterialDescription::lit_normal_mapped(r, g, b, 1.0, normal.clone()),
+                            MaterialDescription::lit_normal_mapped(r, g, b, 1.0, normal),
                             vec![scene.clone()],
                         ),
                         xform: Matrix4::from_scale(1.0),
@@ -1866,6 +1967,13 @@ the Net.HttpResponse, got {}",
                     sound: sound.to_string(),
                     position: None,
                 }))),
+                [v] if asset_of(v).is_some() => {
+                    let sound = asset_path(v, AssetKind::Sound, "Effect.play", span)?;
+                    Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
+                        sound,
+                        position: None,
+                    })))
+                }
                 _ => usage("Effect.play(sound)"),
             },
             "Effect.playAt" => match args.as_slice() {
@@ -1873,6 +1981,14 @@ the Net.HttpResponse, got {}",
                     let (x, y, z) = vec3_of(v, path, span)?;
                     Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
                         sound: sound.to_string(),
+                        position: Some([x, y, z]),
+                    })))
+                }
+                [a, v] if asset_of(a).is_some() => {
+                    let sound = asset_path(a, AssetKind::Sound, "Effect.playAt", span)?;
+                    let (x, y, z) = vec3_of(v, path, span)?;
+                    Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
+                        sound,
                         position: Some([x, y, z]),
                     })))
                 }
@@ -1886,6 +2002,13 @@ the Net.HttpResponse, got {}",
                     sound: sound.to_string(),
                     message: msg.clone(),
                 }))),
+                [a, msg] if asset_of(a).is_some() => {
+                    let sound = asset_path(a, AssetKind::Sound, "Effect.playThen", span)?;
+                    Ok(host(FunctorLangEffect(EffectTree::PlayAudioThen {
+                        sound,
+                        message: msg.clone(),
+                    })))
+                }
                 _ => usage("Effect.playThen(sound, msg)"),
             },
             // Soundscape voices (the continuous, reconciled half of audio).
@@ -1895,6 +2018,12 @@ the Net.HttpResponse, got {}",
                 [Value::String(key), Value::String(sound)] => Ok(host(FunctorLangAudioSource(
                     crate::audio::AudioSource::ambient(key.to_string(), sound.to_string()),
                 ))),
+                [Value::String(key), a] if asset_of(a).is_some() => {
+                    let sound = asset_path(a, AssetKind::Sound, "AudioSource.ambient", span)?;
+                    Ok(host(FunctorLangAudioSource(
+                        crate::audio::AudioSource::ambient(key.to_string(), sound),
+                    )))
+                }
                 _ => usage("AudioSource.ambient(key, sound)"),
             },
             "AudioSource.at" => match args.as_slice() {
@@ -1903,6 +2032,17 @@ the Net.HttpResponse, got {}",
                     Ok(host(FunctorLangAudioSource(crate::audio::AudioSource::at(
                         key.to_string(),
                         sound.to_string(),
+                        x,
+                        y,
+                        z,
+                    ))))
+                }
+                [Value::String(key), a, v] if asset_of(a).is_some() => {
+                    let sound = asset_path(a, AssetKind::Sound, "AudioSource.at", span)?;
+                    let (x, y, z) = vec3_of(v, path, span)?;
+                    Ok(host(FunctorLangAudioSource(crate::audio::AudioSource::at(
+                        key.to_string(),
+                        sound,
                         x,
                         y,
                         z,
@@ -3479,24 +3619,27 @@ with Ui.topLeft()"
     }
 }
 
-/// Extract a [`TextureDescription`] — texture materials accept ONLY the
-/// branded value, so the predictable mistake (a bare path string) gets a
-/// teaching error pointing at `Texture.file` (the [`angle_of`] rule, applied
-/// to assets).
-fn texture_of<'a>(
-    value: &'a Value,
-    what: &str,
-    span: Span,
-) -> Result<&'a TextureDescription, RunError> {
+/// Extract a [`TextureDescription`] — texture materials accept the branded
+/// `Texture.file` value or a texture Asset (`Asset.texture`), never a bare
+/// path string: that predictable mistake gets a teaching error pointing at
+/// the constructors (the [`angle_of`] rule, applied to assets).
+fn texture_of(value: &Value, what: &str, span: Span) -> Result<TextureDescription, RunError> {
     match value {
-        Value::HostData(data) => data
-            .as_any()
-            .downcast_ref::<FunctorLangTexture>()
-            .map(|t| &t.0)
-            .ok_or_else(|| RunError {
+        Value::HostData(data) => {
+            if let Some(t) = data.as_any().downcast_ref::<FunctorLangTexture>() {
+                return Ok(t.0.clone());
+            }
+            if asset_of(value).is_some() {
+                // A texture asset carries a file path; a wrong-kind asset is
+                // a teaching error from asset_path.
+                return asset_path(value, AssetKind::Texture, what, span)
+                    .map(TextureDescription::File);
+            }
+            Err(RunError {
                 message: format!("{what}: expected a Texture, got {}", value.kind_name()),
                 span,
-            }),
+            })
+        }
         Value::String(_) => Err(RunError {
             message: format!(
                 "{what}: expected a Texture, got a bare string — build one with \
@@ -3508,6 +3651,35 @@ Texture.file(\"…\") and pass that value"
             message: format!("{what}: expected a Texture, got {}", other.kind_name()),
             span,
         }),
+    }
+}
+
+/// Downcast to the branded Asset locator, if the value is one.
+fn asset_of(value: &Value) -> Option<&FunctorLangAsset> {
+    match value {
+        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangAsset>(),
+        _ => None,
+    }
+}
+
+/// The path inside an Asset argument, enforcing the KIND: a sound asset
+/// where a model asset belongs is a teaching error naming the right
+/// constructor. Callers guard with [`asset_of`] first.
+fn asset_path(value: &Value, kind: AssetKind, what: &str, span: Span) -> Result<String, RunError> {
+    let asset = asset_of(value).expect("asset_path callers guard with asset_of");
+    if asset.kind == kind {
+        Ok(asset.path.clone())
+    } else {
+        Err(RunError {
+            message: format!(
+                "{what}: expected a {} asset, got a {} asset (\"{}\") — construct it with {}",
+                kind.noun(),
+                asset.kind.noun(),
+                asset.path,
+                kind.constructor(),
+            ),
+            span,
+        })
     }
 }
 
@@ -3818,6 +3990,198 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
                 "usage: Scene.model(\"file.glb\") — a non-empty glTF path relative to \
 the game dir"
             );
+        }
+    }
+
+    // --- typed assets (Track B.1) ---
+
+    /// A run failure's message, for teaching-error assertions.
+    fn fail_message(src: &str) -> String {
+        let module = functor_lang::lower(functor_lang::parse(src).unwrap()).unwrap();
+        functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail")
+            .error
+            .message
+    }
+
+    /// `Asset.model` flows into `Scene.model` exactly like the (deprecated)
+    /// bare path string — byte-identical protocol frames.
+    #[test]
+    fn asset_model_matches_string_form() {
+        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let by_string =
+            frame_of(&format!("let main = () => Frame.create({camera}, Scene.model(\"shark.glb\"))"));
+        let by_asset = frame_of(&format!(
+            "let main = () => Frame.create({camera}, Scene.model(Asset.model(\"shark.glb\")))"
+        ));
+        assert_eq!(
+            serde_json::to_string(&by_string).unwrap(),
+            serde_json::to_string(&by_asset).unwrap()
+        );
+    }
+
+    /// `Asset.texture` feeds the texture materials exactly like a
+    /// `Texture.file` value (both lit and the normal-map slot).
+    #[test]
+    fn asset_texture_matches_texture_file_form() {
+        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        for (by_texture, by_asset) in [
+            (
+                "Scene.plane() |> Scene.litTexture(Texture.file(\"wood.png\"))",
+                "Scene.plane() |> Scene.litTexture(Asset.texture(\"wood.png\"))",
+            ),
+            (
+                "Scene.plane() |> Scene.litNormalMapped(Color.rgb(1.0, 1.0, 1.0), Texture.file(\"n.png\"))",
+                "Scene.plane() |> Scene.litNormalMapped(Color.rgb(1.0, 1.0, 1.0), Asset.texture(\"n.png\"))",
+            ),
+        ] {
+            let a = frame_of(&format!("let main = () => Frame.create({camera}, {by_texture})"));
+            let b = frame_of(&format!("let main = () => Frame.create({camera}, {by_asset})"));
+            assert_eq!(
+                serde_json::to_string(&a).unwrap(),
+                serde_json::to_string(&b).unwrap()
+            );
+        }
+    }
+
+    /// `Asset.sound` feeds the soundscape voices exactly like a bare path
+    /// (the key stays a string — identity, not an asset).
+    #[test]
+    fn asset_sound_matches_string_form_in_soundscape() {
+        let by_string = eval("let main = () => AudioSource.ambient(\"bed\", \"wind.ogg\")");
+        let by_asset =
+            eval("let main = () => AudioSource.ambient(\"bed\", Asset.sound(\"wind.ogg\"))");
+        assert_eq!(
+            audio_source_of(&by_string).unwrap(),
+            audio_source_of(&by_asset).unwrap()
+        );
+        let by_string = eval(
+            "let main = () => AudioSource.at(\"fire\", \"crackle.ogg\", Vec3.make(1.0, 0.0, 2.0))",
+        );
+        let by_asset = eval(
+            "let main = () => AudioSource.at(\"fire\", Asset.sound(\"crackle.ogg\"), Vec3.make(1.0, 0.0, 2.0))",
+        );
+        assert_eq!(
+            audio_source_of(&by_string).unwrap(),
+            audio_source_of(&by_asset).unwrap()
+        );
+    }
+
+    /// `Asset.sound` in the one-shot effects queues the same AudioCommands
+    /// as the bare-path form.
+    #[test]
+    fn asset_sound_matches_string_form_in_one_shots() {
+        let _guard = crate::audio::OUTBOUND_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = crate::audio::drain_commands(); // clear the shared queue
+        let src = "\
+            let init = 0.0\n\
+            let shoot = Effect.play(Asset.sound(\"gunshot.wav\"))\n\
+            let blast = Effect.playAt(Asset.sound(\"explosion.wav\"), Vec3.make(5.0, 0.5, -2.0))\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").unwrap();
+        let mut log = EffectLog::new();
+        for name in ["shoot", "blast"] {
+            let effect = effect_of(&session.global(name).unwrap()).unwrap().0.clone();
+            let _ = drain_effects(
+                &session,
+                &mut model,
+                effect,
+                &mut FakeEffects::new(0.0, vec![]),
+                &mut log,
+                &mut |m| panic!("unexpected report: {m}"),
+                false,
+            );
+        }
+        assert_eq!(
+            crate::audio::drain_commands(),
+            vec![
+                crate::audio::AudioCommand::PlayOneShot {
+                    token: None,
+                    sound: "gunshot.wav".to_string(),
+                    gain: 1.0,
+                    position: None,
+                },
+                crate::audio::AudioCommand::PlayOneShot {
+                    token: None,
+                    sound: "explosion.wav".to_string(),
+                    gain: 1.0,
+                    position: Some([5.0, 0.5, -2.0]),
+                },
+            ]
+        );
+    }
+
+    /// The Asset constructors teach their usage: a bare number or an empty
+    /// path is a spanned error naming the kind's example file.
+    #[test]
+    fn asset_constructors_teach_usage() {
+        for (src, want) in [
+            (
+                "let main = () => Asset.model(42.0)",
+                "usage: Asset.model(\"file.glb\") — a non-empty model path relative to the game dir",
+            ),
+            (
+                "let main = () => Asset.model(\"\")",
+                "usage: Asset.model(\"file.glb\") — a non-empty model path relative to the game dir",
+            ),
+            (
+                "let main = () => Asset.texture(42.0)",
+                "usage: Asset.texture(\"file.png\") — a non-empty texture path relative to the game dir",
+            ),
+            (
+                "let main = () => Asset.sound()",
+                "usage: Asset.sound(\"file.ogg\") — a non-empty sound path relative to the game dir",
+            ),
+        ] {
+            assert_eq!(fail_message(src), want, "for {src}");
+        }
+    }
+
+    /// A wrong-kind asset at a consumer is a teaching error naming the value,
+    /// its actual kind, and the constructor that fits — never a silent
+    /// fallback at draw.
+    #[test]
+    fn wrong_kind_assets_are_teaching_errors() {
+        for (src, want) in [
+            (
+                "let main = () => Scene.model(Asset.sound(\"boom.ogg\"))",
+                "Scene.model: expected a model asset, got a sound asset (\"boom.ogg\") — \
+construct it with Asset.model(…)",
+            ),
+            (
+                "let main = () => Scene.plane() |> Scene.litTexture(Asset.model(\"shark.glb\"))",
+                "Scene.litTexture: expected a texture asset, got a model asset (\"shark.glb\") — \
+construct it with Asset.texture(…)",
+            ),
+            (
+                "let main = () => Effect.play(Asset.texture(\"wood.png\"))",
+                "Effect.play: expected a sound asset, got a texture asset (\"wood.png\") — \
+construct it with Asset.sound(…)",
+            ),
+            (
+                "let main = () => AudioSource.ambient(\"bed\", Asset.model(\"shark.glb\"))",
+                "AudioSource.ambient: expected a sound asset, got a model asset (\"shark.glb\") — \
+construct it with Asset.sound(…)",
+            ),
+        ] {
+            assert_eq!(fail_message(src), want, "for {src}");
+        }
+    }
+
+    /// An Asset is plain data (kind + path), so storing one in the model must
+    /// not invalidate hot-reload time-travel history.
+    #[test]
+    fn assets_are_reload_safe_snapshots() {
+        let value = eval("let main = () => Asset.model(\"shark.glb\")");
+        match &value {
+            Value::HostData(data) => assert!(data.is_reload_safe_snapshot()),
+            other => panic!("expected a HostData asset, got {}", other.kind_name()),
         }
     }
 

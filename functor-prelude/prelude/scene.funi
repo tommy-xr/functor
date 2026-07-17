@@ -20,8 +20,11 @@ let cylinder : () => t
 let quad : () => t
 let plane : () => t
 
-// Assets and generated surfaces.
-let model : (string) => t
+// Assets and generated surfaces. During the typed-asset migration, `model`
+// accepts a path string OR an `Asset.Model` value (there is no union type, so
+// the parameter is gradually typed); the flag day tightens it to
+// `(Asset.Model) => t`, and the host teaches wrong-kind assets at runtime.
+let model : ('asset) => t
 let heightmap : (List<List<float>>) => t
 
 // Composition.
@@ -32,9 +35,12 @@ let group : (List<t>) => t
 let color : (Color.t, t) => t
 let lit : (Color.t, t) => t
 let emissive : (Color.t, t) => t
-let litTexture : (Texture.t, t) => t
-let emissiveTexture : (Texture.t, t) => t
-let litNormalMapped : (Color.t, Texture.t, t) => t
+// Texture parameters accept a `Texture.t` OR an `Asset.Texture` during the
+// typed-asset migration (gradually typed — no union type); the flag day
+// tightens them, and the host teaches bare strings / wrong kinds at runtime.
+let litTexture : ('texture, t) => t
+let emissiveTexture : ('texture, t) => t
+let litNormalMapped : (Color.t, 'texture, t) => t
 let screen : (RenderTarget.t, t) => t
 
 // Animation (subject-last): attach an Anim expression to the Model node(s)
