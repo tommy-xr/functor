@@ -26,18 +26,16 @@ import { EXAMPLES } from "./examples.js";
 
 const frame = document.getElementById("player");
 const statusPill = document.getElementById("status");
-const statusLog = document.getElementById("status-log");
 const picker = document.getElementById("example-picker");
 const resetButton = document.getElementById("reset");
 
 const setStatus = (state, text, detail = "") => {
   statusPill.dataset.state = state;
   statusPill.textContent = text;
-  // Every transition clears the tooltip (the ok branch below re-sets it) so
-  // a stale "model preserved" can't contradict a later error or fresh load.
-  statusPill.title = "";
-  statusLog.textContent = detail;
-  statusLog.hidden = detail === "";
+  // The detail (the reload note, or a parse error) lives in the pill's tooltip
+  // and — for errors — the Output panel. No separate error banner under the
+  // editor: the preview pill is the single live indicator.
+  statusPill.title = detail;
 };
 
 const statusBar = createStatusBar({ host: document.getElementById("statusbar") });
@@ -47,10 +45,9 @@ const bridge = new PlayerBridge(frame, {
   onLive: () => setStatus("live", "● live"),
   onResult: (ok, message) => {
     if (ok) {
-      setStatus("live", "● live");
       // The runtime's status line ("reloaded … model preserved") stays
       // reachable — hover the pill, or the e2e's status() seam below.
-      statusPill.title = message;
+      setStatus("live", "● live", message);
     } else {
       setStatus("error", "✖ error", message);
     }
@@ -246,7 +243,6 @@ window.__sandbox = {
     state: statusPill.dataset.state,
     text: statusPill.textContent,
     message: statusPill.title,
-    detail: statusLog.textContent,
   }),
   getSource: () => view.state.doc.toString(),
   // Replace the buffer, place the cursor, and open the completion popup

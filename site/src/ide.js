@@ -82,7 +82,6 @@ const els = {
   download: document.getElementById("download"),
   restart: document.getElementById("restart"),
   status: document.getElementById("status"),
-  statusLog: document.getElementById("status-log"),
   activeName: document.getElementById("active-file"),
   editorHost: document.getElementById("editor"),
   player: document.getElementById("player"),
@@ -142,9 +141,10 @@ const activeFile = () => project.files.find((f) => f.path === project.active);
 const setStatus = (state, text, detail = "") => {
   els.status.dataset.state = state;
   els.status.textContent = text;
-  els.status.title = "";
-  els.statusLog.textContent = detail;
-  els.statusLog.hidden = detail === "";
+  // The detail (the reload note, or a parse error) lives in the pill's tooltip
+  // and — for errors — the Output panel. No separate error banner under the
+  // editor: the preview pill is the single live indicator.
+  els.status.title = detail;
 };
 
 // ---------------------------------------------------------------- editor
@@ -244,8 +244,8 @@ const bridge = new ProjectBridge(els.player, {
   onLive: () => setStatus("live", "● live"),
   onResult: (ok, message) => {
     if (ok) {
-      setStatus("live", "● live");
-      els.status.title = message; // the runtime's "model preserved" note, on hover
+      // the runtime's "model preserved" note, reachable on hover
+      setStatus("live", "● live", message);
     } else {
       setStatus("error", "✖ error", message);
     }
@@ -424,7 +424,6 @@ window.__ide = {
     state: els.status.dataset.state,
     text: els.status.textContent,
     message: els.status.title,
-    detail: els.statusLog.textContent,
   }),
   // Replace the active buffer, place the cursor, and open the completion popup
   // (explicit trigger) — the sandbox's seam, minus any push (programmaticEdit
