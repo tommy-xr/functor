@@ -303,6 +303,8 @@ fn run(
                 if let Some(project) = load_project(uri, &documents) {
                     projects.insert(uri.to_string(), project);
                 }
+                // A just-opened matching document gets the current coverage.
+                push_coverage(writer, trace.as_ref(), &documents);
             }
             ("textDocument/didChange", None) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
@@ -317,6 +319,9 @@ fn run(
                     if let Some(project) = load_project(uri, &documents) {
                         projects.insert(uri.to_string(), project);
                     }
+                    // The edit changed the hash: the gate re-evaluates (and
+                    // the client's gutter clears via the empty push).
+                    push_coverage(writer, trace.as_ref(), &documents);
                 }
             }
             ("textDocument/didClose", None) => {
@@ -339,6 +344,7 @@ fn run(
                     last_trace_params = Some(params.clone());
                     trace = Some(doc);
                     refresh_overlays(writer, &mut next_request_id);
+                    push_coverage(writer, trace.as_ref(), &documents);
                 }
             }
             // Native refresh: poll `GET /trace` on a background thread. Attach
@@ -654,6 +660,46 @@ fn refresh_overlays(writer: &mut impl Write, next_request_id: &mut i64) {
         write_message(
             writer,
             &json!({ "jsonrpc": "2.0", "id": id, "method": method }),
+        );
+    }
+}
+
+/// Push the recency-gutter coverage to the client — a custom NOTIFICATION
+/// (`functor/inspector/coverage`, no id: fire-and-forget) with per-line
+/// states for every OPEN document the trace covers. Hash-gated per file by
+/// the pure half; a document that no longer matches gets an explicit empty
+/// list so the client clears its gutter (never stale colors on wrong lines).
+fn push_coverage(
+    writer: &mut impl Write,
+    trace: Option<&TraceDoc>,
+    documents: &HashMap<String, String>,
+) {
+    // No trace yet → nothing to draw OR clear (the client starts empty), and
+    // pushing would inject notifications into sessions that never touch the
+    // inspector (the stdio e2e reads the stream in strict order).
+    if trace.is_none() {
+        return;
+    }
+    for (uri, text) in documents {
+        let lines: Vec<Value> = trace
+            .and_then(|t| {
+                let path = uri_to_path(uri)?;
+                let file_name = match_trace_file(t, &path)?;
+                Some(
+                    inspector::coverage_lines(t, &file_name, text)
+                        .into_iter()
+                        .map(|(line, state)| json!({ "line": line, "state": state }))
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
+        write_message(
+            writer,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "functor/inspector/coverage",
+                "params": { "uri": uri, "lines": lines },
+            }),
         );
     }
 }
