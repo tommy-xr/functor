@@ -302,6 +302,41 @@ impl FunctorLangWebGame {
         functor_lang::set_trace_sink(Box::new(|message| {
             web_sys::console::log_1(&JsValue::from_str(&message));
         }));
+        // Route runtime events to the browser console too. Without a sink they
+        // fall back to eprintln!, which goes nowhere in a browser — a failed
+        // asset was completely invisible (it just rendered as the fallback).
+        // AssetError is the load-bearing case: `Scene.model` on a missing or
+        // bad URL now says so in the console, where a dev (or a headless test)
+        // can see it.
+        functor_runtime_common::events::set_sink(Box::new(|event| {
+            use functor_runtime_common::events::RuntimeEvent as R;
+            match event {
+                R::AssetError { path, message } => {
+                    let line = match path {
+                        Some(path) => format!(
+                            "[functor] asset '{path}' failed to load; using fallback: {message}"
+                        ),
+                        None => {
+                            format!("[functor] asset failed to load; using fallback: {message}")
+                        }
+                    };
+                    web_sys::console::error_1(&JsValue::from_str(&line));
+                }
+                R::HotReload { ok, message } => {
+                    let line = format!("[functor] hot-reload: {message}");
+                    if ok {
+                        web_sys::console::log_1(&JsValue::from_str(&line));
+                    } else {
+                        web_sys::console::error_1(&JsValue::from_str(&line));
+                    }
+                }
+                R::FunctorLangTrace { message } => {
+                    web_sys::console::log_1(&JsValue::from_str(&message));
+                }
+                // CLI-stream concerns; quiet in the browser.
+                R::Ready | R::FrameStats { .. } | R::CaptureWritten { .. } => {}
+            }
+        }));
         let path = sources
             .first()
             .map(|(p, _)| p.clone())

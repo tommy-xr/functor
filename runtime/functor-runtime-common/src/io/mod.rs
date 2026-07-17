@@ -55,10 +55,21 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
     #[cfg(target_arch = "wasm32")]
     {
         // fetch() takes relative paths (bundle-served files) and absolute
-        // http(s) URLs (CDN assets, CORS permitting) alike — no branch needed.
-        load_bytes_async(&path)
+        // http(s) URLs (CDN assets, CORS permitting) alike — no branch needed
+        // for the transfer itself...
+        let bytes = load_bytes_async(&path)
             .await
-            .map_err(|e| format!("{}: {}", path, e))
+            .map_err(|e| format!("{}: {}", path, e))?;
+        // ...but remote responses get the same soft-404 guard as native: a
+        // CDN answering HTTP 200 with an HTML error page must not reach the
+        // glTF/PNG parsers (they panic on garbage) — it fails the load, which
+        // routes to the fallback asset + an AssetError event instead. Local
+        // bundle files skip this (the pipelines sniff content, not extension,
+        // so a mislabeled-but-valid local file keeps working).
+        if is_remote_path(&path) {
+            verify_magic(&path, &bytes).map_err(|e| format!("{}: {}", path, e))?;
+        }
+        Ok(bytes)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -85,6 +96,60 @@ pub fn is_remote_path(path: &str) -> bool {
     path.starts_with("http://") || path.starts_with("https://")
 }
 
+/// Cheap magic-byte verification for the formats whose URLs we can recognize
+/// by extension, applied to every REMOTE asset body on both targets (natively
+/// in `remote::fetch`, on wasm after the browser fetch). Unknown extensions
+/// pass — this is a poisoning/soft-404 guard, not a general validator.
+fn verify_magic(url: &str, bytes: &[u8]) -> Result<(), String> {
+    // HTML is never a valid asset of ANY type, so an HTML body — the classic
+    // CDN error page — is rejected regardless of extension. This covers
+    // extensionless/API-style asset URLs the per-format checks below can't.
+    let stripped = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    let body = stripped
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|start| &stripped[start..])
+        .unwrap_or(&[]);
+    let html = [&b"<!doctype"[..], &b"<html"[..]]
+        .iter()
+        .any(|prefix| body.len() >= prefix.len() && body[..prefix.len()].eq_ignore_ascii_case(prefix));
+    if html {
+        return Err("response body is an HTML page, not an asset — is the URL an error page?"
+            .to_string());
+    }
+    let path_part = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = std::path::Path::new(path_part)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ok = match ext.as_str() {
+        "glb" => bytes.starts_with(b"glTF"),
+        // A .gltf is JSON: first non-whitespace byte is '{' (some exporters
+        // prefix a UTF-8 BOM — skip it, it's still JSON).
+        "gltf" => bytes
+            .strip_prefix(&[0xEF, 0xBB, 0xBF])
+            .unwrap_or(bytes)
+            .iter()
+            .find(|b| !b.is_ascii_whitespace())
+            .map(|b| *b == b'{')
+            .unwrap_or(false),
+        "png" => bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+        "jpg" | "jpeg" => bytes.starts_with(&[0xFF, 0xD8]),
+        _ => true,
+    };
+    if ok {
+        Ok(())
+    } else {
+        let head: Vec<u8> = bytes.iter().take(12).copied().collect();
+        Err(format!(
+            "response body is not {} (starts with {:?}) — is the URL an error page?",
+            ext,
+            String::from_utf8_lossy(&head)
+        ))
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use remote::{set_remote_fetcher, RemoteFetchResult, RemoteFetchSender};
 
@@ -104,6 +169,8 @@ mod remote {
         path::{Path, PathBuf},
         sync::RwLock,
     };
+
+    use super::verify_magic;
 
     pub type RemoteFetchResult = Result<Vec<u8>, String>;
     pub type RemoteFetchSender = futures::channel::oneshot::Sender<RemoteFetchResult>;
@@ -148,40 +215,6 @@ mod remote {
         verify_magic(url, &bytes)?;
         cache_write(url, &bytes);
         Ok(bytes)
-    }
-
-    /// Cheap magic-byte verification for the formats whose URLs we can
-    /// recognize by extension. Unknown extensions pass — this is a poisoning
-    /// guard, not a general validator.
-    fn verify_magic(url: &str, bytes: &[u8]) -> Result<(), String> {
-        let path_part = url.split(['?', '#']).next().unwrap_or(url);
-        let ext = Path::new(path_part)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let ok = match ext.as_str() {
-            "glb" => bytes.starts_with(b"glTF"),
-            // A .gltf is JSON: first non-whitespace byte is '{'.
-            "gltf" => bytes
-                .iter()
-                .find(|b| !b.is_ascii_whitespace())
-                .map(|b| *b == b'{')
-                .unwrap_or(false),
-            "png" => bytes.starts_with(&[0x89, b'P', b'N', b'G']),
-            "jpg" | "jpeg" => bytes.starts_with(&[0xFF, 0xD8]),
-            _ => true,
-        };
-        if ok {
-            Ok(())
-        } else {
-            let head: Vec<u8> = bytes.iter().take(12).copied().collect();
-            Err(format!(
-                "response body is not {} (starts with {:?}) — is the URL an error page?",
-                ext,
-                String::from_utf8_lossy(&head)
-            ))
-        }
     }
 
     fn cache_dir() -> Option<PathBuf> {
@@ -302,7 +335,9 @@ mod remote {
             let tx = stash.lock().unwrap().take().unwrap();
             tx.send(Ok(b"<html>not found</html>".to_vec())).unwrap();
             match poll_once(&mut fut3) {
-                Poll::Ready(Err(e)) => assert!(e.contains("not glb"), "error was: {e}"),
+                // The extension-independent HTML rejection fires before the
+                // per-format glb check for this body.
+                Poll::Ready(Err(e)) => assert!(e.contains("HTML page"), "error was: {e}"),
                 _ => panic!("expected Ready(Err(..)) for an HTML body"),
             }
             // Nothing new cached: only the good asset's entry exists.
@@ -317,13 +352,20 @@ mod remote {
             assert!(verify_magic("https://x/a.glb?v=2", GLB).is_ok());
             assert!(verify_magic("https://x/a.glb", b"<html>").is_err());
             assert!(verify_magic("https://x/a.gltf", b"  {\"asset\":{}}").is_ok());
+            // A UTF-8 BOM before the JSON is still a valid .gltf.
+            assert!(verify_magic("https://x/a.gltf", b"\xEF\xBB\xBF{\"asset\":{}}").is_ok());
             assert!(verify_magic("https://x/a.gltf", b"<html>").is_err());
             assert!(verify_magic("https://x/a.png", &[0x89, b'P', b'N', b'G', 1]).is_ok());
             assert!(verify_magic("https://x/a.png", b"nope").is_err());
             assert!(verify_magic("https://x/a.jpg", &[0xFF, 0xD8, 0xFF]).is_ok());
-            // Unknown extensions pass through unverified.
+            // Unknown extensions pass through unverified...
             assert!(verify_magic("https://x/a.bin", b"anything").is_ok());
             assert!(verify_magic("https://x/noext", b"anything").is_ok());
+            // ...EXCEPT an HTML body, which is never a valid asset of any
+            // type — extensionless/API-style URLs get soft-404 protection too.
+            assert!(verify_magic("https://x/api/asset/123", b"<!DOCTYPE html><html>").is_err());
+            assert!(verify_magic("https://x/noext", b"\n  <html><body>err</body>").is_err());
+            assert!(verify_magic("https://x/noext", b"\xEF\xBB\xBF<HTML>").is_err());
         }
     }
 }
