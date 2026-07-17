@@ -65,8 +65,8 @@
           ".funi"
         ],
         "icon": {
-          "light": "./images/functor-lang-file.png",
-          "dark": "./images/functor-lang-file.png"
+          "light": "./images/functor-lang-file-light.png",
+          "dark": "./images/functor-lang-file-dark.png"
         },
         "configuration": "./language-configuration.json"
       }
@@ -82,6 +82,7 @@
   "scripts": {
     "test": "node --test client/inspector.test.js",
     "test:e2e": "playwright test -c tests-integration/playwright.config.mjs",
+    "vscode:prepublish": "node ../../scripts/generate-icons.mjs",
     "package:vsix": "npx --yes @vscode/vsce@3.9.2 package --out functor-lang-vscode.vsix",
     "install:vsix": "npm run package:vsix && code --install-extension functor-lang-vscode.vsix --force"
   },

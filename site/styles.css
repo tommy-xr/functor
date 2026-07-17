@@ -111,6 +111,17 @@ a:hover {
   text-decoration: none;
 }
 
+.site-nav a.nav-github {
+  display: inline-flex;
+  align-items: center;
+}
+
+.site-nav a.nav-github svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
 /* ---------------------------------------------------------------- landing */
 
 /* Hero mini-sandbox band: copy left, a live demo card right; stacks below 900px. */
@@ -428,11 +439,21 @@ a:hover {
 }
 
 .wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
   font-family: var(--font-display);
   font-weight: 600;
   letter-spacing: 0.14em;
   color: var(--text);
   font-size: 0.8rem;
+}
+
+.wordmark-mark {
+  height: 1.75em;
+  width: auto;
+  display: block;
+  color: var(--cyan);
 }
 
 .wordmark-accent {
@@ -652,7 +673,11 @@ a:hover {
 }
 
 .file-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   flex: 1;
+  min-width: 0;
   text-align: left;
   font-family: var(--font-mono);
   font-size: 0.82rem;
@@ -661,6 +686,16 @@ a:hover {
   border: 0;
   padding: 8px 0;
   cursor: pointer;
+}
+
+.file-icon {
+  flex: none;
+  height: 1.05em;
+  width: auto;
+  color: var(--cyan);
+}
+
+.file-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
