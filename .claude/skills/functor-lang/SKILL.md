@@ -511,6 +511,23 @@ frame |> Frame.withSkybox(sky)                             //   paths (+X..-Z). 
                                                            //   Fog never fogs the sky
 Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
 Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
+Sub.assets(tagger)                                         // asset-loading progress: the tagger
+                                                           //   receives {loaded, total, failed}
+                                                           //   whenever the shell's snapshot
+                                                           //   CHANGES (incl. the initial state
+                                                           //   on frame one) — the loading-
+                                                           //   screen seam. The settled gate is
+                                                           //   total > 0.0 && loaded +
+                                                           //   List.length(failed) == total
+                                                           //   (failures never join loaded, and
+                                                           //   frame one can deliver 0/0);
+                                                           //   failed lists {path, error} per
+                                                           //   failed byte-load (decode
+                                                           //   fallbacks count as loaded).
+                                                           //   Fires from snapshot changes, not
+                                                           //   the time grid; requires `update`.
+                                                           //   examples/loading is the
+                                                           //   reference
 Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (float) => Msg
 Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connections; tagger: (Net.NetEvent) => Msg
 Effect.send(connId, text)                                  // send on an open connection

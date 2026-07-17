@@ -61,6 +61,10 @@ pub struct FunctorLangWebGame {
     /// (nothing fires on frame one — mirroring the F# executor and the
     /// desktop producer).
     prev_tts: Option<f64>,
+    /// The shell's latest asset-loading snapshot (pushed each frame by the
+    /// render loop) and the one the game last saw — the `Sub.assets` seam.
+    asset_progress: Option<functor_runtime_common::asset::AssetProgress>,
+    delivered_asset_progress: Option<functor_runtime_common::asset::AssetProgress>,
     has_physics: bool,
     /// The game defines the optional `soundScape` entry point
     /// (`soundScape(model) -> AudioScene`, the continuous-audio hook). Absent =
@@ -384,6 +388,8 @@ impl FunctorLangWebGame {
             recorder: SceneRecorder::new(),
             input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
+            asset_progress: None,
+            delivered_asset_progress: None,
             has_physics: loaded.has_physics,
             has_soundscape: loaded.has_soundscape,
             last_soundscape_json: empty_soundscape_json(),
@@ -505,6 +511,8 @@ impl FunctorLangWebGame {
             input_buf: &mut self.input_buf,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
+            asset_progress: self.asset_progress.clone(),
+            delivered_asset_progress: &mut self.delivered_asset_progress,
             suppress_outbound: false,
             reporter: &mut self.reporter,
         }
@@ -515,6 +523,12 @@ impl GameProducer for FunctorLangWebGame {
     // File-watch hot reload is native-only (docs/functor-lang.md C3) — there is no
     // filesystem here. The PUSH path below is the web's reload.
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {}
+
+    fn push_asset_progress(&mut self, progress: functor_runtime_common::asset::AssetProgress) {
+        // Stored, not delivered here: the producer compares it against what
+        // the game last saw during the frame's subscription phase.
+        self.asset_progress = Some(progress);
+    }
 
     fn reload_source(&mut self, source: &str) -> Result<String, String> {
         // The editor push path (docs/functor-lang.md D4), same semantics as the
@@ -591,6 +605,9 @@ impl GameProducer for FunctorLangWebGame {
         if result.is_ok() {
             self.deferred_queries.clear();
             self.pending_events.clear();
+            // The restored model predates the current loading snapshot —
+            // redeliver it on the next frame (see before_physics).
+            self.delivered_asset_progress = None;
             // Model restored to `target`; drop orphaned buffered input so it can't
             // record into the branch (fixed-timestep 0-substep buffering, xreview).
             self.input_buf.clear();

@@ -34,6 +34,12 @@ bug found in the same exercise was fixed on the spot
 - [x] Asset introspection: `functor inspect` should print per-node
       translations + bbox (Kenney glbs carry baked placement offsets that
       render displaced and look like renderer bugs).
+- [ ] `Sub.assets` under `--headless`: the headless loop has no asset cache,
+      so it never pushes a progress snapshot and the sub silently never fires
+      — a game gating on its loading screen can't be driven headless. Either
+      push an empty-cache snapshot (loading screens settle at 0/0 with the
+      documented `total > 0` guard… still gated) or give headless a real
+      byte-load path without GPU hydration.
 
 ## Validation tooling
 

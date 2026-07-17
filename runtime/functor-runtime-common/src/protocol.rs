@@ -264,6 +264,13 @@ pub trait GameProducer {
     /// Deliver a transport-level failure for a request into the async inbox.
     fn net_push_http_error(&mut self, token: i32, message: String);
 
+    /// Push the shell's current asset-loading snapshot
+    /// ([`crate::asset::AssetCache::progress`]); a change fires the game's
+    /// `Sub.assets` taggers with the frame's subscription messages. Default:
+    /// no-op (drivers without an asset cache — replay, netsim — have nothing
+    /// to report).
+    fn push_asset_progress(&mut self, _progress: crate::asset::AssetProgress) {}
+
     /// Take the audio commands the game queued this frame (a JSON array of
     /// [`crate::audio::AudioCommand`]). The shell plays them on its device.
     fn audio_drain_commands(&self) -> String;

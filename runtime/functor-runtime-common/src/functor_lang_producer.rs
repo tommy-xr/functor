@@ -30,12 +30,14 @@ use std::collections::HashSet;
 use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value};
 
 use crate::functor_lang_prelude::{
-    contains_effect, deliver_physics_events, drain_effects, frame_value, http_response_value,
+    asset_progress_value, assets_taggers, contains_effect, deliver_physics_events, drain_effects,
+    frame_value, http_response_value,
     needs_update, net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
     physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
     take_http_tagger, take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree,
     FunctorHost, NetEventKind, UiHandler,
 };
+use crate::asset::AssetProgress;
 use crate::input::RecordedInput;
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
@@ -318,6 +320,15 @@ pub struct FrameCtx<'a> {
     pub input_buf: &'a mut Vec<RecordedInput>,
     pub has_physics: bool,
     pub has_subscriptions: bool,
+    /// The shell's current asset-loading snapshot (`AssetCache::progress()`),
+    /// `None` when the driver doesn't track assets (dry-run forward-step,
+    /// headless tests). Compared against `delivered_asset_progress` each frame;
+    /// a change fires the `Sub.assets` taggers through `update`.
+    pub asset_progress: Option<AssetProgress>,
+    /// The snapshot the game last saw (shell-owned so it survives frames; only
+    /// advanced when a `Sub.assets` tagger actually received it, so a game
+    /// that ADDS the sub later — hot reload — still gets the current state).
+    pub delivered_asset_progress: &'a mut Option<AssetProgress>,
     /// Suppress OUTBOUND effects (physics command / timeline / send / http /
     /// audio) during a dry-run forward-step (docs/time-travel.md T6b): they
     /// still log and the model still evolves, but nothing escapes to the live
@@ -354,6 +365,12 @@ impl FrameCtx<'_> {
         {
             self.deferred_queries.clear();
             self.pending_events.clear();
+            // The restored model predates the current loading snapshot, so
+            // "what the game last saw" no longer holds — invalidate the
+            // marker so the branch's first frame redelivers current progress
+            // (a rewound loading screen must learn its assets already
+            // settled).
+            *self.delivered_asset_progress = None;
         }
         self.subscriptions_and_tick(frame_time);
     }
@@ -703,6 +720,9 @@ to receive their messages; dropping them"
         // Reconcile connections EVERY frame — including frame one (before the
         // timer window exists), so a declared connection opens immediately.
         self.reconcile_connections(&subs);
+        // Asset progress also delivers on frame one: a loading screen wants
+        // the initial snapshot, not the first change after it.
+        self.deliver_asset_progress(&subs);
         let Some(prev) = prev else {
             return;
         };
@@ -717,6 +737,56 @@ to receive their messages; dropping them"
                 Ok(returned) => self.absorb(returned),
                 Err(err) => self.reporter.frame_error("update", &err),
             }
+        }
+    }
+
+    /// Fire the `Sub.assets` taggers when the shell's loading snapshot changed
+    /// since the game last saw it, folding `tagger({loaded, total, failed})`
+    /// through `update` — the loading-screen seam. No taggers subscribed
+    /// leaves `delivered` unmarked, so a game that adds `Sub.assets` later
+    /// (hot reload) still receives the current state on its first frame.
+    fn deliver_asset_progress(&mut self, subs: &Value) {
+        let Some(progress) = self.asset_progress.clone() else {
+            return;
+        };
+        if self.delivered_asset_progress.as_ref() == Some(&progress) {
+            return;
+        }
+        let taggers = match assets_taggers(subs) {
+            Ok(taggers) => taggers,
+            Err(message) => return self.reporter.report_once(format!("[functor-lang] {message}")),
+        };
+        if taggers.is_empty() {
+            return;
+        }
+        let record = asset_progress_value(&progress);
+        let mut any_delivered = false;
+        for tagger in taggers {
+            let msg = match self.session.apply(
+                tagger,
+                vec![record.clone()],
+                "Sub.assets tagger",
+                &mut FunctorHost,
+            ) {
+                Ok(msg) => msg,
+                Err(err) => {
+                    self.reporter.frame_error("Sub.assets tagger", &err);
+                    continue;
+                }
+            };
+            any_delivered = true;
+            let args = vec![self.model.clone(), msg];
+            journal_push("update", &args, Provenance::Subscription);
+            match self.session.call("update", args, &mut FunctorHost) {
+                Ok(returned) => self.absorb(returned),
+                Err(err) => self.reporter.frame_error("update", &err),
+            }
+        }
+        // Only mark delivered when a tagger actually received it — an
+        // erroring tagger (usually a transient hot-reload state) must not
+        // permanently swallow the snapshot.
+        if any_delivered {
+            *self.delivered_asset_progress = Some(progress);
         }
     }
 
@@ -1057,6 +1127,8 @@ pub fn forward_step_scene(
     // Throwaway input buffer: the forward-step replays `inputs` directly and
     // never records, so this stays empty — it just satisfies the borrow.
     let mut input_buf: Vec<RecordedInput> = Vec::new();
+    // The dry run never tracks assets: no snapshot, throwaway delivered slot.
+    let mut delivered_asset_progress: Option<AssetProgress> = None;
     let mut reporter = Reporter::new(
         SpanSource::Single {
             src: String::new(),
@@ -1081,6 +1153,8 @@ pub fn forward_step_scene(
             input_buf: &mut input_buf,
             has_physics,
             has_subscriptions,
+            asset_progress: None,
+            delivered_asset_progress: &mut delivered_asset_progress,
             suppress_outbound: true,
             reporter: &mut reporter,
         };
@@ -1255,6 +1329,7 @@ mod tests {
         let mut live_conn_keys: HashSet<String> = HashSet::new();
         let mut prev_tts: Option<f64> = None;
         let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut delivered_asset_progress: Option<AssetProgress> = None;
         let mut reporter = Reporter::new(
             SpanSource::Single {
                 src: String::new(),
@@ -1277,6 +1352,8 @@ mod tests {
             input_buf: &mut input_buf,
             has_physics: false,
             has_subscriptions: false,
+            asset_progress: None,
+            delivered_asset_progress: &mut delivered_asset_progress,
             suppress_outbound: false,
             reporter: &mut reporter,
         };
@@ -1417,6 +1494,7 @@ mod tests {
         // fires the `Sub.every` timer.
         let mut prev_tts: Option<f64> = Some(0.9);
         let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut delivered_asset_progress: Option<AssetProgress> = None;
         let mut reporter = Reporter::new(
             SpanSource::Single {
                 src: INSPECTOR_SRC.to_string(),
@@ -1439,6 +1517,8 @@ mod tests {
             input_buf: &mut input_buf,
             has_physics: false,
             has_subscriptions: true,
+            asset_progress: None,
+            delivered_asset_progress: &mut delivered_asset_progress,
             suppress_outbound: false,
             reporter: &mut reporter,
         };
@@ -1446,6 +1526,109 @@ mod tests {
             dts: 0.2,
             tts: 1.1,
         });
+    }
+
+    const ASSETS_SRC: &str = "\
+        let init = { count: 0.0, loaded: 99.0, total: 99.0, failedCount: 99.0 }\n\
+        let update = (m, p) =>\n\
+          { count: m.count + 1.0, loaded: p.loaded, total: p.total,\n\
+            failedCount: List.length(p.failed) }\n\
+        let subscriptions = (m) => Sub.assets((p) => p)\n\
+        let tick = (m, dt, tts) => m\n\
+        let expectedFirst = { count: 1.0, loaded: 1.0, total: 3.0, failedCount: 1.0 }\n\
+        let expectedSettled = { count: 2.0, loaded: 3.0, total: 3.0, failedCount: 1.0 }\n\
+        let expectedFirstSettled = { count: 1.0, loaded: 3.0, total: 3.0, failedCount: 1.0 }\n";
+
+    /// Run one frame (subscriptions + tick) with the given shell snapshot,
+    /// the way a shell drives the producer.
+    fn run_assets_frame(
+        session: &Session,
+        model: &mut Value,
+        progress: Option<AssetProgress>,
+        delivered: &mut Option<AssetProgress>,
+        tts: f64,
+    ) {
+        let mut physics_rt = SteppedPhysics::new();
+        let mut physics_frame = 0u64;
+        let mut recorder = SceneRecorder::new();
+        let mut effect_runner = DryRunEffects::new();
+        let mut effect_log = EffectLog::new();
+        let mut deferred_queries: Vec<EffectTree> = Vec::new();
+        let mut pending_events: Vec<PhysicsEvent> = Vec::new();
+        let mut live_conn_keys: HashSet<String> = HashSet::new();
+        let mut prev_tts: Option<f64> = Some(tts - 0.1);
+        let mut input_buf: Vec<RecordedInput> = Vec::new();
+        let mut reporter = Reporter::new(
+            SpanSource::Single {
+                src: ASSETS_SRC.to_string(),
+                path: "game".to_string(),
+            },
+            silent_emit,
+        );
+        let mut ctx = FrameCtx {
+            session,
+            model,
+            physics_rt: &mut physics_rt,
+            physics_frame: &mut physics_frame,
+            recorder: &mut recorder,
+            effect_runner: &mut effect_runner as &mut dyn EffectRunner,
+            effect_log: &mut effect_log,
+            deferred_queries: &mut deferred_queries,
+            pending_events: &mut pending_events,
+            live_conn_keys: &mut live_conn_keys,
+            prev_tts: &mut prev_tts,
+            input_buf: &mut input_buf,
+            has_physics: false,
+            has_subscriptions: true,
+            asset_progress: progress,
+            delivered_asset_progress: delivered,
+            suppress_outbound: false,
+            reporter: &mut reporter,
+        };
+        ctx.before_physics(FrameTime { dts: 0.1, tts: tts as f32 });
+    }
+
+    /// `Sub.assets` delivers the snapshot through `update` exactly when it
+    /// changes: on the first sighting, NOT on an identical frame, and again
+    /// when loading settles.
+    #[test]
+    fn asset_progress_flows_to_update_once_per_change() {
+        let project = functor_lang::project::load_single_source("game", ASSETS_SRC)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").expect("init");
+        let mut delivered: Option<AssetProgress> = None;
+
+        let loading = AssetProgress {
+            loaded: 1,
+            total: 3,
+            failed: vec![("a.glb".to_string(), "404".to_string())],
+        };
+        run_assets_frame(&session, &mut model, Some(loading.clone()), &mut delivered, 1.1);
+        assert_model(&session, &model, "expectedFirst");
+
+        // Same snapshot: no redelivery (count stays 1).
+        run_assets_frame(&session, &mut model, Some(loading), &mut delivered, 1.2);
+        assert_model(&session, &model, "expectedFirst");
+
+        // Loading settles: the change delivers once more.
+        let settled = AssetProgress {
+            loaded: 3,
+            total: 3,
+            failed: vec![("a.glb".to_string(), "404".to_string())],
+        };
+        run_assets_frame(&session, &mut model, Some(settled.clone()), &mut delivered, 1.3);
+        assert_model(&session, &model, "expectedSettled");
+
+        // A time-travel branch restores an older model and INVALIDATES the
+        // delivered marker (before_physics / rewind_scene_to): the next frame
+        // redelivers the unchanged current snapshot, so a rewound loading
+        // screen learns its assets already settled.
+        let mut rewound = session.global("init").expect("init");
+        delivered = None;
+        run_assets_frame(&session, &mut rewound, Some(settled), &mut delivered, 1.4);
+        assert_model(&session, &rewound, "expectedFirstSettled");
     }
 
     #[test]
