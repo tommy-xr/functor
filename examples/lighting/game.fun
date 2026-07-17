@@ -23,9 +23,12 @@ let tau = 6.2831855
 let orbitRadius = 3.5
 let orbitHeight = 2.6
 
-// Normal-map texture (branded value, declared once, passed by value): a
-// tangent-space bumps map so the lights and specular play across the cube.
-let bumpsTexture = Texture.file("bumps-normal.png")
+// Normal-map texture from the generated asset manifest (`functor import` —
+// see assets.fun): a tangent-space bumps map so the lights and specular play
+// across the cube. Every asset below (model, texture, sounds) is referenced
+// through its typed `Assets.*` constant, so a filename typo is a check-time
+// error instead of a silent fallback.
+let bumpsTexture = Assets.bumps_normal
 
 // World position of the fountain — shared by its visual (draw) and its
 // positioned audio loop (soundScape) so the sound always comes from the object.
@@ -79,7 +82,7 @@ let fireGun = (model, isDown) =>
   | true =>
     (match model.spaceHeld with
      | true => model
-     | false => ({ model with spaceHeld: true }, Effect.playThen("gunshot.wav", GunshotDone)))
+     | false => ({ model with spaceHeld: true }, Effect.playThen(Assets.gunshot, GunshotDone)))
 
 // 'B' fires a spatialized gunshot a few units directly to your left/right
 // (relative to facing), alternating each press — a clear hard-pan L/R test of
@@ -100,7 +103,7 @@ let fireBang = (model, isDown) =>
        let py = model.eye.y in
        let pz = model.eye.z + side * rz in
        let flipped = (match model.bangRight with | true => false | false => true) in
-       ({ model with bangRight: flipped, bHeld: true }, Effect.playAt("gunshot.wav", Vec3.make(px, py, pz))))
+       ({ model with bangRight: flipped, bHeld: true }, Effect.playAt(Assets.gunshot, Vec3.make(px, py, pz))))
 
 let input = (model, key, isDown) =>
   match key with
@@ -194,7 +197,7 @@ let draw = (model, tts: float) =>
   // An animated (skinned) shark swimming above the ground — it casts a
   // deforming shadow as it swims (skinned shadow caster).
   let shark =
-    Scene.model("shark.glb")
+    Scene.model(Assets.shark)
       |> Scene.scale(0.18)
       |> Scene.rotateY(Angle.degrees(90.0))
       |> Scene.translate(Vec3.make(1.5, 1.8, 0.5)) in
@@ -256,7 +259,7 @@ let draw = (model, tts: float) =>
 // reconciled by key each frame — they keep playing as the camera moves.
 let soundScape = (model) =>
   AudioScene.create([
-    AudioSource.ambient("wind", "wind-loop.wav") |> AudioSource.gain(0.35),
-    AudioSource.at("fountain", "water-loop.wav", Vec3.make(fountainPos.x, fountainPos.y, fountainPos.z))
+    AudioSource.ambient("wind", Assets.wind_loop) |> AudioSource.gain(0.35),
+    AudioSource.at("fountain", Assets.water_loop, Vec3.make(fountainPos.x, fountainPos.y, fountainPos.z))
       |> AudioSource.gain(0.8),
   ])

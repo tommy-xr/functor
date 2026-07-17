@@ -67,12 +67,14 @@ let walkWeight = (s: float): float => Math.clamp01(1.0 - absF(s - 0.5) * 2.0)
 let runWeight = (s: float): float => Math.clamp01(s * 2.0 - 1.0)
 
 // Clip names come from the generated `assets.fun` (`functor import`) — a typo
-// in a typed constant is a check-time error, not a silent bind pose.
+// in a typed constant is a check-time error, not a silent bind pose. The
+// model itself is the branded `Assets.xbot` (`Asset.model`), so its
+// reference is typo-proof too.
 let locomotion = (s: float, tts: float): Anim.t =>
   Anim.blend([
-    (Anim.clip(Assets.xbot.idle.name, tts), idleWeight(s)),
-    (Anim.clip(Assets.xbot.walk.name, tts), walkWeight(s)),
-    (Anim.clip(Assets.xbot.run.name, tts), runWeight(s)),
+    (Anim.clip(Assets.xbotClips.idle.name, tts), idleWeight(s)),
+    (Anim.clip(Assets.xbotClips.walk.name, tts), walkWeight(s)),
+    (Anim.clip(Assets.xbotClips.run.name, tts), runWeight(s)),
   ])
 
 // The full pose: the locomotion blend with the head aimed on top — an
@@ -91,7 +93,7 @@ let draw = (model, tts) =>
       Scene.plane() |> Scene.scale(10.0) |> Scene.lit(Color.rgb(0.42, 0.47, 0.55)),
       // Xbot stands ~1.8 units tall, Y-up, at authored scale; glTF forward
       // is +Z, so turn it to face the camera.
-      Scene.model("Xbot.glb")
+      Scene.model(Assets.xbot)
         |> Scene.animate(pose(model, tts))
         |> Scene.rotateY(Angle.degrees(180.0)),
     ]),

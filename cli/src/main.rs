@@ -119,12 +119,15 @@ enum Command {
         #[command(subcommand)]
         target: InspectTarget,
     },
-    /// Generate typed clip constants from the project's glTF models: scans the
-    /// project dir for `*.glb`/`*.gltf` and writes `assets.fun` (module
-    /// `Assets`), one record per model with a `{ name, duration }` field per
-    /// animation clip — so `Anim.clip(Assets.xbot.walk.name, tts)` can't
-    /// silently drift from the asset. Rerun after models change; check the
-    /// generated file in. E.g. `functor -d examples/animation import`.
+    /// Generate the typed asset manifest: scans the project dir's models
+    /// (`*.glb`/`*.gltf`), textures (`*.png`/`*.jpg`/`*.jpeg`/`*.hdr`), and
+    /// sounds (`*.wav`/`*.ogg`/`*.mp3`) and writes `assets.fun` (module
+    /// `Assets`) — one branded constant per asset (`Scene.model(Assets.xbot)`)
+    /// plus a `<name>Clips` record per animated model, so
+    /// `Anim.clip(Assets.xbotClips.walk.name, tts)` can't silently drift from
+    /// the asset. Check the generated file in; `run`/`build` refresh it
+    /// automatically when assets are added or change (removals/renames need a
+    /// rerun). E.g. `functor -d examples/animation import`.
     Import,
     /// Push the game's Functor Lang source to a running runtime over the network
     /// (POST /reload-source on its debug server) — the remote develop loop.

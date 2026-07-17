@@ -67,6 +67,7 @@ impl FunctorLangProject {
     /// file = module) and typecheck the whole program; `functor-lang check`
     /// diagnostics are build errors here (see the module doc).
     pub fn build(&self, working_directory: &str) -> Result<(), Error> {
+        refresh_manifest(working_directory);
         let path = self.entry_path(working_directory)?;
         let display = path.display().to_string();
         // A load failure (parse error, bad module name, cycle) is a positioned
@@ -146,6 +147,7 @@ impl FunctorLangProject {
         runner_args: &[String],
         develop: bool,
     ) -> Result<(), Error> {
+        refresh_manifest(working_directory);
         if matches!(environment, Environment::Wasm) {
             return self.run_wasm(working_directory, runner_args, develop).await;
         }
@@ -405,6 +407,19 @@ relative path inside it (got {})",
             }
             wasm_server_start.await
         }
+    }
+}
+
+/// Auto-reimport (B.2): regenerate a stale GENERATED `assets.fun` before the
+/// project loads, so its constants match the on-disk assets (see
+/// `commands::import::ensure_fresh` — projects opt in by running
+/// `functor import` once; hand-written files are never touched). Never blocks
+/// the command — a scan/inspect failure degrades to a warning.
+fn refresh_manifest(working_directory: &str) {
+    if let Err(e) = crate::commands::import::ensure_fresh(Path::new(working_directory)) {
+        emit(Event::Warning {
+            message: format!("asset-manifest refresh failed: {e}"),
+        });
     }
 }
 
