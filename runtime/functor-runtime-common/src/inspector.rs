@@ -102,7 +102,7 @@ fn build_invocations(
     draw_args: Option<&[Value]>,
     sources: &[InspectorSource],
     session: &Session,
-) -> Vec<serde_json::Value> {
+) -> (Vec<serde_json::Value>, Vec<usize>) {
     use std::collections::HashMap;
     // Replay FIRST, then frame: `index`/`count` are computed over the
     // invocations actually EMITTED, so the array is always consistent with its
@@ -176,7 +176,15 @@ fn build_invocations(
             "bindings": bindings,
         }));
     }
-    out
+    // The paused frame's coverage rides along free (every values replay
+    // collected it, draw included) — merged and deduped for coverage_json.
+    let mut frame_coverage: Vec<usize> = replayed
+        .iter()
+        .flat_map(|(_, _, inv)| inv.coverage.iter().copied())
+        .collect();
+    frame_coverage.sort_unstable();
+    frame_coverage.dedup();
+    (out, frame_coverage)
 }
 
 /// The wire strings for the recorder's site/kind enums.
@@ -211,6 +219,39 @@ pub fn build_trace_doc(
     draw_args: Option<&[Value]>,
     session: &Session,
 ) -> String {
+    build_trace_doc_with_coverage(
+        paused, frame, tts, sources, journal, draw_args, &[], &[], session,
+    )
+}
+
+/// [`build_trace_doc`] plus the recency-gutter data (visual-debugger v2 PR4):
+///
+/// - `ring` is a window of recent frames' journals `(frame, entries)` — the
+///   coverage source. Each ringed frame replays COVERAGE-ONLY
+///   (`Session::call_covered`: no Display rendering), yielding
+///   `"coverage": { file: [ { "start": N, "frames": [-2, 0, 3] } ] }` —
+///   per-file span starts with the sorted frame OFFSETS (ringFrame − frame)
+///   they executed on. Offsets can be positive when the paused frame is
+///   scrubbed behind the live head (the gutter's "ran in a frame after").
+///   The paused frame's own coverage comes free from the values replay
+///   (including draw); other frames' draw passes are not replayed (their
+///   models aren't journaled).
+/// - `runnable` is the static could-run set
+///   (`functor_lang::coverage::runnable_offsets`, project-wide starts),
+///   emitted per file as `"runnable": { file: [starts] }` — how a consumer
+///   tells "runnable but never ran" (dark) from "not code at all".
+#[allow(clippy::too_many_arguments)]
+pub fn build_trace_doc_with_coverage(
+    paused: bool,
+    frame: u64,
+    tts: f64,
+    sources: &[InspectorSource],
+    journal: &[JournalEntry],
+    draw_args: Option<&[Value]>,
+    ring: &[(u64, Vec<JournalEntry>)],
+    runnable: &[usize],
+    session: &Session,
+) -> String {
     if !paused {
         return serde_json::json!({
             "paused": false,
@@ -219,14 +260,88 @@ pub fn build_trace_doc(
         })
         .to_string();
     }
+    let (invocations, paused_coverage) = build_invocations(journal, draw_args, sources, session);
     serde_json::json!({
         "frame": frame,
         "tts": tts,
         "paused": true,
         "sources": sources_json(sources),
-        "invocations": build_invocations(journal, draw_args, sources, session),
+        "invocations": invocations,
+        "coverage": coverage_json(frame, paused_coverage, ring, sources, session),
+        "runnable": runnable_json(runnable, sources),
     })
     .to_string()
+}
+
+/// How many recent frames' journals the shells retain for coverage (the
+/// recency gutter's ±window). Entries hold Rc-cloned args, so a frame costs
+/// little; replay is lazy (pause-time only) and coverage-only per frame.
+pub const COVERAGE_RING_FRAMES: usize = 120;
+
+/// Merge the paused frame's coverage (already collected by the values
+/// replay) with coverage-only replays of every OTHER ringed frame, grouped
+/// per file with frame offsets relative to `frame`.
+fn coverage_json(
+    frame: u64,
+    paused_coverage: Vec<usize>,
+    ring: &[(u64, Vec<JournalEntry>)],
+    sources: &[InspectorSource],
+    session: &Session,
+) -> serde_json::Value {
+    use std::collections::{BTreeMap, BTreeSet};
+    // The same observation-only bracket as the values replay: a windowful of
+    // frames with a Debug.log in tick would otherwise re-emit ~120× per
+    // trace build, and a Ui.* call would leak handlers into the next real
+    // ui pass. (Sequential with build_invocations' own bracket, not nested.)
+    let _mute = functor_lang::suppress_trace();
+    let saved_handlers = crate::functor_lang_prelude::take_ui_handlers();
+    // start (project-wide) → the frame offsets it executed on.
+    let mut hits: BTreeMap<usize, BTreeSet<i64>> = BTreeMap::new();
+    for start in paused_coverage {
+        hits.entry(start).or_default().insert(0);
+    }
+    for (ring_frame, entries) in ring {
+        let offset = *ring_frame as i64 - frame as i64;
+        // offset == 0 is NOT skipped: when scrubbed to frame K, the values
+        // replay saw an empty journal (seek clears it) and covered only draw
+        // — the ring's (K, journal) entry is the sole source of the paused
+        // frame's tick/update coverage. Unscrubbed, the union with
+        // paused_coverage is identical (BTreeSet dedups), so always
+        // processing is strictly safe for one cheap extra replay.
+        for e in entries {
+            if let Ok((_discard, cov)) = session.call_covered(e.entry, e.args.clone(), &mut FunctorHost)
+            {
+                for start in cov {
+                    hits.entry(start).or_default().insert(offset);
+                }
+            }
+        }
+    }
+    let _replay_pushed = crate::functor_lang_prelude::take_ui_handlers();
+    crate::functor_lang_prelude::restore_ui_handlers(saved_handlers);
+    // Group per file, in file-local offsets.
+    let mut per_file: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for (start, offsets) in hits {
+        if let Some((file, local, _)) = span_to_file(sources, Span::new(start, start)) {
+            per_file.entry(file).or_default().push(serde_json::json!({
+                "start": local,
+                "frames": offsets.iter().collect::<Vec<_>>(),
+            }));
+        }
+    }
+    serde_json::json!(per_file)
+}
+
+/// The static could-run set, per file in local offsets.
+fn runnable_json(runnable: &[usize], sources: &[InspectorSource]) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    let mut per_file: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for &start in runnable {
+        if let Some((file, local, _)) = span_to_file(sources, Span::new(start, start)) {
+            per_file.entry(file).or_default().push(local);
+        }
+    }
+    serde_json::json!(per_file)
 }
 
 #[cfg(test)]
@@ -455,6 +570,78 @@ mod tests {
         let handlers = take_ui_handlers();
         assert_eq!(handlers.len(), 1, "replay pushes must not linger in the UI table");
         assert!(matches!(handlers[0], UiHandler::Msg(Value::Number(n)) if n == 9.0));
+    }
+
+    #[test]
+    fn coverage_window_and_runnable_pin_the_gutter_states() {
+        // The recency gutter's exact scenario: a branch whose arm depends on
+        // the model. Frame 5 (paused) and 6 take the true arm; frame 4 took
+        // the false arm; a third arm never runs in the window but is
+        // statically runnable.
+        let src = "\
+            let init = { n: 0.0 }\n\
+            let tick = (m, dt: Float, tts: Float) =>\n\
+              match m.n < 1.0 with\n\
+              | true => { n: m.n + 1.0 }\n\
+              | false => { n: 0.0 }\n";
+        let project =
+            load_single_source("game", src).unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let sources = inspector_sources(&project.sources);
+        let runnable = functor_lang::coverage::runnable_offsets(&project.module);
+
+        let model = |n: f64| {
+            Value::Record(Rc::new(vec![("n".to_string(), Value::Number(n))]))
+        };
+        let tick = |n: f64| JournalEntry {
+            entry: "tick",
+            args: vec![model(n), Value::Number(0.1), Value::Number(0.1)],
+            provenance: Provenance::Tick,
+        };
+        // Paused frame 5 takes true (n=0); frame 4 took false (n=2); frame 6
+        // takes true again (n=0.2).
+        let journal = vec![tick(0.0)];
+        let ring = vec![
+            (4u64, vec![tick(2.0)]),
+            (5u64, vec![tick(0.0)]),
+            (6u64, vec![tick(0.2)]),
+        ];
+        let doc: serde_json::Value = serde_json::from_str(&build_trace_doc_with_coverage(
+            true,
+            5,
+            0.5,
+            &sources,
+            &journal,
+            None,
+            &ring,
+            &runnable,
+            &session,
+        ))
+        .unwrap();
+
+        let true_arm = src.find("{ n: m.n + 1.0 }").unwrap();
+        // rfind: `init` is the SAME text as the false arm — the arm is last.
+        let false_arm = src.rfind("{ n: 0.0 }").unwrap();
+        let cov = doc["coverage"]["game.fun"].as_array().expect("coverage for game.fun");
+        let frames_at = |start: usize| {
+            cov.iter()
+                .find(|c| c["start"] == serde_json::json!(start))
+                .map(|c| c["frames"].as_array().unwrap().iter().map(|f| f.as_i64().unwrap()).collect::<Vec<_>>())
+        };
+        // The true arm ran on the paused frame (0) and the frame after (+1),
+        // never the frame before.
+        assert_eq!(frames_at(true_arm), Some(vec![0, 1]), "{cov:#?}");
+        // The false arm ran ONLY the frame before (−1) — the cyan case.
+        assert_eq!(frames_at(false_arm), Some(vec![-1]), "{cov:#?}");
+        // Both arms are statically runnable (the dark state's baseline).
+        let runnable_local: Vec<usize> = doc["runnable"]["game.fun"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as usize)
+            .collect();
+        assert!(runnable_local.contains(&true_arm) && runnable_local.contains(&false_arm));
     }
 
     #[test]

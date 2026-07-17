@@ -337,6 +337,31 @@ fn empty_collections_are_primitive() {
 }
 
 #[test]
+fn coverage_records_the_taken_arm_only() {
+    // Runtime coverage is the recency gutter's data: the TAKEN match arm's
+    // span is covered, the un-taken arm's is not (statically both are
+    // runnable — see functor_lang::coverage::runnable_offsets).
+    let src = "let pick = (b) =>\n  match b with\n  | true => 1.0\n  | false => 2.0";
+    let session = session(src);
+    let taken = src.find("1.0").unwrap();
+    let untaken = src.find("2.0").unwrap();
+
+    let (_, inv) = session
+        .call_recorded("pick", vec![Value::Bool(true)], &mut NoHost)
+        .expect("call_recorded");
+    assert!(inv.coverage.contains(&taken), "taken arm covered: {:?}", inv.coverage);
+    assert!(!inv.coverage.contains(&untaken), "un-taken arm NOT covered");
+    assert!(inv.coverage.windows(2).all(|w| w[0] < w[1]), "sorted + deduped");
+
+    // The coverage-only mode agrees and still returns the exact result.
+    let (result, cov) = session
+        .call_covered("pick", vec![Value::Bool(true)], &mut NoHost)
+        .expect("call_covered");
+    assert_eq!(result.to_string(), "1");
+    assert_eq!(cov, inv.coverage);
+}
+
+#[test]
 fn cap_breach_truncates_but_result_is_exact() {
     // 60_000 elements × 2 closure params = 120_000 binding events, past the
     // 100_000 event cap — recording stops, `truncated` is set, and the fold

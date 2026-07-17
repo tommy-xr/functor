@@ -14,6 +14,7 @@ pub mod complete;
 pub mod eval;
 pub mod goto;
 pub mod hover;
+pub mod coverage;
 pub mod inlay;
 pub mod ir;
 // Public for consumers that need raw string literals without evaluating

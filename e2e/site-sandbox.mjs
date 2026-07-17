@@ -1287,6 +1287,98 @@ for (const example of ["hero", "primitives", "bounce", "monitor"]) {
   await page.close();
 }
 
+// --- 12d. The execution-recency gutter. ----------------------------------------
+// A parity-conditional program makes every gutter state deterministic: the
+// even/odd arms alternate per frame, and a never-true branch stays dark.
+// Pausing shows green (ran this frame) vs cyan (ran a frame before); scrubbing
+// BACK one frame swaps the arms' colors and turns pink on (ran after).
+{
+  // A frame-counter threshold: the EARLY arm runs on frames n<60, the LATE
+  // arm after; `never` requires hp < 0 — unreachable (statically runnable →
+  // dark). Unique arm texts so line lookup can't collide with init.
+  const PARITY = `let init = { n: 0.0, hp: 1.0 }
+let tick = (model, dt: Float, tts: Float) =>
+  match model.hp < 0.0 with
+  | true => { n: model.n, hp: 0.0 }
+  | false =>
+    match model.n < 60.0 with
+    | true => { n: model.n + 1.0, hp: 1.0 }
+    | false => { n: model.n + 1.0, hp: 2.0 }
+let draw = (model, tts: Float) =>
+  Frame.create(
+    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)))
+`;
+  const b64u = Buffer.from(PARITY).toString("base64url");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html#src=${b64u}`);
+  await page.waitForFunction(
+    () => window.__sandbox && window.__sandbox.status().state === "live",
+    { timeout: 30000 }
+  );
+  await page.waitForFunction(() => window.__lang && window.__lang.ready, { timeout: 15000 });
+
+  const waitFor = async (fn, pred, timeout = 10000) => {
+    const t0 = Date.now();
+    for (;;) {
+      const v = await fn();
+      if (pred(v)) return v;
+      if (Date.now() - t0 > timeout) return v;
+      await sleep(150);
+    }
+  };
+  const lineOf = (needle) => PARITY.slice(0, PARITY.indexOf(needle)).split("\n").length;
+  const earlyLine = lineOf("{ n: model.n + 1.0, hp: 1.0 }"); // frames n<60
+  const lateLine = lineOf("{ n: model.n + 1.0, hp: 2.0 }"); // frames n>=60
+  const neverLine = lineOf("{ n: model.n, hp: 0.0 }");
+
+  // Run past the threshold, then pause: the late arm is CURRENT (green),
+  // the early arm history (cyan), the unreachable arm dark.
+  const player = playerFrame(page);
+  await player.waitForFunction(
+    () => window.__scrub && window.__scrub.range().length === 2 && window.__scrub.range()[1] > 80,
+    { timeout: 30000 }
+  );
+  await player.evaluate(() => document.getElementById("scrub-pause")?.click());
+  const cov = await waitFor(
+    () => page.evaluate(() => window.__lang.coverage()),
+    (c) => c[lateLine] === "now"
+  );
+  check("current arm is green", cov[lateLine] === "now", JSON.stringify(cov));
+  check("pre-threshold arm is cyan (ran before)", cov[earlyLine] === "before", JSON.stringify(cov));
+  check("never-taken branch is dark", cov[neverLine] === "dark", JSON.stringify(cov));
+  // Gutter markers are real DOM (the viewport shows them all here).
+  const domStates = await page.evaluate(() =>
+    [...document.querySelectorAll(".cm-cov")].map((el) => el.className)
+  );
+  check(
+    "gutter renders now/before/dark markers",
+    ["now", "before", "dark"].every((s) => domStates.some((c) => c.includes(`cm-cov-${s}`))),
+    JSON.stringify(domStates.slice(0, 6))
+  );
+
+  // Scrub back BEFORE the threshold (frame 10): the early arm becomes this
+  // frame's (green — its coverage comes from the ring, the scrubbed-frame
+  // path) and the late arm ran only in frames AFTER the paused one → pink.
+  await player.evaluate(() => window.__scrub.seek(10));
+  const scrubbed = await waitFor(
+    () => page.evaluate(() => window.__lang.coverage()),
+    (c) => c[earlyLine] === "now"
+  );
+  check(
+    "scrubbed back: the early arm is green from the ring",
+    scrubbed[earlyLine] === "now",
+    JSON.stringify(scrubbed)
+  );
+  check(
+    "scrubbed back: the post-threshold arm is pink (ran after)",
+    scrubbed[lateLine] === "after",
+    JSON.stringify(scrubbed)
+  );
+
+  await page.close();
+}
+
 // --- 13. Scope-aware autocomplete in the editor (commit 8b). ------------------
 // The completion source is backed by the wasm's scope-aware `complete`, driven
 // through the __sandbox.triggerComplete seam (insert text + set cursor + open
