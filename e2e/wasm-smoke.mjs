@@ -63,8 +63,13 @@ async function waitPortFree(timeoutMs) {
 
 // Samples that stand alone (no companion network server). The multiplayer /
 // websocket demos need a running server to do anything, so they're out of a
-// pure client smoke.
+// pure client smoke — and `loading` is out because it is the one sample that
+// streams from an EXTERNAL CDN (assets.babylonjs.com): a hermetic CI smoke
+// must not depend on third-party network. Its wasm remote-loading path is
+// covered hermetically by e2e/remote-assets.mjs, and its Sub.assets
+// lifecycle by the producer tests + native debug-server verification.
 const EXCLUDE = new Set([
+  "loading",
   "mpclient",
   "mpserver",
   "wsdemo",
