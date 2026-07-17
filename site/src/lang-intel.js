@@ -145,6 +145,12 @@ const toDiagnostics = (view) => {
 // and render it monospace in a small calm-theme tooltip.
 const hoverTypes = hoverTooltip((view, pos) => {
   if (!hoverFn) return null;
+  // The live value first (the paused inspector's inline-vs-hover policy:
+  // previews render inline, the FULL value lives here). ALL recorded sites
+  // answer — including reads the inline dedup suppressed. Half-open bounds —
+  // the character AT nameEnd is the operator/space after the name.
+  const hit = liveSites.find((s) => pos >= s.nameStart && pos < s.nameEnd);
+  const live = hit ? { name: hit.b.name, value: hit.b.value, count: hit.b.count || 1, nameStart: hit.nameStart, nameEnd: hit.nameEnd } : null;
   let info;
   try {
     const doc = view.state.doc.toString();
@@ -153,21 +159,36 @@ const hoverTypes = hoverTooltip((view, pos) => {
       (args ? hoverProjectFn(args.filesJson, args.active, pos) : hoverFn(doc, pos)) || ""
     );
   } catch {
-    return null;
+    info = null;
   }
-  if (!info || !info.text) return null;
+  if (!live && (!info || !info.text)) return null;
   // Clamp to the current doc, exactly like toDiagnostics/buildDecorations: the
   // wasm offsets can lag the live buffer by a keystroke.
   const len = view.state.doc.length;
-  const from = Math.max(0, Math.min(info.from | 0, len));
-  const to = Math.max(from, Math.min(info.to | 0, len));
+  const from = live
+    ? live.nameStart
+    : Math.max(0, Math.min(info.from | 0, len));
+  const to = live ? live.nameEnd : Math.max(from, Math.min(info.to | 0, len));
   return {
     pos: from,
     end: to,
     create: () => {
       const dom = document.createElement("div");
       dom.className = "cm-hover-type";
-      dom.textContent = info.text;
+      if (live) {
+        const line = document.createElement("div");
+        line.className = "cm-hover-live";
+        line.textContent =
+          live.count > 1
+            ? `${live.name} = ${live.value} (×${live.count})`
+            : `${live.name} = ${live.value}`;
+        dom.appendChild(line);
+      }
+      if (info && info.text) {
+        const line = document.createElement("div");
+        line.textContent = info.text;
+        dom.appendChild(line);
+      }
       return { dom };
     },
   };
@@ -360,6 +381,325 @@ const decorationField = StateField.define({
   provide: (f) => EditorView.decorations.from(f),
 });
 
+// --- Live values (paused-inspector overlay) ------------------------------------
+// The player relays the paused trace (`functor-inspector-trace` postMessage,
+// see site/player.html); the host page hands it to `setLiveTrace`. While the
+// game is paused and the buffer matches the trace's source hash, every
+// recorded site renders an inline `= preview` next to its name — binders and
+// variable reads — and hovering a name shows the FULL value. Any edit clears
+// the overlay instantly (the hash no longer matches; the IDE's push loop
+// delivers a fresh trace after the hot reload).
+
+class LiveValueWidget extends WidgetType {
+  constructor(label) {
+    super();
+    this.label = label;
+  }
+  eq(other) {
+    return other.label === this.label;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-live-value";
+    span.textContent = this.label;
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+const setLiveOverlay = StateEffect.define();
+
+// The current overlay's hint data, kept in lockstep with the decoration
+// field below — plus ALL recorded sites for the buffer (hover searches every
+// site, not just the per-line dedup winners: the second `x` in `x + x` still
+// hovers to its value).
+let liveHints = [];
+let liveSites = [];
+
+const liveField = StateField.define({
+  create: () => Decoration.none,
+  update(value, tr) {
+    // Any edit invalidates the overlay wholesale — the trace's source hash no
+    // longer matches, and honest absence beats drifted values. A fresh trace
+    // re-populates after the reload round-trips.
+    if (tr.docChanged) {
+      liveHints = [];
+      liveSites = [];
+      return Decoration.none;
+    }
+    for (const effect of tr.effects) {
+      if (effect.is(setLiveOverlay)) {
+        liveHints = effect.value;
+        return Decoration.set(
+          effect.value.map((h) =>
+            Decoration.widget({ widget: new LiveValueWidget(h.label), side: 1 }).range(h.offset)
+          ),
+          true
+        );
+      }
+      if (effect.is(clearDecorations)) {
+        liveHints = [];
+        liveSites = [];
+        return Decoration.none;
+      }
+    }
+    return value;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+// The trace + selection state, module-level like the analysis caches.
+let liveTrace = null; // the last paused trace doc (null while playing)
+let selectedExec = new Map(); // entry name → selected execution index
+let liveRefreshToken = 0; // supersedes in-flight async hash checks
+
+// The 0-based line of `offset` in `source`.
+const lineOf = (source, offset) => {
+  let line = 0;
+  for (let i = 0; i < offset && i < source.length; i++) {
+    if (source.charCodeAt(i) === 10) line += 1;
+  }
+  return line;
+};
+
+// Trace spans are UTF-8 BYTE offsets into the file text; JS strings and
+// CodeMirror positions count UTF-16 code units. Returns a byte→UTF-16 lookup
+// array, or null for pure-ASCII sources (identity — the common case).
+const byteToUtf16 = (source) => {
+  let ascii = true;
+  for (let i = 0; i < source.length; i++) {
+    if (source.charCodeAt(i) > 127) {
+      ascii = false;
+      break;
+    }
+  }
+  if (ascii) return null;
+  const map = [];
+  let bytes = 0;
+  let units = 0;
+  for (const ch of source) {
+    const cp = ch.codePointAt(0);
+    const width = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    for (let k = 0; k < width; k++) map[bytes + k] = units;
+    bytes += width;
+    units += ch.length;
+  }
+  map[bytes] = units;
+  return map;
+};
+
+// Locate the binder name inside its recorded span (the LSP's rule): spans are
+// name-precise except `let [mut] name =` regions, where we scan FORWARD past
+// the keywords (a type annotation or comment inside the region can contain
+// the name too). Returns the offset just after the name, or span end.
+const hintOffset = (source, b) => {
+  const region = source.slice(b.start, b.end);
+  const atName = (i) => {
+    if (!region.startsWith(b.name, i)) return false;
+    const next = region[i + b.name.length];
+    return !(next && /[A-Za-z0-9_]/.test(next));
+  };
+  if (atName(0)) return b.start + b.name.length;
+  let i = 0;
+  for (const keyword of ["let", "mut"]) {
+    if (region.startsWith(keyword, i)) {
+      i += keyword.length;
+      while (i < region.length && /\s/.test(region[i])) i += 1;
+      if (atName(i)) return b.start + i + b.name.length;
+    }
+  }
+  const found = region.lastIndexOf(b.name);
+  return found >= 0 ? b.start + found + b.name.length : b.end;
+};
+
+// The wire's file name for the buffer being edited: the active path in
+// project mode (the IDE), else the trace's single user file (the sandbox
+// serves examples under their own names — `hero.fun`, not `game.fun`).
+// SINGLE-FILE ASSUMPTION: a sandbox program that ever loads sibling modules
+// would yield multiple sources here and the overlay stays hidden — the
+// sandbox is a one-buffer editor by design, so there is nothing to overlay
+// the siblings on anyway.
+const liveFileName = (docString) => {
+  const args = projectArgs(docString);
+  if (args) return args.active;
+  const sources = liveTrace?.sources || [];
+  return sources.length === 1 ? sources[0].file : null;
+};
+
+// The selected executions' recorded sites for `fileName`, with spans
+// CONVERTED to UTF-16 (`byteToUtf16`) and name-located (`hintOffset`) —
+// `[{ b, offset, nameStart, nameEnd }]` for every site (hover searches all
+// of them; the inline dedup happens in liveHintsFor).
+const liveSitesFor = (fileName, source) => {
+  const conv = byteToUtf16(source);
+  const invs = (liveTrace.invocations || []).filter((i) => !i.ghost);
+  const sites = [];
+  for (const entry of new Set(invs.map((i) => i.entry))) {
+    const group = invs.filter((i) => i.entry === entry);
+    const count = Math.max(1, ...group.map((i) => i.count || 1));
+    const sel = (selectedExec.get(entry) || 0) % count;
+    const inv = group.find((i) => i.index === sel) || group[0];
+    for (const b of inv.bindings || []) {
+      if (b.file !== fileName) continue;
+      const start = conv ? conv[b.start] ?? source.length : b.start;
+      const end = conv ? conv[b.end] ?? source.length : b.end;
+      const offset = hintOffset(source, { ...b, start, end });
+      sites.push({ b, offset, nameStart: offset - b.name.length, nameEnd: offset });
+    }
+  }
+  return sites;
+};
+
+// Compute the overlay hints for the CURRENT buffer from the selected
+// execution of each entry — the LSP's policy, ported: previews inline, one
+// hint per (line, name), a binder site beats a reference, earliest read wins.
+const liveHintsFor = (sites, source) => {
+  const chosen = new Map(); // `${line}\x00${name}` → { b, offset, … }
+  for (const site of sites) {
+    const key = `${lineOf(source, site.offset)}\x00${site.b.name}`;
+    const cur = chosen.get(key);
+    const wins =
+      !cur ||
+      (site.b.site === "binder" && cur.b.site === "ref") ||
+      (!(site.b.site === "ref" && cur.b.site === "binder") && site.offset < cur.offset);
+    if (wins) chosen.set(key, site);
+  }
+  return [...chosen.values()]
+    .map(({ b, offset, nameStart, nameEnd }) => {
+      const preview = shortNumbers(b.preview ?? b.value);
+      return {
+        offset,
+        label: b.count > 1 ? `= ${preview} (×${b.count})` : `= ${preview}`,
+        name: b.name,
+        value: b.value,
+        count: b.count || 1,
+        nameStart,
+        nameEnd,
+      };
+    })
+    .sort((a, z) => a.offset - z.offset);
+};
+
+// Inline labels shorten long floats (0.15000000782310963 → 0.15) — full-
+// precision noise makes dense lines unreadable; hover keeps the exact value.
+// Quoted segments pass through untouched: a STRING value containing
+// number-like text ("lat: 37.7749295") must never be rewritten.
+const shortNumbers = (text) =>
+  String(text ?? "")
+    .split(/("(?:[^"\\]|\\.)*")/)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part.replace(/-?\d+\.\d{6,}(?:e-?\d+)?/g, (m) => String(Number(Number(m).toPrecision(5))))
+    )
+    .join("");
+
+const sha256Hex = async (text) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+// Rebuild the overlay for the current buffer: async (the hash check), token-
+// guarded so a stale completion can't clobber a newer state.
+const refreshLive = async (view) => {
+  const token = ++liveRefreshToken;
+  const clear = () => view.dispatch({ effects: setLiveOverlay.of([]) });
+  if (!liveTrace || !liveTrace.paused) {
+    clear();
+    return;
+  }
+  const source = view.state.doc.toString();
+  const fileName = liveFileName(source);
+  const traceHash = (liveTrace.sources || []).find((s) => s.file === fileName)?.hash;
+  if (!fileName || !traceHash) {
+    clear();
+    return;
+  }
+  const hash = await sha256Hex(source);
+  if (token !== liveRefreshToken) return; // superseded
+  if (hash !== traceHash || source !== view.state.doc.toString()) {
+    clear();
+    return;
+  }
+  const sites = liveSitesFor(fileName, source);
+  liveSites = sites;
+  view.dispatch({ effects: setLiveOverlay.of(liveHintsFor(sites, source)) });
+};
+
+// Host seams -------------------------------------------------------------------
+
+// A new trace arrived (or the game resumed: pass an unpaused doc/null).
+// Resets the execution selection — the frame changed under it.
+export const setLiveTrace = (view, trace) => {
+  liveTrace = trace && trace.paused ? trace : null;
+  selectedExec = new Map();
+  refreshLive(view);
+};
+
+// The current overlay's hints — the e2e position-invariant seam (every
+// hint's [nameStart, nameEnd) must slice to exactly its name in the doc,
+// which fails loudly if byte offsets ever leak through unconverted).
+export const currentLiveHints = () => liveHints;
+
+// The frame's executions in order, for the host's picker UI:
+// `[{ entry, index, count, provenance, selected }]`. Empty while playing.
+export const liveExecutions = () => {
+  if (!liveTrace) return [];
+  return (liveTrace.invocations || [])
+    .filter((i) => !i.ghost)
+    .map((i) => ({
+      entry: i.entry,
+      index: i.index || 0,
+      count: i.count || 1,
+      provenance: i.provenance || "",
+      selected: ((selectedExec.get(i.entry) || 0) % (i.count || 1)) === (i.index || 0),
+    }));
+};
+
+// Select which execution of `entry` overlays (the picker's click).
+export const selectExecution = (view, entry, index) => {
+  selectedExec.set(entry, index);
+  refreshLive(view);
+};
+
+// Re-verify the overlay after a context change the doc didn't see (the IDE's
+// file switch re-uses setDoc, whose doc change already clears; this is for
+// hosts that need an explicit nudge, e.g. after a reload result).
+export const refreshLiveValues = (view) => refreshLive(view);
+
+// The whole host-side wiring, shared by the sandbox and the IDE: listen for
+// the player's `functor-inspector-trace` relay (guarded to OUR iframe),
+// hand traces to the overlay, and keep the status bar's executions picker in
+// sync (rows select which execution's values render).
+export const wireLiveTrace = (view, statusBar, playerIframe, ready) => {
+  const renderExecutions = () => {
+    statusBar.setExecutions(
+      liveExecutions().map((e) => ({
+        label: `${e.entry} ${e.index + 1}/${e.count} — ${e.provenance}`,
+        selected: e.selected,
+        onPick: () => {
+          selectExecution(view, e.entry, e.index);
+          renderExecutions();
+        },
+      }))
+    );
+  };
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.type !== "functor-inspector-trace") return;
+    if (event.source !== playerIframe.contentWindow) return;
+    setLiveTrace(view, data.trace);
+    renderExecutions();
+  });
+  // A trace can beat the async extension install (the runtime pauses before
+  // setupLangIntel resolves): the overlay effect would land on an
+  // unconfigured field and the generation never re-fires for an unchanged
+  // doc. Replay once the extensions are in.
+  if (ready) ready.then(() => refreshLive(view));
+};
+
 // --- Theme (editor chrome) ----------------------------------------------------
 // Recolor lint's wavy underline to the calm theme's red (--red: #f2637f)
 // instead of its default bright #f11. Mirrors @codemirror/lint's own helper.
@@ -392,6 +732,17 @@ const intelTheme = EditorView.theme({
     color: "#6c6685",
     fontSize: "0.85em",
     padding: "0 1px",
+  },
+  // Live values (the paused inspector): cyan-tinted so runtime data reads
+  // apart from the static type inlays.
+  ".cm-live-value": {
+    color: "#41d8e6",
+    fontSize: "0.85em",
+    padding: "0 2px",
+    opacity: "0.85",
+  },
+  ".cm-hover-live": {
+    color: "#41d8e6",
   },
   // Codelenses: a dimmed signature line above the def.
   ".cm-lens": {
@@ -469,6 +820,7 @@ export const setupLangIntel = async () => {
     linter(toDiagnostics, { delay: 300, needsRefresh: contextChanged }),
     hoverTypes,
     decorationField,
+    liveField,
     initialRefresh,
     // Register the completion source on the language's data facet — basicSetup's
     // autocompletion() picks it up via languageDataAt (no second popup).

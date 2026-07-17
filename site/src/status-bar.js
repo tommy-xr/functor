@@ -24,6 +24,8 @@ export const createStatusBar = ({ host }) => {
   problemsList.className = "statusbar-list problems-list";
   const outputList = document.createElement("div");
   outputList.className = "statusbar-list output-list";
+  const executionsList = document.createElement("div");
+  executionsList.className = "statusbar-list executions-list";
 
   const strip = document.createElement("div");
   strip.className = "statusbar-strip";
@@ -36,6 +38,7 @@ export const createStatusBar = ({ host }) => {
     panel.hidden = open === null;
     problemsList.style.display = open === "problems" ? "" : "none";
     outputList.style.display = open === "output" ? "" : "none";
+    executionsList.style.display = open === "executions" ? "" : "none";
     for (const [tabName, button] of Object.entries(tabs)) {
       button.classList.toggle("active", tabName === open);
     }
@@ -58,9 +61,11 @@ export const createStatusBar = ({ host }) => {
 
   const problemsTab = makeTab("problems", "✓ 0 problems");
   makeTab("output", "output");
+  const executionsTab = makeTab("executions", "executions");
 
   panel.appendChild(problemsList);
   panel.appendChild(outputList);
+  panel.appendChild(executionsList);
   host.appendChild(panel);
   host.appendChild(strip);
 
@@ -155,5 +160,29 @@ export const createStatusBar = ({ host }) => {
     }
   };
 
-  return { setProblems, appendOutput };
+  // The paused frame's entry-point executions (the inspector's picker):
+  // `items` is `[{ label, selected, onPick }]` in frame order. Empty while
+  // the game plays.
+  const setExecutions = (items) => {
+    executionsTab.textContent = items.length ? `⏸ ${items.length} executions` : "executions";
+    executionsList.textContent = "";
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "statusbar-empty";
+      empty.textContent = "Pause the game to inspect the frame's executions.";
+      executionsList.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "exec-row" + (item.selected ? " selected" : "");
+      row.textContent = item.label;
+      if (item.onPick) row.addEventListener("click", item.onPick);
+      executionsList.appendChild(row);
+    }
+  };
+  setExecutions([]);
+
+  return { setProblems, appendOutput, setExecutions };
 };

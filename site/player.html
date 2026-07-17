@@ -102,6 +102,8 @@
         functor_lang_mouse_wheel,
         functor_lang_is_running,
         functor_lang_scene_frame,
+        functor_lang_inspector_trace,
+        functor_lang_inspector_trace_gen,
         functor_lang_set_source,
         functor_lang_set_project,
       } from "./pkg/functor_runtime_web.js";
@@ -316,8 +318,37 @@
           setupInput();
           if (!scrubberOff) mountScrubber();
         }
+        setupInspectorRelay();
         announceWhenReady();
       });
+
+      // Relay the paused-inspector trace to the embedding sandbox/IDE page
+      // (live values in the editor). The runtime bumps a generation counter
+      // only when the trace CONTENT changes (pause, paused-frame change);
+      // poll it once per frame and post the doc on change. Same-origin
+      // parents only — like the console relay above, this carries
+      // game-visible data outward.
+      const setupInspectorRelay = () => {
+        if (!sameOriginParent) return;
+        let lastTraceGen = -1;
+        const poll = () => {
+          const traceGen = functor_lang_inspector_trace_gen();
+          if (traceGen !== lastTraceGen) {
+            lastTraceGen = traceGen;
+            try {
+              const trace = JSON.parse(functor_lang_inspector_trace());
+              window.parent.postMessage(
+                { type: "functor-inspector-trace", trace },
+                window.location.origin
+              );
+            } catch {
+              // A malformed doc (shouldn't happen) must not kill the poll loop.
+            }
+          }
+          requestAnimationFrame(poll);
+        };
+        requestAnimationFrame(poll);
+      };
 
       if (inlineProject) {
         // Tell the host the listener is armed — it then pushes the initial
