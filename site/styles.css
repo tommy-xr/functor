@@ -926,6 +926,13 @@ a:hover {
   display: flex;
 }
 
+/* The author display:flex above would override the `hidden` attribute's UA
+   display:none — without this, the closed panel still eats 180px and the
+   editor/preview never get the full height back. */
+.statusbar-panel[hidden] {
+  display: none;
+}
+
 .statusbar-list {
   flex: 1;
   overflow-y: auto;
