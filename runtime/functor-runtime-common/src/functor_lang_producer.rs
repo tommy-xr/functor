@@ -364,6 +364,12 @@ impl FrameCtx<'_> {
         {
             self.deferred_queries.clear();
             self.pending_events.clear();
+            // The restored model predates the current loading snapshot, so
+            // "what the game last saw" no longer holds — invalidate the
+            // marker so the branch's first frame redelivers current progress
+            // (a rewound loading screen must learn its assets already
+            // settled).
+            *self.delivered_asset_progress = None;
         }
         self.subscriptions_and_tick(frame_time);
     }
@@ -1529,7 +1535,8 @@ mod tests {
         let subscriptions = (m) => Sub.assets((p) => p)\n\
         let tick = (m, dt, tts) => m\n\
         let expectedFirst = { count: 1.0, loaded: 1.0, total: 3.0, failedCount: 1.0 }\n\
-        let expectedSettled = { count: 2.0, loaded: 3.0, total: 3.0, failedCount: 1.0 }\n";
+        let expectedSettled = { count: 2.0, loaded: 3.0, total: 3.0, failedCount: 1.0 }\n\
+        let expectedFirstSettled = { count: 1.0, loaded: 3.0, total: 3.0, failedCount: 1.0 }\n";
 
     /// Run one frame (subscriptions + tick) with the given shell snapshot,
     /// the way a shell drives the producer.
@@ -1610,8 +1617,17 @@ mod tests {
             total: 3,
             failed: vec![("a.glb".to_string(), "404".to_string())],
         };
-        run_assets_frame(&session, &mut model, Some(settled), &mut delivered, 1.3);
+        run_assets_frame(&session, &mut model, Some(settled.clone()), &mut delivered, 1.3);
         assert_model(&session, &model, "expectedSettled");
+
+        // A time-travel branch restores an older model and INVALIDATES the
+        // delivered marker (before_physics / rewind_scene_to): the next frame
+        // redelivers the unchanged current snapshot, so a rewound loading
+        // screen learns its assets already settled.
+        let mut rewound = session.global("init").expect("init");
+        delivered = None;
+        run_assets_frame(&session, &mut rewound, Some(settled), &mut delivered, 1.4);
+        assert_model(&session, &rewound, "expectedFirstSettled");
     }
 
     #[test]

@@ -593,6 +593,9 @@ impl GameProducer for FunctorLangWebGame {
         if result.is_ok() {
             self.deferred_queries.clear();
             self.pending_events.clear();
+            // The restored model predates the current loading snapshot —
+            // redeliver it on the next frame (see before_physics).
+            self.delivered_asset_progress = None;
             // Model restored to `target`; drop orphaned buffered input so it can't
             // record into the branch (fixed-timestep 0-substep buffering, xreview).
             self.input_buf.clear();

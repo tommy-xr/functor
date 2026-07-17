@@ -671,6 +671,9 @@ impl Game for FunctorLangGame {
             // the reload discipline); between-frame callers have these empty.
             self.deferred_queries.clear();
             self.pending_events.clear();
+            // The restored model predates the current loading snapshot —
+            // redeliver it on the next frame (see before_physics).
+            self.delivered_asset_progress = None;
             clear_http_taggers();
             clear_audio_completions();
             // The paused frame moved to `target`, for which we hold no journal
