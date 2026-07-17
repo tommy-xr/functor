@@ -16,6 +16,10 @@ const { LanguageClient } = require("vscode-languageclient/node");
 const inspector = require("./inspector.js");
 
 let client;
+// Resolves once the LanguageClient has started (server launched + initialized).
+// Captured only so the test-only inject command below can await readiness before
+// sending; production notification paths run long after startup.
+let clientStarted;
 // The paused-scene inspector's attach state + its status bar item. Attach
 // persists server-side until detach, so this is per-session UI state; the
 // last-used port is persisted across sessions in globalState.
@@ -53,11 +57,34 @@ function activate(context) {
     { command: "functor-lang-lsp" },
     { documentSelector: [{ language: "functor-lang" }] }
   );
-  client.start();
+  clientStarted = client.start();
 
   context.subscriptions.push(
     vscode.commands.registerCommand("functor-lang.openLivePreview", openLivePreview)
   );
+
+  // --- Test-only inspector-trace inject seam -------------------------------
+  // Gated on FUNCTOR_LANG_TEST_HOOKS so it never registers (or shows in the
+  // Command Palette — see the `when: functorLangTestHooks` menu entry) in a
+  // normal session. The E2E harness (tools/functor-lang-vscode/tests-integration)
+  // writes a wire-contract trace JSON to the file named by
+  // FUNCTOR_INSPECTOR_TEST_TRACE and invokes this command; we forward it through
+  // the SAME client.sendNotification("functor/inspector/trace", …) call the
+  // preview relay uses above — a faithful seam, not a fake.
+  if (process.env.FUNCTOR_LANG_TEST_HOOKS === "1") {
+    // Reveal the command in the palette only in this mode (see the
+    // `when: functorLangTestHooks` menu entry in package.json).
+    vscode.commands.executeCommand("setContext", "functorLangTestHooks", true);
+    context.subscriptions.push(
+      vscode.commands.registerCommand("functor-lang.inspector._injectTrace", async () => {
+        const file = process.env.FUNCTOR_INSPECTOR_TEST_TRACE;
+        if (!file || !client) return;
+        const doc = JSON.parse(fs.readFileSync(file, "utf8"));
+        await clientStarted;
+        await client.sendNotification(inspector.TRACE, doc);
+      })
+    );
+  }
 
   // --- Paused-scene inspector: attach/detach + status bar -----------------
   inspectorState = inspector.initialState(context.globalState.get(INSPECTOR_PORT_KEY));

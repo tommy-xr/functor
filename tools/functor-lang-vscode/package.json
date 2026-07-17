@@ -29,8 +29,20 @@
       {
         "command": "functor-lang.inspector.detach",
         "title": "Functor Lang: Detach Inspector"
+      },
+      {
+        "command": "functor-lang.inspector._injectTrace",
+        "title": "Functor Lang: [test] Inject Inspector Trace"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "functor-lang.inspector._injectTrace",
+          "when": "functorLangTestHooks"
+        }
+      ]
+    },
     "configuration": {
       "title": "Functor Lang",
       "properties": {
@@ -69,6 +81,7 @@
   },
   "scripts": {
     "test": "node --test client/inspector.test.js",
+    "test:e2e": "playwright test -c tests-integration/playwright.config.mjs",
     "package:vsix": "npx --yes @vscode/vsce@3.9.2 package --out functor-lang-vscode.vsix",
     "install:vsix": "npm run package:vsix && code --install-extension functor-lang-vscode.vsix --force"
   },
