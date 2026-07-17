@@ -1062,6 +1062,10 @@ pub fn run(args: Args) {
 
             game.check_hot_reload(time.clone());
 
+            // The loading snapshot for `Sub.assets`: pushed every frame, the
+            // producer only acts when it changed since the game last saw it.
+            game.push_asset_progress(asset_cache.progress());
+
             // Asset hot-reload, the twin of the .fun check above: a model/
             // texture saved on disk is evicted from the caches so the next
             // draw re-reads and re-decodes it. Throttled: unlike the handful

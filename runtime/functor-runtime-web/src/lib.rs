@@ -1278,6 +1278,10 @@ async fn run_async() -> Result<(), JsValue> {
             // draining stops the queue bursting on resume.
             functor_lang_game::drain_input(&mut **game, !clock.is_pinned());
 
+            // The loading snapshot for `Sub.assets`: pushed every frame, the
+            // producer only acts when it changed since the game last saw it.
+            game.push_asset_progress(asset_cache.progress());
+
             for sub in &sub_frames {
                 game.tick(sub.clone());
             }

@@ -78,6 +78,10 @@ pub struct FunctorLangGame {
     /// state, not model state: it survives a hot reload, and the stateless
     /// time-grid semantics of `Sub.every` do the rest.
     prev_tts: Option<f64>,
+    /// The shell's latest asset-loading snapshot (pushed each frame by the
+    /// run loop) and the one the game last saw — the `Sub.assets` seam.
+    asset_progress: Option<functor_runtime_common::asset::AssetProgress>,
+    delivered_asset_progress: Option<functor_runtime_common::asset::AssetProgress>,
     has_physics: bool,
     /// The game defines the optional `soundScape` entry point
     /// (`soundScape(model) -> AudioScene`, the continuous-audio hook). Absent =
@@ -404,6 +408,8 @@ impl FunctorLangGame {
             recorder: SceneRecorder::new(),
             input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
+            asset_progress: None,
+            delivered_asset_progress: None,
             last_frame: empty_frame(),
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_stderr),
             last_frame_journal: Vec::new(),
@@ -438,6 +444,8 @@ impl FunctorLangGame {
             input_buf: &mut self.input_buf,
             has_physics: self.has_physics,
             has_subscriptions: self.has_subscriptions,
+            asset_progress: self.asset_progress.clone(),
+            delivered_asset_progress: &mut self.delivered_asset_progress,
             suppress_outbound: false,
             reporter: &mut self.reporter,
         }
@@ -1006,6 +1014,11 @@ AudioScene.empty), got {}",
         // HttpRequest commands (Effect.httpGet/httpPost), performed by the
         // shell's net_dispatch; the response returns via net_push_http_*.
         functor_runtime_common::net::drain_commands_json()
+    }
+    fn push_asset_progress(&mut self, progress: functor_runtime_common::asset::AssetProgress) {
+        // Stored, not delivered here: the producer compares it against what
+        // the game last saw during the frame's subscription phase.
+        self.asset_progress = Some(progress);
     }
     fn net_push_http_response(&mut self, token: i32, status: i32, body: String) {
         self.ctx()

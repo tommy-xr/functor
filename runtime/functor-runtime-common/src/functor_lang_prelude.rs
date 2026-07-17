@@ -193,6 +193,13 @@ pub enum SubTree {
     PhysicsEvents {
         tagger: Value,
     },
+    /// Asset-loading progress (the loading-screen seam): the tagger receives
+    /// `{loaded, total, failed}` whenever the shell's snapshot changes,
+    /// delivered with the frame's subscription messages through `update`.
+    /// NOT fired on the time grid — the producer compares snapshots.
+    Assets {
+        tagger: Value,
+    },
     /// A persistent client connection (`Sub.connect`) or server listener
     /// (`Sub.listen`), keyed by its endpoint url/addr. NOT fired on the time
     /// grid — the producer reconciles declared keys against the live set
@@ -920,6 +927,7 @@ const PATHS: &[&str] = &[
     "Sub.none",
     "Sub.every",
     "Sub.batch",
+    "Sub.assets",
     "Effect.none",
     "Effect.now",
     "Effect.random",
@@ -2240,6 +2248,21 @@ the new text, got {}",
                 }))),
                 _ => usage("Sub.every(duration, msg)"),
             },
+            // Asset-loading progress SUB: the tagger receives
+            // `{loaded, total, failed}` whenever the loading snapshot changes
+            // (see functor_lang_producer's delivery). The loading-screen seam.
+            "Sub.assets" => match args.as_slice() {
+                [tagger @ (Value::Closure(_) | Value::Ctor { .. })] => Ok(host(FunctorLangSub(
+                    SubTree::Assets {
+                        tagger: tagger.clone(),
+                    },
+                ))),
+                [other] => err(format!(
+                    "Sub.assets(tagger): the tagger must be a function of the progress record, got {}",
+                    other.kind_name()
+                )),
+                _ => usage("Sub.assets(tagger)"),
+            },
             "Effect.none" => match args.as_slice() {
                 [] => Ok(host(FunctorLangEffect(EffectTree::None))),
                 _ => usage("Effect.none()"),
@@ -2423,6 +2446,9 @@ fn collect_fired(sub: &SubTree, prev_tts: f64, tts: f64, msgs: &mut Vec<Value>) 
         SubTree::PhysicsEvents { .. } => {}
         // Connections are reconciled + routed by the producer, not fired.
         SubTree::Connect { .. } => {}
+        // Progress subs fire on snapshot changes, not the time grid — the
+        // producer collects their taggers via `assets_taggers`.
+        SubTree::Assets { .. } => {}
     }
 }
 
@@ -2480,7 +2506,10 @@ fn collect_conn_subs(sub: &SubTree, out: &mut Vec<NetConnSub>) {
             listen: *listen,
             tagger: tagger.clone(),
         }),
-        SubTree::None | SubTree::Every { .. } | SubTree::PhysicsEvents { .. } => {}
+        SubTree::None
+        | SubTree::Every { .. }
+        | SubTree::PhysicsEvents { .. }
+        | SubTree::Assets { .. } => {}
     }
 }
 
@@ -2665,7 +2694,10 @@ pub enum NetEventKind {
 
 fn collect_event_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
     match sub {
-        SubTree::None | SubTree::Every { .. } | SubTree::Connect { .. } => {}
+        SubTree::None
+        | SubTree::Every { .. }
+        | SubTree::Connect { .. }
+        | SubTree::Assets { .. } => {}
         SubTree::Batch(items) => {
             for item in items.iter() {
                 collect_event_taggers(item, taggers);
@@ -2673,6 +2705,58 @@ fn collect_event_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
         }
         SubTree::PhysicsEvents { tagger } => taggers.push(tagger.clone()),
     }
+}
+
+/// The `Sub.assets` taggers in a subscription tree, in declaration order —
+/// the producer applies each to the progress record whenever the loading
+/// snapshot changes and folds the messages through `update`. A non-Sub value
+/// yields the same error `sub_messages_for_frame` reports.
+pub fn assets_taggers(subs: &Value) -> Result<Vec<Value>, String> {
+    let Some(sub) = sub_of(subs) else {
+        return Err(format!(
+            "subscriptions must return a Sub (Sub.every / Sub.none / Sub.batch), got {}",
+            subs.kind_name()
+        ));
+    };
+    let mut taggers = Vec::new();
+    collect_assets_taggers(&sub.0, &mut taggers);
+    Ok(taggers)
+}
+
+fn collect_assets_taggers(sub: &SubTree, taggers: &mut Vec<Value>) {
+    match sub {
+        SubTree::None
+        | SubTree::Every { .. }
+        | SubTree::PhysicsEvents { .. }
+        | SubTree::Connect { .. } => {}
+        SubTree::Batch(items) => {
+            for item in items.iter() {
+                collect_assets_taggers(item, taggers);
+            }
+        }
+        SubTree::Assets { tagger } => taggers.push(tagger.clone()),
+    }
+}
+
+/// The tagger-facing record for a `Sub.assets` progress snapshot:
+/// `{loaded, total, failed: [{path, error}, …]}`. `loaded == total` is "all
+/// settled" — a loading screen's gate.
+pub fn asset_progress_value(progress: &crate::asset::AssetProgress) -> Value {
+    let failed: Vec<Value> = progress
+        .failed
+        .iter()
+        .map(|(path, error)| {
+            Value::Record(Rc::new(vec![
+                ("path".to_string(), Value::String(Rc::from(path.as_str()))),
+                ("error".to_string(), Value::String(Rc::from(error.as_str()))),
+            ]))
+        })
+        .collect();
+    Value::Record(Rc::new(vec![
+        ("loaded".to_string(), Value::Number(progress.loaded as f64)),
+        ("total".to_string(), Value::Number(progress.total as f64)),
+        ("failed".to_string(), Value::List(Rc::new(failed))),
+    ]))
 }
 
 /// The tagger-facing record for one collision event.
