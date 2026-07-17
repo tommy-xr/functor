@@ -130,6 +130,13 @@ pub struct FunctorLangWebGame {
     /// the inspector reads the last real frame. Replayed through
     /// `Session::call_recorded` while paused. Mirrors the desktop producer.
     last_frame_journal: Vec<JournalEntry>,
+    /// A window of recent frames' journals `(frame, entries)` — the recency
+    /// gutter's coverage source. Survives rewind/seek (that's what makes
+    /// "ran in a frame AFTER" observable when scrubbed back); cleared on
+    /// hot-reload (old program's spans). Mirrors the desktop producer.
+    journal_ring: std::collections::VecDeque<(u64, Vec<JournalEntry>)>,
+    /// The static could-run set, recomputed on load/reload.
+    runnable: Vec<usize>,
     /// The lazily built + cached inspector-trace JSON for the current paused
     /// frame. Invalidated when the frame advances (`tick`), the paused frame
     /// changes (rewind/seek), or the program reloads.
@@ -349,10 +356,13 @@ impl FunctorLangWebGame {
         // trace is built lazily only when paused (visual-debugger PR2b).
         journal_arm();
         let source_hashes = inspector_sources(&loaded.sources);
+        let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
         Ok(FunctorLangWebGame {
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_console),
             overlay_error: None,
             last_frame_journal: Vec::new(),
+            journal_ring: std::collections::VecDeque::new(),
+            runnable,
             cached_trace: None,
             source_hashes,
             sources,
@@ -411,6 +421,8 @@ impl FunctorLangWebGame {
         // execution (visual-debugger PR2b — reload clears both, like desktop).
         self.source_hashes = inspector_sources(&loaded.sources);
         self.last_frame_journal.clear();
+        self.journal_ring.clear(); // old program's spans
+        self.runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
         self.cached_trace = None;
         journal_swap(); // discard any partial current-frame journal
         self.reporter
@@ -669,6 +681,13 @@ impl GameProducer for FunctorLangWebGame {
         // A paused frame never reaches here, so its last real frame is kept
         // (visual-debugger PR2b — mirrors the desktop producer).
         if let Some(journal) = journal_swap() {
+            // The ring shares the frame's entries (Rc-cloned args — cheap);
+            // coverage replays them lazily at pause time.
+            let frame = self.recorder.current_scene_frame().unwrap_or(0);
+            self.journal_ring.push_back((frame, journal.clone()));
+            while self.journal_ring.len() > functor_runtime_common::inspector::COVERAGE_RING_FRAMES {
+                self.journal_ring.pop_front();
+            }
             self.last_frame_journal = journal;
         }
         self.cached_trace = None;
@@ -859,13 +878,16 @@ AudioScene.empty), got {}",
         // Draw is pure and never journaled; the builder replays it once
         // against the frozen model so the render pass is inspectable too.
         let draw_args = vec![self.model.clone(), Value::Number(tts)];
-        let json = build_trace_doc(
+        let ring: Vec<(u64, Vec<JournalEntry>)> = self.journal_ring.iter().cloned().collect();
+        let json = functor_runtime_common::inspector::build_trace_doc_with_coverage(
             true,
             frame,
             tts,
             &self.source_hashes,
             &self.last_frame_journal,
             Some(&draw_args),
+            &ring,
+            &self.runnable,
             &self.session,
         );
         self.cached_trace = Some(json.clone());

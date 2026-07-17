@@ -64,6 +64,7 @@ use crate::{Frame, FrameTime};
 /// lightweight provenance tag. The provenance STRING (the wire vocabulary) is
 /// derived from the tag + args only at trace-build time — never during play, so
 /// journaling renders no Display text.
+#[derive(Clone)]
 pub struct JournalEntry {
     /// The entry-point name — `tick` | `input` | `mouseMove` | `mouseWheel` |
     /// `update` (the wire contract's `entry`).
