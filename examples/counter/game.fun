@@ -22,11 +22,11 @@ let draw = (m: Model, tts) =>
   Frame.createLit(
     Camera.lookAt(0.0, 1.5, -4.0, 0.0, 0.0, 0.0),
     Scene.cube()
-      |> Scene.lit(0.3, 0.65, 0.9)
+      |> Scene.lit(Color.rgb(0.3, 0.65, 0.9))
       |> Scene.rotateY(Angle.degrees(m.count * 15.0)),
     [
-      Light.ambient(0.25, 0.25, 0.25),
-      Light.directional(-0.5, -1.0, 0.4, 1.0, 1.0, 1.0, 0.9),
+      Light.ambient(Color.rgb(0.25, 0.25, 0.25)),
+      Light.directional(-0.5, -1.0, 0.4, Color.rgb(1.0, 1.0, 1.0), 0.9),
     ],
   )
 

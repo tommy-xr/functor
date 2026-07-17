@@ -668,7 +668,7 @@ mod tests {
     // resolves it — the reason the `_project` API exists.
     const GAME: &str = "let draw = (model, tts: Float) =>\n  \
         Frame.create(Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0), \
-        Scene.sphere() |> Scene.emissive(0.15, 1.0, Palette.glow))\n";
+        Scene.sphere() |> Scene.emissive(Color.rgb(0.15, 1.0, Palette.glow)))\n";
     const PALETTE: &str = "let glow = 0.85\nlet sky = 0.18\n";
 
     fn files_json(files: &[(&str, &str)]) -> String {

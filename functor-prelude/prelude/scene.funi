@@ -5,7 +5,7 @@
 // interface-only module is a CLOSED module: a reference to a member it does not
 // declare is a load error, so a partial Scene would break real games.
 //
-// Branded argument types (`Angle.t`, `Texture.t`, `RenderTarget.t`) name types
+// Branded argument types (`Angle.t`, `Color.t`, `Texture.t`, `RenderTarget.t`) name types
 // owned by the sibling host modules authored in 2e-ii, so they resolve to those
 // real opaque types.
 
@@ -27,13 +27,14 @@ let heightmap : (List<List<float>>) => t
 // Composition.
 let group : (List<t>) => t
 
-// Materials (subject-last, so they pipe: `Scene.cube() |> Scene.color(r,g,b)`).
-let color : (float, float, float, t) => t
-let lit : (float, float, float, t) => t
-let emissive : (float, float, float, t) => t
+// Materials (subject-last, so they pipe:
+// `Scene.cube() |> Scene.color(Color.rgb(r, g, b))`).
+let color : (Color.t, t) => t
+let lit : (Color.t, t) => t
+let emissive : (Color.t, t) => t
 let litTexture : (Texture.t, t) => t
 let emissiveTexture : (Texture.t, t) => t
-let litNormalMapped : (float, float, float, Texture.t, t) => t
+let litNormalMapped : (Color.t, Texture.t, t) => t
 let screen : (RenderTarget.t, t) => t
 
 // Animation (subject-last): attach an Anim expression to the Model node(s)

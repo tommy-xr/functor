@@ -190,9 +190,9 @@ let grab = (s) =>
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude namespace (Net, Key, Random, List, Text, Math, Debug, Scene,
-  Anim, Camera, Frame, Light, Fog, Skybox, Angle, Texture, Time, Sub, Effect,
-  Physics, RenderTarget, Ui, AudioSource, AudioScene) is a load error —
-  rename the file.
+  Anim, Camera, Frame, Light, Fog, Color, Skybox, Angle, Texture, Time, Sub,
+  Effect, Physics, RenderTarget, Ui, AudioSource, AudioScene) is a load
+  error — rename the file.
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
   | Connected(id: float) | Message(id: float, text: string) |
   Disconnected(id: float) | Error(id: float, text: string)`. A `Sub.connect`/
@@ -383,14 +383,18 @@ Scene.model("shark.glb")                                   // glTF by path, rela
                                                            //   game dir; missing file =
                                                            //   logged error + empty fallback
 Scene.group([scene, …])
-scene |> Scene.color(r, g, b)                              // scene-last: pipes
-scene |> Scene.lit(r, g, b)                                // diffuse+specular
-scene |> Scene.litNormalMapped(r, g, b, normalTex)         // + tangent-space
+Color.rgb(r, g, b)                                         // Color VALUES only (the
+                                                           //   Angle rule): every color
+                                                           //   parameter below takes one —
+                                                           //   never three bare floats
+scene |> Scene.color(color)                                // scene-last: pipes
+scene |> Scene.lit(color)                                  // diffuse+specular
+scene |> Scene.litNormalMapped(color, normalTex)           // + tangent-space
                                                            //   normal map (a
                                                            //   Texture value):
                                                            //   bumps catch the
                                                            //   lights/specular
-scene |> Scene.emissive(r, g, b)                           // unlit glow
+scene |> Scene.emissive(color)                             // unlit glow
 scene |> Scene.translate(x, y, z)
 scene |> Scene.rotateX(angle) / rotateY / rotateZ          // Angle VALUES only:
 Angle.degrees(60.0) / Angle.radians(1.57)                  //   never bare numbers
@@ -454,9 +458,9 @@ anim |> Anim.rotate("jointName", ax, ay, az)               // additive local XYZ
                                                            //   enclosing mask still can)
 Camera.lookAt(ex, ey, ez, tx, ty, tz)                      // up=+Y, fov 45°
 Camera.firstPerson(ex, ey, ez, yaw, pitch, fov)           // all three: Angles
-Light.ambient(r, g, b) / Light.point(px, py, pz, r, g, b, intensity, range)
-Light.directional(dx, dy, dz, r, g, b, intensity) |> Light.castShadows
-Light.spot(px, py, pz, dx, dy, dz, r, g, b, intensity, range, coneAngle)
+Light.ambient(color) / Light.point(px, py, pz, color, intensity, range)
+Light.directional(dx, dy, dz, color, intensity) |> Light.castShadows
+Light.spot(px, py, pz, dx, dy, dz, color, intensity, range, coneAngle)
                                                            // cone from pos
                                                            //   along dir;
                                                            //   coneAngle is an
@@ -485,18 +489,18 @@ scene |> Scene.screen(target)                              // reader: emissive s
                                                            //   is +Z — rotate the monitor
                                                            //   to face the viewer or the
                                                            //   feed shows mirrored
-Fog.linear(near, far, r, g, b)                             // Fog VALUES only (the Angle
-Fog.exp(density, r, g, b)                                  //   rule); near >= 0, far >
+Fog.linear(near, far, color)                               // Fog VALUES only (the Angle
+Fog.exp(density, color)                                    //   rule); near >= 0, far >
                                                            //   near, density > 0 enforced
                                                            //   with teaching errors
 frame |> Frame.withFog(fog)                                // distance fog on all forward
                                                            //   materials incl. emissive;
                                                            //   the fog color is also the
                                                            //   pass's clear color
-frame |> Frame.withClearColor(r, g, b)                     // explicit background clear color
-                                                           //   (r,g,b in 0..1), overriding the
-                                                           //   fog-color default; paints the
-                                                           //   background only, not fog blending
+frame |> Frame.withClearColor(color)                       // explicit background clear color,
+                                                           //   overriding the fog-color
+                                                           //   default; paints the background
+                                                           //   only, not fog blending
 Skybox.files(px, nx, py, ny, pz, nz)                       // Skybox VALUES only: six face
 frame |> Frame.withSkybox(sky)                             //   paths (+X..-Z). Faces are
                                                            //   fetched assets (not checked
@@ -523,7 +527,7 @@ AudioSource.at(key, sound, x, y, z)                        //   / positioned emi
 source |> AudioSource.gain(g)                              // source-last: linear gain (1.0=full)
 AudioScene.create([source, …]) / AudioScene.empty()       // what `soundScape` returns
 
-Ui.text("line") / Ui.textColor(r, g, b, "line")            // HUD text (monospace, 14pt)
+Ui.text("line") / Ui.textColor(color, "line")              // HUD text (monospace, 14pt)
 Ui.column([view, …]) / Ui.row([view, …])                   // stack top-to-bottom / left-to-right
 view |> Ui.panel(Ui.topLeft())                             // pin to a corner (view-LAST: pipes);
 Ui.topLeft() / topRight() / bottomLeft() / bottomRight()   //   Anchor VALUES (the Angle rule)
@@ -566,19 +570,28 @@ Ui.textInput(value, tagger)                                // INTERACTIVE contro
                                                            //   `examples/ui` showcases every
                                                            //   widget in one panel
 
+Physics.tag("name")                                        // BRANDED body identity (the
+                                                           //   RenderTarget rule): declare
+                                                           //   once, use the VALUE at every
+                                                           //   site. Check-time only — at
+                                                           //   runtime a tag IS its string
+                                                           //   (plain data; == with event
+                                                           //   tags works). A bare string
+                                                           //   where a tag goes is a check
+                                                           //   error
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
-Physics.dynamic("tag", shape)                              // simulated body
-Physics.kinematic("tag", shape) / Physics.fixed("tag", shape)
+Physics.dynamic(tag, shape)                                // simulated body
+Physics.kinematic(tag, shape) / Physics.fixed(tag, shape)
 body |> Physics.at(x, y, z)                                // body-last: pipes
 body |> Physics.velocity(vx, vy, vz)
 body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
 body |> Physics.sensor                                     // overlap-only, no forces
 Physics.scene(gx, gy, gz, [body, …])                       // what `physics` returns
-Physics.position("tag")                                    // {x, y, z} of the LIVE body
-scene |> Physics.transformed("tag")                        // scene at the body's live pose
-Physics.applyImpulse("tag", x, y, z)                       // -> Effect (fire-and-forget)
-Physics.applyForce("tag", x, y, z)                         //   force lasts ONE stepped frame
-Physics.setVelocity("tag", x, y, z) / Physics.teleport("tag", x, y, z)
+Physics.position(tag)                                      // {x, y, z} of the LIVE body
+scene |> Physics.transformed(tag)                          // scene at the body's live pose
+Physics.applyImpulse(tag, x, y, z)                         // -> Effect (fire-and-forget)
+Physics.applyForce(tag, x, y, z)                           //   force lasts ONE stepped frame
+Physics.setVelocity(tag, x, y, z) / Physics.teleport(tag, x, y, z)
 Physics.raycast(ox, oy, oz, dx, dy, dz, maxDist, tagger)   // -> Effect (QUERY): tagger gets
                                                            //   {hit, x, y, z, nx, ny, nz,
                                                            //    distance, tag} — hit: false
@@ -597,7 +610,7 @@ Re-declaring an *unchanged* body leaves the simulation alone; *changing*
 its declared position teleports it (the divergence rule, docs/physics.md).
 
 Physics **command effects** are returned beside the model like any effect
-— `(model, Physics.applyImpulse("ball", 0.0, 5.0, 0.0))` — but carry no
+— `(model, Physics.applyImpulse(ballTag, 0.0, 5.0, 0.0))` — but carry no
 tagger: nothing folds back through `update`; observe outcomes via the
 physics reads. Commands queue at perform time and apply at the next
 stepped frame's first substep, **after reconcile** — so declaring a body
@@ -624,9 +637,10 @@ testable with no world at all.
 
 `Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
 `Sub.batch`; it requires `update`). Every contact begin/end from this
-frame's physics step arrives post-step as `{started: bool, a: Text,
-b: Text, sensor: bool}` — `a`/`b` are the pair's tags in rapier's
-(deterministic) order, so check both; `sensor: true` marks an overlap with
+frame's physics step arrives post-step as `{started: bool, a: Physics.tag,
+b: Physics.tag, sensor: bool}` — `a`/`b` are the pair's tags in rapier's
+(deterministic) order, so check both (compare against your declared tag
+VALUES: `e.a == ballTag` — tags are strings underneath, so `==` works); `sensor: true` marks an overlap with
 a `Physics.sensor` body (no contact forces). Events for a pair whose body
 was despawned this frame are dropped (there is nothing left to name), and
 a frame's undelivered events never carry over.

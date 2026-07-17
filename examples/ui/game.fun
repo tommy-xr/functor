@@ -63,7 +63,7 @@ let nameRow = (m: Model) =>
 // other anchors and colored text.
 let echoPanel = (m: Model) =>
   Ui.textColor(
-    1.0, 0.85, 0.4,
+    Color.rgb(1.0, 0.85, 0.4),
     Text.join("", [
       "model = { count: ", Text.fixed(m.count, 0.0),
       ", speed: ", Text.fixed(m.speed, 1.0),

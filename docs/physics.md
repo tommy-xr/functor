@@ -128,15 +128,18 @@ commands, subs — but the shipping vocabulary is the Functor Lang prelude
 skill):
 
 ```functor
+let crateTag = Physics.tag("crate")            // branded identity: declared once,
+                                               // the VALUE used at every site
+
 let physics = (model) =>                       // OPTIONAL game hook
   Physics.scene(0.0, -9.81, 0.0, [
-    Physics.fixed("ground", Physics.box(20.0, 0.2, 20.0)),
-    Physics.dynamic("crate", Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0),
+    Physics.fixed(Physics.tag("ground"), Physics.box(20.0, 0.2, 20.0)),
+    Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0),
   ])
 
 let draw = (model, tts) =>
   Frame.create(camera,
-    Scene.cube() |> Scene.lit(0.8, 0.5, 0.2) |> Physics.transformed("crate"))
+    Scene.cube() |> Scene.lit(Color.rgb(0.8, 0.5, 0.2)) |> Physics.transformed(crateTag))
 ```
 
 Functor Lang dissolves the read-back boundary problem outright: the interpreter runs in
@@ -202,7 +205,8 @@ module PhysicsScene =
 ```
 
 **Commands — plain-data effects.** *Shipped (Phase 3) on the Functor Lang surface as B6
-effect variants* — `Physics.applyImpulse("tag", x, y, z)` etc., returned beside
+effect variants* — `Physics.applyImpulse(tag, x, y, z)` etc. (tags are branded
+`Physics.tag("name")` values), returned beside
 the model; tagger-less (outcomes are observed via the physics reads). Commands
 queue at perform time and apply **after the frame's reconcile, before its first
 substep** (so same-frame declare+command works); `applyForce` lasts exactly one

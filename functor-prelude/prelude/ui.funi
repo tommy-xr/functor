@@ -10,7 +10,7 @@ type view
 type anchor
 
 let text : (string) => view
-let textColor : (float, float, float, string) => view
+let textColor : (Color.t, string) => view
 let column : (List<view>) => view
 let row : (List<view>) => view
 // view LAST (subject-last), so it pipes: `Ui.column([…]) |> Ui.panel(Ui.topLeft())`.

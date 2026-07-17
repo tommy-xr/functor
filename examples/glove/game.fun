@@ -95,7 +95,7 @@ let draw = (model, tts) =>
     Camera.lookAt(0.0, 0.25, -0.65, 0.0, 0.1, 0.0),
     Scene.group([
       Scene.plane() |> Scene.scale(6.0) |> Scene.translate(0.0, -0.25, 0.0)
-        |> Scene.lit(0.42, 0.47, 0.55),
+        |> Scene.lit(Color.rgb(0.42, 0.47, 0.55)),
       // The glove renders at its authored size (~0.2 units — a real hand):
       // authored palm-down with the fingers along +Z, so tip it up to show
       // the back of the hand (and the finger curls) to the camera.
@@ -104,8 +104,8 @@ let draw = (model, tts) =>
         |> Scene.rotateX(Angle.degrees(-70.0)),
     ]),
     [
-      Light.ambient(0.45, 0.45, 0.5),
-      Light.directional(-0.4, -0.8, 0.6, 1.0, 0.96, 0.9, 1.1) |> Light.castShadows,
+      Light.ambient(Color.rgb(0.45, 0.45, 0.5)),
+      Light.directional(-0.4, -0.8, 0.6, Color.rgb(1.0, 0.96, 0.9), 1.1) |> Light.castShadows,
     ])
 
 let ui = (model) =>

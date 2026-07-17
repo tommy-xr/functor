@@ -271,7 +271,7 @@ try {
     await page.evaluate(() => window.__ide.openFile("game.fun"));
     await page.evaluate(
       (src) => window.__ide.setActiveSource(src),
-      `${gameSource}let tinted = (s) => s |> Scene.emissive(0.1, 0.2, Colors.bad)\n`
+      `${gameSource}let tinted = (s) => s |> Scene.emissive(Color.rgb(0.1, 0.2, Colors.bad))\n`
     );
     const flagged = await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n > 0);
     if (flagged > 0) console.log("wrong-typed sibling constant underlines in the entry ✓");

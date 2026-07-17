@@ -11,6 +11,13 @@
 type shape
 type body
 type world
+// The branded body identity — the RenderTarget rule applied to physics
+// identity. Made ONCE by `Physics.tag("name")` and used as the VALUE at
+// every site: declaration, reads, commands, and the tags inside `rayHit` /
+// `collisionEvent`. At runtime a tag is still the plain string (plain data:
+// journal, /state, and structural equality with event tags all unchanged) —
+// the brand is check-time only, like `Random.Seed`.
+type tag
 
 // The record `Physics.position` returns — the live pose of a body.
 type position = { x: float, y: float, z: float }
@@ -21,10 +28,14 @@ type rayHit = {
   x: float, y: float, z: float,
   nx: float, ny: float, nz: float,
   distance: float,
-  tag: string
+  tag: tag
 }
 // The record a `Physics.events` tagger receives, one per contact begin/end.
-type collisionEvent = { started: bool, a: string, b: string, sensor: bool }
+type collisionEvent = { started: bool, a: tag, b: tag, sensor: bool }
+
+// The tag constructor (identity at runtime; the empty tag is the zeroed
+// rayHit-miss / "no body" sentinel).
+let tag : (string) => tag
 
 // Shapes.
 let box : (float, float, float) => shape
@@ -32,12 +43,12 @@ let sphere : (float) => shape
 let capsule : (float, float) => shape
 
 // Bodies (tag, shape).
-let dynamic : (string, shape) => body
-let kinematic : (string, shape) => body
-let fixed : (string, shape) => body
+let dynamic : (tag, shape) => body
+let kinematic : (tag, shape) => body
+let fixed : (tag, shape) => body
 
 // body LAST (subject-last), so they pipe:
-// `Physics.dynamic("crate", Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
+// `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(0.0, 5.0, 0.0)`.
 let at : (float, float, float, body) => body
 let velocity : (float, float, float, body) => body
 let mass : (float, body) => body
@@ -49,17 +60,17 @@ let sensor : (body) => body
 let scene : (float, float, float, List<body>) => world
 
 // Reads of the LIVE stepped world (in-process, no boundary).
-let position : (string) => position
+let position : (tag) => position
 
 // world LAST (subject-last), so it pipes: place a visual at a body's live pose —
-// `Scene.cube() |> Physics.transformed("crate-1")`.
-let transformed : (string, Scene.t) => Scene.t
+// `Scene.cube() |> Physics.transformed(crateTag)`.
+let transformed : (tag, Scene.t) => Scene.t
 
 // Command EFFECTS (tag, x, y, z).
-let applyImpulse : (string, float, float, float) => Effect.t
-let applyForce : (string, float, float, float) => Effect.t
-let setVelocity : (string, float, float, float) => Effect.t
-let teleport : (string, float, float, float) => Effect.t
+let applyImpulse : (tag, float, float, float) => Effect.t
+let applyForce : (tag, float, float, float) => Effect.t
+let setVelocity : (tag, float, float, float) => Effect.t
+let teleport : (tag, float, float, float) => Effect.t
 
 // Query EFFECT: ox, oy, oz, dx, dy, dz, maxDist, tagger.
 let raycast : (float, float, float, float, float, float, float, (rayHit) => 'msg) => Effect.t
