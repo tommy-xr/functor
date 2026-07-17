@@ -214,6 +214,34 @@ assembles the GIF, hosts the binaries in a gist, and embeds them in the PR body 
 and it runs the capture in a subagent so the image-heavy work stays out of the
 main context.
 
+## Performance-sensitive changes
+
+Whenever a change touches a **per-frame hot path** — the interpreter/evaluator
+(`functor-lang` core), the prelude/host bridge (`functor_lang_prelude.rs`,
+`host_registry.rs`), the producers, or rendering internals — run the benchmarks
+**before and after** (base ref vs. change, release builds, back-to-back on the
+same machine) and include the comparison in the PR. This is part of the
+definition of done for perf-sensitive work:
+
+```sh
+cargo run -q --release -p functor_runtime_common --example frame_bench
+```
+
+`frame_bench` is the honest macro number: a synthwave-shaped frame under the
+REAL engine prelude, headless. Compare **`allocs/frame` and `bytes/frame`
+first** — they are deterministic, so any delta is real; a regression there
+needs a justification in the PR. Wall-clock `us/frame` is DVFS/load-noisy
+(same-commit runs vary a few percent) — run each side 2–3×, compare the
+**min** column, and treat deltas inside run-to-run spread as noise. Never
+benchmark a debug build (the harness warns), and never use the windowed
+runtime's `draw_us` telemetry for perf claims (it inflates ~2× on
+sub-saturated scenes).
+
+For language-only changes, `functor-lang/benches` (see its README) isolates
+interpreter micro-ops under the plain prelude — useful for pinpointing, but a
+frame_bench run is still the acceptance number: micro-derived estimates have
+misjudged real per-frame cost before.
+
 ## Gotchas
 
 - **The `functor-lang` skill is the source of truth for Functor Lang.** Functor Lang is a small, custom language —
