@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Functor icon</title>
+  <desc id="desc">A lowercase f assembled from three sharp cyan geometric segments.</desc>
+
+  <g fill="#2aa9e0">
+    <!-- Crown -->
+    <path d="M382 341 545 179H735L615 300H548L382 466Z"/>
+
+    <!-- Continuous main stem -->
+    <path d="M382 493 497 380V748L382 837Z"/>
+
+    <!-- Crossbar -->
+    <path d="M518 426H693L597 522H518Z"/>
+  </g>
+</svg>

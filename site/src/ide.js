@@ -32,6 +32,14 @@ const ENTRY = "game.fun"; // the program root; every other .fun is a sibling mod
 // (which would be a zip-slip entry on download and a bad module at load).
 const MODULE_FILE = /^[A-Za-z][A-Za-z0-9_]*\.fun$/;
 
+// The Functor mark, shown on every .fun file row — the same art as the site
+// favicon and the VS Code file icon (docs/media/functor-icon.svg).
+const FILE_ICON =
+  '<svg class="file-icon" viewBox="366 163 385 690" fill="currentColor" aria-hidden="true">' +
+  '<path d="M382 341 545 179H735L615 300H548L382 466Z"/>' +
+  '<path d="M382 493 497 380V748L382 837Z"/>' +
+  '<path d="M518 426H693L597 522H518Z"/></svg>';
+
 // A two-file starter: game.fun draws using constants from palette.fun (a
 // sibling module — file = module, so palette.fun is module `Palette`), to show
 // the multi-file loop the sandbox can't.
@@ -264,7 +272,11 @@ const renderFileList = () => {
 
     const name = document.createElement("button");
     name.className = "file-name";
-    name.textContent = file.path;
+    name.innerHTML = FILE_ICON;
+    const label = document.createElement("span");
+    label.className = "file-label";
+    label.textContent = file.path;
+    name.appendChild(label);
     name.title = file.path === ENTRY ? "game.fun — the program entry" : file.path;
     name.addEventListener("click", () => openFile(file.path));
     row.appendChild(name);

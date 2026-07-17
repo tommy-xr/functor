@@ -19,6 +19,11 @@ const dist = `${site}dist`;
 
 const PAGES = ["index.html", "sandbox.html", "ide.html", "player.html", "docs.html", "styles.css"];
 
+// Favicons, generated from docs/media/functor-icon.svg by `npm run generate:icons`
+// (gitignored — site:build regenerates them first). Copied defensively so a stale
+// checkout without them still builds.
+const ICONS = ["favicon.svg", "favicon.ico", "favicon-16.png", "favicon-32.png", "apple-touch-icon.png"];
+
 const PKG = `${root}runtime/functor-runtime-web/pkg`;
 const PKG_FILES = ["functor_runtime_web.js", "functor_runtime_web_bg.wasm"];
 // The shared time-travel scrubber, imported by player.html (served next to it,
@@ -49,6 +54,13 @@ await mkdir(`${dist}/examples`, { recursive: true });
 
 for (const page of PAGES) {
   await cp(`${site}${page}`, `${dist}/${page}`);
+}
+for (const icon of ICONS) {
+  try {
+    await cp(`${site}${icon}`, `${dist}/${icon}`);
+  } catch {
+    console.warn(`note: ${icon} missing — run \`npm run generate:icons\``);
+  }
 }
 for (const file of PKG_FILES) {
   await cp(`${PKG}/${file}`, `${dist}/pkg/${file}`);
