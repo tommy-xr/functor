@@ -18,7 +18,10 @@ let send : (float, string) => t
 let httpGet : (string, (Net.HttpResponse) => 'msg) => t
 let httpPost : (string, string, (Net.HttpResponse) => 'msg) => t
 // Fire-and-forget audio one-shots. `play` is non-spatial; `playAt` positioned.
-let play : (string) => t
-let playAt : (string, Vec3.t) => t
+// The sound parameter accepts a path string OR an `Asset.Sound` during the
+// typed-asset migration (gradually typed — no union type); the flag day
+// tightens it, and the host teaches wrong-kind assets at runtime.
+let play : ('sound) => t
+let playAt : ('sound, Vec3.t) => t
 // Play once and deliver `'msg` (a message VALUE, not a tagger) when it finishes.
-let playThen : (string, 'msg) => t
+let playThen : ('sound, 'msg) => t

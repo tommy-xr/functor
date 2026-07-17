@@ -58,3 +58,41 @@ fn host_calls_have_real_types() {
     );
     assert!(diags.iter().any(|m| m.contains("Frame.t")), "{diags:?}");
 }
+
+// --- typed assets (Track B.1) ---
+
+/// The `Asset` constructors are fully typed: a non-string argument is a
+/// check-time diagnostic, and each kind's annotation holds.
+#[test]
+fn asset_constructors_are_typed() {
+    let diags = check("let a = Asset.model(42.0)");
+    assert!(!diags.is_empty(), "Asset.model(42.0) must be a check error");
+
+    let diags = check("let a : Asset.Model = Asset.model(\"barrel.glb\")");
+    assert!(diags.is_empty(), "kind annotation should hold: {diags:?}");
+
+    // A kind mismatch is a check-time error — the whole point of the brand.
+    let diags = check("let a : Asset.Sound = Asset.model(\"barrel.glb\")");
+    assert!(
+        diags.iter().any(|m| m.contains("Model")),
+        "Asset.Model vs Asset.Sound must error: {diags:?}"
+    );
+}
+
+/// During the typed-asset migration, asset-consuming functions accept BOTH
+/// the bare path string (deprecated at the flag day) and the branded Asset
+/// value — their asset parameter is gradually typed, so both forms check
+/// clean; the host enforces kinds at runtime.
+#[test]
+fn asset_consumers_accept_both_forms() {
+    let diags = check(
+        "let byString = Scene.model(\"shark.glb\")\n\
+         let byAsset = Scene.model(Asset.model(\"shark.glb\"))\n\
+         let tex = Scene.plane() |> Scene.litTexture(Asset.texture(\"wood.png\"))\n\
+         let texFile = Scene.plane() |> Scene.litTexture(Texture.file(\"wood.png\"))\n\
+         let sfx = Effect.play(Asset.sound(\"boom.ogg\"))\n\
+         let sfxString = Effect.play(\"boom.ogg\")\n\
+         let bed = AudioSource.ambient(\"bed\", Asset.sound(\"wind.ogg\"))",
+    );
+    assert!(diags.is_empty(), "both forms should check clean: {diags:?}");
+}

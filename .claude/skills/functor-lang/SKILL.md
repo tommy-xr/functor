@@ -190,9 +190,10 @@ let grab = (s) =>
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude namespace (Net, Key, Random, List, Text, Math, Debug, Scene,
-  Anim, Camera, Frame, Light, Fog, Color, Vec3, Skybox, Angle, Texture, Time, Sub,
-  Effect, Physics, RenderTarget, Ui, AudioSource, AudioScene) is a load
-  error — rename the file.
+  Anim, Asset, Camera, Frame, Light, Fog, Color, Vec3, Skybox, Angle, Texture,
+  Time, Sub, Effect, Physics, RenderTarget, Ui, AudioSource, AudioScene) is a
+  load error — rename the file. (`assets.fun` → `Assets` — the generated
+  manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
   | Connected(id: float) | Message(id: float, text: string) |
   Disconnected(id: float) | Error(id: float, text: string)`. A `Sub.connect`/
@@ -243,13 +244,13 @@ open Widget                                              // …or open, bringing
 - **Runtime is unchanged**: an interface member stays an `External` (the host
   provides its value at run time), so `.funi` is a pure check-time overlay.
 - This is how the **engine prelude's types are declared**: the `functor-prelude`
-  crate ships a `.funi` for every host namespace (`Scene`, `Camera`, `Frame`,
-  `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`, `Sub`,
-  `Effect`, `Physics`, `Ui`, `AudioSource`, `AudioScene`), loaded by the runner
-  so engine calls carry real types (no longer `Unknown`). Each module's primary
-  opaque handle is `Mod.t` (`Camera.t`, `Frame.t`, `Effect.t`, …); modules that
-  own several name each (`Scene.t`; `Physics.shape`/`body`/`world`;
-  `Ui.view`/`anchor`). Physics query/event results are records
+  crate ships a `.funi` for every host namespace (`Scene`, `Asset`, `Camera`,
+  `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`,
+  `Sub`, `Effect`, `Physics`, `Ui`, `AudioSource`, `AudioScene`), loaded by the
+  runner so engine calls carry real types (no longer `Unknown`). Each module's
+  primary opaque handle is `Mod.t` (`Camera.t`, `Frame.t`, `Effect.t`, …);
+  modules that own several name each (`Scene.t`; `Physics.shape`/`body`/`world`;
+  `Ui.view`/`anchor`; `Asset.Model`/`Texture`/`Sound`). Physics query/event results are records
   (`Physics.position`, `Physics.rayHit`, `Physics.collisionEvent`).
 
 ## Semantics rules that WILL bite you
@@ -382,6 +383,32 @@ Scene.cube() / sphere() / cylinder() / quad() / plane()   // zero args, enforced
 Scene.model("shark.glb")                                   // glTF by path, relative to the
                                                            //   game dir; missing file =
                                                            //   logged error + empty fallback
+Asset.model("shark.glb") / Asset.texture("wood.png")       // typed asset locators, branded
+Asset.sound("boom.ogg")                                    //   per KIND (types Asset.Model /
+                                                           //   Asset.Texture / Asset.Sound).
+                                                           //   Scene.model, Effect.play/
+                                                           //   playAt/playThen, and
+                                                           //   AudioSource.ambient/at accept
+                                                           //   the matching kind alongside
+                                                           //   the pre-manifest bare path
+                                                           //   string (deprecated, retired
+                                                           //   at the flag day; the
+                                                           //   AudioSource KEY stays a
+                                                           //   string). The texture
+                                                           //   materials accept
+                                                           //   Asset.Texture alongside a
+                                                           //   Texture.t VALUE — they never
+                                                           //   took bare strings. A WRONG-
+                                                           //   kind asset (a sound into
+                                                           //   Scene.model) is a teaching
+                                                           //   error naming the right
+                                                           //   constructor. Check-time: the
+                                                           //   consumers' asset params are
+                                                           //   gradually typed (no union
+                                                           //   type) until the flag day
+                                                           //   tightens them to the Asset
+                                                           //   kinds; the constructors are
+                                                           //   fully typed now
 Scene.group([scene, …])
 Color.rgb(r, g, b)                                         // Color VALUES only (the
                                                            //   Angle rule): every color
