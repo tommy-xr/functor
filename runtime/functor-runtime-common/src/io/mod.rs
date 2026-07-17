@@ -73,19 +73,75 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Remote (URL) assets download off-thread through the shell's installed
-        // fetcher and land over a channel — the future stays Pending until the
-        // download completes, so a CDN transfer never stalls the render thread.
-        if is_remote_path(&path) {
-            return remote::fetch(&path).await.map_err(|e| format!("{}: {}", path, e));
+        let bytes = if is_remote_path(&path) {
+            // Remote (URL) assets download off-thread through the shell's
+            // installed fetcher and land over a channel — the future stays
+            // Pending until the download completes, so a CDN transfer never
+            // stalls the render thread.
+            remote::fetch(&path)
+                .await
+                .map_err(|e| format!("{}: {}", path, e))?
+        } else {
+            // AssetHandle polls asset futures manually with a noop waker, once
+            // per frame on the render thread. A chunked tokio::fs read only
+            // advances one chunk per poll under that scheme, so large assets
+            // took minutes to load natively (a 47MB glb ≈ thousands of
+            // frames). Until assets are driven by a real executor (see
+            // docs/todo.md "async inbox"), read synchronously: one frame hitch
+            // instead of a minutes-long stall.
+            std::fs::read(&path).map_err(|e| format!("{}: {}", path, e))?
+        };
+        // Simulated slow network (dev): FUNCTOR_THROTTLE_ASSETS=<KB/s> holds
+        // the loaded bytes until size/rate has elapsed, so loading UX
+        // (Sub.assets progress bars, fallback placeholders) is actually
+        // visible on a machine where every load is otherwise instant.
+        if let Some(kbps) = throttle_kbps() {
+            let seconds = bytes.len() as f64 / (kbps * 1024.0);
+            throttle::DelayUntil {
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds),
+            }
+            .await;
         }
-        // AssetHandle polls asset futures manually with a noop waker, once per
-        // frame on the render thread. A chunked tokio::fs read only advances one
-        // chunk per poll under that scheme, so large assets took minutes to load
-        // natively (a 47MB glb ≈ thousands of frames). Until assets are driven by
-        // a real executor (see docs/todo.md "async inbox"), read synchronously:
-        // one frame hitch instead of a minutes-long stall.
-        std::fs::read(&path).map_err(|e| format!("{}: {}", path, e))
+        Ok(bytes)
+    }
+}
+
+/// See the FUNCTOR_THROTTLE_ASSETS comment in [`load_bytes_async2`].
+#[cfg(not(target_arch = "wasm32"))]
+fn throttle_kbps() -> Option<f64> {
+    std::env::var("FUNCTOR_THROTTLE_ASSETS")
+        .ok()?
+        .parse::<f64>()
+        .ok()
+        .filter(|kbps| *kbps > 0.0)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod throttle {
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll},
+        time::Instant,
+    };
+
+    /// Pending until the deadline passes. Never registers a waker — like the
+    /// asset futures it delays, it relies on the once-per-frame manual polling
+    /// in `AssetHandle::poll_load` (a parked executor would hang on it).
+    pub struct DelayUntil {
+        pub deadline: Instant,
+    }
+
+    impl Future for DelayUntil {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if Instant::now() >= self.deadline {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
     }
 }
 
