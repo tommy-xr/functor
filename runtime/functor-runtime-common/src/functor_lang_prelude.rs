@@ -967,15 +967,6 @@ pub fn install_debug_log_sink() {
 }
 
 const PATHS: &[&str] = &[
-    "Anim.clip",
-    "Anim.blend",
-    "Anim.rest",
-    "Anim.add",
-    "Anim.mask",
-    "Anim.rotate",
-    "Asset.model",
-    "Asset.texture",
-    "Asset.sound",
     "Ui.text",
     "Ui.textColor",
     "Ui.column",
@@ -992,27 +983,6 @@ const PATHS: &[&str] = &[
     "Effect.now",
     "Effect.random",
     "Effect.batch",
-    "Physics.box",
-    "Physics.sphere",
-    "Physics.capsule",
-    "Physics.dynamic",
-    "Physics.kinematic",
-    "Physics.fixed",
-    "Physics.at",
-    "Physics.velocity",
-    "Physics.mass",
-    "Physics.friction",
-    "Physics.restitution",
-    "Physics.sensor",
-    "Physics.scene",
-    "Physics.position",
-    "Physics.transformed",
-    "Physics.applyImpulse",
-    "Physics.applyForce",
-    "Physics.setVelocity",
-    "Physics.teleport",
-    "Physics.raycast",
-    "Physics.events",
     "Sub.connect",
     "Sub.listen",
     "Effect.send",
@@ -1044,6 +1014,9 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_light(&mut reg);
         register_frame(&mut reg);
         register_render_resources(&mut reg);
+        register_physics(&mut reg);
+        register_assets(&mut reg);
+        register_anim(&mut reg);
         reg
     })
 }
@@ -1128,6 +1101,13 @@ crate::host_returnable!(
     FunctorLangLight,
     FunctorLangTexture,
     FunctorLangSkybox,
+    FunctorLangShape,
+    FunctorLangBody,
+    FunctorLangPhysicsScene,
+    FunctorLangAnim,
+    FunctorLangEffect,
+    FunctorLangSub,
+    FunctorLangAsset,
 );
 
 fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
@@ -1620,6 +1600,400 @@ paths (+X, -X, +Y, -Y, +Z, -Z)";
     );
 }
 
+/// The Physics vocabulary (docs/physics.md; the declarative surface): shapes
+/// are values, bodies are tag + shape + piped attributes, the optional game
+/// hook `physics = (model) => Physics.scene(…)` declares the world each
+/// frame, and the command/query/event APIs are effects and subs.
+///
+/// `Physics.tag` (registered with the branded constructors) is the body
+/// identity — check-time only, so at runtime a tag IS its string: the tag
+/// parameters here take the string directly.
+fn register_physics(reg: &mut crate::host_registry::Registry) {
+    // Shapes: dimensions are strictly positive (Rapier accepts a negative
+    // radius and silently builds a degenerate collider that misbehaves far
+    // from the declaration — reject it loud at the boundary).
+    reg.fn3(
+        "Physics.box",
+        "Physics.box(width, height, depth)",
+        |w: f64, h: f64, d: f64| {
+            Ok(FunctorLangShape(physics::Shape::Cuboid {
+                extents: [
+                    positive(w, "Physics.box width")? as f32,
+                    positive(h, "Physics.box height")? as f32,
+                    positive(d, "Physics.box depth")? as f32,
+                ],
+            }))
+        },
+    );
+    reg.fn1("Physics.sphere", "Physics.sphere(radius)", |r: f64| {
+        Ok(FunctorLangShape(physics::Shape::Sphere {
+            radius: positive(r, "Physics.sphere radius")? as f32,
+        }))
+    });
+    reg.fn2(
+        "Physics.capsule",
+        "Physics.capsule(halfHeight, radius)",
+        |half_height: f64, r: f64| {
+            Ok(FunctorLangShape(physics::Shape::Capsule {
+                half_height: positive(half_height, "Physics.capsule halfHeight")? as f32,
+                radius: positive(r, "Physics.capsule radius")? as f32,
+            }))
+        },
+    );
+    // Bodies (tag, shape). The tag brand is erased at runtime, so it arrives
+    // as the plain string (Rc<str>, allocation-light like `Physics.tag`).
+    fn body_ctor(
+        make: fn(String, physics::Shape) -> physics::Body,
+    ) -> impl Fn(std::rc::Rc<str>, FunctorLangShape) -> FunctorLangBody {
+        move |tag, shape| FunctorLangBody(make(tag.to_string(), shape.0))
+    }
+    reg.fn2(
+        "Physics.dynamic",
+        "Physics.dynamic(tag, shape)",
+        body_ctor(physics::Body::dynamic),
+    );
+    reg.fn2(
+        "Physics.kinematic",
+        "Physics.kinematic(tag, shape)",
+        body_ctor(physics::Body::kinematic),
+    );
+    reg.fn2(
+        "Physics.fixed",
+        "Physics.fixed(tag, shape)",
+        body_ctor(physics::Body::fixed),
+    );
+    // Body LAST (subject-last), so they pipe:
+    // `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0))`.
+    reg.fn2(
+        "Physics.at",
+        "Physics.at(v, body)",
+        |v: FunctorLangVec3, body: FunctorLangBody| {
+            let (x, y, z) = v.0;
+            FunctorLangBody(body.0.at([x, y, z]))
+        },
+    );
+    reg.fn2(
+        "Physics.velocity",
+        "Physics.velocity(v, body)",
+        |v: FunctorLangVec3, body: FunctorLangBody| {
+            let (x, y, z) = v.0;
+            FunctorLangBody(body.0.with_velocity([x, y, z]))
+        },
+    );
+    reg.fn2(
+        "Physics.mass",
+        "Physics.mass(n, body)",
+        |n: f64, body: FunctorLangBody| {
+            Ok(FunctorLangBody(
+                body.0.with_mass(positive(n, "Physics.mass")? as f32),
+            ))
+        },
+    );
+    reg.fn2(
+        "Physics.friction",
+        "Physics.friction(n, body)",
+        |n: f64, body: FunctorLangBody| {
+            Ok(FunctorLangBody(
+                body.0
+                    .with_friction(non_negative(n, "Physics.friction")? as f32),
+            ))
+        },
+    );
+    reg.fn2(
+        "Physics.restitution",
+        "Physics.restitution(n, body)",
+        |n: f64, body: FunctorLangBody| {
+            Ok(FunctorLangBody(
+                body.0
+                    .with_restitution(non_negative(n, "Physics.restitution")? as f32),
+            ))
+        },
+    );
+    reg.fn1("Physics.sensor", "Physics.sensor(body)", |body: FunctorLangBody| {
+        FunctorLangBody(body.0.as_sensor())
+    });
+    reg.fn2(
+        "Physics.scene",
+        "Physics.scene(Vec3.make(gx, gy, gz), [body, …])",
+        |g: FunctorLangVec3, bodies: Vec<FunctorLangBody>| {
+            let (gx, gy, gz) = g.0;
+            FunctorLangPhysicsScene(physics::PhysicsScene::create(
+                [gx, gy, gz],
+                bodies.into_iter().map(|b| b.0).collect(),
+            ))
+        },
+    );
+    // Reads of the LIVE stepped world (the singleton, world 0). Functor Lang
+    // runs in the same process as the world the shell steps, so these are
+    // direct reads — no boundary, no copy (the dylib producers can't do
+    // this; Functor Lang can). A tag that isn't in the world is a loud
+    // spanned error — declare the body before reading. (An Option-shaped
+    // variant return could come now that B5 match exists, but
+    // loud-by-default is right for the common case.)
+    reg.fn1(
+        "Physics.position",
+        "Physics.position(tag)",
+        |tag: std::rc::Rc<str>| match live_transform(&tag) {
+            Some((pos, _)) => Ok(Value::Record(Rc::new(vec![
+                ("x".to_string(), Value::Number(pos[0] as f64)),
+                ("y".to_string(), Value::Number(pos[1] as f64)),
+                ("z".to_string(), Value::Number(pos[2] as f64)),
+            ]))),
+            None => Err(no_body(&tag)),
+        },
+    );
+    // Scene LAST (subject-last), so it pipes: the way Functor Lang draws a physics body —
+    // `Scene.cube() |> Scene.lit(…) |> Physics.transformed(crateTag)`
+    // places the visual at the body's live pose (position + rotation).
+    reg.fn2(
+        "Physics.transformed",
+        "Physics.transformed(tag, scene)",
+        |tag: std::rc::Rc<str>, scene: FunctorLangScene| match live_transform(&tag) {
+            Some((pos, rot)) => {
+                // cgmath's Quaternion::new is scalar-FIRST (w, x, y, z).
+                let rotation = cgmath::Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
+                let xform = Matrix4::from_translation(cgmath::vec3(pos[0], pos[1], pos[2]))
+                    * Matrix4::from(rotation);
+                Ok(FunctorLangScene(group(vec![scene.0], xform)))
+            }
+            None => Err(no_body(&tag)),
+        },
+    );
+    // Command EFFECTS (docs/physics.md Phase 3): fire-and-forget, returned
+    // beside the model like any effect —
+    // `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))`.
+    // Performing one queues it on the singleton world; it applies at the
+    // next stepped frame's first substep, AFTER reconcile — so a body
+    // declared and commanded in the same frame works.
+    fn physics_command(
+        make: fn(String, [f32; 3]) -> physics::PhysicsCommand,
+    ) -> impl Fn(std::rc::Rc<str>, FunctorLangVec3) -> FunctorLangEffect {
+        move |tag, v| {
+            let (x, y, z) = v.0;
+            FunctorLangEffect(EffectTree::Physics(make(tag.to_string(), [x, y, z])))
+        }
+    }
+    reg.fn2(
+        "Physics.applyImpulse",
+        "Physics.applyImpulse(tag, v)",
+        physics_command(|tag, impulse| physics::PhysicsCommand::ApplyImpulse { tag, impulse }),
+    );
+    reg.fn2(
+        "Physics.applyForce",
+        "Physics.applyForce(tag, v)",
+        physics_command(|tag, force| physics::PhysicsCommand::ApplyForce { tag, force }),
+    );
+    reg.fn2(
+        "Physics.setVelocity",
+        "Physics.setVelocity(tag, v)",
+        physics_command(|tag, velocity| physics::PhysicsCommand::SetVelocity { tag, velocity }),
+    );
+    reg.fn2(
+        "Physics.teleport",
+        "Physics.teleport(tag, v)",
+        physics_command(|tag, position| physics::PhysicsCommand::Teleport { tag, position }),
+    );
+    // Query EFFECT (docs/physics.md Phase 4): deferred until after the
+    // frame's physics step, then the tagger receives the result record
+    // `{hit, x, y, z, nx, ny, nz, distance, tag}` (hit: false with zeroed
+    // fields for a miss) — fresh, same-frame.
+    reg.fn4(
+        "Physics.raycast",
+        "Physics.raycast(origin, dir, maxDist, tagger)",
+        |origin: FunctorLangVec3, dir: FunctorLangVec3, max_dist: f64, tagger: Tagger| {
+            let (ox, oy, oz) = origin.0;
+            let (dx, dy, dz) = dir.0;
+            let dir = [dx, dy, dz];
+            if dir == [0.0, 0.0, 0.0] {
+                return Err("Physics.raycast: the direction must not be zero".to_string());
+            }
+            let max_dist = positive(max_dist, "Physics.raycast maxDist")? as f32;
+            Ok(FunctorLangEffect(EffectTree::Raycast {
+                origin: [ox, oy, oz],
+                dir,
+                max_dist,
+                tagger: tagger.0,
+            }))
+        },
+    );
+    // Collision-event SUB (docs/physics.md Phase 5): what `subscriptions`
+    // returns (alone or in Sub.batch). The tagger receives
+    // {started, a, b, sensor} per contact begin/end, post-step (like query
+    // answers).
+    reg.fn1("Physics.events", "Physics.events(tagger)", |tagger: Tagger| {
+        FunctorLangSub(SubTree::PhysicsEvents { tagger: tagger.0 })
+    });
+}
+
+/// Typed asset locators (the typed-manifest front door): a branded value
+/// naming an asset by path, constructed per KIND so a wrong-kind asset is a
+/// teaching error at the consumer instead of a silent fallback at draw.
+/// These are the PERMANENT dynamic constructors — the typed manifest
+/// `functor import` grows into (Track B.2) will call the same ones; strings
+/// live only at data boundaries.
+fn register_assets(reg: &mut crate::host_registry::Registry) {
+    // Dual-shape by hand (the ModelPath rule): a wrong TYPE gets the usage
+    // line naming the accepted form, not a misleading "expected a string" —
+    // and an empty path gets the same line.
+    fn asset_ctor(
+        path: &'static str,
+        kind: AssetKind,
+    ) -> impl Fn(Value) -> Result<FunctorLangAsset, String> {
+        move |value| match value {
+            Value::String(p) if !p.is_empty() => Ok(FunctorLangAsset {
+                kind,
+                path: p.to_string(),
+            }),
+            _ => Err(format!(
+                "usage: {path}(\"{}\") — a non-empty {} path relative to the game dir",
+                kind.example(),
+                kind.noun(),
+            )),
+        }
+    }
+    reg.fn1(
+        "Asset.model",
+        "Asset.model(\"file.glb\") — a non-empty model path relative to the game dir",
+        asset_ctor("Asset.model", AssetKind::Model),
+    );
+    reg.fn1(
+        "Asset.texture",
+        "Asset.texture(\"file.png\") — a non-empty texture path relative to the game dir",
+        asset_ctor("Asset.texture", AssetKind::Texture),
+    );
+    reg.fn1(
+        "Asset.sound",
+        "Asset.sound(\"file.ogg\") — a non-empty sound path relative to the game dir",
+        asset_ctor("Asset.sound", AssetKind::Sound),
+    );
+}
+
+/// The Anim pose algebra — clip sampling, blending, the rest pose, additive
+/// layers, masks, and per-joint rotation. Playheads/weights are explicit in
+/// the values, so the pose stays a pure function of what the game derived.
+fn register_anim(reg: &mut crate::host_registry::Registry) {
+    // A clip sample as a value: the named glTF clip at a playhead in seconds
+    // (looping by the clip's duration). The playhead is explicit — derive it
+    // from `tts` / model state — so the pose is a pure function of the
+    // frame's inputs and time-travel replays it exactly.
+    const CLIP: &str = "Anim.clip(\"walk\", playheadSeconds) — a non-empty clip name \
+(functor inspect lists a model's clips) and a playhead in seconds (loops)";
+    reg.fn2("Anim.clip", CLIP, |name: String, playhead: f64| {
+        if name.is_empty() {
+            return Err(format!("usage: {CLIP}"));
+        }
+        Ok(FunctorLangAnim(AnimExpr::Clip {
+            name,
+            playhead: playhead as f32,
+        }))
+    });
+    // A weighted mix of animations: [(anim, weight), …]. Weights are
+    // normalized; a non-positive weight drops its entry (so driving a
+    // weight to 0.0 in game code cleanly silences that clip). The entries
+    // are TUPLES — a bespoke shape with per-entry teaching errors, so it
+    // takes the raw `Value` and validates by hand (the extractors' RunError
+    // spans are discarded: the registry reattaches the call span).
+    const BLEND: &str = "Anim.blend([(anim, weight), …]) — a non-empty list of \
+(Anim, weight) pairs, e.g. Anim.blend([(Anim.clip(\"walk\", tts), 0.7), \
+(Anim.clip(\"run\", tts), 0.3)])";
+    reg.fn1("Anim.blend", BLEND, |items: Value| {
+        let Value::List(items) = items else {
+            return Err(format!("usage: {BLEND}"));
+        };
+        if items.is_empty() {
+            return Err(format!("usage: {BLEND}"));
+        }
+        let span = Span::new(0, 0);
+        let mut blended = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            let Value::Tuple(pair) = item else {
+                return Err(format!(
+                    "Anim.blend entries must be (anim, weight) tuples, got {}",
+                    item.kind_name()
+                ));
+            };
+            let [anim, weight] = pair.as_slice() else {
+                return Err(format!(
+                    "Anim.blend entries must be (anim, weight) pairs, got a \
+{}-tuple",
+                    pair.len()
+                ));
+            };
+            let anim = anim_of(anim, "Anim.blend", span)
+                .map_err(|e| e.message)?
+                .clone();
+            let weight = num(weight, span).map_err(|e| e.message)? as f32;
+            blended.push((anim, weight));
+        }
+        Ok(FunctorLangAnim(AnimExpr::Blend(blended)))
+    });
+    // The bind (rest) pose — the base for purely programmatic posing
+    // (Anim.rotate on a model with no authored clips, e.g. a hand).
+    reg.fn0("Anim.rest", "Anim.rest()", || FunctorLangAnim(AnimExpr::Rest));
+    // Additive layer (anim-last so the BASE pipes):
+    // walk |> Anim.add(Anim.clip("headShake", tts), 1.0) layers the
+    // shake's delta-from-bind on top of the walk.
+    reg.fn3(
+        "Anim.add",
+        "Anim.add(layerAnim, weight, base) — layer the anim's delta-from-bind \
+on top, scaled by weight; base last, so it pipes: base |> Anim.add(layerAnim, weight)",
+        |layer: FunctorLangAnim, weight: f64, base: FunctorLangAnim| {
+            FunctorLangAnim(AnimExpr::Add {
+                base: Box::new(base.0),
+                layer: Box::new(layer.0),
+                weight: weight as f32,
+            })
+        },
+    );
+    // Restrict an anim's influence to the subtrees rooted at the named
+    // joints (a name covers itself and every descendant).
+    const MASK: &str = "Anim.mask([\"jointName\", …], anim) — a non-empty list of joint \
+names; each covers its whole subtree (functor inspect lists a model's joints)";
+    reg.fn2("Anim.mask", MASK, |joints: Vec<String>, anim: FunctorLangAnim| {
+        if joints.is_empty() {
+            return Err(format!("usage: {MASK}"));
+        }
+        if joints.iter().any(|j| j.is_empty()) {
+            // An empty NAME is a string, so the legacy arm's kind-naming
+            // error read "got a string" — kept byte-identical.
+            return Err(
+                "Anim.mask joint names must be non-empty strings, got a string".to_string(),
+            );
+        }
+        Ok(FunctorLangAnim(AnimExpr::Mask {
+            joints,
+            expr: Box::new(anim.0),
+        }))
+    });
+    // Post-multiply an additive local rotation onto one joint —
+    // programmatic per-joint control (head aim, finger curl). Angles are
+    // branded values (the Angle rule): XYZ Euler, local frame.
+    const ROTATE: &str = "Anim.rotate(\"jointName\", xAngle, yAngle, zAngle, anim) — a \
+non-empty joint name and three Angle values (Angle.degrees/radians), applied as an \
+additive local XYZ rotation";
+    reg.fn5(
+        "Anim.rotate",
+        ROTATE,
+        |joint: String,
+         x: FunctorLangAngle,
+         y: FunctorLangAngle,
+         z: FunctorLangAngle,
+         anim: FunctorLangAnim| {
+            if joint.is_empty() {
+                return Err(format!("usage: {ROTATE}"));
+            }
+            let x: cgmath::Rad<f32> = x.0.into();
+            let y: cgmath::Rad<f32> = y.0.into();
+            let z: cgmath::Rad<f32> = z.0.into();
+            Ok(FunctorLangAnim(AnimExpr::Rotate {
+                joint,
+                euler: [x.0, y.0, z.0],
+                expr: Box::new(anim.0),
+            }))
+        },
+    );
+}
+
 /// Branded values convert through the registry with the same teaching errors
 /// the legacy extractors give — written once, on each type. Handle-shaped
 /// types without a teaching extractor (Scene, Light, Camera, Frame) get the
@@ -1646,6 +2020,26 @@ impl crate::host_registry::FromArg for ModelPath {
                 message: "usage: Scene.model(\"file.glb\") — a non-empty glTF path \
 relative to the game dir"
                     .to_string(),
+                span,
+            }),
+        }
+    }
+}
+
+/// A tagger argument — a function of the performed result (a closure or an
+/// ADT constructor), validated callable at construction so a typo fails at
+/// the call, not frames later when the result lands.
+struct Tagger(Value);
+
+impl crate::host_registry::FromArg for Tagger {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        match value {
+            Value::Closure(_) | Value::Ctor { .. } => Ok(Tagger(value.clone())),
+            other => Err(RunError {
+                message: format!(
+                    "{path}: the tagger must be a function of the result record, got {}",
+                    other.kind_name()
+                ),
                 span,
             }),
         }
@@ -1681,6 +2075,8 @@ handle_arg!(
     FunctorLangLight => "Light",
     FunctorLangCamera => "Camera",
     FunctorLangFrame => "Frame",
+    FunctorLangShape => "Shape",
+    FunctorLangBody => "Body",
 );
 
 impl crate::host_registry::FromArg for FunctorLangAngle {
@@ -1744,361 +2140,6 @@ impl Host for FunctorHost {
             return result;
         }
         match path {
-            // Typed asset locators (the typed-manifest front door): a branded
-            // value naming an asset by path, constructed per KIND so a
-            // wrong-kind asset is a teaching error at the consumer instead of
-            // a silent fallback at draw. These are the PERMANENT dynamic
-            // constructors — the typed manifest `functor import` grows into
-            // (Track B.2) will call the same ones; strings live only at data
-            // boundaries.
-            "Asset.model" | "Asset.texture" | "Asset.sound" => {
-                let kind = match path {
-                    "Asset.model" => AssetKind::Model,
-                    "Asset.texture" => AssetKind::Texture,
-                    _ => AssetKind::Sound,
-                };
-                match args.as_slice() {
-                    [Value::String(p)] if !p.is_empty() => Ok(host(FunctorLangAsset {
-                        kind,
-                        path: p.to_string(),
-                    })),
-                    _ => usage(&format!(
-                        "{path}(\"{}\") — a non-empty {} path relative to the game dir",
-                        kind.example(),
-                        kind.noun(),
-                    )),
-                }
-            }
-            // A clip sample as a value: the named glTF clip at a playhead in
-            // seconds (looping by the clip's duration). The playhead is
-            // explicit — derive it from `tts` / model state — so the pose is
-            // a pure function of the frame's inputs and time-travel replays
-            // it exactly.
-            "Anim.clip" => match args.as_slice() {
-                [Value::String(name), playhead] if !name.is_empty() => {
-                    let playhead = num(playhead, span)? as f32;
-                    Ok(host(FunctorLangAnim(AnimExpr::Clip {
-                        name: name.to_string(),
-                        playhead,
-                    })))
-                }
-                _ => usage(
-                    "Anim.clip(\"walk\", playheadSeconds) — a non-empty clip name \
-(functor inspect lists a model's clips) and a playhead in seconds (loops)",
-                ),
-            },
-            // A weighted mix of animations: [(anim, weight), …]. Weights are
-            // normalized; a non-positive weight drops its entry (so driving a
-            // weight to 0.0 in game code cleanly silences that clip).
-            "Anim.blend" => match args.as_slice() {
-                [Value::List(items)] if !items.is_empty() => {
-                    let mut blended = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        let Value::Tuple(pair) = item else {
-                            return err(format!(
-                                "Anim.blend entries must be (anim, weight) tuples, got {}",
-                                item.kind_name()
-                            ));
-                        };
-                        let [anim, weight] = pair.as_slice() else {
-                            return err(format!(
-                                "Anim.blend entries must be (anim, weight) pairs, got a \
-{}-tuple",
-                                pair.len()
-                            ));
-                        };
-                        let anim = anim_of(anim, "Anim.blend", span)?.clone();
-                        let weight = num(weight, span)? as f32;
-                        blended.push((anim, weight));
-                    }
-                    Ok(host(FunctorLangAnim(AnimExpr::Blend(blended))))
-                }
-                _ => usage(
-                    "Anim.blend([(anim, weight), …]) — a non-empty list of \
-(Anim, weight) pairs, e.g. Anim.blend([(Anim.clip(\"walk\", tts), 0.7), \
-(Anim.clip(\"run\", tts), 0.3)])",
-                ),
-            },
-            // The bind (rest) pose — the base for purely programmatic posing
-            // (Anim.rotate on a model with no authored clips, e.g. a hand).
-            "Anim.rest" => match args.as_slice() {
-                [] => Ok(host(FunctorLangAnim(AnimExpr::Rest))),
-                _ => usage("Anim.rest()"),
-            },
-            // Additive layer (anim-last so the BASE pipes):
-            // walk |> Anim.add(Anim.clip("headShake", tts), 1.0) layers the
-            // shake's delta-from-bind on top of the walk.
-            "Anim.add" => match args.as_slice() {
-                [layer, weight, base] => {
-                    let layer = anim_of(layer, "Anim.add", span)?.clone();
-                    let base = anim_of(base, "Anim.add", span)?.clone();
-                    let weight = num(weight, span)? as f32;
-                    Ok(host(FunctorLangAnim(AnimExpr::Add {
-                        base: Box::new(base),
-                        layer: Box::new(layer),
-                        weight,
-                    })))
-                }
-                _ => usage("base |> Anim.add(layerAnim, weight) — layer the anim's \
-delta-from-bind on top, scaled by weight"),
-            },
-            // Restrict an anim's influence to the subtrees rooted at the
-            // named joints (a name covers itself and every descendant).
-            "Anim.mask" => match args.as_slice() {
-                [Value::List(names), anim] if !names.is_empty() => {
-                    let mut joints = Vec::with_capacity(names.len());
-                    for name in names.iter() {
-                        match name {
-                            Value::String(name) if !name.is_empty() => {
-                                joints.push(name.to_string())
-                            }
-                            other => {
-                                return err(format!(
-                                    "Anim.mask joint names must be non-empty strings, got {}",
-                                    other.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    let expr = anim_of(anim, "Anim.mask", span)?.clone();
-                    Ok(host(FunctorLangAnim(AnimExpr::Mask {
-                        joints,
-                        expr: Box::new(expr),
-                    })))
-                }
-                _ => usage(
-                    "anim |> Anim.mask([\"jointName\", …]) — a non-empty list of joint \
-names; each covers its whole subtree (functor inspect lists a model's joints)",
-                ),
-            },
-            // Post-multiply an additive local rotation onto one joint —
-            // programmatic per-joint control (head aim, finger curl). Angles
-            // are branded values (the Angle rule): XYZ Euler, local frame.
-            "Anim.rotate" => match args.as_slice() {
-                [Value::String(joint), x, y, z, anim] if !joint.is_empty() => {
-                    let x: cgmath::Rad<f32> = angle_of(x, path, span)?.into();
-                    let y: cgmath::Rad<f32> = angle_of(y, path, span)?.into();
-                    let z: cgmath::Rad<f32> = angle_of(z, path, span)?.into();
-                    let expr = anim_of(anim, "Anim.rotate", span)?.clone();
-                    Ok(host(FunctorLangAnim(AnimExpr::Rotate {
-                        joint: joint.to_string(),
-                        euler: [x.0, y.0, z.0],
-                        expr: Box::new(expr),
-                    })))
-                }
-                _ => usage(
-                    "anim |> Anim.rotate(\"jointName\", xAngle, yAngle, zAngle) — a \
-non-empty joint name and three Angle values (Angle.degrees/radians), applied as an \
-additive local XYZ rotation",
-                ),
-            },
-            // ── Physics (docs/physics.md; the declarative surface) ─────────
-            // Shapes are values, bodies are tag + shape + piped attributes,
-            // and the optional game hook `physics = (model) => Physics.scene(…)`
-            // declares the world each frame.
-            //
-            // `Physics.tag` is the branded body identity — check-time only
-            // (physics.funi types it as the abstract `Physics.tag`), so at
-            // runtime a tag IS its string: identity here, plain data in the
-            // model/journal, and structurally comparable with the tags inside
-            // rayHit/collisionEvent records. The empty tag is the zeroed
-            // rayHit-miss / "no body" sentinel, so no non-empty validation.
-            "Physics.box" => match args.as_slice() {
-                [w, h, d] => Ok(host(FunctorLangShape(physics::Shape::Cuboid {
-                    extents: [
-                        positive_num(w, span, "Physics.box width")? as f32,
-                        positive_num(h, span, "Physics.box height")? as f32,
-                        positive_num(d, span, "Physics.box depth")? as f32,
-                    ],
-                }))),
-                _ => usage("Physics.box(width, height, depth)"),
-            },
-            "Physics.sphere" => match args.as_slice() {
-                [r] => Ok(host(FunctorLangShape(physics::Shape::Sphere {
-                    radius: positive_num(r, span, "Physics.sphere radius")? as f32,
-                }))),
-                _ => usage("Physics.sphere(radius)"),
-            },
-            "Physics.capsule" => match args.as_slice() {
-                [half_height, r] => Ok(host(FunctorLangShape(physics::Shape::Capsule {
-                    half_height: positive_num(half_height, span, "Physics.capsule halfHeight")?
-                        as f32,
-                    radius: positive_num(r, span, "Physics.capsule radius")? as f32,
-                }))),
-                _ => usage("Physics.capsule(halfHeight, radius)"),
-            },
-            "Physics.dynamic" | "Physics.kinematic" | "Physics.fixed" => match args.as_slice() {
-                [Value::String(tag), shape] => match shape_of(shape) {
-                    Some(shape) => {
-                        let tag = tag.to_string();
-                        let shape = shape.clone();
-                        Ok(host(FunctorLangBody(match path {
-                            "Physics.dynamic" => physics::Body::dynamic(tag, shape),
-                            "Physics.kinematic" => physics::Body::kinematic(tag, shape),
-                            _ => physics::Body::fixed(tag, shape),
-                        })))
-                    }
-                    None => usage(&format!("{path}(tag, shape)")),
-                },
-                _ => usage(&format!("{path}(tag, shape)")),
-            },
-            // Body LAST (subject-last), so they pipe:
-            // `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0))`.
-            "Physics.at" | "Physics.velocity" => match args.as_slice() {
-                [vec, body] => match body_of(body) {
-                    Some(inner) => {
-                        let (x, y, z) = vec3_of(vec, path, span)?;
-                        let v = [x, y, z];
-                        Ok(host(FunctorLangBody(if path == "Physics.at" {
-                            inner.clone().at(v)
-                        } else {
-                            inner.clone().with_velocity(v)
-                        })))
-                    }
-                    None => usage(&format!("{path}(v, body)")),
-                },
-                _ => usage(&format!("{path}(v, body)")),
-            },
-            "Physics.mass" | "Physics.friction" | "Physics.restitution" => match args.as_slice() {
-                [n, body] => match body_of(body) {
-                    Some(inner) => {
-                        let n = match path {
-                            "Physics.mass" => positive_num(n, span, "Physics.mass")?,
-                            _ => non_negative_num(n, span, path)?,
-                        } as f32;
-                        Ok(host(FunctorLangBody(match path {
-                            "Physics.mass" => inner.clone().with_mass(n),
-                            "Physics.friction" => inner.clone().with_friction(n),
-                            _ => inner.clone().with_restitution(n),
-                        })))
-                    }
-                    None => usage(&format!("{path}(n, body)")),
-                },
-                _ => usage(&format!("{path}(n, body)")),
-            },
-            "Physics.sensor" => match args.as_slice() {
-                [body] => match body_of(body) {
-                    Some(inner) => Ok(host(FunctorLangBody(inner.clone().as_sensor()))),
-                    None => usage("Physics.sensor(body)"),
-                },
-                _ => usage("Physics.sensor(body)"),
-            },
-            "Physics.scene" => match args.as_slice() {
-                [g, Value::List(items)] => {
-                    let (gx, gy, gz) = vec3_of(g, "Physics.scene gravity", span)?;
-                    let gravity = [gx, gy, gz];
-                    let mut bodies = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        match body_of(item) {
-                            Some(body) => bodies.push(body.clone()),
-                            None => {
-                                return err(format!(
-                                    "Physics.scene bodies must be Bodies, got {}",
-                                    item.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    Ok(host(FunctorLangPhysicsScene(physics::PhysicsScene::create(
-                        gravity, bodies,
-                    ))))
-                }
-                _ => usage("Physics.scene(Vec3.make(gx, gy, gz), [body, …])"),
-            },
-            // Reads of the LIVE stepped world (the singleton, world 0). Functor Lang
-            // runs in the same process as the world the shell steps, so these
-            // are direct reads — no boundary, no copy (the dylib producers
-            // can't do this; Functor Lang can). A tag that isn't in the world is a
-            // loud spanned error — declare the body before reading. (An
-            // Option-shaped variant return could come now that B5 match
-            // exists, but loud-by-default is right for the common case.)
-            "Physics.position" => match args.as_slice() {
-                [Value::String(tag)] => match live_transform(tag) {
-                    Some((pos, _)) => Ok(Value::Record(Rc::new(vec![
-                        ("x".to_string(), Value::Number(pos[0] as f64)),
-                        ("y".to_string(), Value::Number(pos[1] as f64)),
-                        ("z".to_string(), Value::Number(pos[2] as f64)),
-                    ]))),
-                    None => err(no_body(tag)),
-                },
-                _ => usage("Physics.position(tag)"),
-            },
-            // Scene LAST (subject-last), so it pipes: the way Functor Lang draws a physics body —
-            // `Scene.cube() |> Scene.lit(…) |> Physics.transformed(crateTag)`
-            // places the visual at the body's live pose (position + rotation).
-            // Command EFFECTS (docs/physics.md Phase 3): fire-and-forget,
-            // returned beside the model like any effect —
-            // `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))`.
-            // Performing one queues it on the singleton world; it applies at
-            // the next stepped frame's first substep, AFTER reconcile — so a
-            // body declared and commanded in the same frame works.
-            "Physics.applyImpulse" | "Physics.applyForce" | "Physics.setVelocity"
-            | "Physics.teleport" => match args.as_slice() {
-                [Value::String(tag), vec] => {
-                    let tag = tag.to_string();
-                    let (x, y, z) = vec3_of(vec, path, span)?;
-                    let v = [x, y, z];
-                    let command = match path {
-                        "Physics.applyImpulse" => {
-                            physics::PhysicsCommand::ApplyImpulse { tag, impulse: v }
-                        }
-                        "Physics.applyForce" => {
-                            physics::PhysicsCommand::ApplyForce { tag, force: v }
-                        }
-                        "Physics.setVelocity" => {
-                            physics::PhysicsCommand::SetVelocity { tag, velocity: v }
-                        }
-                        _ => physics::PhysicsCommand::Teleport { tag, position: v },
-                    };
-                    Ok(host(FunctorLangEffect(EffectTree::Physics(command))))
-                }
-                _ => usage(&format!("{path}(tag, v)")),
-            },
-            // Query EFFECT (docs/physics.md Phase 4): deferred until after
-            // the frame's physics step, then the tagger receives the result
-            // record `{hit, x, y, z, nx, ny, nz, distance, tag}` (hit: false
-            // with zeroed fields for a miss) — fresh, same-frame.
-            "Physics.raycast" => match args.as_slice() {
-                [o, d, max_dist, tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
-                    let (ox, oy, oz) = vec3_of(o, "Physics.raycast origin", span)?;
-                    let (dx, dy, dz) = vec3_of(d, "Physics.raycast direction", span)?;
-                    let origin = [ox, oy, oz];
-                    let dir = [dx, dy, dz];
-                    if dir == [0.0, 0.0, 0.0] {
-                        return err("Physics.raycast: the direction must not be zero".to_string());
-                    }
-                    let max_dist =
-                        positive_num(max_dist, span, "Physics.raycast maxDist")? as f32;
-                    Ok(host(FunctorLangEffect(EffectTree::Raycast {
-                        origin,
-                        dir,
-                        max_dist,
-                        tagger: tagger.clone(),
-                    })))
-                }
-                [_, _, _, other] => err(format!(
-                    "Physics.raycast(origin, dir, maxDist, tagger): the tagger \
-                     must be a function of the result record, got {}",
-                    other.kind_name()
-                )),
-                _ => usage("Physics.raycast(origin, dir, maxDist, tagger)"),
-            },
-            // Collision-event SUB (docs/physics.md Phase 5): what
-            // `subscriptions` returns (alone or in Sub.batch). The tagger
-            // receives {started, a, b, sensor} per contact begin/end,
-            // post-step (like query answers).
-            "Physics.events" => match args.as_slice() {
-                [tagger @ (Value::Closure(_) | Value::Ctor { .. })] => Ok(host(FunctorLangSub(
-                    SubTree::PhysicsEvents {
-                        tagger: tagger.clone(),
-                    },
-                ))),
-                [other] => err(format!(
-                    "Physics.events(tagger): the tagger must be a function of the event record, got {}",
-                    other.kind_name()
-                )),
-                _ => usage("Physics.events(tagger)"),
-            },
             // A persistent connection (client) / listener (server): the key
             // is the endpoint; the tagger receives `Net.NetEvent` values.
             "Sub.connect" | "Sub.listen" => match args.as_slice() {
@@ -2291,25 +2332,6 @@ the Net.HttpResponse, got {}",
             "AudioScene.empty" => match args.as_slice() {
                 [] => Ok(host(FunctorLangAudioScene(crate::audio::AudioScene::default()))),
                 _ => usage("AudioScene.empty()"),
-            },
-            "Physics.transformed" => match args.as_slice() {
-                [Value::String(tag), scene] => {
-                    let Some(inner) = scene_of(scene) else {
-                        return usage("Physics.transformed(tag, scene)");
-                    };
-                    match live_transform(tag) {
-                        Some((pos, rot)) => {
-                            // cgmath's Quaternion::new is scalar-FIRST (w, x, y, z).
-                            let rotation = cgmath::Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
-                            let xform =
-                                Matrix4::from_translation(cgmath::vec3(pos[0], pos[1], pos[2]))
-                                    * Matrix4::from(rotation);
-                            scene_value(group(vec![inner.clone()], xform))
-                        }
-                        None => err(no_body(tag)),
-                    }
-                }
-                _ => usage("Physics.transformed(tag, scene)"),
             },
             // ── Ui (the optional `ui = (model) => …` hook) ─────────────────
             // hello's HUD vocabulary: text lines (white or colored), stacked
@@ -3102,28 +3124,20 @@ pub fn deliver_physics_events(
 /// positive: Rapier accepts a negative radius and silently builds a
 /// degenerate collider that misbehaves far from the declaration — so reject
 /// it loud at the boundary.
-fn positive_num(value: &Value, span: Span, what: &str) -> Result<f64, RunError> {
-    let n = num(value, span)?;
+fn positive(n: f64, what: &str) -> Result<f64, String> {
     if n > 0.0 {
         Ok(n)
     } else {
-        Err(RunError {
-            message: format!("{what} must be positive, got {n}"),
-            span,
-        })
+        Err(format!("{what} must be positive, got {n}"))
     }
 }
 
 /// Friction/restitution are coefficients: zero is meaningful, negative is not.
-fn non_negative_num(value: &Value, span: Span, what: &str) -> Result<f64, RunError> {
-    let n = num(value, span)?;
+fn non_negative(n: f64, what: &str) -> Result<f64, String> {
     if n >= 0.0 {
         Ok(n)
     } else {
-        Err(RunError {
-            message: format!("{what} must not be negative, got {n}"),
-            span,
-        })
+        Err(format!("{what} must not be negative, got {n}"))
     }
 }
 
@@ -3493,13 +3507,6 @@ dropping the rest"
     }
 }
 
-fn scene_of(value: &Value) -> Option<&Scene3D> {
-    match value {
-        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangScene>().map(|s| &s.0),
-        _ => None,
-    }
-}
-
 /// Extract an [`AnimExpr`] — animation-consuming functions accept ONLY the
 /// branded value, so the predictable mistake (a bare clip-name string) gets a
 /// teaching error pointing at `Anim.clip` (the [`angle_of`] rule).
@@ -3726,20 +3733,6 @@ Fog.linear(near, far, color) or Fog.exp(density, color)"
     }
 }
 
-fn shape_of(value: &Value) -> Option<&physics::Shape> {
-    match value {
-        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangShape>().map(|s| &s.0),
-        _ => None,
-    }
-}
-
-fn body_of(value: &Value) -> Option<&physics::Body> {
-    match value {
-        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangBody>().map(|b| &b.0),
-        _ => None,
-    }
-}
-
 /// Live pose of a body in the ACTIVE world (normally the singleton world the
 /// shell steps — same process, same crate statics as this prelude; under a
 /// dry-run forward-step scope, the throwaway projected world, so ghost draws
@@ -3759,10 +3752,6 @@ fn host(data: impl HostData + 'static) -> Value {
     Value::HostData(Rc::new(data))
 }
 
-fn scene_value(scene: Scene3D) -> Result<Value, RunError> {
-    Ok(host(FunctorLangScene(scene)))
-}
-
 /// A `Group` wrapper carrying `xform` — the transform representation the
 /// prelude uses everywhere (see the module doc for why).
 fn group(scenes: Vec<Scene3D>, xform: Matrix4<f32>) -> Scene3D {
@@ -3776,6 +3765,15 @@ fn group(scenes: Vec<Scene3D>, xform: Matrix4<f32>) -> Scene3D {
 mod tests {
     use super::*;
     use functor_lang::Tracing;
+
+    /// Downcast to the Scene inside a host value (test-side only since the
+    /// registry migration — the prelude consumes Scenes via FromArg).
+    fn scene_of(value: &Value) -> Option<&Scene3D> {
+        match value {
+            Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangScene>().map(|s| &s.0),
+            _ => None,
+        }
+    }
 
     /// Evaluate a Functor Lang `main` under the prelude and return its value.
     fn eval(src: &str) -> Value {
@@ -4603,6 +4601,36 @@ Anim.clip(\"walk\", tts)"
             failure.error.message.contains("Angle"),
             "message: {}",
             failure.error.message
+        );
+    }
+
+    // [registry migration pins] the deliberate teaching-text deltas, made
+    // loud: usage sigs are registry-derived and must START with the path, so
+    // the legacy pipe-form spellings (anim |> Anim.mask(…)) are positional
+    // now; taggers share one FromArg message ("result record"); wrong list
+    // elements get the uniform typed error. Domain messages (zero-direction)
+    // stay byte-identical.
+    #[test]
+    fn migrated_usage_and_tagger_texts_are_pinned() {
+        assert_eq!(
+            fail_message("let main = () => Anim.rest() |> Anim.mask([])"),
+            "usage: Anim.mask([\"jointName\", …], anim) — a non-empty list of joint \
+names; each covers its whole subtree (functor inspect lists a model's joints)"
+        );
+        assert_eq!(
+            fail_message("let main = () => Physics.events(3.0)"),
+            "Physics.events: the tagger must be a function of the result record, got a number"
+        );
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.raycast(Vec3.make(0.0, 0.0, 0.0), \
+Vec3.make(0.0, 0.0, 0.0), 10.0, (h) => h)"
+            ),
+            "Physics.raycast: the direction must not be zero"
+        );
+        assert_eq!(
+            fail_message("let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), [3.0])"),
+            "Physics.scene: expected a Body, got a number"
         );
     }
 
