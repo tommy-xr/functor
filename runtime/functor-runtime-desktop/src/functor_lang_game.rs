@@ -33,9 +33,9 @@ use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
-    audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, take_ui_handlers,
-    view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects,
-    UiHandler,
+    audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, html_node_value,
+    take_ui_handlers, view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind,
+    RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_push, journal_swap, FrameCtx, JournalEntry, Provenance, Reporter,
@@ -45,6 +45,7 @@ use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, Insp
 use functor_runtime_common::physics;
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
+use functor_runtime_common::webview::HtmlNode;
 use functor_runtime_common::{Frame, FrameTime};
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -101,6 +102,17 @@ pub struct FunctorLangGame {
     /// with `last_view` (updated only on a successful evaluation) and cleared
     /// on reload — its values may close over the old session.
     ui_handlers: Vec<UiHandler>,
+    /// The game defines the optional `webview` entry point
+    /// (`webview(model) -> Html.node`, the HTML/CSS overlay hook).
+    has_webview: bool,
+    /// The last successfully built webview tree, cached like `last_view`.
+    /// `None` = no webview (hook absent, or its first evaluation hasn't
+    /// succeeded yet).
+    last_webview: Option<HtmlNode>,
+    /// The handler table for `last_webview` — the webview's own slot space,
+    /// separate from `ui_handlers` (each hook's evaluation drains the shared
+    /// per-eval table into its own copy). Same lockstep/reload rules.
+    webview_handlers: Vec<UiHandler>,
     /// The last serialized soundscape (`soundScape model` → JSON), cached
     /// because `audio_scene_json` is a `&self` accessor — evaluated beside
     /// `draw` each frame so errors can `&mut`-dedupe. A bad frame keeps the
@@ -210,6 +222,7 @@ struct Loaded {
     has_physics: bool,
     has_soundscape: bool,
     has_ui: bool,
+    has_webview: bool,
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -330,6 +343,12 @@ return them beside the model as `(model, effect)`"
     if has_ui {
         require_function(path, &session, "ui", 1)?;
     }
+    // Optional webview: `webview(model)` returns an Html node (Html.div /
+    // Html.text / …), rendered as an HTML/CSS overlay above the frame.
+    let has_webview = session.global("webview").is_some();
+    if has_webview {
+        require_function(path, &session, "webview", 1)?;
+    }
     Ok(Loaded {
         sources,
         module,
@@ -342,6 +361,7 @@ return them beside the model as `(model, effect)`"
         has_physics,
         has_soundscape,
         has_ui,
+        has_webview,
     })
 }
 
@@ -410,6 +430,9 @@ impl FunctorLangGame {
             has_ui: loaded.has_ui,
             last_view: View::Empty,
             ui_handlers: Vec::new(),
+            has_webview: loaded.has_webview,
+            last_webview: None,
+            webview_handlers: Vec::new(),
             last_soundscape_json: empty_soundscape_json(),
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
@@ -521,6 +544,11 @@ impl FunctorLangGame {
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
             self.last_view = View::Empty;
         }
+        self.has_webview = loaded.has_webview;
+        if !self.has_webview {
+            // Deleting the `webview` hook drops the overlay (the `ui` rule).
+            self.last_webview = None;
+        }
         self.reporter.reset();
         // A deferred query or in-flight HTTP request holds a tagger — a closure
         // into the OLD session; drop them rather than let them dangle. A late
@@ -536,6 +564,7 @@ impl FunctorLangGame {
         // the next render's `ui(model)` rebuilds it against the new one. A
         // click landing in the gap resolves an unknown slot and is dropped.
         self.ui_handlers.clear();
+        self.webview_handlers.clear();
         // Plain-data snapshots remain seekable under the new program. A model
         // history containing callable or opaque host values instead starts a new
         // generation anchored at this rebound live frame.
@@ -888,6 +917,19 @@ impl Game for FunctorLangGame {
             .push(functor_runtime_common::RecordedInput::UiEvent(event));
     }
 
+    fn webview_event(&mut self, event: functor_runtime_common::ui::UiEvent) {
+        // The `ui_event` shape, against the webview's own handler table.
+        if !self.has_webview {
+            return;
+        }
+        let handlers = std::mem::take(&mut self.webview_handlers);
+        self.ctx().deliver_ui_event(&handlers, &event);
+        self.webview_handlers = handlers;
+        // TODO(webview): record for replay once webview events get their own
+        // RecordedInput variant — a UiEvent entry would replay against the
+        // wrong (ui) handler table.
+    }
+
     fn render(&mut self, frame_time: FrameTime) -> Frame {
         let started = Instant::now();
         // While scrubbing, draw at the scrubbed frame's recorded `tts` so
@@ -939,6 +981,32 @@ impl Game for FunctorLangGame {
                 }
             }
         }
+        // The optional webview, evaluated beside `draw` like `ui` — same
+        // caching, same handler-adoption lockstep, its own handler table.
+        if self.has_webview {
+            match self
+                .session
+                .call("webview", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(value) => match html_node_value(&value) {
+                    Some(node) => {
+                        self.last_webview = Some(node.clone());
+                        self.webview_handlers = take_ui_handlers();
+                    }
+                    None => {
+                        let _ = take_ui_handlers();
+                        self.reporter.report_once(format!(
+                            "[functor-lang] webview must return an Html node (Html.div / Html.text / …), got {}",
+                            value.kind_name()
+                        ))
+                    }
+                },
+                Err(err) => {
+                    let _ = take_ui_handlers();
+                    self.reporter.frame_error("webview", &err)
+                }
+            }
+        }
         // The optional soundscape, evaluated beside `draw` (same settled model)
         // and cached — `audio_scene_json` is a `&self` accessor, and errors
         // need `&mut` dedupe. A bad frame keeps the last good scene (the
@@ -979,6 +1047,10 @@ AudioScene.empty), got {}",
 
     fn ui(&self) -> View {
         self.last_view.clone()
+    }
+
+    fn webview(&self) -> Option<HtmlNode> {
+        self.last_webview.clone()
     }
 
     fn state_debug(&self) -> String {

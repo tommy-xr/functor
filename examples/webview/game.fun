@@ -1,0 +1,66 @@
+// webview — the HTML/CSS overlay hello world.
+//
+// `webview(model)` returns an Elm-style `Html.*` tree styled with real CSS
+// (flexbox, gradients, border-radius, :hover). Natively it renders through
+// blitz (Stylo + Taffy + Parley) composited over the 3D frame; on wasm it is
+// a real DOM overlay above the canvas. An `Attr.onClick` click delivers its
+// msg verbatim through `update` — the `Ui.button` loop, with CSS styling.
+
+type Model = { count: float, spin: float }
+type Msg =
+  | Inc
+  | Dec
+  | Reset
+
+let init = { count: 0.0, spin: 0.0 }
+
+let update = (m: Model, msg: Msg) =>
+  match msg with
+  | Inc => { m with count: m.count + 1.0 }
+  | Dec => { m with count: m.count - 1.0 }
+  | Reset => { m with count: 0.0 }
+
+let tick = (m: Model, dt, tts) => { m with spin: m.spin + dt * 20.0 }
+
+let draw = (m: Model, tts) =>
+  Frame.createLit(
+    Camera.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube()
+      |> Scene.lit(Color.rgb(0.35, 0.75, 0.55))
+      |> Scene.rotateY(Angle.degrees(m.spin + m.count * 15.0)),
+    [
+      Light.ambient(Color.rgb(0.25, 0.25, 0.25)),
+      Light.directional(Vec3.make(-0.5, -1.0, 0.4), Color.rgb(1.0, 1.0, 1.0), 0.9),
+    ],
+  )
+
+// The stylesheet is plain CSS in a string — themeable without touching the
+// tree. .hud is a fixed-width card pinned by its margin; buttons get :hover.
+let css = "
+  .hud { display: flex; flex-direction: column; gap: 12px; width: 300px;
+         margin: 24px; padding: 20px;
+         background: linear-gradient(135deg, rgba(24, 26, 44, 0.92), rgba(52, 24, 64, 0.92));
+         border: 2px solid #8be9fd; border-radius: 14px;
+         font-family: sans-serif; color: #f8f8f2; }
+  .hud h1 { margin: 0; font-size: 22px; color: #8be9fd; }
+  .count { font-size: 40px; font-weight: bold; text-align: center; }
+  .row { display: flex; gap: 10px; justify-content: center; }
+  button { padding: 8px 18px; font-size: 18px; font-weight: bold;
+           background: #50fa7b; color: #1e1e3c; border: none; border-radius: 8px; }
+  button:hover { background: #f1fa8c; }
+  button.ghost { background: transparent; color: #8be9fd; border: 1px solid #8be9fd; }
+"
+
+let webview = (m: Model) =>
+  Html.div([], [
+    Html.style(css),
+    Html.div([Attr.class("hud")], [
+      Html.h1([], [Html.text("Functor webview")]),
+      Html.div([Attr.class("count")], [Html.text(Text.fixed(m.count, 0.0))]),
+      Html.div([Attr.class("row")], [
+        Html.button([Attr.onClick(Dec)], [Html.text("-")]),
+        Html.button([Attr.onClick(Inc)], [Html.text("+")]),
+        Html.button([Attr.class("ghost"), Attr.onClick(Reset)], [Html.text("Reset")]),
+      ]),
+    ]),
+  ])

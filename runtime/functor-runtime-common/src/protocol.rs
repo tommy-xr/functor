@@ -229,6 +229,20 @@ pub trait GameProducer {
     /// text overlay drawn on top of the frame.
     fn ui(&self) -> crate::ui::View;
 
+    /// The game's HTML/CSS webview tree (`webview model`), or `None` when the
+    /// game defines no `webview`. The shell renders it above the frame: blitz
+    /// composited as a GL texture natively, a real DOM overlay on wasm.
+    /// Interactions come back through [`GameProducer::webview_event`].
+    fn webview(&self) -> Option<crate::webview::HtmlNode> {
+        None
+    }
+
+    /// Deliver an interaction on an interactive webview element (slot-addressed
+    /// like [`GameProducer::ui_event`], against the webview's own handler
+    /// table). The default drops it: the honest no-op for producers whose
+    /// games define no `webview`.
+    fn webview_event(&mut self, _event: crate::ui::UiEvent) {}
+
     /// A pretty-printed (Rust `Debug`) view of the live game model, for
     /// introspection (the debug server's `GET /state` `model` field). Opaque
     /// debug text — see the module doc; consumers must not parse it.

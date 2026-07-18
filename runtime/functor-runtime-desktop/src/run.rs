@@ -614,6 +614,10 @@ fn service_debug_request(
                     game.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
+                debug_server::InputCommand::WebviewEvent { slot, kind } => {
+                    game.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    Ok(())
+                }
             };
             // Input injected while PAUSED journals entry-point calls no `tick`
             // will sweep — fold them into the inspector's last-frame journal so
@@ -866,6 +870,10 @@ pub fn run(args: Args) {
         // rest of the runtime keeps using `&gl`, which derefs through the Arc.
         let gl = std::sync::Arc::new(gl);
         let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
+        // The game's HTML/CSS webview overlay (`webview model`), blitz-rendered
+        // to a texture and composited between the game UI and the scrubber.
+        let mut webview_overlay =
+            crate::webview_overlay::WebviewOverlay::new(gl.clone(), shader_version);
         // The shell-owned time-travel scrubber (docs/time-travel.md T3), drawn
         // over the frame; interactive when the cursor is released (Escape).
         let mut scrubber = functor_runtime_common::ui::Scrubber::new(gl.clone());
@@ -884,6 +892,9 @@ pub fn run(args: Args) {
         // click on a `Ui.button` must drive the widget, not recapture the
         // cursor for free-look (the scrubber rule, docs/ui-interaction.md).
         let mut ui_wants_pointer = false;
+        // Same latch for the webview overlay: the pointer is over an element
+        // with an `Attr.onClick`/`Attr.onInput` handler.
+        let mut webview_wants_pointer = false;
         // Whether it wanted the KEYBOARD last frame (a `Ui.textInput` is
         // focused): keys then route to the overlay instead of the game's
         // `input` hook, and Escape defocuses the field instead of releasing
@@ -1163,10 +1174,21 @@ Escape again to quit"
                     {
                         match action {
                             Action::Press => {
-                                // Either overlay wanting the pointer — the
-                                // scrubber or the game UI's widgets — means
-                                // the click is for it, not a recapture.
-                                if scrubber_wants_pointer || ui_wants_pointer {
+                                // Any overlay wanting the pointer — the
+                                // scrubber, the game UI's widgets, or the
+                                // webview — means the click is for it, not a
+                                // recapture. The webview is hit-tested LIVE
+                                // (mouse_pos is window points == CSS px): the
+                                // one-frame latch reads the OLD tree after a
+                                // model-driven re-render, and a stationary
+                                // repeat-click would recapture the cursor.
+                                if scrubber_wants_pointer
+                                    || ui_wants_pointer
+                                    || webview_overlay.hit_interactive_css(
+                                        mouse_pos.0 as f32,
+                                        mouse_pos.1 as f32,
+                                    )
+                                {
                                     mouse_primary_down = true;
                                     mouse_primary_clicked = true;
                                 } else {
@@ -1834,12 +1856,25 @@ Escape again to quit"
             // don't let egui process the interaction at all — a paused
             // button must not visually depress, and a paused slider drag
             // must not fight its own reconciliation. [xreview]
-            let ui_pointer = if (scrubber_visible && scrubber_wants_pointer) || ignore_user_input
-            {
-                functor_runtime_common::ui::PointerState {
-                    pos: None,
-                    primary_down: pointer.primary_down,
-                }
+            let overlay_suppressed =
+                (scrubber_visible && scrubber_wants_pointer) || ignore_user_input;
+            let suppressed_pointer = functor_runtime_common::ui::PointerState {
+                pos: None,
+                primary_down: pointer.primary_down,
+            };
+            // The webview draws ABOVE the game UI, so while the pointer is
+            // over one of its interactive elements the egui pass must not
+            // also hit-test the click (the scrubber-over-ui rule) — one click
+            // must never fire a `Ui.button` AND a webview button. The webview
+            // itself is gated only by the scrubber/pin (never by its own
+            // latch, which would oscillate). [xreview]
+            let webview_pointer = if overlay_suppressed {
+                suppressed_pointer
+            } else {
+                pointer
+            };
+            let ui_pointer = if overlay_suppressed || webview_wants_pointer {
+                suppressed_pointer
             } else {
                 pointer
             };
@@ -1857,6 +1892,28 @@ Escape again to quit"
             if !ignore_user_input {
                 for event in ui_out.events {
                     game.ui_event(event);
+                }
+            }
+
+            // The HTML/CSS webview overlay (`webview model`), blitz-rendered
+            // over the game UI and under the scrubber. Same pointer
+            // arbitration as the game UI (`ui_pointer`): suppressed while the
+            // scrubber wants the pointer or the clock is pinned.
+            // TODO(webview): `webview()` clones the tree and `to_html`
+            // reserializes every frame — cache the serialized string in the
+            // producer once the protocol shape settles (perf follow-up).
+            let webview_html = game.webview().map(|node| node.to_html());
+            let webview_out = webview_overlay.frame(
+                fb_width as u32,
+                fb_height as u32,
+                dpi_scale,
+                webview_html.as_deref(),
+                webview_pointer,
+            );
+            webview_wants_pointer = webview_out.wants_pointer;
+            if !ignore_user_input {
+                for event in webview_out.events {
+                    game.webview_event(event);
                 }
             }
 

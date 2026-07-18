@@ -1278,6 +1278,17 @@ async fn run_async() -> Result<(), JsValue> {
             // draining stops the queue bursting on resume.
             functor_lang_game::drain_input(&mut **game, !clock.is_pinned());
 
+            // Webview interactions drain HERE, before render replaces the
+            // handler table — the queued slots were clicked against the DOM
+            // the LAST render published, so they must resolve against that
+            // render's table, not this frame's. Pinned frames drain-and-drop
+            // like all input. [xreview]
+            for event in functor_lang_game::take_webview_events() {
+                if !clock.is_pinned() {
+                    game.webview_event(event);
+                }
+            }
+
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
             game.push_asset_progress(asset_cache.progress());
@@ -1554,6 +1565,16 @@ async fn run_async() -> Result<(), JsValue> {
                     game.ui_event(event);
                 }
             }
+
+            // The HTML/CSS webview overlay: publish the serialized tree for
+            // the page's overlay (a REAL DOM node above the canvas — the
+            // browser is the renderer here; blitz is the native analogue).
+            // Interactions drained pre-tick above. TODO(webview): cache the
+            // serialized string in the producer instead of clone+reserialize
+            // per frame (perf follow-up).
+            functor_lang_game::publish_webview_html(
+                game.webview().map(|node| node.to_html()),
+            );
 
             // Publish the scrubber state for the DOM slider to poll (the UI
             // itself is native HTML in index-functor-lang.html, outside the canvas).

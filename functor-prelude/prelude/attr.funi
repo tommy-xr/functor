@@ -1,0 +1,22 @@
+// attr.funi — the `Attr` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//
+// Attributes for `Html.*` elements — CSS classes, inline styles, and the
+// event handlers that route interactions back through `update`.
+
+// The opaque attribute handle.
+type t
+
+let class : (string) => t
+let style : (string) => t
+let id : (string) => t
+// Any attribute by name: `Attr.attr("placeholder", "Your name")`.
+let attr : (string, string) => t
+// The controlled value of an `Html.input`.
+let value : (string) => t
+let placeholder : (string) => t
+// Like Ui.button's msg: delivered VERBATIM through `update` when the element
+// is clicked ('msg is erased by the opaque t; checked at runtime).
+let onClick : ('msg) => t
+// Like Ui.textInput's tagger: applied to the new text on each edit.
+let onInput : ('tagger) => t

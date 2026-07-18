@@ -28,10 +28,18 @@
       }
       /* The time-travel scrubber is the shared component (scrubber.js); it
          injects its own styles (the calm site theme). */
+      /* The game's HTML/CSS webview overlay (`webview model`): a REAL DOM
+         layer above the canvas — the browser renders here what blitz renders
+         natively. The game's tree lives in a SHADOW ROOT so its stylesheet
+         (Html.style) can't restyle the host chrome — matching blitz's
+         isolated document on native. The interior pointer-events rules live
+         inside the shadow root (page CSS can't cross the boundary). */
+      #webview { position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
+    <div id="webview"></div>
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
     <script type="module">
 
@@ -48,6 +56,10 @@
         functor_lang_set_project,
         functor_lang_inspector_trace_gen,
         functor_lang_inspector_trace,
+        functor_lang_webview_html,
+        functor_lang_webview_gen,
+        functor_lang_webview_click,
+        functor_lang_webview_input,
       } from "./pkg/functor_runtime_web.js";
       // The time-travel scrubber is the shared component, served next to pkg/
       // by the dev server (see runtime/functor-runtime-web/scrubber.js). It
@@ -257,6 +269,41 @@
         }
       };
 
+      // The webview overlay: poll the runtime's revision each frame and swap
+      // innerHTML only on change (the timeline-events pattern — no per-rAF
+      // string copies over the wasm boundary). The tree renders inside a
+      // SHADOW ROOT so the game's <style> can't leak onto the host chrome
+      // (mouselook button, scrubber) — the native blitz document is likewise
+      // isolated. Interactions route back by walking up from the event
+      // target to the nearest handler-stamped element, mirroring the native
+      // shell's bubble-chain walk (closest() stays within the shadow tree).
+      const setupWebview = () => {
+        const shadow = document.getElementById("webview").attachShadow({ mode: "open" });
+        // Only handler-carrying elements take pointer input; empty overlay
+        // space stays click-through to the canvas.
+        const baseCss =
+          "<style>[data-fn-click], [data-fn-input] { pointer-events: auto; }</style>";
+        let lastGen = -1;
+        const poll = () => {
+          const gen = functor_lang_webview_gen();
+          if (gen !== lastGen) {
+            lastGen = gen;
+            const html = functor_lang_webview_html();
+            shadow.innerHTML = html ? baseCss + html : "";
+          }
+          requestAnimationFrame(poll);
+        };
+        requestAnimationFrame(poll);
+        shadow.addEventListener("click", (e) => {
+          const el = e.target.closest("[data-fn-click]");
+          if (el) functor_lang_webview_click(Number(el.getAttribute("data-fn-click")));
+        });
+        shadow.addEventListener("input", (e) => {
+          const el = e.target.closest("[data-fn-input]");
+          if (el) functor_lang_webview_input(Number(el.getAttribute("data-fn-input")), e.target.value);
+        });
+      };
+
       init().then(() => {
         // In a deterministic capture (?fixed-time), don't wire up input — a
         // stray mouse move would turn the camera, like on native.
@@ -266,6 +313,10 @@
           mountScrubber();
           setupInspectorRelay();
         }
+        // The webview overlay renders even in deterministic captures (it is
+        // part of the frame's visual output); only its input wiring is inert
+        // then (paused clocks drop interactions runtime-side anyway).
+        setupWebview();
         setupSetSource();
       });
     </script>

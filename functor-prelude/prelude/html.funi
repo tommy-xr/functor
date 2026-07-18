@@ -1,0 +1,28 @@
+// html.funi — the `Html` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//
+// The optional `webview = (model) => …` hook's vocabulary: an Elm-style tree
+// of HTML elements styled with CSS. Native renders it via blitz (Stylo +
+// Taffy + Parley) composited over the 3D frame; wasm shows it as a real DOM
+// overlay above the canvas.
+
+// The opaque node handle (`Html.node` from game code).
+type node
+
+// A text node. Escaped — write markup with elements, not strings.
+let text : (string) => node
+// A generic element: `Html.element("section", [attrs], [children])`.
+let element : (string, List<Attr.t>, List<node>) => node
+// Common elements, all `(attrs, children)`.
+let div : (List<Attr.t>, List<node>) => node
+let span : (List<Attr.t>, List<node>) => node
+let button : (List<Attr.t>, List<node>) => node
+let h1 : (List<Attr.t>, List<node>) => node
+let h2 : (List<Attr.t>, List<node>) => node
+let p : (List<Attr.t>, List<node>) => node
+// A single-line text input (a void element — no children). Pair with
+// `Attr.value` (controlled) and `Attr.onInput`.
+let input : (List<Attr.t>) => node
+// A stylesheet: `Html.style(".hud { color: red; }")`. The CSS string is
+// emitted verbatim inside a <style> element.
+let style : (string) => node

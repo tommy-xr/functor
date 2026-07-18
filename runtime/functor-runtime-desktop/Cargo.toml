@@ -51,6 +51,17 @@ rodio = { version = "0.19", default-features = false, features = ["symphonia-wav
 symphonia = { version = "0.5", default-features = false, features = ["ogg"] }
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
+# Webview overlay: game-authored HTML/CSS UI rendered headlessly by blitz
+# (Stylo + Taffy + Parley) and CPU-painted into an RGBA buffer we upload as a
+# GL texture. Native-only — the wasm runtime shows the same tree as a real DOM
+# overlay instead. Pre-1.0: pinned exactly, expect churn on upgrades.
+blitz-dom = "=0.3.0-beta.1"
+blitz-html = "=0.3.0-beta.1"
+blitz-paint = "=0.3.0-beta.1"
+blitz-traits = "=0.3.0-beta.1"
+anyrender = "=0.11.1"
+anyrender_vello_cpu = "=0.14.0"
+markup5ever = "0.39"
 
 [dev-dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
