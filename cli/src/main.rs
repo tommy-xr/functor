@@ -281,7 +281,7 @@ async fn run(args: &Args) -> io::Result<()> {
             // either target (native interprets the file; wasm ships it as
             // text). `build wasm` then also writes the static web bundle.
             Command::Build { environment } => {
-                project.build(&working_directory_str)?;
+                project.build(&working_directory_str, true)?;
                 match environment {
                     Some(Environment::Wasm) => project.export_wasm(&working_directory_str),
                     _ => Ok(()),
@@ -291,7 +291,7 @@ async fn run(args: &Args) -> io::Result<()> {
                 environment,
                 runner_args,
             } => {
-                project.build(&working_directory_str)?;
+                project.build(&working_directory_str, false)?;
                 project
                     .run(
                         &working_directory_str,
@@ -305,7 +305,7 @@ async fn run(args: &Args) -> io::Result<()> {
                 environment,
                 runner_args,
             } => {
-                project.build(&working_directory_str)?;
+                project.build(&working_directory_str, false)?;
                 project
                     .run(
                         &working_directory_str,

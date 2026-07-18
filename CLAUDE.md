@@ -150,7 +150,13 @@ Produces `target/debug/functor` — a single binary with the desktop runtime bui
 ./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; Functor Lang hot-reload is built in
 ```
 
-Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors); `build wasm`
+Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
+**verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with
+the fetch/reimport hints), a URL verifies via the remote disk cache then a HEAD request
+(provably-404 = error; offline/unverifiable = warning, so offline builds stay usable). In
+projects with a generated `assets.fun`, bare-string asset args to consumers
+(`Scene.model("x.glb")`, `Effect.play`, `AudioSource.*`) get a deprecation warning pointing at
+the manifest. `build wasm`
 then also exports a **self-contained static web bundle** to `<project>/dist/web` — the rendered
 host page + the embedded web runtime + a copy of the project directory (hidden files and `dist/`
 excluded), with a warn-only lint for string-literal asset references that won't be in the bundle.

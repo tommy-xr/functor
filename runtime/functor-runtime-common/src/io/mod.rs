@@ -211,7 +211,8 @@ fn verify_magic(url: &str, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use remote::{
-    fetch_cached_blocking, set_remote_fetcher, RemoteFetchResult, RemoteFetchSender,
+    fetch_cached_blocking, remote_cache_hit, set_remote_fetcher, RemoteFetchResult,
+    RemoteFetchSender,
 };
 
 /// Remote (URL) asset fetching for the native runtime.
@@ -276,6 +277,12 @@ mod remote {
         verify_magic(url, &bytes)?;
         cache_write(url, &bytes);
         Ok(bytes)
+    }
+
+    /// Whether a VERIFIED disk-cache entry exists for `url` — the build-time
+    /// existence check's fast path (no network touched).
+    pub fn remote_cache_hit(url: &str) -> bool {
+        cache_read(url).is_some_and(|bytes| verify_magic(url, &bytes).is_ok())
     }
 
     /// Synchronous check-cache → download → verify → store, for TOOLING (the
