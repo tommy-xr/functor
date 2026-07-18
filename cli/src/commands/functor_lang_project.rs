@@ -532,6 +532,77 @@ mod tests {
     use super::entry_escapes_project;
     use super::nth_line;
 
+    /// Every shipped example typechecks against the engine prelude — the
+    /// game-level half of the `.funi` ↔ implementation sync story: the drift
+    /// tests (functor_runtime_common) pin interface ≡ registrations, and this
+    /// sweep pins that the interface still describes what real games write.
+    /// It runs `build`'s exact gate (prelude-injected load + whole-program
+    /// check) minus the manifest/emit side effects, so it needs no fetched
+    /// assets, GPU, or network. A prelude signature change that breaks any
+    /// example now fails `cargo test` instead of waiting for a manual sweep.
+    #[test]
+    fn every_shipped_example_typechecks() {
+        let examples: std::path::PathBuf =
+            [env!("CARGO_MANIFEST_DIR"), "..", "examples"].iter().collect();
+        let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&examples)
+            .expect("examples directory")
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|dir| dir.join("functor.json").is_file())
+            .collect();
+        dirs.sort();
+        assert!(
+            dirs.len() >= 20,
+            "expected the full example set, found {} project dirs — did the \
+examples move?",
+            dirs.len()
+        );
+
+        let mut failures = Vec::new();
+        for dir in &dirs {
+            let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let dir_str = dir.to_string_lossy().into_owned();
+            let Some(project) = super::detect(&dir_str) else {
+                failures.push(format!("{name}: functor.json did not parse as a project"));
+                continue;
+            };
+            let entry = match project.entry_path(&dir_str) {
+                Ok(entry) => entry,
+                Err(e) => {
+                    failures.push(format!("{name}: {e}"));
+                    continue;
+                }
+            };
+            match functor_lang::project::load_with_prelude(
+                &entry,
+                &std::collections::HashMap::new(),
+                &functor_prelude::modules(),
+            ) {
+                Ok(loaded) => {
+                    for diag in loaded.check() {
+                        let (file, line, col) = loaded.sources.resolve(diag.span.start);
+                        failures.push(format!(
+                            "{name}: {}:{line}:{col}: {}",
+                            file.path.display(),
+                            diag.message
+                        ));
+                    }
+                }
+                Err(e) => failures.push(format!(
+                    "{name}: {}:{}:{}: {}",
+                    e.path.display(),
+                    e.line,
+                    e.col,
+                    e.message
+                )),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "shipped examples no longer typecheck against the prelude:\n{}",
+            failures.join("\n")
+        );
+    }
+
     #[test]
     fn nth_line_returns_the_1_based_line_without_newline() {
         let src = "one\ntwo\nthree";
