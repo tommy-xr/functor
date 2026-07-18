@@ -460,6 +460,19 @@ a:hover {
   color: var(--pink);
 }
 
+/* The release badge next to the wordmark. The HTML ships "pre-alpha"; the site
+   build stamps in the latest release tag (see build.mjs). */
+.version-badge {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+  cursor: default;
+}
+
 .sandbox-controls {
   display: flex;
   align-items: center;

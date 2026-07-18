@@ -8,8 +8,9 @@
 //
 // The output is fully static — deploy site/dist to any static host.
 
-import { cp, mkdir, rm, access } from "node:fs/promises";
+import { cp, mkdir, rm, access, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 import esbuild from "esbuild";
 import { EXAMPLES } from "./src/examples.js";
 
@@ -52,8 +53,34 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(`${dist}/pkg`, { recursive: true });
 await mkdir(`${dist}/examples`, { recursive: true });
 
+// The latest release tag (vX.Y.Z), stamped into each page's header
+// version-badge so the deployed site names the release it accompanies. No
+// reachable tag (fresh history, shallow checkout) → the badge stays the
+// source's plain "pre-alpha".
+let version = "";
+try {
+  const tag = execSync("git describe --tags --abbrev=0 --match 'v[0-9]*'", {
+    cwd: root,
+    stdio: ["ignore", "pipe", "ignore"],
+  })
+    .toString()
+    .trim();
+  if (/^v\d+\.\d+\.\d+$/.test(tag)) version = tag;
+} catch {}
+
 for (const page of PAGES) {
-  await cp(`${site}${page}`, `${dist}/${page}`);
+  if (version && page.endsWith(".html")) {
+    const html = await readFile(`${site}${page}`, "utf8");
+    await writeFile(
+      `${dist}/${page}`,
+      html.replace(
+        /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
+        `$1${version} · pre-alpha$2`
+      )
+    );
+  } else {
+    await cp(`${site}${page}`, `${dist}/${page}`);
+  }
 }
 for (const icon of ICONS) {
   try {

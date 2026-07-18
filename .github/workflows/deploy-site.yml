@@ -22,6 +22,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history + tags: site:build stamps the latest vX.Y.Z into the
+          # header version-badge via `git describe`, which has to walk from
+          # HEAD back to the tagged commit — a shallow checkout (even with
+          # fetch-tags) only finds a tag sitting exactly on HEAD.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
