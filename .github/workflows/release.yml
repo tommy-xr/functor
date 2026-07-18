@@ -8,11 +8,17 @@ name: Release
 #   1. resolves + validates the version and that the tag vX.Y.Z is free
 #   2. generates release notes from the conventional commits since the last
 #      release tag (git-cliff, config in cliff.toml)
-#   3. builds + sanity-checks the `functor` binary for every supported
-#      platform (release-binaries.yml, reused via workflow_call)
-#   4. creates the vX.Y.Z tag and a PRE-RELEASE GitHub release (Functor is
-#      alpha) with the notes and all platform archives attached
-#   5. dispatches Deploy Site, so the deployed site header picks up the new
+#   3. builds + sanity-checks the `functor` binary (and the functor-lang-lsp
+#      language server) for every supported platform (release-binaries.yml,
+#      reused via workflow_call)
+#   4. packages a platform VS Code extension VSIX per target with the
+#      language server bundled and the release version injected
+#   5. creates the vX.Y.Z tag and a PRE-RELEASE GitHub release (Functor is
+#      alpha) with the notes, platform archives, and VSIXes attached
+#   6. publishes the VSIXes to the VS Code Marketplace and Open VSX — each
+#      gated on its PAT secret (VSCE_PAT / OVSX_PAT), skipped with a notice
+#      when the secret isn't configured
+#   7. dispatches Deploy Site, so the deployed site header picks up the new
 #      tag (a GITHUB_TOKEN-created tag does not fire push-triggered workflows
 #      on its own — explicit workflow_dispatch is the sanctioned exception)
 #
@@ -100,8 +106,69 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.version }}
 
-  publish:
+  # One VSIX per platform, each bundling that platform's language server.
+  # vsce's --target makes the Marketplace serve the right one automatically;
+  # release-page installs pick the file matching their platform.
+  vsix:
     needs: [prepare, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # Each lsp-<target> artifact lands in its own subdir of lsp/.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lsp-*
+          path: lsp
+
+      # Root deps too: the extension's vscode:prepublish hook runs the repo's
+      # icon generator (scripts/generate-icons.mjs).
+      - name: Install npm dependencies
+        run: |
+          npm ci
+          npm ci --prefix tools/functor-lang-vscode
+
+      - name: Package platform VSIXes
+        working-directory: tools/functor-lang-vscode
+        run: |
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          mkdir -p out
+          for pair in \
+            x86_64-unknown-linux-gnu:linux-x64 \
+            aarch64-apple-darwin:darwin-arm64 \
+            x86_64-apple-darwin:darwin-x64 \
+            x86_64-pc-windows-msvc:win32-x64; do
+            target="${pair%%:*}"
+            vt="${pair##*:}"
+            rm -rf server && mkdir server
+            if [[ "$vt" == win32-x64 ]]; then
+              cp "$GITHUB_WORKSPACE/lsp/lsp-$target/functor-lang-lsp.exe" server/
+            else
+              # download-artifact does not preserve the exec bit; vsce records
+              # file modes into the VSIX, so restore it before packaging.
+              cp "$GITHUB_WORKSPACE/lsp/lsp-$target/functor-lang-lsp" server/
+              chmod +x server/functor-lang-lsp
+            fi
+            npx --yes @vscode/vsce@3.9.2 package --target "$vt" --pre-release \
+              --out "out/functor-lang-$VERSION-$vt.vsix"
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-bundles
+          path: tools/functor-lang-vscode/out/*.vsix
+          retention-days: 14
+
+  publish:
+    needs: [prepare, binaries, vsix]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -111,12 +178,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Flattens every artifact (release-notes + the per-platform archives
-      # from release-binaries.yml) into assets/.
+      # Only what gets attached to the release lands in assets/: the platform
+      # archives (functor-*), the notes, and the VSIXes — NOT the raw lsp-*
+      # binaries (whose identical filenames would also collide when merged).
       - uses: actions/download-artifact@v4
         with:
+          pattern: functor-*
           path: assets
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix-bundles
+          path: assets
 
       # The tag is created + pushed explicitly, then the release attaches to
       # it: `gh release create --target <sha>` is rejected with a 403 for the
@@ -136,7 +213,53 @@ jobs:
             --title "v$VERSION" \
             --prerelease \
             --notes-file assets/release-notes.md \
-            assets/functor-*.tar.gz assets/functor-*.zip
+            assets/functor-*.tar.gz assets/functor-*.zip assets/*.vsix
+
+  # Marketplace publishes are gated on their PATs. Secrets are not readable in
+  # a job-level `if:`, so each job checks the env inside the step and skips
+  # with a notice when unconfigured — a missing publisher account must never
+  # fail the release (the VSIXes are on the release page regardless).
+  publish-marketplace:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix-bundles
+          path: vsix
+      - name: Publish to the VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [[ -z "$VSCE_PAT" ]]; then
+            echo "::notice::VSCE_PAT is not configured — skipping the VS Code Marketplace publish"
+            exit 0
+          fi
+          for f in vsix/*.vsix; do
+            npx --yes @vscode/vsce@3.9.2 publish --pre-release --packagePath "$f" -p "$VSCE_PAT"
+          done
+
+  publish-openvsx:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix-bundles
+          path: vsix
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [[ -z "$OVSX_PAT" ]]; then
+            echo "::notice::OVSX_PAT is not configured — skipping the Open VSX publish"
+            exit 0
+          fi
+          for f in vsix/*.vsix; do
+            npx --yes ovsx@1.0.2 publish --pre-release --packagePath "$f" -p "$OVSX_PAT"
+          done
 
   # A separate job so a failed dispatch can be rerun without tripping over
   # the already-created release in `publish`.

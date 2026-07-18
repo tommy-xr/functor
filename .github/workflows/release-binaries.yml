@@ -44,16 +44,20 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: functor
+            lsp_bin: functor-lang-lsp
           - os: macos-14 # Apple Silicon (native)
             target: aarch64-apple-darwin
             bin: functor
+            lsp_bin: functor-lang-lsp
           - os: macos-14 # Intel, cross-compiled on the arm64 runner
             target: x86_64-apple-darwin
             bin: functor
+            lsp_bin: functor-lang-lsp
             cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: functor.exe
+            lsp_bin: functor-lang-lsp.exe
 
     steps:
       - uses: actions/checkout@v6
@@ -155,4 +159,20 @@ jobs:
         with:
           name: functor-${{ matrix.target }}
           path: ${{ env.ASSET }}
+          retention-days: 14
+
+      # The language server ships inside the platform VSIXes (the vsix job in
+      # release.yml). A tiny pure-Rust crate, so the warm toolchain/cache make
+      # this nearly free. Artifact names deliberately do NOT start with
+      # "functor-" — the publish job downloads the release archives by that
+      # pattern. (No exec sanity check: it's a blocking stdio server with no
+      # --version; the VSIX e2e path covers it.)
+      - name: Build language server
+        run: cargo build --bin functor-lang-lsp --release --target ${{ matrix.target }}
+
+      - name: Upload language server
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.lsp_bin }}
           retention-days: 14
