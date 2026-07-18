@@ -1,0 +1,130 @@
+name: Release
+
+# The release pipeline (manually dispatched, main only). Given a version
+# X.Y.Z it:
+#
+#   1. validates the version and that the tag vX.Y.Z is free
+#   2. generates release notes from the conventional commits since the last
+#      release tag (git-cliff, config in cliff.toml)
+#   3. builds + sanity-checks the `functor` binary for every supported
+#      platform (release-binaries.yml, reused via workflow_call)
+#   4. creates the vX.Y.Z tag and a PRE-RELEASE GitHub release (Functor is
+#      pre-alpha) with the notes and all platform archives attached
+#   5. dispatches Deploy Site, so the deployed site header picks up the new
+#      tag (a GITHUB_TOKEN-created tag does not fire push-triggered workflows
+#      on its own — explicit workflow_dispatch is the sanctioned exception)
+#
+# The tag is the single source of truth for the version: nothing in-repo is
+# bumped. The binaries bake the version via FUNCTOR_RELEASE_VERSION (the CLI
+# crate stays 0.0.0-dev), and the site stamps its header badge from the
+# latest reachable tag at build time.
+#
+# `inputs.version` is user-controlled text: every job reads it through an
+# env var (never `${{ }}`-interpolated into a `run:` script), so it cannot
+# inject shell into a write-capable job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 0.1.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: release # never two releases at once; a second dispatch queues
+  cancel-in-progress: false
+
+# Only the jobs that need write access get it (see their `permissions`).
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history + tags: git-cliff walks last-tag..HEAD, and the
+          # tag-free check needs the existing tags.
+          fetch-depth: 0
+
+      - name: Validate version and ref
+        run: |
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
+            || { echo "::error::releases are cut from main, not $GITHUB_REF"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::version '$VERSION' is not of the form X.Y.Z"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists"
+            exit 1
+          fi
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff@2.13.1
+
+      - name: Generate release notes
+        run: |
+          git-cliff --unreleased --tag "v$VERSION" -o release-notes.md
+          cat release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 14
+
+  binaries:
+    needs: prepare
+    uses: ./.github/workflows/release-binaries.yml
+    with:
+      version: ${{ inputs.version }}
+
+  publish:
+    needs: [prepare, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the tag + release
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Flattens every artifact (release-notes + the per-platform archives
+      # from release-binaries.yml) into assets/.
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create tag + pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l assets
+          gh release create "v$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --prerelease \
+            --notes-file assets/release-notes.md \
+            assets/functor-*.tar.gz assets/functor-*.zip
+
+  # A separate job so a failed dispatch can be rerun without tripping over
+  # the already-created release in `publish`.
+  deploy-site:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # dispatch Deploy Site
+    steps:
+      - name: Deploy the site (stamps the new version into the header)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-site.yml --ref main --repo "$GITHUB_REPOSITORY"
