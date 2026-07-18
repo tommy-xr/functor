@@ -103,6 +103,10 @@
         functor_lang_key_event,
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
+        functor_lang_ui_pointer,
+        functor_lang_ui_pointer_leave,
+        functor_lang_ui_wants_keyboard,
+        functor_lang_ui_key,
         functor_lang_is_running,
         functor_lang_scene_frame,
         functor_lang_inspector_trace,
@@ -150,6 +154,13 @@
         if (code.length === 4 && code.startsWith("Key")) {
           return code.charCodeAt(3) - 64;
         }
+        // "Digit0".."Digit9" / "Numpad0".."Numpad9" -> Num0=34..Num9=43.
+        if (code.startsWith("Digit") && code.length === 6) {
+          return code.charCodeAt(5) - 48 + 34;
+        }
+        if (code.startsWith("Numpad") && code.length === 7) {
+          return code.charCodeAt(6) - 48 + 34;
+        }
         switch (code) {
           case "ArrowUp": return 27;
           case "ArrowDown": return 28;
@@ -165,16 +176,32 @@
       const setupInput = () => {
         const canvas = document.getElementById("canvas");
 
+        // While a Ui.textInput is focused (the runtime reports it after each
+        // frame), keydowns route to the OVERLAY instead — the game's input
+        // hook is suppressed (docs/ui-interaction.md U4; repeats pass through
+        // so held backspace repeats). `gameHeld` tracks the presses the GAME
+        // actually received, so a release whose press was swallowed by a
+        // focused field never leaks a phantom release edge. Kept in sync with
+        // index-functor-lang.html.
+        const gameHeld = new Set();
         window.addEventListener("keydown", (e) => {
+          if (functor_lang_ui_wants_keyboard()) {
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
+            if (functor_lang_ui_key(e.key)) e.preventDefault();
+            return;
+          }
           const code = keyCode(e.code);
           if (code === 0) return;
           e.preventDefault();
-          if (!e.repeat) functor_lang_key_event(code, true);
+          if (!e.repeat) {
+            functor_lang_key_event(code, true);
+            gameHeld.add(code);
+          }
         });
         window.addEventListener("keyup", (e) => {
           const code = keyCode(e.code);
           if (code === 0) return;
-          functor_lang_key_event(code, false);
+          if (gameHeld.delete(code)) functor_lang_key_event(code, false);
         });
 
         // Mouse free-look. Pointer Lock is the browser equivalent of the
@@ -201,6 +228,35 @@
         canvas.addEventListener("wheel", (e) => {
           e.preventDefault();
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
+        });
+
+        // Interactive game UI (docs/ui-interaction.md U3): while the pointer
+        // is FREE (not look mode), its canvas position + primary button drive
+        // the game's `Ui.*` widgets. CSS px — the runtime scales by the
+        // device pixel ratio. Pointer lock engaging counts as leaving. Kept
+        // in sync with index-functor-lang.html.
+        let uiButtonDown = false;
+        const uiPointer = (e) => {
+          if (document.pointerLockElement === canvas) return;
+          functor_lang_ui_pointer(e.offsetX, e.offsetY, uiButtonDown);
+        };
+        canvas.addEventListener("mousemove", uiPointer);
+        canvas.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          uiButtonDown = true;
+          uiPointer(e);
+        });
+        canvas.addEventListener("mouseup", (e) => {
+          if (e.button !== 0) return;
+          uiButtonDown = false;
+          uiPointer(e);
+        });
+        canvas.addEventListener("mouseleave", () => {
+          uiButtonDown = false;
+          functor_lang_ui_pointer_leave();
+        });
+        document.addEventListener("pointerlockchange", () => {
+          if (document.pointerLockElement === canvas) functor_lang_ui_pointer_leave();
         });
       };
 
