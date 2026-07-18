@@ -966,42 +966,9 @@ pub fn install_debug_log_sink() {
     }));
 }
 
-const PATHS: &[&str] = &[
-    "Ui.text",
-    "Ui.textColor",
-    "Ui.column",
-    "Ui.row",
-    "Ui.panel",
-    "Ui.button",
-    "Ui.slider",
-    "Ui.textInput",
-    "Sub.none",
-    "Sub.every",
-    "Sub.batch",
-    "Sub.assets",
-    "Effect.none",
-    "Effect.now",
-    "Effect.random",
-    "Effect.batch",
-    "Sub.connect",
-    "Sub.listen",
-    "Effect.send",
-    "Effect.httpGet",
-    "Effect.httpPost",
-    "Effect.play",
-    "Effect.playAt",
-    "Effect.playThen",
-    "AudioSource.ambient",
-    "AudioSource.at",
-    "AudioSource.gain",
-    "AudioScene.create",
-    "AudioScene.empty",
-];
-
-/// The typed external registry (see [`crate::host_registry`]) — consulted
-/// BEFORE the legacy `match path` below, so externals migrate arm-by-arm.
-/// New externals should be registered here, not added as match arms; the
-/// drift test asserts `.funi` signatures ≡ (registry ∪ legacy `PATHS`).
+/// The typed external registry (see [`crate::host_registry`]) — the ONLY
+/// dispatch: every prelude external is registered here. The drift test
+/// asserts `.funi` signatures ≡ the registered paths (with matching arities).
 pub(crate) fn registry() -> &'static crate::host_registry::Registry {
     static REGISTRY: std::sync::OnceLock<crate::host_registry::Registry> =
         std::sync::OnceLock::new();
@@ -1017,6 +984,10 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_physics(&mut reg);
         register_assets(&mut reg);
         register_anim(&mut reg);
+        register_effects(&mut reg);
+        register_subs(&mut reg);
+        register_ui_widgets(&mut reg);
+        register_audio(&mut reg);
         reg
     })
 }
@@ -1108,6 +1079,9 @@ crate::host_returnable!(
     FunctorLangEffect,
     FunctorLangSub,
     FunctorLangAsset,
+    FunctorLangView,
+    FunctorLangAudioSource,
+    FunctorLangAudioScene,
 );
 
 fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
@@ -1994,6 +1968,274 @@ additive local XYZ rotation";
     );
 }
 
+/// The Effect vocabulary — fire-and-forget commands returned beside the
+/// model. Taggers are validated callable at construction (the [`Tagger`]
+/// rule) so a typo fails at the call, not frames later when the result lands.
+fn register_effects(reg: &mut crate::host_registry::Registry) {
+    reg.fn0("Effect.none", "Effect.none()", || FunctorLangEffect(EffectTree::None));
+    // The tagger is a Functor Lang function value, applied by the producer with the
+    // performed result.
+    reg.fn1("Effect.now", "Effect.now(tagger)", |tagger: Tagger| {
+        FunctorLangEffect(EffectTree::Now { tagger: tagger.0 })
+    });
+    reg.fn1("Effect.random", "Effect.random(tagger)", |tagger: Tagger| {
+        FunctorLangEffect(EffectTree::Random { tagger: tagger.0 })
+    });
+    reg.fn1(
+        "Effect.batch",
+        "Effect.batch([effect, …])",
+        |fx: Vec<FunctorLangEffect>| {
+            FunctorLangEffect(EffectTree::Batch(fx.into_iter().map(|f| f.0).collect()))
+        },
+    );
+    reg.fn2(
+        "Effect.send",
+        "Effect.send(connId, text)",
+        |conn: f64, text: String| {
+            // A connection id is a non-negative whole number the host handed
+            // the game; reject garbage rather than truncate it to some OTHER
+            // live client.
+            if conn < 0.0 || conn.fract() != 0.0 || conn > u64::MAX as f64 {
+                return Err(format!(
+                    "Effect.send: connId must be a non-negative whole number, got {conn}"
+                ));
+            }
+            Ok(FunctorLangEffect(EffectTree::Send { conn, text }))
+        },
+    );
+    // httpGet(url, tagger) / httpPost(url, body, tagger). The tagger is a
+    // function of the Net.HttpResponse; performing the effect (drain) mints a
+    // token, queues the request, and registers the tagger by token — see
+    // EffectTree::Http.
+    reg.fn2(
+        "Effect.httpGet",
+        "Effect.httpGet(url, tagger)",
+        |url: String, tagger: Tagger| {
+            FunctorLangEffect(EffectTree::Http {
+                method: crate::net::HttpMethod::Get,
+                url,
+                body: String::new(),
+                tagger: tagger.0,
+            })
+        },
+    );
+    reg.fn3(
+        "Effect.httpPost",
+        "Effect.httpPost(url, body, tagger)",
+        |url: String, body: String, tagger: Tagger| {
+            FunctorLangEffect(EffectTree::Http {
+                method: crate::net::HttpMethod::Post,
+                url,
+                body,
+                tagger: tagger.0,
+            })
+        },
+    );
+    // Fire-and-forget audio one-shots (the dual of `soundScape`). `play` is
+    // non-spatial; `playAt` is positioned. Both queue an AudioCommand on
+    // drain — see EffectTree::PlayAudio.
+    reg.fn1("Effect.play", "Effect.play(sound)", |sound: SoundPath| {
+        FunctorLangEffect(EffectTree::PlayAudio {
+            sound: sound.0,
+            position: None,
+        })
+    });
+    reg.fn2(
+        "Effect.playAt",
+        "Effect.playAt(sound, v)",
+        |sound: SoundPath, v: FunctorLangVec3| {
+            let (x, y, z) = v.0;
+            FunctorLangEffect(EffectTree::PlayAudio {
+                sound: sound.0,
+                position: Some([x, y, z]),
+            })
+        },
+    );
+    // Play once and deliver `msg` (a message VALUE, not a tagger) when the
+    // sound finishes — see EffectTree::PlayAudioThen. Any value is a valid
+    // message, so there is nothing to validate.
+    reg.fn2(
+        "Effect.playThen",
+        "Effect.playThen(sound, msg)",
+        |sound: SoundPath, msg: Value| {
+            FunctorLangEffect(EffectTree::PlayAudioThen {
+                sound: sound.0,
+                message: msg,
+            })
+        },
+    );
+}
+
+/// The Sub vocabulary — what the optional `subscriptions` hook returns.
+fn register_subs(reg: &mut crate::host_registry::Registry) {
+    reg.fn0("Sub.none", "Sub.none()", || FunctorLangSub(SubTree::None));
+    // The msg is any Functor Lang value (typically an ADT variant), held by the
+    // host and handed back verbatim when the timer fires.
+    reg.fn2(
+        "Sub.every",
+        "Sub.every(duration, msg)",
+        |duration: FunctorLangDuration, msg: Value| {
+            FunctorLangSub(SubTree::Every {
+                period_seconds: duration.0,
+                msg,
+            })
+        },
+    );
+    reg.fn1("Sub.batch", "Sub.batch([sub, …])", |subs: Vec<FunctorLangSub>| {
+        FunctorLangSub(SubTree::Batch(subs.into_iter().map(|s| s.0).collect()))
+    });
+    // Asset-loading progress SUB: the tagger receives
+    // `{loaded, total, failed}` whenever the loading snapshot changes (see
+    // functor_lang_producer's delivery). The loading-screen seam.
+    reg.fn1("Sub.assets", "Sub.assets(tagger)", |tagger: Tagger| {
+        FunctorLangSub(SubTree::Assets { tagger: tagger.0 })
+    });
+    // A persistent connection (client) / listener (server): the key is the
+    // endpoint; the tagger receives `Net.NetEvent` values.
+    fn conn(listen: bool) -> impl Fn(String, Tagger) -> FunctorLangSub {
+        move |key, tagger| {
+            FunctorLangSub(SubTree::Connect {
+                key,
+                listen,
+                tagger: tagger.0,
+            })
+        }
+    }
+    reg.fn2("Sub.connect", "Sub.connect(endpoint, tagger)", conn(false));
+    reg.fn2("Sub.listen", "Sub.listen(endpoint, tagger)", conn(true));
+}
+
+/// The Ui widgets (the optional `ui = (model) => …` hook): text lines,
+/// stacks, panels, and the interactive widgets (docs/ui-interaction.md).
+/// The shells lower the View through the shared egui overlay.
+fn register_ui_widgets(reg: &mut crate::host_registry::Registry) {
+    reg.fn1("Ui.text", "Ui.text(\"…\")", |text: String| {
+        FunctorLangView(View::Text {
+            text,
+            color: [255, 255, 255],
+            font: None,
+        })
+    });
+    reg.fn2(
+        "Ui.textColor",
+        "Ui.textColor(color, \"…\")",
+        |color: FunctorLangColor, text: String| {
+            let (r, g, b) = color.0;
+            FunctorLangView(View::Text {
+                text,
+                color: ui::rgb_u8(r, g, b),
+                font: None,
+            })
+        },
+    );
+    reg.fn1("Ui.column", "Ui.column([view, …])", |views: Vec<FunctorLangView>| {
+        FunctorLangView(View::Column(views.into_iter().map(|v| v.0).collect()))
+    });
+    reg.fn1("Ui.row", "Ui.row([view, …])", |views: Vec<FunctorLangView>| {
+        FunctorLangView(View::Row(views.into_iter().map(|v| v.0).collect()))
+    });
+    // View LAST (subject-last), so it pipes:
+    // `Ui.column([…]) |> Ui.panel(Ui.topLeft())`.
+    reg.fn2(
+        "Ui.panel",
+        "Ui.panel(anchor, view)",
+        |anchor: FunctorLangUiAnchor, view: FunctorLangView| {
+            FunctorLangView(View::Panel {
+                anchor: anchor.0,
+                child: Box::new(view.0),
+            })
+        },
+    );
+    // The msg is any Functor Lang value (typically an ADT variant), registered in
+    // the frame's handler table and delivered VERBATIM through `update` when
+    // the shell reports a click on the stamped slot — the `Sub.every`
+    // message shape.
+    reg.fn2(
+        "Ui.button",
+        "Ui.button(\"label\", msg) — msg is delivered to update on click",
+        |label: String, msg: Value| {
+            let slot = push_ui_handler(UiHandler::Msg(msg));
+            FunctorLangView(View::Button { slot, label })
+        },
+    );
+    // A slider over min..=max showing the MODEL's value (a controlled
+    // widget, docs/ui-interaction.md U4). The tagger is applied to the
+    // dragged value and the message folds through `update` — the
+    // `Effect.now` tagger shape.
+    reg.fn4(
+        "Ui.slider",
+        "Ui.slider(min, max, value, tagger) — tagger: (newValue) => msg",
+        |min: f64, max: f64, value: f64, tagger: Tagger| {
+            if max <= min {
+                return Err(format!(
+                    "Ui.slider: max ({max}) must be greater than min ({min})"
+                ));
+            }
+            let slot = push_ui_handler(UiHandler::Tagger(tagger.0));
+            Ok(FunctorLangView(View::Slider {
+                slot,
+                min,
+                max,
+                value,
+            }))
+        },
+    );
+    // A single-line text input showing the MODEL's text (controlled,
+    // docs/ui-interaction.md U4). The tagger is applied to the new text on
+    // each edit — the `Effect.now` tagger shape.
+    reg.fn2(
+        "Ui.textInput",
+        "Ui.textInput(value, tagger) — tagger: (newText) => msg",
+        |value: String, tagger: Tagger| {
+            let slot = push_ui_handler(UiHandler::Tagger(tagger.0));
+            FunctorLangView(View::TextInput { slot, value })
+        },
+    );
+}
+
+/// The audio vocabulary — soundscape voices (the continuous, reconciled half
+/// of audio; the one-shots live in `register_effects`). Voices are keyed for
+/// cross-frame identity so the shell keeps a live voice playing.
+fn register_audio(reg: &mut crate::host_registry::Registry) {
+    // `ambient` is a non-spatial bed; `at` is positioned.
+    reg.fn2(
+        "AudioSource.ambient",
+        "AudioSource.ambient(key, sound)",
+        |key: String, sound: SoundPath| {
+            FunctorLangAudioSource(crate::audio::AudioSource::ambient(key, sound.0))
+        },
+    );
+    reg.fn3(
+        "AudioSource.at",
+        "AudioSource.at(key, sound, v)",
+        |key: String, sound: SoundPath, v: FunctorLangVec3| {
+            let (x, y, z) = v.0;
+            FunctorLangAudioSource(crate::audio::AudioSource::at(key, sound.0, x, y, z))
+        },
+    );
+    // Source LAST (subject-last) so it pipes:
+    // `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
+    reg.fn2(
+        "AudioSource.gain",
+        "AudioSource.gain(gain, source)",
+        |gain: f64, source: FunctorLangAudioSource| {
+            FunctorLangAudioSource(source.0.with_gain(gain as f32))
+        },
+    );
+    reg.fn1(
+        "AudioScene.create",
+        "AudioScene.create([source, …])",
+        |sources: Vec<FunctorLangAudioSource>| {
+            FunctorLangAudioScene(crate::audio::AudioScene::new(
+                sources.into_iter().map(|s| s.0).collect(),
+            ))
+        },
+    );
+    reg.fn0("AudioScene.empty", "AudioScene.empty()", || {
+        FunctorLangAudioScene(crate::audio::AudioScene::default())
+    });
+}
+
 /// Branded values convert through the registry with the same teaching errors
 /// the legacy extractors give — written once, on each type. Handle-shaped
 /// types without a teaching extractor (Scene, Light, Camera, Frame) get the
@@ -2026,6 +2268,31 @@ relative to the game dir"
     }
 }
 
+/// A sound argument (the [`ModelPath`] dual-accept pattern, for audio —
+/// #384): a non-empty path string, or an `Asset.sound` locator (a wrong-kind
+/// asset gets `asset_path`'s teaching error). The legacy arms answered a
+/// wrong-type sound with their own full `usage:` line; those flatten to this
+/// shared teaching text (a pinned delta).
+struct SoundPath(String);
+
+impl crate::host_registry::FromArg for SoundPath {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        match value {
+            Value::String(p) if !p.is_empty() => Ok(SoundPath(p.to_string())),
+            v if asset_of(v).is_some() => {
+                asset_path(v, AssetKind::Sound, path, span).map(SoundPath)
+            }
+            _ => Err(RunError {
+                message: format!(
+                    "{path}: expected a sound — a non-empty path string or \
+Asset.sound(\"file.ogg\")"
+                ),
+                span,
+            }),
+        }
+    }
+}
+
 /// A tagger argument — a function of the performed result (a closure or an
 /// ADT constructor), validated callable at construction so a typo fails at
 /// the call, not frames later when the result lands.
@@ -2047,7 +2314,8 @@ impl crate::host_registry::FromArg for Tagger {
 }
 
 /// Implements [`crate::host_registry::FromArg`] for a handle newtype by
-/// downcasting, with the uniform typed error.
+/// downcasting, with the uniform typed error. `$name` carries its article
+/// ("a Scene", "an Effect") so the message reads naturally.
 macro_rules! handle_arg {
     ($($ty:ident => $name:literal),+ $(,)?) => {$(
         impl crate::host_registry::FromArg for $ty {
@@ -2059,7 +2327,7 @@ macro_rules! handle_arg {
                 }
                 Err(RunError {
                     message: format!(
-                        "{path}: expected a {}, got {}",
+                        "{path}: expected {}, got {}",
                         $name,
                         value.kind_name()
                     ),
@@ -2071,12 +2339,16 @@ macro_rules! handle_arg {
 }
 
 handle_arg!(
-    FunctorLangScene => "Scene",
-    FunctorLangLight => "Light",
-    FunctorLangCamera => "Camera",
-    FunctorLangFrame => "Frame",
-    FunctorLangShape => "Shape",
-    FunctorLangBody => "Body",
+    FunctorLangScene => "a Scene",
+    FunctorLangLight => "a Light",
+    FunctorLangCamera => "a Camera",
+    FunctorLangFrame => "a Frame",
+    FunctorLangShape => "a Shape",
+    FunctorLangBody => "a Body",
+    FunctorLangEffect => "an Effect",
+    FunctorLangSub => "a Sub",
+    FunctorLangView => "a View",
+    FunctorLangAudioSource => "an AudioSource",
 );
 
 impl crate::host_registry::FromArg for FunctorLangAngle {
@@ -2121,446 +2393,36 @@ impl crate::host_registry::FromArg for FunctorLangSkybox {
     }
 }
 
+impl crate::host_registry::FromArg for FunctorLangDuration {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        duration_of(value, path, span).map(FunctorLangDuration)
+    }
+}
+
+// `ui_anchor_of` names `Ui.panel` in its teaching errors itself (the only
+// anchor-consuming external), so the path parameter is unused.
+impl crate::host_registry::FromArg for FunctorLangUiAnchor {
+    fn from_arg(value: &Value, _path: &str, span: Span) -> Result<Self, RunError> {
+        ui_anchor_of(value, span).map(FunctorLangUiAnchor)
+    }
+}
+
 impl Host for FunctorHost {
     fn provides(&self, path: &str) -> bool {
-        registry().provides(path) || PATHS.contains(&path)
+        registry().provides(path)
     }
 
     fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<Value, RunError> {
-        let err = |message: String| Err(RunError { message, span });
-        let usage = |sig: &str| {
-            Err(RunError {
-                message: format!("usage: {sig}"),
+        match registry().call(path, &args, span) {
+            Some(result) => result,
+            // Defensive: unreachable in practice — eval checks `provides()`
+            // (registry-only) and errors "unknown external `…`" before ever
+            // calling the host. Kept with the legacy fallback's text so
+            // nothing observable changes if a caller skips that check.
+            None => Err(RunError {
+                message: format!("internal: unregistered prelude path `{path}`"),
                 span,
-            })
-        };
-        // The typed external registry dispatches first; the match below is
-        // the not-yet-migrated remainder (see crate::host_registry).
-        if let Some(result) = registry().call(path, &args, span) {
-            return result;
-        }
-        match path {
-            // A persistent connection (client) / listener (server): the key
-            // is the endpoint; the tagger receives `Net.NetEvent` values.
-            "Sub.connect" | "Sub.listen" => match args.as_slice() {
-                [Value::String(key), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
-                    Ok(host(FunctorLangSub(SubTree::Connect {
-                        key: key.to_string(),
-                        listen: path == "Sub.listen",
-                        tagger: tagger.clone(),
-                    })))
-                }
-                [_, other] => err(format!(
-                    "{path}(endpoint, tagger): the tagger must be a function of the \
-Net.NetEvent, got {}",
-                    other.kind_name()
-                )),
-                _ => usage(&format!("{path}(endpoint, tagger)")),
-            },
-            "Effect.send" => match args.as_slice() {
-                [id, Value::String(text)] => {
-                    let n = num(id, span)?;
-                    // A connection id is a non-negative whole number the host
-                    // handed the game; reject garbage rather than truncate it
-                    // to some OTHER live client.
-                    if n < 0.0 || n.fract() != 0.0 || n > u64::MAX as f64 {
-                        return err(format!(
-                            "Effect.send: connId must be a non-negative whole number, got {n}"
-                        ));
-                    }
-                    Ok(host(FunctorLangEffect(EffectTree::Send {
-                        conn: n,
-                        text: text.to_string(),
-                    })))
-                }
-                _ => usage("Effect.send(connId, text)"),
-            },
-            // httpGet(url, tagger) / httpPost(url, body, tagger). The tagger is
-            // a function of the Net.HttpResponse, validated callable here so a
-            // typo fails at construction, not frames later when the response
-            // lands. Performing it (drain) mints a token, queues the request,
-            // and registers the tagger by token — see EffectTree::Http.
-            "Effect.httpGet" => match args.as_slice() {
-                [Value::String(url), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
-                    Ok(host(FunctorLangEffect(EffectTree::Http {
-                        method: crate::net::HttpMethod::Get,
-                        url: url.to_string(),
-                        body: String::new(),
-                        tagger: tagger.clone(),
-                    })))
-                }
-                [Value::String(_), other] => err(format!(
-                    "Effect.httpGet(url, tagger): the tagger must be a function of the \
-Net.HttpResponse, got {}",
-                    other.kind_name()
-                )),
-                _ => usage("Effect.httpGet(url, tagger)"),
-            },
-            "Effect.httpPost" => match args.as_slice() {
-                [Value::String(url), Value::String(body), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
-                    Ok(host(FunctorLangEffect(EffectTree::Http {
-                        method: crate::net::HttpMethod::Post,
-                        url: url.to_string(),
-                        body: body.to_string(),
-                        tagger: tagger.clone(),
-                    })))
-                }
-                [Value::String(_), Value::String(_), other] => err(format!(
-                    "Effect.httpPost(url, body, tagger): the tagger must be a function of \
-the Net.HttpResponse, got {}",
-                    other.kind_name()
-                )),
-                _ => usage("Effect.httpPost(url, body, tagger)"),
-            },
-            // Fire-and-forget audio one-shots (the dual of `soundScape`).
-            // `play` is non-spatial; `playAt` is positioned. Both queue an
-            // AudioCommand on drain — see EffectTree::PlayAudio.
-            "Effect.play" => match args.as_slice() {
-                [Value::String(sound)] => Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
-                    sound: sound.to_string(),
-                    position: None,
-                }))),
-                [v] if asset_of(v).is_some() => {
-                    let sound = asset_path(v, AssetKind::Sound, "Effect.play", span)?;
-                    Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
-                        sound,
-                        position: None,
-                    })))
-                }
-                _ => usage("Effect.play(sound)"),
-            },
-            "Effect.playAt" => match args.as_slice() {
-                [Value::String(sound), v] => {
-                    let (x, y, z) = vec3_of(v, path, span)?;
-                    Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
-                        sound: sound.to_string(),
-                        position: Some([x, y, z]),
-                    })))
-                }
-                [a, v] if asset_of(a).is_some() => {
-                    let sound = asset_path(a, AssetKind::Sound, "Effect.playAt", span)?;
-                    let (x, y, z) = vec3_of(v, path, span)?;
-                    Ok(host(FunctorLangEffect(EffectTree::PlayAudio {
-                        sound,
-                        position: Some([x, y, z]),
-                    })))
-                }
-                _ => usage("Effect.playAt(sound, v)"),
-            },
-            // Play once and deliver `msg` (a message VALUE, not a tagger) when
-            // the sound finishes — see EffectTree::PlayAudioThen. Any value is a
-            // valid message, so there is nothing to validate here.
-            "Effect.playThen" => match args.as_slice() {
-                [Value::String(sound), msg] => Ok(host(FunctorLangEffect(EffectTree::PlayAudioThen {
-                    sound: sound.to_string(),
-                    message: msg.clone(),
-                }))),
-                [a, msg] if asset_of(a).is_some() => {
-                    let sound = asset_path(a, AssetKind::Sound, "Effect.playThen", span)?;
-                    Ok(host(FunctorLangEffect(EffectTree::PlayAudioThen {
-                        sound,
-                        message: msg.clone(),
-                    })))
-                }
-                _ => usage("Effect.playThen(sound, msg)"),
-            },
-            // Soundscape voices (the continuous, reconciled half of audio).
-            // `ambient` is a non-spatial bed; `at` is positioned. Keyed for
-            // cross-frame identity so the shell keeps a live voice playing.
-            "AudioSource.ambient" => match args.as_slice() {
-                [Value::String(key), Value::String(sound)] => Ok(host(FunctorLangAudioSource(
-                    crate::audio::AudioSource::ambient(key.to_string(), sound.to_string()),
-                ))),
-                [Value::String(key), a] if asset_of(a).is_some() => {
-                    let sound = asset_path(a, AssetKind::Sound, "AudioSource.ambient", span)?;
-                    Ok(host(FunctorLangAudioSource(
-                        crate::audio::AudioSource::ambient(key.to_string(), sound),
-                    )))
-                }
-                _ => usage("AudioSource.ambient(key, sound)"),
-            },
-            "AudioSource.at" => match args.as_slice() {
-                [Value::String(key), Value::String(sound), v] => {
-                    let (x, y, z) = vec3_of(v, path, span)?;
-                    Ok(host(FunctorLangAudioSource(crate::audio::AudioSource::at(
-                        key.to_string(),
-                        sound.to_string(),
-                        x,
-                        y,
-                        z,
-                    ))))
-                }
-                [Value::String(key), a, v] if asset_of(a).is_some() => {
-                    let sound = asset_path(a, AssetKind::Sound, "AudioSource.at", span)?;
-                    let (x, y, z) = vec3_of(v, path, span)?;
-                    Ok(host(FunctorLangAudioSource(crate::audio::AudioSource::at(
-                        key.to_string(),
-                        sound,
-                        x,
-                        y,
-                        z,
-                    ))))
-                }
-                _ => usage("AudioSource.at(key, sound, v)"),
-            },
-            // Source LAST (subject-last) so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
-            "AudioSource.gain" => match args.as_slice() {
-                [g, source] => match audio_source_of(source) {
-                    Some(src) => Ok(host(FunctorLangAudioSource(src.clone().with_gain(num(g, span)? as f32)))),
-                    None => usage("AudioSource.gain(gain, source)"),
-                },
-                _ => usage("AudioSource.gain(gain, source)"),
-            },
-            "AudioScene.create" => match args.as_slice() {
-                [Value::List(items)] => {
-                    let mut sources = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        match audio_source_of(item) {
-                            Some(src) => sources.push(src.clone()),
-                            None => {
-                                return err(format!(
-                                    "AudioScene.create items must be AudioSources, got {}",
-                                    item.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    Ok(host(FunctorLangAudioScene(crate::audio::AudioScene::new(sources))))
-                }
-                _ => usage("AudioScene.create([source, …])"),
-            },
-            "AudioScene.empty" => match args.as_slice() {
-                [] => Ok(host(FunctorLangAudioScene(crate::audio::AudioScene::default()))),
-                _ => usage("AudioScene.empty()"),
-            },
-            // ── Ui (the optional `ui = (model) => …` hook) ─────────────────
-            // hello's HUD vocabulary: text lines (white or colored), stacked
-            // in a column, pinned to a screen corner. The shells lower the
-            // View through the same egui overlay as the F# `ui` hook.
-            "Ui.text" => match args.as_slice() {
-                [Value::String(s)] => Ok(host(FunctorLangView(View::Text {
-                    text: s.to_string(),
-                    color: [255, 255, 255],
-                    font: None,
-                }))),
-                _ => usage("Ui.text(\"…\")"),
-            },
-            "Ui.textColor" => match args.as_slice() {
-                [color, Value::String(s)] => {
-                    let (r, g, b) = color_of(color, path, span)?;
-                    Ok(host(FunctorLangView(View::Text {
-                        text: s.to_string(),
-                        color: ui::rgb_u8(r, g, b),
-                        font: None,
-                    })))
-                }
-                _ => usage("Ui.textColor(color, \"…\")"),
-            },
-            "Ui.column" => match args.as_slice() {
-                [Value::List(items)] => {
-                    let mut views = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        match view_value(item) {
-                            Some(view) => views.push(view.clone()),
-                            None => {
-                                return err(format!(
-                                    "Ui.column items must be Views, got {}",
-                                    item.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    Ok(host(FunctorLangView(View::Column(views))))
-                }
-                _ => usage("Ui.column([view, …])"),
-            },
-            // View LAST (subject-last), so it pipes:
-            // `Ui.column([…]) |> Ui.panel(Ui.topLeft())`. Only the corner
-            // hello's HUD needed exists; the other three arrive with a port
-            // that needs them.
-            "Ui.panel" => match args.as_slice() {
-                [anchor, view] => {
-                    let Some(view) = view_value(view) else {
-                        return usage("Ui.panel(anchor, view)");
-                    };
-                    let anchor = ui_anchor_of(anchor, span)?;
-                    Ok(host(FunctorLangView(View::Panel {
-                        anchor,
-                        child: Box::new(view.clone()),
-                    })))
-                }
-                _ => usage("Ui.panel(anchor, view)"),
-            },
-            "Ui.row" => match args.as_slice() {
-                [Value::List(items)] => {
-                    let mut views = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        match view_value(item) {
-                            Some(view) => views.push(view.clone()),
-                            None => {
-                                return err(format!(
-                                    "Ui.row items must be Views, got {}",
-                                    item.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    Ok(host(FunctorLangView(View::Row(views))))
-                }
-                _ => usage("Ui.row([view, …])"),
-            },
-            // The first interactive widget (docs/ui-interaction.md U3). The
-            // msg is any Functor Lang value (typically an ADT variant), registered in
-            // the frame's handler table and delivered VERBATIM through
-            // `update` when the shell reports a click on the stamped slot —
-            // the `Sub.every` message shape.
-            "Ui.button" => match args.as_slice() {
-                [Value::String(label), msg] => {
-                    let slot = push_ui_handler(UiHandler::Msg(msg.clone()));
-                    Ok(host(FunctorLangView(View::Button {
-                        slot,
-                        label: label.to_string(),
-                    })))
-                }
-                _ => usage("Ui.button(\"label\", msg) — msg is delivered to update on click"),
-            },
-            // A slider over min..=max showing the MODEL's value (a controlled
-            // widget, docs/ui-interaction.md U4). The tagger is applied to
-            // the dragged value and the message folds through `update` — the
-            // `Effect.now` tagger shape.
-            "Ui.slider" => match args.as_slice() {
-                [min, max, value, tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
-                    let min = num(min, span)?;
-                    let max = num(max, span)?;
-                    if max <= min {
-                        return err(format!(
-                            "Ui.slider: max ({max}) must be greater than min ({min})"
-                        ));
-                    }
-                    let slot = push_ui_handler(UiHandler::Tagger(tagger.clone()));
-                    Ok(host(FunctorLangView(View::Slider {
-                        slot,
-                        min,
-                        max,
-                        value: num(value, span)?,
-                    })))
-                }
-                [_, _, _, other] => err(format!(
-                    "Ui.slider(min, max, value, tagger): the tagger must be a function of \
-the new value, got {}",
-                    other.kind_name()
-                )),
-                _ => usage("Ui.slider(min, max, value, tagger) — tagger: (newValue) => msg"),
-            },
-            // A single-line text input showing the MODEL's text (controlled,
-            // docs/ui-interaction.md U4). The tagger is applied to the new
-            // text on each edit — the `Effect.now` tagger shape.
-            "Ui.textInput" => match args.as_slice() {
-                [Value::String(value), tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
-                    let slot = push_ui_handler(UiHandler::Tagger(tagger.clone()));
-                    Ok(host(FunctorLangView(View::TextInput {
-                        slot,
-                        value: value.to_string(),
-                    })))
-                }
-                [_, other] => err(format!(
-                    "Ui.textInput(value, tagger): the tagger must be a function of \
-the new text, got {}",
-                    other.kind_name()
-                )),
-                _ => usage("Ui.textInput(value, tagger) — tagger: (newText) => msg"),
-            },
-            "Sub.none" => match args.as_slice() {
-                [] => Ok(host(FunctorLangSub(SubTree::None))),
-                _ => usage("Sub.none()"),
-            },
-            // The msg is any Functor Lang value (typically an ADT variant), held by
-            // the host and handed back verbatim when the timer fires.
-            "Sub.every" => match args.as_slice() {
-                [duration, msg] => Ok(host(FunctorLangSub(SubTree::Every {
-                    period_seconds: duration_of(duration, "Sub.every", span)?,
-                    msg: msg.clone(),
-                }))),
-                _ => usage("Sub.every(duration, msg)"),
-            },
-            // Asset-loading progress SUB: the tagger receives
-            // `{loaded, total, failed}` whenever the loading snapshot changes
-            // (see functor_lang_producer's delivery). The loading-screen seam.
-            "Sub.assets" => match args.as_slice() {
-                [tagger @ (Value::Closure(_) | Value::Ctor { .. })] => Ok(host(FunctorLangSub(
-                    SubTree::Assets {
-                        tagger: tagger.clone(),
-                    },
-                ))),
-                [other] => err(format!(
-                    "Sub.assets(tagger): the tagger must be a function of the progress record, got {}",
-                    other.kind_name()
-                )),
-                _ => usage("Sub.assets(tagger)"),
-            },
-            "Effect.none" => match args.as_slice() {
-                [] => Ok(host(FunctorLangEffect(EffectTree::None))),
-                _ => usage("Effect.none()"),
-            },
-            // The tagger is a Functor Lang function value, applied by the producer
-            // with the performed result; validated as callable here so a
-            // `Effect.now(3.0)` fails at construction, not mid-drain.
-            "Effect.now" | "Effect.random" => match args.as_slice() {
-                [tagger @ (Value::Closure(_) | Value::Ctor { .. })] => {
-                    let tree = if path == "Effect.now" {
-                        EffectTree::Now {
-                            tagger: tagger.clone(),
-                        }
-                    } else {
-                        EffectTree::Random {
-                            tagger: tagger.clone(),
-                        }
-                    };
-                    Ok(host(FunctorLangEffect(tree)))
-                }
-                [other] => err(format!(
-                    "{path}(tagger): the tagger must be a function of the result, got {}",
-                    other.kind_name()
-                )),
-                _ => usage(&format!("{path}(tagger)")),
-            },
-            "Effect.batch" => match args.as_slice() {
-                [Value::List(items)] => {
-                    let mut fx = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        match effect_of(item) {
-                            Some(effect) => fx.push(effect.0.clone()),
-                            None => {
-                                return err(format!(
-                                    "Effect.batch items must be Effects, got {}",
-                                    item.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    Ok(host(FunctorLangEffect(EffectTree::Batch(fx))))
-                }
-                _ => usage("Effect.batch([effect, …])"),
-            },
-            "Sub.batch" => match args.as_slice() {
-                [Value::List(items)] => {
-                    let mut subs = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        match sub_of(item) {
-                            Some(sub) => subs.push(sub.0.clone()),
-                            None => {
-                                return err(format!(
-                                    "Sub.batch items must be Subs, got {}",
-                                    item.kind_name()
-                                ))
-                            }
-                        }
-                    }
-                    Ok(host(FunctorLangSub(SubTree::Batch(subs))))
-                }
-                _ => usage("Sub.batch([sub, …])"),
-            },
-            _ => err(format!("internal: unregistered prelude path `{path}`")),
+            }),
         }
     }
 }
@@ -3537,13 +3399,6 @@ Anim.clip(\"walk\", tts)"
     }
 }
 
-fn audio_source_of(value: &Value) -> Option<&crate::audio::AudioSource> {
-    match value {
-        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangAudioSource>().map(|s| &s.0),
-        _ => None,
-    }
-}
-
 /// Extract the [`crate::audio::AudioScene`] from a Functor Lang value (a
 /// `soundScape` return), for the shells' soundscape reconcile.
 pub fn audio_scene_of(value: &Value) -> Option<&crate::audio::AudioScene> {
@@ -3748,10 +3603,6 @@ fn no_body(tag: &str) -> String {
     )
 }
 
-fn host(data: impl HostData + 'static) -> Value {
-    Value::HostData(Rc::new(data))
-}
-
 /// A `Group` wrapper carrying `xform` — the transform representation the
 /// prelude uses everywhere (see the module doc for why).
 fn group(scenes: Vec<Scene3D>, xform: Matrix4<f32>) -> Scene3D {
@@ -3775,6 +3626,18 @@ mod tests {
         }
     }
 
+    /// Downcast to the AudioSource inside a host value (test-side only since
+    /// the registry migration — the prelude consumes sources via FromArg).
+    fn audio_source_of(value: &Value) -> Option<&crate::audio::AudioSource> {
+        match value {
+            Value::HostData(data) => data
+                .as_any()
+                .downcast_ref::<FunctorLangAudioSource>()
+                .map(|s| &s.0),
+            _ => None,
+        }
+    }
+
     /// Evaluate a Functor Lang `main` under the prelude and return its value.
     fn eval(src: &str) -> Value {
         let module = functor_lang::lower(functor_lang::parse(src).expect("parse")).expect("lower");
@@ -3794,11 +3657,12 @@ mod tests {
     }
 
     // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`
-    // signatures and the host `PATHS`. Every `.funi` `val`/`let` signature must
-    // name a real host external, AND every host external must have exactly one
-    // signature — so the declared types and the Rust implementations cannot
-    // silently diverge in either direction. We parse the `.funi` sources to
-    // extract `Module.name` signatures and compare the two sets.
+    // signatures and the registered externals. Every `.funi` `val`/`let`
+    // signature must name a real host external, AND every host external must
+    // have exactly one signature — so the declared types and the Rust
+    // implementations cannot silently diverge in either direction. We parse
+    // the `.funi` sources to extract `Module.name` signatures and compare the
+    // two sets.
     #[test]
     fn prelude_signatures_map_to_host_paths() {
         use std::collections::BTreeSet;
@@ -3817,28 +3681,19 @@ mod tests {
             }
         }
 
-        let legacy: BTreeSet<String> = PATHS.iter().map(|p| p.to_string()).collect();
-        let registered: BTreeSet<String> =
-            registry().paths().map(|p| p.to_string()).collect();
-        let overlap: Vec<&String> = legacy.intersection(&registered).collect();
-        assert!(
-            overlap.is_empty(),
-            "externals both registered and in the legacy PATHS (remove the \
-legacy entry): {overlap:?}"
-        );
-        let paths: BTreeSet<String> = legacy.union(&registered).cloned().collect();
+        let paths: BTreeSet<String> = registry().paths().map(|p| p.to_string()).collect();
 
         let phantom: Vec<&String> = signatures.difference(&paths).collect();
         assert!(
             phantom.is_empty(),
-            "prelude signatures with no matching host external in PATHS \
+            "prelude signatures with no registered host external \
 (functor_lang_prelude.rs) — phantom signatures: {phantom:?}"
         );
 
         let missing: Vec<&String> = paths.difference(&signatures).collect();
         assert!(
             missing.is_empty(),
-            "host externals in PATHS with no `.funi` signature — an interface-only \
+            "registered host externals with no `.funi` signature — an interface-only \
 module is CLOSED, so games referencing these break at load: {missing:?}"
         );
 
@@ -4632,6 +4487,20 @@ Vec3.make(0.0, 0.0, 0.0), 10.0, (h) => h)"
             fail_message("let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), [3.0])"),
             "Physics.scene: expected a Body, got a number"
         );
+        // [registry delta] the sound-taking externals answered a wrong-type
+        // (or empty) sound with their own full usage line ("usage:
+        // Effect.play(sound)" etc.); all five now share the SoundPath
+        // teaching text.
+        assert_eq!(
+            fail_message("let main = () => Effect.play(3.0)"),
+            "Effect.play: expected a sound — a non-empty path string or \
+Asset.sound(\"file.ogg\")"
+        );
+        assert_eq!(
+            fail_message("let main = () => AudioSource.ambient(\"bed\", 3.0)"),
+            "AudioSource.ambient: expected a sound — a non-empty path string or \
+Asset.sound(\"file.ogg\")"
+        );
     }
 
     // Degrees and radians agree where they should: 90° == τ/4 rad.
@@ -4668,10 +4537,7 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
     #[test]
     fn every_advertised_path_dispatches() {
         let mut host = FunctorHost;
-        // Legacy match arms AND registered externals — migration must not
-        // narrow this pin.
-        let all: Vec<&str> = PATHS.iter().copied().chain(registry().paths()).collect();
-        for path in all {
+        for path in registry().paths() {
             let result = host.call(path, vec![Value::Bool(true)], functor_lang::Span::new(0, 0));
             let message = result.err().expect("garbage args should error").message;
             assert!(
@@ -5617,18 +5483,23 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         let failure = functor_lang::run_with_host(&module, functor_lang::Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
+        // [registry delta] was "Effect.now(tagger): the tagger must be a
+        // function of the result, got a number" — flattened to the shared
+        // Tagger teaching text.
         assert_eq!(
             failure.error.message,
-            "Effect.now(tagger): the tagger must be a function of the result, got a number"
+            "Effect.now: the tagger must be a function of the result record, got a number"
         );
         let module =
             functor_lang::lower(functor_lang::parse("let main = () => Effect.batch([1.0])").unwrap()).unwrap();
         let failure = functor_lang::run_with_host(&module, functor_lang::Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
+        // [registry delta] was "Effect.batch items must be Effects, got a
+        // number" — the uniform typed list-element error.
         assert_eq!(
             failure.error.message,
-            "Effect.batch items must be Effects, got a number"
+            "Effect.batch: expected an Effect, got a number"
         );
     }
 
@@ -5740,9 +5611,11 @@ Time.seconds(…) or Time.millis(…)"
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
+        // [registry delta] was "Sub.batch items must be Subs, got a number" —
+        // the uniform typed list-element error.
         assert_eq!(
             failure.error.message,
-            "Sub.batch items must be Subs, got a number"
+            "Sub.batch: expected a Sub, got a number"
         );
     }
 
@@ -5992,10 +5865,12 @@ the game dir"
         assert_eq!(handlers.len(), 1);
         assert!(matches!(&handlers[0], UiHandler::Tagger(_)));
 
+        // [registry delta] was "Ui.slider(min, max, value, tagger): the
+        // tagger must be a function of the new value, got a number" —
+        // flattened to the shared Tagger teaching text.
         assert_eq!(
             run_fail("let main = () => Ui.slider(0.0, 10.0, 2.5, 42.0)"),
-            "Ui.slider(min, max, value, tagger): the tagger must be a function of \
-the new value, got a number"
+            "Ui.slider: the tagger must be a function of the result record, got a number"
         );
         let _ = take_ui_handlers();
 
@@ -6025,10 +5900,12 @@ the new value, got a number"
         assert_eq!(handlers.len(), 1);
         assert!(matches!(&handlers[0], UiHandler::Tagger(_)));
 
+        // [registry delta] was "Ui.textInput(value, tagger): the tagger must
+        // be a function of the new text, got a number" — flattened to the
+        // shared Tagger teaching text.
         assert_eq!(
             run_fail("let main = () => Ui.textInput(\"x\", 42.0)"),
-            "Ui.textInput(value, tagger): the tagger must be a function of \
-the new text, got a number"
+            "Ui.textInput: the tagger must be a function of the result record, got a number"
         );
         let _ = take_ui_handlers();
     }
@@ -6119,8 +5996,12 @@ the new text, got a number"
 
     #[test]
     fn http_get_rejects_a_non_function_tagger() {
-        assert!(run_fail("let main = () => Effect.httpGet(\"http://x\", 3.0)")
-            .contains("the tagger must be a function of the Net.HttpResponse"));
+        // [registry delta] was "…the tagger must be a function of the
+        // Net.HttpResponse…" — flattened to the shared Tagger teaching text.
+        assert_eq!(
+            run_fail("let main = () => Effect.httpGet(\"http://x\", 3.0)"),
+            "Effect.httpGet: the tagger must be a function of the result record, got a number"
+        );
     }
 
     /// The `http_response_value` builder maps a transport error to `Net.Failure`
@@ -6674,9 +6555,11 @@ the new text, got a number"
     // Ui teaching errors: non-View children and unbranded anchors fail loud.
     #[test]
     fn ui_teaches_its_usage() {
+        // [registry delta] was "Ui.column items must be Views, got a number"
+        // — the uniform typed list-element error.
         assert_eq!(
             run_fail("let main = () => Ui.column([Ui.text(\"a\"), 3.0])"),
-            "Ui.column items must be Views, got a number"
+            "Ui.column: expected a View, got a number"
         );
         assert_eq!(
             run_fail("let main = () => Ui.text(\"a\") |> Ui.panel(\"topLeft\")"),

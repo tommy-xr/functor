@@ -5,9 +5,9 @@
 //! the implementation half was one hand-written `match path` arm per external
 //! in [`crate::functor_lang_prelude`], each destructuring its `&[Value]` slice,
 //! calling extractors, and hand-writing a usage string — three places to keep
-//! in sync per API (`.funi`, `PATHS`, the arm), guarded only by a drift test.
+//! in sync per API, guarded only by a drift test.
 //!
-//! This module replaces that with REGISTRATION: the host declares each
+//! This module replaced that with REGISTRATION: the host declares each
 //! external once, as a typed Rust closure —
 //!
 //! ```ignore
@@ -29,10 +29,9 @@
 //!   `Result<_, String>` for domain-validation errors — the registry
 //!   attaches the call span.
 //!
-//! [`FunctorHost::call`] consults the registry FIRST and falls back to the
-//! legacy match, so externals migrate arm-by-arm with no flag day. The drift
-//! test asserts `.funi` signatures ≡ (registry keys ∪ legacy `PATHS`), keys
-//! disjoint.
+//! The registry is now the ONLY dispatch — [`FunctorHost::call`] is a
+//! registry lookup (the legacy match is fully retired). The drift test
+//! asserts `.funi` signatures ≡ the registered paths, with matching arities.
 //!
 //! [`FunctorHost::call`]: crate::functor_lang_prelude::FunctorHost
 //! [`HostData`]: functor_lang::HostData
@@ -226,7 +225,7 @@ struct External {
 }
 
 /// The registry: external path → typed implementation. Built once at startup
-/// ([`crate::functor_lang_prelude::registry`]) and consulted before the legacy match.
+/// ([`crate::functor_lang_prelude::registry`]) — the host's only dispatch.
 #[derive(Default)]
 pub struct Registry {
     fns: PathMap<External>,
@@ -316,8 +315,8 @@ impl Registry {
         self.fns.contains_key(path)
     }
 
-    /// Dispatch a call if `path` is registered; `None` falls through to the
-    /// legacy match.
+    /// Dispatch a call if `path` is registered; `None` means an unregistered
+    /// path (the caller reports it).
     pub fn call(&self, path: &str, args: &[Value], span: Span) -> Option<Result<Value, RunError>> {
         self.fns.get(path).map(|ext| (ext.call)(path, args, span))
     }
