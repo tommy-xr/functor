@@ -180,6 +180,17 @@ The generator core is shared Rust (`functor_runtime_common::manifest`, IO-free) 
 tooling (the browser IDE's wasm build) emits byte-identical manifests; the CLI command owns
 scanning, model inspection, and file IO.
 
+**Remote (CDN) assets** are declared with a **sidecar**: `<name>.asset.json` containing
+`{ "url": "https://…", "kind"?: "model"|"texture"|"sound" }` (`kind` only when the url's
+extension can't infer it; unknown keys warn). The manifest then carries the URL locator
+(`let shark = Asset.model("https://…/shark.glb")`), and `import` inspects remote models for
+clips by fetching ONCE through the same content-addressed disk cache the runtime uses
+(`~/.functor/cache`, `FUNCTOR_ASSET_CACHE` override) — so import warms exactly the entry the
+game later loads, and reruns are offline-safe. A sidecar named after a local file is that
+asset's (future) per-asset config seat; if both declare (`url` + local file), the local file
+wins with a warning. Auto-reimport watches sidecar mtimes too, and a failed remote fetch
+during auto-reimport keeps the existing manifest (offline must not strip clip constants).
+
 **Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|parse|ir <file.fun>`
 drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the
 `functor-lang` skill.

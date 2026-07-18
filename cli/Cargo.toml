@@ -30,6 +30,10 @@ log = "0.4"
 # The ink-style live region: spinners + a sticky telemetry panel above
 # scrollback, on an interactive TTY only (see cli/src/output/live.rs).
 indicatif = "0.17"
+# Blocking HTTP for `functor import`'s sidecar-declared remote assets (run on
+# a dedicated thread — the CLI's tokio context can't host a blocking client).
+# Same version/TLS as the desktop runtime's async reqwest, so cargo unifies.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.117"
 tokio = { version = "1", features = ["full"] }

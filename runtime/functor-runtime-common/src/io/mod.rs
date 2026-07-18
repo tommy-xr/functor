@@ -210,7 +210,9 @@ fn verify_magic(url: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use remote::{set_remote_fetcher, RemoteFetchResult, RemoteFetchSender};
+pub use remote::{
+    fetch_cached_blocking, set_remote_fetcher, RemoteFetchResult, RemoteFetchSender,
+};
 
 /// Remote (URL) asset fetching for the native runtime.
 ///
@@ -272,6 +274,39 @@ mod remote {
         // (a CDN "soft 404" — HTTP 200 with an HTML error page — would panic
         // the glTF pipeline this run and, if cached, on every later run too).
         verify_magic(url, &bytes)?;
+        cache_write(url, &bytes);
+        Ok(bytes)
+    }
+
+    /// Synchronous check-cache → download → verify → store, for TOOLING (the
+    /// CLI's `functor import` inspecting a sidecar-declared remote model for
+    /// its clips). Same cache location, key, and verify rules as [`fetch`],
+    /// so the entry this warms is the very one the game's later load hits.
+    /// The `download` closure runs only on a cache miss — the CLI passes a
+    /// blocking HTTP GET run on its own thread; this module stays
+    /// transport-free (mirroring the [`set_remote_fetcher`] hook design).
+    ///
+    /// `validate` guards the cache for EXTENSIONLESS urls, where
+    /// `verify_magic` can only reject HTML: without it, a JSON error body
+    /// from `https://api/asset/123` would be cached and served forever, even
+    /// after the server recovers. It runs before every store AND on every
+    /// hit (a cached body failing it is a miss, refetched) — the caller
+    /// passes its format check (e.g. "inspect_model parses this").
+    pub fn fetch_cached_blocking(
+        url: &str,
+        download: impl FnOnce(&str) -> Result<Vec<u8>, String>,
+        validate: impl Fn(&[u8]) -> Result<(), String>,
+    ) -> Result<Vec<u8>, String> {
+        if let Some(bytes) = cache_read(url) {
+            // Same poisoned-entry rule as `fetch`: an invalid cached body is
+            // a miss, refetched.
+            if verify_magic(url, &bytes).is_ok() && validate(&bytes).is_ok() {
+                return Ok(bytes);
+            }
+        }
+        let bytes = download(url)?;
+        verify_magic(url, &bytes)?;
+        validate(&bytes)?;
         cache_write(url, &bytes);
         Ok(bytes)
     }
@@ -401,6 +436,75 @@ mod remote {
             }
             // Nothing new cached: only the good asset's entry exists.
             assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+
+            // The synchronous tooling path (fetch_cached_blocking) shares the
+            // same cache: miss → download closure runs once; hit → it doesn't;
+            // an HTML body is an error and is not cached. In the same test
+            // because the cache dir env var is process-global.
+            let url3 = "https://example.test/tooling.glb";
+            let calls = std::cell::Cell::new(0);
+            let got = fetch_cached_blocking(
+                url3,
+                |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(GLB.to_vec())
+                },
+                |_| Ok(()),
+            );
+            assert_eq!(got.unwrap(), GLB);
+            assert_eq!(calls.get(), 1);
+            let got = fetch_cached_blocking(
+                url3,
+                |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(GLB.to_vec())
+                },
+                |_| Ok(()),
+            );
+            assert_eq!(got.unwrap(), GLB, "second call served from cache");
+            assert_eq!(calls.get(), 1, "download closure must not run on a hit");
+            // The caller's validator guards the cache where magic can't (an
+            // extensionless url): a failing body is an error and NOT cached,
+            // so the entry count stays put and recovery needs no manual
+            // cache flush.
+            let api_url = "https://example.test/api/asset/123";
+            let bad = fetch_cached_blocking(
+                api_url,
+                |_| Ok(b"{\"error\":\"try later\"}".to_vec()),
+                |_| Err("not a model".to_string()),
+            );
+            assert!(bad.is_err());
+            let recovered = fetch_cached_blocking(
+                api_url,
+                |_| Ok(GLB.to_vec()),
+                |bytes| {
+                    if bytes.starts_with(b"glTF") {
+                        Ok(())
+                    } else {
+                        Err("not a model".to_string())
+                    }
+                },
+            );
+            assert_eq!(recovered.unwrap(), GLB, "recovers once the server does");
+            // And the ASYNC runtime path hits the tooling-warmed entry too —
+            // the whole point: import warms exactly what the game later loads.
+            let mut fut4: Pin<Box<dyn Future<Output = RemoteFetchResult>>> =
+                Box::pin(fetch(url3));
+            match poll_once(&mut fut4) {
+                Poll::Ready(Ok(bytes)) => assert_eq!(bytes, GLB),
+                _ => panic!("runtime fetch should hit the tooling-warmed cache entry"),
+            }
+            let poisoned = fetch_cached_blocking(
+                "https://example.test/soft404.glb",
+                |_| Ok(b"<html>not found</html>".to_vec()),
+                |_| Ok(()),
+            );
+            assert!(poisoned.is_err());
+            assert_eq!(
+                std::fs::read_dir(&cache).unwrap().count(),
+                3,
+                "good entries only: model.glb + tooling.glb + the recovered api asset"
+            );
 
             let _ = std::fs::remove_dir_all(&cache);
         }
