@@ -90,7 +90,8 @@ jobs:
             libglu1-mesa-dev \
             libglfw3 \
             libglfw3-dev \
-            libasound2-dev
+            libasound2-dev \
+            libfontconfig-dev
 
       - name: Build web runtime bundle
         run: wasm-pack build --target=web

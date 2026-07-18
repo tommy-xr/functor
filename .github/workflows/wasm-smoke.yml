@@ -57,7 +57,8 @@ jobs:
             libglu1-mesa-dev \
             libglfw3 \
             libglfw3-dev \
-            libasound2-dev
+            libasound2-dev \
+            libfontconfig-dev
 
       - name: Install npm dependencies
         run: npm ci

@@ -54,7 +54,10 @@ futures-util = "0.3"
 # Webview overlay: game-authored HTML/CSS UI rendered headlessly by blitz
 # (Stylo + Taffy + Parley) and CPU-painted into an RGBA buffer we upload as a
 # GL texture. Native-only — the wasm runtime shows the same tree as a real DOM
-# overlay instead. Pre-1.0: pinned exactly, expect churn on upgrades.
+# overlay instead. Pre-1.0: pinned exactly, expect churn on upgrades. The font
+# stack (parley/fontique) needs fontconfig dev headers on Linux
+# (libfontconfig-dev) — installed in every CI job that builds this crate (the
+# cpal/ALSA rule).
 blitz-dom = "=0.3.0-beta.1"
 blitz-html = "=0.3.0-beta.1"
 blitz-paint = "=0.3.0-beta.1"
