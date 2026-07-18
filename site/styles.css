@@ -460,7 +460,7 @@ a:hover {
   color: var(--pink);
 }
 
-/* The release badge next to the wordmark. The HTML ships "pre-alpha"; the site
+/* The release badge next to the wordmark. The HTML ships "alpha"; the site
    build stamps in the latest release tag (see build.mjs). */
 .version-badge {
   font-size: 0.68rem;
