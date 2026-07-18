@@ -56,7 +56,7 @@ await mkdir(`${dist}/examples`, { recursive: true });
 // The latest release tag (vX.Y.Z), stamped into each page's header
 // version-badge so the deployed site names the release it accompanies. No
 // reachable tag (fresh history, shallow checkout) → the badge stays the
-// source's plain "pre-alpha".
+// source's plain "alpha".
 let version = "";
 try {
   const tag = execSync("git describe --tags --abbrev=0 --match 'v[0-9]*'", {
@@ -75,7 +75,7 @@ for (const page of PAGES) {
       `${dist}/${page}`,
       html.replace(
         /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
-        `$1${version} · pre-alpha$2`
+        `$1${version} · alpha$2`
       )
     );
   } else {

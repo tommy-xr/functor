@@ -11,7 +11,7 @@ name: Release
 #   3. builds + sanity-checks the `functor` binary for every supported
 #      platform (release-binaries.yml, reused via workflow_call)
 #   4. creates the vX.Y.Z tag and a PRE-RELEASE GitHub release (Functor is
-#      pre-alpha) with the notes and all platform archives attached
+#      alpha) with the notes and all platform archives attached
 #   5. dispatches Deploy Site, so the deployed site header picks up the new
 #      tag (a GITHUB_TOKEN-created tag does not fire push-triggered workflows
 #      on its own — explicit workflow_dispatch is the sanctioned exception)
