@@ -1,0 +1,44 @@
+# git-cliff configuration — generates the release notes for the release
+# pipeline (.github/workflows/release.yml) from conventional commits.
+#
+# Preview locally:  npx git-cliff --unreleased --tag v0.1.0
+
+[changelog]
+header = ""
+# Groups carry an HTML-comment ordering prefix (a git-cliff idiom: groups sort
+# by name, the comment is invisible in rendered markdown).
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.breaking %}**BREAKING** {% endif %}{{ commit.message | split(pat="\n") | first }}
+{%- endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+# Keep non-conventional commits (grouped under Other) rather than dropping
+# them silently — the log is clean enough that this is a rare fallback.
+filter_unconventional = false
+commit_parsers = [
+  # `type!:`-marked breaking changes group first, whatever their type — this
+  # also keeps a breaking build/ci/chore/test commit out of the skip rule
+  # below (a footer-only "BREAKING CHANGE:" in a skipped type is still kept
+  # by protect_breaking_commits, but lands ungrouped — mark breakage with `!`).
+  { message = "^[a-z]+(\\(.+\\))?!:", group = "<!-- 0 -->Breaking" },
+  { message = "^feat", group = "<!-- 1 -->Features" },
+  { message = "^fix", group = "<!-- 2 -->Fixes" },
+  { message = "^perf", group = "<!-- 3 -->Performance" },
+  { message = "^docs", group = "<!-- 4 -->Docs" },
+  { message = "^refactor", group = "<!-- 5 -->Refactoring" },
+  { message = "^(build|ci|chore|test)", skip = true },
+  { message = ".*", group = "<!-- 6 -->Other" },
+]
+# A breaking change must never be dropped by a skip rule above.
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+sort_commits = "newest"
