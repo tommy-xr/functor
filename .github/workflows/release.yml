@@ -118,13 +118,21 @@ jobs:
           path: assets
           merge-multiple: true
 
+      # The tag is created + pushed explicitly, then the release attaches to
+      # it: `gh release create --target <sha>` is rejected with a 403 for the
+      # Actions token even with contents: write (cli/cli#9514), while a plain
+      # tag push and a release onto an existing tag are both allowed. The
+      # explicit SHA pins the release to the commit the binaries were built
+      # from, even if main has moved since the dispatch.
       - name: Create tag + pre-release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l assets
+          git tag "v$VERSION" "$GITHUB_SHA"
+          git push origin "v$VERSION"
           gh release create "v$VERSION" \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
             --title "v$VERSION" \
             --prerelease \
             --notes-file assets/release-notes.md \
