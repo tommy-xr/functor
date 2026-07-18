@@ -324,6 +324,16 @@ snapshots — no GPU, fully agent-verifiable.
       velocities stored in the model survive hot-reload time travel.
       Component accessors and vector math (`Vec3.add`/`scale`/`length`, and
       Vec2/Vec4) are deliberately deferred until an API returns a Vec3.
+- [x] **Prelude go-to-definition + hover docs** (2026-07-18; prelude-infra
+      track). Go-to-definition on a host external (`Scene.cube`) jumps into
+      its `.funi` interface — the LSP materializes the embedded prelude to a
+      content-hashed read-only directory so the editor opens a real file —
+      and hover surfaces the doc-comment block above the definition: the
+      `.funi` prose for prelude calls, and (for free) a user's own comment
+      block above a `let` when hovering its references. A blank line breaks
+      attachment, so section headers don't leak. Project-local `.funi`
+      modules get both behaviors with no special casing (their files are
+      real). This closes the notes item "prelude as real code".
 - [x] **Typed external registry** (2026-07-16; prelude-infra track, PR 1).
       The generalized Functor Lang ↔ Rust bridge: hosts REGISTER externals as
       typed closures (`host_registry.rs`) instead of hand-writing `match

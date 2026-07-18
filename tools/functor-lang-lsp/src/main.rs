@@ -523,8 +523,17 @@ fn hover(uri: &str, documents: &HashMap<String, String>, position: &Value) -> Op
     let (_, types) = project.check_with_types();
     let (span, hover_text) = functor_lang::hover::hover_text(&project.module, &types, offset)?;
     let (_, range) = localize(&project, span)?;
+    // The doc-comment block above whatever this reference DEFINES — the
+    // `.funi` prose for a prelude external, the user's own comment for a
+    // project def — rendered as a paragraph under the type line.
+    let docs = functor_lang::goto::definition_span(&project.module, offset)
+        .and_then(|def| functor_lang::docs::doc_comment(&project.sources, def));
+    let value = match docs {
+        Some(docs) => format!("```functor\n{hover_text}\n```\n\n{docs}"),
+        None => format!("```functor\n{hover_text}\n```"),
+    };
     Some(json!({
-        "contents": { "kind": "markdown", "value": format!("```functor\n{hover_text}\n```") },
+        "contents": { "kind": "markdown", "value": value },
         "range": range,
     }))
 }
@@ -963,10 +972,85 @@ fn owns(file: &functor_lang::project::SourceFile, offset: usize) -> bool {
 
 /// A project-wide span → an LSP range local to the file it belongs to, plus
 /// that file's URI. Spans never straddle files (each node is lowered from one
-/// file), so both ends localize against the start file.
+/// file), so both ends localize against the start file. Spans landing in the
+/// injected `<prelude>/{module}.funi` sources map to the MATERIALIZED prelude
+/// (see [`materialized_prelude_dir`]) so go-to-definition on `Scene.cube`
+/// opens a real, readable interface file.
 fn localize(project: &functor_lang::project::Project, span: functor_lang::Span) -> Option<(String, Value)> {
     let file = project.sources.file_at(span.start);
-    Some((path_to_uri(&file.path), local_range(file, span)))
+    let path = if file.path.to_str().is_some_and(|p| p.starts_with('<')) {
+        // A synthetic source (`<prelude>/Scene.funi`, `<builtin>/Random.funi`,
+        // `<builtin>/Net.fun`) — materialize its text so the editor can open
+        // it. Definition targets in Net/Random/Key land here too.
+        materialize_synthetic(file)?
+    } else {
+        file.path.clone()
+    };
+    Some((path_to_uri(&path), local_range(file, span)))
+}
+
+/// The embedded prelude `.funi` interfaces written out as real files, so the
+/// editor can OPEN them (go-to-definition targets, browsable docs). Written
+/// once per content hash — a new prelude version gets a fresh directory, and
+/// an unchanged one reuses it — and marked read-only best-effort (they are
+/// generated views of the interfaces baked into this binary; edits would be
+/// silently ignored). `None` only if the temp dir is unwritable, in which
+/// case prelude jumps degrade to "no definition" rather than a broken URI.
+fn materialize_synthetic(file: &functor_lang::project::SourceFile) -> Option<std::path::PathBuf> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::sync::OnceLock;
+    // One cache directory per prelude version (the synthetic sources are
+    // fixed by this binary, so the prelude hash keys them all); the per-file
+    // content check below self-heals anything stale or truncated inside it.
+    static DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    let dir = DIR
+        .get_or_init(|| {
+            let mut hasher = DefaultHasher::new();
+            for (name, src) in &functor_prelude::modules() {
+                name.hash(&mut hasher);
+                src.hash(&mut hasher);
+            }
+            let dir =
+                std::env::temp_dir().join(format!("functor-prelude-{:016x}", hasher.finish()));
+            std::fs::create_dir_all(&dir).ok()?;
+            Some(dir)
+        })
+        .clone()?;
+
+    let path = dir.join(file.path.file_name()?);
+    // Self-healing, ATOMIC write: rewrite when absent or when the on-disk
+    // text differs (a truncated write must never be served forever) via a
+    // temp file + rename, then mark read-only best-effort — these are
+    // generated views of interfaces baked into this binary.
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(file.src.as_str()) {
+        let tmp = dir.join(format!(
+            ".{}.tmp-{}",
+            file.path.file_name()?.to_string_lossy(),
+            std::process::id()
+        ));
+        if std::fs::write(&tmp, &file.src).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+            }
+            if std::fs::rename(&tmp, &path).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444));
+                }
+            } else {
+                let _ = std::fs::remove_file(&tmp);
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 /// A project-wide span → an LSP range in `file`'s local coordinates.

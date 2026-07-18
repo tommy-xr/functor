@@ -71,6 +71,12 @@ struct Targets {
     ctors: HashMap<String, Span>,
     /// Declared types: name → the whole `type` declaration's span.
     types: HashMap<String, Span>,
+    /// Interface (`.funi`) signatures: canonical path (`Scene.cube`) → the
+    /// `let name : Type` declaration's span — for the engine prelude these
+    /// land in the injected `<prelude>/{module}.funi` sources (the LSP
+    /// materializes those to real files), and for a project's own `.funi`
+    /// modules in the on-disk file.
+    signatures: HashMap<String, Span>,
 }
 
 fn index_targets(module: &Module) -> Targets {
@@ -89,6 +95,9 @@ fn index_targets(module: &Module) -> Targets {
             Span::new(def.span.start, def.value.span.start),
         );
         collect_binders(&def.value, &mut targets.binders);
+    }
+    for sig in &module.signatures {
+        targets.signatures.insert(sig.name.clone(), sig.span);
     }
     targets
 }
@@ -162,6 +171,16 @@ fn visit(expr: &Expr, targets: &Targets, consider: &mut impl FnMut(Span, Span)) 
             offer(
                 name_region(expr.span, name),
                 targets.globals.get(name),
+                consider,
+            );
+        }
+        // A host external (`Scene.cube`) jumps to its interface signature —
+        // the `let cube : () => t` line of the owning `.funi`. Unregistered
+        // externals (no signature; the gradual seam) still answer nothing.
+        ExprKind::External(path) => {
+            offer(
+                expr.span,
+                targets.signatures.get(&path.join(".")),
                 consider,
             );
         }
@@ -389,6 +408,37 @@ mod tests {
     }
 
     // --- Nothing ---
+
+    /// A host external jumps to its `.funi` signature: the span lands in
+    /// the interface module's (synthetic) source, at the `let name : Type`
+    /// declaration. Unregistered externals still answer nothing.
+    #[test]
+    fn externals_jump_to_their_interface_signature() {
+        let funi = "// Make a widget.\nlet make : (float) => float\n";
+        let project = crate::project::load_sources_with_prelude(
+            vec![(
+                std::path::PathBuf::from("game.fun"),
+                "let x = Widget.make(2.0)\n".to_string(),
+            )],
+            &[("Widget".to_string(), funi.to_string())],
+        )
+        .unwrap_or_else(|e| panic!("loads: {}", e.render()));
+        let offset = "let x = Wid".len(); // inside the external reference
+        let span = definition_span(&project.module, offset).expect("external resolves");
+        let (file, line, _col) = project.sources.resolve(span.start);
+        assert_eq!(file.path.to_string_lossy(), "<prelude>/Widget.funi");
+        assert_eq!(line, 2, "the `let make : …` line, past the doc comment");
+        // An unregistered external (no signature) still has no definition.
+        let none = crate::project::load_sources_with_prelude(
+            vec![(
+                std::path::PathBuf::from("game.fun"),
+                "let x = Ghost.make(2.0)\n".to_string(),
+            )],
+            &[],
+        )
+        .unwrap_or_else(|e| panic!("loads: {}", e.render()));
+        assert_eq!(definition_span(&none.module, offset), None);
+    }
 
     #[test]
     fn builtins_and_literals_have_no_definition() {

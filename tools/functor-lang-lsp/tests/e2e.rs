@@ -639,7 +639,7 @@ fn prelude_gives_host_calls_real_types() {
     }));
     server.recv();
     server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
-    let text = "let s = () => Scene.cube()\n";
+    let text = "let s = () => Scene.cube()\nlet r = Random.seed(1.0)\n";
     server.send(json!({
         "jsonrpc": "2.0", "method": "textDocument/didOpen",
         "params": { "textDocument": {
@@ -659,8 +659,65 @@ fn prelude_gives_host_calls_real_types() {
     }));
     let response = server.recv();
     assert_eq!(
-        response["result"]["contents"]["value"], "```functor\nScene.cube : () => Scene.t\n```",
-        "prelude hover: {response}"
+        response["result"]["contents"]["value"],
+        "```functor\nScene.cube : () => Scene.t\n```\n\nPrimitive geometry.",
+        "prelude hover carries the .funi doc block: {response}"
+    );
+
+    // Go-to-definition on the same external jumps INTO the interface: a
+    // real, readable scene.funi materialized from the embedded prelude.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 0, "character": col },
+        },
+    }));
+    let definition = server.recv();
+    let uri = definition["result"]["uri"].as_str().unwrap_or_default().to_string();
+    assert!(
+        uri.ends_with("Scene.funi"),
+        "definition lands in the materialized interface: {definition}"
+    );
+    // Percent-decode the path portion (temp dirs may contain encoded bytes).
+    let raw = uri.strip_prefix("file://").expect("file uri");
+    let mut decoded = Vec::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                decoded.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    let target = std::path::PathBuf::from(String::from_utf8(decoded).expect("utf8 path"));
+    let contents = std::fs::read_to_string(&target).expect("materialized file readable");
+    let line = definition["result"]["range"]["start"]["line"].as_u64().unwrap() as usize;
+    assert!(
+        contents.lines().nth(line).unwrap_or_default().contains("let cube"),
+        "the range points at the `let cube` signature: {definition}"
+    );
+
+    // Built-in interface modules (injected by the language, not the host
+    // prelude) materialize too: Random.seed jumps into Random.funi.
+    let col = "let r = Random.s".len() as i64;
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 6, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 1, "character": col },
+        },
+    }));
+    let builtin = server.recv();
+    assert!(
+        builtin["result"]["uri"].as_str().unwrap_or_default().ends_with("Random.funi"),
+        "Random.seed jumps into the materialized builtin interface: {builtin}"
     );
 
     server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));

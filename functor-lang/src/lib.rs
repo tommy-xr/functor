@@ -12,6 +12,7 @@ pub mod ast;
 pub mod codelens;
 pub mod complete;
 pub mod eval;
+pub mod docs;
 pub mod goto;
 pub mod hover;
 pub mod coverage;

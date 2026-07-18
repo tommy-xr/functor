@@ -27,7 +27,10 @@ so scratch files must live in their own directory, not a shared one.
 Errors are always `file:line:col: error: message`. Tests live in `functor-lang/tests/`
 with goldens next to `functor-lang/examples/` (`UPDATE_GOLDENS=1 cargo test -p functor-lang`
 regenerates). VSCode gets live parse/lower/type diagnostics,
-`name : Type` hover, and go-to-definition via `tools/functor-lang-lsp`.
+`name : Type` hover (with the doc-comment block above the definition — the
+`.funi` prose for prelude calls), and go-to-definition via
+`tools/functor-lang-lsp` — including JUMPING INTO the prelude: definition on
+`Scene.cube` opens the materialized `Scene.funi` interface at its signature.
 
 ## Syntax subset
 
