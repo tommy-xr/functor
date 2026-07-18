@@ -71,12 +71,21 @@ let fraction = (model) =>
     (model.loaded + model.failed - model.baseLoaded)
       / (model.total - model.baseTotal)
 
+// The 15MB shark shows the `Asset.whilePending` placeholder pattern: the
+// 2KB box stands in (streams near-instantly) until the shark is decoded —
+// under FUNCTOR_THROTTLE_ASSETS you can watch the swap. The placeholder is
+// just another asset value; a FAILED shark would show the empty fallback
+// (failure is not pending) and still count in Sub.assets' `failed`.
+let shark =
+  Asset.model("https://assets.babylonjs.com/meshes/shark.glb")
+    |> Asset.whilePending(Asset.model("https://assets.babylonjs.com/meshes/box.glb"))
+
 let models = () =>
   Scene.group([
     Scene.model("https://assets.babylonjs.com/meshes/ExplodingBarrel.glb")
       |> Scene.scale(0.35)
       |> Scene.translate(Vec3.make(0.0, -1.2, 0.0)),
-    Scene.model("https://assets.babylonjs.com/meshes/shark.glb")
+    Scene.model(shark)
       |> Scene.scale(0.18)
       |> Scene.rotateY(Angle.degrees(200.0))
       |> Scene.translate(Vec3.make(-2.2, 0.7, 0.0)),

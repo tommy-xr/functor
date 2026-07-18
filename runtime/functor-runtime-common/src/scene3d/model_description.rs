@@ -40,4 +40,11 @@ pub struct ModelDescription {
     /// clock.
     #[serde(default)]
     pub animation: Option<AnimExpr>,
+    /// Placeholder model locators tried in order WHILE `handle` is still
+    /// loading (`Asset.whilePending`): the first loaded entry renders until
+    /// the primary is ready. A FAILED primary renders the empty fallback
+    /// like before — failure is not pending, and must stay visible. Skipped
+    /// on the wire when empty, so plain models keep their JSON shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub while_pending: Vec<String>,
 }

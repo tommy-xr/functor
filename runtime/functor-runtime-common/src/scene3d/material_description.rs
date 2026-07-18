@@ -176,6 +176,24 @@ fn bind_texture_description(
                 .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
             asset.get().bind(unit, context);
         }
+        // `Asset.whilePending`: the first loaded chain entry binds while the
+        // primary streams in (instead of the checkerboard fallback); a FAILED
+        // primary keeps the fallback — failure is not pending.
+        TextureDescription::FileWhilePending {
+            file,
+            while_pending,
+        } => {
+            let asset = context
+                .asset_cache
+                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+            crate::asset::resolve_while_pending(
+                &context.asset_cache,
+                &scene_context.texture_pipeline,
+                &asset,
+                while_pending,
+            )
+            .bind(unit, context);
+        }
         TextureDescription::RenderTarget(id) => {
             // Select the unit BEFORE any lazy fallback creation: creating the
             // fallback binds/unbinds TEXTURE_2D on the active unit, which would

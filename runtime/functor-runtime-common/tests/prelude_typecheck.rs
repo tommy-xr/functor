@@ -96,3 +96,17 @@ fn asset_consumers_accept_both_forms() {
     );
     assert!(diags.is_empty(), "both forms should check clean: {diags:?}");
 }
+
+/// `Asset.whilePending` is gradually typed but ties its result to the asset
+/// argument, so a chained locator still flows into `Scene.model` cleanly.
+#[test]
+fn while_pending_checks_clean_in_both_positions() {
+    let diags = check(
+        "let proxy = Asset.model(\"low.glb\")\n\
+         let boss = Asset.model(\"boss.glb\") |> Asset.whilePending(proxy)\n\
+         let scene = Scene.model(boss)\n\
+         let tex = Asset.texture(\"wood.png\") |> Asset.whilePending(Asset.texture(\"grey.png\"))\n\
+         let mat = Scene.plane() |> Scene.litTexture(tex)",
+    );
+    assert!(diags.is_empty(), "whilePending should check clean: {diags:?}");
+}

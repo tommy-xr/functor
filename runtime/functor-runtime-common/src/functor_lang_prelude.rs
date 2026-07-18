@@ -680,9 +680,14 @@ impl AssetKind {
 /// (the pre-manifest form, deprecated at B.6) and check the KIND, so a
 /// wrong-kind asset is a teaching error at the call instead of a silent
 /// fallback at draw.
+#[derive(Clone)]
 struct FunctorLangAsset {
     kind: AssetKind,
     path: String,
+    /// `Asset.whilePending` placeholder locators, tried in order while
+    /// `path` is still loading (empty for a plain locator). Same kind as
+    /// `path` by construction.
+    while_pending: Vec<String>,
 }
 
 impl HostData for FunctorLangAsset {
@@ -1164,9 +1169,10 @@ fn register_scene(reg: &mut crate::host_registry::Registry) {
 the game dir";
     reg.fn1("Scene.model", MODEL, |path: ModelPath| {
         FunctorLangScene(Scene3D::model(ModelDescription {
-            handle: ModelHandle::File(path.0),
+            handle: ModelHandle::File(path.path),
             overrides: Vec::new(),
             animation: None,
+            while_pending: path.while_pending,
         }))
     });
     // A subdivided XZ grid displaced by per-vertex heights — the Functor Lang
@@ -1843,6 +1849,7 @@ fn register_assets(reg: &mut crate::host_registry::Registry) {
             Value::String(p) if !p.is_empty() => Ok(FunctorLangAsset {
                 kind,
                 path: p.to_string(),
+                while_pending: Vec::new(),
             }),
             _ => Err(format!(
                 "usage: {path}(\"{}\") — a non-empty {} path relative to the game dir",
@@ -1866,6 +1873,72 @@ fn register_assets(reg: &mut crate::host_registry::Registry) {
         "Asset.sound(\"file.ogg\") — a non-empty sound path relative to the game dir",
         asset_ctor("Asset.sound", AssetKind::Sound),
     );
+    // Placeholder-LAST subject threading: `asset |> Asset.whilePending(ph)`.
+    // The placeholder renders while the asset streams in; it is just another
+    // asset, so it chains (a low-poly proxy can carry its own placeholder).
+    // Sounds are rejected: they decode at play time, outside the asset
+    // cache, so there is no pending state to render.
+    reg.fn2(
+        "Asset.whilePending",
+        "Asset.whilePending(placeholder, asset) — same-kind model or texture Asset values \
+(pipes: asset |> Asset.whilePending(placeholder))",
+        |placeholder: AssetArg, asset: AssetArg| -> Result<FunctorLangAsset, String> {
+            let (placeholder, asset) = (placeholder.0, asset.0);
+            if asset.kind == AssetKind::Sound || placeholder.kind == AssetKind::Sound {
+                return Err(
+                    "Asset.whilePending: sounds have no pending state to render (they \
+decode at play time, outside the asset cache) — whilePending applies to model and \
+texture assets"
+                        .to_string(),
+                );
+            }
+            if placeholder.kind != asset.kind {
+                return Err(format!(
+                    "Asset.whilePending: the placeholder must match the asset's kind — \
+got a {} placeholder for a {} asset; construct it with {}",
+                    placeholder.kind.noun(),
+                    asset.kind.noun(),
+                    asset.kind.constructor(),
+                ));
+            }
+            // The OUTER placeholder is tried first, then its own chain, then
+            // any chain the asset already carried.
+            let mut while_pending =
+                Vec::with_capacity(1 + placeholder.while_pending.len() + asset.while_pending.len());
+            while_pending.push(placeholder.path);
+            while_pending.extend(placeholder.while_pending);
+            while_pending.extend(asset.while_pending);
+            Ok(FunctorLangAsset {
+                kind: asset.kind,
+                path: asset.path,
+                while_pending,
+            })
+        },
+    );
+}
+
+/// A branded Asset argument at the registry seam (`Asset.whilePending`) —
+/// teaches the Angle rule for assets: bare strings must go through the
+/// `Asset.*` constructors first.
+struct AssetArg(FunctorLangAsset);
+
+impl crate::host_registry::FromArg for AssetArg {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        if let Some(asset) = asset_of(value) {
+            return Ok(AssetArg(asset.clone()));
+        }
+        let message = match value {
+            Value::String(s) => format!(
+                "{path}: expected an Asset value, got a bare string (\"{s}\") — construct \
+one with Asset.model/texture(…) first"
+            ),
+            other => format!(
+                "{path}: expected an Asset value (Asset.model/texture(…)), got {}",
+                other.kind_name()
+            ),
+        };
+        Err(RunError { message, span })
+    }
 }
 
 /// The Anim pose algebra — clip sampling, blending, the rest pose, additive
@@ -2006,15 +2079,29 @@ impl crate::host_registry::FromArg for FunctorLangColor {
 
 /// A model-asset argument: a non-empty path string, or an `Asset.model`
 /// locator (a wrong-kind asset gets `asset_path`'s teaching error) — the
-/// typed-manifest front door at the registry seam.
-struct ModelPath(String);
+/// typed-manifest front door at the registry seam. Carries the asset's
+/// `Asset.whilePending` chain (empty for the string form).
+struct ModelPath {
+    path: String,
+    while_pending: Vec<String>,
+}
 
 impl crate::host_registry::FromArg for ModelPath {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         match value {
-            Value::String(p) if !p.is_empty() => Ok(ModelPath(p.to_string())),
+            Value::String(p) if !p.is_empty() => Ok(ModelPath {
+                path: p.to_string(),
+                while_pending: Vec::new(),
+            }),
             v if asset_of(v).is_some() => {
-                asset_path(v, AssetKind::Model, path, span).map(ModelPath)
+                // asset_path enforces the KIND (teaching error); the chain
+                // rides along.
+                let locator = asset_path(v, AssetKind::Model, path, span)?;
+                let chain = asset_of(v).map(|a| a.while_pending.clone()).unwrap_or_default();
+                Ok(ModelPath {
+                    path: locator,
+                    while_pending: chain,
+                })
             }
             _ => Err(RunError {
                 message: "usage: Scene.model(\"file.glb\") — a non-empty glTF path \
@@ -3652,11 +3739,19 @@ fn texture_of(value: &Value, what: &str, span: Span) -> Result<TextureDescriptio
             if let Some(t) = data.as_any().downcast_ref::<FunctorLangTexture>() {
                 return Ok(t.0.clone());
             }
-            if asset_of(value).is_some() {
-                // A texture asset carries a file path; a wrong-kind asset is
-                // a teaching error from asset_path.
-                return asset_path(value, AssetKind::Texture, what, span)
-                    .map(TextureDescription::File);
+            if let Some(asset) = asset_of(value) {
+                // A texture asset carries a file path (and possibly an
+                // `Asset.whilePending` chain); a wrong-kind asset is a
+                // teaching error from asset_path.
+                let file = asset_path(value, AssetKind::Texture, what, span)?;
+                return Ok(if asset.while_pending.is_empty() {
+                    TextureDescription::File(file)
+                } else {
+                    TextureDescription::FileWhilePending {
+                        file,
+                        while_pending: asset.while_pending.clone(),
+                    }
+                });
             }
             Err(RunError {
                 message: format!("{what}: expected a Texture, got {}", value.kind_name()),
@@ -4208,13 +4303,102 @@ construct it with Asset.sound(…)",
     }
 
     /// An Asset is plain data (kind + path), so storing one in the model must
-    /// not invalidate hot-reload time-travel history.
+    /// not invalidate hot-reload time-travel history — with or without a
+    /// whilePending chain.
     #[test]
     fn assets_are_reload_safe_snapshots() {
-        let value = eval("let main = () => Asset.model(\"shark.glb\")");
-        match &value {
-            Value::HostData(data) => assert!(data.is_reload_safe_snapshot()),
-            other => panic!("expected a HostData asset, got {}", other.kind_name()),
+        for src in [
+            "let main = () => Asset.model(\"shark.glb\")",
+            "let main = () => Asset.model(\"shark.glb\") |> Asset.whilePending(Asset.model(\"box.glb\"))",
+        ] {
+            let value = eval(src);
+            match &value {
+                Value::HostData(data) => assert!(data.is_reload_safe_snapshot()),
+                other => panic!("expected a HostData asset, got {}", other.kind_name()),
+            }
+        }
+    }
+
+    // --- Asset.whilePending (Track B.4) ---
+
+    /// The chain reaches the protocol: `Scene.model` carries `while_pending`,
+    /// and nested placeholders flatten OUTER-first (the last-applied
+    /// placeholder is tried first, then its own chain, then the asset's).
+    #[test]
+    fn while_pending_chains_flatten_into_the_model_description() {
+        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let frame = frame_of(&format!(
+            "let proxy = Asset.model(\"low.glb\") |> Asset.whilePending(Asset.model(\"cube.glb\"))\n\
+             let boss = Asset.model(\"boss.glb\") |> Asset.whilePending(proxy)\n\
+             let main = () => Frame.create({camera}, Scene.model(boss))"
+        ));
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(
+            json.contains("\"while_pending\":[\"low.glb\",\"cube.glb\"]"),
+            "json: {json}"
+        );
+        assert!(json.contains("boss.glb"), "json: {json}");
+        // And it round-trips through the protocol.
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    /// A chainless model keeps the exact pre-B.4 wire shape (no
+    /// `while_pending` key at all) — replays and cross-version scenes agree.
+    #[test]
+    fn chainless_models_keep_the_old_wire_shape() {
+        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let frame = frame_of(&format!(
+            "let main = () => Frame.create({camera}, Scene.model(\"shark.glb\"))"
+        ));
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(!json.contains("while_pending"), "json: {json}");
+    }
+
+    /// Texture chains produce the `FileWhilePending` description; chainless
+    /// texture assets keep the plain `File` shape.
+    #[test]
+    fn while_pending_textures_flow_into_materials() {
+        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let frame = frame_of(&format!(
+            "let wood = Asset.texture(\"wood.png\") |> Asset.whilePending(Asset.texture(\"grey.png\"))\n\
+             let main = () => Frame.create({camera}, Scene.plane() |> Scene.litTexture(wood))"
+        ));
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(
+            json.contains("FileWhilePending") && json.contains("grey.png"),
+            "json: {json}"
+        );
+        let frame = frame_of(&format!(
+            "let main = () => Frame.create({camera}, \
+Scene.plane() |> Scene.litTexture(Asset.texture(\"wood.png\")))"
+        ));
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(!json.contains("FileWhilePending"), "json: {json}");
+    }
+
+    /// whilePending teaches: sounds have no pending state, kinds must match,
+    /// and bare strings must construct an Asset first.
+    #[test]
+    fn while_pending_teaching_errors() {
+        for (src, want) in [
+            (
+                "let main = () => Asset.sound(\"a.ogg\") |> Asset.whilePending(Asset.sound(\"b.ogg\"))",
+                "Asset.whilePending: sounds have no pending state to render (they decode at \
+play time, outside the asset cache) — whilePending applies to model and texture assets",
+            ),
+            (
+                "let main = () => Asset.model(\"a.glb\") |> Asset.whilePending(Asset.texture(\"b.png\"))",
+                "Asset.whilePending: the placeholder must match the asset's kind — got a \
+texture placeholder for a model asset; construct it with Asset.model(…)",
+            ),
+            (
+                "let main = () => Asset.model(\"a.glb\") |> Asset.whilePending(\"b.glb\")",
+                "Asset.whilePending: expected an Asset value, got a bare string (\"b.glb\") \
+— construct one with Asset.model/texture(…) first",
+            ),
+        ] {
+            assert_eq!(fail_message(src), want, "for {src}");
         }
     }
 

@@ -65,7 +65,12 @@
 /// of any type enumerated in this module changes incompatibly. Informational
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// v2: `Asset.whilePending` — `ModelDescription.while_pending` (defaulted,
+/// omitted when empty, so v1 frames read back and chainless frames stay v1-
+/// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
+/// reader cannot decode a frame carrying one).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -370,6 +375,7 @@ mod tests {
                     handle: ModelHandle::File("barrel.glb".to_string()),
                     overrides: vec![],
                     animation: None,
+                    while_pending: vec![],
                 }),
                 // A monitor: samples the "feed" render target declared below.
                 Scene3D {
@@ -435,6 +441,54 @@ mod tests {
         assert_wire(
             &RenderTargetDescriptor::new("feed"),
             r#"{"id":"feed","width":512,"height":512}"#,
+        );
+    }
+
+    // The `Asset.whilePending` wire vocabulary (protocol v2): the model
+    // chain field is OMITTED when empty (chainless frames keep the v1
+    // shape), and chained textures use the FileWhilePending variant.
+    #[test]
+    fn while_pending_wire_is_pinned() {
+        use crate::scene3d::{ModelDescription, ModelHandle};
+        use crate::TextureDescription;
+
+        // ModelDescription has no PartialEq (matrix overrides), so pin the
+        // JSON text and round-trip by re-serialization instead.
+        let pin_model = |model: &ModelDescription, expected: &str| {
+            let json = serde_json::to_string(model).expect("serialize");
+            assert_eq!(json, expected);
+            let back: ModelDescription = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        };
+        let chainless = ModelDescription {
+            handle: ModelHandle::File("boss.glb".to_string()),
+            overrides: vec![],
+            animation: None,
+            while_pending: vec![],
+        };
+        pin_model(
+            &chainless,
+            r#"{"handle":{"File":"boss.glb"},"overrides":[],"animation":null}"#,
+        );
+        let chained = ModelDescription {
+            while_pending: vec!["low.glb".to_string(), "cube.glb".to_string()],
+            ..chainless
+        };
+        pin_model(
+            &chained,
+            r#"{"handle":{"File":"boss.glb"},"overrides":[],"animation":null,"while_pending":["low.glb","cube.glb"]}"#,
+        );
+
+        assert_wire(
+            &TextureDescription::File("wood.png".to_string()),
+            r#"{"File":"wood.png"}"#,
+        );
+        assert_wire(
+            &TextureDescription::FileWhilePending {
+                file: "wood.png".to_string(),
+                while_pending: vec!["grey.png".to_string()],
+            },
+            r#"{"FileWhilePending":{"file":"wood.png","while_pending":["grey.png"]}}"#,
         );
     }
 

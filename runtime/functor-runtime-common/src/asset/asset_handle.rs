@@ -19,6 +19,13 @@ impl<T> AssetHandle<T> {
         }
     }
 
+    /// The pipeline's stand-in for this asset, WITHOUT polling — for callers
+    /// that already called [`Self::poll_state`] this frame and must not
+    /// advance the future a second time.
+    pub fn fallback(&self) -> Arc<T> {
+        self.fallback_asset.clone()
+    }
+
     pub fn new<F>(future: F, fallback_asset: Arc<T>) -> AssetHandle<T>
     where
         F: Future<Output = Result<Arc<T>, String>> + 'static,

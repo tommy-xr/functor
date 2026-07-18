@@ -678,7 +678,16 @@ impl Scene3D {
                             .asset_cache
                             .load_asset_with_pipeline(scene_context.model_pipeline.clone(), str);
 
-                        let hydrated_model = model.get();
+                        // While the primary streams in, an `Asset.whilePending`
+                        // chain renders its first loaded placeholder instead of
+                        // the empty fallback (chainless models resolve exactly
+                        // like the old `get()`).
+                        let hydrated_model = crate::asset::resolve_while_pending(
+                            &render_context.asset_cache,
+                            &scene_context.model_pipeline,
+                            &model,
+                            &model_description.while_pending,
+                        );
 
                         let matrix = world_matrix * self.xform;
 

@@ -77,6 +77,18 @@ impl AssetCache {
         progress.failed.remove(path);
     }
 
+    /// Whether `path` was started but has not yet settled (loaded or failed)
+    /// — [`resolve_while_pending`]'s liveness check. A started load must
+    /// keep being polled to completion (futures advance only when polled),
+    /// or `Sub.assets`' settled gate (`loaded + failed == total`) never
+    /// fires.
+    pub fn is_unsettled(&self, path: &str) -> bool {
+        let progress = self.progress.lock().unwrap();
+        progress.started.contains(path)
+            && !progress.loaded.contains(path)
+            && !progress.failed.contains_key(path)
+    }
+
     pub fn load_asset_with_pipeline<T: 'static>(
         self: &Arc<Self>,
         pipeline: Arc<BuiltAssetPipeline<T>>,
@@ -163,6 +175,51 @@ impl AssetCache {
     }
 }
 
+/// The asset to RENDER for a primary that carries an `Asset.whilePending`
+/// chain: the primary when LOADED; while it is still loading, the first
+/// LOADED chain entry; otherwise the pipeline fallback. A FAILED primary
+/// falls back exactly like a chainless one — failure is not pending, and a
+/// placeholder must not mask it (`Sub.assets` still reports it).
+///
+/// Liveness contract: asset futures only advance when POLLED, and this is
+/// the only poll site for chain entries. So new entries are requested only
+/// while the primary is pending (a warm-cache primary never touches its
+/// placeholders), but every entry the cache has STARTED keeps being driven
+/// here until it settles — even once the primary (or an earlier entry) has
+/// landed, and even after a hot-reload eviction. An abandoned in-flight
+/// placeholder would otherwise sit in `Sub.assets`' `total` forever and
+/// hold the settled gate (`loaded + failed == total`) open.
+pub fn resolve_while_pending<T: 'static>(
+    cache: &Arc<AssetCache>,
+    pipeline: &Arc<super::BuiltAssetPipeline<T>>,
+    primary: &AssetHandle<T>,
+    while_pending: &[String],
+) -> Arc<T> {
+    if while_pending.is_empty() {
+        // The overwhelmingly common case: byte-identical to the old
+        // single-poll `get()` path.
+        return primary.get();
+    }
+    let primary_state = primary.poll_state();
+    let pending = matches!(primary_state, super::AssetPollState::Loading);
+    let mut stand_in: Option<Arc<T>> = None;
+    for locator in while_pending {
+        if pending || cache.is_unsettled(locator) {
+            let handle = cache.load_asset_with_pipeline(pipeline.clone(), locator);
+            if let super::AssetPollState::Loaded(asset) = handle.poll_state() {
+                if pending && stand_in.is_none() {
+                    stand_in = Some(asset);
+                }
+            }
+        }
+    }
+    match primary_state {
+        super::AssetPollState::Loaded(asset) => asset,
+        super::AssetPollState::Failed => primary.fallback(),
+        super::AssetPollState::Loading => stand_in.unwrap_or_else(|| primary.fallback()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +293,112 @@ mod tests {
         assert_eq!((progress.loaded, progress.total), (1, 2));
 
         let _ = std::fs::remove_file(&good);
+    }
+
+    /// `Asset.whilePending` resolution: the first LOADED chain entry stands
+    /// in while the primary loads (failed entries skipped); a loaded primary
+    /// wins outright; a FAILED primary keeps the fallback (a placeholder
+    /// must not mask failure). Local reads settle on their first poll, so a
+    /// genuinely-pending primary is a hand-built never-resolving handle.
+    #[test]
+    fn while_pending_resolves_placeholders_only_while_loading() {
+        let cache = Arc::new(AssetCache::new());
+        let pipeline = super::super::build_pipeline(Box::new(BytesLen));
+
+        let pending_forever: AssetHandle<usize> = AssetHandle::new(
+            std::future::pending::<Result<Arc<usize>, String>>(),
+            Arc::new(0),
+        );
+        let placeholder = temp_file("wp-placeholder.bin", b"12");
+        let real = temp_file("wp-real.bin", b"1234567");
+
+        // Pending primary + a chain whose FIRST entry fails (missing file):
+        // the failed entry is skipped and the loaded one stands in. The
+        // resolve call itself requests the chain loads.
+        let chain = vec!["wp/does-not-exist.bin".to_string(), placeholder.clone()];
+        let shown = resolve_while_pending(&cache, &pipeline, &pending_forever, &chain);
+        assert_eq!(*shown, 2, "loaded placeholder (2 bytes) stands in");
+
+        // An empty chain on a pending primary keeps today's fallback.
+        let shown = resolve_while_pending(&cache, &pipeline, &pending_forever, &[]);
+        assert_eq!(*shown, 0, "no chain -> pipeline fallback");
+
+        // A loaded primary wins even with a loaded placeholder available.
+        let primary = cache.load_asset_with_pipeline(pipeline.clone(), &real);
+        settle(&primary);
+        let shown = resolve_while_pending(&cache, &pipeline, &primary, &chain);
+        assert_eq!(*shown, 7, "loaded primary wins");
+
+        // A FAILED primary falls back to the pipeline default (0), NOT the
+        // placeholder — failure is not pending, and must stay visible.
+        let failed = cache.load_asset_with_pipeline(pipeline.clone(), "wp/missing-primary.bin");
+        settle(&failed);
+        let shown = resolve_while_pending(&cache, &pipeline, &failed, &chain);
+        assert_eq!(*shown, 0, "failed primary keeps the fallback");
+
+        for f in [placeholder, real] {
+            let _ = std::fs::remove_file(&f);
+        }
+    }
+
+    /// Liveness: a STARTED chain entry keeps being driven to settled even
+    /// once the primary has landed — an abandoned placeholder would sit in
+    /// `Sub.assets`' total forever and hold the settled gate open. The
+    /// synchronously-testable strand is hot-reload eviction: evicting an
+    /// inactive placeholder leaves it started-but-not-loaded, and only the
+    /// resolve call re-drives it.
+    #[test]
+    fn while_pending_drives_started_entries_to_settled() {
+        let cache = Arc::new(AssetCache::new());
+        let pipeline = super::super::build_pipeline(Box::new(BytesLen));
+
+        let placeholder = temp_file("wp-live-placeholder.bin", b"12");
+        let real = temp_file("wp-live-real.bin", b"1234567");
+        let chain = vec![placeholder.clone()];
+
+        // Pending primary requests + settles the placeholder (sync read).
+        let pending_forever: AssetHandle<usize> = AssetHandle::new(
+            std::future::pending::<Result<Arc<usize>, String>>(),
+            Arc::new(0),
+        );
+        let _ = resolve_while_pending(&cache, &pipeline, &pending_forever, &chain);
+        let progress = cache.progress();
+        assert_eq!((progress.loaded, progress.total), (1, 1));
+
+        // The primary lands; hot reload then evicts the (now inactive)
+        // placeholder: started-but-unsettled — the strand.
+        let primary = cache.load_asset_with_pipeline(pipeline.clone(), &real);
+        settle(&primary);
+        cache.evict(&placeholder);
+        pipeline.evict(&placeholder);
+        assert!(cache.is_unsettled(&placeholder));
+        let progress = cache.progress();
+        assert_eq!((progress.loaded, progress.total), (1, 2), "placeholder pending again");
+
+        // The next resolve — primary LOADED, so no new placeholder is
+        // NEEDED for display — still re-drives the started entry, and the
+        // settled gate can fire again.
+        let shown = resolve_while_pending(&cache, &pipeline, &primary, &chain);
+        assert_eq!(*shown, 7, "primary still shown");
+        let progress = cache.progress();
+        assert_eq!(
+            (progress.loaded, progress.total),
+            (2, 2),
+            "started placeholder driven back to settled"
+        );
+        assert!(!cache.is_unsettled(&placeholder));
+
+        // An entry that was NEVER started is not requested once the primary
+        // is loaded (placeholders stay lazy).
+        let never = temp_file("wp-live-never.bin", b"123");
+        let shown =
+            resolve_while_pending(&cache, &pipeline, &primary, &[never.clone()]);
+        assert_eq!(*shown, 7);
+        let progress = cache.progress();
+        assert_eq!(progress.total, 2, "never-needed placeholder never counted");
+
+        for f in [placeholder, real, never] {
+            let _ = std::fs::remove_file(&f);
+        }
     }
 }
