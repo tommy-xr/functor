@@ -66,7 +66,12 @@ impl FunctorLangProject {
     /// Load the project (B8: the entry plus every sibling `.fun` file —
     /// file = module) and typecheck the whole program; `functor-lang check`
     /// diagnostics are build errors here (see the module doc).
-    pub fn build(&self, working_directory: &str) -> Result<(), Error> {
+    /// `verify_assets` gates the B.3 locator checks: true only for the BUILD
+    /// command (the strict/ship gate). `run`/`develop` pass false — a missing
+    /// gitignored model must not abort the dev loop (the runtime's fallback +
+    /// logged error covers it), and cold-URL HEAD probes must not delay
+    /// launch (the fast-inner-loop rule).
+    pub fn build(&self, working_directory: &str, verify_assets: bool) -> Result<(), Error> {
         refresh_manifest(working_directory);
         let path = self.entry_path(working_directory)?;
         let display = path.display().to_string();
@@ -115,27 +120,71 @@ impl FunctorLangProject {
                 source_line,
             });
         }
-        if diags.is_empty() {
-            // The user's own sibling `.fun` files: exclude the entry and the
-            // prelude-injected builtin (`<builtin>/Net.fun`).
-            let sibling_count = project
-                .sources
-                .files()
-                .iter()
-                .filter(|f| !f.path.starts_with("<builtin>"))
-                .count()
-                .saturating_sub(1);
-            emit(Event::FunctorLangLoaded {
-                entry: self.entry.clone(),
-                sibling_count,
-            });
-            Ok(())
-        } else {
-            Err(Error::other(format!(
+        if !diags.is_empty() {
+            return Err(Error::other(format!(
                 "{} type error(s) in the {display} project",
                 diags.len()
-            )))
+            )));
         }
+
+        // B.3: the strict gate also PROVES the typed asset surface — every
+        // literal Asset.* locator exists (file on disk, or a verifiable URL),
+        // and bare-string asset args get their deprecation warning in
+        // manifest-adopting projects. Findings carry spans, so they render
+        // exactly like type diagnostics.
+        if !verify_assets {
+            return self.finish_build(&project);
+        }
+        let has_manifest = std::fs::read_to_string(Path::new(working_directory).join("assets.fun"))
+            .map(|s| functor_runtime_common::manifest::is_generated(&s))
+            .unwrap_or(false);
+        let findings = crate::util::asset_verify::verify_assets(
+            &project.module,
+            Path::new(working_directory),
+            has_manifest,
+            &mut crate::util::asset_verify::probe_url_live,
+        );
+        for (finding, severity) in findings
+            .errors
+            .iter()
+            .map(|f| (f, Severity::Error))
+            .chain(findings.warnings.iter().map(|f| (f, Severity::Warning)))
+        {
+            let (file, line, col) = project.sources.resolve(finding.span.start);
+            emit(Event::Diagnostic {
+                severity,
+                file: Some(file.path.display().to_string()),
+                line: Some(line),
+                col: Some(col),
+                message: finding.message.clone(),
+                source_line: nth_line(&file.src, line),
+            });
+        }
+        if !findings.errors.is_empty() {
+            return Err(Error::other(format!(
+                "{} missing asset(s) in the {display} project",
+                findings.errors.len()
+            )));
+        }
+        self.finish_build(&project)
+    }
+
+    /// The successful-build tail: report what loaded.
+    fn finish_build(&self, project: &functor_lang::project::Project) -> Result<(), Error> {
+        // The user's own sibling `.fun` files: exclude the entry and the
+        // prelude-injected builtin (`<builtin>/Net.fun`).
+        let sibling_count = project
+            .sources
+            .files()
+            .iter()
+            .filter(|f| !f.path.starts_with("<builtin>"))
+            .count()
+            .saturating_sub(1);
+        emit(Event::FunctorLangLoaded {
+            entry: self.entry.clone(),
+            sibling_count,
+        });
+        Ok(())
     }
 
     /// Spawn the runner on the entry (`run` and `develop` — hot reload is
