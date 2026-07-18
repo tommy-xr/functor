@@ -16,6 +16,11 @@ for game logic** — the Rust runtime *interprets* the `.fun` directly, with
 state-preserving hot reload as you save, whole-game time travel over the running model,
 and the same source running on **native and wasm**.
 
+> **Status: pre-alpha.** Functor is early software under active development — the
+> language, the prelude, and file formats can all change between releases without a
+> deprecation path. Binaries and changelogs are published on the
+> [releases page](https://github.com/tommy-xr/functor/releases).
+
 ## Try it in the browser
 
 No install needed:
