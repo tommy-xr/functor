@@ -1,9 +1,11 @@
 name: Release
 
-# The release pipeline (manually dispatched, main only). Given a version
-# X.Y.Z it:
+# The release pipeline (manually dispatched, main only). Dispatched with a
+# version X.Y.Z — or with none, in which case the version is computed from
+# the conventional commits since the last release tag plus a language-surface
+# check (scripts/next-version.mjs) — it:
 #
-#   1. validates the version and that the tag vX.Y.Z is free
+#   1. resolves + validates the version and that the tag vX.Y.Z is free
 #   2. generates release notes from the conventional commits since the last
 #      release tag (git-cliff, config in cliff.toml)
 #   3. builds + sanity-checks the `functor` binary for every supported
@@ -27,8 +29,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, without the leading v (e.g. 0.1.0)"
-        required: true
+        description: "Version to release, without the leading v (e.g. 0.1.0). Leave empty to compute it from the commits since the last release tag."
+        required: false
+        default: ""
         type: string
 
 concurrency:
@@ -43,25 +46,35 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      VERSION: ${{ inputs.version }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
-          # Full history + tags: git-cliff walks last-tag..HEAD, and the
-          # tag-free check needs the existing tags.
+          # Full history + tags: the version calc and git-cliff walk
+          # last-tag..HEAD, and the tag-free check needs the existing tags.
           fetch-depth: 0
 
-      - name: Validate version and ref
+      - name: Resolve + validate version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           [[ "$GITHUB_REF" == "refs/heads/main" ]] \
             || { echo "::error::releases are cut from main, not $GITHUB_REF"; exit 1; }
+          if [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="$(node scripts/next-version.mjs)"
+          fi
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
             || { echo "::error::version '$VERSION' is not of the form X.Y.Z"; exit 1; }
           if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
             echo "::error::tag v$VERSION already exists"
             exit 1
           fi
+          echo "releasing v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install git-cliff
         uses: taiki-e/install-action@v2
@@ -69,6 +82,8 @@ jobs:
           tool: git-cliff@2.13.1
 
       - name: Generate release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git-cliff --unreleased --tag "v$VERSION" -o release-notes.md
           cat release-notes.md
@@ -83,7 +98,7 @@ jobs:
     needs: prepare
     uses: ./.github/workflows/release-binaries.yml
     with:
-      version: ${{ inputs.version }}
+      version: ${{ needs.prepare.outputs.version }}
 
   publish:
     needs: [prepare, binaries]
@@ -92,7 +107,7 @@ jobs:
     permissions:
       contents: write # create the tag + release
     env:
-      VERSION: ${{ inputs.version }}
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
