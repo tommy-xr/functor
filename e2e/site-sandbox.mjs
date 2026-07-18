@@ -320,11 +320,12 @@ const playerFrame = (page) => {
 
   // Broken edit → error surfaced, old frame keeps rendering.
   await page.evaluate((s) => window.__sandbox.setSource(s), BROKEN);
+  // The preview holds an error back (~4s grace) before surfacing it.
   await page.waitForFunction(() => window.__sandbox.status().state === "error", {
-    timeout: 5000,
+    timeout: 8000,
   });
   const status = await page.evaluate(() => window.__sandbox.status());
-  check("broken edit surfaces the parse error", /cannot .*:\d+:\d+/.test(status.detail), status.detail);
+  check("broken edit surfaces the parse error", /cannot .*:\d+:\d+/.test(status.message), status.message);
   await sleep(400);
   const still = await centerPixel(playerFrame(page));
   check("old program keeps rendering after a broken edit", still[1] > 150 && still[0] < 100, `center = rgb(${still})`);

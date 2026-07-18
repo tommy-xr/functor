@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -73,6 +73,26 @@ fn main() {
         }
         let _ = stdin_tx.send(Incoming::Eof); // client vanished — stop the loop
     });
+    // Debounced diagnostics: `didChange` signals this thread instead of
+    // publishing inline; after a quiet window it injects a `$/functorFlush`
+    // notification back onto the channel and the loop publishes the settled
+    // buffer. Tunable via FUNCTOR_LSP_DIAGNOSTICS_DEBOUNCE_MS (default 1000ms;
+    // 0 disables and publishes inline, per-keystroke).
+    let debounce_ms = std::env::var("FUNCTOR_LSP_DIAGNOSTICS_DEBOUNCE_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1000);
+    let debounce = if debounce_ms > 0 {
+        let (change_tx, change_rx) = std::sync::mpsc::channel::<String>();
+        let flush_tx = tx.clone();
+        std::thread::spawn(move || {
+            debounce_publisher(change_rx, flush_tx, std::time::Duration::from_millis(debounce_ms));
+        });
+        Some(change_tx)
+    } else {
+        None
+    };
+
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
     let code = run(
@@ -82,8 +102,49 @@ fn main() {
         },
         &mut writer,
         tx,
+        debounce,
     );
     std::process::exit(code);
+}
+
+/// Coalesce rapid `didChange`s into one diagnostics publish. Each edit (re)arms
+/// a per-URI deadline; once a URI has been quiet for `delay`, inject a
+/// `$/functorFlush` notification back onto the server channel so the loop
+/// publishes the settled buffer's diagnostics. One thread serves every URI, and
+/// idles on a long recv when nothing is pending.
+fn debounce_publisher(rx: Receiver<String>, flush: Sender<Incoming>, delay: std::time::Duration) {
+    let mut deadlines: HashMap<String, std::time::Instant> = HashMap::new();
+    loop {
+        let now = std::time::Instant::now();
+        let due: Vec<String> = deadlines
+            .iter()
+            .filter(|(_, &deadline)| deadline <= now)
+            .map(|(uri, _)| uri.clone())
+            .collect();
+        for uri in due {
+            deadlines.remove(&uri);
+            let message = json!({
+                "jsonrpc": "2.0",
+                "method": "$/functorFlush",
+                "params": { "uri": uri },
+            });
+            if flush.send(Incoming::Msg(message)).is_err() {
+                return; // the server loop is gone
+            }
+        }
+        let timeout = deadlines
+            .values()
+            .min()
+            .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()))
+            .unwrap_or(std::time::Duration::from_secs(3600));
+        match rx.recv_timeout(timeout) {
+            Ok(uri) => {
+                deadlines.insert(uri, std::time::Instant::now() + delay);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
 }
 
 /// The server loop: read framed messages until `exit` (or EOF), dispatching
@@ -96,7 +157,7 @@ fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> i32 {
     // polling is a `main`-only concern (its trace notifications arrive on the
     // channel `main` drains), so the receiver is dropped here.
     let (trace_tx, _trace_rx) = std::sync::mpsc::channel::<Incoming>();
-    run(&mut || read_message(reader), writer, trace_tx)
+    run(&mut || read_message(reader), writer, trace_tx, None)
 }
 
 /// The server core: pull messages from `next` (stdin in tests; a stdin+attach
@@ -108,6 +169,7 @@ fn run(
     next: &mut dyn FnMut() -> Option<Value>,
     writer: &mut impl Write,
     trace_tx: Sender<Incoming>,
+    debounce: Option<Sender<String>>,
 ) -> i32 {
     let mut shutdown_seen = false;
     let mut documents: HashMap<String, String> = HashMap::new();
@@ -314,8 +376,16 @@ fn run(
                     .and_then(|changes| changes.last())
                     .and_then(|change| change["text"].as_str())
                 {
-                    publish_diagnostics(writer, uri, text);
                     documents.insert(uri.to_string(), text.to_string());
+                    // Diagnostics are debounced so typing doesn't flash squiggles:
+                    // signal the debounce thread, which flushes via `$/functorFlush`
+                    // once the buffer settles. With no debouncer (tests), publish now.
+                    match &debounce {
+                        Some(change_tx) => {
+                            let _ = change_tx.send(uri.to_string());
+                        }
+                        None => publish_diagnostics(writer, uri, text),
+                    }
                     if let Some(project) = load_project(uri, &documents) {
                         projects.insert(uri.to_string(), project);
                     }
@@ -330,6 +400,14 @@ fn run(
                 projects.remove(uri);
                 // Clear stale squiggles for the closed file.
                 write_diagnostics(writer, uri, vec![]);
+            }
+            // A debounce-thread flush: `uri`'s buffer has settled — publish its
+            // diagnostics from the latest stored document.
+            ("$/functorFlush", None) => {
+                let uri = params["uri"].as_str().unwrap_or("");
+                if let Some(text) = documents.get(uri) {
+                    publish_diagnostics(writer, uri, text);
+                }
             }
             // A pushed trace (extension relay, wasm postMessage, tests, or the
             // attach poller re-entering): replace the overlay and refresh.
@@ -1230,7 +1308,7 @@ mod inspector_server_tests {
         let mut queue: VecDeque<Value> = messages.into();
         let mut out: Vec<u8> = Vec::new();
         let (trace_tx, _rx) = std::sync::mpsc::channel::<Incoming>();
-        run(&mut || queue.pop_front(), &mut out, trace_tx);
+        run(&mut || queue.pop_front(), &mut out, trace_tx, None);
         let mut reader: &[u8] = &out;
         let mut parsed = Vec::new();
         while let Some(message) = read_message(&mut reader) {

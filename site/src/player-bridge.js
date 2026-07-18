@@ -11,21 +11,37 @@
 // not to push a reload per keystroke.
 const PUSH_DEBOUNCE_MS = 300;
 
+// A rejected edit keeps the last good program running, so an error isn't urgent.
+// Hold it back this long before surfacing it — a fix within the window (the
+// common case while typing) clears it before it ever shows.
+const ERROR_GRACE_MS = 4000;
+
 export class PlayerBridge {
   // iframe: the player element. Callbacks map protocol events to UI:
   //   onReloading()          — a push was sent (busy)
   //   onLive()               — the player is ready with nothing pending
   //   onResult(ok, message)  — a hot-swap reply came back
-  constructor(iframe, { onReloading, onLive, onResult, debounceMs = PUSH_DEBOUNCE_MS }) {
+  constructor(
+    iframe,
+    {
+      onReloading,
+      onLive,
+      onResult,
+      debounceMs = PUSH_DEBOUNCE_MS,
+      errorGraceMs = ERROR_GRACE_MS,
+    }
+  ) {
     this.iframe = iframe;
     this.onReloading = onReloading;
     this.onLive = onLive;
     this.onResult = onResult;
     this.debounceMs = debounceMs;
+    this.errorGraceMs = errorGraceMs;
 
     this.previewReady = false;
     this.dirty = false;
     this.pushTimer = null;
+    this.errorTimer = null;
     this.lastSource = "";
     // Correlates results with pushes: each posted push gets a fresh id, the
     // runtime echoes it in the result, and a result for anything but the
@@ -64,8 +80,23 @@ export class PlayerBridge {
   // push and drops readiness until the next `functor-lang-preview-ready`.
   reset() {
     clearTimeout(this.pushTimer);
+    clearTimeout(this.errorTimer);
     this.previewReady = false;
     this.dirty = false;
+  }
+
+  // Surface a hot-swap result — but hold errors back. A rejected edit keeps the
+  // last good program running, so the preview IS still live; show that now and
+  // only surface the error if the program stays broken past the grace window.
+  // Any success (the usual next keystroke that re-parses) clears it instantly.
+  #deliverResult(ok, message) {
+    clearTimeout(this.errorTimer);
+    if (ok) {
+      this.onResult(true, message);
+    } else {
+      this.onLive();
+      this.errorTimer = setTimeout(() => this.onResult(false, message), this.errorGraceMs);
+    }
   }
 
   #post() {
@@ -101,7 +132,7 @@ export class PlayerBridge {
       // A result carrying an id that isn't the latest push's is stale — a
       // newer push is already in flight; its reply supersedes this one.
       if (data.id !== undefined && data.id !== this.pushId) return;
-      this.onResult(data.ok, data.message);
+      this.#deliverResult(data.ok, data.message);
     }
   }
 }

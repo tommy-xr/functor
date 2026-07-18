@@ -18,6 +18,9 @@ struct Server {
 impl Server {
     fn spawn() -> Server {
         let mut child = Command::new(env!("CARGO_BIN_EXE_functor-lang-lsp"))
+            // These tests assert diagnostic content, not typing cadence: disable
+            // the didChange debounce so publishes are immediate and deterministic.
+            .env("FUNCTOR_LSP_DIAGNOSTICS_DEBOUNCE_MS", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()

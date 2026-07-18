@@ -551,18 +551,6 @@ a:hover {
   height: 100%;
 }
 
-#status-log {
-  margin: 0;
-  padding: 10px 14px;
-  max-height: 30%;
-  overflow: auto;
-  font-size: 0.78rem;
-  color: var(--red);
-  background: #1a1220;
-  border-top: 1px solid rgba(242, 99, 127, 0.4);
-  white-space: pre-wrap;
-}
-
 .preview-pane {
   min-width: 0;
   min-height: 0;
@@ -603,8 +591,8 @@ a:hover {
 /* --------------------------------------------------------------------- ide */
 
 /* Three panes: file sidebar | editor | preview. Reuses .editor-pane,
-   #editor, .preview-pane, #player, #status-log, .status-pill from the
-   sandbox rules above. */
+   #editor, .preview-pane, #player, .status-pill from the sandbox rules
+   above. */
 .ide-split {
   flex: 1;
   display: grid;
@@ -719,20 +707,6 @@ a:hover {
 
 .file-delete:hover {
   color: var(--red);
-}
-
-.file-pane-note {
-  margin: 0;
-  padding: 10px 12px;
-  border-top: 1px solid var(--line);
-  font-size: 0.68rem;
-  line-height: 1.5;
-  color: var(--text-dim);
-}
-
-.file-pane-note code {
-  font-family: var(--font-mono);
-  color: var(--text);
 }
 
 .editor-tab {
