@@ -167,7 +167,11 @@ impl Parser {
                 TokenKind::Ident(name) if name == "open" => {
                     items.push(Item::Open(self.open_decl()?))
                 }
-                _ => return self.error("`let`, `type`, or `open` at top level"),
+                // `expect` is contextual the same way.
+                TokenKind::Ident(name) if name == "expect" => {
+                    items.push(Item::Expect(self.expect_decl()?))
+                }
+                _ => return self.error("`let`, `type`, `open`, or `expect` at top level"),
             }
         }
         Ok(Program { items })
@@ -191,6 +195,23 @@ impl Parser {
             module,
             span: kw.span.to(module_span),
         })
+    }
+
+    /// `expect <expr>` — an inline test. The expression is full-width (a
+    /// `let … in` chain works as a setup block), checked as `bool`.
+    fn expect_decl(&mut self) -> Result<ExpectDecl, ParseError> {
+        let kw = self.bump();
+        if self.interface {
+            return Err(ParseError {
+                message: "interface files (.funi) declare signatures — `expect` tests belong \
+in a `.fun` file"
+                    .to_string(),
+                span: kw.span,
+            });
+        }
+        let expr = self.expr()?;
+        let span = kw.span.to(expr.span);
+        Ok(ExpectDecl { expr, span })
     }
 
     /// An optional `: Type` binding annotation between a `let` binder name and

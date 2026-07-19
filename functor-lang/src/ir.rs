@@ -74,6 +74,22 @@ pub struct Module {
     /// externals; they have no body, so evaluation never sees them (the host
     /// provides the value at runtime — there is no paired `.fun`).
     pub signatures: Vec<Signature>,
+    /// `expect <expr>` inline tests, in file order. Deliberately OUTSIDE
+    /// `defs`: loading a session ([`crate::eval::Session::load`]) never
+    /// evaluates them — only test tooling does
+    /// ([`crate::eval::run_expects`]).
+    pub expects: Vec<ExpectDef>,
+}
+
+/// One lowered `expect <expr>` test. `module` is the owning module's
+/// canonical prefix (`"Utils"`; empty for the entry) — the checker scopes
+/// bare record literals by it, like a def's name prefix. Unnamed: the span
+/// is the test's identity.
+#[derive(Debug)]
+pub struct ExpectDef {
+    pub module: String,
+    pub expr: Expr,
+    pub span: Span,
 }
 
 /// One `.funi` value signature: a canonical name (`Scene.cube`) and its

@@ -6,10 +6,11 @@
 //! functor-lang check <file.fun>   # typecheck the project; all diagnostics, exit 1
 //! functor-lang run <file.fun>     # evaluate; print main's result, or the entry's bindings
 //! functor-lang trace <file.fun>   # evaluate with the call trace; print the trace
+//! functor-lang test <file.fun>    # evaluate the project's `expect` tests; exit 1 on failure
 //! functor-lang bench [--all] [--json] [<file.fun>|<dir>]  # time interpreter eval (see bench.rs)
 //! ```
 //!
-//! `ir`/`check`/`run`/`trace` treat the file as a project entry (B8): every
+//! `ir`/`check`/`run`/`trace`/`test` treat the file as a project entry (B8): every
 //! sibling `.fun` file in its directory loads with it — file = module,
 //! whole-program checking. `parse` stays single-file (it shows one file's
 //! surface syntax).
@@ -31,12 +32,14 @@ fn main() {
         bench::main(&args[1..]);
     }
     let (command, path) = match args.as_slice() {
-        [command, path] if ["parse", "ir", "check", "run", "trace"].contains(&command.as_str()) => {
+        [command, path]
+            if ["parse", "ir", "check", "run", "trace", "test"].contains(&command.as_str()) =>
+        {
             (command.as_str(), path)
         }
         _ => {
             eprintln!(
-                "usage: functor-lang <parse|ir|check|run|trace> <file.fun>\n       functor-lang bench [--all] [--json] [<file.fun>|<dir>]"
+                "usage: functor-lang <parse|ir|check|run|trace|test> <file.fun>\n       functor-lang bench [--all] [--json] [<file.fun>|<dir>]"
             );
             exit(2);
         }
@@ -89,6 +92,59 @@ fn main() {
             );
         }
         if !diags.is_empty() {
+            exit(1);
+        }
+        return;
+    }
+    if command == "test" {
+        // Like `run`, `test` does not typecheck first — `check` is the
+        // static gate; here a non-bool expect reports as its own error.
+        let reports = match functor_lang::run_expects(&project.module, &mut functor_lang::NoHost) {
+            Ok(reports) => reports,
+            Err(failure) => {
+                let (file, line, col) = project.sources.resolve(failure.error.span.start);
+                eprintln!(
+                    "{}:{line}:{col}: error: {}",
+                    file.path.display(),
+                    failure.error.message
+                );
+                exit(1);
+            }
+        };
+        if reports.is_empty() {
+            println!("no `expect` tests found");
+            return;
+        }
+        let mut failed = 0usize;
+        for report in &reports {
+            let (file, line, _col) = project.sources.resolve(report.span.start);
+            let at = format!("{}:{line}", file.path.display());
+            match &report.outcome {
+                functor_lang::ExpectOutcome::Pass => println!("{at}: ok"),
+                functor_lang::ExpectOutcome::Fail(detail) => {
+                    failed += 1;
+                    match detail {
+                        Some(cmp) => println!(
+                            "{at}: FAILED: left {} right — left: {}, right: {}",
+                            cmp.op, cmp.lhs, cmp.rhs
+                        ),
+                        None => println!("{at}: FAILED: expected true, got false"),
+                    }
+                }
+                functor_lang::ExpectOutcome::Error(error) => {
+                    failed += 1;
+                    let (efile, eline, ecol) = project.sources.resolve(error.span.start);
+                    println!(
+                        "{at}: ERROR: {}:{eline}:{ecol}: {}",
+                        efile.path.display(),
+                        error.message
+                    );
+                }
+            }
+        }
+        let passed = reports.len() - failed;
+        println!("{} expects: {passed} passed, {failed} failed", reports.len());
+        if failed > 0 {
             exit(1);
         }
         return;

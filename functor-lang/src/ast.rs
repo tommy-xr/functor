@@ -21,6 +21,18 @@ pub enum Item {
     /// (`.funi`): the type of a value the host implements (a module is either a
     /// `.fun` or a `.funi`, never both, so there is no paired implementation).
     Sig(SigDecl),
+    Expect(ExpectDecl),
+}
+
+/// `expect <expr>` — an inline test: a bool expression evaluated by test
+/// tooling (`functor-lang test`, the editor), NEVER by the game loop. Like
+/// `open`, `expect` is a *contextual* keyword: it only means this at the top
+/// level, so the name stays usable everywhere else. Tests are unnamed — the
+/// span (file:line) is their identity.
+#[derive(Debug)]
+pub struct ExpectDecl {
+    pub expr: Expr,
+    pub span: Span,
 }
 
 /// `let name : Type` in a `.funi` — a value signature with no body.

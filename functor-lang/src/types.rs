@@ -719,6 +719,15 @@ fn check_impl(
         }
     }
 
+    // `expect` tests: each must be a bool. Checked after every def has
+    // generalized, so an expect instantiates the same schemes a later def
+    // would (`expect id(1.0) == 1.0` beside `id` used at string elsewhere).
+    for exp in &module.expects {
+        checker.annot_vars.clear();
+        checker.current_module = exp.module.clone();
+        checker.expect(&exp.expr, &Type::Bool, "an `expect` test");
+    }
+
     checker.diags.sort_by_key(|d| d.span.start);
     // ONE display order for the whole table: the same variable must hover
     // as the same 'a everywhere (per-entry renumbering showed `q : 'a`
