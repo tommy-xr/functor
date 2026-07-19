@@ -23,19 +23,19 @@ loopback — an accepted dev-tool tradeoff):
 
 ```sh
 adb forward tcp:8123 tcp:8123
-curl --fail-with-body -X POST --data-binary @game.fun http://127.0.0.1:8123/reload-source
+functor -d mygame push 127.0.0.1:8123          # push once
+functor -d mygame push 127.0.0.1:8123 --watch  # push on every save
 ```
+
+(`functor push` is the desktop remote-develop command — the Quest endpoint
+speaks the same protocol, verified at ~12ms per push. Raw HTTP works too:
+`curl --fail-with-body -X POST --data-binary @game.fun
+http://127.0.0.1:8123/reload-source`.)
 
 Semantics match desktop hot-reload: the **model is preserved** (closures
 stored in the model rebind by def-name), a broken push returns the rendered
 error with HTTP 400 and the old program keeps running, and a push landed
-while the headset dozes applies the moment the session resumes. Edit-on-save
-loop (watchexec is optional everywhere else too):
-
-```sh
-watchexec -w game.fun -- \
-  curl -s -X POST --data-binary @game.fun http://127.0.0.1:8123/reload-source
-```
+while the headset dozes applies the moment the session resumes.
 
 ## Headless iteration (no one wearing the headset)
 
