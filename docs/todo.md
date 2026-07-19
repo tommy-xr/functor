@@ -80,6 +80,33 @@ bug found in the same exercise was fixed on the spot
 - [ ] Camera middleware: FPSCamera, OrbitCamera.
 - [ ] In-built hands models.
 
+## Webview (HTML/CSS UI)
+
+Prototype landed 2026-07-18: `webview(model)` → `Html.*`/`Attr.*` tree, blitz
+(CPU-painted) natively, DOM overlay on wasm; clicks fold through `update`.
+Remaining, roughly in priority order:
+
+- [ ] Native text input: route focus/keyboard into blitz (`Ui.textInput`'s
+      wants-keyboard gate; blitz has `Input` events + form support). wasm
+      inputs already work.
+- [ ] Record webview events for replay — needs their own `RecordedInput`
+      variant (a `UiEvent` entry would replay against the wrong handler
+      table; TODO comments in both producers).
+- [ ] Reconcile the DOM instead of full reparse on change (also fixes
+      focus/caret loss in wasm controlled inputs, and native selection state).
+- [ ] Cache the serialized HTML in the producer (today: tree clone +
+      `to_html` per frame per shell — the `webview_bench` numbers).
+- [ ] Tick CSS animations/transitions: repaint-while-animating (native is
+      dirty-flag only; we own blitz's clock via `resolve(t)`).
+- [ ] Debug-build usability: dirty-region repaint or downscaled raster
+      (full-window CPU paint is ~200× release — interactive native testing
+      uses release builds meanwhile).
+- [ ] Keep `site/player.html` in sync with `index-functor-lang.html` — the
+      hand-copied page drifted three features behind (ui-pointer bridge,
+      textInput keyboard route, webview overlay; caught+fixed 2026-07-18).
+      Extract the shared page JS into a module like `scrubber.js`, or add a
+      sync-check test.
+
 ## Effects & subscriptions
 
 Build the shared machinery once when the first resource-backed sub/effect lands.

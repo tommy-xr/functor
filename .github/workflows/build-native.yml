@@ -40,7 +40,8 @@ jobs:
             libglu1-mesa-dev \
             libglfw3 \
             libglfw3-dev \
-            libasound2-dev
+            libasound2-dev \
+            libfontconfig-dev
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2

@@ -4,6 +4,7 @@
   "scripts": {
     "clean": "git clean -fdX",
     "build:cli": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
+    "build:cli:release": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --release --bin functor",
     "build:lang-wasm": "wasm-pack build tools/functor-lang-wasm --target=web",
     "build:lsp": "cargo install --path tools/functor-lang-lsp --force && (pkill -x functor-lang-lsp || true)",
     "install:vsix": "npm run install:vsix --prefix tools/functor-lang-vscode",

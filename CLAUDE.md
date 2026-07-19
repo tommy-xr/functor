@@ -128,10 +128,17 @@ Functor Lang hot-reload is built into the runtime, so `develop` does not need it
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
 
 ```sh
-npm run build:cli   # the wasm bundle, then the functor CLI
+npm run build:cli           # the wasm bundle, then the functor CLI (debug)
+npm run build:cli:release   # same, but target/release/functor
 ```
 
-Produces `target/debug/functor` — a single binary with the desktop runtime built in.
+Produces `target/debug/functor` (or `target/release/functor`) — a single binary with the
+desktop runtime built in. **Use the RELEASE binary for interactive native testing** — the
+debug build is fine for headless checks and captures, but its CPU-bound paths are unusably
+slow live: the webview overlay's CPU raster is ~200× slower (~0.6s per repaint at a retina
+window — feels like a hang), and rapier physics steps are similarly far off release speed.
+The wasm bundle is unaffected either way: `wasm-pack build` is release by default, so
+`run wasm` and the site always ship optimized wasm.
 
 **Scaffold a game.** `init` creates an embedded Functor Lang starter without overwriting an existing
 `functor.json` or `game.fun`; `3d` is the default template:
@@ -270,6 +277,18 @@ For language-only changes, `functor-lang/benches` (see its README) isolates
 interpreter micro-ops under the plain prelude — useful for pinpointing, but a
 frame_bench run is still the acceptance number: micro-derived estimates have
 misjudged real per-frame cost before.
+
+For changes to the **native webview overlay** (blitz parse/resolve/paint —
+`webview_overlay.rs` or its blitz dependency pins), the analogous number is:
+
+```sh
+cargo run -q --release -p functor-runtime-desktop --example webview_bench
+```
+
+It times per-re-render parse+resolve (shared FontContext — a fresh one
+re-scans system fonts, the ~30ms regression it exists to catch), per-repaint
+CPU raster at three framebuffer sizes, and the press-time hit-test. Same
+rules: release only, compare the **min** column.
 
 ## Gotchas
 

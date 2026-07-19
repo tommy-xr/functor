@@ -76,6 +76,12 @@ pub enum InputCommand {
         slot: u32,
         kind: functor_runtime_common::ui::UiEventKind,
     },
+    /// The webview's flavor of `ui_event`, addressed against the webview
+    /// handler table: `{"type":"webview_event","slot":0,"kind":"Clicked"}`.
+    WebviewEvent {
+        slot: u32,
+        kind: functor_runtime_common::ui::UiEventKind,
+    },
 }
 
 /// A clock command via `POST /time`: `{"type":"set","tts":2.0}` pins the frame
@@ -438,7 +444,7 @@ pub fn spawn(bind: &str, port: u16) -> Receiver<DebugRequest> {
                             "GET /state": "runtime state JSON: frame, tts, viewport, input (held_keys + mouse), model (Debug text)",
                             "GET /scene": "current frame as JSON: camera + scene + lights",
                             "GET /trace": "paused-inspector trace: last real frame's entry-point invocations (bindings + result) replayed while paused; {paused:false, invocations:[]} while playing",
-                            "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"}",
+                            "POST /input": "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"}",
                             "POST /time": "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}",
                             "POST /reload-source": "swap game logic from the request body (raw .fun source), model preserved — 400 with the load error on a broken push",
                             "POST /rewind": "coupled scene rewind — {\"frame\":42} restores model + physics to that rendered frame (pin the clock first); 400 if unrecorded/pruned"

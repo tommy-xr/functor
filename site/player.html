@@ -47,10 +47,17 @@
       /* The time-travel scrubber is the shared component (scrubber.js); it
          injects its own styles, reading the --scrub-* vars above so it matches
          this page's calm theme. */
+      /* The game's HTML/CSS webview overlay (`webview model`): a REAL DOM
+         layer above the canvas whose tree lives in a shadow root (the game's
+         stylesheet can't restyle the page chrome). Only handler-carrying
+         elements take pointer input — the rules live inside the shadow root.
+         Kept in sync with index-functor-lang.html. */
+      #webview { position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
+    <div id="webview"></div>
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
     <script type="module">
 
@@ -107,6 +114,10 @@
         functor_lang_ui_pointer_leave,
         functor_lang_ui_wants_keyboard,
         functor_lang_ui_key,
+        functor_lang_webview_html,
+        functor_lang_webview_gen,
+        functor_lang_webview_click,
+        functor_lang_webview_input,
         functor_lang_is_running,
         functor_lang_scene_frame,
         functor_lang_inspector_trace,
@@ -260,6 +271,35 @@
         });
       };
 
+      // The webview overlay (the `webview model` hook): poll the runtime's
+      // revision each frame and swap innerHTML only on change. The tree
+      // renders inside a SHADOW ROOT so the game's <style> can't leak onto
+      // the page chrome. Kept in sync with index-functor-lang.html.
+      const setupWebview = () => {
+        const shadow = document.getElementById("webview").attachShadow({ mode: "open" });
+        const baseCss =
+          "<style>[data-fn-click], [data-fn-input] { pointer-events: auto; }</style>";
+        let lastGen = -1;
+        const poll = () => {
+          const gen = functor_lang_webview_gen();
+          if (gen !== lastGen) {
+            lastGen = gen;
+            const html = functor_lang_webview_html();
+            shadow.innerHTML = html ? baseCss + html : "";
+          }
+          requestAnimationFrame(poll);
+        };
+        requestAnimationFrame(poll);
+        shadow.addEventListener("click", (e) => {
+          const el = e.target.closest("[data-fn-click]");
+          if (el) functor_lang_webview_click(Number(el.getAttribute("data-fn-click")));
+        });
+        shadow.addEventListener("input", (e) => {
+          const el = e.target.closest("[data-fn-input]");
+          if (el) functor_lang_webview_input(Number(el.getAttribute("data-fn-input")), e.target.value);
+        });
+      };
+
       // The live-edit seam: the hosting page (the sandbox / the IDE) posts
       // .fun source (`functor-lang-set-source`) or a whole file set
       // (`functor-lang-set-project`, the IDE) and the runtime hot-swaps it,
@@ -377,6 +417,10 @@
           setupInput();
           if (!scrubberOff) mountScrubber();
         }
+        // The webview overlay renders even in deterministic captures (it is
+        // part of the frame's visual output); paused clocks drop its
+        // interactions runtime-side.
+        setupWebview();
         setupInspectorRelay();
         announceWhenReady();
       });

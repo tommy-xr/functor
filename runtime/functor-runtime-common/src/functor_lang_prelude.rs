@@ -143,6 +143,7 @@ use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{MaterialDescription, ModelDescription, ModelHandle, TextureDescription};
 use crate::skybox::SkyboxDescription;
 use crate::ui::{self, View};
+use crate::webview::HtmlNode;
 use crate::{Camera, Frame, Light, Scene3D, SceneObject, Shape};
 
 /// A [`Scene3D`] as an opaque Functor Lang value.
@@ -732,6 +733,46 @@ impl HostData for FunctorLangUiAnchor {
     }
 }
 
+/// An [`HtmlNode`] as an opaque Functor Lang value — what the optional
+/// `webview(model)` entry point returns (`Html.div` / `Html.text` / …).
+/// The shells render it as HTML/CSS: blitz-composited natively, a real DOM
+/// overlay on wasm.
+pub struct FunctorLangHtmlNode(pub HtmlNode);
+
+impl HostData for FunctorLangHtmlNode {
+    fn type_name(&self) -> &'static str {
+        "Html"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// One attribute of an `Html.*` element, before it is folded into the node.
+/// Interactive attributes registered their handler at construction time (the
+/// `Ui.button` shape) and carry only the slot.
+#[derive(Clone)]
+pub enum HtmlAttr {
+    /// A plain `name="value"` pair (`Attr.class` / `Attr.style` / `Attr.attr`).
+    Pair(String, String),
+    /// `Attr.onClick(msg)` — msg registered in the frame's handler table.
+    Click(u32),
+    /// `Attr.onInput(tagger)` — tagger registered in the frame's handler table.
+    Input(u32),
+}
+
+/// An [`HtmlAttr`] as an opaque Functor Lang value — `Attr.class(…)` / `Attr.onClick(msg)`.
+pub struct FunctorLangHtmlAttr(pub HtmlAttr);
+
+impl HostData for FunctorLangHtmlAttr {
+    fn type_name(&self) -> &'static str {
+        "Attr"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// A [`Fog`] as an opaque Functor Lang value — `Fog.linear(…)`/`Fog.exp(…)`.
 /// `Frame.withFog` accepts ONLY this (the Angle rule).
 pub struct FunctorLangFog(pub Fog);
@@ -941,6 +982,18 @@ pub fn view_value(value: &Value) -> Option<&View> {
     }
 }
 
+/// Extract the [`HtmlNode`] from a Functor Lang value (an `Html.*` result), for the
+/// shells' webview overlay — the `webview` hook's [`view_value`].
+pub fn html_node_value(value: &Value) -> Option<&HtmlNode> {
+    match value {
+        Value::HostData(data) => data
+            .as_any()
+            .downcast_ref::<FunctorLangHtmlNode>()
+            .map(|n| &n.0),
+        _ => None,
+    }
+}
+
 /// Extract the [`physics::PhysicsScene`] from a Functor Lang value (a `Physics.scene`
 /// result), for the shells' physics drive.
 pub fn physics_scene_value(value: &Value) -> Option<&physics::PhysicsScene> {
@@ -992,6 +1045,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_effects(&mut reg);
         register_subs(&mut reg);
         register_ui_widgets(&mut reg);
+        register_html(&mut reg);
         register_audio(&mut reg);
         reg
     })
@@ -1085,6 +1139,8 @@ crate::host_returnable!(
     FunctorLangSub,
     FunctorLangAsset,
     FunctorLangView,
+    FunctorLangHtmlNode,
+    FunctorLangHtmlAttr,
     FunctorLangAudioSource,
     FunctorLangAudioScene,
 );
@@ -2266,6 +2322,162 @@ fn register_ui_widgets(reg: &mut crate::host_registry::Registry) {
     );
 }
 
+/// A simple identifier-ish name: letters, then letters/digits/dashes — the
+/// shape of every real tag and attribute name. Anything else could break out
+/// of the serialized HTML (names are emitted unescaped).
+fn valid_html_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Tags that execute or reframe content — never legitimate game UI. The wasm
+/// overlay is a REAL DOM, so `Html.element("script", …)` would otherwise run
+/// code in the host page (game logic has no DOM access by design).
+fn forbidden_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "script" | "iframe" | "object" | "embed" | "link" | "base" | "meta" | "frame" | "frameset"
+    )
+}
+
+/// Attribute names that execute code (`on*`), navigate (`href`, `action`,
+/// `formaction`), embed documents (`srcdoc`), or spoof the runtime's handler
+/// slots (`data-fn-*` — those come only from `Attr.onClick`/`Attr.onInput`).
+fn forbidden_attr(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("on")
+        || lower.starts_with("data-fn-")
+        || matches!(lower.as_str(), "href" | "srcdoc" | "action" | "formaction")
+}
+
+/// Fold typed `Html.*` builder arguments — attrs and child nodes — into an
+/// [`HtmlNode::Element`]. Type errors were already handled by the registry's
+/// argument conversion; this owns only the fold.
+fn build_html_element(
+    tag: &str,
+    attrs: Vec<FunctorLangHtmlAttr>,
+    children: Vec<FunctorLangHtmlNode>,
+) -> FunctorLangHtmlNode {
+    let mut pairs = Vec::new();
+    let mut click_slot = None;
+    let mut input_slot = None;
+    for FunctorLangHtmlAttr(attr) in attrs {
+        match attr {
+            HtmlAttr::Pair(name, value) => pairs.push((name, value)),
+            HtmlAttr::Click(slot) => click_slot = Some(slot),
+            HtmlAttr::Input(slot) => input_slot = Some(slot),
+        }
+    }
+    FunctorLangHtmlNode(HtmlNode::Element {
+        tag: tag.to_string(),
+        attrs: pairs,
+        click_slot,
+        input_slot,
+        children: children.into_iter().map(|n| n.0).collect(),
+    })
+}
+
+/// The webview vocabulary (the optional `webview = (model) => …` hook): an
+/// Elm-style HTML/CSS tree — `Html.div([Attr.class("hud")], […])`.
+/// Interactive attrs register their handler like Ui.button/textInput
+/// (docs/ui-interaction.md); the shells render the tree via blitz (native)
+/// or a DOM overlay (wasm).
+fn register_html(reg: &mut crate::host_registry::Registry) {
+    reg.fn1("Html.text", "Html.text(\"…\")", |text: String| {
+        FunctorLangHtmlNode(HtmlNode::Text(text))
+    });
+    // A stylesheet: the CSS string is emitted VERBATIM inside <style> (CSS
+    // needs `>` selectors etc.; `Html.text` is escaped).
+    reg.fn1("Html.style", "Html.style(\"css…\")", |css: String| {
+        FunctorLangHtmlNode(HtmlNode::Element {
+            tag: "style".to_string(),
+            attrs: vec![],
+            click_slot: None,
+            input_slot: None,
+            children: vec![HtmlNode::Text(css)],
+        })
+    });
+    // The generic element. Names are emitted unescaped and the wasm overlay
+    // is a REAL DOM — validate here so a script-capable tag is a
+    // construction-time teaching error, not an injection.
+    reg.fn3(
+        "Html.element",
+        "Html.element(\"tag\", [attr, …], [node, …])",
+        |tag: String,
+         attrs: Vec<FunctorLangHtmlAttr>,
+         children: Vec<FunctorLangHtmlNode>| {
+            if !valid_html_name(&tag) || forbidden_tag(&tag) {
+                return Err(format!(
+                    "Html.element: `{tag}` is not an allowed tag name \
+(letters/digits/dashes; script-capable tags are refused)"
+                ));
+            }
+            Ok(build_html_element(&tag, attrs, children))
+        },
+    );
+    for tag in ["div", "span", "button", "h1", "h2", "p"] {
+        reg.fn2(
+            format!("Html.{tag}").leak() as &'static str,
+            format!("Html.{tag}([attr, …], [node, …])").leak() as &'static str,
+            move |attrs: Vec<FunctorLangHtmlAttr>, children: Vec<FunctorLangHtmlNode>| {
+                build_html_element(tag, attrs, children)
+            },
+        );
+    }
+    // A void element: attrs only. Pair Attr.value (controlled) with
+    // Attr.onInput.
+    reg.fn1(
+        "Html.input",
+        "Html.input([attr, …])",
+        |attrs: Vec<FunctorLangHtmlAttr>| build_html_element("input", attrs, vec![]),
+    );
+    for name in ["class", "style", "id", "value", "placeholder"] {
+        reg.fn1(
+            format!("Attr.{name}").leak() as &'static str,
+            format!("Attr.{name}(\"…\")").leak() as &'static str,
+            move |value: String| FunctorLangHtmlAttr(HtmlAttr::Pair(name.to_string(), value)),
+        );
+    }
+    // The `Html.element` rule for attribute names: reject executable (`on*`),
+    // navigating (`href`/`action`), and handler-slot-spoofing (`data-fn-*`)
+    // names.
+    reg.fn2(
+        "Attr.attr",
+        "Attr.attr(\"name\", \"value\")",
+        |name: String, value: String| {
+            if !valid_html_name(&name) || forbidden_attr(&name) {
+                return Err(format!(
+                    "Attr.attr: `{name}` is not an allowed attribute name \
+(letters/digits/dashes; on*/href/data-fn-* are refused)"
+                ));
+            }
+            Ok(FunctorLangHtmlAttr(HtmlAttr::Pair(name, value)))
+        },
+    );
+    // The msg is any Functor Lang value (typically an ADT variant), registered in
+    // the frame's handler table and delivered VERBATIM through `update` when
+    // the shell reports a click — the Ui.button shape.
+    reg.fn1(
+        "Attr.onClick",
+        "Attr.onClick(msg) — msg is delivered to update on click",
+        |msg: Value| {
+            let slot = push_ui_handler(UiHandler::Msg(msg));
+            FunctorLangHtmlAttr(HtmlAttr::Click(slot))
+        },
+    );
+    // The tagger is applied to the new text on each edit — the Ui.textInput
+    // shape.
+    reg.fn1(
+        "Attr.onInput",
+        "Attr.onInput(tagger) — tagger: (newText) => msg",
+        |tagger: Tagger| {
+            let slot = push_ui_handler(UiHandler::Tagger(tagger.0));
+            FunctorLangHtmlAttr(HtmlAttr::Input(slot))
+        },
+    );
+}
+
 /// The audio vocabulary — soundscape voices (the continuous, reconciled half
 /// of audio; the one-shots live in `register_effects`). Voices are keyed for
 /// cross-frame identity so the shell keeps a live voice playing.
@@ -2435,6 +2647,8 @@ handle_arg!(
     FunctorLangEffect => "an Effect",
     FunctorLangSub => "a Sub",
     FunctorLangView => "a View",
+    FunctorLangHtmlNode => "an Html node",
+    FunctorLangHtmlAttr => "an Attr",
     FunctorLangAudioSource => "an AudioSource",
 );
 
@@ -4723,12 +4937,21 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         let mut host = FunctorHost;
         for path in registry().paths() {
             let result = host.call(path, vec![Value::Bool(true)], functor_lang::Span::new(0, 0));
-            let message = result.err().expect("garbage args should error").message;
-            assert!(
-                !message.starts_with("internal:"),
-                "`{path}` fell through to the internal fallback: {message}"
-            );
+            // Most paths reject the garbage `true` arg with a usage/type
+            // error; a path whose contract accepts ANY value
+            // (`Attr.onClick(msg)`) may legitimately succeed — an Ok proves
+            // dispatch just as well.
+            if let Err(error) = result {
+                assert!(
+                    !error.message.starts_with("internal:"),
+                    "`{path}` fell through to the internal fallback: {}",
+                    error.message
+                );
+            }
         }
+        // An any-msg path (Attr.onClick) registered a handler above — drop it
+        // so the table never leaks into other tests on this thread.
+        let _ = take_ui_handlers();
     }
 
     // The render-target vocabulary end to end: a branded target declared once
@@ -6091,6 +6314,103 @@ the game dir"
             run_fail("let main = () => Ui.textInput(\"x\", 42.0)"),
             "Ui.textInput: the tagger must be a function of the result record, got a number"
         );
+        let _ = take_ui_handlers();
+    }
+
+    // Html/Attr (the `webview` hook): the Elm-style HTML tree. Attrs fold
+    // into the element (class pairs, onClick slots), children must be nodes,
+    // and the serialized HTML carries the handler slots as data attributes —
+    // the exact string both shells render.
+    #[test]
+    fn html_builders_fold_attrs_and_stamp_handler_slots() {
+        let _ = take_ui_handlers(); // isolate from other tests on this thread
+        let value = eval(
+            "type Msg = | Inc | Dec\n\
+             let main = () =>\n\
+             Html.div([Attr.class(\"hud\")], [\n\
+               Html.button([Attr.onClick(Dec)], [Html.text(\"-\")]),\n\
+               Html.button([Attr.onClick(Inc)], [Html.text(\"+\")]),\n\
+               Html.input([Attr.value(\"hi\"), Attr.onInput((s) => s)]),\n\
+             ])",
+        );
+        let node = html_node_value(&value).expect("main should return an Html node");
+        assert_eq!(
+            node.to_html(),
+            r#"<div class="hud"><button data-fn-click="0">-</button><button data-fn-click="1">+</button><input value="hi" data-fn-input="2"></div>"#
+        );
+        let handlers = take_ui_handlers();
+        assert_eq!(handlers.len(), 3);
+        match (&handlers[0], &handlers[1], &handlers[2]) {
+            (UiHandler::Msg(dec), UiHandler::Msg(inc), UiHandler::Tagger(_)) => {
+                assert_eq!(dec.to_string(), "Dec");
+                assert_eq!(inc.to_string(), "Inc");
+            }
+            _ => panic!("onClick registers msgs, onInput a tagger"),
+        }
+    }
+
+    #[test]
+    fn html_builders_reject_wrong_shapes_with_teaching_errors() {
+        let _ = take_ui_handlers();
+        assert_eq!(
+            run_fail("let main = () => Html.div([42.0], [])"),
+            "Html.div: expected an Attr, got a number"
+        );
+        let _ = take_ui_handlers();
+        assert_eq!(
+            run_fail("let main = () => Html.div([], [1.0])"),
+            "Html.div: expected an Html node, got a number"
+        );
+        let _ = take_ui_handlers();
+        assert_eq!(
+            run_fail("let main = () => Attr.onInput(42.0)"),
+            "Attr.onInput: the tagger must be a function of the result record, got a number"
+        );
+        let _ = take_ui_handlers();
+    }
+
+    // The wasm overlay is a REAL DOM, so script-capable tags and executable/
+    // spoofing attribute names are refused at construction (game logic has no
+    // DOM access by design — the webview must not become the escape hatch).
+    #[test]
+    fn html_rejects_injection_shaped_names() {
+        let _ = take_ui_handlers();
+        assert_eq!(
+            run_fail("let main = () => Html.element(\"script\", [], [])"),
+            "Html.element: `script` is not an allowed tag name \
+(letters/digits/dashes; script-capable tags are refused)"
+        );
+        let _ = take_ui_handlers();
+        assert_eq!(
+            run_fail("let main = () => Html.element(\"div onload=x\", [], [])"),
+            "Html.element: `div onload=x` is not an allowed tag name \
+(letters/digits/dashes; script-capable tags are refused)"
+        );
+        let _ = take_ui_handlers();
+        for bad in ["onerror", "href", "data-fn-click", "srcdoc"] {
+            assert_eq!(
+                run_fail(&format!("let main = () => Attr.attr(\"{bad}\", \"x\")")),
+                format!(
+                    "Attr.attr: `{bad}` is not an allowed attribute name \
+(letters/digits/dashes; on*/href/data-fn-* are refused)"
+                )
+            );
+            let _ = take_ui_handlers();
+        }
+        // Ordinary names still pass.
+        let value =
+            eval("let main = () => Html.element(\"section\", [Attr.attr(\"title\", \"hi\")], [])");
+        let node = html_node_value(&value).expect("section node");
+        assert_eq!(node.to_html(), r#"<section title="hi"></section>"#);
+        let _ = take_ui_handlers();
+    }
+
+    #[test]
+    fn html_style_emits_raw_css() {
+        let _ = take_ui_handlers();
+        let value = eval("let main = () => Html.style(\".a > .b { color: red; }\")");
+        let node = html_node_value(&value).expect("style node");
+        assert_eq!(node.to_html(), "<style>.a > .b { color: red; }</style>");
         let _ = take_ui_handlers();
     }
 

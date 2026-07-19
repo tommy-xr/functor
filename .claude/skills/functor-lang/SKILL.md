@@ -194,7 +194,7 @@ let grab = (s) =>
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude namespace (Net, Key, Random, List, Text, Math, Debug, Scene,
   Anim, Asset, Camera, Frame, Light, Fog, Color, Vec3, Skybox, Angle, Texture,
-  Time, Sub, Effect, Physics, RenderTarget, Ui, AudioSource, AudioScene) is a
+  Time, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr, AudioSource, AudioScene) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
   manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -249,11 +249,12 @@ open Widget                                              // …or open, bringing
 - This is how the **engine prelude's types are declared**: the `functor-prelude`
   crate ships a `.funi` for every host namespace (`Scene`, `Asset`, `Camera`,
   `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`,
-  `Sub`, `Effect`, `Physics`, `Ui`, `AudioSource`, `AudioScene`), loaded by the
+  `Sub`, `Effect`, `Physics`, `Ui`, `Html`, `Attr`, `AudioSource`, `AudioScene`),
+  loaded by the
   runner so engine calls carry real types (no longer `Unknown`). Each module's
   primary opaque handle is `Mod.t` (`Camera.t`, `Frame.t`, `Effect.t`, …);
   modules that own several name each (`Scene.t`; `Physics.shape`/`body`/`world`;
-  `Ui.view`/`anchor`; `Asset.Model`/`Texture`/`Sound`). Physics query/event results are records
+  `Ui.view`/`anchor`; `Html.node`/`Attr.t`; `Asset.Model`/`Texture`/`Sound`). Physics query/event results are records
   (`Physics.position`, `Physics.rayHit`, `Physics.collisionEvent`).
 
 ## Semantics rules that WILL bite you
@@ -638,6 +639,41 @@ Ui.textInput(value, tagger)                                // INTERACTIVE contro
                                                            //   `examples/ui` showcases every
                                                            //   widget in one panel
 
+Html.text("…") / Html.style("css…")                        // the `webview` hook's vocabulary: an
+Html.element("tag", [attr, …], [node, …])                  //   Elm-style HTML tree styled with
+Html.div([attr, …], [node, …])                             //   REAL CSS (flexbox, gradients,
+Html.span(…) / Html.button(…) / Html.h1(…)                 //   :hover, transitions). Natively it
+Html.h2(…) / Html.p(…)                                     //   renders via blitz (Stylo + Taffy +
+Html.input([attr, …])                                      //   Parley) CPU-painted and composited
+                                                           //   over the frame; on wasm it is a
+                                                           //   REAL DOM overlay above the canvas.
+                                                           //   Html.style emits its CSS string
+                                                           //   verbatim in a <style> element;
+                                                           //   Html.text is escaped. Html.input
+                                                           //   is a void element (attrs only) —
+                                                           //   pair Attr.value + Attr.onInput.
+Attr.class("…") / Attr.style("…") / Attr.id("…")           // plain attributes; Attr.attr(name,
+Attr.value("…") / Attr.placeholder("…")                    //   value) for anything else
+Attr.attr("name", "value")
+Attr.onClick(msg)                                          // INTERACTIVE (the Ui.button shape):
+                                                           //   a click on the element (or a
+                                                           //   descendant — DOM bubbling)
+                                                           //   delivers msg VERBATIM through
+                                                           //   `update`. Handlers are numbered by
+                                                           //   SLOT in construction order across
+                                                           //   the whole webview tree; drive them
+                                                           //   headlessly via POST /input
+                                                           //   {"type":"webview_event","slot":0,
+                                                           //    "kind":"Clicked"}.
+Attr.onInput(tagger)                                       // INTERACTIVE (the Ui.textInput
+                                                           //   shape): each edit applies the
+                                                           //   tagger to the new text. NOTE: text
+                                                           //   inputs are wasm-complete; native
+                                                           //   focus/keyboard routing is still a
+                                                           //   prototype gap (clicks work
+                                                           //   everywhere). `examples/webview` is
+                                                           //   the reference
+
 Physics.tag("name")                                        // BRANDED body identity (the
                                                            //   RenderTarget rule): declare
                                                            //   once, use the VALUE at every
@@ -744,6 +780,10 @@ let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
                                             // OPTIONAL, but requires update
 let physics = (model) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [body, …])  // OPTIONAL
+let webview = (model) => Html.div([…], […])  // OPTIONAL; the HTML/CSS overlay
+                                            // (blitz natively, a DOM overlay on
+                                            // wasm). Attr.onClick msgs arrive
+                                            // through `update`
 let ui = (model) => Ui.column([…]) |> Ui.panel(Ui.topLeft())  // OPTIONAL; the 2D HUD,
                                             // drawn over the frame. Ui.button clicks
                                             // arrive as msgs through `update`

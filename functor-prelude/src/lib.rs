@@ -34,6 +34,8 @@ pub fn modules() -> Vec<(String, String)> {
         module("Effect", include_str!("../prelude/effect.funi")),
         module("Physics", include_str!("../prelude/physics.funi")),
         module("Ui", include_str!("../prelude/ui.funi")),
+        module("Html", include_str!("../prelude/html.funi")),
+        module("Attr", include_str!("../prelude/attr.funi")),
         module("AudioSource", include_str!("../prelude/audio_source.funi")),
         module("AudioScene", include_str!("../prelude/audio_scene.funi")),
     ]

@@ -67,6 +67,8 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Physics",
     "RenderTarget",
     "Ui",
+    "Html",
+    "Attr",
     "AudioSource",
     "AudioScene",
     "Debug",
