@@ -35,6 +35,10 @@ mod run;
 // headless render test in tests/.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod webview_overlay;
+// The GLFW→blitz keyboard lowering for the webview overlay (native text
+// input): the plain-data key type crossing the worker channel + its mapping.
+#[cfg(not(target_arch = "wasm32"))]
+mod webview_keys;
 #[cfg(not(target_arch = "wasm32"))]
 mod ws_host;
 #[cfg(not(target_arch = "wasm32"))]

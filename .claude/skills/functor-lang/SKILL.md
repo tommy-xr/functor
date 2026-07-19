@@ -710,12 +710,21 @@ Attr.onClick(msg)                                          // INTERACTIVE (the U
                                                            //    "kind":"Clicked"}.
 Attr.onInput(tagger)                                       // INTERACTIVE (the Ui.textInput
                                                            //   shape): each edit applies the
-                                                           //   tagger to the new text. NOTE: text
-                                                           //   inputs are wasm-complete; native
-                                                           //   focus/keyboard routing is still a
-                                                           //   prototype gap (clicks work
-                                                           //   everywhere). `examples/webview` is
-                                                           //   the reference
+                                                           //   tagger to the new text, on BOTH
+                                                           //   shells — clicking the input
+                                                           //   focuses it, keys then type into
+                                                           //   the field instead of the game's
+                                                           //   `input` hook (Escape defocuses
+                                                           //   first, releases the cursor
+                                                           //   second), and focus survives the
+                                                           //   per-edit re-render (caret resets
+                                                           //   to the end when an update
+                                                           //   transforms the text — the
+                                                           //   Ui.textInput rule). IME
+                                                           //   composition (CJK/dead keys) is
+                                                           //   native-deferred.
+                                                           //   `examples/webview` is the
+                                                           //   reference
 
 Physics.tag("name")                                        // BRANDED body identity (the
                                                            //   RenderTarget rule): declare

@@ -195,7 +195,26 @@
         // focused field never leaks a phantom release edge. Kept in sync with
         // index-functor-lang.html.
         const gameHeld = new Set();
+        // The webview keyboard gate (native parity): while an Html.input in
+        // the webview's shadow root is focused, keys are the BROWSER's —
+        // they type into the real DOM field — and the game's input hook
+        // hears none of it. Escape DEFOCUSES the field first (the
+        // Ui.textInput rule); the release-side gameHeld discipline already
+        // keeps a swallowed press from leaking a phantom release.
+        const webviewActiveInput = () => {
+          const shadow = document.getElementById("webview").shadowRoot;
+          const active = shadow && shadow.activeElement;
+          return active && active.hasAttribute("data-fn-input") ? active : null;
+        };
         window.addEventListener("keydown", (e) => {
+          const webviewInput = webviewActiveInput();
+          if (webviewInput) {
+            if (e.key === "Escape") {
+              webviewInput.blur();
+              e.preventDefault();
+            }
+            return;
+          }
           if (functor_lang_ui_wants_keyboard()) {
             if (e.metaKey || e.ctrlKey || e.altKey) return;
             if (functor_lang_ui_key(e.key)) e.preventDefault();
@@ -285,7 +304,34 @@
           if (gen !== lastGen) {
             lastGen = gen;
             const html = functor_lang_webview_html();
+            // Focus survival across re-renders (the native slot-restore rule):
+            // swapping innerHTML destroys the focused <input> mid-typing, so
+            // remember its data-fn-input slot + selection and re-focus the
+            // matching element in the new tree. Selection is restored only
+            // when the value round-tripped unchanged; a transforming update
+            // resets the caret to the end (the documented Ui.textInput
+            // semantics).
+            const active = shadow.activeElement;
+            const focusSlot = active && active.getAttribute("data-fn-input");
+            const focusState = focusSlot != null && {
+              value: active.value,
+              start: active.selectionStart,
+              end: active.selectionEnd,
+            };
             shadow.innerHTML = html ? baseCss + html : "";
+            if (focusSlot != null) {
+              const el = shadow.querySelector(`[data-fn-input="${focusSlot}"]`);
+              if (el) {
+                el.focus();
+                if (el.setSelectionRange) {
+                  if (el.value === focusState.value) {
+                    el.setSelectionRange(focusState.start, focusState.end);
+                  } else {
+                    el.setSelectionRange(el.value.length, el.value.length);
+                  }
+                }
+              }
+            }
           }
           requestAnimationFrame(poll);
         };
