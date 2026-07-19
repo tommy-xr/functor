@@ -237,7 +237,8 @@ jobs:
             exit 0
           fi
           for f in vsix/*.vsix; do
-            npx --yes @vscode/vsce@3.9.2 publish --pre-release --packagePath "$f" -p "$VSCE_PAT"
+            npx --yes @vscode/vsce@3.9.2 publish --pre-release --skip-duplicate \
+              --packagePath "$f" -p "$VSCE_PAT"
           done
 
   publish-openvsx:
@@ -258,7 +259,8 @@ jobs:
             exit 0
           fi
           for f in vsix/*.vsix; do
-            npx --yes ovsx@1.0.2 publish --pre-release --packagePath "$f" -p "$OVSX_PAT"
+            npx --yes ovsx@1.0.2 publish --pre-release --skip-duplicate \
+              --packagePath "$f" -p "$OVSX_PAT"
           done
 
   # A separate job so a failed dispatch can be rerun without tripping over

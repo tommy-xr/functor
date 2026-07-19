@@ -3,4 +3,5 @@
 test/**
 tests-integration/**
 client/*.test.js
-*.vsix
+out/**
+**/*.vsix
