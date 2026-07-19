@@ -48,15 +48,13 @@ let globalStorageDir;
 // The "$(zap) functor" status bar item; its tooltip lists the extension,
 // language server, and functor CLI versions as they become known.
 let versionStatus;
-const versionInfo = { extension: "", server: "starting…", cli: null };
+const versionInfo = { extension: "", server: "starting…", cli: "checking…" };
 function renderVersionStatus() {
   if (!versionStatus) return;
   const md = new vscode.MarkdownString();
   md.appendMarkdown(`**functor** extension v${versionInfo.extension}\n\n`);
   md.appendMarkdown(`- language server: ${versionInfo.server}\n`);
-  md.appendMarkdown(
-    `- functor CLI: ${versionInfo.cli || "not found — the live preview offers a download"}\n`
-  );
+  md.appendMarkdown(`- functor CLI: ${versionInfo.cli}\n`);
   versionStatus.tooltip = md;
 }
 
@@ -298,7 +296,8 @@ async function probeCliVersion() {
     (await cliDownload.commandVersion(configured)) ||
     (await cliDownload.commandVersion(
       cliDownload.downloadedCliPath(globalStorageDir, process.platform)
-    ));
+    )) ||
+    "not found — the live preview offers a download";
   renderVersionStatus();
 }
 

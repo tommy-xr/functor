@@ -64,9 +64,13 @@ function commandVersion(cmd) {
       return done(null);
     }
     let out = "";
+    let exitCode = null;
     child.stdout.on("data", (d) => (out += d));
     child.on("error", () => done(null));
-    child.on("exit", (code) => done(code === 0 ? out.trim().split("\n")[0] || "unknown" : null));
+    child.on("exit", (code) => (exitCode = code));
+    // 'close' (not 'exit') — stdout may still have undelivered data when the
+    // process exits; close fires after the stdio streams have drained.
+    child.on("close", () => done(exitCode === 0 ? out.trim().split("\n")[0] || "unknown" : null));
     setTimeout(() => {
       done(null);
       try {
