@@ -128,20 +128,16 @@ impl FunctorLangProject {
         }
 
         // B.3: the strict gate also PROVES the typed asset surface — every
-        // literal Asset.* locator exists (file on disk, or a verifiable URL),
-        // and bare-string asset args get their deprecation warning in
-        // manifest-adopting projects. Findings carry spans, so they render
-        // exactly like type diagnostics.
+        // literal Asset.* locator exists (file on disk, or a verifiable
+        // URL). Findings carry spans, so they render exactly like type
+        // diagnostics. (Bare-string consumer args are check-time type
+        // errors since the flag day — no lint needed.)
         if !verify_assets {
             return self.finish_build(&project);
         }
-        let has_manifest = std::fs::read_to_string(Path::new(working_directory).join("assets.fun"))
-            .map(|s| functor_runtime_common::manifest::is_generated(&s))
-            .unwrap_or(false);
         let findings = crate::util::asset_verify::verify_assets(
             &project.module,
             Path::new(working_directory),
-            has_manifest,
             &mut crate::util::asset_verify::probe_url_live,
         );
         for (finding, severity) in findings

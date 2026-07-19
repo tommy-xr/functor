@@ -148,17 +148,17 @@ let terrain = () =>
 // units across), hence the per-model scales.
 let models = () =>
   Scene.group([
-    Scene.model("shark.glb")
+    Scene.model(Assets.shark)
       |> Scene.scale(0.2)
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.translate(Vec3.make(3.0, 1.0, 3.0)),
-    Scene.model("fish.glb")
+    Scene.model(Assets.fish)
       |> Scene.scale(0.06)
       |> Scene.translate(Vec3.make(-4.5, 0.8, 4.0)),
-    Scene.model("Xbot.glb")
+    Scene.model(Assets.xbot)
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.translate(Vec3.make(0.9, -0.2, 3.0)),
-    Scene.model("ExplodingBarrel.glb")
+    Scene.model(Assets.explodingBarrel)
       |> Scene.scale(0.02)
       |> Scene.translate(Vec3.make(0.0, -1.5, 3.0)),
   ])

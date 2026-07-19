@@ -384,35 +384,36 @@ Available in runner-hosted Functor Lang (and tests via
 
 ```functor
 Scene.cube() / sphere() / cylinder() / quad() / plane()   // zero args, enforced
-Scene.model("shark.glb")                                   // glTF by path, relative to the
-                                                           //   game dir; missing file =
+Scene.model(Assets.shark)                                  // glTF by branded Asset VALUE
+                                                           //   (the generated manifest, or
+                                                           //   Asset.model(…) at a data
+                                                           //   boundary); missing file =
                                                            //   logged error + empty fallback
 Asset.model("shark.glb") / Asset.texture("wood.png")       // typed asset locators, branded
 Asset.sound("boom.ogg")                                    //   per KIND (types Asset.Model /
-                                                           //   Asset.Texture / Asset.Sound).
-                                                           //   Scene.model, Effect.play/
-                                                           //   playAt/playThen, and
-                                                           //   AudioSource.ambient/at accept
-                                                           //   the matching kind alongside
-                                                           //   the pre-manifest bare path
-                                                           //   string (deprecated, retired
-                                                           //   at the flag day; the
-                                                           //   AudioSource KEY stays a
-                                                           //   string). The texture
-                                                           //   materials accept
+                                                           //   Asset.Texture / Asset.Sound)
+                                                           //   — the PERMANENT dynamic
+                                                           //   constructors; the generated
+                                                           //   manifest (functor import)
+                                                           //   calls the same ones. SINCE
+                                                           //   THE FLAG DAY (B.6): asset
+                                                           //   consumers take Asset VALUES
+                                                           //   ONLY — Scene.model takes
+                                                           //   Asset.Model, Effect.play/
+                                                           //   playAt/playThen and
+                                                           //   AudioSource.ambient/at take
+                                                           //   Asset.Sound (the AudioSource
+                                                           //   KEY stays a string); a bare
+                                                           //   path string is a CHECK error
+                                                           //   and a runtime teaching error
+                                                           //   pointing at the manifest.
+                                                           //   Texture materials accept
                                                            //   Asset.Texture alongside a
-                                                           //   Texture.t VALUE — they never
-                                                           //   took bare strings. A WRONG-
-                                                           //   kind asset (a sound into
-                                                           //   Scene.model) is a teaching
-                                                           //   error naming the right
-                                                           //   constructor. Check-time: the
-                                                           //   consumers' asset params are
-                                                           //   gradually typed (no union
-                                                           //   type) until the flag day
-                                                           //   tightens them to the Asset
-                                                           //   kinds; the constructors are
-                                                           //   fully typed now
+                                                           //   Texture.t VALUE (two brands,
+                                                           //   still gradually typed). A
+                                                           //   WRONG-kind asset (a sound
+                                                           //   into Scene.model) teaches
+                                                           //   the right constructor
 asset |> Asset.whilePending(placeholder)                   // placeholder rendered WHILE the
                                                            //   asset streams in (instead of
                                                            //   the empty/checkerboard

@@ -99,7 +99,7 @@ let draw = (model, tts) =>
       // The glove renders at its authored size (~0.2 units — a real hand):
       // authored palm-down with the fingers along +Z, so tip it up to show
       // the back of the hand (and the finger curls) to the camera.
-      Scene.model("vr_glove_model.glb")
+      Scene.model(Assets.vr_glove_model)
         |> Scene.animate(handPose(model.curls))
         |> Scene.rotateX(Angle.degrees(-70.0)),
     ]),

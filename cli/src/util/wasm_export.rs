@@ -10,7 +10,8 @@
 //!
 //! The whole project directory is copied (minus hidden entries and the
 //! reserved output names below) rather than a statically discovered file
-//! set: asset paths are runtime strings (`Scene.model("shark.glb")`, or
+//! set: asset locators are runtime strings inside Asset values
+//! (`Scene.model(Asset.model("shark.glb"))`, `Texture.file(…)`, or
 //! computed), and a non-embedded `.gltf` references external `.bin`/texture
 //! files from *inside* the glTF — no source scan can see either, and a
 //! missing asset degrades to the invisible fallback, the worst failure mode

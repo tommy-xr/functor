@@ -699,10 +699,9 @@ impl AssetKind {
 
 /// A typed asset locator as an opaque Functor Lang value — made by
 /// `Asset.model` / `Asset.texture` / `Asset.sound` (the typed-manifest front
-/// door). Asset-consuming functions accept it alongside the bare path string
-/// (the pre-manifest form, deprecated at B.6) and check the KIND, so a
-/// wrong-kind asset is a teaching error at the call instead of a silent
-/// fallback at draw.
+/// door). Since the flag day (B.6) the asset consumers accept ONLY these
+/// values and check the KIND, so a wrong-kind asset is a teaching error at
+/// the call instead of a silent fallback at draw.
 #[derive(Clone)]
 struct FunctorLangAsset {
     kind: AssetKind,
@@ -1235,8 +1234,8 @@ fn register_scene(reg: &mut crate::host_registry::Registry) {
     // face of F#'s `Model.file |> Graphics.Scene3D.model`. Loading is the
     // shells' asset pipeline; a missing file logs an error and renders as
     // the empty fallback.
-    const MODEL: &str = "Scene.model(\"file.glb\") — a non-empty glTF path relative to \
-the game dir";
+    const MODEL: &str = "Scene.model(asset) — a model Asset value: the generated \
+manifest's Assets.<name>, or Asset.model(\"file.glb\")";
     reg.fn1("Scene.model", MODEL, |path: ModelPath| {
         FunctorLangScene(Scene3D::model(ModelDescription {
             handle: ModelHandle::File(path.path),
@@ -2763,10 +2762,10 @@ impl crate::host_registry::FromArg for FunctorLangColor {
     }
 }
 
-/// A model-asset argument: a non-empty path string, or an `Asset.model`
-/// locator (a wrong-kind asset gets `asset_path`'s teaching error) — the
-/// typed-manifest front door at the registry seam. Carries the asset's
-/// `Asset.whilePending` chain (empty for the string form).
+/// A model-asset argument: an `Asset.model` locator (a wrong-kind asset gets
+/// `asset_path`'s teaching error) — the typed-manifest front door at the
+/// registry seam. Since the flag day (B.6) bare path strings teach instead
+/// of coercing. Carries the asset's `Asset.whilePending` chain.
 struct ModelPath {
     path: String,
     while_pending: Vec<String>,
@@ -2775,10 +2774,6 @@ struct ModelPath {
 impl crate::host_registry::FromArg for ModelPath {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         match value {
-            Value::String(p) if !p.is_empty() => Ok(ModelPath {
-                path: p.to_string(),
-                while_pending: Vec::new(),
-            }),
             v if asset_of(v).is_some() => {
                 // asset_path enforces the KIND (teaching error); the chain
                 // rides along.
@@ -2789,10 +2784,28 @@ impl crate::host_registry::FromArg for ModelPath {
                     while_pending: chain,
                 })
             }
-            _ => Err(RunError {
-                message: "usage: Scene.model(\"file.glb\") — a non-empty glTF path \
-relative to the game dir"
-                    .to_string(),
+            // The flag day (B.6): the pre-manifest bare-string coercion is
+            // retired — strings live only at data boundaries, inside the
+            // Asset constructors.
+            Value::String(p) => Err(RunError {
+                message: format!(
+                    "{path}: bare asset paths are no longer accepted — reference the \
+generated manifest (run `functor import`, then Assets.<name>), or construct \
+Asset.model({}) at the data boundary",
+                    if p.is_empty() {
+                        "\"file.glb\"".to_string()
+                    } else {
+                        format!("\"{p}\"")
+                    }
+                ),
+                span,
+            }),
+            other => Err(RunError {
+                message: format!(
+                    "{path}: expected a model Asset value (the generated manifest's \
+Assets.<name>, or Asset.model(…)), got {}",
+                    other.kind_name()
+                ),
                 span,
             }),
         }
@@ -2800,23 +2813,36 @@ relative to the game dir"
 }
 
 /// A sound argument (the [`ModelPath`] dual-accept pattern, for audio —
-/// #384): a non-empty path string, or an `Asset.sound` locator (a wrong-kind
-/// asset gets `asset_path`'s teaching error). The legacy arms answered a
-/// wrong-type sound with their own full `usage:` line; those flatten to this
-/// shared teaching text (a pinned delta).
+/// A sound-asset argument: an `Asset.sound` locator (a wrong-kind asset gets
+/// `asset_path`'s teaching error). Since the flag day (B.6) bare path
+/// strings teach the migration instead of coercing.
 struct SoundPath(String);
 
 impl crate::host_registry::FromArg for SoundPath {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         match value {
-            Value::String(p) if !p.is_empty() => Ok(SoundPath(p.to_string())),
             v if asset_of(v).is_some() => {
                 asset_path(v, AssetKind::Sound, path, span).map(SoundPath)
             }
-            _ => Err(RunError {
+            // The flag day (B.6): bare sound paths retired, like model paths.
+            Value::String(p) => Err(RunError {
                 message: format!(
-                    "{path}: expected a sound — a non-empty path string or \
-Asset.sound(\"file.ogg\")"
+                    "{path}: bare asset paths are no longer accepted — reference the \
+generated manifest (run `functor import`, then Assets.<name>), or construct \
+Asset.sound({}) at the data boundary",
+                    if p.is_empty() {
+                        "\"file.ogg\"".to_string()
+                    } else {
+                        format!("\"{p}\"")
+                    }
+                ),
+                span,
+            }),
+            other => Err(RunError {
+                message: format!(
+                    "{path}: expected a sound Asset value (the generated manifest's \
+Assets.<name>, or Asset.sound(…)), got {}",
+                    other.kind_name()
                 ),
                 span,
             }),
@@ -4469,7 +4495,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
             "let main = () =>\n\
              Frame.create(\n\
                Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
-               Scene.model(\"shark.glb\") |> Scene.scale(0.002) |> Scene.translate(Vec3.make(3.0, 1.0, 3.0)))",
+               Scene.model(Asset.model(\"shark.glb\")) |> Scene.scale(0.002) |> Scene.translate(Vec3.make(3.0, 1.0, 3.0)))",
         );
         // Outermost: the translate wrapper; inside it, the scale wrapper;
         // inside that, the Model node itself.
@@ -4498,16 +4524,24 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     // line naming the accepted forms, not a misleading "expected a string".)
     #[test]
     fn model_requires_a_nonempty_path_string() {
+        // The flag day (B.6): a bare number teaches the Asset shape, and a
+        // bare STRING — the retired pre-manifest coercion — teaches the
+        // migration.
         assert_eq!(
             run_fail("let main = () => Scene.model(42.0)"),
-            "usage: Scene.model(\"file.glb\") — a non-empty glTF path relative to \
-the game dir"
+            "Scene.model: expected a model Asset value (the generated manifest's \
+Assets.<name>, or Asset.model(…)), got a number"
         );
         assert_eq!(
-            run_fail("let main = () => Scene.model(\"\")"),
-            "usage: Scene.model(\"file.glb\") — a non-empty glTF path relative to \
-the game dir"
+            run_fail("let main = () => Scene.model(\"shark.glb\")"),
+            "Scene.model: bare asset paths are no longer accepted — reference the \
+generated manifest (run `functor import`, then Assets.<name>), or construct \
+Asset.model(\"shark.glb\") at the data boundary"
         );
+        // An empty string can't be echoed into the advice (Asset.model("")
+        // is itself rejected) — a fixed valid example stands in.
+        assert!(run_fail("let main = () => Scene.model(\"\")")
+            .contains("Asset.model(\"file.glb\")"));
     }
 
     // --- typed assets (Track B.1) ---
@@ -4522,21 +4556,6 @@ the game dir"
             .message
     }
 
-    /// `Asset.model` flows into `Scene.model` exactly like the (deprecated)
-    /// bare path string — byte-identical protocol frames.
-    #[test]
-    fn asset_model_matches_string_form() {
-        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
-        let by_string =
-            frame_of(&format!("let main = () => Frame.create({camera}, Scene.model(\"shark.glb\"))"));
-        let by_asset = frame_of(&format!(
-            "let main = () => Frame.create({camera}, Scene.model(Asset.model(\"shark.glb\")))"
-        ));
-        assert_eq!(
-            serde_json::to_string(&by_string).unwrap(),
-            serde_json::to_string(&by_asset).unwrap()
-        );
-    }
 
     /// `Asset.texture` feeds the texture materials exactly like a
     /// `Texture.file` value (both lit and the normal-map slot).
@@ -4562,33 +4581,11 @@ the game dir"
         }
     }
 
-    /// `Asset.sound` feeds the soundscape voices exactly like a bare path
-    /// (the key stays a string — identity, not an asset).
-    #[test]
-    fn asset_sound_matches_string_form_in_soundscape() {
-        let by_string = eval("let main = () => AudioSource.ambient(\"bed\", \"wind.ogg\")");
-        let by_asset =
-            eval("let main = () => AudioSource.ambient(\"bed\", Asset.sound(\"wind.ogg\"))");
-        assert_eq!(
-            audio_source_of(&by_string).unwrap(),
-            audio_source_of(&by_asset).unwrap()
-        );
-        let by_string = eval(
-            "let main = () => AudioSource.at(\"fire\", \"crackle.ogg\", Vec3.make(1.0, 0.0, 2.0))",
-        );
-        let by_asset = eval(
-            "let main = () => AudioSource.at(\"fire\", Asset.sound(\"crackle.ogg\"), Vec3.make(1.0, 0.0, 2.0))",
-        );
-        assert_eq!(
-            audio_source_of(&by_string).unwrap(),
-            audio_source_of(&by_asset).unwrap()
-        );
-    }
 
-    /// `Asset.sound` in the one-shot effects queues the same AudioCommands
-    /// as the bare-path form.
+    /// `Asset.sound` in the one-shot effects queues the expected
+    /// AudioCommands (paths unwrapped from the branded values).
     #[test]
-    fn asset_sound_matches_string_form_in_one_shots() {
+    fn asset_sound_one_shots_queue_audio_commands() {
         let _guard = crate::audio::OUTBOUND_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -4735,10 +4732,10 @@ construct it with Asset.sound(…)",
     /// A chainless model keeps the exact pre-B.4 wire shape (no
     /// `while_pending` key at all) — replays and cross-version scenes agree.
     #[test]
-    fn chainless_models_keep_the_old_wire_shape() {
+    fn chainless_models_keep_the_v1_wire_shape() {
         let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
         let frame = frame_of(&format!(
-            "let main = () => Frame.create({camera}, Scene.model(\"shark.glb\"))"
+            "let main = () => Frame.create({camera}, Scene.model(Asset.model(\"shark.glb\")))"
         ));
         let json = serde_json::to_string(&frame).expect("serialize");
         assert!(!json.contains("while_pending"), "json: {json}");
@@ -5018,7 +5015,7 @@ Vec3.make(x, y, z)"
     #[test]
     fn scene_animate_sets_clip_on_model() {
         let value = eval(
-            "let main = () => Scene.model(\"Xbot.glb\") |> Scene.animate(Anim.clip(\"walk\", 1.5))",
+            "let main = () => Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"walk\", 1.5))",
         );
         let scene = scene_of(&value).expect("a Scene");
         let SceneObject::Model(description) = &scene.obj else {
@@ -5039,7 +5036,7 @@ Vec3.make(x, y, z)"
     fn scene_animate_reaches_models_in_groups() {
         let value = eval(
             "let main = () =>\n\
-             Scene.group([Scene.model(\"Xbot.glb\"), Scene.cube()])\n\
+             Scene.group([Scene.model(Asset.model(\"Xbot.glb\")), Scene.cube()])\n\
                |> Scene.animate(Anim.blend([\n\
                     (Anim.clip(\"idle\", 0.0), 0.25),\n\
                     (Anim.clip(\"run\", 2.0), 0.75),\n\
@@ -5079,7 +5076,7 @@ Vec3.make(x, y, z)"
     fn bare_strings_are_not_anims() {
         let module = functor_lang::lower(
             functor_lang::parse(
-                "let main = () => Scene.model(\"Xbot.glb\") |> Scene.animate(\"walk\")",
+                "let main = () => Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(\"walk\")",
             )
             .unwrap(),
         )
@@ -5118,7 +5115,7 @@ Anim.clip(\"walk\", tts)"
     fn anim_algebra_composes_and_serializes() {
         let value = eval(
             "let main = () =>\n\
-             Scene.model(\"glove.glb\") |> Scene.animate(\n\
+             Scene.model(Asset.model(\"glove.glb\")) |> Scene.animate(\n\
                Anim.rest()\n\
                  |> Anim.rotate(\"finger_index_0_r\", Angle.degrees(45.0), Angle.degrees(0.0), Angle.degrees(0.0))\n\
                  |> Anim.mask([\"wrist_r\"])\n\
@@ -5211,13 +5208,13 @@ Vec3.make(0.0, 0.0, 0.0), 10.0, (h) => h)"
         // teaching text.
         assert_eq!(
             fail_message("let main = () => Effect.play(3.0)"),
-            "Effect.play: expected a sound — a non-empty path string or \
-Asset.sound(\"file.ogg\")"
+            "Effect.play: expected a sound Asset value (the generated manifest's \
+Assets.<name>, or Asset.sound(…)), got a number"
         );
         assert_eq!(
             fail_message("let main = () => AudioSource.ambient(\"bed\", 3.0)"),
-            "AudioSource.ambient: expected a sound — a non-empty path string or \
-Asset.sound(\"file.ogg\")"
+            "AudioSource.ambient: expected a sound Asset value (the generated \
+manifest's Assets.<name>, or Asset.sound(…)), got a number"
         );
     }
 
@@ -6986,7 +6983,7 @@ the game dir"
         let src = "\
             let init = 0.0\n\
             let fetch = Effect.httpGet(\"http://127.0.0.1:9000/hello\", (r) => r)\n\
-            let shoot = Effect.play(\"gunshot.wav\")\n";
+            let shoot = Effect.play(Asset.sound(\"gunshot.wav\"))\n";
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
@@ -7030,8 +7027,8 @@ the game dir"
         let _ = crate::audio::drain_commands(); // clear the shared queue
         let src = "\
             let init = 0.0\n\
-            let shoot = Effect.play(\"gunshot.wav\")\n\
-            let blast = Effect.playAt(\"explosion.wav\", Vec3.make(5.0, 0.5, -2.0))\n";
+            let shoot = Effect.play(Asset.sound(\"gunshot.wav\"))\n\
+            let blast = Effect.playAt(Asset.sound(\"explosion.wav\"), Vec3.make(5.0, 0.5, -2.0))\n";
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
@@ -7095,7 +7092,7 @@ the game dir"
         let src = "\
             type Model = | Playing | Finished\n\
             let init = Playing\n\
-            let ping = Effect.playThen(\"chime.wav\", Finished)\n\
+            let ping = Effect.playThen(Asset.sound(\"chime.wav\"), Finished)\n\
             let update = (m: Model, msg: Model) => msg\n";
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load: {}", e.render()));
@@ -7303,8 +7300,8 @@ a number",
             let init = 0.0\n\
             let soundScape = (m) =>\n\
               AudioScene.create([\n\
-                AudioSource.ambient(\"wind\", \"wind-loop.wav\") |> AudioSource.gain(0.35),\n\
-                AudioSource.at(\"fountain\", \"water.wav\", Vec3.make(5.0, 0.5, 0.0))\n\
+                AudioSource.ambient(\"wind\", Asset.sound(\"wind-loop.wav\")) |> AudioSource.gain(0.35),\n\
+                AudioSource.at(\"fountain\", Asset.sound(\"water.wav\"), Vec3.make(5.0, 0.5, 0.0))\n\
               ])\n";
         let project = functor_lang::project::load_single_source("game", src)
             .unwrap_or_else(|e| panic!("load: {}", e.render()));

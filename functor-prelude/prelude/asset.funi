@@ -24,6 +24,7 @@ let sound : (string) => Sound
 // another asset of the SAME kind, so it chains — a low-poly proxy can carry
 // its own placeholder. Models and textures only (sounds decode at play time
 // — no pending state; the host teaches). A FAILED asset still shows the
-// fallback: failure is not pending. Gradually typed ('a ties the result to
-// the asset's kind); the flag day tightens the kinds.
+// fallback: failure is not pending. Stays gradually typed ('a ties the
+// result to the asset's kind) — per-kind pairs would need overloads/unions
+// the checker doesn't have; the host enforces kinds at runtime.
 let whilePending : ('placeholder, 'asset) => 'asset

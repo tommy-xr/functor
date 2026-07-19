@@ -7,12 +7,11 @@
 // The opaque audio-source handle (`AudioSource.t` from game code).
 type t
 
-// key, sound. The sound parameter accepts a path string OR an `Asset.Sound`
-// during the typed-asset migration (gradually typed — no union type); the
-// flag day tightens it. The KEY stays a string (cross-frame identity, not
-// an asset).
-let ambient : (string, 'sound) => t
+// key, sound. Since the flag day (B.6) the sound is the branded
+// `Asset.Sound`. The KEY stays a string (cross-frame identity, not an
+// asset).
+let ambient : (string, Asset.Sound) => t
 // key, sound, pos.
-let at : (string, 'sound, Vec3.t) => t
+let at : (string, Asset.Sound, Vec3.t) => t
 // Source LAST (subject-last), so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
 let gain : (float, t) => t
