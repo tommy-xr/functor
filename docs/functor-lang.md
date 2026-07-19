@@ -490,6 +490,21 @@ snapshots — no GPU, fully agent-verifiable.
       implementation satisfies its interface; consumers typecheck against
       the `.funi` alone. The LLM payoff is the point: an interface file is
       the concise, load-into-context summary of a module.
+- [x] **Language: inline `expect` tests** (done 2026-07-19; design note in
+      `~/notes` `inline-expect-tests.md` — the live red/green editor arc
+      builds on this). `expect <bool-expr>` is a top-level item (contextual
+      keyword, the `open` rule) lowered OUTSIDE defs, so `Session::load` /
+      `run` never evaluate it — the game loop is untouched. The checker
+      requires bool ("an `expect` test: expected bool, got …");
+      `functor_lang::run_expects` loads defs then evaluates each expect
+      independently, decomposing a top-level comparison so a failure
+      reports both sides' actual values; `functor-lang test <entry.fun>`
+      renders per-test `file:line: ok/FAILED` lines + a summary, exit 1 on
+      any failure. Expects in sibling modules load and run with the
+      project; `.funi` files refuse them. *Verify (done):* 15 tests
+      (contextual-name pin, `.funi` rejection, check errors, comparison
+      decomposition, per-test independence, run/Session inertness,
+      multi-file); `.ir` goldens regenerated (the new `expects` field).
 
 ## Track C — Functor Lang as a second producer behind the seam
 

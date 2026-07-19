@@ -30,7 +30,7 @@
 //! marker event) after [`MAX_TRACE_EVENTS`] so a hot loop can't produce an
 //! unbounded transcript; evaluation itself continues.
 
-use crate::ir::{BindingId, Def, Expr, ExprKind, Module, Pattern, PatternKind};
+use crate::ir::{BindingId, Def, ExpectDef, Expr, ExprKind, Module, Pattern, PatternKind};
 use crate::span::Span;
 use crate::value::{Closure, Env, Value};
 use crate::RunError;
@@ -380,6 +380,74 @@ pub fn run_with_host(
     }
 }
 
+/// The result of one `expect` test (see [`run_expects`]). The span is the
+/// test's identity — there are no names; render `file:line` via the project
+/// source map.
+#[derive(Debug)]
+pub struct ExpectReport {
+    pub span: Span,
+    pub outcome: ExpectOutcome,
+}
+
+#[derive(Debug)]
+pub enum ExpectOutcome {
+    Pass,
+    /// Evaluated to `false`. When the expression's top level is a comparison,
+    /// both sides' rendered values are carried for the report.
+    Fail(Option<FailedCompare>),
+    /// Evaluation failed (a spanned runtime error), or the expression did not
+    /// produce a bool (unchecked code — `check` catches this statically).
+    Error(RunError),
+}
+
+/// The sides of a failed top-level comparison: `expect a == b` reports what
+/// `a` and `b` actually were (rendered with [`Value`]'s deterministic
+/// `Display`).
+#[derive(Debug)]
+pub struct FailedCompare {
+    pub op: &'static str,
+    pub lhs: String,
+    pub rhs: String,
+}
+
+/// Evaluate a module's `expect` tests: top-level defs load first (exactly as
+/// [`Session::load`] — initializers run, `main` is not called), then each
+/// expect evaluates independently over the loaded globals. A def-load failure
+/// is the returned `Err`; a failing or erroring expect is its own report and
+/// never stops the remaining tests. (One `Interp` is shared across expects —
+/// independence holds because `depth`/`call_depth` unwind on error, globals
+/// are read-only after the load, and `mut_slots` entries are keyed by
+/// per-expect-unique `BindingId`s, so a leaked slot is unreachable.)
+pub fn run_expects(
+    module: &Module,
+    host: &mut dyn Host,
+) -> Result<Vec<ExpectReport>, RunFailure> {
+    let mut interp = Interp {
+        globals: HashMap::new(),
+        mut_slots: HashMap::new(),
+        trace: Vec::new(),
+        tracing: Tracing::Off,
+        recorder: None,
+        depth: 0,
+        call_depth: 0,
+        host,
+    };
+    if let Err(error) = interp.eval_defs(module) {
+        return Err(RunFailure {
+            error,
+            trace: interp.trace,
+        });
+    }
+    Ok(module
+        .expects
+        .iter()
+        .map(|expect| ExpectReport {
+            span: expect.span,
+            outcome: interp.eval_expect(expect),
+        })
+        .collect())
+}
+
 /// A persistent interpreter session for embedding (the C2 producer): load a
 /// module once, then call top-level functions per frame. Globals are
 /// evaluated at load; each `call` runs with a fresh interpreter over the
@@ -569,6 +637,55 @@ impl Interp<'_> {
             bindings.push((def.name.clone(), value));
         }
         Ok(bindings)
+    }
+
+    /// Evaluate one `expect`. A top-level comparison is decomposed — the two
+    /// sides evaluate separately — so a failure reports both actual values.
+    fn eval_expect(&mut self, expect: &ExpectDef) -> ExpectOutcome {
+        use crate::ast::BinOp;
+        let env = Env::empty();
+        if let ExprKind::Binary {
+            op: op @ (BinOp::Eq | BinOp::Lt | BinOp::Gt),
+            lhs,
+            rhs,
+        } = &expect.expr.kind
+        {
+            let l = match self.eval(lhs, &env) {
+                Ok(v) => v,
+                Err(e) => return ExpectOutcome::Error(e),
+            };
+            let r = match self.eval(rhs, &env) {
+                Ok(v) => v,
+                Err(e) => return ExpectOutcome::Error(e),
+            };
+            return match self.binary_op(*op, l.clone(), r.clone(), expect.expr.span) {
+                Ok(Value::Bool(true)) => ExpectOutcome::Pass,
+                // Comparisons only produce bools, so anything else is false.
+                Ok(_) => ExpectOutcome::Fail(Some(FailedCompare {
+                    op: match op {
+                        BinOp::Eq => "==",
+                        BinOp::Lt => "<",
+                        _ => ">",
+                    },
+                    lhs: l.to_string(),
+                    rhs: r.to_string(),
+                })),
+                // e.g. `==` on functions — a runtime error, not a plain fail.
+                Err(e) => ExpectOutcome::Error(e),
+            };
+        }
+        match self.eval(&expect.expr, &env) {
+            Ok(Value::Bool(true)) => ExpectOutcome::Pass,
+            Ok(Value::Bool(false)) => ExpectOutcome::Fail(None),
+            Ok(other) => ExpectOutcome::Error(RunError {
+                message: format!(
+                    "an `expect` must evaluate to a bool, got {other} — write a comparison \
+(`expect actual == expected`)"
+                ),
+                span: expect.expr.span,
+            }),
+            Err(e) => ExpectOutcome::Error(e),
+        }
     }
 
     fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
