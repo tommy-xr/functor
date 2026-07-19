@@ -611,6 +611,21 @@ impl WorkerState {
                     },
                 )
                 .into_inner();
+                // Anchor CSS animations at game-time ZERO before resolving at
+                // the current clock: blitz starts an animation at the
+                // timestamp of the resolve that first sees it, so anchoring a
+                // fresh document at 0 makes the animation timeline the GAME
+                // clock itself. Without this, every reparse (a model-driven
+                // re-render) restarts running @keyframes mid-loop, and
+                // `--fixed-time T` — where the first resolve already happens
+                // at T — pins animations to their from-pose instead of their
+                // pose at T. Known constraint [xreview]: a NON-infinite
+                // (one-shot) animation on an element that appears mid-session
+                // resolves as already-finished under this anchor and never
+                // plays — per-animation start-time preservation needs the DOM
+                // reconciliation follow-up (docs/todo.md § Webview). Game
+                // HUDs should use `infinite` loops + transitions meanwhile.
+                doc.resolve(0.0);
                 // A fresh document has NO layout until resolved — the hover
                 // re-establishing move below would hit-test nothing, leaving
                 // `wants_pointer` false until the mouse physically moves, and
