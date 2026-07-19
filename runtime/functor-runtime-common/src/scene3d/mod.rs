@@ -68,7 +68,33 @@ pub struct SceneContext {
     // The screen-space compositor's fullscreen-average program, built lazily on
     // first use and cached like the skybox program (docs/time-travel.md T5).
     composite_program: RefCell<Option<(ShaderProgram, CompositeUniforms)>>,
+    // In-flight `Effect.preload` loads (B.5), polled each frame by
+    // `drive_preloads` until they settle — asset futures advance only when
+    // polled, and nothing else polls an asset `draw` isn't referencing yet.
+    preloads: RefCell<Vec<PreloadEntry>>,
 }
+
+/// One in-flight `Effect.preload` target: the handle being driven plus every
+/// `preloadThen` completion token waiting on its settlement. Deduped by
+/// (kind, locator): re-preloading an in-flight asset merges into the existing
+/// entry instead of growing the list — a game spamming preload of a stalled
+/// URL each frame must not accumulate entries (or per-frame polls).
+struct PreloadEntry {
+    kind: crate::asset::preload::PreloadKind,
+    locator: String,
+    handle: PreloadHandle,
+    tokens: Vec<u64>,
+}
+
+enum PreloadHandle {
+    Model(Arc<AssetHandle<Model>>),
+    Texture(Arc<AssetHandle<Texture2D>>),
+}
+
+/// Waiting-token bound per in-flight entry (spamming `preloadThen` at one
+/// stalled asset): beyond it the OLDEST token drops — its registered message
+/// then expires unclaimed, exactly like a capped [`PENDING_AUDIO`] eviction.
+const PRELOAD_TOKENS_CAP: usize = 1024;
 
 enum SkyboxEntry {
     /// Six pending face loads, in `SkyboxDescription::faces` order.
@@ -124,7 +150,80 @@ impl SceneContext {
             skyboxes: RefCell::new(HashMap::new()),
             skybox_program: RefCell::new(None),
             composite_program: RefCell::new(None),
+            preloads: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The shell's per-frame preload step (B.5): turn this frame's
+    /// `Effect.preload` commands (from `GameProducer::preload_drain_commands`)
+    /// into cache loads, and POLL every in-flight preload until it settles —
+    /// futures advance only when polled, and an unpolled preload would
+    /// strand in `Sub.assets`' total (the `resolve_while_pending` liveness
+    /// rule). Returns the `preloadThen` tokens that settled this frame
+    /// (loaded or failed), for the shell to report via
+    /// `GameProducer::preload_push_settled`. Once `draw` starts referencing
+    /// a warmed asset it hits the same cached handle.
+    pub fn drive_preloads(
+        &self,
+        asset_cache: &Arc<AssetCache>,
+        commands: Vec<crate::asset::preload::PreloadCommand>,
+    ) -> Vec<u64> {
+        use crate::asset::preload::PreloadKind;
+        let mut preloads = self.preloads.borrow_mut();
+        for cmd in commands {
+            if let Some(entry) = preloads
+                .iter_mut()
+                .find(|e| e.kind == cmd.kind && e.locator == cmd.locator)
+            {
+                // Already in flight: merge (the cache would hand back the
+                // same handle anyway); just accumulate the completion token.
+                if let Some(token) = cmd.token {
+                    entry.tokens.push(token);
+                    if entry.tokens.len() > PRELOAD_TOKENS_CAP {
+                        entry.tokens.remove(0);
+                    }
+                }
+                continue;
+            }
+            let handle = match cmd.kind {
+                PreloadKind::Model => PreloadHandle::Model(
+                    asset_cache
+                        .load_asset_with_pipeline(self.model_pipeline.clone(), &cmd.locator),
+                ),
+                PreloadKind::Texture => PreloadHandle::Texture(
+                    asset_cache
+                        .load_asset_with_pipeline(self.texture_pipeline.clone(), &cmd.locator),
+                ),
+            };
+            preloads.push(PreloadEntry {
+                kind: cmd.kind,
+                locator: cmd.locator,
+                handle,
+                tokens: cmd.token.into_iter().collect(),
+            });
+        }
+        let mut settled = Vec::new();
+        preloads.retain_mut(|entry| {
+            let still_loading = match &entry.handle {
+                PreloadHandle::Model(handle) => {
+                    matches!(handle.poll_state(), AssetPollState::Loading)
+                }
+                PreloadHandle::Texture(handle) => {
+                    matches!(handle.poll_state(), AssetPollState::Loading)
+                }
+            };
+            if still_loading {
+                return true;
+            }
+            settled.append(&mut entry.tokens);
+            false
+        });
+        settled
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preloads_in_flight(&self) -> usize {
+        self.preloads.borrow().len()
     }
 
     /// Create (or recreate, if the declared size changed) the buffers for a
@@ -1017,4 +1116,121 @@ where
         array[3][2],
         array[3][3],
     ))
+}
+
+#[cfg(test)]
+mod preload_tests {
+    use super::*;
+    use crate::asset::preload::{PreloadCommand, PreloadKind};
+    use crate::asset::AssetCache;
+
+    fn temp_glb(name: &str) -> String {
+        // A minimal valid-magic glb (the model pipeline falls back panic-free
+        // on truncated content — decode result doesn't matter here, only that
+        // the byte-load SETTLES).
+        let path = std::env::temp_dir().join(format!(
+            "functor-preload-test-{}-{}",
+            std::process::id(),
+            name
+        ));
+        std::fs::write(&path, b"glTF").unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    /// The driver loads queued commands through the pipelines, drives them
+    /// to settlement (local reads settle on the first poll), reports settled
+    /// preloadThen tokens exactly once, and counts the loads in the cache's
+    /// progress (so `Sub.assets` sees preloads like any other load).
+    #[test]
+    fn drive_preloads_loads_settles_and_reports_tokens() {
+        let ctx = SceneContext::new();
+        let cache = Arc::new(AssetCache::new());
+        let model = temp_glb("boss");
+        let texture = temp_glb("wood");
+        let missing = "preload/does-not-exist.glb".to_string();
+
+        let settled = ctx.drive_preloads(
+            &cache,
+            vec![
+                PreloadCommand {
+                    kind: PreloadKind::Model,
+                    locator: model.clone(),
+                    token: Some(7),
+                },
+                PreloadCommand {
+                    kind: PreloadKind::Model,
+                    locator: missing.clone(),
+                    token: Some(8),
+                },
+                PreloadCommand {
+                    kind: PreloadKind::Texture,
+                    locator: texture.clone(),
+                    token: None,
+                },
+            ],
+        );
+        // Local reads settle on the first poll: the loaded model AND the
+        // failed one both report (settled = loaded OR failed); the tokenless
+        // texture settles silently.
+        let mut sorted = settled.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![7, 8]);
+        assert_eq!(ctx.preloads_in_flight(), 0, "nothing left in flight");
+
+        // Preloads count in Sub.assets' snapshot like any load: 3 started,
+        // 1 failed (progress keys by PATH, so distinct files are used).
+        let progress = cache.progress();
+        assert_eq!(progress.total, 3);
+        assert_eq!(progress.failed.len(), 1);
+        assert_eq!(progress.failed[0].0, missing);
+
+        // A later frame with no commands is a cheap no-op.
+        assert!(ctx.drive_preloads(&cache, vec![]).is_empty());
+
+        for f in [model, texture] {
+            let _ = std::fs::remove_file(&f);
+        }
+    }
+
+    /// Duplicate commands for one (kind, locator) MERGE into a single
+    /// in-flight entry (no unbounded growth from spamming a stalled URL),
+    /// and every waiting token still reports on settlement.
+    #[test]
+    fn duplicate_preloads_merge_and_report_every_token() {
+        let ctx = SceneContext::new();
+        let cache = Arc::new(AssetCache::new());
+        // A remote url with no fetcher installed stays Loading? No — it
+        // fails fast ("remote assets are not supported"); use a missing
+        // local path scheduled twice IN ONE BATCH so the merge happens
+        // before the first poll settles it.
+        let missing = "preload/dup-missing.glb".to_string();
+        let settled = ctx.drive_preloads(
+            &cache,
+            vec![
+                PreloadCommand {
+                    kind: PreloadKind::Model,
+                    locator: missing.clone(),
+                    token: Some(41),
+                },
+                PreloadCommand {
+                    kind: PreloadKind::Model,
+                    locator: missing.clone(),
+                    token: Some(42),
+                },
+                PreloadCommand {
+                    kind: PreloadKind::Model,
+                    locator: missing.clone(),
+                    token: None,
+                },
+            ],
+        );
+        // One merged entry, settled on the first poll (missing file fails
+        // fast), BOTH tokens delivered.
+        let mut sorted = settled.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![41, 42]);
+        assert_eq!(ctx.preloads_in_flight(), 0);
+        // The path counted once in progress despite three commands.
+        assert_eq!(cache.progress().total, 1);
+    }
 }

@@ -314,6 +314,24 @@ pub trait GameProducer {
     /// delivers its completion message.
     fn audio_push_finished(&mut self, token: i32);
 
+    /// Take the `Effect.preload` commands the game queued this frame (a JSON
+    /// array of [`crate::asset::preload::PreloadCommand`]). The shell warms
+    /// its asset cache with them and POLLS each load to settlement (see
+    /// `SceneContext::drive_preloads`); a driver without an asset cache just
+    /// ignores the returned JSON. The default DRAINS the process-global
+    /// queue — never leaves it accumulating — so implementors are correct by
+    /// default (the queue lives in this crate, unlike the per-producer state
+    /// behind the other methods).
+    fn preload_drain_commands(&self) -> String {
+        crate::asset::preload::drain_commands_json()
+    }
+
+    /// Report that a preload (`token`) SETTLED — loaded or failed — so the
+    /// game delivers its `preloadThen` completion message. `u64` end to end —
+    /// a new surface takes no i32 narrowing (unlike the legacy audio token).
+    /// Default: no-op.
+    fn preload_push_settled(&mut self, _token: u64) {}
+
     fn quit(&mut self);
 }
 

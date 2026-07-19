@@ -33,9 +33,9 @@ use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
 use functor_runtime_common::events::{self, RuntimeEvent};
 use functor_runtime_common::functor_lang_prelude::{
-    audio_scene_of, clear_audio_completions, clear_http_taggers, frame_value, html_node_value,
-    take_ui_handlers, view_value, EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind,
-    RealEffects, UiHandler,
+    audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
+    frame_value, html_node_value, take_ui_handlers, view_value, EffectLog, EffectRunner,
+    EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_push, journal_swap, FrameCtx, JournalEntry, Provenance, Reporter,
@@ -560,6 +560,7 @@ impl FunctorLangGame {
         // too — drop them alongside the HTTP taggers (a late finish for a
         // dropped token arrives orphaned and is ignored).
         clear_audio_completions();
+        clear_preload_completions();
         // The widget handler table holds msgs/taggers into the OLD session;
         // the next render's `ui(model)` rebuilds it against the new one. A
         // click landing in the gap resolves an unknown slot and is dropped.
@@ -721,6 +722,7 @@ impl Game for FunctorLangGame {
             self.delivered_asset_progress = None;
             clear_http_taggers();
             clear_audio_completions();
+            clear_preload_completions();
             // The paused frame moved to `target`, for which we hold no journal
             // (only the last real frame's) — drop the stale trace so the
             // inspector reports the rewound frame with no invocations (PR2).
@@ -1172,6 +1174,11 @@ AudioScene.empty), got {}",
     }
     fn audio_push_finished(&mut self, token: i32) {
         self.ctx().deliver_audio_completion(token as u64);
+    }
+
+    // preload_drain_commands: the trait default drains the shared queue.
+    fn preload_push_settled(&mut self, token: u64) {
+        self.ctx().deliver_preload_completion(token);
     }
 
     fn quit(&mut self) {

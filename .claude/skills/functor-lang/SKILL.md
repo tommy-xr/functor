@@ -585,6 +585,25 @@ Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connect
 Effect.send(connId, text)                                  // send on an open connection
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
 
+Effect.preload(asset)                                      // warm the asset cache ahead of
+Effect.preloadThen(asset, msg)                             //   draw referencing the asset —
+                                                           //   the imperative prefetch
+                                                           //   (declarative draw-references-
+                                                           //   it loading stays the default).
+                                                           //   Model/texture Asset VALUES
+                                                           //   only: sounds decode at play
+                                                           //   time (teaching error), bare
+                                                           //   strings teach toward Asset.*.
+                                                           //   preloadThen delivers msg (a
+                                                           //   VALUE, like playThen) through
+                                                           //   update when the load SETTLES —
+                                                           //   loaded or failed (Sub.assets'
+                                                           //   failed list says which).
+                                                           //   Preloads count in Sub.assets
+                                                           //   totals; works on wasm too
+                                                           //   (unlike playThen completion).
+                                                           //   examples/loading's SPACE flow
+                                                           //   is the reference
 Effect.play(sound)                                         // one-shot: fire-and-forget,
 Effect.playAt(sound, pos)                                  //   non-spatial / positioned
 Effect.playThen(sound, msg)                                // one-shot; delivers msg (a VALUE,

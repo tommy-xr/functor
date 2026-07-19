@@ -16,49 +16,77 @@
 // count toward settling, and the HUD shows them: a loading screen must end
 // even when the CDN doesn't cooperate.
 //
-// The SPACE transition demonstrates the two late-request idioms:
-//   1. Progress is CUMULATIVE (total never resets), so a per-phase bar
-//      subtracts the baseline captured at the transition (baseLoaded /
-//      baseTotal below).
-//   2. The new assets only enter the snapshot on the frame AFTER draw first
-//      references them, so the keypress sets its own `transitioning` flag —
-//      the game knows it just asked — and clears it when the batch settles.
+// The SPACE transition is the `Effect.preload` demo (B.5): the new batch is
+// WARMED imperatively — phase 1 keeps playing untouched while the models
+// stream, and `Effect.preloadThen` delivers Phase2Warmed through `update`
+// when the anchor load settles, so phase 2 appears fully loaded (the
+// no-loading-screen transition; draw's later references are cache hits).
+// One late-request idiom remains: progress is CUMULATIVE (total never
+// resets), so the warming bar subtracts the baseline captured at SPACE
+// (baseLoaded / baseTotal). The old second idiom — inferring "did the
+// snapshot see my new assets yet?" from totals via a transitioning flag —
+// is gone: the game KNOWS it is warming (its own phase state) and is TOLD
+// when it's done (the preloadThen message). (Pending effect messages reset
+// on hot reload — the HTTP-tagger rule — so a reload mid-warming strands
+// phase 1.5 until restart; the dev-loop tradeoff the engine documents.)
 
+// phase: 1.0 = playing phase 1; 1.5 = SPACE pressed, phase-2 batch warming
+// via Effect.preload (phase 1 still on screen); 2.0 = warmed, phase 2 drawn.
+// warmed counts the batch's settlements — phase 2 draws when all three land.
 let init = {
   loaded: 0.0, failed: 0.0, total: 0.0, done: false,
-  phase: 1.0,
+  phase: 1.0, warmed: 0.0,
   baseLoaded: 0.0, baseTotal: 0.0,
-  transitioning: false,
 }
 
-let update = (model, p) =>
-  let failedCount = List.length(p.failed) in
-  let settledAll = p.total > 0.0 && p.loaded + failedCount == p.total in
-  { model with
-      loaded: p.loaded,
-      failed: failedCount,
-      total: p.total,
-      done: settledAll,
-      // Idiom 2: the flag clears once the phase-2 batch is both KNOWN
-      // (total grew past the baseline) and settled.
-      transitioning:
-        model.transitioning && not (settledAll && p.total > model.baseTotal) }
+// The phase-2 batch as Asset values (the preload surface takes values, not
+// strings) — another size ladder (1.1MB gull, 4.6MB plane, 11MB boombox).
+let gull = Asset.model("https://assets.babylonjs.com/meshes/seagulf.glb")
+let aeroplane = Asset.model("https://assets.babylonjs.com/meshes/aerobatic_plane.glb")
+let boombox = Asset.model("https://assets.babylonjs.com/meshes/boombox.glb")
 
-let subscriptions = (model) => Sub.assets((p) => p)
+type Msg<'p> =
+  | Progress(p: 'p)
+  | Phase2Warmed
+
+let update = (model, msg) =>
+  match msg with
+  // One batch member settled (loaded or failed — Sub.assets says which).
+  // Phase 2 first DRAWS when all three have landed: every reference below
+  // is then a cache hit, so the batch appears at once, fully loaded.
+  | Phase2Warmed =>
+    let warmed = model.warmed + 1.0 in
+    { model with
+        warmed: warmed,
+        phase: (if warmed == 3.0 then 2.0 else model.phase) }
+  | Progress(p) =>
+    let failedCount = List.length(p.failed) in
+    let settledAll = p.total > 0.0 && p.loaded + failedCount == p.total in
+    { model with
+        loaded: p.loaded,
+        failed: failedCount,
+        total: p.total,
+        done: settledAll }
+
+let subscriptions = (model) => Sub.assets(Progress)
 
 let input = (model, key, isDown) =>
   match key with
   | Key.Space =>
     if isDown && model.phase == 1.0
     then
-      // Idiom 1 + 2: capture the baseline for a fresh per-phase bar, and
-      // raise our own flag — the snapshot won't know about the new assets
-      // until the next frame's draw references them.
-      { model with
-          phase: 2.0,
-          transitioning: true,
-          baseLoaded: model.loaded + model.failed,
-          baseTotal: model.total }
+      // Warm the batch imperatively; each member reports its settlement,
+      // and the count gates the transition. The baseline (remaining idiom)
+      // gives the warming bar a fresh 0..1 range.
+      ({ model with
+           phase: 1.5,
+           baseLoaded: model.loaded + model.failed,
+           baseTotal: model.total },
+       Effect.batch([
+         Effect.preloadThen(gull, Phase2Warmed),
+         Effect.preloadThen(aeroplane, Phase2Warmed),
+         Effect.preloadThen(boombox, Phase2Warmed),
+       ]))
     else model
   | _ => model
 
@@ -101,15 +129,15 @@ let models = () =>
 // boombox), placed above the phase-1 row.
 let phase2Models = () =>
   Scene.group([
-    Scene.model("https://assets.babylonjs.com/meshes/seagulf.glb")
+    Scene.model(gull)
       |> Scene.scale(0.001)
       |> Scene.translate(Vec3.make(-3.0, -1.6, 0.0)),
-    Scene.model("https://assets.babylonjs.com/meshes/aerobatic_plane.glb")
+    Scene.model(aeroplane)
       |> Scene.scale(3.0)
       |> Scene.rotateY(Angle.degrees(150.0))
       |> Scene.translate(Vec3.make(1.7, 2.0, 0.0)),
     // The glTF-sample BoomBox is authored at centimeter scale (~1cm tall).
-    Scene.model("https://assets.babylonjs.com/meshes/boombox.glb")
+    Scene.model(boombox)
       |> Scene.scale(22.0)
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.translate(Vec3.make(0.0, 1.6, 0.0)),
@@ -136,11 +164,13 @@ let bar = (model) =>
 let draw = (model, tts) =>
   let base = models() in
   let scene =
-    if model.phase > 1.0 then Scene.group([base, phase2Models()])
+    if model.phase == 2.0 then Scene.group([base, phase2Models()])
     else base
   in
+  // The bar shows while anything is unsettled OR the game is warming — its
+  // own phase state, no snapshot inference needed.
   let withBar =
-    if model.transitioning || not model.done
+    if model.phase == 1.5 || not model.done
     then Scene.group([scene, bar(model)])
     else scene
   in
@@ -154,9 +184,9 @@ let draw = (model, tts) =>
 
 let ui = (model) =>
   let status =
-    if model.transitioning && model.total == model.baseTotal
-    then "Requesting more assets..."
-    else if not model.done
+    if model.phase == 1.5 && model.total == model.baseTotal
+    then "Warming phase 2 (Effect.preload)..."
+    else if model.phase == 1.5 || not model.done
     then
       Text.concat(
         "Loading ",
