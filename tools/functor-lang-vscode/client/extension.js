@@ -16,6 +16,7 @@ const { LanguageClient } = require("vscode-languageclient/node");
 // VS Code wiring around it.
 const inspector = require("./inspector.js");
 const { resolveServerCommand } = require("./server-path.js");
+const cliDownload = require("./cli-download.js");
 
 let client;
 // Resolves once the LanguageClient has started (server launched + initialized).
@@ -41,6 +42,9 @@ let previewChild;
 // Project dir the open preview is serving — used to tell "reveal the existing
 // panel" (same project) apart from "restart for a different sample".
 let previewProjectDir;
+// The extension's global-storage dir (set in activate) — where a
+// downloaded-on-demand functor CLI is installed (see resolveFunctorCli).
+let globalStorageDir;
 
 // Where `functor run wasm` serves the game — fixed by the CLI's dev server.
 const PREVIEW_URL = "http://127.0.0.1:8080";
@@ -62,6 +66,7 @@ const elog = (text) => {
 };
 
 function activate(context) {
+  globalStorageDir = context.globalStorageUri.fsPath;
   channel = vscode.window.createOutputChannel("Functor Lang");
   context.subscriptions.push(channel);
   elog("extension activated");
@@ -253,6 +258,105 @@ function waitForServer(timeoutMs) {
   });
 }
 
+// Resolve the `functor` CLI the preview spawns: the functor-lang.functorPath
+// setting (default: `functor` from PATH) → a previously downloaded copy in
+// global storage → offer to download the newest release's platform archive.
+// Returns the command to spawn, or null (unsupported platform, declined, or
+// failed download — the user has been messaged in every null case).
+//
+// Concurrent invocations share one in-flight resolution: a second "Open Live
+// Preview" during the download must not race a second download/extract into
+// the same storage paths (or double-prompt).
+let functorCliInFlight = null;
+function resolveFunctorCli() {
+  if (!functorCliInFlight) {
+    functorCliInFlight = resolveFunctorCliUncached().finally(() => {
+      functorCliInFlight = null;
+    });
+  }
+  return functorCliInFlight;
+}
+
+async function resolveFunctorCliUncached() {
+  const configured =
+    vscode.workspace.getConfiguration("functor-lang").get("functorPath") || "functor";
+  if (await cliDownload.commandWorks(configured)) return configured;
+
+  const downloaded = cliDownload.downloadedCliPath(globalStorageDir, process.platform);
+  if (await cliDownload.commandWorks(downloaded)) {
+    elog(`preview: using downloaded CLI ${downloaded}`);
+    return downloaded;
+  }
+
+  // Nothing runnable — offer the download.
+  let asset;
+  try {
+    const releases = await cliDownload.fetchJson(cliDownload.RELEASES_URL);
+    asset = cliDownload.pickAsset(releases, process.platform, process.arch);
+  } catch (e) {
+    vscode.window.showErrorMessage(
+      `Functor Lang: "${configured}" was not found, and querying GitHub releases failed ` +
+        `(${e.message}) — install the functor CLI and/or set functor-lang.functorPath.`
+    );
+    return null;
+  }
+  if (!asset) {
+    vscode.window.showErrorMessage(
+      `Functor Lang: "${configured}" was not found and no prebuilt functor CLI exists for ` +
+        `${process.platform}-${process.arch} — build it from source and set functor-lang.functorPath.`
+    );
+    return null;
+  }
+  const choice = await vscode.window.showInformationMessage(
+    `Functor Lang: the functor CLI ("${configured}") was not found. ` +
+      `Download functor v${asset.version} for this platform from GitHub releases (~17 MB)?`,
+    "Download",
+    "Cancel"
+  );
+  if (choice !== "Download") return null;
+
+  try {
+    const installed = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Downloading functor v${asset.version}…`,
+      },
+      async (progress) => {
+        fs.mkdirSync(globalStorageDir, { recursive: true });
+        const archivePath = path.join(globalStorageDir, asset.assetName);
+        let lastPct = 0;
+        await cliDownload.download(asset.url, archivePath, (received, total) => {
+          if (!total) return;
+          const pct = Math.floor((received / total) * 100);
+          progress.report({ increment: pct - lastPct, message: `${pct}%` });
+          lastPct = pct;
+        });
+        const target = cliDownload.assetTargetFor(process.platform, process.arch);
+        const bin = await cliDownload.extractAndInstall(
+          archivePath,
+          globalStorageDir,
+          process.platform,
+          asset.version,
+          target
+        );
+        fs.rmSync(archivePath, { force: true });
+        return bin;
+      }
+    );
+    if (!(await cliDownload.commandWorks(installed))) {
+      throw new Error("the downloaded binary did not run");
+    }
+    elog(`preview: downloaded functor v${asset.version} to ${installed}`);
+    return installed;
+  } catch (e) {
+    vscode.window.showErrorMessage(
+      `Functor Lang: downloading the functor CLI failed (${e.message}) — install it ` +
+        `manually and/or set functor-lang.functorPath.`
+    );
+    return null;
+  }
+}
+
 // "Functor Lang: Open Live Preview" — serve the active file's project with
 // `functor run wasm` and host the running game in a webview panel that
 // hot-reloads from the LIVE buffer (unsaved included), model preserved.
@@ -307,8 +411,14 @@ async function openLivePreview() {
   // manual `functor run wasm`) this child exits with a bind error — logged
   // to the output channel — and the panel simply attaches to the running
   // server.
-  const functorPath =
-    vscode.workspace.getConfiguration("functor-lang").get("functorPath") || "functor";
+  const functorPath = await resolveFunctorCli();
+  if (!functorPath) return; // declined/failed download — already messaged
+  // The await above reopened the singleton window: a concurrent invocation
+  // may have created the panel while this one waited on the resolution.
+  if (previewPanel) {
+    previewPanel.reveal();
+    return;
+  }
   const output = vscode.window.createOutputChannel("Functor Lang Preview");
   // The child outlives the panel by a beat (kill() on dispose, exit later),
   // so every output write is gated on the panel still being alive — VSCode
