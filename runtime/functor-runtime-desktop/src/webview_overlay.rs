@@ -52,8 +52,15 @@
 //! `input` events they generate come back as `TextChanged` [`UiEvent`]s.
 //! Because a controlled input's keystroke re-renders the HTML (a FRESH
 //! document), focus is restored across rebuilds by the focused element's
-//! `data-fn-input` slot, caret at the end. IME composition is not wired
-//! (follow-up).
+//! `data-fn-input` slot, caret at the end (the documented `Ui.textInput`
+//! rule; per-caret preservation for identity round-trips is part of the
+//! DOM-reconciliation follow-up, docs/todo.md § Webview). Like
+//! `wants_pointer`, the latch is a worker-cycle-stale snapshot: keys typed
+//! in the frame(s) between clicking the field and the worker's report still
+//! go to the game (and vice versa after Escape) — the accepted async-overlay
+//! tradeoff. Not wired (follow-ups): IME composition (CJK/dead keys),
+//! modifier combos (shift-selection, select-all, clipboard), and
+//! `placeholder` rendering (blitz has none).
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
@@ -970,9 +977,11 @@ fn focused_editable(doc: &BaseDocument) -> bool {
         .is_some_and(|el| el.text_input_data().is_some())
 }
 
-/// The `data-fn-input` slot of the focused element (walking up like the
-/// bubble chain, though the slot sits on the `<input>` itself) — the stable
-/// identity used to restore focus across document rebuilds.
+/// The `data-fn-input` slot of the focused element — the stable identity
+/// used to restore focus across document rebuilds. Walks up the parent
+/// chain defensively: blitz focuses the pointer hit-test's node, which can
+/// be a descendant of the slot-stamped `<input>` rather than the element
+/// itself.
 fn focused_input_slot(doc: &BaseDocument) -> Option<u32> {
     let input = LocalName::from("data-fn-input");
     let mut current = doc.get_focussed_node_id();

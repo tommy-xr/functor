@@ -89,8 +89,11 @@ Remaining, roughly in priority order:
 - [x] Native text input (2026-07-18): GLFW keys route into blitz while an
       `Html.input` is focused (`Ui.textInput`'s wants-keyboard gate; Escape
       defocuses first), and focus survives the per-keystroke document rebuild
-      via the `data-fn-input` slot (caret to end). IME composition (CJK/
-      dead keys) deferred — blitz has `Ime` events when we want it.
+      via the `data-fn-input` slot (caret to end). Deferred: IME composition
+      (CJK/dead keys — blitz has `Ime` events when we want it), modifier
+      combos (shift-selection/select-all/clipboard; blitz supports them, the
+      lowering drops modifiers today), and native `placeholder` rendering
+      (blitz has none — wasm shows it).
 - [x] Record webview events for replay — needs their own `RecordedInput`
       variant (a `UiEvent` entry would replay against the wrong handler
       table; TODO comments in both producers).

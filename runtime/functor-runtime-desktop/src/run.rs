@@ -597,25 +597,36 @@ fn service_debug_request(
             let result = match cmd {
                 debug_server::InputCommand::Key { key, down } => {
                     // The focus gate first (the GLFW routing rule): while a
-                    // webview field is focused, an injected press types into
+                    // webview field is focused, an injected PRESS types into
                     // it (or is swallowed if unmapped, like non-edit GLFW
-                    // presses) and its release is swallowed too — never a
-                    // phantom edge to the game's `input` hook.
-                    if let Some(webview_keys) = webview_keyboard.as_deref_mut() {
-                        if down {
+                    // presses). Releases never route to the webview — they
+                    // take the game path with the GLFW release arm's
+                    // held-key discipline, so a key held from before focus
+                    // can't stick, and a press the webview swallowed can't
+                    // leak a phantom release edge. [xreview]
+                    if down {
+                        if let Some(webview_keys) = webview_keyboard.as_deref_mut() {
                             if let Some(k) = crate::webview_keys::webview_key_from_str(&key) {
                                 webview_keys.push(k);
                             }
+                            Ok(())
+                        } else {
+                            match key_from_str(&key) {
+                                Some(k) => {
+                                    game.key_event(k as i32, true);
+                                    held_keys.insert(k);
+                                    Ok(())
+                                }
+                                None => Err(format!("unknown key: {}", key)),
+                            }
                         }
-                        Ok(())
                     } else {
                         match key_from_str(&key) {
                             Some(k) => {
-                                game.key_event(k as i32, down);
-                                if down {
-                                    held_keys.insert(k);
-                                } else {
-                                    held_keys.remove(&k);
+                                // Deliver the release only if the game saw
+                                // the press (mirrors the GLFW release arm).
+                                if held_keys.remove(&k) {
+                                    game.key_event(k as i32, false);
                                 }
                                 Ok(())
                             }
