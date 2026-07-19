@@ -19,7 +19,7 @@
 //
 // Run manually (not part of `playwright test` — it owns its own server):
 //
-//   npm run build:cli   # once, so target/debug/functor embeds the runtime
+//   npm run build:cli:debug   # once, so target/debug/functor embeds the runtime
 //   node e2e/functor-lang-preview-reload.mjs
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";

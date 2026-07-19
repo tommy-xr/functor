@@ -9,7 +9,7 @@
 //!   (cwd = the game dir, so asset paths resolve as usual) — post-E3 there is a
 //!   single `functor` binary, no separate runner child process.
 //! - `develop` is `run`: the Functor Lang producer hot-reloads on save by itself — no
-//!   watchexec loop, no rebuild. State is preserved across edits.
+//!   external file watcher, no rebuild. State is preserved across edits.
 //! - `run wasm` serves the project with the Functor Lang index page (docs/functor-lang.md C5):
 //!   nothing compiles — the `.fun` source ships as text, fetched and
 //!   interpreted by the embedded web runtime. Hot reload is native-only;
