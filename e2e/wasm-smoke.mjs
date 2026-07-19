@@ -23,7 +23,7 @@
 // Run manually (owns its own server on :8080, one sample at a time — not part
 // of `playwright test`):
 //
-//   npm run build:cli        # once, so target/debug/functor embeds the runtime
+//   npm run build:cli:debug  # once, so target/debug/functor embeds the runtime
 //   npm run fetch:assets     # glTF/textures some samples load (optional)
 //   node e2e/wasm-smoke.mjs  # all samples, or: node e2e/wasm-smoke.mjs lighting hello-cubes
 import { spawn } from "node:child_process";

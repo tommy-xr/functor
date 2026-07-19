@@ -32,25 +32,42 @@ No install needed:
 
 (The redesigned pages ship with this branch.)
 
-## Quick start (local)
+## Quick start
 
-Prereqs: **Rust stable** with the `wasm32-unknown-unknown` target, **Node 22+**, and
-**`wasm-pack`** (exact known-good versions in [Prerequisites](#prerequisites) below).
+**Install a prebuilt binary** — no toolchain needed.
 
 ```sh
-# 1. Build the single `functor` binary (wasm bundle first, then the CLI).
-npm run build:cli
-
-# 2. Scaffold a game.
-./target/debug/functor -d my-game init
-
-# 3. Run it natively — a window opens. Edit my-game/game.fun and save;
-#    it hot-reloads, preserving the model.
-./target/debug/functor -d my-game run native
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/tommy-xr/functor/main/install.sh | sh
 ```
 
-See [Building the CLI](#building-the-cli) and [Running a sample](#running-a-sample)
-for the full details (wasm target, serving to the browser, sample assets).
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/tommy-xr/functor/main/install.ps1 | iex
+```
+
+This downloads the right binary for your platform into `~/.functor/bin` and prints
+the line to add it to your `PATH`. (Prefer to grab it by hand? Download the archive
+for your platform from the
+[releases page](https://github.com/tommy-xr/functor/releases) and extract the
+single `functor` binary:)
+
+| Platform | Asset |
+| --- | --- |
+| macOS (Apple Silicon) | `functor-<version>-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `functor-<version>-x86_64-apple-darwin.tar.gz` |
+| Linux (x86-64) | `functor-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Windows (x86-64) | `functor-<version>-x86_64-pc-windows-msvc.zip` |
+
+Then scaffold a game and run it — a window opens; edit `my-game/game.fun` and save
+to hot-reload with the model preserved:
+
+```sh
+functor -d my-game init         # scaffold a starter project
+functor -d my-game run native   # open a window and run it
+```
+
+Prefer to build from source? See [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Writing a game
 
@@ -109,44 +126,10 @@ time-travel scrubber you see at [functor.games](https://functor.games) (design n
 | `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
 | `examples/*/` | Sample games — e.g. `hello` (a lineup of glTF sample models with a WASD + mouse free-look camera), `primitives`, `lighting` |
 
-## Prerequisites
-
-Install the following (the versions in parentheses are known-good):
-
-- [Rust](https://rustup.rs/) stable (`1.91`) with the wasm target:
-  `rustup target add wasm32-unknown-unknown`
-- [Node.js + npm](https://nodejs.org/) (`node 22`, `npm 10`)
-- [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) (`0.12+`) — `npm install -g wasm-pack`
-
-`watchexec` is no longer needed — Functor Lang hot-reload is built into the runtime, so
-`functor develop` needs no external file watcher. There is also **no .NET / Fable
-dependency**: the toolchain is Rust + Node only.
-
-On Linux you also need the native GL/X11 dev packages (see
-`.github/workflows/build-native.yml` for the exact `apt` list).
-
-## Building the CLI
-
-Build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compile
-time (via `include_bytes!`), so the wasm bundle must exist before the `functor` binary is built.
-
-```sh
-wasm-pack build runtime/functor-runtime-web --target=web     # web bundle (embedded into the CLI)
-cargo build --bin functor                                    # the CLI (embeds the desktop runtime)
-```
-
-Or use the bundled convenience script, which runs both in order:
-
-```sh
-npm run build:cli
-```
-
-This produces a single binary in `target/debug/`: `functor` (the CLI, with the desktop
-runtime linked in as a library and run in-process — there is no separate `functor-runner`).
-
 ## Running a sample
 
-Some samples reference glTF model assets that aren't checked in (they download from
+The bundled sample games live in this repo, so clone it to run them. Some samples
+reference glTF model assets that aren't checked in (they download from
 [BabylonJS Assets](https://github.com/BabylonJS/Assets/)); fetch them first:
 
 ```sh
@@ -159,16 +142,18 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 
 ```sh
 # Native — opens a window
-./target/debug/functor -d examples/hello run native
+functor -d examples/hello run native
 
 # A primitives-only sample (no assets needed)
-./target/debug/functor -d examples/primitives run native
+functor -d examples/primitives run native
 
 # Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
-./target/debug/functor -d examples/primitives run wasm
+functor -d examples/primitives run wasm
 ```
 
 `native` is the default environment, so `... run` is equivalent to `... run native`.
+(These commands assume `functor` is on your `PATH`; when running from a source build,
+use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).)
 
 ### CLI commands
 
@@ -179,16 +164,8 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
 | `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime |
 
-### What `build`/`run` do under the hood
-
-1. `build` loads the project (the entry `.fun` plus every sibling `.fun` — file = module)
-   and typechecks the whole program; diagnostics are errors here.
-2. (native) `run` runs the desktop runtime in-process on the entry `.fun` (no separate
-   process); it **interprets** the `.fun` each frame and hot-reloads it on save,
-   preserving the model.
-3. (wasm) `run` serves the project directory — the `.fun` ships as text; the embedded
-   web runtime fetches and interprets it. (File-watch hot-reload is native-only;
-   reload the page to pick up saved edits.)
+For build-from-source instructions and what `build`/`run` do under the hood, see
+[DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Credits
 

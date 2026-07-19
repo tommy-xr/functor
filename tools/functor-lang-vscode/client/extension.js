@@ -45,6 +45,9 @@ let previewProjectDir;
 // The extension's global-storage dir (set in activate) — where a
 // downloaded-on-demand functor CLI is installed (see resolveFunctorCli).
 let globalStorageDir;
+// The extension's install dir (set in activate) — where a platform VSIX
+// bundles the functor CLI (bin/) and the language server (server/).
+let extensionDir;
 // The "$(zap) functor" status bar item; its tooltip lists the extension,
 // language server, and functor CLI versions as they become known.
 let versionStatus;
@@ -79,6 +82,7 @@ const elog = (text) => {
 
 function activate(context) {
   globalStorageDir = context.globalStorageUri.fsPath;
+  extensionDir = context.extensionPath;
   channel = vscode.window.createOutputChannel("Functor Lang");
   context.subscriptions.push(channel);
   elog("extension activated");
@@ -287,25 +291,44 @@ function waitForServer(timeoutMs) {
   });
 }
 
-// Fill in the tooltip's CLI line: the configured/PATH binary, else a
-// previously downloaded copy. Runs in the background at activation.
+// The auto-resolution candidates for the functor CLI, in order (mirrors the
+// language server's serverPath semantics): the binary bundled in a platform
+// VSIX (version-matched to the extension) → PATH → a previously downloaded
+// copy in global storage.
+function autoCliCandidates() {
+  return [
+    cliDownload.bundledCliPath(extensionDir, process.platform),
+    "functor",
+    cliDownload.downloadedCliPath(globalStorageDir, process.platform),
+  ];
+}
+
+// Fill in the tooltip's CLI line. Runs in the background at activation.
+// Mirrors resolveFunctorCliUncached: an explicit setting never falls through,
+// so a broken one reports itself rather than promising a download.
 async function probeCliVersion() {
-  const configured =
-    vscode.workspace.getConfiguration("functor").get("functorPath") || "functor";
-  versionInfo.cli =
-    (await cliDownload.commandVersion(configured)) ||
-    (await cliDownload.commandVersion(
-      cliDownload.downloadedCliPath(globalStorageDir, process.platform)
-    )) ||
-    "not found — the live preview offers a download";
+  const configured = vscode.workspace.getConfiguration("functor").get("functorPath");
+  if (configured) {
+    versionInfo.cli =
+      (await cliDownload.commandVersion(configured)) ||
+      `functor.functorPath ("${configured}") did not run`;
+  } else {
+    let v = null;
+    for (const candidate of autoCliCandidates()) {
+      v = await cliDownload.commandVersion(candidate);
+      if (v) break;
+    }
+    versionInfo.cli = v || "not found — the live preview offers a download";
+  }
   renderVersionStatus();
 }
 
 // Resolve the `functor` CLI the preview spawns: the functor.functorPath
-// setting (default: `functor` from PATH) → a previously downloaded copy in
-// global storage → offer to download the newest release's platform archive.
-// Returns the command to spawn, or null (unsupported platform, declined, or
-// failed download — the user has been messaged in every null case).
+// setting when set (an explicit-but-broken setting errors rather than
+// silently falling through) → the auto candidates above → offer to download
+// the newest release's platform archive. Returns the command to spawn, or
+// null (unsupported platform, declined, or failed download — the user has
+// been messaged in every null case).
 //
 // Concurrent invocations share one in-flight resolution: a second "Open Live
 // Preview" during the download must not race a second download/extract into
@@ -321,14 +344,19 @@ function resolveFunctorCli() {
 }
 
 async function resolveFunctorCliUncached() {
-  const configured =
-    vscode.workspace.getConfiguration("functor").get("functorPath") || "functor";
-  if (await cliDownload.commandWorks(configured)) return configured;
-
-  const downloaded = cliDownload.downloadedCliPath(globalStorageDir, process.platform);
-  if (await cliDownload.commandWorks(downloaded)) {
-    elog(`preview: using downloaded CLI ${downloaded}`);
-    return downloaded;
+  const configured = vscode.workspace.getConfiguration("functor").get("functorPath");
+  if (configured) {
+    if (await cliDownload.commandWorks(configured)) return configured;
+    vscode.window.showErrorMessage(
+      `Functor: functor.functorPath ("${configured}") did not run — fix or clear the setting.`
+    );
+    return null;
+  }
+  for (const candidate of autoCliCandidates()) {
+    if (await cliDownload.commandWorks(candidate)) {
+      elog(`preview: using functor CLI ${candidate}`);
+      return candidate;
+    }
   }
 
   // Nothing runnable — offer the download.
@@ -338,20 +366,20 @@ async function resolveFunctorCliUncached() {
     asset = cliDownload.pickAsset(releases, process.platform, process.arch);
   } catch (e) {
     vscode.window.showErrorMessage(
-      `Functor: "${configured}" was not found, and querying GitHub releases failed ` +
+      `Functor: the functor CLI was not found (not bundled, not on PATH), and querying GitHub releases failed ` +
         `(${e.message}) — install the functor CLI and/or set functor.functorPath.`
     );
     return null;
   }
   if (!asset) {
     vscode.window.showErrorMessage(
-      `Functor: "${configured}" was not found and no prebuilt functor CLI exists for ` +
+      `Functor: the functor CLI was not found and no prebuilt one exists for ` +
         `${process.platform}-${process.arch} — build it from source and set functor.functorPath.`
     );
     return null;
   }
   const choice = await vscode.window.showInformationMessage(
-    `Functor: the functor CLI ("${configured}") was not found. ` +
+    `Functor: the functor CLI was not found (not bundled, not on PATH). ` +
       `Download functor v${asset.version} for this platform from GitHub releases (~17 MB)?`,
     "Download",
     "Cancel"

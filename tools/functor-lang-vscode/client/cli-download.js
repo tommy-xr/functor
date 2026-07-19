@@ -47,6 +47,12 @@ function downloadedCliPath(storageDir, platform) {
   return path.join(storageDir, "bin", platform === "win32" ? "functor.exe" : "functor");
 }
 
+// Where the platform VSIX bundles the functor CLI (staged by the release
+// pipeline next to the language server; absent in dev checkouts).
+function bundledCliPath(extensionDir, platform) {
+  return path.join(extensionDir, "bin", platform === "win32" ? "functor.exe" : "functor");
+}
+
 // `cmd --version`'s first stdout line, or null when it can't run (ENOENT/any
 // spawn error, nonzero exit, 10s hang). Doubles as the availability probe
 // (commandWorks) and the version shown in the status bar tooltip.
@@ -184,6 +190,7 @@ module.exports = {
   assetTargetFor,
   pickAsset,
   downloadedCliPath,
+  bundledCliPath,
   commandVersion,
   commandWorks,
   fetchJson,
