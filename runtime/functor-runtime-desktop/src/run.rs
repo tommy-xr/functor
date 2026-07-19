@@ -1189,11 +1189,14 @@ Escape again to quit"
                                 // Any overlay wanting the pointer — the
                                 // scrubber, the game UI's widgets, or the
                                 // webview — means the click is for it, not a
-                                // recapture. The webview is hit-tested LIVE
-                                // (mouse_pos is window points == CSS px): the
-                                // one-frame latch reads the OLD tree after a
-                                // model-driven re-render, and a stationary
-                                // repeat-click would recapture the cursor.
+                                // recapture. The webview is hit-tested at
+                                // press time (mouse_pos is window points ==
+                                // CSS px) against the render worker's latest
+                                // interactive-rect snapshot: the one-frame
+                                // wants_pointer latch reads the OLD tree
+                                // after a model-driven re-render, and a
+                                // stationary repeat-click would recapture
+                                // the cursor.
                                 if scrubber_wants_pointer
                                     || ui_wants_pointer
                                     || webview_overlay.hit_interactive_css(
@@ -1915,12 +1918,16 @@ Escape again to quit"
             // reserializes every frame — cache the serialized string in the
             // producer once the protocol shape settles (perf follow-up).
             let webview_html = game.webview().map(|node| node.to_html());
+            // `time.tts` as the CSS animation clock: `--fixed-time` pins it
+            // (deterministic captures) and pausing freezes overlay animations
+            // coherently with the game.
             let webview_out = webview_overlay.frame(
                 fb_width as u32,
                 fb_height as u32,
                 dpi_scale,
                 webview_html.as_deref(),
                 webview_pointer,
+                time.tts as f64,
             );
             webview_wants_pointer = webview_out.wants_pointer;
             if !ignore_user_input {

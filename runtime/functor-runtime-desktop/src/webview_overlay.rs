@@ -10,10 +10,28 @@
 //! `(ONE, ONE_MINUS_SRC_ALPHA)` blending. No wgpu anywhere — the CPU painter
 //! keeps the whole path on the existing glow stack.
 //!
+//! **Threaded**: the CPU-heavy half (parse → resolve → paint, plus blitz event
+//! processing) runs on a dedicated worker thread that OWNS the blitz document,
+//! the CPU rasterizer, and the shared `FontContext` — blitz types never cross
+//! threads. Only plain data crosses two mpsc channels: per-frame inputs
+//! (HTML-on-change, viewport, the pointer sample, the animation clock) go in;
+//! completed RGBA frames, [`UiEvent`]s, the `wants_pointer` latch, and the
+//! interactive-element rects come back. The frame loop drains the return
+//! channel non-blocking and uploads a texture only when a new frame arrived —
+//! it never blocks on blitz, so a slow repaint (debug builds are ~200×
+//! release) shows up as overlay *latency*, not frame stalls. The one
+//! exception: the FIRST frame the webview ever activates blocks (bounded,
+//! once per overlay lifetime) for the worker's first paint, so
+//! `--capture-frame` runs deterministically include the overlay instead of
+//! racing it.
+//!
 //! Retained, not immediate: the DOM is rebuilt only when the serialized HTML
-//! actually changes, and re-rasterized only when something visible could have
-//! changed (new HTML, hover transitions, clicks, resize). An idle webview
-//! costs one string compare per frame.
+//! actually changes (one string compare per frame on the main thread), and
+//! re-rasterized only when something visible could have changed (new HTML,
+//! hover transitions, clicks, resize) — the dirty logic lives in the worker.
+//! CSS animations/transitions are ticked: while `doc.is_animating()` reports
+//! live @keyframes or transitions the worker repaints every cycle under our
+//! `resolve(t)` clock (bounded, and off the frame loop).
 //!
 //! Interaction mirrors the egui overlay: pointer events feed blitz's
 //! `EventDriver`, which synthesizes DOM semantics (click = press+release on
@@ -21,10 +39,14 @@
 //! event walks the bubble chain for the nearest `data-fn-click` /
 //! `data-fn-input` attribute — the handler slot the `Attr.onClick` /
 //! `Attr.onInput` builder stamped — and comes back as a [`UiEvent`] the shell
-//! folds through `GameProducer::webview_event`.
+//! folds through `GameProducer::webview_event`. Press arbitration
+//! ([`WebviewOverlay::hit_interactive_css`]) is a point-in-rect test against
+//! the worker's latest snapshot of interactive-element boxes, so the run
+//! loop's synchronous press decision never waits on the worker.
 
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
@@ -38,6 +60,12 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use functor_runtime_common::ui::{PointerState, UiEvent, UiEventKind};
 use glow::HasContext;
 use markup5ever::LocalName;
+
+/// How long the main thread will block for the worker's FIRST frame when the
+/// webview first activates (capture determinism — see the module doc).
+/// Generous because a debug-build retina paint is ~600ms; it is paid at most
+/// once per overlay lifetime, and only if the worker is slower than the loop.
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What one webview frame produced: interactions to fold through `update`,
 /// and whether the pointer is over an interactive element (the shell's
@@ -54,6 +82,57 @@ impl WebviewOutput {
             wants_pointer: false,
         }
     }
+}
+
+// ── The main↔worker protocol (plain data only — no blitz types) ────────────
+
+/// The HTML side of a per-frame input. The main thread keeps the
+/// change-detection string compare, so an idle webview sends `Unchanged`
+/// (no allocation) and the worker reparses only on `Set`.
+enum HtmlMsg {
+    Unchanged,
+    /// `Arc<str>`: one allocation shared between the worker's message and
+    /// the main thread's change-detection cache.
+    Set(Arc<str>),
+    /// The `webview` hook disappeared — drop the retained DOM.
+    Clear,
+}
+
+/// One frame's worth of input, main → worker.
+struct WorkerInput {
+    html: HtmlMsg,
+    fb_width: u32,
+    fb_height: u32,
+    dpi_scale: f32,
+    /// Pointer sample in framebuffer pixels (the overlays' shared space).
+    pointer: PointerState,
+    /// The animation clock blitz `resolve(t)` ticks on (the shell owns it).
+    clock: f64,
+    /// Bumped on `Clear`; outputs stamped with an older epoch are stale
+    /// results from a previous document and are discarded by the main thread.
+    epoch: u64,
+}
+
+/// A completed CPU-painted frame, worker → main (only when repainted).
+struct WorkerFrame {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    generation: u64,
+}
+
+/// One work cycle's results, worker → main. Sent only when something changed
+/// (a repaint, events, a latch flip, or moved rects) so an idle webview stays
+/// idle on both sides.
+struct WorkerOutput {
+    epoch: u64,
+    events: Vec<UiEvent>,
+    wants_pointer: bool,
+    /// CSS-px boxes `(x, y, w, h)` of elements carrying `data-fn-click` /
+    /// `data-fn-input`, from the resolved layout. `None` = unchanged since
+    /// the last send (the main thread keeps its snapshot).
+    interactive_rects: Option<Vec<(f32, f32, f32, f32)>>,
+    frame: Option<WorkerFrame>,
 }
 
 /// Collects DOM events out of blitz's event driver, resolving the bubble
@@ -106,29 +185,33 @@ pub struct WebviewOverlay {
     program: glow::Program,
     vao: glow::VertexArray,
     texture: glow::Texture,
-    /// The live DOM, rebuilt when `html` changes. `None` until the game's
-    /// first `webview` tree arrives.
-    doc: Option<BaseDocument>,
-    /// The serialized HTML the current `doc` was parsed from — the
-    /// change-detection key (a tree diff can replace this later).
-    html: String,
-    /// CPU rasterizer + its output buffer, recreated on resize.
-    renderer: Option<VelloCpuImageRenderer>,
-    buf: Vec<u8>,
+    /// Input channel to the worker; dropped first in `Drop` so the worker's
+    /// blocking `recv` errors out and the thread exits.
+    tx: Option<Sender<WorkerInput>>,
+    rx: Receiver<WorkerOutput>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    /// The serialized HTML last sent — the change-detection key (an idle
+    /// webview costs one string compare per frame, as before).
+    last_html: Option<Arc<str>>,
+    /// Whether a `webview` hook is currently live (drives Clear on removal).
+    active: bool,
+    epoch: u64,
+    /// One-shot latch, once per overlay LIFETIME: the first frame after the
+    /// webview first activates blocks (bounded) for the worker's first paint
+    /// — capture determinism (module doc). Never reset on deactivation: a
+    /// model-toggled webview (a menu) must not stall the frame loop on every
+    /// re-show; its reappearance just lands a cycle later.
+    waited_first_frame: bool,
+    /// Latest latch/rect snapshot received from the worker (≤1 frame stale;
+    /// buttons that keep their place across re-renders — the repeat-click
+    /// case — test identically to the old live hit-test).
+    wants_pointer: bool,
+    interactive_rects: Vec<(f32, f32, f32, f32)>,
+    /// Size of the currently uploaded texture (0 = nothing to composite).
     tex_w: u32,
     tex_h: u32,
-    /// Repaint latch: HTML changed, hover moved, a click landed, resized.
-    dirty: bool,
-    /// The animation clock blitz `resolve(t)` ticks on — ours, per the
-    /// headless embedding (the shell owns the loop).
-    start: Instant,
-    /// One font context shared across reparses. A fresh context per document
-    /// re-enumerates system fonts — ~55ms per model-driven re-render (~30ms
-    /// release), measured; sharing drops the reparse to single-digit ms.
-    font_ctx: FontContext,
-    /// Pointer state last frame, to synthesize press/release edges.
-    pointer_was_down: bool,
-    hover_pos: Option<(f32, f32)>,
+    /// Generation of the currently uploaded texture — the upload gate.
+    uploaded_generation: u64,
 }
 
 const VERTEX_SRC: &str = r#"
@@ -192,43 +275,54 @@ impl WebviewOverlay {
             gl.bind_texture(glow::TEXTURE_2D, None);
             (program, vao, texture)
         };
+        let (tx, worker_rx) = std::sync::mpsc::channel::<WorkerInput>();
+        let (worker_tx, rx) = std::sync::mpsc::channel::<WorkerOutput>();
+        let worker = std::thread::Builder::new()
+            .name("webview-render".into())
+            .spawn(move || worker_loop(worker_rx, worker_tx))
+            .expect("webview: spawn worker");
         WebviewOverlay {
             gl,
             program,
             vao,
             texture,
-            doc: None,
-            html: String::new(),
-            renderer: None,
-            buf: Vec::new(),
+            tx: Some(tx),
+            rx,
+            worker: Some(worker),
+            last_html: None,
+            active: false,
+            epoch: 0,
+            waited_first_frame: false,
+            wants_pointer: false,
+            interactive_rects: Vec::new(),
             tex_w: 0,
             tex_h: 0,
-            dirty: false,
-            start: Instant::now(),
-            font_ctx: FontContext::default(),
-            pointer_was_down: false,
-            hover_pos: None,
+            uploaded_generation: 0,
         }
     }
 
     /// Synchronous hit-test in CSS px (== window points): is the pointer over
-    /// an interactive element RIGHT NOW? The shell's press arbitration uses
-    /// this instead of the one-frame-stale `wants_pointer` latch — after a
-    /// model-driven re-render, a stationary click's latch still reads the OLD
-    /// tree, and the press would recapture the cursor instead of clicking.
+    /// an interactive element? The shell's press arbitration uses this
+    /// instead of the `wants_pointer` latch — a point-in-rect test against
+    /// the worker's latest interactive-rect snapshot, so it never blocks on
+    /// the worker. The rects are ≤1 worker cycle stale, but the repeat-click
+    /// case the old live hit-test existed for (a stationary click after a
+    /// model-driven re-render) keeps its buttons in place, so the rect test
+    /// resolves it identically.
     pub fn hit_interactive_css(&self, x: f32, y: f32) -> bool {
-        let Some(doc) = &self.doc else {
-            return false;
-        };
-        doc.hit(x, y)
-            .map(|hit| chain_has_handler(doc, hit.node_id))
-            .unwrap_or(false)
+        self.interactive_rects
+            .iter()
+            .any(|&(rx, ry, w, h)| x >= rx && x < rx + w && y >= ry && y < ry + h)
     }
 
-    /// Run one webview frame: reconcile the DOM against `html`, feed pointer
-    /// input, repaint if anything changed, and draw the overlay quad.
-    /// `pointer.pos` is in framebuffer pixels (the egui overlays' space);
-    /// blitz works in CSS px, so it is divided by `dpi_scale` here.
+    /// Run one webview frame: forward inputs to the worker, drain its
+    /// results non-blocking, upload the newest frame (if any) as the overlay
+    /// texture, and composite the quad. `pointer.pos` is in framebuffer
+    /// pixels (the egui overlays' space); the worker divides by `dpi_scale`
+    /// for blitz's CSS px. `clock` is the shell's frame time (`tts`, seconds)
+    /// — the clock CSS animations tick on, so `--fixed-time` pins webview
+    /// poses too (deterministic captures) and pausing freezes the overlay's
+    /// animations coherently with the game.
     pub fn frame(
         &mut self,
         fb_width: u32,
@@ -236,70 +330,336 @@ impl WebviewOverlay {
         dpi_scale: f32,
         html: Option<&str>,
         pointer: PointerState,
+        clock: f64,
     ) -> WebviewOutput {
         let Some(html) = html else {
-            // Hook absent (or nothing built yet): drop any retained DOM so a
-            // deleted `webview` clears the overlay (the `ui` reload rule).
-            self.doc = None;
-            self.html.clear();
-            self.pointer_was_down = false;
+            // Hook absent (or nothing built yet): tell the worker to drop the
+            // retained DOM so a deleted `webview` clears the overlay (the
+            // `ui` reload rule), and reset the main-side snapshot NOW — a
+            // stale rect must not capture a press for a dead overlay.
+            if self.active {
+                self.active = false;
+                self.last_html = None;
+                self.wants_pointer = false;
+                self.interactive_rects = Vec::new();
+                self.tex_w = 0;
+                self.tex_h = 0;
+                self.epoch += 1;
+                if let Some(tx) = &self.tx {
+                    let _ = tx.send(WorkerInput {
+                        html: HtmlMsg::Clear,
+                        fb_width,
+                        fb_height,
+                        dpi_scale,
+                        pointer: PointerState::default(),
+                        clock,
+                        epoch: self.epoch,
+                    });
+                }
+            }
+            // Discard in-flight results from the previous document.
+            for _ in self.rx.try_iter() {}
             return WebviewOutput::empty();
         };
         if fb_width == 0 || fb_height == 0 {
             return WebviewOutput::empty();
         }
 
-        let scale = if dpi_scale > 0.0 { dpi_scale } else { 1.0 };
-        let viewport_changed = self.tex_w != fb_width || self.tex_h != fb_height;
-        let clock = self.start.elapsed().as_secs_f64();
+        // ── Send this frame's input (HTML only when changed) ───────────────
+        self.active = true;
+        let html_msg = if self.last_html.as_deref() == Some(html) {
+            HtmlMsg::Unchanged
+        } else {
+            let shared: Arc<str> = Arc::from(html);
+            self.last_html = Some(shared.clone());
+            HtmlMsg::Set(shared)
+        };
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(WorkerInput {
+                html: html_msg,
+                fb_width,
+                fb_height,
+                dpi_scale,
+                pointer,
+                clock,
+                epoch: self.epoch,
+            });
+        }
 
-        // ── Reconcile the DOM (prototype: full reparse on change) ─────────
-        if html != self.html || self.doc.is_none() {
-            self.html.clear();
-            self.html.push_str(html);
-            let viewport = Viewport::new(fb_width, fb_height, scale, ColorScheme::Dark);
-            let mut doc = HtmlDocument::from_html(
-                html,
-                DocumentConfig {
-                    viewport: Some(viewport),
-                    // Shared across reparses — a fresh context re-enumerates
-                    // system fonts (tens of ms) on every re-render.
-                    font_ctx: Some(self.font_ctx.clone()),
-                    ..Default::default()
-                },
-            )
-            .into_inner();
-            // A fresh document has NO layout until resolved — the hover
-            // re-establishing move below would hit-test nothing, leaving
-            // `wants_pointer` false until the mouse physically moves, and the
-            // next stationary click would recapture the cursor instead of
-            // pressing the button (the repeated-click repro). Resolve now so
-            // same-frame events see real geometry.
-            doc.resolve(clock);
-            self.doc = Some(doc);
-            self.dirty = true;
-            // Re-establish hover on the fresh DOM: clearing `hover_pos` makes
-            // the next pointer sample look moved, so the move re-synthesizes
-            // below even for a stationary cursor (`:hover` and wants_pointer
-            // would otherwise go stale until the mouse physically moves).
-            // [xreview]
-            self.hover_pos = None;
-            self.pointer_was_down = false;
-        } else if viewport_changed {
-            if let Some(doc) = &mut self.doc {
-                doc.set_viewport(Viewport::new(fb_width, fb_height, scale, ColorScheme::Dark));
-                self.dirty = true;
+        // ── Drain worker results (non-blocking, except the first frame) ────
+        let mut outputs: Vec<WorkerOutput> = self.rx.try_iter().collect();
+        if !self.waited_first_frame {
+            // Block (bounded) for the worker's FIRST paint of this document,
+            // so captures and the overlay's appearance don't race the worker.
+            self.waited_first_frame = true;
+            let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
+            while !outputs
+                .iter()
+                .any(|o| o.epoch == self.epoch && o.frame.is_some())
+            {
+                let timeout = deadline.saturating_duration_since(Instant::now());
+                if timeout.is_zero() {
+                    break;
+                }
+                match self.rx.recv_timeout(timeout) {
+                    Ok(out) => outputs.push(out),
+                    Err(_) => break,
+                }
             }
         }
+        let mut events: Vec<UiEvent> = Vec::new();
+        let mut latest_frame: Option<WorkerFrame> = None;
+        for out in outputs {
+            if out.epoch != self.epoch {
+                continue; // a stale result from before the last Clear
+            }
+            events.extend(out.events);
+            self.wants_pointer = out.wants_pointer;
+            if let Some(rects) = out.interactive_rects {
+                self.interactive_rects = rects;
+            }
+            if let Some(frame) = out.frame {
+                latest_frame = Some(frame); // messages arrive in generation order
+            }
+        }
+
+        // ── Upload the newest frame (only on a NEW generation) ─────────────
+        if let Some(frame) = latest_frame.filter(|f| f.generation > self.uploaded_generation) {
+            self.uploaded_generation = frame.generation;
+            unsafe {
+                let gl = &self.gl;
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA as i32,
+                    frame.width as i32,
+                    frame.height as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&frame.rgba)),
+                );
+                gl.bind_texture(glow::TEXTURE_2D, None);
+            }
+            // The texture keeps the frame's OWN size: after a resize it
+            // stretches over the quad for the cycle or two until the
+            // newly-sized frame lands.
+            self.tex_w = frame.width;
+            self.tex_h = frame.height;
+        }
+
+        // ── Composite the overlay quad ──────────────────────────────────────
+        if self.tex_w > 0 {
+            unsafe {
+                let gl = &self.gl;
+                gl.disable(glow::DEPTH_TEST);
+                gl.disable(glow::SCISSOR_TEST);
+                gl.enable(glow::BLEND);
+                // The CPU painter emits PREMULTIPLIED alpha.
+                gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
+                gl.use_program(Some(self.program));
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
+                gl.bind_vertex_array(Some(self.vao));
+                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+                gl.bind_vertex_array(None);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                gl.use_program(None);
+                // Restore the slate the 3D path expects (the
+                // `restore_gl_after_egui` convention).
+                gl.disable(glow::BLEND);
+                gl.enable(glow::DEPTH_TEST);
+            }
+        }
+
+        WebviewOutput {
+            events,
+            wants_pointer: self.wants_pointer,
+        }
+    }
+}
+
+impl Drop for WebviewOverlay {
+    fn drop(&mut self) {
+        // Close the input channel; the worker's blocking recv errors and the
+        // thread exits its loop.
+        self.tx = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+// ── The worker: owns all blitz state; nothing here touches GL ──────────────
+
+/// Everything the worker thread owns — the blitz document, the CPU
+/// rasterizer, the shared font context, and the dirty/pointer bookkeeping
+/// that used to live on [`WebviewOverlay`] directly.
+struct WorkerState {
+    doc: Option<BaseDocument>,
+    renderer: Option<VelloCpuImageRenderer>,
+    /// Framebuffer size the current `renderer` was created for.
+    renderer_size: Option<(u32, u32)>,
+    /// One font context shared across reparses. A fresh context per document
+    /// re-enumerates system fonts — ~55ms per model-driven re-render (~30ms
+    /// release), measured; sharing drops the reparse to single-digit ms.
+    font_ctx: FontContext,
+    /// Repaint latch: HTML changed, hover moved, a click landed, resized.
+    dirty: bool,
+    /// Pointer state last cycle, to synthesize press/release edges.
+    pointer_was_down: bool,
+    hover_pos: Option<(f32, f32)>,
+    /// The current viewport (from the latest input); a change re-flows.
+    view_w: u32,
+    view_h: u32,
+    view_scale: f32,
+    clock: f64,
+    epoch: u64,
+    generation: u64,
+    /// Last-sent snapshots, so an idle cycle sends nothing at all.
+    sent_rects: Vec<(f32, f32, f32, f32)>,
+    sent_wants_pointer: bool,
+}
+
+impl WorkerState {
+    fn new() -> Self {
+        WorkerState {
+            doc: None,
+            renderer: None,
+            renderer_size: None,
+            font_ctx: FontContext::default(),
+            dirty: false,
+            pointer_was_down: false,
+            hover_pos: None,
+            view_w: 0,
+            view_h: 0,
+            view_scale: 1.0,
+            clock: 0.0,
+            epoch: 0,
+            generation: 0,
+            sent_rects: Vec::new(),
+            sent_wants_pointer: false,
+        }
+    }
+
+    /// Run one whole batch of inputs (everything queued while the previous
+    /// cycle worked): reconcile the DOM once against the batch's LAST HTML
+    /// directive — intermediate documents would never be painted, so parsing
+    /// them would only let a backlog starve the worker (e.g. a debug build
+    /// with per-frame re-renders) — then feed every pointer sample of the
+    /// current epoch, in order, so no press/release edge is coalesced away.
+    /// The expensive resolve+paint happens once, in
+    /// [`WorkerState::finish_cycle`].
+    fn run_cycle(&mut self, batch: Vec<WorkerInput>) -> Option<WorkerOutput> {
+        let last = batch.last().expect("batch is non-empty");
+        let epoch = last.epoch;
+        self.epoch = epoch;
+        self.clock = last.clock;
+        let scale = if last.dpi_scale > 0.0 {
+            last.dpi_scale
+        } else {
+            1.0
+        };
+        let viewport_changed = self.view_w != last.fb_width
+            || self.view_h != last.fb_height
+            || self.view_scale != scale;
+        self.view_w = last.fb_width;
+        self.view_h = last.fb_height;
+        self.view_scale = scale;
+
+        // Split the batch: the last HTML directive wins; pointer samples
+        // stamped with an OLDER epoch belong to a document Cleared mid-batch
+        // — the main thread discards their results anyway, so don't
+        // synthesize edges from them on the new document.
+        let mut html_action: Option<HtmlMsg> = None;
+        let mut pointers: Vec<PointerState> = Vec::with_capacity(batch.len());
+        for input in batch {
+            if !matches!(input.html, HtmlMsg::Unchanged) {
+                html_action = Some(input.html);
+            }
+            if input.epoch == epoch {
+                pointers.push(input.pointer);
+            }
+        }
+
+        // ── Reconcile the DOM (prototype: full reparse on change) ─────────
+        match html_action {
+            Some(HtmlMsg::Clear) => {
+                self.doc = None;
+                self.pointer_was_down = false;
+                self.hover_pos = None;
+                self.dirty = false;
+                // The main thread cleared ITS snapshot on Clear — reset the
+                // sent-caches too, or an identical re-shown UI would compare
+                // equal and never be re-sent (dead press arbitration).
+                self.sent_rects = Vec::new();
+                self.sent_wants_pointer = false;
+                return None;
+            }
+            Some(HtmlMsg::Set(html)) => {
+                let viewport =
+                    Viewport::new(self.view_w, self.view_h, scale, ColorScheme::Dark);
+                let mut doc = HtmlDocument::from_html(
+                    &html,
+                    DocumentConfig {
+                        viewport: Some(viewport),
+                        // Shared across reparses — a fresh context re-enumerates
+                        // system fonts (tens of ms) on every re-render.
+                        font_ctx: Some(self.font_ctx.clone()),
+                        ..Default::default()
+                    },
+                )
+                .into_inner();
+                // A fresh document has NO layout until resolved — the hover
+                // re-establishing move below would hit-test nothing, leaving
+                // `wants_pointer` false until the mouse physically moves, and
+                // the next stationary click would recapture the cursor instead
+                // of pressing the button (the repeated-click repro). Resolve
+                // now so same-cycle events see real geometry.
+                doc.resolve(self.clock);
+                self.doc = Some(doc);
+                self.dirty = true;
+                // Re-establish hover on the fresh DOM: clearing `hover_pos`
+                // makes the next pointer sample look moved, so the move
+                // re-synthesizes below even for a stationary cursor (`:hover`
+                // and wants_pointer would otherwise go stale until the mouse
+                // physically moves). [xreview]
+                self.hover_pos = None;
+                self.pointer_was_down = false;
+            }
+            Some(HtmlMsg::Unchanged) | None => {
+                if viewport_changed {
+                    if let Some(doc) = &mut self.doc {
+                        doc.set_viewport(Viewport::new(
+                            self.view_w,
+                            self.view_h,
+                            scale,
+                            ColorScheme::Dark,
+                        ));
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+
+        let mut events: Vec<UiEvent> = Vec::new();
+        for pointer in pointers {
+            self.apply_pointer(pointer, scale, &mut events);
+        }
+        self.finish_cycle(events)
+    }
+
+    /// Feed ONE pointer sample through blitz's event driver (a no-op without
+    /// a document), synthesizing hover moves and press/release edges.
+    fn apply_pointer(&mut self, pointer: PointerState, scale: f32, events: &mut Vec<UiEvent>) {
         let Some(doc) = &mut self.doc else {
-            return WebviewOutput::empty();
+            return;
         };
 
         // ── Pointer input → blitz event driver ─────────────────────────────
         let mut collector = EventCollector { events: Vec::new() };
-        let css_pos = pointer
-            .pos
-            .map(|(x, y)| (x / scale, y / scale));
+        let css_pos = pointer.pos.map(|(x, y)| (x / scale, y / scale));
         let hover_before = doc.get_hover_node_id();
         let mut press_edge = false;
         {
@@ -348,91 +708,123 @@ impl WebviewOverlay {
             // once the model folds — repaint on any of them.
             self.dirty = true;
         }
+        events.extend(collector.events);
+    }
 
-        // Is the pointer over an interactive element? That click belongs to
-        // the webview, not to free-look recapture (the `ui_wants_pointer`
-        // rule). Text hit or not, walk up from the hovered node.
+    /// Resolve + repaint once for the whole input batch, and package the
+    /// results. Returns `None` when there is nothing to report (idle).
+    fn finish_cycle(&mut self, events: Vec<UiEvent>) -> Option<WorkerOutput> {
+        let Some(doc) = &mut self.doc else {
+            // Cleared: the main thread already reset its own snapshot.
+            return None;
+        };
+
+        // ── Layout/style resolution + CPU repaint (only when dirty) ────────
+        doc.resolve(self.clock);
         let wants_pointer = doc
             .get_hover_node_id()
             .map(|id| chain_has_handler(doc, id))
             .unwrap_or(false);
-
-        // ── Layout/style resolution + CPU repaint (only when dirty) ────────
-        doc.resolve(clock);
-        if self.dirty || viewport_changed {
-            if self.renderer.is_none() || viewport_changed {
-                self.renderer = Some(VelloCpuImageRenderer::new(fb_width, fb_height));
+        // Repaint when dirty OR while CSS animations/transitions are active:
+        // `resolve(t)` above already advanced blitz's clock, and
+        // `is_animating()` reports live @keyframes/transitions, so ticking
+        // them costs one repaint per cycle — bounded, and off the frame loop.
+        let frame = if self.dirty || doc.is_animating() {
+            // Recreate the rasterizer whenever the framebuffer size moved.
+            if self.renderer_size != Some((self.view_w, self.view_h)) {
+                self.renderer = Some(VelloCpuImageRenderer::new(self.view_w, self.view_h));
+                self.renderer_size = Some((self.view_w, self.view_h));
             }
             let renderer = self.renderer.as_mut().expect("just created");
+            // The render context ACCUMULATES scene commands across paints —
+            // without a reset, content that moved (an animating element)
+            // ghosts its previous positions over the transparent background.
+            renderer.reset();
+            let mut rgba = Vec::new();
+            let (w, h, scale) = (self.view_w, self.view_h, self.view_scale);
             renderer.render_to_vec(
-                |scene| {
-                    blitz_paint::paint_scene(
-                        scene,
-                        doc,
-                        scale as f64,
-                        fb_width,
-                        fb_height,
-                        0,
-                        0,
-                    )
-                },
-                &mut self.buf,
+                |scene| blitz_paint::paint_scene(scene, doc, scale as f64, w, h, 0, 0),
+                &mut rgba,
             );
-            unsafe {
-                let gl = &self.gl;
-                gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA as i32,
-                    fb_width as i32,
-                    fb_height as i32,
-                    0,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&self.buf)),
-                );
-                gl.bind_texture(glow::TEXTURE_2D, None);
-            }
-            self.tex_w = fb_width;
-            self.tex_h = fb_height;
             self.dirty = false;
-        }
+            self.generation += 1;
+            Some(WorkerFrame {
+                rgba,
+                width: w,
+                height: h,
+                generation: self.generation,
+            })
+        } else {
+            None
+        };
 
-        // ── Composite the overlay quad ──────────────────────────────────────
-        if self.tex_w > 0 {
-            unsafe {
-                let gl = &self.gl;
-                gl.disable(glow::DEPTH_TEST);
-                gl.disable(glow::SCISSOR_TEST);
-                gl.enable(glow::BLEND);
-                // The CPU painter emits PREMULTIPLIED alpha.
-                gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
-                gl.use_program(Some(self.program));
-                gl.active_texture(glow::TEXTURE0);
-                gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
-                gl.bind_vertex_array(Some(self.vao));
-                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
-                gl.bind_vertex_array(None);
-                gl.bind_texture(glow::TEXTURE_2D, None);
-                gl.use_program(None);
-                // Restore the slate the 3D path expects (the
-                // `restore_gl_after_egui` convention).
-                gl.disable(glow::BLEND);
-                gl.enable(glow::DEPTH_TEST);
+        // Interactive-element boxes for the shell's synchronous press
+        // arbitration, sent only when they moved/changed.
+        let rects = interactive_rects(doc);
+        let rects_msg = if rects != self.sent_rects {
+            self.sent_rects = rects.clone();
+            Some(rects)
+        } else {
+            None
+        };
+
+        if frame.is_none()
+            && events.is_empty()
+            && rects_msg.is_none()
+            && wants_pointer == self.sent_wants_pointer
+        {
+            return None; // truly idle — keep both channels quiet
+        }
+        self.sent_wants_pointer = wants_pointer;
+        Some(WorkerOutput {
+            epoch: self.epoch,
+            events,
+            wants_pointer,
+            interactive_rects: rects_msg,
+            frame,
+        })
+    }
+}
+
+/// The worker thread: block until inputs arrive, drain everything queued
+/// into one batch, and run a single cycle over it — one parse (the last HTML
+/// directive) + every pointer edge + one resolve/repaint. The expensive half
+/// is what coalesces, so a backlog shrinks instead of compounding. Exits
+/// when the input channel closes (the overlay was dropped).
+fn worker_loop(rx: Receiver<WorkerInput>, tx: Sender<WorkerOutput>) {
+    let mut state = WorkerState::new();
+    loop {
+        let first = match rx.recv() {
+            Ok(input) => input,
+            Err(_) => return,
+        };
+        let mut batch = vec![first];
+        let mut disconnected = false;
+        loop {
+            match rx.try_recv() {
+                Ok(input) => batch.push(input),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
             }
         }
-
-        WebviewOutput {
-            events: collector.events,
-            wants_pointer,
+        if let Some(output) = state.run_cycle(batch) {
+            if tx.send(output).is_err() {
+                return;
+            }
+        }
+        if disconnected {
+            return;
         }
     }
 }
 
 /// Render an HTML string to a premultiplied-RGBA buffer, headlessly (no GL) —
-/// the GL-free core of [`WebviewOverlay::frame`], exposed for tests and
-/// tooling (an agent can verify webview rendering without a window).
+/// the GL-free core of the worker's parse→resolve→paint cycle, exposed for
+/// tests and tooling (an agent can verify webview rendering without a
+/// window).
 pub fn render_html_to_rgba(html: &str, width: u32, height: u32, scale: f32) -> Vec<u8> {
     let viewport = Viewport::new(width, height, scale, ColorScheme::Dark);
     let mut doc = HtmlDocument::from_html(
@@ -469,6 +861,30 @@ fn chain_has_handler(doc: &BaseDocument, node_id: usize) -> bool {
         current = node.parent;
     }
     false
+}
+
+/// CSS-px absolute boxes `(x, y, w, h)` of every element carrying a webview
+/// handler attribute, from the RESOLVED layout — the worker's snapshot for
+/// the shell's synchronous press arbitration. Coarser than a real hit-test
+/// (no z-order/clip awareness), which errs toward the webview keeping a
+/// click — never toward a surprise cursor recapture.
+fn interactive_rects(doc: &BaseDocument) -> Vec<(f32, f32, f32, f32)> {
+    let click = LocalName::from("data-fn-click");
+    let input = LocalName::from("data-fn-input");
+    let mut rects = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        if node.attr(click.clone()).is_some() || node.attr(input.clone()).is_some() {
+            let pos = node.absolute_position(0.0, 0.0);
+            let size = node.final_layout.size;
+            rects.push((pos.x, pos.y, size.width, size.height));
+        }
+        stack.extend(node.children.iter().copied());
+    }
+    rects
 }
 
 /// `primary_held` is the button LEVEL the event carries (`buttons` in DOM
