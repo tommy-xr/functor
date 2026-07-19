@@ -256,6 +256,11 @@ fn camera_from_view(view: &xr::View) -> Camera {
 /// the same embedded producer a pushed game runs under.
 const BOOT_SCENE: &str = include_str!("boot.fun");
 
+/// The push endpoint's device-loopback port (`adb forward tcp:8123 tcp:8123`).
+const RELOAD_PORT: u16 = 8123;
+
+mod reload_server;
+
 #[no_mangle]
 pub fn android_main(app: AndroidApp) {
     android_logger::init_once(
@@ -443,6 +448,20 @@ pub fn android_main(app: AndroidApp) {
     )])
     .expect("embedded boot scene loads");
 
+    // The push endpoint: POST /reload-source on device loopback — the dev PC
+    // reaches it via `adb forward tcp:8123 tcp:8123` (see README). A bind
+    // failure (port taken) degrades to boot-scene-only, loudly.
+    let reload_rx = match reload_server::spawn(RELOAD_PORT) {
+        Ok(rx) => {
+            log::info!("reload endpoint: POST http://127.0.0.1:{RELOAD_PORT}/reload-source");
+            Some(rx)
+        }
+        Err(error) => {
+            log::error!("reload endpoint failed to bind port {RELOAD_PORT}: {error}");
+            None
+        }
+    };
+
     let start = std::time::Instant::now();
     // Lazy: seconds pass between android_main and the first rendered frame
     // (session READY), and the session can pause — the first frame after
@@ -516,6 +535,15 @@ pub fn android_main(app: AndroidApp) {
                 }
                 InstanceLossPending(_) => quit = true,
                 _ => {}
+            }
+        }
+
+        // Apply pushed reloads BEFORE the session gate: the producer needs no
+        // GL/XR to swap programs, so a push lands even while the headset
+        // dozes (session IDLE) — it shows the moment the session resumes.
+        if let Some(rx) = &reload_rx {
+            while let Ok((source, resp)) = rx.try_recv() {
+                let _ = resp.send(game.reload_source(&source));
             }
         }
 
