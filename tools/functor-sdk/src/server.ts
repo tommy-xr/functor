@@ -163,18 +163,42 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     // did directly pre-consolidation.
     const functorJson = join(gameDir, "functor.json");
     const wantEntry = relative(gameDir, gamePath) || "game.fun";
+    // For a multi-entry project, the role selected out of `entries` via the
+    // CLI's `--entry <name>` flag (placed before the subcommand, ahead of the
+    // trailing runner args).
+    const entryArgs: string[] = [];
     if (existsSync(functorJson)) {
       // Don't clobber a real project's config — but since the CLI launches its
       // entry (not `functorLangPath`), verify they agree, or the SDK would silently run
       // a DIFFERENT game than the caller asked for.
       const cfg = JSON.parse(readFileSync(functorJson, "utf8"));
-      const cfgEntry: string = cfg.entry ?? "game.fun";
-      if (resolve(gameDir, cfgEntry) !== gamePath) {
-        throw new Error(
-          `functor.json in ${gameDir} points at entry "${cfgEntry}", but launch ` +
-            `requested functorLangPath ${gamePath}. They must match — \`functor run native\` ` +
-            `launches the functor.json entry.`,
+      const entries =
+        cfg.entries && typeof cfg.entries === "object"
+          ? (cfg.entries as Record<string, string>)
+          : undefined;
+      if (entries) {
+        // Multi-entry project: find the named entry matching the requested
+        // path and select it explicitly (the CLI's default would be `client`).
+        const name = Object.keys(entries).find(
+          (k) => resolve(gameDir, String(entries[k])) === gamePath,
         );
+        if (!name) {
+          throw new Error(
+            `functor.json in ${gameDir} declares entries ` +
+              `{${Object.keys(entries).join(", ")}}, but launch requested ` +
+              `functorLangPath ${gamePath}, which matches none of them.`,
+          );
+        }
+        entryArgs.push("--entry", name);
+      } else {
+        const cfgEntry: string = cfg.entry ?? "game.fun";
+        if (resolve(gameDir, cfgEntry) !== gamePath) {
+          throw new Error(
+            `functor.json in ${gameDir} points at entry "${cfgEntry}", but launch ` +
+              `requested functorLangPath ${gamePath}. They must match — \`functor run native\` ` +
+              `launches the functor.json entry.`,
+          );
+        }
       }
     } else {
       writeFileSync(functorJson, JSON.stringify({ language: "functor-lang", entry: wantEntry }));
@@ -185,6 +209,7 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     const runnerArgs = [
       "-d",
       gameDir,
+      ...entryArgs,
       "run",
       "native",
       "--",
