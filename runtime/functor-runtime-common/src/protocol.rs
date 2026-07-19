@@ -150,6 +150,13 @@ pub trait GameProducer {
         0
     }
 
+    /// Successful loaded-program revision. Safe plain-data reloads intentionally
+    /// leave `scene_timeline_generation` unchanged, but cached extrapolation must
+    /// still invalidate because the code that computes the future changed.
+    fn scene_program_revision(&self) -> u64 {
+        0
+    }
+
     /// The recorded `tts` of the frame the scene currently sits on (the scrubbed
     /// frame while dragging, else the newest recorded frame). Shells read this to
     /// REBASE their [`crate::GameClock`] when a time-travel branch resumes — on a
@@ -429,9 +436,7 @@ mod tests {
                 Light::ambient(0.1, 0.1, 0.1),
                 Light::directional(-1.0, -1.0, 0.0, 1.0, 1.0, 1.0, 0.8).cast_shadows(),
                 Light::point(0.0, 2.0, 0.0, 1.0, 0.0, 0.0, 1.0, 10.0),
-                Light::spot(
-                    0.0, 3.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 15.0, 0.5,
-                ),
+                Light::spot(0.0, 3.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 15.0, 0.5),
             ],
             render_targets: vec![RenderTargetPass {
                 target: RenderTargetDescriptor::new("feed"),
@@ -552,7 +557,10 @@ mod tests {
 
     #[test]
     fn frame_time_round_trips() {
-        let time = FrameTime { tts: 12.5, dts: 0.016 };
+        let time = FrameTime {
+            tts: 12.5,
+            dts: 0.016,
+        };
         let json = serde_json::to_string(&time).unwrap();
         let back: FrameTime = serde_json::from_str(&json).unwrap();
         assert_eq!(time.tts, back.tts);
@@ -615,7 +623,10 @@ mod tests {
             },
             r#"{"Send":{"conn":3,"payload":[1,2]}}"#,
         );
-        assert_wire(&ConnCommand::CloseConn { conn: 3 }, r#"{"CloseConn":{"conn":3}}"#);
+        assert_wire(
+            &ConnCommand::CloseConn { conn: 3 },
+            r#"{"CloseConn":{"conn":3}}"#,
+        );
         assert_wire(
             &ConnCommand::CloseKey {
                 key: "ws://server".to_string(),
@@ -671,7 +682,13 @@ mod tests {
 
         let scene = AudioScene::new(vec![
             AudioSource::ambient("bed".to_string(), "wind.ogg".to_string()),
-            AudioSource::at("fountain".to_string(), "water.ogg".to_string(), 1.0, 0.0, 2.0),
+            AudioSource::at(
+                "fountain".to_string(),
+                "water.ogg".to_string(),
+                1.0,
+                0.0,
+                2.0,
+            ),
         ]);
         assert_wire(
             &scene,

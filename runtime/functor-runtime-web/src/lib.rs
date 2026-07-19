@@ -139,7 +139,8 @@ fn functor_lang_game_path() -> Option<String> {
 /// alone.
 fn functor_lang_project_files() -> Option<Vec<String>> {
     use wasm_bindgen::JsCast;
-    let value = js_sys::Reflect::get(&window(), &JsValue::from_str("__functorLangProjectFiles")).ok()?;
+    let value =
+        js_sys::Reflect::get(&window(), &JsValue::from_str("__functorLangProjectFiles")).ok()?;
     let array = value.dyn_into::<js_sys::Array>().ok()?;
     let files: Vec<String> = array.iter().filter_map(|v| v.as_string()).collect();
     (!files.is_empty()).then_some(files)
@@ -181,7 +182,9 @@ fn parse_project_files(value: &JsValue) -> Option<Vec<(String, String)>> {
 /// `game.fun` + `pieces.fun` links exactly as it does natively. Failures are
 /// rendered strings (fetch status, parse/load position, contract violation) for
 /// `run_async` to fail loud with.
-async fn create_functor_lang_game(entry: &str) -> Result<functor_lang_game::FunctorLangWebGame, String> {
+async fn create_functor_lang_game(
+    entry: &str,
+) -> Result<functor_lang_game::FunctorLangWebGame, String> {
     // A page that already holds every source in memory (the IDE's
     // `?project=inline` boot) injects them directly — nothing to fetch, and
     // module names come from the given paths exactly as in the fetch path.
@@ -297,11 +300,7 @@ fn apply_pending_reload(game: &mut dyn GameProducer) {
             post_reload_result(true, &status, id);
         }
         Err(message) => {
-            functor_lang_game::publish_timeline_reload(
-                selected_frame,
-                false,
-                &message,
-            );
+            functor_lang_game::publish_timeline_reload(selected_frame, false, &message);
             show_error_overlay(&format!("[functor-lang] reload error: {message}"));
             post_reload_result(false, &message, id);
         }
@@ -910,7 +909,9 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     let ws = match web_sys::WebSocket::new(&url) {
         Ok(ws) => ws,
         Err(_) => {
-            with_live_game(|g| g.net_push_conn_error(key, 0, "failed to open WebSocket".to_string()));
+            with_live_game(|g| {
+                g.net_push_conn_error(key, 0, "failed to open WebSocket".to_string())
+            });
             return;
         }
     };
@@ -989,7 +990,9 @@ async fn run_async() -> Result<(), JsValue> {
     // removed in E3. Async pushes (fetch results, WebSocket events) reach it
     // through the shared `GAME` handle (`perform_and_push` / `with_live_game`).
     let Some(path) = functor_lang_game_path() else {
-        let rendered = "[functor-lang] error: no game entry — window.__functorLangGamePath is not set".to_string();
+        let rendered =
+            "[functor-lang] error: no game entry — window.__functorLangGamePath is not set"
+                .to_string();
         web_sys::console::error_1(&rendered.as_str().into());
         show_error_overlay(&rendered);
         return Err(JsValue::from_str(&rendered));
@@ -1163,22 +1166,22 @@ async fn run_async() -> Result<(), JsValue> {
         // by the DOM preview <select>, with the shared forward window/samples
         // from the ⚙ popover. Same anchor cache as the desktop shell: while
         // paused the anchor (scene frame + tts) is frozen, so reuse the
-        // computed preview; the refresh bound re-projects a pushed source edit
-        // within ~half a second. Live projections remain painted every frame
-        // but refresh on a wall-clock cadence that bounds repeated dry runs.
+        // computed preview; the program revision invalidates immediately on a
+        // pushed source edit. Live projections remain painted every frame but
+        // refresh on a wall-clock cadence that bounds repeated dry runs.
         let mut preview_mode = functor_runtime_common::PreviewMode::Off;
         let mut preview_window: f32 = 2.0;
         let mut preview_rate: usize = 5;
         const PAUSED_PREVIEW_REUSE_FRAMES: u32 = 30;
         const LIVE_PREVIEW_INTERVAL_MS: f32 = 100.0;
         let mut preview_cache: Option<(
-            (Option<u64>, u32, bool, bool, bool, usize, u32),
+            (Option<u64>, u32, bool, u64, bool, bool, usize, u32),
             functor_runtime_common::ScenePreview,
         )> = None;
         let mut preview_refresh: u32 = 0;
         let mut next_live_preview_refresh: f32 = 0.0;
         let mut ghost_cache: Option<(
-            (Option<u64>, u32, bool, usize, u32),
+            (Option<u64>, u32, bool, u64, usize, u32),
             Vec<(Frame, FrameTime)>,
         )> = None;
         let mut ghost_refresh: u32 = 0;
@@ -1345,6 +1348,7 @@ async fn run_async() -> Result<(), JsValue> {
                     game.current_scene_frame(),
                     frame_time.tts.to_bits(),
                     clock.is_paused(),
+                    game.scene_program_revision(),
                     trail_wanted,
                     strobe_wanted,
                     preview_rate,
@@ -1361,6 +1365,7 @@ async fn run_async() -> Result<(), JsValue> {
                             && k.4 == key.4
                             && k.5 == key.5
                             && k.6 == key.6
+                            && k.7 == key.7
                     }
                 });
                 if cache_hit {
@@ -1374,8 +1379,7 @@ async fn run_async() -> Result<(), JsValue> {
                     // so dots stay visible between copies and both hold their
                     // density as the window resizes.
                     const TRAIL_RATE: f32 = 20.0;
-                    let divisions =
-                        ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
+                    let divisions = ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
                     let copies = ((preview_rate as f32 * preview_window).round() as usize)
                         .clamp(1, divisions);
                     let p = functor_runtime_common::scene_preview(
@@ -1391,11 +1395,9 @@ async fn run_async() -> Result<(), JsValue> {
                             eps: 0.04,
                             max_step: 3.0,
                             trail: trail_wanted,
-                            strobe: strobe_wanted.then(|| {
-                                functor_runtime_common::StrobeOptions {
-                                    copies,
-                                    ..Default::default()
-                                }
+                            strobe: strobe_wanted.then(|| functor_runtime_common::StrobeOptions {
+                                copies,
+                                ..Default::default()
                             }),
                         },
                     );
@@ -1450,13 +1452,14 @@ async fn run_async() -> Result<(), JsValue> {
             let ghosts = if selected.ghost {
                 // The ⚙ popover's rate × window, clamped to the compositor's
                 // 8-target cap.
-                let divisions = ((preview_rate as f32 * preview_window).round() as usize)
-                    .clamp(1, 8);
+                let divisions =
+                    ((preview_rate as f32 * preview_window).round() as usize).clamp(1, 8);
                 let dt = preview_window / divisions as f32;
                 let key = (
                     game.current_scene_frame(),
                     frame_time.tts.to_bits(),
                     clock.is_paused(),
+                    game.scene_program_revision(),
                     divisions,
                     preview_window.to_bits(),
                 );
@@ -1469,6 +1472,7 @@ async fn run_async() -> Result<(), JsValue> {
                             && !k.2
                             && k.3 == key.3
                             && k.4 == key.4
+                            && k.5 == key.5
                     }
                 });
                 if cache_hit {
@@ -1582,9 +1586,7 @@ async fn run_async() -> Result<(), JsValue> {
             // Interactions drained pre-tick above. TODO(webview): cache the
             // serialized string in the producer instead of clone+reserialize
             // per frame (perf follow-up).
-            functor_lang_game::publish_webview_html(
-                game.webview().map(|node| node.to_html()),
-            );
+            functor_lang_game::publish_webview_html(game.webview().map(|node| node.to_html()));
 
             // Publish the scrubber state for the DOM slider to poll (the UI
             // itself is native HTML in index-functor-lang.html, outside the canvas).

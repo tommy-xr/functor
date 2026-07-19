@@ -135,7 +135,11 @@ fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, St
         let is_down = match parts[2].to_ascii_lowercase().as_str() {
             "down" => true,
             "up" => false,
-            other => return Err(format!("{path}:{lineno}: expected `down|up`, got `{other}`")),
+            other => {
+                return Err(format!(
+                    "{path}:{lineno}: expected `down|up`, got `{other}`"
+                ))
+            }
         };
         map.entry(frame).or_default().push(RecordedInput::Key {
             code: key as i32,
@@ -744,7 +748,9 @@ pub fn run(args: Args) {
     let mut game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
     } else if args.functor_lang {
-        Box::new(functor_lang_game::FunctorLangGame::create(game_path.as_str()))
+        Box::new(functor_lang_game::FunctorLangGame::create(
+            game_path.as_str(),
+        ))
     } else {
         // Functor Lang is the only game producer now (the F#/dylib path was removed in
         // E3). The CLI and SDK always pass --functor-lang; a bare invocation has no
@@ -761,13 +767,15 @@ pub fn run(args: Args) {
     // (the default) leaves live input and the wall-clock capture trigger
     // untouched.
     let input_script: Option<HashMap<u64, Vec<RecordedInput>>> =
-        args.input_script.as_ref().map(|path| match parse_input_script(path) {
-            Ok(map) => map,
-            Err(e) => {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-        });
+        args.input_script
+            .as_ref()
+            .map(|path| match parse_input_script(path) {
+                Ok(map) => map,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            });
 
     // `--capture-at-frame` only names a *deterministic* sim frame when playback
     // advances by a fixed dt — i.e. under `--input-script`. Without it the loop
@@ -799,7 +807,9 @@ pub fn run(args: Args) {
             std::process::exit(1);
         }
         if args.xreal_tracking {
-            eprintln!("warning: --xreal-tracking has no effect in --headless mode (no view to rotate)");
+            eprintln!(
+                "warning: --xreal-tracking has no effect in --headless mode (no view to rotate)"
+            );
         }
         run_headless(game, debug_requests, args.fixed_time);
         return;
@@ -929,20 +939,20 @@ pub fn run(args: Args) {
         // --trajectory/--strobe preview cache. The 32-division forward-sim is
         // the expensive part, and while PAUSED its anchor (scene frame + tts) is
         // frozen — so reuse the computed preview while the anchor key matches,
-        // but still refresh after a bounded number of frames so a hot-reload's
-        // edited code re-projects within ~half a second (the anchor can't see a
-        // code edit). While live, the last projection remains visible between
-        // wall-clock refreshes so continuous extrapolation bounds repeated work.
+        // but still refresh after a bounded number of frames for non-code state
+        // outside the anchor key. A program revision invalidates immediately.
+        // While live, the last projection remains visible between wall-clock
+        // refreshes so continuous extrapolation bounds repeated work.
         const PAUSED_PREVIEW_REUSE_FRAMES: u32 = 30;
         const LIVE_PREVIEW_INTERVAL_SECONDS: f32 = 0.1;
         let mut trail_cache: Option<(
-            (Option<u64>, u32, bool, bool, bool, usize, u32),
+            (Option<u64>, u32, bool, u64, bool, bool, usize, u32),
             functor_runtime_common::ScenePreview,
         )> = None;
         let mut trail_refresh: u32 = 0;
         let mut next_live_trail_refresh: f32 = 0.0;
         let mut ghost_cache: Option<(
-            (Option<u64>, u32, bool, usize, u32),
+            (Option<u64>, u32, bool, u64, usize, u32),
             Vec<(Frame, FrameTime)>,
         )> = None;
         let mut ghost_refresh: u32 = 0;
@@ -1122,11 +1132,8 @@ pub fn run(args: Args) {
                     // Printable text for a focused field. Only meaningful
                     // while the overlay wants the keyboard; otherwise Char
                     // events are dropped (the game hears keys, not text).
-                    glfw::WindowEvent::Char(c)
-                        if ui_wants_keyboard && !ignore_user_input =>
-                    {
-                        ui_keyboard
-                            .push(functor_runtime_common::ui::UiKeyboardEvent::Char(c));
+                    glfw::WindowEvent::Char(c) if ui_wants_keyboard && !ignore_user_input => {
+                        ui_keyboard.push(functor_runtime_common::ui::UiKeyboardEvent::Char(c));
                     }
                     // While a field is focused, Escape DEFOCUSES it (egui's
                     // built-in) instead of releasing the cursor — the next
@@ -1199,10 +1206,8 @@ Escape again to quit"
                                 // the cursor.
                                 if scrubber_wants_pointer
                                     || ui_wants_pointer
-                                    || webview_overlay.hit_interactive_css(
-                                        mouse_pos.0 as f32,
-                                        mouse_pos.1 as f32,
-                                    )
+                                    || webview_overlay
+                                        .hit_interactive_css(mouse_pos.0 as f32, mouse_pos.1 as f32)
                                 {
                                     mouse_primary_down = true;
                                     mouse_primary_clicked = true;
@@ -1406,10 +1411,9 @@ Escape again to quit"
             // captures byte-identical.
             const TRAIL_RATE: f32 = 20.0;
             let (preview_divisions, preview_window_s, strobe_copies) = if scrubber_visible {
-                let divisions =
-                    ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
-                let copies = ((preview_rate as f32 * preview_window).round() as usize)
-                    .clamp(1, divisions);
+                let divisions = ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
+                let copies =
+                    ((preview_rate as f32 * preview_window).round() as usize).clamp(1, divisions);
                 (divisions, preview_window, copies)
             } else {
                 (32usize, 1.6f32, 8usize)
@@ -1431,6 +1435,7 @@ Escape again to quit"
                     game.current_scene_frame(),
                     time.tts.to_bits(),
                     clock.is_paused(),
+                    game.scene_program_revision(),
                     trail_wanted,
                     strobe_wanted,
                     divisions,
@@ -1446,6 +1451,7 @@ Escape again to quit"
                             && k.4 == key.4
                             && k.5 == key.5
                             && k.6 == key.6
+                            && k.7 == key.7
                     } else {
                         trail_refresh > 0 && *k == key
                     }
@@ -1466,8 +1472,7 @@ Escape again to quit"
                     let script_slice: Option<Vec<Vec<RecordedInput>>> =
                         input_script.as_ref().map(|script| {
                             let sub_dt = 1.0f32 / 60.0;
-                            let steps_per_division =
-                                ((dt / sub_dt).round() as usize).max(1);
+                            let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
                             let total = (divisions * steps_per_division) as u64;
                             // Under --ghost the live loop does NOT consume the
                             // script (the model holds at the init anchor while
@@ -1581,6 +1586,7 @@ Escape again to quit"
                         game.current_scene_frame(),
                         time.tts.to_bits(),
                         clock.is_paused(),
+                        game.scene_program_revision(),
                         divisions,
                         ghost_window.to_bits(),
                     );
@@ -1592,6 +1598,7 @@ Escape again to quit"
                                 && !k.2
                                 && k.3 == key.3
                                 && k.4 == key.4
+                                && k.5 == key.5
                         }
                     });
                     if cache_hit {
@@ -1731,8 +1738,24 @@ Escape again to quit"
                 let half_w = (fb_width as u32) / 2;
                 let right_w = fb_width as u32 - half_w;
                 let eyes = [
-                    (left_cam, functor_runtime_common::Viewport::with_offset(0, 0, half_w, fb_height as u32)),
-                    (right_cam, functor_runtime_common::Viewport::with_offset(half_w, 0, right_w, fb_height as u32)),
+                    (
+                        left_cam,
+                        functor_runtime_common::Viewport::with_offset(
+                            0,
+                            0,
+                            half_w,
+                            fb_height as u32,
+                        ),
+                    ),
+                    (
+                        right_cam,
+                        functor_runtime_common::Viewport::with_offset(
+                            half_w,
+                            0,
+                            right_w,
+                            fb_height as u32,
+                        ),
+                    ),
                 ];
                 for (camera, eye_viewport) in &eyes {
                     gl.disable(glow::SCISSOR_TEST);
@@ -1770,10 +1793,7 @@ Escape again to quit"
                         xform: cgmath::Matrix4::from_translation(cgmath::vec3(6.0, 0.0, 0.0)),
                     };
                 }
-                let frames = [
-                    (frame.clone(), time.clone()),
-                    (frame_b, time.clone()),
-                ];
+                let frames = [(frame.clone(), time.clone()), (frame_b, time.clone())];
                 functor_runtime_common::render_composited_frames(
                     &gl,
                     shader_version,
@@ -2149,7 +2169,10 @@ mod tests {
             map[&18][0],
             RecordedInput::Key { code, is_down: true } if code == InputKey::Up as i32
         ));
-        assert!(matches!(map[&71][0], RecordedInput::Key { is_down: false, .. }));
+        assert!(matches!(
+            map[&71][0],
+            RecordedInput::Key { is_down: false, .. }
+        ));
     }
 
     #[test]

@@ -59,6 +59,21 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   selected frame and recorded future both remain seekable. Resume is still the
   explicit branch point that discards that future, while the slider keeps its
   prior visual span as the new branch fills it.
+  **Extrapolation is the deliberate exception for input-only model games:**
+  after a safe reload at a scrubbed historical frame, it replays the
+  session-long plain-data input and exact frame-clock logs from the edited
+  program's `init` through the newest retained frame once. Inputs and `dts`/`tts`
+  stay available from frame zero even after
+  the larger 900-frame model/world rings prune their oldest snapshots. The selected counterfactual model
+  becomes the visible anchor and Resume branch; every later scrub is then an
+  ordinary O(1) snapshot restore, and extrapolation projects from new-code
+  history only. The reload status reports the rebuilt frame count and elapsed
+  time; a broken replay-origin invariant reports a diagnostic instead of
+  silently falling back to old-data semantics. Derived state from the old program (for example Mario's
+  already-launched vertical velocity) therefore cannot pull the edited
+  trajectory back toward the recorded failure. Games with `update` or physics
+  keep the selected-snapshot behavior; exact
+  reconstruction there needs the fuller T7–T8 event/coeffect log.
   "Rewind shows the earlier *code* version" (the harder frontier
   where code-bearing snapshots retain or replay old code) remains deferred.
 - **`tts` is a game clock, not a wall clock.** Both shells own a shared
@@ -318,7 +333,15 @@ Two implementation points decide whether it looks right:
 - **Replay recorded inputs, freeze the camera.** Forward-stepping replays the
   frame-indexed input log (see "The event log") for frames it has, then coasts;
   all divisions render with the *paused* camera so only world motion smears, not
-  the view.
+  the view. After a safe hot reload, an input-only model game with complete
+  retained history first replays from the edited program's `init` to rebuild the
+  complete retained timeline and adopt the selected frame; otherwise that
+  snapshot can carry old derived state into every future sample even though the
+  future loop itself is recomputed. Reconstruction is exact: a recorded key-up
+  still lands on its original frame, so a character may stop over a gap under
+  every edited constant. Pressing Resume branches at the selected frame and
+  discards those future inputs. An optional **coast from here** / replay-cutoff
+  control is deferred so authors can preview that branch without first resuming.
 
 The "tweak a constant" half rides existing hot-reload: swap the `.fun` with the
 model preserved, re-run the window, the ghost redraws — so you can tweak a jump
@@ -363,6 +386,17 @@ log cannot supply; it must never silently fall back to performing the live
 effect. Replaying literally from frame zero additionally requires retaining the
 initial model/code revision and all environmental inputs, so keyframe-based
 reconstruction is the incremental first step.
+
+Today a safe scrubbed reload irreversibly replaces the retained old-code model
+snapshots with the reconstructed timeline. That matches Resume's existing
+"discard the future" philosophy, but it also removes the old outcome an author
+might want beside the new one; T5 persistent forks are the intended comparison
+and retention mechanism.
+
+Reconstruction currently interprets the session log synchronously, so its time
+is O(session frames); the reload status exposes the measured frame count and
+elapsed time. Chunking/yielding long replays off the browser's interaction turn
+is a follow-up once real-session telemetry shows the appropriate threshold.
 
 The functional core should expose branch/event-log transitions as pure data and
 tests; shells own persistence, actual effect execution, branch selection, and
