@@ -18,7 +18,8 @@ network reload, controller input, asymmetric-frustum projection.
 The APK boots an embedded scene (`src/boot.fun`) and listens on **device
 loopback** for pushed source — `POST /reload-source`, the same endpoint the
 desktop debug server exposes. The dev PC reaches it over USB (loopback-only
-binding means nothing on the LAN can push code to the headset):
+binding keeps the LAN out; note another app ON the device could reach
+loopback — an accepted dev-tool tradeoff):
 
 ```sh
 adb forward tcp:8123 tcp:8123
