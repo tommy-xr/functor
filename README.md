@@ -34,9 +34,17 @@ No install needed:
 
 ## Quick start
 
-**Download a prebuilt binary** — no toolchain needed. Grab the archive for your
-platform from the [releases page](https://github.com/tommy-xr/functor/releases),
-extract it to get the single `functor` binary, and put it somewhere on your `PATH`:
+**Install a prebuilt binary** — no toolchain needed. On macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tommy-xr/functor/main/install.sh | sh
+```
+
+This downloads the right binary for your platform into `~/.functor/bin` and prints
+the line to add it to your `PATH`. (Windows, or prefer to grab it by hand? Download
+the archive for your platform from the
+[releases page](https://github.com/tommy-xr/functor/releases) and extract the
+single `functor` binary:)
 
 | Platform | Asset |
 | --- | --- |
