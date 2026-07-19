@@ -5,6 +5,7 @@ const {
   assetTargetFor,
   pickAsset,
   downloadedCliPath,
+  commandVersion,
   commandWorks,
 } = require("./cli-download");
 
@@ -58,4 +59,9 @@ test("downloadedCliPath differs only in the exe suffix", () => {
 test("commandWorks: real spawn success and failure", async () => {
   assert.strictEqual(await commandWorks(process.execPath), true); // node --version
   assert.strictEqual(await commandWorks("functor-definitely-not-installed-xyz"), false);
+});
+
+test("commandVersion returns the first --version line, null when unrunnable", async () => {
+  assert.strictEqual(await commandVersion(process.execPath), process.version);
+  assert.strictEqual(await commandVersion("functor-definitely-not-installed-xyz"), null);
 });

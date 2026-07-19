@@ -45,6 +45,20 @@ let previewProjectDir;
 // The extension's global-storage dir (set in activate) — where a
 // downloaded-on-demand functor CLI is installed (see resolveFunctorCli).
 let globalStorageDir;
+// The "$(zap) functor" status bar item; its tooltip lists the extension,
+// language server, and functor CLI versions as they become known.
+let versionStatus;
+const versionInfo = { extension: "", server: "starting…", cli: null };
+function renderVersionStatus() {
+  if (!versionStatus) return;
+  const md = new vscode.MarkdownString();
+  md.appendMarkdown(`**functor** extension v${versionInfo.extension}\n\n`);
+  md.appendMarkdown(`- language server: ${versionInfo.server}\n`);
+  md.appendMarkdown(
+    `- functor CLI: ${versionInfo.cli || "not found — the live preview offers a download"}\n`
+  );
+  versionStatus.tooltip = md;
+}
 
 // Where `functor run wasm` serves the game — fixed by the CLI's dev server.
 const PREVIEW_URL = "http://127.0.0.1:8080";
@@ -70,6 +84,14 @@ function activate(context) {
   channel = vscode.window.createOutputChannel("Functor Lang");
   context.subscriptions.push(channel);
   elog("extension activated");
+  versionStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  versionStatus.text = "$(zap) functor";
+  versionInfo.extension = context.extension.packageJSON.version;
+  renderVersionStatus();
+  versionStatus.show();
+  context.subscriptions.push(versionStatus);
+  // Fills in the CLI line of the tooltip in the background.
+  probeCliVersion();
   // Setting > bundled platform binary > PATH; stdio is the
   // vscode-languageclient default.
   const serverCommand = resolveServerCommand(
@@ -119,6 +141,11 @@ function activate(context) {
   clientStarted = client.start().then(
     () => {
       elog("language server started (functor-lang-lsp)");
+      const si = client.initializeResult && client.initializeResult.serverInfo;
+      versionInfo.server = si
+        ? `${si.name}${si.version ? ` v${si.version}` : ""}`
+        : "running (no serverInfo)";
+      renderVersionStatus();
       client.onNotification(inspector.COVERAGE, (params) => {
         const grouped = inspector.groupCoverage(params);
         if (!grouped) return;
@@ -128,7 +155,11 @@ function activate(context) {
         vscode.window.visibleTextEditors.forEach(paintCoverage);
       });
     },
-    (e) => elog(`language server FAILED to start: ${e && e.message ? e.message : e}`)
+    (e) => {
+      elog(`language server FAILED to start: ${e && e.message ? e.message : e}`);
+      versionInfo.server = "failed to start (see the Functor Lang output)";
+      renderVersionStatus();
+    }
   );
 
   context.subscriptions.push(
@@ -258,6 +289,19 @@ function waitForServer(timeoutMs) {
   });
 }
 
+// Fill in the tooltip's CLI line: the configured/PATH binary, else a
+// previously downloaded copy. Runs in the background at activation.
+async function probeCliVersion() {
+  const configured =
+    vscode.workspace.getConfiguration("functor").get("functorPath") || "functor";
+  versionInfo.cli =
+    (await cliDownload.commandVersion(configured)) ||
+    (await cliDownload.commandVersion(
+      cliDownload.downloadedCliPath(globalStorageDir, process.platform)
+    ));
+  renderVersionStatus();
+}
+
 // Resolve the `functor` CLI the preview spawns: the functor.functorPath
 // setting (default: `functor` from PATH) → a previously downloaded copy in
 // global storage → offer to download the newest release's platform archive.
@@ -343,9 +387,12 @@ async function resolveFunctorCliUncached() {
         return bin;
       }
     );
-    if (!(await cliDownload.commandWorks(installed))) {
+    const installedVersion = await cliDownload.commandVersion(installed);
+    if (!installedVersion) {
       throw new Error("the downloaded binary did not run");
     }
+    versionInfo.cli = installedVersion;
+    renderVersionStatus();
     elog(`preview: downloaded functor v${asset.version} to ${installed}`);
     return installed;
   } catch (e) {

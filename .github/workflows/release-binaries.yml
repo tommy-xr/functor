@@ -179,6 +179,10 @@ jobs:
       # --version; the VSIX e2e path covers it.)
       - name: Build language server
         shell: bash
+        env:
+          # Baked into the LSP's initialize serverInfo.version (shown in the
+          # extension's status bar tooltip), like the CLI's --version.
+          FUNCTOR_RELEASE_VERSION: ${{ inputs.version }}
         run: |
           cargo build --bin functor-lang-lsp --release --target ${{ matrix.lsp_target }}
           # The musl build must actually be static — it has to run on any
