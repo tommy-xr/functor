@@ -42,6 +42,12 @@ Prefix every PR title with a Conventional Commits-style type, optionally followe
 `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `perf:`, `build:`, `ci:`, or `chore:`. For example,
 `fix: preserve the timeline across hot reloads` or `feat(web): add timeline event markers`.
 
+Open PRs as **drafts** (`gh pr create --draft`) and mark them ready (`gh pr ready <N>`) only
+once the PR is actually complete: verification re-run after any review fixes, review findings
+dispositioned in the body, and — for visual changes — the pr-visuals GIF/PNG embedded. Draft
+status is the signal that captures/review are still landing, so an in-flight PR doesn't get
+merged before its media and dispositions do.
+
 ## Architecture
 
 **The MVU loop (Elm-style).** A game is a set of top-level Functor Lang bindings the runner looks up by
