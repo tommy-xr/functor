@@ -7603,13 +7603,68 @@ a number",
         assert_eq!(fountain.position, Some([5.0, 0.5, 0.0]));
     }
 
+    /// A framed `Protocol.Move(vx, vz)` wire text, as the mp client sends it.
+    /// (`Protocol` is a non-entry sibling module, so its ctors carry the
+    /// qualified canonical tag.)
+    fn mp_move_frame(vx: f64, vz: f64) -> String {
+        encode_typed_msg(&EffectValue::Variant(
+            "Protocol.Move".into(),
+            vec![EffectValue::Number(vx), EffectValue::Number(vz)],
+        ))
+    }
+
+    /// A framed `Protocol.Snapshot(rows)` wire text, as the mp server
+    /// broadcasts it.
+    fn mp_snapshot_frame(rows: &[(f64, f64, f64)]) -> String {
+        encode_typed_msg(&EffectValue::Variant(
+            "Protocol.Snapshot".into(),
+            vec![EffectValue::List(
+                rows.iter()
+                    .map(|(pid, x, z)| {
+                        EffectValue::Record(vec![
+                            ("pid".into(), EffectValue::Number(*pid)),
+                            ("x".into(), EffectValue::Number(*x)),
+                            ("z".into(), EffectValue::Number(*z)),
+                        ])
+                    })
+                    .collect(),
+            )],
+        ))
+    }
+
+    /// Decode a broadcast payload back to (pid, x, z) rows — fails loud on
+    /// anything but a framed `Protocol.Snapshot`.
+    fn mp_decode_rows(payload: &[u8]) -> Vec<(f64, f64, f64)> {
+        let text = std::str::from_utf8(payload).expect("utf8 payload");
+        match decode_typed_msg(text).expect("a typed frame").expect("frame decodes") {
+            EffectValue::Variant(ctor, args) if ctor == "Protocol.Snapshot" => match &args[..] {
+                [EffectValue::List(rows)] => rows
+                    .iter()
+                    .map(|row| match row {
+                        EffectValue::Record(fields) => {
+                            let get = |name: &str| match fields.iter().find(|(k, _)| k == name) {
+                                Some((_, EffectValue::Number(v))) => *v,
+                                other => panic!("bad row field {name}: {other:?}"),
+                            };
+                            (get("pid"), get("x"), get("z"))
+                        }
+                        other => panic!("row is not a record: {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("Snapshot args: {other:?}"),
+            },
+            other => panic!("not a Protocol.Snapshot: {other:?}"),
+        }
+    }
+
     /// Headless server-lifecycle test for the `examples/mp` server entry,
     /// with no socket. Loads the SHIPPED `server.fun` so this tracks the
-    /// example, and exercises the whole server spine — `toMsg` decoding, the
-    /// join/move/left `update` logic, `wrapAxis` integration, the `Text.*` wire
-    /// encoding, and the broadcast-the-whole-world-to-every-client `Effect.send`
-    /// (the naive server's defining behavior), plus a malformed packet ignored
-    /// and a disconnect dropping a player.
+    /// example, and exercises the whole server spine — `toMsg` decoding typed
+    /// `Net.Data` packets, the join/move/left `update` logic, `wrapAxis`
+    /// integration, and the broadcast-the-whole-world-to-every-client
+    /// `Effect.sendMsg` (the naive server's defining behavior), plus a
+    /// plain-text packet ignored (the protocol is typed) and a disconnect
+    /// dropping a player.
     #[test]
     fn mp_server_broadcasts_the_world_to_every_client() {
         let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -7672,29 +7727,29 @@ a number",
         assert!(conns.len() == 1 && conns[0].listen && conns[0].key == "127.0.0.1:9001");
 
         // Two clients join (pid 0 on cid 1, pid 1 on cid 2), each sends a
-        // velocity, and a single-token packet from cid 1 is IGNORED (its
-        // velocity is not reset — a 2-token "vx vz" is the only valid form).
+        // typed Move, and a plain-TEXT packet from cid 1 is IGNORED (the
+        // protocol is the typed Wire ADT; its velocity is not reset).
         let mut model = session.global("init").unwrap();
         model = feed(&session, model, event(NetEventKind::Connected, 1, ""));
         model = feed(&session, model, event(NetEventKind::Connected, 2, ""));
-        model = feed(&session, model, event(NetEventKind::Message, 1, "1 0")); // pid 0: +x
-        model = feed(&session, model, event(NetEventKind::Message, 2, "0 1")); // pid 1: +z
+        model = feed(&session, model, event(NetEventKind::Message, 1, &mp_move_frame(1.0, 0.0))); // pid 0: +x
+        model = feed(&session, model, event(NetEventKind::Message, 2, &mp_move_frame(0.0, 1.0))); // pid 1: +z
         model = feed(&session, model, event(NetEventKind::Message, 1, "junk")); // ignored
 
-        // Tick (dt = 0.5). pid 0: x = -2 + 1·2·0.5 = -1.0, z = -1.8 -> "0,-100,-180".
-        // pid 1: x = -2.0, z = 0 + 1·2·0.5 = 1.0 -> "1,-200,100". pid 0 still
-        // moving proves the "junk" packet did NOT reset its velocity.
+        // Tick (dt = 0.5). pid 0: x = -2 + 1·2·0.5 = -1.0, z = -1.8.
+        // pid 1: x = -2.0, z = 0 + 1·2·0.5 = 1.0. pid 0 still moving proves
+        // the text packet did NOT reset its velocity. Full float precision —
+        // the typed wire has no *100 fixed-point rounding.
         let (model, sends) = broadcast(&session, model);
         // The WHOLE world goes to EVERY client — two identical full snapshots.
-        let snapshot = b"1,-200,100|0,-100,-180".to_vec();
+        let world = vec![(1.0, -2.0, 1.0), (0.0, -1.0, -1.8)];
         assert_eq!(sends.len(), 2, "one Send per client, got: {sends:?}");
         let mut recipients: Vec<u64> = sends.iter().map(|(c, _)| *c).collect();
         recipients.sort();
         assert_eq!(recipients, vec![1, 2], "broadcast reaches both clients");
-        assert!(
-            sends.iter().all(|(_, p)| *p == snapshot),
-            "every client receives the full world, got: {sends:?}"
-        );
+        for (_, payload) in &sends {
+            assert_eq!(mp_decode_rows(payload), world, "every client receives the full world");
+        }
 
         // Client 1 disconnects -> Left drops pid 0. The next tick broadcasts
         // only pid 1, and only to the client that is still connected (cid 2).
@@ -7702,19 +7757,20 @@ a number",
         let (_, sends) = broadcast(&session, model);
         assert_eq!(sends.len(), 1, "only the remaining client is served: {sends:?}");
         assert_eq!(sends[0].0, 2);
+        let rows = mp_decode_rows(&sends[0].1);
         assert!(
-            sends[0].1.starts_with(b"1,"),
-            "snapshot no longer contains pid 0, got: {:?}",
-            String::from_utf8_lossy(&sends[0].1)
+            rows.len() == 1 && rows[0].0 == 1.0,
+            "snapshot no longer contains pid 0, got: {rows:?}"
         );
     }
 
     /// Headless client-lifecycle test for the `examples/mp` client entry,
     /// with no socket. Loads the SHIPPED `client.fun` (and its Protocol/View
-    /// siblings) and drives connect (auto-move sent), a snapshot decoded into
-    /// the world, WASD `input` producing sends, and a disconnect. The snapshot
-    /// fed in is the exact wire string the server entry broadcasts, so this
-    /// doubles as a wire round-trip check between the two roles.
+    /// siblings) and drives connect (typed auto-move sent), a typed Snapshot
+    /// landing in the world, WASD `input` producing typed Move sends, and a
+    /// disconnect. The snapshot fed in is the exact frame the server entry
+    /// broadcasts (same builder), so this doubles as a wire round-trip check
+    /// between the two roles.
     #[test]
     fn mp_client_decodes_snapshots_and_sends_input() {
         let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -7783,24 +7839,24 @@ a number",
         let conns = net_conn_subs(&subs).expect("a Sub tree");
         assert!(!conns[0].listen && conns[0].key == "ws://127.0.0.1:9001/play");
 
-        // The socket opens (id 5): store it and auto-move +x (Effect.send "1 0").
+        // The socket opens (id 5): store it and auto-move +x (a typed Move).
         let connected = call(&session, "toMsg", vec![event(NetEventKind::Connected, 5, "")]);
         let joined = call(&session, "update", vec![session.global("init").unwrap(), connected]);
         let (model, _) = split_model_effect(joined.clone());
         assert_eq!(field(&model, "conn").to_string(), "Online(5)");
         assert_eq!(field(&model, "status").to_string(), "\"connected\"");
-        assert_eq!(sends_of(&session, joined), vec![(5, b"1 0".to_vec())]);
+        assert_eq!(sends_of(&session, joined), vec![(5, mp_move_frame(1.0, 0.0).into_bytes())]);
 
         // WASD `input` (the trickiest hook: nested match, mixed bare/tuple arms)
-        // sends the mapped velocity on keydown, a stop on keyup, and NOTHING for
-        // a non-WASD key or before the socket opens.
+        // sends the mapped typed Move on keydown, a stop on keyup, and NOTHING
+        // for a non-WASD key or before the socket opens.
         assert_eq!(
             sends_of(&session, call(&session, "input", vec![model.clone(), key("W"), Value::Bool(true)])),
-            vec![(5, b"0 1".to_vec())]
+            vec![(5, mp_move_frame(0.0, 1.0).into_bytes())]
         );
         assert_eq!(
             sends_of(&session, call(&session, "input", vec![model.clone(), key("A"), Value::Bool(true)])),
-            vec![(5, b"-1 0".to_vec())]
+            vec![(5, mp_move_frame(-1.0, 0.0).into_bytes())]
         );
         assert!(
             sends_of(&session, call(&session, "input", vec![model.clone(), key("X"), Value::Bool(true)])).is_empty(),
@@ -7808,7 +7864,7 @@ a number",
         );
         assert_eq!(
             sends_of(&session, call(&session, "input", vec![model.clone(), key("W"), Value::Bool(false)])),
-            vec![(5, b"0 0".to_vec())],
+            vec![(5, mp_move_frame(0.0, 0.0).into_bytes())],
             "key release sends a stop"
         );
         assert!(
@@ -7816,9 +7872,13 @@ a number",
             "input before connect sends nothing"
         );
 
-        // A server snapshot (the exact wire string server.fun broadcasts)
-        // decodes into the world, binding each pid to its own coordinates.
-        let msg = call(&session, "toMsg", vec![event(NetEventKind::Message, 5, "1,-200,100|0,-100,-180")]);
+        // A server snapshot (the exact frame server.fun broadcasts) lands in
+        // the world, binding each pid to its own coordinates.
+        let msg = call(&session, "toMsg", vec![event(
+            NetEventKind::Message,
+            5,
+            &mp_snapshot_frame(&[(1.0, -2.0, 1.0), (0.0, -1.0, -1.8)]),
+        )]);
         let (model, _) = split_model_effect(call(&session, "update", vec![model, msg]));
         assert_eq!(field(&model, "status").to_string(), "\"in-world\"");
         let world = match field(&model, "world") {
@@ -7833,7 +7893,8 @@ a number",
                 .unwrap_or_else(|| panic!("no player pid {pid}"));
             (num(field(p, "x")), num(field(p, "z")))
         };
-        // *100 fixed-point undone, per-pid (a swapped decoder would fail here).
+        // Per-pid coordinates, full float precision (a swapped field order
+        // would fail here).
         assert_eq!(at(0.0), (-1.0, -1.8));
         assert_eq!(at(1.0), (-2.0, 1.0));
 
