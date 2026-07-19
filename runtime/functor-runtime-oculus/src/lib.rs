@@ -448,6 +448,12 @@ pub fn android_main(app: AndroidApp) {
     // (session READY), and the session can pause — the first frame after
     // either must not hand the game a giant dts.
     let mut last_tts: Option<f32> = None;
+    // Freeze the game clock across session pauses (headset off, system
+    // menu): paused wall-clock must not enter `tts`, or the first resumed
+    // frame hands the game the whole gap as `dts` and fires subscriptions
+    // over it in one burst.
+    let mut paused_offset = std::time::Duration::ZERO;
+    let mut paused_at: Option<std::time::Instant> = None;
     let mut session_running = false;
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
@@ -490,10 +496,17 @@ pub fn android_main(app: AndroidApp) {
                                 .begin(xr::ViewConfigurationType::PRIMARY_STEREO)
                                 .expect("session begin");
                             session_running = true;
+                            if let Some(paused) = paused_at.take() {
+                                paused_offset += paused.elapsed();
+                            }
                         }
                         xr::SessionState::STOPPING => {
                             session.end().expect("session end");
                             session_running = false;
+                            paused_at = Some(std::time::Instant::now());
+                            // Belt-and-braces with the frozen clock: the
+                            // first resumed frame gets dts = 0.
+                            last_tts = None;
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
                             quit = true;
@@ -533,9 +546,9 @@ pub fn android_main(app: AndroidApp) {
             )
             .expect("locate views");
 
-        // Frame time from wall clock for now; the Functor Lang producer step will own
-        // this the way the desktop loop does.
-        let tts = start.elapsed().as_secs_f32();
+        // Frame time from the pause-frozen wall clock; fixed-timestep
+        // sub-frames (the desktop GameClock pattern) are a follow-up.
+        let tts = start.elapsed().saturating_sub(paused_offset).as_secs_f32();
         let frame_time = FrameTime {
             dts: last_tts.map_or(0.0, |last| tts - last),
             tts,
@@ -548,9 +561,11 @@ pub fn android_main(app: AndroidApp) {
         game.check_hot_reload(frame_time.clone());
         game.tick(frame_time.clone());
         let frame = game.render(frame_time.clone());
-        // No audio/HTTP/preload hosts on device yet (M1): drain the command
-        // queues so they don't grow unbounded. Games using those effects run;
-        // the effects just don't produce sound/replies here yet.
+        // No audio/HTTP/preload/asset hosts on device yet (M1): drain the
+        // command queues so they don't grow unbounded (and
+        // `push_asset_progress` is deliberately never fed — `Sub.assets`
+        // stays quiet). Games using those effects run; the effects just
+        // don't produce sound/replies here yet.
         let _ = game.audio_drain_commands();
         let _ = game.net_drain_commands();
         let _ = game.net_drain_conn_commands();
