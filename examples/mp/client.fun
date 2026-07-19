@@ -26,6 +26,8 @@ let toMsg = (ev: Net.NetEvent): Msg =>
   match ev with
   | Net.Connected(id) => Joined(id)
   | Net.Message(_, text) => Snapshot(text)
+  // The mp wire is the string snapshot; typed payloads are not part of it.
+  | Net.Data(_, _) => ConnErr("unexpected typed message")
   | Net.Disconnected(_) => Dropped
   | Net.Error(_, message) => ConnErr(message)
 

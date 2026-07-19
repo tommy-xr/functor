@@ -208,9 +208,21 @@ let grab = (s) =>
   manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
   | Connected(id: float) | Message(id: float, text: string) |
-  Disconnected(id: float) | Error(id: float, text: string)`. A `Sub.connect`/
+  Data(id: float, value: NetData) | Disconnected(id: float) |
+  Error(id: float, text: string)`. A `Sub.connect`/
   `Sub.listen` tagger receives these — `match ev with | Net.Connected(id)
-  => …` — with no declaration needed.
+  => …` — with no declaration needed. `Data` carries an `Effect.sendMsg`
+  payload decoded back into a plain-data value; its field type `NetData` is
+  deliberately UNDECLARED (the gradual `Unknown` seam), so the bound value
+  matches directly against whatever ADT the two ends share — declare the
+  protocol ADT once in a shared sibling module and match its ctors
+  (`match w with | Tproto.Ping(n) => …`). A corrupt/version-skewed typed
+  frame arrives as `Net.Error`, never as garbled `Message` text. Ctors
+  match by CANONICAL tag (module prefix included) — the same ADT declared
+  separately on each end, or entry-declared on one side, tags differently
+  and falls through the peer's catch-all silently: share ONE module.
+  Non-finite numbers (NaN/Infinity) in a payload are teaching errors at
+  the `sendMsg` call site (JSON cannot carry them).
 - **`Key` is a built-in module**: `Key.t`, the variant the `input` hook's
   `key` parameter carries — `Key.A`..`Key.Z`, `Key.Up`/`Down`/`Left`/`Right`,
   `Key.Space`/`Enter`/`Escape`, and the digit row as `Key.Num0`..`Key.Num9`
@@ -593,6 +605,12 @@ Sub.assets(tagger)                                         // asset-loading prog
 Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (float) => Msg
 Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connections; tagger: (Net.NetEvent) => Msg
 Effect.send(connId, text)                                  // send on an open connection
+Effect.sendMsg(connId, msg)                                // send a plain-data VALUE (usually a
+                                                           //   shared-module ADT variant); the
+                                                           //   other end receives it decoded as
+                                                           //   Net.Data(id, value) — no string
+                                                           //   codec. Functions/host values in
+                                                           //   the payload are teaching errors
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
 
 Effect.preload(asset)                                      // warm the asset cache ahead of

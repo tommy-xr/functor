@@ -26,6 +26,9 @@ let update = (m: Model, msg: Msg) =>
      | Net.Connected(id) =>
          ({ m with conn: Conn(id), status: "connected" }, Effect.send(id, "hello"))
      | Net.Message(id, text) => { m with lastMsg: text, status: "got-message" }
+     // This demo speaks plain text; a typed payload (Effect.sendMsg) is not
+     // part of its protocol.
+     | Net.Data(id, _) => { m with lastMsg: "<typed message>", status: "got-message" }
      | Net.Disconnected(id) => { m with conn: NoConn, status: "disconnected" }
      | Net.Error(id, e) => { m with status: Text.concat("error: ", e) })
   | Send(text) =>
