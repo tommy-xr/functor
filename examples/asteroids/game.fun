@@ -14,8 +14,6 @@
 // The playfield is the XZ plane (Y-up, camera overhead); positions wrap
 // at the field edges like the arcade original.
 
-open Lib
-
 // ---------- tuning ----------
 let worldX = 21.0        // half-extent of the playfield in x
 let worldZ = 15.0        // half-extent in z
@@ -137,7 +135,7 @@ let bulletHitsRock = (a, b) =>
 let assignHits = (bullets, rocks) =>
   rocks |> List.fold((acc, a) =>
     let (bs, kept, struck) = acc in
-    (match bs |> Lib.any((b) => bulletHitsRock(a, b)) with
+    (match bs |> List.any((b) => bulletHitsRock(a, b)) with
      | true => (Lib.removeFirst((b) => bulletHitsRock(a, b), bs), kept, [a, ..struck])
      | false => (bs, [a, ..kept], struck)),
     (bullets, [], []))
@@ -205,10 +203,10 @@ let setHeld = (held, key, isDown) =>
   | _ => held
 
 let startPressed = (key, isDown) =>
-  Lib.and(isDown, Lib.or(key == Key.Enter, key == Key.Space))
+  isDown && (key == Key.Enter || key == Key.Space)
 
 let restartPressed = (key, isDown) =>
-  Lib.and(isDown, Lib.or(key == Key.Enter, key == Key.R))
+  isDown && (key == Key.Enter || key == Key.R)
 
 // Spawn a bullet at the ship's nose, inheriting the ship's velocity.
 let fire = (model) =>
@@ -243,7 +241,7 @@ let input = (model, key, isDown) =>
   | _ =>
     (match restartPressed(key, isDown) with
      | true => (model, Effect.random(Seeded))
-     | false => (match Lib.and(key == Key.M, isDown) with
+     | false => (match key == Key.M && isDown with
                  | true => { model with phase: Menu }
                  | false => model))
 
@@ -256,7 +254,7 @@ let stepShip = (ship, held, dt) =>
   let heading = ship.heading + axis(held.left, held.right) * turnSpeed * dt in
   let acc = (match held.thrust with | true => thrustAccel | false => 0.0) in
   // Floored at 0 so a pathological frame (dt > 2s) can't reverse velocity.
-  let keep = Lib.floorAt(0.0, 1.0 - drag * dt) in
+  let keep = Math.max(0.0, 1.0 - drag * dt) in
   let vx = (ship.vel.x + Math.sin(heading) * acc * dt) * keep in
   let vz = (ship.vel.z + Math.cos(heading) * acc * dt) * keep in
   { pos: { x: wrap(ship.pos.x + vx * dt, worldX),
@@ -285,15 +283,15 @@ let tickPlaying = (model, dt, tts) =>
   let movedA = moveRocks(model.asteroids, dt) in
   let hits = assignHits(movedB, movedA) in
   let (keptB, kept, struck) = hits in
-  let rocks = Lib.append(kept, struck |> List.map(splitRock) |> Lib.flatten) in
+  let rocks = kept |> List.append(struck |> List.map(splitRock) |> List.flatten) in
   let gained = struck |> List.fold((acc, a) => acc + pointsFor(a.size), 0.0) in
   let anyKill = (match struck with | [] => false | _ => true) in
   let killFx = (match anyKill with
                 | true => [Effect.play(Assets.explosion)]
                 | false => []) in
-  let shield = Lib.floorAt(0.0, model.shield - dt) in
-  let shipHit = Lib.and(shield == 0.0,
-                        rocks |> Lib.any((a) => rockHitsShip(ship, a))) in
+  let shield = Math.max(0.0, model.shield - dt) in
+  let shipHit = shield == 0.0
+                && (rocks |> List.any((a) => rockHitsShip(ship, a))) in
   let base = { model with
                  ship: ship,
                  bullets: keptB,
@@ -305,9 +303,9 @@ let tickPlaying = (model, dt, tts) =>
     (let lives = model.lives - 1.0 in
      match lives < 1.0 with
      | true => ({ base with lives: 0.0, phase: Lost },
-                fxOf(Lib.append(killFx, [Effect.play(Assets.ship_explosion)])))
+                fxOf(killFx |> List.append([Effect.play(Assets.ship_explosion)])))
      | false => ({ base with lives: lives, ship: newShip, shield: respawnShield },
-                 fxOf(Lib.append(killFx, [Effect.play(Assets.ship_explosion)]))))
+                 fxOf(killFx |> List.append([Effect.play(Assets.ship_explosion)]))))
   | false =>
     (match rocks with
      | [] =>
@@ -316,7 +314,7 @@ let tickPlaying = (model, dt, tts) =>
           (let (_, nextSeed) = Random.step(model.seed) in
            ({ base with wave: model.wave + 1.0,
                         seed: nextSeed,
-                        shield: Lib.floorAt(1.5, shield),
+                        shield: Math.max(1.5, shield),
                         asteroids: spawnWave(nextSeed, waveRocks(model.wave + 1.0)) },
             fxOf(killFx)))
         | false => ({ base with phase: Won }, fxOf(killFx)))
@@ -382,7 +380,7 @@ let shipBody = (thrusting) =>
                   |> Scene.translate(Vec3.make(0.0, 0.0, 0.0 - 0.85))
                   |> Scene.emissive(Color.rgb(1.0, 0.55, 0.1))]
      | false => []) in
-  Scene.group(Lib.append([
+  Scene.group([
     // Kenney crafts model nose-toward--Z; flip to face our +Z forward.
     // The glb's craft_racer node carries a baked [2, 0, 1.5] placement
     // translation (kit-scene leftover) — counter it first or the body
@@ -391,15 +389,15 @@ let shipBody = (thrusting) =>
       |> Scene.translate(Vec3.make(0.0 - 2.0, 0.0, 0.0 - 1.5))
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.scale(1.5),
-  ], flame))
+  ] |> List.append(flame))
 
 // Hidden entirely on Menu/Lost; blinks while the respawn shield runs.
 let shipScenes = (model, tts) =>
-  let visible = Lib.or(model.shield < 0.001, Math.sin(tts * 18.0) > 0.0) in
+  let visible = model.shield < 0.001 || Math.sin(tts * 18.0) > 0.0 in
   match visible with
   | false => []
   | true =>
-    [shipBody(Lib.and(model.held.thrust, model.phase == Playing))
+    [shipBody(model.held.thrust && model.phase == Playing)
        |> Scene.rotateY(Angle.radians(model.ship.heading))
        |> Scene.translate(Vec3.make(model.ship.pos.x, 0.0, model.ship.pos.z))]
 
@@ -452,10 +450,9 @@ let draw = (model, tts) =>
                  Scene.group(titleScenes(model, tts))]),
     [Light.ambient(Color.rgb(0.3, 0.3, 0.38)),
      Light.directional(Vec3.make(-0.45, -1.0, -0.3), Color.rgb(1.0, 0.97, 0.9), 1.1)])
-    // Distance fog starting past the whole scene: nothing in play is
-    // fogged, but the pass's clear color becomes deep space (there is no
-    // Frame.clearColor — see the findings log).
-    |> Frame.withFog(Fog.linear(80.0, 160.0, Color.rgb(0.01, 0.012, 0.035)))
+    // Deep-space background. Nothing in play needs fog blending, so this is
+    // a plain clear color rather than a distant-fog trick.
+    |> Frame.withClearColor(Color.rgb(0.01, 0.012, 0.035))
 
 // ---------- sound ----------
 // One-shots (laser/explosions) fire as Effects above; the thrust loop is
