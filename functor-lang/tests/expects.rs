@@ -159,6 +159,135 @@ fn sibling_module_expects_run_with_the_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ------------------------------------------------------------- step budget
+
+fn budgeted(src: &str, budget: u64) -> Vec<functor_lang::ExpectReport> {
+    functor_lang::run_expects_budgeted(&lower(src), &mut NoHost, Some(budget))
+        .unwrap_or_else(|failure| panic!("defs should load: {}", failure.error.message))
+}
+
+#[test]
+fn runaway_expect_exceeds_the_budget() {
+    let src = "let sum = (n) => List.range(n) |> List.fold((acc, x) => acc + x, 0.0)\n\
+               expect sum(10000.0) == 0.0\n";
+    let out = budgeted(src, 1_000);
+    let ExpectOutcome::Error(err) = &out[0].outcome else {
+        panic!("expected a budget error");
+    };
+    assert!(
+        err.message.contains("step budget (1000 steps)"),
+        "unexpected message: {}",
+        err.message
+    );
+}
+
+#[test]
+fn list_range_allocation_is_charged() {
+    // No per-element evals happen in List.range — the bulk charge must
+    // trip the budget anyway.
+    let out = budgeted("expect List.length(List.range(1000000.0)) > 0.0\n", 10_000);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+}
+
+#[test]
+fn budget_resets_per_expect() {
+    // Each expect fits the budget alone; together they'd exceed it. All
+    // must pass — the budget is per-expect, not per-run.
+    let src = "let sum = (n) => List.range(n) |> List.fold((acc, x) => acc + x, 0.0)\n\
+               expect sum(100.0) == 4950.0\n\
+               expect sum(100.0) == 4950.0\n\
+               expect sum(100.0) == 4950.0\n";
+    let out = budgeted(src, 3_000);
+    assert!(out.iter().all(|r| matches!(r.outcome, ExpectOutcome::Pass)));
+}
+
+#[test]
+fn a_budget_error_never_stops_the_remaining_expects() {
+    let src = "let sum = (n) => List.range(n) |> List.fold((acc, x) => acc + x, 0.0)\n\
+               expect sum(10000.0) == 0.0\n\
+               expect 1.0 == 1.0\n";
+    let out = budgeted(src, 500);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+    assert!(matches!(out[1].outcome, ExpectOutcome::Pass));
+}
+
+#[test]
+fn call_charging_trips_without_any_range_in_the_expect() {
+    // The def load's small range fits the budget; the expect's nested folds
+    // are pure closure CALLS (no bulk allocation) and must trip it — pinning
+    // that calls, not just List.range, are charged.
+    let src = "let xs = List.range(10.0)\n\
+               expect (xs |> List.fold((a, x) => a + (xs |> List.fold((b, y) => b + y, 0.0)), 0.0)) == 450.0\n";
+    let out = budgeted(src, 60);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+    // Sanity: the same program passes unbudgeted.
+    let ok = reports(src);
+    assert!(matches!(ok[0].outcome, ExpectOutcome::Pass));
+}
+
+#[test]
+fn append_doubling_cannot_amplify_past_the_budget() {
+    // The review probe: each d(x) doubles the list for O(1) calls, so a
+    // per-call-only budget would permit exponential work (26 nestings =
+    // 134M elements, seconds of wall-clock). The output-size charge on
+    // List.append must trip the budget instead — and fast.
+    // 13 doublings of a 2-element list: cumulative append output charges
+    // sum to ~32k, well past the 10k budget, while the CALL count stays a
+    // trivial ~15 — only the output-size charge can trip this.
+    let src = "let d = (x) => List.append(x, x)\n\
+               expect (\n\
+                 let a = d(d(d(d(List.range(2.0))))) in\n\
+                 let b = d(d(d(d(a)))) in\n\
+                 let c = d(d(d(d(d(b))))) in\n\
+                 List.length(c) == 0.0\n\
+               )\n";
+    let out = budgeted(src, 10_000);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+}
+
+#[test]
+fn text_join_doubling_cannot_amplify_past_the_budget() {
+    // The string flavor of the same amplifier: join("", [s, s]) doubles s.
+    let src = "let d = (s) => Text.join(\"\", [s, s])\n\
+               expect d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(\"ab\"\
+)))))))))))))))))))))))))) == \"\"\n";
+    let out = budgeted(src, 10_000);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+}
+
+#[test]
+fn structural_equality_is_charged_by_size() {
+    // A single `==` on a large value is O(size) work no call charge sees:
+    // comparing a 500-element list 50 times is ~25k comparison nodes on a
+    // trivial call count, so only the equality charge can trip this.
+    let src = "let xs = List.range(500.0)\n\
+               let f = (x) => if xs == xs then 1.0 else 0.0\n\
+               expect (List.range(50.0) |> List.map(f) |> List.length) == 0.0\n";
+    let out = budgeted(src, 5_000);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+}
+
+#[test]
+fn def_load_is_budgeted_too() {
+    let src = "let table = List.range(100000.0)\nexpect 1.0 == 1.0\n";
+    let failure = functor_lang::run_expects_budgeted(&lower(src), &mut NoHost, Some(1_000))
+        .err()
+        .expect("def load should exceed the budget");
+    assert!(
+        failure.error.message.contains("step budget"),
+        "unexpected message: {}",
+        failure.error.message
+    );
+}
+
+#[test]
+fn unbudgeted_run_expects_is_unbounded() {
+    let src = "let sum = (n) => List.range(n) |> List.fold((acc, x) => acc + x, 0.0)\n\
+               expect sum(10000.0) == 49995000.0\n";
+    let out = reports(src);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+}
+
 // ---------------------------------------------------- inert in the game loop
 
 #[test]

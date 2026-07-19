@@ -31,7 +31,8 @@ pub mod types;
 pub mod value;
 
 pub use eval::{
-    render_trace, run, run_expects, run_with_host, ExpectOutcome, ExpectReport, FailedCompare,
+    render_trace, run, run_expects, run_expects_budgeted, run_with_host, ExpectOutcome,
+    ExpectReport, FailedCompare,
     Host, NoHost, RecordedBinding, RecordedInvocation, RecordedKind, RecordedSite, RunFailure,
     RunOutcome, RunRecord, Session, Tracing,
 };
