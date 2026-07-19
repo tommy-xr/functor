@@ -81,6 +81,11 @@ pub enum RecordedInput {
     /// [`crate::ui::UiEvent`]). Replay rebuilds the frame's handler table from
     /// `ui(model)` and re-delivers, so UI-driven model changes replay too.
     UiEvent(crate::ui::UiEvent),
+    /// An interaction on a webview element (`Attr.onClick` / `Attr.onInput`).
+    /// Same event shape as [`RecordedInput::UiEvent`], but its OWN variant:
+    /// slots address the `webview(model)` handler table, so replay must
+    /// rebuild and resolve against that table — not the `ui` one.
+    WebviewEvent(crate::ui::UiEvent),
 }
 
 impl Key {

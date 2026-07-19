@@ -558,10 +558,17 @@ impl FrameCtx<'_> {
                     let ui_handlers = events
                         .iter()
                         .any(|e| matches!(e, RecordedInput::UiEvent(_)))
-                        .then(|| self.eval_ui_handlers())
+                        .then(|| self.eval_handler_table("ui"))
+                        .unwrap_or_default();
+                    // Webview events carry their OWN table: same step-top
+                    // rebuild, from `webview(model)` instead of `ui(model)`.
+                    let webview_handlers = events
+                        .iter()
+                        .any(|e| matches!(e, RecordedInput::WebviewEvent(_)))
+                        .then(|| self.eval_handler_table("webview"))
                         .unwrap_or_default();
                     for event in events {
-                        self.replay_input(event.clone(), &ui_handlers);
+                        self.replay_input(event.clone(), &ui_handlers, &webview_handlers);
                     }
                 }
                 let frame_time = FrameTime {
@@ -585,21 +592,21 @@ impl FrameCtx<'_> {
         out
     }
 
-    /// Evaluate `ui(model)` for its HANDLER TABLE only (the view is discarded)
-    /// — how the replay path reconstructs the table a recorded frame's
-    /// `UiEvent`s resolved against. A failed evaluation reports (silenced under
-    /// the dry-run reporter) and yields an empty table, so the events drop as
-    /// unknown slots.
-    fn eval_ui_handlers(&mut self) -> Vec<UiHandler> {
+    /// Evaluate `entry(model)` (`"ui"` or `"webview"`) for its HANDLER TABLE
+    /// only (the view/tree is discarded) — how the replay path reconstructs
+    /// the table a recorded frame's events resolved against. A failed
+    /// evaluation reports (silenced under the dry-run reporter) and yields an
+    /// empty table, so the events drop as unknown slots.
+    fn eval_handler_table(&mut self, entry: &'static str) -> Vec<UiHandler> {
         match self
             .session
-            .call("ui", vec![self.model.clone()], &mut FunctorHost)
+            .call(entry, vec![self.model.clone()], &mut FunctorHost)
         {
             Ok(_) => take_ui_handlers(),
             Err(err) => {
                 // A failed evaluation must not leak a partial table.
                 let _ = take_ui_handlers();
-                self.reporter.frame_error("ui", &err);
+                self.reporter.frame_error(entry, &err);
                 Vec::new()
             }
         }
@@ -613,9 +620,15 @@ impl FrameCtx<'_> {
     /// as the live path does; an unknown code is dropped, like live. An entry
     /// point the game doesn't define resolves to an interpreter error, reported
     /// (and silenced) through the dry-run reporter. A `UiEvent` resolves against
-    /// `ui_handlers` — the step-top table the caller rebuilt (the live frame's
-    /// last-render contract).
-    fn replay_input(&mut self, event: RecordedInput, ui_handlers: &[UiHandler]) {
+    /// `ui_handlers` and a `WebviewEvent` against `webview_handlers` — the
+    /// step-top tables the caller rebuilt (the live frame's last-render
+    /// contract).
+    fn replay_input(
+        &mut self,
+        event: RecordedInput,
+        ui_handlers: &[UiHandler],
+        webview_handlers: &[UiHandler],
+    ) {
         let (entry, args) = match event {
             RecordedInput::Key { code, is_down } => {
                 let Some(key_value) = crate::key_input_value(code) else {
@@ -639,6 +652,10 @@ impl FrameCtx<'_> {
             }
             RecordedInput::UiEvent(event) => {
                 self.deliver_ui_event(ui_handlers, &event);
+                return;
+            }
+            RecordedInput::WebviewEvent(event) => {
+                self.deliver_ui_event(webview_handlers, &event);
                 return;
             }
         };
