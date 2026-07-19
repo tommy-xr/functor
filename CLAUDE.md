@@ -163,6 +163,13 @@ The wasm bundle is unaffected either way: `wasm-pack build` is release by defaul
 ./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; Functor Lang hot-reload is built in
 ```
 
+Instead of one `entry`, a project may declare named **`entries`**
+(`{"entries": {"client": "client.fun", "server": "server.fun"}}`) — roles sharing one
+directory of sibling modules (file = module). `--entry <name>` picks the role
+(default: `client`, or the sole entry), anywhere on the line:
+`functor -d examples/mp run native --entry server`. `examples/mp` is the reference —
+client + authoritative server over a shared `protocol.fun`.
+
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with
 the fetch/reimport hints), a URL verifies via the remote disk cache then a HEAD request

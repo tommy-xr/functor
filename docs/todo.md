@@ -164,7 +164,7 @@ shell spine (no game-language surface).
 - [ ] `physicsScape : model -> PhysicsScene` hook + `Physics.View` read-back +
       `hello-physics` example.
 - [ ] Pause/rewind/replay via keyboard (the local culmination).
-- [ ] Networked physics: grow `mpserver`/`mpclient` to client-owned balls +
+- [ ] Networked physics: grow `examples/mp` to client-owned balls +
       server-owned objects (state-sync, then prediction).
 
 ## Time-travel tooling

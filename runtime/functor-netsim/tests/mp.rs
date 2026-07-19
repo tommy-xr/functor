@@ -1,12 +1,13 @@
-//! Netsim test of the multiplayer prototype: one authoritative `mpserver`
-//! and two `mpclient`s, run as independent in-process Functor Lang producers through
-//! the virtual network and stepped deterministically. Proves the full loop --
-//! clients connect, the server spawns + simulates them, broadcasts world
-//! snapshots, and both clients converge on the same world -- with no GL and no
-//! sockets.
+//! Netsim test of the multiplayer prototype: one authoritative server and two
+//! clients (`examples/mp` — a multi-entry project whose roles share a wire
+//! protocol via the `Protocol` sibling module), run as independent in-process
+//! Functor Lang producers through the virtual network and stepped deterministically.
+//! Proves the full loop -- clients connect, the server spawns + simulates
+//! them, broadcasts world snapshots, and both clients converge on the same
+//! world -- with no GL and no sockets.
 //!
-//! The instances are `.fun` games (E3 phase 0b): no dylib build is needed, only
-//! the committed `examples/*/game.fun` sources. Still `#[ignore]`d by
+//! The instances are `.fun` games (E3 phase 0b): no dylib build is needed,
+//! only the committed `examples/mp/*.fun` sources. Still `#[ignore]`d by
 //! default (they pull in the full desktop runtime as a dev-dependency); run
 //! with:
 //!
@@ -22,17 +23,17 @@ use functor_runtime_desktop::functor_lang_game::FunctorLangGame;
 // sims concurrently. Serialize them, and clear any residue at each test's start.
 static NET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn functor_lang_path(sample: &str) -> String {
+fn functor_lang_path(entry: &str) -> String {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join(format!("examples/{sample}/game.fun"))
+        .join(format!("examples/mp/{entry}"))
         .to_str()
         .unwrap()
         .to_string()
 }
 
-fn add_functor_lang(sim: &mut NetSim, sample: &str) -> InstanceId {
-    let path = functor_lang_path(sample);
+fn add_functor_lang(sim: &mut NetSim, entry: &str) -> InstanceId {
+    let path = functor_lang_path(entry);
     assert!(
         std::path::Path::new(&path).exists(),
         "missing {path} (the committed Functor Lang example)"
@@ -47,9 +48,9 @@ fn server_broadcasts_world_and_clients_converge() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_functor_lang(&mut sim, "mpserver");
-    let c1 = add_functor_lang(&mut sim, "mpclient");
-    let c2 = add_functor_lang(&mut sim, "mpclient");
+    let server = add_functor_lang(&mut sim, "server.fun");
+    let c1 = add_functor_lang(&mut sim, "client.fun");
+    let c2 = add_functor_lang(&mut sim, "client.fun");
 
     // Let everyone connect and a few snapshots flow.
     sim.step_n(20);
@@ -97,8 +98,8 @@ fn latency_delays_what_the_client_sees() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_functor_lang(&mut sim, "mpserver");
-    let client = add_functor_lang(&mut sim, "mpclient");
+    let server = add_functor_lang(&mut sim, "server.fun");
+    let client = add_functor_lang(&mut sim, "client.fun");
     // A laggy link: the client's view trails the server.
     sim.set_link(
         client,

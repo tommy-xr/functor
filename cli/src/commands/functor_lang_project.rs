@@ -28,27 +28,135 @@ use crate::util::{self, ShellCommand, WasmDevServer};
 use crate::Environment;
 
 /// The Functor Lang project settings read from `functor.json`.
+#[derive(Debug)]
 pub struct FunctorLangProject {
     /// The game source, relative to the project dir (default `game.fun`).
     pub entry: String,
 }
 
+/// The entry layout `functor.json` declares: the classic single `entry`, or a
+/// named `entries` map for projects whose roles share one directory of modules
+/// (e.g. `{"client": "client.fun", "server": "server.fun"}` beside a shared
+/// `protocol.fun`). Selection happens in [`FunctorLangConfig::select`] so every
+/// command resolves the same way.
+enum FunctorLangEntries {
+    Single(String),
+    Named(Vec<(String, serde_json::Value)>),
+    /// Both `entry` and `entries` were declared — ambiguous, refused at selection.
+    Conflicting,
+    /// `entries` was declared but is not an object — refused at selection.
+    Malformed,
+}
+
+/// What `detect` reads from `functor.json`, before an entry is selected.
+pub struct FunctorLangConfig {
+    entries: FunctorLangEntries,
+}
+
 /// Read `functor.json` and return the Functor Lang project settings when
 /// `"language": "functor-lang"` — `None` (the F#/Fable pipeline) otherwise, including
 /// for projects whose `functor.json` is empty or has no `language` field.
-pub fn detect(working_directory: &str) -> Option<FunctorLangProject> {
+pub fn detect(working_directory: &str) -> Option<FunctorLangConfig> {
     let path = Path::new(working_directory).join("functor.json");
     let content = std::fs::read_to_string(path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     if json.get("language").and_then(|v| v.as_str()) != Some("functor-lang") {
         return None;
     }
-    let entry = json
-        .get("entry")
-        .and_then(|v| v.as_str())
-        .unwrap_or("game.fun")
-        .to_string();
-    Some(FunctorLangProject { entry })
+    let entries = match (json.get("entry"), json.get("entries")) {
+        (Some(_), Some(_)) => FunctorLangEntries::Conflicting,
+        (None, Some(serde_json::Value::Object(map))) => FunctorLangEntries::Named(
+            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        ),
+        // A non-object `entries` is shaped wrong; carry that so selection
+        // reports it instead of silently running the default entry.
+        (None, Some(_)) => FunctorLangEntries::Malformed,
+        (entry, None) => FunctorLangEntries::Single(
+            entry
+                .and_then(|v| v.as_str())
+                .unwrap_or("game.fun")
+                .to_string(),
+        ),
+    };
+    Some(FunctorLangConfig { entries })
+}
+
+impl FunctorLangConfig {
+    /// Resolve which entry this invocation runs. `requested` is the CLI's
+    /// `--entry <name>`; a `Named` project with no request defaults to
+    /// `client`, or the sole entry.
+    pub fn select(&self, requested: Option<&str>) -> Result<FunctorLangProject, Error> {
+        match &self.entries {
+            FunctorLangEntries::Conflicting => Err(Error::other(
+                "functor.json declares both `entry` and `entries` — keep one",
+            )),
+            FunctorLangEntries::Malformed => Err(Error::other(
+                "functor.json `entries` must be a map of name → .fun path \
+(e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"})",
+            )),
+            FunctorLangEntries::Single(entry) => match requested {
+                None => Ok(FunctorLangProject {
+                    entry: entry.clone(),
+                }),
+                Some(name) => Err(Error::other(format!(
+                    "--entry {name}: this project has a single `entry` — `--entry` picks from \
+an `entries` map in functor.json"
+                ))),
+            },
+            FunctorLangEntries::Named(map) => {
+                let names = || {
+                    map.iter()
+                        .map(|(k, _)| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let pick = |name: &str, value: &serde_json::Value| match value.as_str() {
+                    Some(entry) if !entry.is_empty() => Ok(FunctorLangProject {
+                        entry: entry.to_string(),
+                    }),
+                    _ => Err(Error::other(format!(
+                        "functor.json entry `{name}` must be a path to a .fun file"
+                    ))),
+                };
+                match requested {
+                    Some(name) => match map.iter().find(|(k, _)| k == name) {
+                        Some((k, v)) => pick(k, v),
+                        None => Err(Error::other(format!(
+                            "no entry named `{name}` in functor.json (available: {})",
+                            names()
+                        ))),
+                    },
+                    None => match map.as_slice() {
+                        [] => Err(Error::other(
+                            "functor.json `entries` must be a non-empty map of \
+name → .fun path (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"})",
+                        )),
+                        [(k, v)] => pick(k, v),
+                        _ => match map.iter().find(|(k, _)| k == "client") {
+                            Some((k, v)) => pick(k, v),
+                            None => Err(Error::other(format!(
+                                "functor.json declares multiple entries ({}) — pick one with \
+--entry <name>",
+                                names()
+                            ))),
+                        },
+                    },
+                }
+            }
+        }
+    }
+
+    /// Every declared entry, resolved — the example-sweep test typechecks each.
+    #[cfg(test)]
+    fn all(&self) -> Result<Vec<FunctorLangProject>, Error> {
+        match &self.entries {
+            FunctorLangEntries::Named(map) => map
+                .iter()
+                .map(|(k, _)| self.select(Some(k)))
+                .collect(),
+            _ => self.select(None).map(|p| vec![p]),
+        }
+    }
 }
 
 impl FunctorLangProject {
@@ -526,7 +634,89 @@ fn entry_escapes_project(entry: &str) -> bool {
 mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
-    use super::nth_line;
+    use super::{nth_line, FunctorLangConfig, FunctorLangEntries};
+
+    fn single(entry: &str) -> FunctorLangConfig {
+        FunctorLangConfig {
+            entries: FunctorLangEntries::Single(entry.to_string()),
+        }
+    }
+
+    fn named(pairs: &[(&str, &str)]) -> FunctorLangConfig {
+        FunctorLangConfig {
+            entries: FunctorLangEntries::Named(
+                pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), serde_json::Value::from(*v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn single_entry_selects_by_default_and_rejects_the_flag() {
+        assert_eq!(single("game.fun").select(None).unwrap().entry, "game.fun");
+        let err = single("game.fun").select(Some("server")).unwrap_err();
+        assert!(err.to_string().contains("single `entry`"), "{err}");
+    }
+
+    #[test]
+    fn named_entries_select_by_name() {
+        let config = named(&[("client", "client.fun"), ("server", "server.fun")]);
+        assert_eq!(config.select(Some("server")).unwrap().entry, "server.fun");
+        assert_eq!(config.select(Some("client")).unwrap().entry, "client.fun");
+    }
+
+    #[test]
+    fn named_entries_default_to_client_or_the_sole_entry() {
+        let config = named(&[("server", "server.fun"), ("client", "client.fun")]);
+        assert_eq!(config.select(None).unwrap().entry, "client.fun");
+        assert_eq!(
+            named(&[("server", "server.fun")]).select(None).unwrap().entry,
+            "server.fun"
+        );
+    }
+
+    #[test]
+    fn multiple_entries_without_client_need_the_flag() {
+        let err = named(&[("alpha", "a.fun"), ("beta", "b.fun")])
+            .select(None)
+            .unwrap_err();
+        assert!(err.to_string().contains("--entry"), "{err}");
+        assert!(err.to_string().contains("alpha, beta"), "{err}");
+    }
+
+    #[test]
+    fn unknown_entry_name_lists_the_available_ones() {
+        let err = named(&[("client", "client.fun")])
+            .select(Some("sever"))
+            .unwrap_err();
+        assert!(err.to_string().contains("no entry named `sever`"), "{err}");
+        assert!(err.to_string().contains("client"), "{err}");
+    }
+
+    #[test]
+    fn conflicting_entry_and_entries_are_refused() {
+        let config = FunctorLangConfig {
+            entries: FunctorLangEntries::Conflicting,
+        };
+        let err = config.select(None).unwrap_err();
+        assert!(err.to_string().contains("both `entry` and `entries`"), "{err}");
+    }
+
+    #[test]
+    fn empty_or_non_string_entries_are_refused() {
+        let err = named(&[]).select(None).unwrap_err();
+        assert!(err.to_string().contains("non-empty"), "{err}");
+        let config = FunctorLangConfig {
+            entries: FunctorLangEntries::Named(vec![(
+                "client".to_string(),
+                serde_json::Value::from(3),
+            )]),
+        };
+        let err = config.select(None).unwrap_err();
+        assert!(err.to_string().contains("must be a path"), "{err}");
+    }
 
     /// Every shipped example typechecks against the engine prelude — the
     /// game-level half of the `.funi` ↔ implementation sync story: the drift
@@ -557,39 +747,51 @@ examples move?",
         for dir in &dirs {
             let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
             let dir_str = dir.to_string_lossy().into_owned();
-            let Some(project) = super::detect(&dir_str) else {
+            let Some(config) = super::detect(&dir_str) else {
                 failures.push(format!("{name}: functor.json did not parse as a project"));
                 continue;
             };
-            let entry = match project.entry_path(&dir_str) {
-                Ok(entry) => entry,
+            let projects = match config.all() {
+                Ok(projects) => projects,
                 Err(e) => {
                     failures.push(format!("{name}: {e}"));
                     continue;
                 }
             };
-            match functor_lang::project::load_with_prelude(
-                &entry,
-                &std::collections::HashMap::new(),
-                &functor_prelude::modules(),
-            ) {
-                Ok(loaded) => {
-                    for diag in loaded.check() {
-                        let (file, line, col) = loaded.sources.resolve(diag.span.start);
-                        failures.push(format!(
-                            "{name}: {}:{line}:{col}: {}",
-                            file.path.display(),
-                            diag.message
-                        ));
+            // A multi-entry project typechecks once PER entry: each entry is
+            // its own program root over the same sibling modules.
+            for project in &projects {
+                let label = format!("{name}[{}]", project.entry);
+                let entry = match project.entry_path(&dir_str) {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        failures.push(format!("{label}: {e}"));
+                        continue;
                     }
+                };
+                match functor_lang::project::load_with_prelude(
+                    &entry,
+                    &std::collections::HashMap::new(),
+                    &functor_prelude::modules(),
+                ) {
+                    Ok(loaded) => {
+                        for diag in loaded.check() {
+                            let (file, line, col) = loaded.sources.resolve(diag.span.start);
+                            failures.push(format!(
+                                "{label}: {}:{line}:{col}: {}",
+                                file.path.display(),
+                                diag.message
+                            ));
+                        }
+                    }
+                    Err(e) => failures.push(format!(
+                        "{label}: {}:{}:{}: {}",
+                        e.path.display(),
+                        e.line,
+                        e.col,
+                        e.message
+                    )),
                 }
-                Err(e) => failures.push(format!(
-                    "{name}: {}:{}:{}: {}",
-                    e.path.display(),
-                    e.line,
-                    e.col,
-                    e.message
-                )),
             }
         }
         assert!(

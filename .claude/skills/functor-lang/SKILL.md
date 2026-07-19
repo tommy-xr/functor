@@ -154,6 +154,15 @@ evaluate together — an unreferenced (or broken, or stray scratch) sibling
 still counts. File stems must be identifiers (`pure_pipeline.fun`, not
 `pure-pipeline.fun` — that's a load error).
 
+A project may instead declare named **`entries`** (`{"entries": {"client":
+"client.fun", "server": "server.fun"}}`) — multiple program roots over the
+SAME directory of sibling modules; `functor --entry <name>` picks one
+(default `client`, or the sole entry). Each entry is its own program (its
+bindings are the bare `init`/`tick`/`draw` roots; the other entry is just a
+qualified sibling module), so roles share code — `examples/mp`'s client and
+server share a `protocol.fun` wire codec — without drifting. `entry` and
+`entries` together are refused.
+
 ```functor
 // utils.fun                                  // → module Utils
 type Shape = | Circle(radius: float) | Point
@@ -876,6 +885,7 @@ debug server's `/time` advance. To *see* colliders, run with
 (collider outlines, contacts, body frames).
 
 A project dir with `functor.json` `{"language": "functor-lang", "entry": "game.fun"}`
+(or a named `entries` map — see Modules; `--entry <name>` selects the role)
 works with the CLI: `functor -d dir build` (typecheck, diagnostics are
 errors), `run native`, `develop` (hot reload is built in), and `run wasm`
 (the `.fun` ships as text and is interpreted in the browser; file-watch hot

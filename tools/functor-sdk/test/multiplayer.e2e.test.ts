@@ -4,12 +4,11 @@ import { test } from "node:test";
 
 import { findRepoRoot, FunctorRunner, waitForPort } from "../src/index.js";
 
-// End-to-end network simulation: one mpserver + two mpclient runners,
-// each its own process on its own debug port, networked over a real WebSocket.
-// These are the Functor Lang ports of examples/mpserver + examples/mpclient — same wire
-// protocol and same auto-move-on-connect, so convergence is identical. The
-// `.fun` ships as text (no dylib build), so this only needs the runner binary
-// and a display:
+// End-to-end network simulation: one server + two client runners
+// (examples/mp — a multi-entry project whose roles share the wire protocol
+// via the Protocol sibling module), each its own process on its own debug
+// port, networked over a real WebSocket. The `.fun` ships as text (no dylib
+// build), so this only needs the runner binary and a display:
 //
 //   cargo build --bin functor
 //   FUNCTOR_E2E=1 node --test dist/test/
@@ -45,12 +44,12 @@ test(
     // All three debug ports derive from one base so the test is self-consistent
     // when relocated. (The ws port is fixed at 9001 by the example games.)
     const base = Number(process.env.FUNCTOR_E2E_PORT ?? 8095);
-    const launch = (game: string, port: number) => {
-      const gameDir = join(repoRoot, "examples", game);
+    const launch = (entry: string, port: number) => {
+      const gameDir = join(repoRoot, "examples", "mp");
       return FunctorRunner.launch({
         gameDir,
         repoRoot,
-        functorLangPath: join(gameDir, "game.fun"),
+        functorLangPath: join(gameDir, entry),
         port,
         launchTimeoutMs: 30_000,
         headless,
@@ -58,17 +57,17 @@ test(
     };
 
     // Server first, and wait for its Sub.listen socket to actually bind before
-    // launching clients — mpclient connects once with no retry, so a client that
-    // races ahead of the listener would land in "error" and never converge.
-    await using server = await launch("mpserver", base);
+    // launching clients — the client connects once with no retry, so a client
+    // that races ahead of the listener would land in "error" and never converge.
+    await using server = await launch("server.fun", base);
     await waitForPort("127.0.0.1", 9001, {
       timeoutMs: 15_000,
-      description: "mpserver ws listener",
+      description: "mp server ws listener",
     });
 
-    // mpclient auto-moves on connect, so no input injection is needed.
-    await using clientA = await launch("mpclient", base + 1);
-    await using clientB = await launch("mpclient", base + 2);
+    // The client auto-moves on connect, so no input injection is needed.
+    await using clientA = await launch("client.fun", base + 1);
+    await using clientB = await launch("client.fun", base + 2);
 
     const waitOpts = { timeoutMs: 20_000, intervalMs: 200 };
 
