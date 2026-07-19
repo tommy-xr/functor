@@ -52,6 +52,14 @@ use std::time::SystemTime;
 
 use crate::game::Game;
 
+fn replay_status(history_replay: Option<(usize, f64)>) -> String {
+    history_replay.map_or_else(String::new, |(frames, elapsed_ms)| {
+        format!(
+            "; history recomputed from init ({frames} frames, {elapsed_ms:.2}ms)"
+        )
+    })
+}
+
 pub struct FunctorLangGame {
     path: String,
     /// Per-file mtimes of the WHOLE project (every sibling `.fun` — B8:
@@ -499,7 +507,13 @@ impl FunctorLangGame {
     /// is kept as well: `Sub.every` fires on the global time grid, so timers
     /// tick right through a reload. Returns the number of stored closures
     /// rebound, for the status line.
-    fn swap_in(&mut self, loaded: Loaded) -> usize {
+    fn swap_in(
+        &mut self,
+        loaded: Loaded,
+    ) -> (
+        usize,
+        Option<(usize, f64)>,
+    ) {
         let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
@@ -571,7 +585,26 @@ impl FunctorLangGame {
         // generation anchored at this rebound live frame.
         self.recorder
             .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
-        report.rebound
+        let replay_started = Instant::now();
+        let history_replay = match
+            functor_runtime_common::functor_lang_producer::materialize_counterfactual_history(
+                &self.session,
+                &mut self.model,
+                &mut self.recorder,
+                self.has_physics,
+                self.has_subscriptions,
+                !self.input_buf.is_empty(),
+            )
+        {
+            Ok(frames) => frames.map(|frames| {
+                (frames, replay_started.elapsed().as_secs_f64() * 1000.0)
+            }),
+            Err(error) => {
+                self.reporter.report_once(format!("[functor-lang] {error}"));
+                None
+            }
+        };
+        (report.rebound, history_replay)
     }
 
     fn report_stats(&mut self) {
@@ -640,16 +673,17 @@ impl Game for FunctorLangGame {
         };
         match loaded {
             Ok(loaded) => {
-                let rebound = self.swap_in(loaded);
+                let (rebound, history_replay) = self.swap_in(loaded);
                 let stored = if rebound > 0 {
                     format!("; {rebound} stored closure(s) rebound")
                 } else {
                     String::new()
                 };
+                let history = replay_status(history_replay);
                 events::emit(RuntimeEvent::HotReload {
                     ok: true,
                     message: format!(
-                        "hot-reloaded {} in {:.2}ms (model preserved{stored}; an edited \
+                        "hot-reloaded {} in {:.2}ms (model preserved{stored}{history}; an edited \
 `init` takes effect on restart)",
                         self.path,
                         started.elapsed().as_secs_f64() * 1000.0
@@ -681,15 +715,16 @@ impl Game for FunctorLangGame {
         let stamp = project_stamp(&self.path);
         let loaded = load_source(&self.path, source.to_string())?;
         self.pushed_entry = Some(source.to_string());
-        let rebound = self.swap_in(loaded);
+        let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
         } else {
             String::new()
         };
+        let history = replay_status(history_replay);
         self.stamp = stamp;
         let status = format!(
-            "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
+            "reloaded {} from pushed source in {:.2}ms (model preserved{stored}{history})",
             self.path,
             started.elapsed().as_secs_f64() * 1000.0
         );
@@ -744,6 +779,10 @@ impl Game for FunctorLangGame {
 
     fn scene_frame_range(&self) -> Option<(u64, u64)> {
         self.recorder.scene_frame_range()
+    }
+
+    fn scene_program_revision(&self) -> u64 {
+        self.recorder.program_revision()
     }
 
     fn current_scene_tts(&self) -> Option<f64> {
@@ -839,7 +878,8 @@ impl Game for FunctorLangGame {
             // coverage replays them lazily at pause time.
             let frame = self.recorder.current_scene_frame().unwrap_or(0);
             self.journal_ring.push_back((frame, journal.clone()));
-            while self.journal_ring.len() > functor_runtime_common::inspector::COVERAGE_RING_FRAMES {
+            while self.journal_ring.len() > functor_runtime_common::inspector::COVERAGE_RING_FRAMES
+            {
                 self.journal_ring.pop_front();
             }
             self.last_frame_journal = journal;
@@ -2383,6 +2423,187 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Bret-Victor authoring regression: a failed jump recorded under the old
+    /// program must be recomputed all the way through under a hot-reloaded
+    /// jump constant. The old future contributes inputs only, never model
+    /// snapshots or outcomes.
+    #[test]
+    fn mario_hot_reload_recomputes_the_entire_extrapolated_future() {
+        use functor_runtime_common::Key;
+
+        fn field(v: &Value, name: &str) -> f64 {
+            match v {
+                Value::Record(fields) => match &fields.iter().find(|(k, _)| k == name).unwrap().1 {
+                    Value::Number(x) => *x,
+                    Value::Bool(b) => (*b as i32) as f64,
+                    other => panic!("{name} is not a number/bool: {other}"),
+                },
+                _ => panic!("model is not a record"),
+            }
+        }
+
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
+        let source = std::fs::read_to_string(mario).expect("read mario source");
+        let weak_jump = source.replacen("let jumpVelocity = 12.0", "let jumpVelocity = 6.0", 1);
+        assert_ne!(weak_jump, source, "test must rewrite the jump constant");
+
+        let mut game = FunctorLangGame::create(mario);
+        const SUB_DT: f32 = 1.0 / 60.0;
+        let mut tts = 0.0f32;
+        // Match the browser workflow after the old ~15-second retention cliff:
+        // model snapshots have pruned frame zero, but the session input log has
+        // not, so edited-code reconstruction can still start from `init`.
+        for _ in 0..(functor_runtime_common::timetravel::DEFAULT_HISTORY_FRAMES + 30) {
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+        }
+        assert!(
+            game.scene_frame_range().unwrap().0 > 0,
+            "the regression must exercise pruned model history"
+        );
+        game.reload_source(&weak_jump).expect("load weak jump");
+
+        const N: usize = 90;
+        game.key_event(Key::Right as i32, true);
+        let mut jumped = false;
+        let mut jump_frame = None;
+        for _ in 0..N {
+            if !jumped
+                && field(&game.model, "grounded") == 1.0
+                && field(&game.model, "x") + (8.0 * SUB_DT as f64) >= -3.0
+            {
+                game.key_event(Key::Up as i32, true);
+                jumped = true;
+                jump_frame = Some(game.recorder.next_frame());
+            }
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+        }
+        assert!(jumped, "the weak jump must have fired");
+        assert_eq!(
+            field(&game.model, "x"),
+            -6.0,
+            "weak jump should fall and respawn"
+        );
+
+        // Scrub to an airborne frame AFTER the jump input. Replaying only from
+        // this old-code snapshot is the bug: it has already baked in the weak
+        // launch velocity, so the edited constant can never affect the jump.
+        // Counterfactual extrapolation must rebuild the selected anchor from
+        // retained inputs under the new program before projecting its future.
+        let s = jump_frame.expect("recorded jump frame") + 15;
+        game.seek_scene_to(s).expect("scrub into the failed jump");
+        let reload_status = game.reload_source(&source).expect("reload stronger jump");
+        assert!(
+            reload_status.contains("history recomputed from init (")
+                && reload_status.contains(" frames, "),
+            "reload status must disclose reconstruction and timing: {reload_status}"
+        );
+
+        // Reload recomputes every retained snapshot once, so later scrubbing is
+        // an O(1) restore and the old recorded failure has already disappeared.
+        game.seek_scene_to(s + 50).expect("seek rebuilt future");
+        assert!(
+            field(&game.model, "x") > 3.0,
+            "the retained future itself must be rebuilt under the stronger jump: {}",
+            game.model
+        );
+        game.seek_scene_to(s).expect("return to rebuilt anchor");
+
+        let inputs = game.recorder.inputs_from(s + 1);
+        let start_tts = game.recorder.current_scene_frame_tts().unwrap() as f32;
+        let anchor = game.model.clone();
+        let forward = functor_runtime_common::functor_lang_producer::forward_step_scene(
+            &game.session,
+            &anchor,
+            game.has_physics,
+            game.has_subscriptions,
+            Some(start_tts as f64),
+            start_tts,
+            SUB_DT,
+            10,
+            5,
+            &inputs,
+        );
+        let recomputed = &forward.last().expect("projected future").0;
+        assert!(
+            field(recomputed, "x") > 3.0,
+            "the stronger jump must clear the chasm instead of coalescing back to the old fall: {recomputed}"
+        );
+
+        // The counterfactual anchor is authoritative, not a preview-only
+        // illusion: Resume must branch from it and reach the same landing.
+        let mut branch_tts = start_tts;
+        for _ in 0..50 {
+            branch_tts += SUB_DT;
+            game.tick(FrameTime {
+                tts: branch_tts,
+                dts: SUB_DT,
+            });
+        }
+        assert!(
+            field(&game.model, "x") > 3.0,
+            "resumed play must follow the recomputed strong-jump branch: {}",
+            game.model
+        );
+    }
+
+    /// Same-code reconstruction is the determinism invariant behind edited-code
+    /// extrapolation: replaying the exact frame-indexed inputs from `init` must
+    /// reproduce every retained model byte-for-byte.
+    #[test]
+    fn scrubbed_same_source_reload_rebuilds_identical_history() {
+        use functor_runtime_common::Key;
+
+        fn retained_models(game: &mut FunctorLangGame) -> Vec<(u64, String)> {
+            let (lo, hi) = game.scene_frame_range().expect("recorded history");
+            (lo..=hi)
+                .map(|frame| {
+                    game.seek_scene_to(frame).expect("seek retained frame");
+                    (frame, game.model.to_string())
+                })
+                .collect()
+        }
+
+        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
+        let source = std::fs::read_to_string(mario).expect("read mario source");
+        let mut game = FunctorLangGame::create(mario);
+        const SUB_DT: f32 = 1.0 / 60.0;
+
+        // Exercise the real shell bootstrap: this zero-delta tick is not a
+        // visible timeline frame, but exact reconstruction must replay it.
+        game.tick(FrameTime { tts: 0.0, dts: 0.0 });
+
+        for frame in 0..120 {
+            match frame {
+                5 => game.key_event(Key::Right as i32, true),
+                25 => game.key_event(Key::Up as i32, true),
+                26 => game.key_event(Key::Up as i32, false),
+                // Exact reconstruction deliberately replays this release at its
+                // recorded frame. A future "coast" mode would instead cut off
+                // recorded input here, but that is a separate authoring choice.
+                70 => game.key_event(Key::Right as i32, false),
+                _ => {}
+            }
+            game.tick(FrameTime {
+                tts: (frame + 1) as f32 * SUB_DT,
+                dts: SUB_DT,
+            });
+        }
+
+        let selected = 40;
+        let before = retained_models(&mut game);
+        game.seek_scene_to(selected).expect("scrub into history");
+        let status = game.reload_source(&source).expect("reload identical source");
+        assert!(
+            status.contains("history recomputed from init (120 frames, "),
+            "reload status must disclose deterministic reconstruction: {status}"
+        );
+        let after = retained_models(&mut game);
+
+        assert_eq!(after, before, "same-source replay must be byte-identical");
     }
 
     /// Regression (xreview): under the fixed-timestep loop a live input can be

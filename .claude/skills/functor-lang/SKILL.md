@@ -906,6 +906,18 @@ plain data, pausing on an earlier frame and reloading keeps the selected cursor
 and the entire recorded future. Resume remains the explicit branch point: it
 discards that future, while the scrubber holds its prior visual span until the
 new branch fills it.
+Forward **extrapolation** adds one counterfactual step for input-only model games:
+after a safe reload at a scrubbed frame, it replays the session-long plain-data
+input and exact frame-clock logs from the NEW program's `init` through the newest
+retained frame once. Those logs retain frame zero even when the larger 900-frame
+model/world rings prune old snapshots. The rebuilt selected model becomes the visible anchor and
+Resume branch, later scrubs remain O(1) snapshot restores, and its future is
+projected from new-code history. This prevents old derived state (such as a
+jump's stored launch velocity) from dragging a constant-tweaked trajectory back
+to the recorded outcome. Replay is exact, including future key-up frames; Resume
+cuts off that recorded future, while an optional paused **coast from here**
+control is deferred. Games with `update` or physics keep selected-snapshot
+behavior until the fuller event/coeffect replay log exists.
 Closures **stored in the model** rebind too: they adopt the edited code
 with their captured values carried over (matched by the enclosing def's
 name; a closure whose def was renamed/deleted keeps its old body with a

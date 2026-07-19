@@ -28,10 +28,11 @@
 //! later increment unifies the two under one clock so a single `seek` restores
 //! model *and* world together (docs/time-travel.md, "One frame, one clock").
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use functor_lang::Value;
 
+use crate::FrameTime;
 use crate::input::RecordedInput;
 use crate::physics::SteppedPhysics;
 
@@ -188,6 +189,60 @@ impl<T: Clone> History<T> {
     }
 }
 
+/// Session-long input history with O(events) storage rather than one heap-sized
+/// `Vec` header per input-free frame. The contiguous frame range is tracked
+/// separately because fixed-step replay still advances through empty frames.
+struct InputHistory {
+    base: Option<Frame>,
+    next: Option<Frame>,
+    events: BTreeMap<Frame, Vec<RecordedInput>>,
+}
+
+impl InputHistory {
+    fn new() -> InputHistory {
+        InputHistory {
+            base: None,
+            next: None,
+            events: BTreeMap::new(),
+        }
+    }
+
+    fn record(&mut self, frame: Frame, inputs: Vec<RecordedInput>) {
+        match self.next {
+            None => self.base = Some(frame),
+            Some(next) => assert_eq!(frame, next, "input frames must be recorded consecutively"),
+        }
+        if !inputs.is_empty() {
+            self.events.insert(frame, inputs);
+        }
+        self.next = Some(frame + 1);
+    }
+
+    fn recorded_range(&self) -> Option<(Frame, Frame)> {
+        self.base.zip(self.next).and_then(|(base, next)| {
+            (next > base).then_some((base, next - 1))
+        })
+    }
+
+    fn at(&self, frame: Frame) -> &[RecordedInput] {
+        self.events.get(&frame).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn truncate_from(&mut self, frame: Frame) {
+        let Some(next) = self.next else { return };
+        if frame >= next {
+            return;
+        }
+        let base = self.base.expect("input history with a next frame has a base");
+        assert!(
+            frame >= base,
+            "truncate_from({frame}) predates input history (base {base})"
+        );
+        self.events.split_off(&frame);
+        self.next = Some(frame);
+    }
+}
+
 /// The coupled time-travel recorder shared by both Functor Lang shells (docs/time-travel.md
 /// T1–T3): records the MVU `model` and the physics fixed-frame in lockstep each
 /// rendered frame, and seeks/rewinds them together. It owns the recording rings
@@ -212,13 +267,22 @@ pub struct SceneRecorder {
     /// `tts` so `tts`-driven visuals (orbiting lights, `sin(tts)` bobbing)
     /// rewind too, not just model/world state (docs/time-travel.md).
     tts_history: History<f64>,
+    /// Exact per-frame `dts` / `tts`, retained for the current branch so a
+    /// same-source reconstruction replays debugger steps and f32 clock rounding
+    /// byte-identically even after the display-oriented `tts_history` prunes.
+    clock_history: History<FrameTime>,
+    /// The shell's one unrecorded bootstrap execution (`dts == 0`) before
+    /// frame zero. It can still mutate a valid model, so reconstruction must
+    /// replay it (and any input delivered before it) ahead of recorded frames.
+    replay_prefix: Option<(FrameTime, Vec<RecordedInput>)>,
     /// The frame-indexed input log (docs/time-travel.md T6, "The event log"):
     /// each rendered frame's recorded input events, keyed in LOCKSTEP with
     /// `model_history`. Unlike the other three rings this is PLAIN DATA
-    /// (`RecordedInput`), so it deliberately SURVIVES a hot reload — the log is
-    /// what lets "tweak a constant, replay my recorded inputs" work. Alignment
-    /// with the (reset) model ring holds because both key off `rendered_frame`.
-    input_history: History<Vec<RecordedInput>>,
+    /// (`RecordedInput`) and is retained from frame zero for the whole current
+    /// branch. That lets a scrubbed hot reload replay from the edited program's
+    /// `init` even after the much larger model/world snapshots have pruned their
+    /// first ~15-second window.
+    input_history: InputHistory,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
     /// Bumps whenever existing recorded frames may have been replaced or a
@@ -226,6 +290,15 @@ pub struct SceneRecorder {
     /// this to rebuild from authoritative input history instead of guessing a
     /// branch from range movement.
     generation: u64,
+    /// Successful program swaps, including plain-data reloads that deliberately
+    /// keep the same timeline generation. Preview caches key on this revision:
+    /// a code edit changes extrapolation even when frame/range state does not.
+    program_revision: u64,
+    /// A plain-data reload preserved snapshots produced by the previous
+    /// program. Input-only extrapolation rebuilds the retained model timeline
+    /// from the input log under the new program instead of treating old-code
+    /// snapshots as authoritative.
+    counterfactual_replay: bool,
     /// While dragging: the frame the scrubber has non-destructively seeked to.
     /// `Some` = "scrubbing" (future intact); committed on resume.
     scrub_pos: Option<u64>,
@@ -243,9 +316,13 @@ impl SceneRecorder {
             model_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             world_frame_history: History::bounded(DEFAULT_HISTORY_FRAMES),
             tts_history: History::bounded(DEFAULT_HISTORY_FRAMES),
-            input_history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            clock_history: History::unbounded(),
+            replay_prefix: None,
+            input_history: InputHistory::new(),
             rendered_frame: 0,
             generation: 0,
+            program_revision: 0,
+            counterfactual_replay: false,
             scrub_pos: None,
         }
     }
@@ -267,6 +344,7 @@ impl SceneRecorder {
         physics_fixed_frame: u64,
         live_model_was_safe: bool,
     ) -> ReloadHistory {
+        self.program_revision = self.program_revision.wrapping_add(1);
         let current_frame = self.current_scene_frame();
         if live_model_was_safe && self.reload_history_is_safe() {
             // Input can update the live model while paused, without producing
@@ -279,9 +357,16 @@ impl SceneRecorder {
                 self.world_frame_history
                     .replace(frame, &physics_fixed_frame);
             }
+            // Ordinary hot reload at the live tail preserves the live model;
+            // only an explicitly scrubbed historical branch is counterfactual.
+            self.counterfactual_replay = self
+                .scrub_pos
+                .zip(self.model_history.recorded_range())
+                .is_some_and(|(selected, (_, hi))| selected < hi);
             return ReloadHistory::Preserved;
         }
 
+        self.counterfactual_replay = false;
         self.scrub_pos = None;
         let Some((frame, tts)) = current_frame.map(|frame| {
             let tts = *self.tts_history.seek(frame);
@@ -341,6 +426,89 @@ impl SceneRecorder {
         self.generation
     }
 
+    /// Monotonic successful-code-swap revision. Unlike [`Self::generation`], a
+    /// safe plain-data reload bumps this too, because extrapolation changes even
+    /// though the recorded frame range remains intact.
+    pub fn program_revision(&self) -> u64 {
+        self.program_revision
+    }
+
+    /// Complete replay target after a safe reload. Model snapshots may have
+    /// pruned frame zero; the small plain-data input log deliberately does not.
+    /// Return a diagnostic instead of silently falling back to old-data
+    /// semantics if that session-origin invariant is ever broken.
+    pub fn counterfactual_replay_span(
+        &self,
+    ) -> Result<Option<(Frame, Frame, Frame)>, String> {
+        if !self.counterfactual_replay {
+            return Ok(None);
+        }
+        let (lo, hi) = self.model_history.recorded_range().ok_or_else(|| {
+            "counterfactual replay unavailable: no model history is retained".to_string()
+        })?;
+        let (input_lo, input_hi) = self.input_history.recorded_range().ok_or_else(|| {
+            "counterfactual replay unavailable: the session input log is empty".to_string()
+        })?;
+        if input_lo != 0 || input_hi < hi {
+            return Err(format!(
+                "counterfactual replay unavailable: input history covers frames \
+                 {input_lo}..={input_hi}, not the required 0..={hi}"
+            ));
+        }
+        let selected = self.current_scene_frame().ok_or_else(|| {
+            "counterfactual replay unavailable: no selected frame".to_string()
+        })?;
+        let (clock_lo, clock_hi) = self.clock_history.recorded_range().ok_or_else(|| {
+            "counterfactual replay unavailable: the session clock log is empty".to_string()
+        })?;
+        if clock_lo != 0 || clock_hi < hi {
+            return Err(format!(
+                "counterfactual replay unavailable: clock history covers frames \
+                 {clock_lo}..={clock_hi}, not the required 0..={hi}"
+            ));
+        }
+        Ok(Some((lo, selected, hi)))
+    }
+
+    /// Replace the complete retained model timeline with models replayed under
+    /// the current program, returning the rebuilt selected model. The input,
+    /// world-frame, and `tts` rings keep their existing frame alignment.
+    pub fn materialize_counterfactual_history(
+        &mut self,
+        models: &[Value],
+        selected_override: Option<&Value>,
+    ) -> Result<Option<Value>, String> {
+        let Some((lo, selected, hi)) = self.counterfactual_replay_span()? else {
+            return Ok(None);
+        };
+        let retained = (hi - lo + 1) as usize;
+        if models.len() != retained {
+            return Err(format!(
+                "counterfactual replay produced {} frames, expected {}",
+                models.len(),
+                retained
+            ));
+        }
+        let (retained_lo, retained_hi) = self.model_history.recorded_range().ok_or_else(|| {
+            "counterfactual replay cannot replace an empty model history".to_string()
+        })?;
+        if (retained_lo, retained_hi) != (lo, hi) {
+            return Err("counterfactual replay target changed while rebuilding history".to_string());
+        }
+        for (frame, rebuilt) in (lo..=hi).zip(models) {
+            self.model_history.replace(
+                frame,
+                if frame == selected {
+                    selected_override.unwrap_or(rebuilt)
+                } else {
+                    rebuilt
+                },
+            );
+        }
+        self.counterfactual_replay = false;
+        Ok(Some(self.model_history.seek(selected).clone()))
+    }
+
     /// Commit a non-destructive scrub before an UNSAFE reload replaces the
     /// snapshot generation. Safe plain-data reloads must not call this: they
     /// retain both the selected cursor and its recorded future until Resume.
@@ -369,11 +537,68 @@ impl SceneRecorder {
     /// only when the sim advanced (`dts > 0`) — a paused frame would pile up
     /// frozen duplicates.
     pub fn record(&mut self, model: &Value, physics_fixed_frame: u64, tts: f64) {
+        self.record_timed(
+            model,
+            physics_fixed_frame,
+            FrameTime {
+                dts: 1.0 / 60.0,
+                tts: tts as f32,
+            },
+        );
+    }
+
+    /// Production recording path: retain the exact clock values the model saw.
+    pub fn record_timed(
+        &mut self,
+        model: &Value,
+        physics_fixed_frame: u64,
+        frame_time: FrameTime,
+    ) {
         self.model_history.record(self.rendered_frame, model);
         self.world_frame_history
             .record(self.rendered_frame, &physics_fixed_frame);
-        self.tts_history.record(self.rendered_frame, &tts);
+        self.tts_history
+            .record(self.rendered_frame, &(frame_time.tts as f64));
+        self.clock_history.record(self.rendered_frame, &frame_time);
         self.rendered_frame += 1;
+    }
+
+    pub fn frame_time_at(&self, frame: Frame) -> Option<FrameTime> {
+        self.clock_history.recorded_range().and_then(|(lo, hi)| {
+            (frame >= lo && frame <= hi).then(|| *self.clock_history.seek(frame))
+        })
+    }
+
+    /// Capture the shell's initial zero-delta settling execution. Later paused
+    /// renders are not simulation history and remain deliberately discarded.
+    pub fn record_replay_prefix(
+        &mut self,
+        frame_time: FrameTime,
+        inputs: Vec<RecordedInput>,
+    ) {
+        if self.rendered_frame == 0 && self.replay_prefix.is_none() {
+            self.replay_prefix = Some((frame_time, inputs));
+        }
+    }
+
+    pub fn replay_prefix_len(&self) -> usize {
+        usize::from(self.replay_prefix.is_some())
+    }
+
+    pub fn replay_frame_time_at_step(&self, step: usize) -> Option<FrameTime> {
+        match (&self.replay_prefix, step) {
+            (Some((frame_time, _)), 0) => Some(*frame_time),
+            (Some(_), step) => self.frame_time_at((step - 1) as Frame),
+            (None, step) => self.frame_time_at(step as Frame),
+        }
+    }
+
+    pub fn replay_inputs_at_step(&self, step: usize) -> &[RecordedInput] {
+        match (&self.replay_prefix, step) {
+            (Some((_, inputs)), 0) => inputs,
+            (Some(_), step) => self.inputs_at((step - 1) as Frame),
+            (None, step) => self.inputs_at(step as Frame),
+        }
     }
 
     /// Record this rendered frame's input events, keyed by the CURRENT
@@ -383,14 +608,14 @@ impl SceneRecorder {
     /// recorded for input-free frames, keeping the ring consecutive with the
     /// model ring.
     pub fn record_inputs(&mut self, inputs: Vec<RecordedInput>) {
-        self.input_history.record(self.rendered_frame, &inputs);
+        self.input_history.record(self.rendered_frame, inputs);
     }
 
     /// The recorded input events of `frame` — empty if that frame is outside the
     /// retained input window (never recorded, or pruned).
     pub fn inputs_at(&self, frame: u64) -> &[RecordedInput] {
         match self.input_history.recorded_range() {
-            Some((lo, hi)) if frame >= lo && frame <= hi => self.input_history.seek(frame),
+            Some((lo, hi)) if frame >= lo && frame <= hi => self.input_history.at(frame),
             _ => &[],
         }
     }
@@ -402,7 +627,7 @@ impl SceneRecorder {
     pub fn inputs_from(&self, start: u64) -> Vec<Vec<RecordedInput>> {
         match self.input_history.recorded_range() {
             Some((lo, hi)) => (start.max(lo)..=hi)
-                .map(|f| self.input_history.seek(f).clone())
+                .map(|f| self.input_history.at(f).to_vec())
                 .collect(),
             None => Vec::new(),
         }
@@ -455,6 +680,7 @@ impl SceneRecorder {
     ) -> bool {
         if let Some(k) = self.scrub_pos.take() {
             let _ = self.rewind_scene_to(k, model, physics, physics_frame, has_physics);
+            self.counterfactual_replay = false;
             true
         } else {
             false
@@ -518,6 +744,7 @@ impl SceneRecorder {
         // Truncate the input log too: a destructive branch discards the old
         // future consistently across all four rings (docs/time-travel.md T6b).
         self.input_history.truncate_from(frame + 1);
+        self.clock_history.truncate_from(frame + 1);
         self.rendered_frame = frame + 1;
         self.generation = self.generation.wrapping_add(1);
         self.scrub_pos = None;
@@ -750,6 +977,7 @@ mod tests {
     fn plain_data_reload_while_scrubbed_preserves_the_full_future_until_resume() {
         let mut rec = SceneRecorder::new();
         for frame in 0..5u64 {
+            rec.record_inputs(Vec::new());
             rec.record(&Value::Number(frame as f64), 0, frame as f64);
         }
         let mut model = Value::Number(0.0);
@@ -769,11 +997,104 @@ mod tests {
         assert_eq!(rec.scrub_render_tts(), Some(2.0));
         assert_eq!(rec.generation(), generation);
         assert_eq!(rec.next_frame(), 5, "reload must not branch the future");
+        assert_eq!(rec.counterfactual_replay_span(), Ok(Some((0, 2, 4))));
+
+        let rebuilt: Vec<Value> = (10..15).map(|n| Value::Number(n as f64)).collect();
+        model = rec
+            .materialize_counterfactual_history(&rebuilt, None)
+            .expect("valid replay history")
+            .expect("materialized history");
 
         assert!(rec.commit_scrub_if_resuming(&mut model, &mut physics, &mut physics_frame, false));
+        assert_eq!(model.to_string(), "12", "Resume adopts the rebuilt anchor");
+        assert_eq!(rec.counterfactual_replay_span(), Ok(None));
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));
         assert_eq!(rec.next_frame(), 3);
         assert_ne!(rec.generation(), generation, "Resume commits the branch");
+    }
+
+    #[test]
+    fn counterfactual_replay_requires_a_historical_scrub_but_not_model_frame_zero() {
+        let mut live = SceneRecorder::new();
+        for frame in 0..3u64 {
+            live.record_inputs(Vec::new());
+            live.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        assert_eq!(
+            live.finish_reload(&Value::Number(2.0), 0, true),
+            ReloadHistory::Preserved
+        );
+        assert!(
+            live.counterfactual_replay_span() == Ok(None),
+            "ordinary live-tail reload preserves the live model"
+        );
+
+        let mut tail = SceneRecorder::new();
+        for frame in 0..3u64 {
+            tail.record_inputs(Vec::new());
+            tail.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let mut tail_model = Value::Number(0.0);
+        let mut tail_physics = SteppedPhysics::new();
+        let mut tail_physics_frame = 0;
+        tail.seek_scene_to(
+            2,
+            &mut tail_model,
+            &mut tail_physics,
+            &mut tail_physics_frame,
+            false,
+        )
+        .expect("seek live tail");
+        tail.finish_reload(&tail_model, tail_physics_frame, true);
+        assert!(
+            tail.counterfactual_replay_span() == Ok(None),
+            "a cursor explicitly parked at the newest frame is still the live tail"
+        );
+
+        let mut pruned = SceneRecorder::new();
+        for frame in 0..=DEFAULT_HISTORY_FRAMES as u64 {
+            pruned.record_inputs(Vec::new());
+            pruned.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let (lo, _) = pruned.scene_frame_range().unwrap();
+        assert!(lo > 0);
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        pruned
+            .seek_scene_to(lo, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek pruned floor");
+        assert_eq!(
+            pruned.finish_reload(&model, physics_frame, true),
+            ReloadHistory::Preserved
+        );
+        assert_eq!(
+            pruned.counterfactual_replay_span(),
+            Ok(Some((lo, lo, DEFAULT_HISTORY_FRAMES as u64))),
+            "the session input log keeps frame zero after model pruning"
+        );
+    }
+
+    #[test]
+    fn counterfactual_replay_reports_a_missing_session_input_log() {
+        let mut rec = SceneRecorder::new();
+        for frame in 0..3u64 {
+            // Deliberately violate the producer invariant by omitting
+            // `record_inputs`; production must report this instead of silently
+            // retaining old-code snapshots.
+            rec.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        rec.seek_scene_to(1, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("scrub into history");
+        rec.finish_reload(&model, physics_frame, true);
+
+        let error = rec
+            .counterfactual_replay_span()
+            .expect_err("missing input history must be diagnosed");
+        assert!(error.contains("session input log is empty"), "{error}");
     }
 
     #[test]
@@ -878,12 +1199,8 @@ mod tests {
         // but must not overwrite this live value with frame 2's snapshot.
         model = closure_model();
         let live_before = model.to_string();
-        let live_model_was_safe = rec.prepare_reload(
-            &mut model,
-            &mut physics,
-            &mut physics_frame,
-            false,
-        );
+        let live_model_was_safe =
+            rec.prepare_reload(&mut model, &mut physics, &mut physics_frame, false);
         assert!(!live_model_was_safe);
         assert_eq!(model.to_string(), live_before);
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));

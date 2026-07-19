@@ -40,6 +40,14 @@ use functor_runtime_common::webview::HtmlNode;
 use functor_runtime_common::{Frame, FrameTime};
 use wasm_bindgen::prelude::*;
 
+fn replay_status(history_replay: Option<(usize, f64)>) -> String {
+    history_replay.map_or_else(String::new, |(frames, elapsed_ms)| {
+        format!(
+            "; history recomputed from init ({frames} frames, {elapsed_ms:.2}ms)"
+        )
+    })
+}
+
 pub struct FunctorLangWebGame {
     path: String,
     /// The project's fetched source files (entry FIRST, then siblings) as
@@ -430,7 +438,7 @@ impl FunctorLangWebGame {
     /// as well: `Sub.every` fires on the global time grid, so timers tick
     /// right through a reload. Returns the number of stored closures rebound,
     /// for the status line.
-    fn swap_in(&mut self, loaded: Loaded) -> usize {
+    fn swap_in(&mut self, loaded: Loaded) -> (usize, Option<(usize, f64)>) {
         let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
@@ -486,6 +494,23 @@ impl FunctorLangWebGame {
         // generation anchored at this rebound live frame.
         self.recorder
             .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
+        let replay_started = js_sys::Date::now();
+        let history_replay = match
+            functor_runtime_common::functor_lang_producer::materialize_counterfactual_history(
+                &self.session,
+                &mut self.model,
+                &mut self.recorder,
+                self.has_physics,
+                self.has_subscriptions,
+                !self.input_buf.is_empty(),
+            )
+        {
+            Ok(frames) => frames.map(|frames| (frames, js_sys::Date::now() - replay_started)),
+            Err(error) => {
+                self.reporter.report_once(format!("[functor-lang] {error}"));
+                None
+            }
+        };
         self.has_ui = loaded.has_ui;
         if !self.has_ui {
             // Deleting the `ui` hook drops the HUD (the physics-world rule).
@@ -501,7 +526,7 @@ impl FunctorLangWebGame {
         // clear our shadow so the reloaded program's first draw re-shows it if
         // that program's `draw` still errors.
         self.overlay_error = None;
-        report.rebound
+        (report.rebound, history_replay)
     }
 
     /// Toggle the page's red draw-error overlay, touching the DOM only when the
@@ -575,14 +600,15 @@ impl GameProducer for FunctorLangWebGame {
         }
         let loaded = load_source(&sources)?;
         self.sources = sources;
-        let rebound = self.swap_in(loaded);
+        let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
         } else {
             String::new()
         };
+        let history = replay_status(history_replay);
         let status = format!(
-            "reloaded {} from pushed source in {:.2}ms (model preserved{stored})",
+            "reloaded {} from pushed source in {:.2}ms (model preserved{stored}{history})",
             self.path,
             js_sys::Date::now() - started
         );
@@ -603,14 +629,16 @@ impl GameProducer for FunctorLangWebGame {
         let loaded = load_source(files)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
-        let rebound = self.swap_in(loaded);
+        let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
         } else {
             String::new()
         };
+        let history = replay_status(history_replay);
         let status = format!(
-            "reloaded {} ({} file(s)) from pushed project in {:.2}ms (model preserved{stored})",
+            "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
+(model preserved{stored}{history})",
             self.path,
             files.len(),
             js_sys::Date::now() - started
@@ -685,6 +713,10 @@ impl GameProducer for FunctorLangWebGame {
         self.recorder.generation()
     }
 
+    fn scene_program_revision(&self) -> u64 {
+        self.recorder.program_revision()
+    }
+
     fn current_scene_tts(&self) -> Option<f64> {
         self.recorder.current_scene_frame_tts()
     }
@@ -729,7 +761,8 @@ impl GameProducer for FunctorLangWebGame {
             // coverage replays them lazily at pause time.
             let frame = self.recorder.current_scene_frame().unwrap_or(0);
             self.journal_ring.push_back((frame, journal.clone()));
-            while self.journal_ring.len() > functor_runtime_common::inspector::COVERAGE_RING_FRAMES {
+            while self.journal_ring.len() > functor_runtime_common::inspector::COVERAGE_RING_FRAMES
+            {
                 self.journal_ring.pop_front();
             }
             self.last_frame_journal = journal;

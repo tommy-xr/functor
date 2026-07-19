@@ -29,16 +29,15 @@ use std::collections::HashSet;
 
 use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value};
 
+use crate::asset::AssetProgress;
 use crate::functor_lang_prelude::{
     asset_progress_value, assets_taggers, contains_effect, deliver_physics_events, drain_effects,
-    frame_value, http_response_value,
-    needs_update, net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
-    physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
-    take_preload_completion,
-    take_http_tagger, take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree,
-    FunctorHost, NetEventKind, UiHandler,
+    frame_value, http_response_value, needs_update, net_conn_subs, net_event_value,
+    perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
+    sub_messages_for_frame, take_audio_completion, take_http_tagger, take_preload_completion,
+    take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree, FunctorHost,
+    NetEventKind, UiHandler,
 };
-use crate::asset::AssetProgress;
 use crate::input::RecordedInput;
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
@@ -271,6 +270,10 @@ impl Reporter {
         self.last_error = None;
     }
 
+    fn last_error(&self) -> Option<String> {
+        self.last_error.clone()
+    }
+
     /// Print a message once per distinct string — a 60fps loop must not flood
     /// the sink with one persistent bug.
     pub fn report_once(&mut self, message: String) {
@@ -461,7 +464,9 @@ impl FrameCtx<'_> {
                         }
                     }
                     Ok(_) => {}
-                    Err(message) => self.reporter.report_once(format!("[functor-lang] {message}")),
+                    Err(message) => self
+                        .reporter
+                        .report_once(format!("[functor-lang] {message}")),
                 },
                 Err(err) => self.reporter.frame_error("subscriptions", &err),
             }
@@ -484,12 +489,17 @@ impl FrameCtx<'_> {
             // both must land on the same frame (docs/time-travel.md T6b).
             self.recorder.record_inputs(std::mem::take(self.input_buf));
             self.recorder
-                .record(self.model, *self.physics_frame, frame_time.tts as f64);
+                .record_timed(self.model, *self.physics_frame, frame_time);
         } else {
-            // Paused frame (`dts == 0`): drain-and-drop the buffer. Paused frames
-            // aren't part of the played timeline, so their buffered inputs must
-            // NOT leak into the next stepped frame's recorded events.
-            self.input_buf.clear();
+            // The shell runs one zero-delta bootstrap before frame zero so the
+            // model/physics hooks settle before first draw. It is not a visible
+            // timeline frame, but it can mutate a valid model and must therefore
+            // prefix an exact reconstruction. Later paused zero-delta renders
+            // are not simulation history and are discarded by the recorder.
+            self.recorder.record_replay_prefix(
+                frame_time,
+                std::mem::take(self.input_buf),
+            );
         }
     }
 
@@ -538,22 +548,22 @@ impl FrameCtx<'_> {
     /// live order — input arrives before `tick`) so a recorded jump replays.
     /// Beyond the recorded window (`inputs` runs out) the step COASTS on held
     /// state.
-    pub fn step_scene_forward(
+    fn step_scene_forward<'a>(
         &mut self,
         divisions: usize,
         steps_per_division: usize,
-        sub_dt: f32,
-        start_tts: f32,
-        inputs: &[Vec<RecordedInput>],
+        input_at: impl Fn(usize) -> Option<&'a [RecordedInput]>,
+        mut frame_time_at: impl FnMut(usize) -> FrameTime,
+        capture_from_division: usize,
     ) -> Vec<(Value, Option<Vec<u8>>)> {
-        let mut out = Vec::with_capacity(divisions);
+        let mut out = Vec::with_capacity(divisions.saturating_sub(capture_from_division));
         let mut step = 0usize;
-        for _div in 0..divisions {
+        for div in 0..divisions {
             for _ in 0..steps_per_division {
                 // Replay this fine step's recorded inputs before the frame body,
                 // so the model absorbs them exactly as the live frame did (coast
                 // when the log has no entry for this step).
-                if let Some(events) = inputs.get(step) {
+                if let Some(events) = input_at(step) {
                     // A recorded UiEvent resolved against the LAST RENDER's
                     // handler table live — the tree the user saw, built from
                     // the settled model BEFORE this step's inputs. Rebuild
@@ -576,10 +586,7 @@ impl FrameCtx<'_> {
                         self.replay_input(event.clone(), &ui_handlers, &webview_handlers);
                     }
                 }
-                let frame_time = FrameTime {
-                    dts: sub_dt,
-                    tts: start_tts + (step as f32 + 1.0) * sub_dt,
-                };
+                let frame_time = frame_time_at(step);
                 self.subscriptions_and_tick(frame_time);
                 self.physics_phase(frame_time);
                 step += 1;
@@ -587,12 +594,14 @@ impl FrameCtx<'_> {
             // Snapshot only at the division boundary — the strobe still has
             // `divisions` frames, but each is the result of accurate fine
             // integration over `steps_per_division` sub-ticks.
-            let world = if self.has_physics {
-                self.physics_rt.snapshot_world()
-            } else {
-                None
-            };
-            out.push((self.model.clone(), world));
+            if div >= capture_from_division {
+                let world = if self.has_physics {
+                    self.physics_rt.snapshot_world()
+                } else {
+                    None
+                };
+                out.push((self.model.clone(), world));
+            }
         }
         out
     }
@@ -623,8 +632,8 @@ impl FrameCtx<'_> {
     /// args, then [`Self::absorb`] the result (which honors `suppress_outbound`,
     /// so nothing escapes). A `Key` re-runs `Key::from_i32` on the raw code just
     /// as the live path does; an unknown code is dropped, like live. An entry
-    /// point the game doesn't define resolves to an interpreter error, reported
-    /// (and silenced) through the dry-run reporter. A `UiEvent` resolves against
+    /// point removed by the edited program is ignored, exactly as the live
+    /// shell would ignore that raw event. A `UiEvent` resolves against
     /// `ui_handlers` and a `WebviewEvent` against `webview_handlers` — the
     /// step-top tables the caller rebuilt (the live frame's last-render
     /// contract).
@@ -652,9 +661,10 @@ impl FrameCtx<'_> {
                     Value::Number(y as f64),
                 ],
             ),
-            RecordedInput::MouseWheel { delta } => {
-                ("mouseWheel", vec![self.model.clone(), Value::Number(delta as f64)])
-            }
+            RecordedInput::MouseWheel { delta } => (
+                "mouseWheel",
+                vec![self.model.clone(), Value::Number(delta as f64)],
+            ),
             RecordedInput::UiEvent(event) => {
                 self.deliver_ui_event(ui_handlers, &event);
                 return;
@@ -664,6 +674,9 @@ impl FrameCtx<'_> {
                 return;
             }
         };
+        if self.session.global(entry).is_none() {
+            return;
+        }
         match self.session.call(entry, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error(entry, &err),
@@ -732,13 +745,14 @@ to receive their messages; dropping them"
             }
             return;
         }
-        let subs = match self
-            .session
-            .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-        {
-            Ok(subs) => subs,
-            Err(err) => return self.reporter.frame_error("subscriptions", &err),
-        };
+        let subs =
+            match self
+                .session
+                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(subs) => subs,
+                Err(err) => return self.reporter.frame_error("subscriptions", &err),
+            };
         // Reconcile connections EVERY frame — including frame one (before the
         // timer window exists), so a declared connection opens immediately.
         self.reconcile_connections(&subs);
@@ -750,7 +764,11 @@ to receive their messages; dropping them"
         };
         let msgs = match sub_messages_for_frame(&subs, prev, tts) {
             Ok(msgs) => msgs,
-            Err(message) => return self.reporter.report_once(format!("[functor-lang] {message}")),
+            Err(message) => {
+                return self
+                    .reporter
+                    .report_once(format!("[functor-lang] {message}"))
+            }
         };
         for msg in msgs {
             let args = vec![self.model.clone(), msg];
@@ -776,7 +794,11 @@ to receive their messages; dropping them"
         }
         let taggers = match assets_taggers(subs) {
             Ok(taggers) => taggers,
-            Err(message) => return self.reporter.report_once(format!("[functor-lang] {message}")),
+            Err(message) => {
+                return self
+                    .reporter
+                    .report_once(format!("[functor-lang] {message}"))
+            }
         };
         if taggers.is_empty() {
             return;
@@ -838,7 +860,8 @@ to receive their messages; dropping them"
                     // time, applied at the step), so their problems — unknown
                     // tag, queue overflow — surface here, deduped.
                     for warning in warnings {
-                        self.reporter.report_once(format!("[functor-lang] {warning}"));
+                        self.reporter
+                            .report_once(format!("[functor-lang] {warning}"));
                     }
                     return steps;
                 }
@@ -875,7 +898,11 @@ to receive their messages; dropping them"
         }
         let conns = match net_conn_subs(subs) {
             Ok(conns) => conns,
-            Err(message) => return self.reporter.report_once(format!("[functor-lang] {message}")),
+            Err(message) => {
+                return self
+                    .reporter
+                    .report_once(format!("[functor-lang] {message}"))
+            }
         };
         // Dedupe by key (first declaration wins its listen/connect role) so a
         // key is opened at most once even if declared twice in one frame.
@@ -913,16 +940,21 @@ to receive their messages; dropping them"
         if !self.has_subscriptions {
             return;
         }
-        let subs = match self
-            .session
-            .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-        {
-            Ok(subs) => subs,
-            Err(err) => return self.reporter.frame_error("subscriptions", &err),
-        };
+        let subs =
+            match self
+                .session
+                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
+            {
+                Ok(subs) => subs,
+                Err(err) => return self.reporter.frame_error("subscriptions", &err),
+            };
         let conns = match net_conn_subs(&subs) {
             Ok(conns) => conns,
-            Err(message) => return self.reporter.report_once(format!("[functor-lang] {message}")),
+            Err(message) => {
+                return self
+                    .reporter
+                    .report_once(format!("[functor-lang] {message}"))
+            }
         };
         let Some(sub) = conns.into_iter().find(|c| c.key == key) else {
             return; // an event for a no-longer-declared connection: drop it
@@ -1072,6 +1104,39 @@ carries no payload to tag; dropped",
 /// they go nowhere.
 fn silent_emit(_: &str) {}
 
+enum ForwardInputs<'a> {
+    Dense(&'a [Vec<RecordedInput>]),
+    Recorder(&'a SceneRecorder),
+}
+
+impl ForwardInputs<'_> {
+    fn at(&self, step: usize) -> Option<&[RecordedInput]> {
+        match self {
+            ForwardInputs::Dense(inputs) => inputs.get(step).map(Vec::as_slice),
+            ForwardInputs::Recorder(recorder) => Some(recorder.replay_inputs_at_step(step)),
+        }
+    }
+}
+
+enum ForwardClock<'a> {
+    Fixed { tts: f32, dts: f32 },
+    Recorder(&'a SceneRecorder),
+}
+
+impl ForwardClock<'_> {
+    fn next(&mut self, step: usize) -> FrameTime {
+        match self {
+            ForwardClock::Fixed { tts, dts } => {
+                *tts += *dts;
+                FrameTime { tts: *tts, dts: *dts }
+            }
+            ForwardClock::Recorder(recorder) => recorder
+                .replay_frame_time_at_step(step)
+                .expect("counterfactual replay clock range was validated"),
+        }
+    }
+}
+
 /// RAII guard for a throwaway dry-run physics world: removes it from the global
 /// registry on drop, so a panic in the stepped game code (`session.call` runs the
 /// Functor Lang interpreter) can't leak the world. `forward_step_scene` runs repeatedly
@@ -1104,18 +1169,18 @@ impl Drop for DryWorld {
 /// drain. `prev_tts` seeds the subscription-timer window so timers stay
 /// continuous through the step; `start_tts` is the fork point's scene time.
 #[allow(clippy::too_many_arguments)]
-pub fn forward_step_scene(
+fn forward_step_scene_with_error(
     session: &Session,
     model: &Value,
     has_physics: bool,
     has_subscriptions: bool,
     prev_tts: Option<f64>,
-    start_tts: f32,
-    sub_dt: f32,
+    clock: ForwardClock<'_>,
     divisions: usize,
     steps_per_division: usize,
-    inputs: &[Vec<RecordedInput>],
-) -> Vec<(Value, Option<Vec<u8>>)> {
+    inputs: ForwardInputs<'_>,
+    capture_from_division: usize,
+) -> (Vec<(Value, Option<Vec<u8>>)>, Option<String>) {
     // Pause the paused-inspector journal for the whole dry run: `--ghost`
     // forward-projection replays `tick`/`update` over throwaway state, and those
     // calls must NOT land in the live frame's journal (they are not real frame
@@ -1155,7 +1220,7 @@ pub fn forward_step_scene(
 
     let mut model = model.clone();
     let mut physics_frame = 0u64;
-    let mut recorder = SceneRecorder::new();
+    let mut dry_recorder = SceneRecorder::new();
     let mut effect_runner = DryRunEffects::new();
     let mut effect_log = EffectLog::new();
     let mut deferred_queries: Vec<EffectTree> = Vec::new();
@@ -1176,12 +1241,13 @@ pub fn forward_step_scene(
     );
 
     let result = {
+        let mut clock = clock;
         let mut ctx = FrameCtx {
             session,
             model: &mut model,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
-            recorder: &mut recorder,
+            recorder: &mut dry_recorder,
             effect_runner: &mut effect_runner as &mut dyn EffectRunner,
             effect_log: &mut effect_log,
             deferred_queries: &mut deferred_queries,
@@ -1196,13 +1262,117 @@ pub fn forward_step_scene(
             suppress_outbound: true,
             reporter: &mut reporter,
         };
-        ctx.step_scene_forward(divisions, steps_per_division, sub_dt, start_tts, inputs)
+        ctx.step_scene_forward(
+            divisions,
+            steps_per_division,
+            |step| inputs.at(step),
+            |step| clock.next(step),
+            capture_from_division,
+        )
     };
 
     // Natural drop order (declaration-reverse, also on unwind) restores the
     // world scope FIRST, then `dry_world`'s `Drop` removes the throwaway world
     // — so `active_world()` never points at a removed world.
-    result
+    (result, reporter.last_error())
+}
+
+/// Deterministically project a scene over throwaway state. Runtime errors are
+/// intentionally swallowed for visual previews, which simply omit/bound the
+/// affected projection; authoritative history replay uses the checked internal
+/// result instead.
+#[allow(clippy::too_many_arguments)]
+pub fn forward_step_scene(
+    session: &Session,
+    model: &Value,
+    has_physics: bool,
+    has_subscriptions: bool,
+    prev_tts: Option<f64>,
+    start_tts: f32,
+    sub_dt: f32,
+    divisions: usize,
+    steps_per_division: usize,
+    inputs: &[Vec<RecordedInput>],
+) -> Vec<(Value, Option<Vec<u8>>)> {
+    forward_step_scene_with_error(
+        session,
+        model,
+        has_physics,
+        has_subscriptions,
+        prev_tts,
+        ForwardClock::Fixed {
+            tts: start_tts,
+            dts: sub_dt,
+        },
+        divisions,
+        steps_per_division,
+        ForwardInputs::Dense(inputs),
+        0,
+    )
+    .0
+}
+
+/// Rebuild the complete retained pure-model timeline under the currently loaded
+/// program after a plain-data hot reload. Retained snapshots are old data: using
+/// them directly would preserve derived state from the old program (Mario's
+/// already-launched `vy`, for example), so a changed constant could alter only
+/// the beginning of a preview and then converge on the old outcome.
+///
+/// Replay starts from the edited program's actual `init` and is available only
+/// while the complete frame-zero input history is retained. Games with an
+/// `update` entry point are excluded for now because their model may depend on
+/// effect results or UI/network/audio/asset events that the input log does not
+/// yet capture. Physics games likewise need historical world replay.
+pub fn materialize_counterfactual_history(
+    session: &Session,
+    model: &mut Value,
+    recorder: &mut SceneRecorder,
+    has_physics: bool,
+    has_subscriptions: bool,
+    preserve_selected_model: bool,
+) -> Result<Option<usize>, String> {
+    if has_physics || session.global("update").is_some() {
+        return Ok(None);
+    }
+    let Some((lo, _, hi)) = recorder.counterfactual_replay_span()? else {
+        return Ok(None);
+    };
+    let Some(init) = session.global("init") else {
+        return Ok(None);
+    };
+    let recorded_frames = hi as usize + 1;
+    let prefix_len = recorder.replay_prefix_len();
+    let steps = prefix_len + recorded_frames;
+    let (stepped, replay_error) = forward_step_scene_with_error(
+        session,
+        &init,
+        false,
+        has_subscriptions,
+        None,
+        ForwardClock::Recorder(recorder),
+        steps,
+        1,
+        ForwardInputs::Recorder(recorder),
+        prefix_len + lo as usize,
+    );
+    if let Some(error) = replay_error {
+        return Err(format!(
+            "counterfactual history replay failed; retained old snapshots: {error}"
+        ));
+    }
+    let rebuilt: Vec<Value> = stepped.into_iter().map(|(model, _)| model).collect();
+    let selected_override = preserve_selected_model.then(|| model.clone());
+    let Some(selected) = recorder.materialize_counterfactual_history(
+        &rebuilt,
+        selected_override.as_ref(),
+    )? else {
+        return Err(
+            "counterfactual history replay produced an incomplete timeline; retained old snapshots"
+                .to_string(),
+        );
+    };
+    *model = selected;
+    Ok(Some(recorded_frames))
 }
 
 /// Forward-ghosting (docs/time-travel.md T6d): the shared producer body behind
@@ -1272,7 +1442,10 @@ pub fn ghost_frames(
         model,
         has_physics,
         has_subscriptions,
-        prev_tts,
+        // The projection starts at the selected frame's time. In particular,
+        // a scrubbed preview must not seed subscription windows from the old
+        // live tail's `prev_tts`.
+        recorder.current_scene_frame_tts().or(prev_tts),
         start_tts as f32,
         sub_dt,
         divisions,
@@ -1352,6 +1525,168 @@ mod tests {
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let model = session.global("init").expect("init");
         (session, model)
+    }
+
+    #[test]
+    fn failed_counterfactual_replay_keeps_the_old_history_atomically() {
+        let src = "\
+            let init = 0.0\n\
+            let tick = (m, dt, tts) => match m with | 0.0 => 1.0\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+
+        let mut recorder = SceneRecorder::new();
+        for model in [10.0, 20.0, 30.0] {
+            recorder.record_inputs(Vec::new());
+            recorder.record(&Value::Number(model), 0, model / 60.0);
+        }
+        let mut model = Value::Number(30.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        recorder
+            .seek_scene_to(0, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("scrub to a historical frame");
+        recorder.finish_reload(&model, physics_frame, true);
+
+        let error =
+            materialize_counterfactual_history(
+                &session,
+                &mut model,
+                &mut recorder,
+                false,
+                false,
+                false,
+            )
+                .expect_err("the second replayed tick has no matching arm");
+        assert!(error.contains("retained old snapshots"), "{error}");
+
+        recorder
+            .seek_scene_to(1, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("old future remains seekable");
+        assert_eq!(model.to_string(), "20");
+    }
+
+    #[test]
+    fn same_source_counterfactual_replay_matches_cumulative_game_clock_tts() {
+        let src = "let init = 0.0\nlet tick = (m, dt, tts) => m + dt + tts\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+
+        let mut recorder = SceneRecorder::new();
+        let mut recorded = Vec::new();
+        let mut tts = 0.0f32;
+        let mut live_model = 0.0f64;
+        let sub_dt = 1.0f32 / 60.0;
+        for frame in 0..1_000 {
+            let dts = if frame == 400 { 0.25 } else { sub_dt };
+            tts += dts;
+            live_model += dts as f64 + tts as f64;
+            let value = Value::Number(live_model);
+            recorded.push(value.to_string());
+            recorder.record_inputs(Vec::new());
+            recorder.record_timed(&value, 0, FrameTime { dts, tts });
+        }
+        let (lo, hi) = recorder.scene_frame_range().expect("retained history");
+        assert!(lo > 0, "exercise replay after model-ring pruning");
+
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        recorder
+            .seek_scene_to(lo, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("scrub retained history");
+        recorder.finish_reload(&model, physics_frame, true);
+        materialize_counterfactual_history(
+            &session,
+            &mut model,
+            &mut recorder,
+            false,
+            false,
+            false,
+        )
+            .expect("replay succeeds")
+            .expect("historical reload replays");
+
+        for frame in lo..=hi {
+            recorder
+                .seek_scene_to(frame, &mut model, &mut physics, &mut physics_frame, false)
+                .expect("seek rebuilt history");
+            assert_eq!(
+                model.to_string(),
+                recorded[frame as usize],
+                "same-source replay diverged at frame {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn counterfactual_replay_preserves_paused_input_and_ignores_removed_handlers() {
+        let src = "let init = 0.0\nlet tick = (m, dt, tts) => m + 1.0\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+
+        let mut recorder = SceneRecorder::new();
+        recorder.record_replay_prefix(
+            FrameTime { dts: 0.0, tts: 0.0 },
+            Vec::new(),
+        );
+        for frame in 0..3 {
+            let inputs = (frame == 1)
+                .then(|| {
+                    vec![RecordedInput::Key {
+                        code: crate::Key::Right as i32,
+                        is_down: true,
+                    }]
+                })
+                .unwrap_or_default();
+            recorder.record_inputs(inputs);
+            recorder.record_timed(
+                &Value::Number((frame + 2) as f64),
+                0,
+                FrameTime {
+                    dts: 1.0 / 60.0,
+                    tts: (frame + 1) as f32 / 60.0,
+                },
+            );
+        }
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        recorder
+            .seek_scene_to(1, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("scrub into history");
+        // A live input while paused has already updated the authoritative model
+        // but is not part of the recorded future until Resume.
+        model = Value::Number(99.0);
+        recorder.finish_reload(&model, physics_frame, true);
+
+        assert_eq!(
+            materialize_counterfactual_history(
+                &session,
+                &mut model,
+                &mut recorder,
+                false,
+                false,
+                true,
+            )
+            .expect("removed input handler is not a replay error"),
+            Some(3)
+        );
+        assert_eq!(
+            model.to_string(),
+            "99",
+            "rebuild must not overwrite the authoritative paused-input model"
+        );
+        recorder
+            .seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek rebuilt recorded future");
+        assert_eq!(model.to_string(), "4", "other snapshots are reconstructed");
     }
 
     /// Drive one `deliver_ui_event` through a throwaway [`FrameCtx`] (the
@@ -1560,10 +1895,7 @@ mod tests {
             suppress_outbound: false,
             reporter: &mut reporter,
         };
-        ctx.before_physics(FrameTime {
-            dts: 0.2,
-            tts: 1.1,
-        });
+        ctx.before_physics(FrameTime { dts: 0.2, tts: 1.1 });
     }
 
     const ASSETS_SRC: &str = "\
@@ -1623,7 +1955,10 @@ mod tests {
             suppress_outbound: false,
             reporter: &mut reporter,
         };
-        ctx.before_physics(FrameTime { dts: 0.1, tts: tts as f32 });
+        ctx.before_physics(FrameTime {
+            dts: 0.1,
+            tts: tts as f32,
+        });
     }
 
     /// `Sub.assets` delivers the snapshot through `update` exactly when it
@@ -1643,7 +1978,13 @@ mod tests {
             total: 3,
             failed: vec![("a.glb".to_string(), "404".to_string())],
         };
-        run_assets_frame(&session, &mut model, Some(loading.clone()), &mut delivered, 1.1);
+        run_assets_frame(
+            &session,
+            &mut model,
+            Some(loading.clone()),
+            &mut delivered,
+            1.1,
+        );
         assert_model(&session, &model, "expectedFirst");
 
         // Same snapshot: no redelivery (count stays 1).
@@ -1656,7 +1997,13 @@ mod tests {
             total: 3,
             failed: vec![("a.glb".to_string(), "404".to_string())],
         };
-        run_assets_frame(&session, &mut model, Some(settled.clone()), &mut delivered, 1.3);
+        run_assets_frame(
+            &session,
+            &mut model,
+            Some(settled.clone()),
+            &mut delivered,
+            1.3,
+        );
         assert_model(&session, &model, "expectedSettled");
 
         // A time-travel branch restores an older model and INVALIDATES the
@@ -1693,7 +2040,10 @@ mod tests {
             "effect result: GotTime(42)"
         );
         assert_eq!(journal[2].entry, "tick");
-        assert_eq!(journal[2].provenance.render(&journal[2].args), "tick dt=0.2");
+        assert_eq!(
+            journal[2].provenance.render(&journal[2].args),
+            "tick dt=0.2"
+        );
 
         // Replaying each journaled call through the PR1 recorder reproduces the
         // exact result of a direct `call` (entry points are pure), and records
