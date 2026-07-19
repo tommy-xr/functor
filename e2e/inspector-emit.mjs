@@ -17,7 +17,7 @@
 //
 // Run manually (owns its own server on :8080):
 //
-//   npm run build:cli            # so target/debug/functor embeds the runtime
+//   npm run build:cli:debug      # so target/debug/functor embeds the runtime
 //   node e2e/inspector-emit.mjs
 import { spawn } from "node:child_process";
 import net from "node:net";

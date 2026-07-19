@@ -126,21 +126,21 @@ language, prelude, and semantics are documented in the **`functor-lang` skill** 
 ## Commands
 
 **Prerequisites:** Rust stable + `wasm32-unknown-unknown` target, Node 22 / npm 10, and
-`wasm-pack`. **No .NET / Fable** — the toolchain is Rust + Node only. (`watchexec` is optional;
-Functor Lang hot-reload is built into the runtime, so `develop` does not need it.)
+`wasm-pack`. **No .NET / Fable** — the toolchain is Rust + Node only. (No external file
+watcher either; Functor Lang hot-reload is built into the runtime, so `develop` does not need one.)
 
 **Build the CLI.** Order matters — the CLI embeds the web runtime bundle at compile time via
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
 
 ```sh
-npm run build:cli           # the wasm bundle, then the functor CLI (debug)
-npm run build:cli:release   # same, but target/release/functor
+npm run build:cli           # the wasm bundle, then the functor CLI (RELEASE) → target/release/functor
+npm run build:cli:debug     # same, but a debug build → target/debug/functor
 ```
 
 (The human-facing docs mirror this split: `README.md` covers installing and using
 Functor; `DEVELOPMENT.md` covers building the CLI from source.)
 
-Produces `target/debug/functor` (or `target/release/functor`) — a single binary with the
+Produces `target/release/functor` (or `target/debug/functor` via `build:cli:debug`) — a single binary with the
 desktop runtime built in. **Use the RELEASE binary for interactive native testing** — the
 debug build is fine for headless checks and captures, but its CPU-bound paths are unusably
 slow live: the webview overlay's CPU raster is ~200× slower (~0.6s per repaint at a retina

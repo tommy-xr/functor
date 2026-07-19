@@ -32,26 +32,28 @@ No install needed:
 
 (The redesigned pages ship with this branch.)
 
-## Quick start (local)
+## Quick start
 
-Prereqs: **Rust stable** with the `wasm32-unknown-unknown` target, **Node 22+**, and
-**`wasm-pack`** (exact known-good versions in [DEVELOPMENT.md](DEVELOPMENT.md#prerequisites)).
+**Download a prebuilt binary** — no toolchain needed. Grab the archive for your
+platform from the [releases page](https://github.com/tommy-xr/functor/releases),
+extract it to get the single `functor` binary, and put it somewhere on your `PATH`:
+
+| Platform | Asset |
+| --- | --- |
+| macOS (Apple Silicon) | `functor-<version>-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `functor-<version>-x86_64-apple-darwin.tar.gz` |
+| Linux (x86-64) | `functor-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Windows (x86-64) | `functor-<version>-x86_64-pc-windows-msvc.zip` |
+
+Then scaffold a game and run it — a window opens; edit `my-game/game.fun` and save
+to hot-reload with the model preserved:
 
 ```sh
-# 1. Build the single `functor` binary (wasm bundle first, then the CLI).
-npm run build:cli
-
-# 2. Scaffold a game.
-./target/debug/functor -d my-game init
-
-# 3. Run it natively — a window opens. Edit my-game/game.fun and save;
-#    it hot-reloads, preserving the model.
-./target/debug/functor -d my-game run native
+functor -d my-game init         # scaffold a starter project
+functor -d my-game run native   # open a window and run it
 ```
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for build-from-source details (prerequisites,
-the wasm target) and [Running a sample](#running-a-sample) below for serving to the
-browser and fetching sample assets.
+Prefer to build from source? See [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Writing a game
 
@@ -112,7 +114,8 @@ time-travel scrubber you see at [functor.games](https://functor.games) (design n
 
 ## Running a sample
 
-Some samples reference glTF model assets that aren't checked in (they download from
+The bundled sample games live in this repo, so clone it to run them. Some samples
+reference glTF model assets that aren't checked in (they download from
 [BabylonJS Assets](https://github.com/BabylonJS/Assets/)); fetch them first:
 
 ```sh
@@ -125,16 +128,18 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 
 ```sh
 # Native — opens a window
-./target/debug/functor -d examples/hello run native
+functor -d examples/hello run native
 
 # A primitives-only sample (no assets needed)
-./target/debug/functor -d examples/primitives run native
+functor -d examples/primitives run native
 
 # Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
-./target/debug/functor -d examples/primitives run wasm
+functor -d examples/primitives run wasm
 ```
 
 `native` is the default environment, so `... run` is equivalent to `... run native`.
+(These commands assume `functor` is on your `PATH`; when running from a source build,
+use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).)
 
 ### CLI commands
 
