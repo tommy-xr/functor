@@ -7328,19 +7328,22 @@ a number",
         assert_eq!(fountain.position, Some([5.0, 0.5, 0.0]));
     }
 
-    /// Headless server-lifecycle test for the `mpserver` port (roadmap E2),
-    /// with no socket. Loads the SHIPPED `game.fun` so this tracks the example,
-    /// and exercises the whole server spine — `toMsg` decoding, the
+    /// Headless server-lifecycle test for the `examples/mp` server entry,
+    /// with no socket. Loads the SHIPPED `server.fun` so this tracks the
+    /// example, and exercises the whole server spine — `toMsg` decoding, the
     /// join/move/left `update` logic, `wrapAxis` integration, the `Text.*` wire
     /// encoding, and the broadcast-the-whole-world-to-every-client `Effect.send`
     /// (the naive server's defining behavior), plus a malformed packet ignored
     /// and a disconnect dropping a player.
     #[test]
-    fn mpserver_broadcasts_the_world_to_every_client() {
-        // load_single_source injects the built-in Net module, like the runner.
-        let src = include_str!("../../../examples/mpserver/game.fun");
-        let project = functor_lang::project::load_single_source("game", src)
-            .unwrap_or_else(|e| panic!("load mpserver: {}", e.render()));
+    fn mp_server_broadcasts_the_world_to_every_client() {
+        // project::load walks the entry's siblings (file = module) — the mp
+        // example keeps its wire codec in a shared Protocol module — and
+        // injects the built-in Net module, like the runner.
+        let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/mp/server.fun");
+        let project = functor_lang::project::load(&entry)
+            .unwrap_or_else(|e| panic!("load mp server: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
 
@@ -7430,17 +7433,18 @@ a number",
         );
     }
 
-    /// Headless client-lifecycle test for the `mpclient` port (roadmap E2),
-    /// with no socket. Loads the SHIPPED `game.fun` and drives connect (auto-move
-    /// sent), a snapshot decoded into the world, WASD `input` producing sends,
-    /// and a disconnect. The snapshot fed in is the exact wire string the
-    /// `mpserver` port broadcasts, so this doubles as a wire round-trip check
-    /// between the two ports.
+    /// Headless client-lifecycle test for the `examples/mp` client entry,
+    /// with no socket. Loads the SHIPPED `client.fun` (and its Protocol/View
+    /// siblings) and drives connect (auto-move sent), a snapshot decoded into
+    /// the world, WASD `input` producing sends, and a disconnect. The snapshot
+    /// fed in is the exact wire string the server entry broadcasts, so this
+    /// doubles as a wire round-trip check between the two roles.
     #[test]
-    fn mpclient_decodes_snapshots_and_sends_input() {
-        let src = include_str!("../../../examples/mpclient/game.fun");
-        let project = functor_lang::project::load_single_source("game", src)
-            .unwrap_or_else(|e| panic!("load mpclient: {}", e.render()));
+    fn mp_client_decodes_snapshots_and_sends_input() {
+        let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/mp/client.fun");
+        let project = functor_lang::project::load(&entry)
+            .unwrap_or_else(|e| panic!("load mp client: {}", e.render()));
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         fn call(session: &functor_lang::Session, name: &str, args: Vec<Value>) -> Value {
@@ -7535,7 +7539,7 @@ a number",
             "input before connect sends nothing"
         );
 
-        // A server snapshot (the exact wire string mpserver broadcasts)
+        // A server snapshot (the exact wire string server.fun broadcasts)
         // decodes into the world, binding each pid to its own coordinates.
         let msg = call(&session, "toMsg", vec![event(NetEventKind::Message, 5, "1,-200,100|0,-100,-180")]);
         let (model, _) = split_model_effect(call(&session, "update", vec![model, msg]));

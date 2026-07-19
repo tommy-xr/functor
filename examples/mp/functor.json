@@ -1,0 +1,7 @@
+{
+  "language": "functor-lang",
+  "entries": {
+    "client": "client.fun",
+    "server": "server.fun"
+  }
+}

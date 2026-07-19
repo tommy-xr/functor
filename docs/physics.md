@@ -30,7 +30,7 @@ roadmap table; the highlights:
   contact-flash; scrub time with the shell scrubber overlay).
 
 **Not yet built:** the model-layer `Entities`/`Archetype` abstraction (5b),
-networked physics (7a/7b — the `mpserver`/`mpclient` demo), and cross-target
+networked physics (7a/7b — the `examples/mp` demo), and cross-target
 determinism (8, likely unneeded). See the roadmap table.
 
 **Design-doc note:** the surface shipped on **Functor Lang**, so the F#-shaped API
@@ -297,7 +297,7 @@ The `Physics.View` is a cheap read handle to the frame's stepped snapshot, reach
 through the explicit `DrawContext` argument so rewind and netsim still treat
 **model + snapshot** as the whole truth (it is not ambient global state). Changing
 `draw3d` to take the context record is a small migration across the existing
-examples (`hello`, `mpserver`, `mpclient`) — they destructure `{ time }` and are
+examples (`hello`, `examples/mp`) — they destructure `{ time }` and are
 otherwise untouched.
 
 ### Authority + divergence
@@ -560,7 +560,7 @@ ball), each owner resolves the contact seeing the other body as kinematic
 (infinite mass), and the two outcomes can disagree physically. This is resolved
 by design — ownership handoff on contact, or routing contested interactions
 through the server — not by determinism. Deferring Mode B defers this too, but
-any split-ownership scene (including the `mpserver`/`mpclient` demo below) hits
+any split-ownership scene (including the `examples/mp` demo below) hits
 it as soon as owned bodies can touch.
 
 **Target topology (networked VR): client-owned player movement, server-owned
@@ -648,11 +648,11 @@ phase (7):
   resim depth); wire the existing pause/step controls to the snapshot ring for
   **backward** scrubbing.
 
-### Networked-physics demo: `mpserver` / `mpclient`
+### Networked-physics demo: `examples/mp`
 
 The concrete vehicle for Phase 7 — grown directly from the existing examples
-(today `mpserver` broadcasts player positions as a text snapshot and `mpclient`
-renders them). The scene: **each client owns a bouncing ball; the server owns the
+(today its `server.fun` broadcasts player positions as a text snapshot and
+`client.fun` renders them). The scene: **each client owns a bouncing ball; the server owns the
 moving objects** (e.g. drifting platforms / bumpers the balls collide with). This
 puts both authority directions in one scene, so a client's `physicsScape` declares:
 
@@ -688,7 +688,7 @@ It's worth building in two steps, because they exercise different machinery:
 | **5. Collision events** | `Physics.events(tagger)` sub: contact begin/end as `{started, a, b, sensor}` records, collected per fixed substep (rapier `ActiveEvents::COLLISION_EVENTS` on every collider), delivered post-step through `update`; `Simulatable::step` now returns the frame's events (the doc's original seam). **Shipped (Functor Lang).** | native+wasm (Functor Lang) |
 | **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `physics` grows a bullet/debris archetype. | both |
 | **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history. **Shipped**; the game-facing control effects (`Physics.pause`/`resume`/`stepOnce`/`rewindTo`/`timelineFrame`) and the example's keyboard scrub shipped here too but were later **removed** — the recorder now drives the shell-owned whole-game scrubber (docs/time-travel.md) via `rewind_to_frame`/`seek_to_frame`. | native+wasm (Functor Lang) |
-| **7a. Networked physics (state-sync)** | `Authority`, `mpserver`/`mpclient` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
+| **7a. Networked physics (state-sync)** | `Authority`, `examples/mp` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
 | **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
 
 (No cross-target determinism phase: neither netcode mode needs it — see

@@ -61,18 +61,19 @@ holds, e.g. network convergence; `stepAll(clients, dt)` advances every client by
 one lockstep frame.
 
 `test/multiplayer.e2e.test.ts` does exactly this end-to-end: it launches one
-`mpserver` + two `mpclient` runners and waits until the server tracks 2
-players and each client converges on a 2-player world.
+server + two client runners (`examples/mp`, a multi-entry project) and waits
+until the server tracks 2 players and each client converges on a 2-player
+world.
 
 ```ts
-const launch = (game: string, port: number) =>
+const launch = (entry: string, port: number) =>
   FunctorRunner.launch({
-    gameDir: `examples/${game}`,
-    functorLangPath: `examples/${game}/game.fun`,
+    gameDir: "examples/mp",
+    functorLangPath: `examples/mp/${entry}`,
     port,
   });
-await using a = await launch("mpserver", 8077);
-await using b = await launch("mpclient", 8078);
+await using a = await launch("server.fun", 8077);
+await using b = await launch("client.fun", 8078);
 await Promise.all([a.pause(), b.pause()]);
 for (let frame = 0; frame < 600; frame++) {
   await a.keyDown("up");        // per-client input
@@ -96,9 +97,9 @@ cargo build --bin functor
 ```
 
 (The games driven by the tests are `examples/hello` — the held-input
-test — and `examples/mpserver` / `examples/mpclient` — the multiplayer
-test. A `build` step is optional: `functor -d <dir> build native` just
-typechecks the `.fun`.)
+test — and `examples/mp` (its `server.fun` / `client.fun` entries) — the
+multiplayer test. A `build` step is optional: `functor -d <dir> build native`
+just typechecks the `.fun`.)
 
 The headline e2e (`held-input.e2e.test.ts`) is the durable guard for the
 input→state→step loop: inject `up`, step a frame, assert the model's `held.up`
