@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use android_activity::{AndroidApp, MainEvent, PollEvent};
+use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use cgmath::{Quaternion, Rotation, Vector3};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::{Camera, Frame, FrameTime, SceneContext, Viewport};
@@ -277,6 +277,30 @@ pub fn android_main(app: AndroidApp) {
     );
     log::info!("functor oculus runtime starting");
 
+    // Meta's runtime refuses to bind a session to an activity that isn't
+    // resumed with a window ("xrCreateSession: Activity is not yet in the
+    // ready state") — the session then parks in IDLE forever and Horizon's
+    // loading interstitial times out. Pump the Android event loop until the
+    // activity is ready before touching EGL/OpenXR.
+    let mut resumed = false;
+    let mut destroyed = false;
+    while !destroyed && !(resumed && app.native_window().is_some()) {
+        app.poll_events(Some(std::time::Duration::from_millis(16)), |event| {
+            if let PollEvent::Main(main) = event {
+                match main {
+                    MainEvent::Resume { .. } => resumed = true,
+                    MainEvent::Pause => resumed = false,
+                    MainEvent::Destroy => destroyed = true,
+                    _ => {}
+                }
+            }
+        });
+    }
+    if destroyed {
+        return;
+    }
+    log::info!("activity resumed with window; initializing EGL + OpenXR");
+
     let egl_ctx = init_egl();
     let gl = unsafe {
         glow::Context::from_loader_function(|s| {
@@ -289,10 +313,23 @@ pub fn android_main(app: AndroidApp) {
     };
     let gl = Arc::new(gl);
 
-    // OpenXR: Meta's libopenxr_loader.so is dlopen'd (the crate's `loaded`
-    // feature); the Android loader hook must run before create_instance.
+    // android-activity stores the *Application* in ndk_context, but Meta's
+    // runtime needs the *Activity* in XrInstanceCreateInfoAndroidKHR to track
+    // the app's lifecycle — handed the Application, it logs "xrCreateSession:
+    // Activity is not yet in the ready state" and parks the session in IDLE
+    // forever. The openxr crate populates that struct from ndk_context; the
+    // only ndk_context reads happen below on this same thread (loader +
+    // instance init), so the non-atomic release→initialize swap is safe here.
+    unsafe {
+        ndk_context::release_android_context();
+        ndk_context::initialize_android_context(app.vm_as_ptr(), app.activity_as_ptr());
+    }
+
+    // OpenXR: libopenxr_loader.so (Khronos or Meta's) is dlopen'd (the
+    // crate's `loaded` feature); the Android loader hook must run before
+    // create_instance.
     let entry = unsafe { xr::Entry::load() }.expect(
-        "load libopenxr_loader.so — is Meta's loader bundled in the APK? (see README)",
+        "load libopenxr_loader.so — is an OpenXR loader bundled in the APK? (see README)",
     );
     entry
         .initialize_android_loader()
@@ -407,6 +444,18 @@ pub fn android_main(app: AndroidApp) {
                 }
             }
         });
+
+        // Drain Android input events: real input arrives via OpenXR actions,
+        // but an undrained queue is an "isn't responding" ANR — the
+        // dispatcher times out waiting on the unread events. Key events are
+        // consumed (Handled): default-handling an unhandled BACK would
+        // finish the activity.
+        if let Ok(mut input_iter) = app.input_events_iter() {
+            while input_iter.next(|event| match event {
+                android_activity::input::InputEvent::KeyEvent(_) => InputStatus::Handled,
+                _ => InputStatus::Unhandled,
+            }) {}
+        }
 
         // OpenXR events: drive the session state machine.
         while let Some(event) = instance.poll_event(&mut event_storage).expect("poll_event") {

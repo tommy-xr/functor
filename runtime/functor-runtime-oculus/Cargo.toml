@@ -27,6 +27,8 @@ openxr = "0.21"
 # Modern replacement for the deprecated ndk-glue: provides android_main and
 # feeds ndk-context, which openxr's initialize_android_loader() reads.
 android-activity = { version = "0.6", features = ["native-activity"] }
+# For the ndk_context activity swap in android_main (see the comment there).
+ndk-context = "0.1"
 khronos-egl = { version = "6.0", features = ["dynamic"] }
 libloading = "0.8"
 glow = "0.17"
@@ -50,6 +52,31 @@ target_sdk_version = 32
 name = "android.hardware.vr.headtracking"
 required = true
 version = 1
+
+# Optional hand tracking: bypasses Horizon's "controllers required" launch
+# interceptor, so the tool APK launches with controllers asleep (headless /
+# automated runs included). Real hand input is later roadmap work.
+[[package.metadata.android.uses_feature]]
+name = "oculus.software.handtracking"
+required = false
+
+[[package.metadata.android.uses_permission]]
+name = "com.oculus.permission.HAND_TRACKING"
+
+# Without supportedDevices, Horizon OS treats the APK as an original-Quest
+# compat app (`VrRuntimeCompatHelper: DevicesSupported : 1 devices, quest`).
+[[package.metadata.android.application.meta_data]]
+name = "com.oculus.supportedDevices"
+value = "quest2|questpro|quest3"
+
+# Immersive VR activity: single instance, landscape, no decor — matches
+# Meta's native samples (and the working shock2quest manifest).
+[package.metadata.android.application.activity]
+theme = "@android:style/Theme.Black.NoTitleBar.Fullscreen"
+config_changes = "density|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|uiMode"
+launch_mode = "singleTask"
+orientation = "landscape"
+resizeable_activity = false
 
 [[package.metadata.android.application.activity.intent_filter]]
 actions = ["android.intent.action.MAIN"]

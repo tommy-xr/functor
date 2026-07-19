@@ -8,10 +8,25 @@ over the network (the `POST /reload-source` remote-develop loop).
 
 ## Status
 
-Phase 1: the OpenXR shell cross-compiles (instance/session/swapchains/frame
-loop, per-eye rendering with head-pose cameras, placeholder scene). Device
-bring-up (Functor Lang producer, network reload, controller input, asymmetric-frustum
-projection) happens against real hardware.
+Phase 1 **verified on hardware** (Quest 3, Horizon OS v205): the OpenXR shell
+reaches session FOCUSED and renders the placeholder scene in stereo through
+the shared `render_frame` path. Remaining device bring-up: the Functor Lang producer,
+network reload, controller input, asymmetric-frustum projection.
+
+## Headless iteration (no one wearing the headset)
+
+The device only promotes a session past IDLE when it believes it's worn, and
+blocks launches when controllers are asleep — both bypassable for automated
+runs (the manifest's optional `oculus.software.handtracking` handles the
+controller gate):
+
+```sh
+adb shell am broadcast -a com.oculus.vrpowermanager.prox_close   # fake "worn"
+adb shell am start -n dev.functor.runner/android.app.NativeActivity
+adb logcat -s functor    # expect IDLE → READY → SYNCHRONIZED → VISIBLE → FOCUSED
+adb exec-out screencap -p > /tmp/quest.png   # both rendered eyes, via compositor
+# undo: adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable
+```
 
 ## Prerequisites
 
@@ -43,12 +58,21 @@ npm run build:oculus:apk   # → target-android/debug/apk/functor_runtime_oculus
 cargo apk run              # builds + adb installs + launches on the headset
 ```
 
-**One manual artifact:** OpenXR on Quest needs **Meta's loader**. Download the
+**One manual artifact:** the APK must bundle an OpenXR loader as
+`lib/arm64-v8a/libopenxr_loader.so` (gitignored; `runtime_libs = "lib"`
+bundles it). Without it the app aborts at startup with a clear message.
+The easy path is the **standard Khronos loader** — Meta endorses it on
+Horizon OS, it needs no developer login, and it's verified working on a
+Quest 3 (OS v205):
+
+```sh
+curl -sO https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/1.1.61/openxr_loader_for_android-1.1.61.aar
+unzip -j openxr_loader_for_android-1.1.61.aar 'jni/arm64-v8a/libopenxr_loader.so' -d lib/arm64-v8a/
+```
+
+(Meta's own loader from the
 [Meta OpenXR Mobile SDK](https://developer.oculus.com/downloads/package/oculus-openxr-mobile-sdk/)
-and copy `OpenXR/Libs/Android/arm64-v8a/Release/libopenxr_loader.so` to
-`lib/arm64-v8a/` in this directory (gitignored; `runtime_libs = "lib"` bundles
-it into the APK). Without it the app aborts at startup with a clear message.
-Do not substitute the Khronos loader — Meta's is the supported path.
+works identically if you have one on hand.)
 
 ## Architecture notes
 
