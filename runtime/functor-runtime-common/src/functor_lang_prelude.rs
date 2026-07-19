@@ -773,6 +773,22 @@ impl HostData for FunctorLangHtmlAttr {
     }
 }
 
+/// One or more formatted CSS declarations (`width: 300px`) as an opaque
+/// Functor Lang value — `Style.widthPx(300.0)`. `Attr.styles` folds a list of
+/// these into ONE `style="…"` attribute (the Angle rule applied to inline
+/// styles); values are formatted at construction, so a Style is plain text
+/// by the time it reaches the fold.
+pub struct FunctorLangStyle(pub String);
+
+impl HostData for FunctorLangStyle {
+    fn type_name(&self) -> &'static str {
+        "Style"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// A [`Fog`] as an opaque Functor Lang value — `Fog.linear(…)`/`Fog.exp(…)`.
 /// `Frame.withFog` accepts ONLY this (the Angle rule).
 pub struct FunctorLangFog(pub Fog);
@@ -1046,6 +1062,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_subs(&mut reg);
         register_ui_widgets(&mut reg);
         register_html(&mut reg);
+        register_style(&mut reg);
         register_audio(&mut reg);
         reg
     })
@@ -1141,6 +1158,7 @@ crate::host_returnable!(
     FunctorLangView,
     FunctorLangHtmlNode,
     FunctorLangHtmlAttr,
+    FunctorLangStyle,
     FunctorLangAudioSource,
     FunctorLangAudioScene,
 );
@@ -2476,6 +2494,124 @@ fn register_html(reg: &mut crate::host_registry::Registry) {
             FunctorLangHtmlAttr(HtmlAttr::Input(slot))
         },
     );
+    // Typed inline styles: the list folds into ONE `style="k: v; k: v"` pair
+    // at construction, so the shells need no new lowering — it is exactly an
+    // `Attr.style` by the time they see it.
+    reg.fn1(
+        "Attr.styles",
+        "Attr.styles([Style.widthPx(300.0), …])",
+        |styles: Vec<FunctorLangStyle>| {
+            let css = styles
+                .into_iter()
+                .map(|FunctorLangStyle(decl)| decl)
+                .collect::<Vec<_>>()
+                .join("; ");
+            FunctorLangHtmlAttr(HtmlAttr::Pair("style".to_string(), css))
+        },
+    );
+}
+
+/// `Color.t` -> the CSS `rgb(r, g, b)` form, quantized through [`ui::rgb_u8`]
+/// so inline styles and `Ui.textColor` agree on the same 0..1 -> 0..255
+/// rounding.
+fn css_color(color: FunctorLangColor) -> String {
+    let (r, g, b) = color.0;
+    let [r, g, b] = ui::rgb_u8(r, g, b);
+    format!("rgb({r}, {g}, {b})")
+}
+
+/// The `Style` vocabulary — typed INLINE styles for `Attr.styles` (the
+/// elm-css idea, scoped to the declaration half of CSS). Each constructor
+/// formats its value at construction (`Style.widthPx(300.0)` IS
+/// `width: 300px`); colors are `Color.t` (the one color type across 3D and
+/// UI). Stylesheet CSS — selectors, `:hover`, keyframes — deliberately stays
+/// a string in `Html.style`.
+fn register_style(reg: &mut crate::host_registry::Registry) {
+    /// A fixed declaration (`Style.bold()` -> `font-weight: bold`).
+    fn fixed(reg: &mut crate::host_registry::Registry, path: &'static str, css: &'static str) {
+        reg.fn0(path, format!("{path}()").leak() as &'static str, move || {
+            FunctorLangStyle(css.to_string())
+        });
+    }
+    /// A `px`-valued declaration (`Style.widthPx(300.0)` -> `width: 300px`).
+    fn px(reg: &mut crate::host_registry::Registry, path: &'static str, prop: &'static str) {
+        reg.fn1(path, format!("{path}(n)").leak() as &'static str, move |n: f64| {
+            FunctorLangStyle(format!("{prop}: {n}px"))
+        });
+    }
+    /// A `%`-valued declaration (`Style.widthPct(50.0)` -> `width: 50%`).
+    fn pct(reg: &mut crate::host_registry::Registry, path: &'static str, prop: &'static str) {
+        reg.fn1(path, format!("{path}(n)").leak() as &'static str, move |n: f64| {
+            FunctorLangStyle(format!("{prop}: {n}%"))
+        });
+    }
+    /// A color-valued declaration (`Style.color(Color.rgb(…))`).
+    fn colored(reg: &mut crate::host_registry::Registry, path: &'static str, prop: &'static str) {
+        reg.fn1(
+            path,
+            format!("{path}(color)").leak() as &'static str,
+            move |color: FunctorLangColor| FunctorLangStyle(format!("{prop}: {}", css_color(color))),
+        );
+    }
+
+    // Layout (flexbox).
+    fixed(reg, "Style.flexRow", "display: flex; flex-direction: row");
+    fixed(reg, "Style.flexColumn", "display: flex; flex-direction: column");
+    px(reg, "Style.gapPx", "gap");
+    fixed(reg, "Style.justifyStart", "justify-content: flex-start");
+    fixed(reg, "Style.justifyCenter", "justify-content: center");
+    fixed(reg, "Style.justifyEnd", "justify-content: flex-end");
+    fixed(reg, "Style.justifyBetween", "justify-content: space-between");
+    fixed(reg, "Style.alignStart", "align-items: flex-start");
+    fixed(reg, "Style.alignCenter", "align-items: center");
+    fixed(reg, "Style.alignEnd", "align-items: flex-end");
+    // Sizing.
+    px(reg, "Style.widthPx", "width");
+    pct(reg, "Style.widthPct", "width");
+    px(reg, "Style.heightPx", "height");
+    pct(reg, "Style.heightPct", "height");
+    // Spacing (all sides).
+    px(reg, "Style.paddingPx", "padding");
+    px(reg, "Style.marginPx", "margin");
+    // Color — Color.t, the one color type across 3D and UI.
+    colored(reg, "Style.color", "color");
+    colored(reg, "Style.background", "background");
+    // Text.
+    px(reg, "Style.fontSizePx", "font-size");
+    fixed(reg, "Style.bold", "font-weight: bold");
+    fixed(reg, "Style.textCenter", "text-align: center");
+    // Border.
+    reg.fn2(
+        "Style.borderPx",
+        "Style.borderPx(n, color)",
+        |n: f64, color: FunctorLangColor| {
+            FunctorLangStyle(format!("border: {n}px solid {}", css_color(color)))
+        },
+    );
+    px(reg, "Style.roundedPx", "border-radius");
+    // Misc.
+    reg.fn1("Style.opacity", "Style.opacity(n) — 0..1", |n: f64| {
+        if !(0.0..=1.0).contains(&n) {
+            return Err(format!("Style.opacity: expected 0..1, got {n}"));
+        }
+        Ok(FunctorLangStyle(format!("opacity: {n}")))
+    });
+    // The escape hatch for the long tail of CSS. The `Attr.attr` rule for the
+    // property NAME (letters/digits/dashes), so a hostile name can't smuggle
+    // extra declarations or break out of the attribute; the value is escaped
+    // by the serializer like any other attribute text.
+    reg.fn2(
+        "Style.raw",
+        "Style.raw(\"property\", \"value\")",
+        |name: String, value: String| {
+            if !valid_html_name(&name) {
+                return Err(format!(
+                    "Style.raw: `{name}` is not an allowed property name (letters/digits/dashes)"
+                ));
+            }
+            Ok(FunctorLangStyle(format!("{name}: {value}")))
+        },
+    );
 }
 
 /// The audio vocabulary — soundscape voices (the continuous, reconciled half
@@ -2649,6 +2785,7 @@ handle_arg!(
     FunctorLangView => "a View",
     FunctorLangHtmlNode => "an Html node",
     FunctorLangHtmlAttr => "an Attr",
+    FunctorLangStyle => "a Style",
     FunctorLangAudioSource => "an AudioSource",
 );
 
@@ -6411,6 +6548,61 @@ the game dir"
         let value = eval("let main = () => Html.style(\".a > .b { color: red; }\")");
         let node = html_node_value(&value).expect("style node");
         assert_eq!(node.to_html(), "<style>.a > .b { color: red; }</style>");
+        let _ = take_ui_handlers();
+    }
+
+    // Attr.styles (the elm-css split — inline declarations typed, stylesheet
+    // strings not): the Style list folds into ONE style="…" pair at
+    // construction. Pinned as the exact serialized attribute, including the
+    // px formatting and the ui::rgb_u8 color quantization.
+    #[test]
+    fn attr_styles_folds_into_one_style_attribute() {
+        let _ = take_ui_handlers();
+        let value = eval(
+            "let main = () => Html.div([Attr.styles([\n\
+               Style.flexRow(),\n\
+               Style.gapPx(10.0),\n\
+               Style.widthPx(300.0),\n\
+               Style.background(Color.rgb(0.1, 0.1, 0.2)),\n\
+               Style.borderPx(2.0, Color.rgb(1.0, 1.0, 1.0)),\n\
+               Style.opacity(0.5),\n\
+               Style.raw(\"letter-spacing\", \"0.1em\"),\n\
+             ])], [])",
+        );
+        let node = html_node_value(&value).expect("div node");
+        assert_eq!(
+            node.to_html(),
+            r#"<div style="display: flex; flex-direction: row; gap: 10px; width: 300px; background: rgb(26, 26, 51); border: 2px solid rgb(255, 255, 255); opacity: 0.5; letter-spacing: 0.1em"></div>"#
+        );
+        let _ = take_ui_handlers();
+    }
+
+    // The Angle rule applied to inline styles: bare values where a Style (or
+    // the list) goes, an out-of-range opacity, and an injection-shaped
+    // Style.raw property name are construction-time teaching errors.
+    #[test]
+    fn attr_styles_rejects_wrong_shapes_with_teaching_errors() {
+        let _ = take_ui_handlers();
+        assert_eq!(
+            run_fail("let main = () => Attr.styles(42.0)"),
+            "expected a list, got a number"
+        );
+        assert_eq!(
+            run_fail("let main = () => Attr.styles([42.0])"),
+            "Attr.styles: expected a Style, got a number"
+        );
+        assert_eq!(
+            run_fail("let main = () => Attr.styles([\"width: 300px\"])"),
+            "Attr.styles: expected a Style, got a string"
+        );
+        assert_eq!(
+            run_fail("let main = () => Style.opacity(1.5)"),
+            "Style.opacity: expected 0..1, got 1.5"
+        );
+        assert_eq!(
+            run_fail("let main = () => Style.raw(\"width;height\", \"10px\")"),
+            "Style.raw: `width;height` is not an allowed property name (letters/digits/dashes)"
+        );
         let _ = take_ui_handlers();
     }
 

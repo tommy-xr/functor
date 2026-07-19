@@ -1,0 +1,56 @@
+// style.funi — the `Style` host module (interface only; implemented in Rust by
+// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//
+// Typed INLINE styles for `Attr.styles` — the declaration half of CSS as
+// branded values (the Angle rule: a bare string/number where a Style goes is
+// an error). Values are formatted at construction (`Style.widthPx(300.0)` IS
+// `width: 300px`); colors take `Color.t` — the one color type across 3D and
+// UI. Stylesheet CSS (selectors, :hover, keyframes) deliberately stays a
+// string in `Html.style`.
+
+// The opaque style-declaration handle.
+type t
+
+// Layout: flexbox. flexRow/flexColumn set display AND direction.
+let flexRow : () => t
+let flexColumn : () => t
+let gapPx : (float) => t
+let justifyStart : () => t
+let justifyCenter : () => t
+let justifyEnd : () => t
+let justifyBetween : () => t
+let alignStart : () => t
+let alignCenter : () => t
+let alignEnd : () => t
+
+// Sizing — pixels or percent of the parent.
+let widthPx : (float) => t
+let widthPct : (float) => t
+let heightPx : (float) => t
+let heightPct : (float) => t
+
+// Spacing — all sides.
+let paddingPx : (float) => t
+let marginPx : (float) => t
+
+// Color — text and background.
+let color : (Color.t) => t
+let background : (Color.t) => t
+
+// Text.
+let fontSizePx : (float) => t
+let bold : () => t
+let textCenter : () => t
+
+// Border: `borderPx(n, color)` is a solid border; `roundedPx` is
+// border-radius.
+let borderPx : (float, Color.t) => t
+let roundedPx : (float) => t
+
+// 0..1 (out of range is a construction-time error).
+let opacity : (float) => t
+
+// The escape hatch for the long tail of CSS:
+// `Style.raw("letter-spacing", "0.1em")`. The property name is validated
+// (letters/digits/dashes) like `Attr.attr`.
+let raw : (string, string) => t

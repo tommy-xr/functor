@@ -9,6 +9,9 @@ type t
 
 let class : (string) => t
 let style : (string) => t
+// Typed inline styles (the `Style` module): the list folds into ONE
+// `style="k: v; k: v"` attribute at construction.
+let styles : (List<Style.t>) => t
 let id : (string) => t
 // Any attribute by name: `Attr.attr("placeholder", "Your name")`.
 let attr : (string, string) => t
