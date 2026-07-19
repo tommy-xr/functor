@@ -17,10 +17,19 @@ struct Server {
 
 impl Server {
     fn spawn() -> Server {
+        // Most tests assert exact message SEQUENCES: disable the async
+        // expect-evaluation worker so no unsolicited `functor/tests/status`
+        // interleaves (the expects flow has its own test, spawned with a
+        // budget).
+        Server::spawn_with_expect_budget("0")
+    }
+
+    fn spawn_with_expect_budget(budget: &str) -> Server {
         let mut child = Command::new(env!("CARGO_BIN_EXE_functor-lang-lsp"))
             // These tests assert diagnostic content, not typing cadence: disable
             // the didChange debounce so publishes are immediate and deterministic.
             .env("FUNCTOR_LSP_DIAGNOSTICS_DEBOUNCE_MS", "0")
+            .env("FUNCTOR_LSP_EXPECT_BUDGET", budget)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -32,6 +41,19 @@ impl Server {
             stdin,
             stdout,
         }
+    }
+
+    /// Read messages until one satisfies `want` (skipping unrelated
+    /// notifications — the expects worker is async, so its status pushes
+    /// interleave with request replies).
+    fn recv_until(&mut self, what: &str, want: impl Fn(&Value) -> bool) -> Value {
+        for _ in 0..50 {
+            let message = self.recv();
+            if want(&message) {
+                return message;
+            }
+        }
+        panic!("never received {what}");
     }
 
     fn send(&mut self, message: Value) {
@@ -722,6 +744,67 @@ fn prelude_gives_host_calls_real_types() {
 
     server.send(json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
     server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
+}
+
+/// The live expect-test flow: didOpen pushes `running` immediately, then the
+/// async worker's settled statuses arrive with pass/fail/unrunnable states
+/// and the decomposed-comparison detail; an edit re-pushes `running` and
+/// re-evaluates.
+#[test]
+fn expect_statuses_over_real_stdio() {
+    let mut server = Server::spawn_with_expect_budget("1000000");
+    server.send(json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }));
+    server.recv();
+
+    let src = "let area = (w, h) => w * h\n\
+               expect area(3.0, 4.0) == 12.0\n\
+               expect area(3.0, 4.0) == 12.5\n\
+               expect Scene.cube() == Scene.cube()\n";
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": { "uri": URI, "text": src } },
+    }));
+    let is_status = |message: &Value| message["method"] == "functor/tests/status";
+    // The immediate push: every expect `running`.
+    let running = server.recv_until("the running push", is_status);
+    let rows = running["params"]["files"][URI].as_array().expect("rows").clone();
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|row| row["state"] == "running"), "{running}");
+    assert_eq!(rows[0]["line"], 1);
+
+    // The worker's settled statuses.
+    let settled = server.recv_until("settled statuses", |message| {
+        is_status(message) && message["params"]["files"][URI][0]["state"] != "running"
+    });
+    let rows = settled["params"]["files"][URI].as_array().expect("rows").clone();
+    assert_eq!(rows[0]["state"], "pass");
+    assert_eq!(rows[1]["state"], "fail");
+    assert_eq!(
+        rows[1]["detail"], "left == right — left: 12, right: 12.5",
+        "decomposed comparison detail: {settled}"
+    );
+    assert_eq!(rows[2]["state"], "unrunnable", "engine call: {settled}");
+
+    // Fix the failing expect: running again, then all runnable ones pass.
+    let fixed = src.replace("== 12.5", "== 12.0");
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": URI },
+            "contentChanges": [{ "text": fixed }],
+        },
+    }));
+    let settled = server.recv_until("re-settled statuses", |message| {
+        is_status(message)
+            && message["params"]["files"][URI][1]["state"] != "running"
+            && message["params"]["files"][URI][1]["state"] != "fail"
+    });
+    assert_eq!(settled["params"]["files"][URI][1]["state"], "pass", "{settled}");
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }));
+    server.recv_until("shutdown reply", |message| message["id"] == 2);
     server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
     server.child.wait().expect("wait for exit");
 }

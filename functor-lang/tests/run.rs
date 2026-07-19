@@ -179,9 +179,16 @@ fn error_calling_a_non_function() {
 
 #[test]
 fn error_unknown_external_with_span() {
+    // A typo'd member of a BUILTIN namespace is a plain user error — it
+    // must not read like a host external that isn't available here (the
+    // expect gutter's `unrunnable` classification rests on the distinction).
     let (message, line, col) = run_err("let main = () => List.frobnicate(1.0)");
-    assert_eq!(message, "unknown external `List.frobnicate`");
+    assert_eq!(message, "`List` has no builtin `frobnicate`");
     assert_eq!((line, col), (1, 18));
+    // A namespace the builtin registry does NOT own stays an unknown
+    // external (under a host it could be host-provided).
+    let (message, _, _) = run_err("let main = () => Scene.cube()");
+    assert_eq!(message, "unknown external `Scene.cube`");
 }
 
 #[test]

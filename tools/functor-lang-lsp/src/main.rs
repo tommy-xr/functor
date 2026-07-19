@@ -29,6 +29,7 @@
 //! change triggers server-initiated `workspace/inlayHint/refresh` and
 //! `workspace/codeLens/refresh` requests.
 
+mod expects;
 mod inspector;
 
 use std::collections::HashMap;
@@ -187,6 +188,16 @@ fn run(
     let mut selected: HashMap<String, usize> = HashMap::new();
     let mut next_request_id: i64 = 1;
     let mut attach_stop: Option<Arc<AtomicBool>> = None;
+    // Live expect-test status (see `expects`): a PER-URI monotonic
+    // generation gates stale worker results — per-uri, not global, so a
+    // result for one project is never dropped because an unrelated file was
+    // edited meanwhile (which would leave its gutter stuck on `running`).
+    // A 0 budget disables the feature entirely.
+    let mut expect_generations: HashMap<String, u64> = HashMap::new();
+    let expect_budget = std::env::var("FUNCTOR_LSP_EXPECT_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(expects::DEFAULT_BUDGET);
     while let Some(message) = next() {
         // A message with an `id` but no `method` is the client's response to one
         // of our server-initiated refresh requests: fire-and-forget, so tolerate
@@ -374,6 +385,13 @@ fn run(
                 }
                 // A just-opened matching document gets the current coverage.
                 push_coverage(writer, trace.as_ref(), &documents);
+                // Expect tests: show `running` now, evaluate right away (open
+                // is already a settled buffer — no debounce to wait out).
+                if expect_budget > 0 {
+                    let generation = bump_generation(&mut expect_generations, uri);
+                    push_expects_running(writer, projects.get(uri), generation);
+                    spawn_expect_worker(uri, &documents, generation, expect_budget, &trace_tx);
+                }
             }
             ("textDocument/didChange", None) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
@@ -399,6 +417,17 @@ fn run(
                     // The edit changed the hash: the gate re-evaluates (and
                     // the client's gutter clears via the empty push).
                     push_coverage(writer, trace.as_ref(), &documents);
+                    // Expect tests: flip the gutter to `running` immediately
+                    // (the in-flight state); the evaluation itself waits for
+                    // the debounce flush. Without a debouncer (tests),
+                    // evaluate now — no flush will come.
+                    if expect_budget > 0 {
+                        let generation = bump_generation(&mut expect_generations, uri);
+                        push_expects_running(writer, projects.get(uri), generation);
+                        if debounce.is_none() {
+                            spawn_expect_worker(uri, &documents, generation, expect_budget, &trace_tx);
+                        }
+                    }
                 }
             }
             ("textDocument/didClose", None) => {
@@ -407,13 +436,39 @@ fn run(
                 projects.remove(uri);
                 // Clear stale squiggles for the closed file.
                 write_diagnostics(writer, uri, vec![]);
+                // And its expect gutter/problems (an authoritative empty list).
+                if expect_budget > 0 {
+                    let generation = bump_generation(&mut expect_generations, uri);
+                    let params = expects::status_params(generation, &[], &[uri.to_string()]);
+                    write_message(
+                        writer,
+                        &json!({ "jsonrpc": "2.0", "method": expects::STATUS, "params": params }),
+                    );
+                }
             }
             // A debounce-thread flush: `uri`'s buffer has settled — publish its
-            // diagnostics from the latest stored document.
+            // diagnostics from the latest stored document, and kick off the
+            // expect-evaluation worker for the settled state.
             ("$/functorFlush", None) => {
                 let uri = params["uri"].as_str().unwrap_or("");
                 if let Some(text) = documents.get(uri) {
                     publish_diagnostics(writer, uri, text);
+                    if expect_budget > 0 {
+                        let generation = *expect_generations.get(uri).unwrap_or(&0);
+                        spawn_expect_worker(uri, &documents, generation, expect_budget, &trace_tx);
+                    }
+                }
+            }
+            // An expect worker finished: relay its statuses to the client —
+            // unless another edit has already superseded that run.
+            ("$/functorExpects", None) => {
+                let for_uri = params["uri"].as_str().unwrap_or("");
+                let current = *expect_generations.get(for_uri).unwrap_or(&0);
+                if params["generation"].as_u64() == Some(current) {
+                    write_message(
+                        writer,
+                        &json!({ "jsonrpc": "2.0", "method": expects::STATUS, "params": params }),
+                    );
                 }
             }
             // A pushed trace (extension relay, wasm postMessage, tests, or the
@@ -450,6 +505,89 @@ fn run(
         }
     }
     0
+}
+
+/// Advance and return `uri`'s expect generation (see the per-uri map in
+/// [`run`]).
+fn bump_generation(generations: &mut HashMap<String, u64>, uri: &str) -> u64 {
+    let entry = generations.entry(uri.to_string()).or_insert(0);
+    *entry += 1;
+    *entry
+}
+
+/// Push the project's expects as `running` — the immediate in-flight state on
+/// every edit, ahead of the debounce and the worker. A project with no
+/// expects still pushes (empty per-file lists), clearing a gutter whose last
+/// expect was just deleted. On an UNPARSEABLE edit the projects map keeps
+/// the last good load, so the running rows paint at the stale project's
+/// lines — transiently honest (the worker reports nothing for a broken
+/// buffer, and diagnostics carry the why) rather than flickering clear.
+fn push_expects_running(
+    writer: &mut impl Write,
+    project: Option<&functor_lang::project::Project>,
+    generation: u64,
+) {
+    let Some(project) = project else { return };
+    let rows = expects::running_rows(project, |path| path_to_uri(path));
+    let uris = expects::project_uris(project, |path| path_to_uri(path));
+    let params = expects::status_params(generation, &rows, &uris);
+    write_message(
+        writer,
+        &json!({ "jsonrpc": "2.0", "method": expects::STATUS, "params": params }),
+    );
+}
+
+/// Evaluate `uri`'s project's expects on a WORKER thread and inject the
+/// result back into the server loop as `$/functorExpects` (generation-tagged;
+/// the loop drops stale runs). The worker reloads the project from the live
+/// buffer snapshots — IR/values are `Rc`-based and cannot cross threads — and
+/// its stack follows `run_expects_budgeted`'s contract: ~100 bytes per
+/// budget step of possible value depth, floored at 256MB (reserved virtual
+/// memory, committed lazily).
+fn spawn_expect_worker(
+    uri: &str,
+    documents: &HashMap<String, String>,
+    generation: u64,
+    budget: u64,
+    tx: &Sender<Incoming>,
+) {
+    let Some(path) = uri_to_path(uri) else { return };
+    let entry = discover_entry(&path);
+    let single = documents.get(uri).map(|text| (path, text.clone()));
+    let overrides: HashMap<PathBuf, String> = documents
+        .iter()
+        .filter_map(|(u, text)| Some((uri_to_path(u)?, text.clone())))
+        .collect();
+    let tx = tx.clone();
+    let stack = usize::try_from(budget.saturating_mul(200))
+        .unwrap_or(usize::MAX)
+        .max(256 << 20);
+    let uri = uri.to_string();
+    let spawned = std::thread::Builder::new()
+        .stack_size(stack)
+        .spawn(move || {
+            // Unloadable buffer: report nothing (running states stand; the
+            // diagnostics say why). Loadable: authoritative per-file lists —
+            // a project with zero expects clears gutters via empty lists.
+            let Some((rows, uris)) =
+                expects::evaluate_rows(entry, single, overrides, budget, |p| path_to_uri(p))
+            else {
+                return;
+            };
+            let mut params = expects::status_params(generation, &rows, &uris);
+            // The gate key: results are per-REQUESTING-uri (its generation).
+            params["uri"] = json!(uri);
+            let _ = tx.send(Incoming::Msg(json!({
+                "jsonrpc": "2.0",
+                "method": "$/functorExpects",
+                "params": params,
+            })));
+        });
+    if let Err(err) = spawned {
+        // A denied 256MB stack reservation must not leave a silent forever-
+        // `running` gutter — stderr is the LSP client's log channel.
+        eprintln!("functor-lang-lsp: expect worker failed to spawn: {err}");
+    }
 }
 
 /// Run the Functor Lang front-end over `text` and publish the outcome: one diagnostic

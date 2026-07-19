@@ -108,6 +108,28 @@ pub fn functor_lang_complete_project(files_json: &str, active: &str, offset: f64
     complete_project_json(files_json, active, offset.max(0.0) as usize)
 }
 
+/// Evaluate the project's inline `expect` tests under a step budget and
+/// report the ACTIVE file's rows (the live-gutter seam — the same states as
+/// the LSP's `functor/tests/status`):
+///
+/// ```json
+/// { "rows": [{ "from": u16, "state": "pass|fail|error|unrunnable", "detail": str|null }] }
+/// ```
+///
+/// `from` is the `expect` keyword's whole-document UTF-16 offset in the
+/// active file. `{"rows": null}` means the project didn't load (keep the
+/// previous gutter; diagnostics carry the why); an EMPTY `rows` is
+/// authoritative (clears the gutter). The budget bounds interpreter steps
+/// (see `run_expects_budgeted`) — the browser runs this on the main thread,
+/// so keep it modest; the caller must also try/catch: a pathologically
+/// deep value can still exhaust the engine's wasm call stack on teardown
+/// (native runs on a big-stack worker; the browser has no such seam — trap,
+/// catch, reinit).
+#[wasm_bindgen]
+pub fn functor_lang_expects_project(files_json: &str, active: &str, budget: f64) -> String {
+    expects_project_json(files_json, active, budget.max(0.0) as u64)
+}
+
 /// See [`functor_lang_analyze`]. Pure — the tested seam.
 pub fn analyze_json(src: &str) -> String {
     analyze_impl(single(src), Path::new(USER_FILE))
@@ -183,6 +205,52 @@ fn analyze_impl(sources: Vec<(PathBuf, String)>, active: &Path) -> String {
     // "no completions until the value is fully typed" gap.
     LAST_GOOD.with(|cell| *cell.borrow_mut() = Some(project));
     doc
+}
+
+/// See [`functor_lang_expects_project`]. Pure — the tested seam.
+pub fn expects_project_json(files_json: &str, active: &str, budget: u64) -> String {
+    let no_load = || json!({ "rows": Value::Null }).to_string();
+    let Some(sources) = parse_files(files_json) else {
+        return no_load();
+    };
+    let Ok(project) = load_sources(sources) else {
+        return no_load();
+    };
+    let Some(file) = project.sources.file_by_path(Path::new(active)) else {
+        return no_load();
+    };
+    let row = |span: functor_lang::Span, state: &str, detail: Option<String>| {
+        json!({ "from": to_u16(file, span.start), "state": state, "detail": detail })
+    };
+    let rows: Vec<Value> = match functor_lang::run_expects_budgeted(
+        &project.module,
+        &mut functor_lang::NoHost,
+        Some(budget),
+    ) {
+        Ok(reports) => reports
+            .iter()
+            .filter(|report| owns(file, report.span.start))
+            .map(|report| {
+                // The shared outcome mapping (ExpectOutcome::status — the
+                // LSP paints the same states).
+                let (state, detail) = report.outcome.status();
+                row(report.span, state, detail)
+            })
+            .collect(),
+        // The def load failed (or exceeded the budget): every expect gets
+        // the load error — the tests can't run until the defs do.
+        Err(failure) => {
+            let detail = format!("defs failed to load: {}", failure.error.message);
+            project
+                .module
+                .expects
+                .iter()
+                .filter(|expect| owns(file, expect.span.start))
+                .map(|expect| row(expect.span, "error", Some(detail.clone())))
+                .collect()
+        }
+    };
+    json!({ "rows": rows }).to_string()
 }
 
 /// See [`functor_lang_hover`]. Pure — the tested seam. `offset` is UTF-16.
@@ -787,6 +855,66 @@ mod tests {
         assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
         assert_eq!(complete_project_json("[]", "game.fun", 0), empty_completion());
         assert_eq!(hover_project_json("[{\"path\": 1}]", "game.fun", 0), "");
+    }
+
+    // --- Inline `expect` tests (the live-gutter seam) -----------------------
+
+    // Outcomes map to gutter states, offsets are active-file UTF-16, and
+    // sibling-file expects are filtered out of the active report.
+    #[test]
+    fn expects_report_active_file_states() {
+        let game = "let area = (w, h) => w * h\n\
+                    expect area(3.0, 4.0) == 12.0\n\
+                    expect area(3.0, 4.0) == 12.5\n\
+                    expect Scene.cube() == Scene.cube()\n";
+        let files = files_json(&[("game.fun", game), ("palette.fun", "let glow = 0.85\nexpect glow > 0.0\n")]);
+        let out = parse(&expects_project_json(&files, "game.fun", 1_000_000));
+        let rows = out["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 3, "sibling expects filtered: {out}");
+        assert_eq!(rows[0]["state"], "pass");
+        assert_eq!(rows[1]["state"], "fail");
+        assert_eq!(
+            rows[1]["detail"], "left == right — left: 12, right: 12.5",
+            "{out}"
+        );
+        assert_eq!(rows[2]["state"], "unrunnable");
+        // `from` lands on the second `expect` keyword (UTF-16 == byte here).
+        let from = rows[1]["from"].as_u64().unwrap() as usize;
+        assert!(game[from..].starts_with("expect area(3.0, 4.0) == 12.5"), "{out}");
+        // The sibling's own report carries only its row.
+        let sibling = parse(&expects_project_json(&files, "palette.fun", 1_000_000));
+        let rows = sibling["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["state"], "pass");
+    }
+
+    // Unloadable input is `rows: null` (keep the previous gutter), never an
+    // exception; a loadable project with no expects is an EMPTY rows array
+    // (authoritative clear).
+    #[test]
+    fn expects_distinguish_unloadable_from_empty() {
+        let broken = files_json(&[("game.fun", "let broken = {\n")]);
+        let out = parse(&expects_project_json(&broken, "game.fun", 1_000));
+        assert!(out["rows"].is_null(), "{out}");
+        assert!(parse(&expects_project_json("not json", "game.fun", 1_000))["rows"].is_null());
+
+        let clean = files_json(&[("game.fun", "let x = 1.0\n")]);
+        let out = parse(&expects_project_json(&clean, "game.fun", 1_000));
+        assert_eq!(out["rows"].as_array().unwrap().len(), 0, "{out}");
+    }
+
+    // A budget-exceeding expect reports as an error row (the browser's
+    // main-thread bound).
+    #[test]
+    fn expects_budget_reports_error_rows() {
+        let files = files_json(&[(
+            "game.fun",
+            "let sum = (n) => List.range(n) |> List.fold((a, x) => a + x, 0.0)\nexpect sum(10000.0) == 0.0\n",
+        )]);
+        let out = parse(&expects_project_json(&files, "game.fun", 200));
+        let rows = out["rows"].as_array().unwrap();
+        assert_eq!(rows[0]["state"], "error");
+        assert!(rows[0]["detail"].as_str().unwrap().contains("step budget"), "{out}");
     }
 
     // Hover round-trips on a non-ASCII line: the returned span's UTF-16 offsets

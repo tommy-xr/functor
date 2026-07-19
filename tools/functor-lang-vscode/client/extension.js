@@ -15,6 +15,9 @@ const { LanguageClient } = require("vscode-languageclient/node");
 // `node --test` (client/inspector.test.js) — extension.js keeps only the thin
 // VS Code wiring around it.
 const inspector = require("./inspector.js");
+// Live expect-test gutter decision logic (grouping, problem rows, hover
+// text) — same pure-module pattern (client/expects.test.js).
+const expects = require("./expects.js");
 const { resolveServerCommand } = require("./server-path.js");
 const cliDownload = require("./cli-download.js");
 
@@ -136,8 +139,59 @@ function activate(context) {
       );
     }
   };
+  // --- Live expect-test gutter ---------------------------------------------
+  // Five decoration types (running / pass / fail / error / unrunnable). The
+  // LSP pushes authoritative per-file rows (`functor/tests/status`); we
+  // repaint visible editors, and failing/erroring expects also land in a
+  // dedicated Problems collection carrying the decomposed actual-vs-expected
+  // detail. Decision logic is in expects.js (pure, node-tested).
+  const expectDecorations = {};
+  for (const state of expects.EXPECT_STATES) {
+    expectDecorations[state] = vscode.window.createTextEditorDecorationType({
+      gutterIconPath: vscode.Uri.file(
+        path.join(context.extensionPath, "media", `expect-${state}.svg`)
+      ),
+      gutterIconSize: "contain",
+    });
+    context.subscriptions.push(expectDecorations[state]);
+  }
+  const expectDiagnostics = vscode.languages.createDiagnosticCollection("functor-tests");
+  context.subscriptions.push(expectDiagnostics);
+  const expectsByUri = new Map();
+  const paintExpects = (editor) => {
+    const rows = expectsByUri.get(editor.document.uri.toString()) || [];
+    const groups = expects.groupByState(rows);
+    for (const state of expects.EXPECT_STATES) {
+      editor.setDecorations(
+        expectDecorations[state],
+        groups[state].map((line) => ({
+          range: new vscode.Range(line, 0, line, 0),
+          hoverMessage: expects.hoverText(
+            rows.find((row) => row.line === line && row.state === state)
+          ),
+        }))
+      );
+    }
+  };
+  const publishExpectProblems = (uri) => {
+    expectDiagnostics.set(
+      vscode.Uri.parse(uri),
+      expects.problemRows(expectsByUri.get(uri)).map((row) => {
+        const diagnostic = new vscode.Diagnostic(
+          new vscode.Range(row.line, 0, row.line, 1000),
+          row.message,
+          vscode.DiagnosticSeverity.Error
+        );
+        diagnostic.source = "functor expect";
+        return diagnostic;
+      })
+    );
+  };
   context.subscriptions.push(
-    vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach(paintCoverage))
+    vscode.window.onDidChangeVisibleTextEditors((editors) => {
+      editors.forEach(paintCoverage);
+      editors.forEach(paintExpects);
+    })
   );
 
   clientStarted = client.start().then(
@@ -155,6 +209,24 @@ function activate(context) {
         const total = Object.values(grouped.groups).reduce((n, l) => n + l.length, 0);
         elog(`inspector coverage: ${total} gutter lines for ${grouped.uri}`);
         vscode.window.visibleTextEditors.forEach(paintCoverage);
+      });
+      client.onNotification(expects.STATUS, (params) => {
+        // Normalize uri keys through vscode.Uri so map lookups match editor
+        // documents (percent-encoding differences).
+        const raw = new Map();
+        const touched = expects.mergeStatuses(raw, params);
+        if (!touched) return;
+        // Normalize uri keys through vscode.Uri EVERYWHERE (map keys and the
+        // Problems publish) so lookups match editor documents — raw server
+        // uris can differ in percent-encoding/drive-letter case.
+        for (const [uri, rows] of raw) {
+          expectsByUri.set(vscode.Uri.parse(uri).toString(), rows);
+        }
+        for (const uri of touched) {
+          publishExpectProblems(vscode.Uri.parse(uri).toString());
+        }
+        elog(`expect status: ${touched.length} file(s), generation ${params.generation}`);
+        vscode.window.visibleTextEditors.forEach(paintExpects);
       });
     },
     (e) => {

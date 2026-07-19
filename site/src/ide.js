@@ -19,6 +19,7 @@ import {
   onDiagnostics,
   wireLiveTrace,
   refreshLiveValues,
+  currentExpects,
 } from "./lang-intel.js";
 import { ProjectBridge } from "./project-bridge.js";
 import { createStatusBar } from "./status-bar.js";
@@ -444,4 +445,7 @@ window.__ide = {
 
 // Whether language analysis is available (false = degraded, pkg absent) — the
 // same readiness seam the sandbox exposes for e2e.
-window.__lang = { ready: langReady };
+window.__lang = {
+  ready: langReady,
+  expects: () => currentExpects(view),
+};

@@ -401,6 +401,35 @@ pub enum ExpectOutcome {
     Error(RunError),
 }
 
+impl ExpectOutcome {
+    /// The tooling-facing `(state, detail)` — ONE shared mapping for every
+    /// editor gutter (the LSP and the web IDE): `pass` / `fail` /
+    /// `unrunnable` (an engine-external call — the plain evaluator has no
+    /// host) / `error`. An `Error`'s detail is the bare message; callers
+    /// holding a `SourceMap` may prefer a located rendering.
+    pub fn status(&self) -> (&'static str, Option<String>) {
+        match self {
+            ExpectOutcome::Pass => ("pass", None),
+            ExpectOutcome::Fail(Some(cmp)) => (
+                "fail",
+                Some(format!(
+                    "left {} right — left: {}, right: {}",
+                    cmp.op, cmp.lhs, cmp.rhs
+                )),
+            ),
+            ExpectOutcome::Fail(None) => ("fail", Some("expected true, got false".to_string())),
+            ExpectOutcome::Error(error) if error.message.starts_with("unknown external") => (
+                "unrunnable",
+                Some(format!(
+                    "{} — engine calls need the runtime; run `functor test` or the game",
+                    error.message
+                )),
+            ),
+            ExpectOutcome::Error(error) => ("error", Some(error.message.clone())),
+        }
+    }
+}
+
 /// The sides of a failed top-level comparison: `expect a == b` reports what
 /// `a` and `b` actually were (rendered with [`Value`]'s deterministic
 /// `Display`).
@@ -902,10 +931,12 @@ evaluation depth."
                     None if self.host.provides(&joined) => {
                         Ok(Value::HostFn(Rc::from(joined.as_str())))
                     }
-                    None => Err(RunError {
-                        message: format!("unknown external `{joined}`"),
-                        span: expr.span,
-                    }),
+                    // `#[cold]` helper: the message formatting must not
+                    // enlarge this hot frame (eval recursion sits near the
+                    // stack budget at the 128-depth cap — the call_curried
+                    // rule; adding the formatting inline here overflowed the
+                    // deep-recursion test's 2MB stack in debug).
+                    None => Err(unknown_external_error(path, joined, expr.span)),
                 }
             }
             // Container CONSTRUCTION charges one step (the depth invariant
@@ -2419,6 +2450,29 @@ fn fork_seed(i: f64, seed: f64) -> f64 {
 }
 
 /// Resolve an [`ExprKind::External`] path against the registry.
+/// The error for an external that resolved nowhere. A typo'd member of a
+/// BUILTIN namespace (`List.fooo`) is a user error everywhere — it must not
+/// read (or classify — see [`ExpectOutcome::status`]) like a host external
+/// that merely isn't available in this embedding. `#[cold]`: keeps the
+/// formatting locals out of `eval_inner`'s recursion frame.
+#[cold]
+#[inline(never)]
+fn unknown_external_error(path: &[String], joined: String, span: Span) -> RunError {
+    let message = match path.first() {
+        Some(head) if BUILTIN_NAMESPACES.contains(&head.as_str()) => {
+            format!("`{head}` has no builtin `{}`", path[1..].join("."))
+        }
+        _ => format!("unknown external `{joined}`"),
+    };
+    RunError { message, span }
+}
+
+/// The namespaces the BUILTIN registry owns: an unknown member of one of
+/// these is a typo (a plain error), never a host-provided external — the
+/// distinction the unknown-external error message (and through it the
+/// expect gutter's `unrunnable` classification) rests on.
+pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Text", "Math", "Random", "Debug"];
+
 pub fn builtin(path: &[String]) -> Option<Builtin> {
     let joined = path.join(".");
     Some(match joined.as_str() {

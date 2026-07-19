@@ -40,8 +40,16 @@ let analyzeProjectFn = null; // (filesJson, active) => JSON string
 let hoverProjectFn = null; // (filesJson, active, offset) => JSON string
 let completeProjectFn = null; // (filesJson, active, offset) => JSON string
 let resetFn = null; // () => void, clears the wasm completion cache
+let expectsProjectFn = null; // (filesJson, active, budget) => JSON string — optional export
 let lastKey = null;
 let lastResult = null;
+let lastExpectKey = null;
+let lastExpectRows = null;
+
+// The browser's per-lint-pass step budget for inline `expect` tests: bounds
+// main-thread work (see run_expects_budgeted — total interpreter work is
+// O(budget)). Modest by design: this runs synchronously in the lint pass.
+const EXPECT_BUDGET = 200_000;
 
 // The multi-file seam (the IDE): the host registers a provider returning the
 // whole file set (`[{ path, source }]`, entry first) plus the active path;
@@ -144,6 +152,30 @@ const toDiagnostics = (view) => {
           const to = Math.max(from, Math.min(d.to | 0, len));
           return { from, to, severity: d.severity || "error", message: d.message || "" };
         });
+  // Inline expect tests ride the same heartbeat: refresh the gutter, and
+  // surface failing/erroring expects as diagnostics too (squiggle + the
+  // Problems panel carry the decomposed actual-vs-expected detail).
+  const rows = expectRowsCached(doc.toString());
+  if (rows !== null) {
+    const marks = expectSetFor(rows, doc);
+    queueMicrotask(() => {
+      // Dispatch outside the lint pass; skip if another edit landed first
+      // (its demote-to-running already superseded this set).
+      if (view.state.doc === doc) view.dispatch({ effects: setExpects.of(marks) });
+    });
+    for (const row of rows) {
+      if (row.state !== "fail" && row.state !== "error") continue;
+      const from = Math.max(0, Math.min(row.from | 0, len));
+      const to = Math.min(from + "expect".length, len);
+      diagnostics.push({
+        from,
+        to,
+        severity: "error",
+        message: `expect ${row.state === "fail" ? "failed" : "errored"}${row.detail ? `: ${row.detail}` : ""}`,
+      });
+    }
+    diagnostics.sort((a, z) => a.from - z.from);
+  }
   if (diagnosticsListener) diagnosticsListener(diagnostics);
   return diagnostics;
 };
@@ -735,6 +767,134 @@ const coverageSetFor = (fileName, source, doc) => {
   return RangeSet.of(ranges);
 };
 
+// --- Inline expect-test gutter -------------------------------------------------
+// Live red/green for `expect` tests, evaluated by the analysis wasm on each
+// lint pass (budgeted — see EXPECT_BUDGET). States mirror the LSP/VSCode
+// gutter: running (in-flight, shown between an edit and the next settled
+// pass) / pass / fail / error / unrunnable (engine calls need the runtime).
+// An edit DEMOTES existing markers to running in place (positions mapped
+// through the change) — the "show when they are re-running" state.
+
+const EXPECT_STATES = ["running", "pass", "fail", "error", "unrunnable"];
+
+class ExpectMarker extends GutterMarker {
+  constructor(state, detail) {
+    super();
+    this.state = state;
+    this.detail = detail || "";
+  }
+  eq(other) {
+    return other.state === this.state && other.detail === this.detail;
+  }
+  toDOM() {
+    const el = document.createElement("div");
+    el.className = `cm-expect cm-expect-${this.state}`;
+    el.title =
+      this.state === "running"
+        ? "expect: re-running…"
+        : `expect: ${this.state}${this.detail ? ` — ${this.detail}` : ""}`;
+    return el;
+  }
+}
+
+const setExpects = StateEffect.define();
+
+const expectField = StateField.define({
+  create: () => RangeSet.empty,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setExpects)) return effect.value;
+      if (effect.is(clearDecorations)) return RangeSet.empty;
+    }
+    if (tr.docChanged) {
+      // Keep the gutter through the edit, demoted to `running`: map each
+      // marker's position and swap in the in-flight marker.
+      const ranges = [];
+      const cursor = value.iter();
+      while (cursor.value) {
+        const from = tr.changes.mapPos(cursor.from, 1);
+        ranges.push(new ExpectMarker("running", "").range(from));
+        cursor.next();
+      }
+      // Dedup positions (two expects collapsing onto one line after a
+      // deletion) — RangeSet.of requires sorted, and duplicates are noise.
+      const seen = new Set();
+      const unique = ranges
+        .sort((a, z) => a.from - z.from)
+        .filter((r) => !seen.has(r.from) && seen.add(r.from));
+      return RangeSet.of(unique);
+    }
+    return value;
+  },
+});
+
+const expectGutter = gutter({
+  class: "cm-expect-gutter",
+  markers: (view) => view.state.field(expectField, false) || RangeSet.empty,
+});
+
+// Evaluate the active file's expects, memoized per (doc, context) key like
+// analyzeCached. Returns rows ([{from, state, detail}]), null when the
+// project didn't load (keep the current gutter), or null when unavailable.
+const expectRowsCached = (docString) => {
+  if (!expectsProjectFn) return null;
+  const args = projectArgs(docString);
+  const key = cacheKey(docString, args);
+  if (key === lastExpectKey) return lastExpectRows;
+  let rows = null;
+  try {
+    const filesJson = args
+      ? args.filesJson
+      : JSON.stringify([{ path: "game.fun", source: docString }]);
+    const active = args ? args.active : "game.fun";
+    rows = JSON.parse(expectsProjectFn(filesJson, active, EXPECT_BUDGET)).rows;
+  } catch (e) {
+    // A wasm trap (e.g. a pathologically deep value exhausting the engine
+    // stack on teardown — the browser has no big-stack worker seam) can
+    // leave the instance unsafe: disable the feature for this session.
+    console.info(`[lang-intel] expect evaluation disabled after a trap: ${e}`);
+    expectsProjectFn = null;
+    rows = null;
+  }
+  lastExpectKey = key;
+  lastExpectRows = rows;
+  return rows;
+};
+
+// Rows → a marker set against the current doc (one marker per line; the
+// first row wins a shared line).
+const expectSetFor = (rows, doc) => {
+  const ranges = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    if (!EXPECT_STATES.includes(row.state)) continue;
+    const at = doc.lineAt(Math.min(Math.max(row.from | 0, 0), doc.length)).from;
+    if (seen.has(at)) continue;
+    seen.add(at);
+    ranges.push(new ExpectMarker(row.state, row.detail).range(at));
+  }
+  ranges.sort((a, z) => a.from - z.from);
+  return RangeSet.of(ranges);
+};
+
+// The introspection/e2e seam (window.__lang.expects): the current gutter as
+// plain rows.
+export const currentExpects = (view) => {
+  const set = view.state.field(expectField, false);
+  if (!set) return [];
+  const rows = [];
+  const cursor = set.iter();
+  while (cursor.value) {
+    rows.push({
+      line: view.state.doc.lineAt(cursor.from).number,
+      state: cursor.value.state,
+      detail: cursor.value.detail,
+    });
+    cursor.next();
+  }
+  return rows;
+};
+
 // Rebuild the overlay for the current buffer: async (the hash check), token-
 // guarded so a stale completion can't clobber a newer state.
 const refreshLive = async (view) => {
@@ -913,6 +1073,24 @@ const intelTheme = EditorView.theme({
   ".cm-cov-before": { background: "rgba(65, 216, 230, 0.55)" },
   ".cm-cov-after": { background: "rgba(232, 88, 184, 0.55)" },
   ".cm-cov-dark": { background: "rgba(233, 230, 242, 0.14)" },
+  // The expect-test gutter: a dot per test line — the VSCode gutter's states
+  // in the calm theme (green pass / red fail / hollow red error / amber
+  // running / gray unrunnable).
+  ".cm-expect-gutter": {
+    width: "10px",
+  },
+  ".cm-expect": {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    margin: "4px 1px 0 1px",
+    boxSizing: "border-box",
+  },
+  ".cm-expect-pass": { background: "#6fdc92" },
+  ".cm-expect-fail": { background: "#e05561" },
+  ".cm-expect-error": { border: "1.5px solid #e05561" },
+  ".cm-expect-running": { border: "1.5px dashed #d8a657" },
+  ".cm-expect-unrunnable": { border: "1.5px solid rgba(233, 230, 242, 0.35)" },
   // Codelenses: a dimmed signature line above the def.
   ".cm-lens": {
     fontFamily: mono,
@@ -979,6 +1157,12 @@ export const setupLangIntel = async () => {
     completeProjectFn = mod.functor_lang_complete_project;
     // reset is optional — an older bundle without it just skips cache clearing.
     resetFn = typeof mod.functor_lang_reset === "function" ? mod.functor_lang_reset : null;
+    // Expect evaluation is optional too — an older bundle degrades to no
+    // test gutter, not to no intel.
+    expectsProjectFn =
+      typeof mod.functor_lang_expects_project === "function"
+        ? mod.functor_lang_expects_project
+        : null;
   } catch {
     console.info(
       "[lang-intel] language analysis unavailable (pkg not built) — editor runs without diagnostics"
@@ -992,6 +1176,8 @@ export const setupLangIntel = async () => {
     liveField,
     coverageField,
     coverageGutter,
+    expectField,
+    expectGutter,
     initialRefresh,
     // Register the completion source on the language's data facet — basicSetup's
     // autocompletion() picks it up via languageDataAt (no second popup).
