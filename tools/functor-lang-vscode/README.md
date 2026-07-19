@@ -15,18 +15,21 @@ Language support for `.fun` source files and `.funi` interface files
   "Functor Lang Preview" output channel). Needs the `functor` CLI on PATH (or point
   the `functor-lang.functorPath` setting at the binary).
 
-## Prerequisite: `functor-lang-lsp` on PATH
+## The `functor-lang-lsp` language server
 
-The extension launches the `functor-lang-lsp` **binary from your PATH** — it is not
-bundled. Build and install it from the repo root:
+Resolution order (see `client/server-path.js`): the `functor-lang.serverPath`
+setting if set, else the binary **bundled inside the platform VSIX** (released
+builds ship one per platform under `server/`), else **PATH**. A dev checkout
+packaged locally has no bundled binary, so build and install the server from
+the repo root:
 
 ```sh
 cargo install --path tools/functor-lang-lsp
 # or: cargo build -p functor-lang-lsp && ln -s "$PWD/target/debug/functor-lang-lsp" ~/.local/bin/
 ```
 
-Without it, highlighting still works but diagnostics are silently absent
-(VSCode reports the failed server launch in the Output panel).
+Without a resolvable server, highlighting still works but diagnostics are
+silently absent (VSCode reports the failed server launch in the Output panel).
 
 ## Install
 

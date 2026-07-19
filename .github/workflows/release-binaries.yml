@@ -41,19 +41,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # lsp_target: linux ships the language server as a static musl
+          # build — it runs inside any VS Code install (glibc floor 2.28,
+          # older than the ubuntu-latest toolchain links against), and the
+          # crate is pure Rust so musl costs nothing. The GL-linked `functor`
+          # binary itself stays gnu.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: functor
+            lsp_bin: functor-lang-lsp
+            lsp_target: x86_64-unknown-linux-musl
           - os: macos-14 # Apple Silicon (native)
             target: aarch64-apple-darwin
             bin: functor
+            lsp_bin: functor-lang-lsp
+            lsp_target: aarch64-apple-darwin
           - os: macos-14 # Intel, cross-compiled on the arm64 runner
             target: x86_64-apple-darwin
             bin: functor
+            lsp_bin: functor-lang-lsp
+            lsp_target: x86_64-apple-darwin
             cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: functor.exe
+            lsp_bin: functor-lang-lsp.exe
+            lsp_target: x86_64-pc-windows-msvc
 
     steps:
       - uses: actions/checkout@v6
@@ -64,7 +77,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown,${{ matrix.target }}
+          targets: wasm32-unknown-unknown,${{ matrix.target }},${{ matrix.lsp_target }}
 
       - name: Install wasm-pack
         run: npm install -g wasm-pack
@@ -156,4 +169,30 @@ jobs:
         with:
           name: functor-${{ matrix.target }}
           path: ${{ env.ASSET }}
+          retention-days: 14
+
+      # The language server ships inside the platform VSIXes (the vsix job in
+      # release.yml). A tiny pure-Rust crate, so the warm toolchain/cache make
+      # this nearly free. Artifact names deliberately do NOT start with
+      # "functor-" — the publish job downloads the release archives by that
+      # pattern. (No exec sanity check: it's a blocking stdio server with no
+      # --version; the VSIX e2e path covers it.)
+      - name: Build language server
+        shell: bash
+        run: |
+          cargo build --bin functor-lang-lsp --release --target ${{ matrix.lsp_target }}
+          # The musl build must actually be static — it has to run on any
+          # glibc a supported VS Code install may have.
+          if [[ "${{ matrix.lsp_target }}" == *-musl ]]; then
+            file "target/${{ matrix.lsp_target }}/release/functor-lang-lsp" | grep -qi "static"
+          fi
+
+      # Artifact name stays keyed by the PLATFORM (matrix.target) — the vsix
+      # job maps platforms to vsce targets and doesn't care which triple the
+      # server was compiled for.
+      - name: Upload language server
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-${{ matrix.target }}
+          path: target/${{ matrix.lsp_target }}/release/${{ matrix.lsp_bin }}
           retention-days: 14

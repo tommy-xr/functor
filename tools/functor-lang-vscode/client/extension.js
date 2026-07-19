@@ -1,5 +1,6 @@
 // Functor Lang extension entry point: an LSP client for `.fun` documents (launching
-// the `functor-lang-lsp` binary from PATH — see ../README.md for how to get it there)
+// the `functor-lang-lsp` binary — bundled in platform VSIXes, from PATH in dev
+// checkouts; see ./server-path.js)
 // and the live game preview panel (docs/functor-lang.md D4). Plain JS on purpose — no
 // bundler or TS build step; the only runtime dependency is
 // vscode-languageclient.
@@ -14,6 +15,7 @@ const { LanguageClient } = require("vscode-languageclient/node");
 // `node --test` (client/inspector.test.js) — extension.js keeps only the thin
 // VS Code wiring around it.
 const inspector = require("./inspector.js");
+const { resolveServerCommand } = require("./server-path.js");
 
 let client;
 // Resolves once the LanguageClient has started (server launched + initialized).
@@ -63,11 +65,19 @@ function activate(context) {
   channel = vscode.window.createOutputChannel("Functor Lang");
   context.subscriptions.push(channel);
   elog("extension activated");
+  // Setting > bundled platform binary > PATH; stdio is the
+  // vscode-languageclient default.
+  const serverCommand = resolveServerCommand(
+    vscode.workspace.getConfiguration("functor-lang").get("serverPath"),
+    context.extensionPath,
+    process.platform,
+    fs.existsSync
+  );
+  elog(`language server command: ${serverCommand}`);
   client = new LanguageClient(
     "functor-lang",
     "Functor Lang Language Server",
-    // Resolved from PATH; stdio is the vscode-languageclient default.
-    { command: "functor-lang-lsp" },
+    { command: serverCommand },
     { documentSelector: [{ language: "functor-lang" }] }
   );
   // --- Recency gutter (inspector coverage) --------------------------------

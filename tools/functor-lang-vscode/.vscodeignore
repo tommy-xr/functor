@@ -1,0 +1,7 @@
+# Kept out of the packaged VSIX (server/ — the bundled LSP binary staged by
+# the release pipeline — ships; everything else is dev-only).
+test/**
+tests-integration/**
+client/*.test.js
+out/**
+**/*.vsix
