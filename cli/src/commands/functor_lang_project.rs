@@ -452,17 +452,19 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         // The initial push, with retries: a cold app start needs a moment
         // to bind its endpoint. (The typecheck gate already ran — `run`
         // builds before dispatching, same as native/wasm.)
-        let files = read_project_files(&entry_path)?;
+        let files = read_project_json(&entry_path)?;
         let mut attempted = None;
         for _ in 0..20 {
             match post_reload_project(&addr, &files) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
-                    attempted = Some(serde_json::to_string(&files).unwrap_or_default());
+                    attempted = Some(files.clone());
                     break;
                 }
-                // The endpoint answered and said no — the project is the
-                // problem (shouldn't happen post-gate), not the transport.
+                // The endpoint answered and said no (400/413) — the project
+                // or protocol is the problem, not the transport. (A 503
+                // can't realistically arrive: the server's 30s reply
+                // timeout is far behind our 5s client read timeout.)
                 Ok((status, body)) => {
                     return Err(Error::other(format!("push rejected ({status}): {body}")))
                 }
@@ -490,10 +492,9 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             // Atomic-save editors briefly unlink files mid-save; wait for
             // the next poll rather than failing the loop.
-            let Ok(files) = read_project_files(&entry_path) else {
+            let Ok(current) = read_project_json(&entry_path) else {
                 continue;
             };
-            let current = serde_json::to_string(&files).unwrap_or_default();
             if current == attempted {
                 continue;
             }
@@ -507,7 +508,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
                 attempted = current;
                 continue;
             }
-            match post_reload_project(&addr, &files) {
+            match post_reload_project(&addr, &current) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
@@ -738,10 +739,29 @@ async fn adb_device() -> Result<String, Error> {
         .collect();
     match devices.as_slice() {
         [one] => Ok(one.clone()),
-        [] => Err(Error::other(
-            "no device attached (`adb devices` lists none) — connect the headset over USB \
-and accept its debugging prompt",
-        )),
+        [] => {
+            // The common first-connect states deserve their real diagnosis,
+            // not "none": `unauthorized` = the USB-debugging prompt hasn't
+            // been accepted; `offline` = a wedged connection.
+            let stuck = out.lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                match (fields.next(), fields.next()) {
+                    (Some(serial), Some(state @ ("unauthorized" | "offline"))) => {
+                        Some(format!("{serial} is {state}"))
+                    }
+                    _ => None,
+                }
+            });
+            Err(Error::other(match stuck {
+                Some(stuck) => format!(
+                    "device attached but not ready ({stuck}) — put the headset on and \
+accept the USB-debugging prompt (unauthorized), or reconnect the cable (offline)"
+                ),
+                None => "no device attached (`adb devices` lists none) — connect the \
+headset over USB and accept its debugging prompt"
+                    .to_string(),
+            }))
+        }
         _ => Err(Error::other(
             "multiple devices attached — set ANDROID_SERIAL to pick one",
         )),
@@ -802,9 +822,11 @@ fn spawn_logcat(serial: &str) {
     });
 }
 
-/// The project's `.fun`/`.funi` files as `(file name, source)`, entry FIRST —
-/// the `reload_project` wire contract (`file = module`, so names are enough).
-fn read_project_files(entry_path: &Path) -> Result<Vec<(String, String)>, Error> {
+/// The project's `.fun`/`.funi` files as the `/reload-project` wire body — a
+/// JSON array of `[file name, source]` pairs, entry FIRST (`file = module`,
+/// so names are enough). Serialized once: the watch loop's change-compare
+/// and the POST body are the same string.
+fn read_project_json(entry_path: &Path) -> Result<String, Error> {
     let mut files = Vec::new();
     for path in functor_lang::project::project_files(entry_path)? {
         let name = path
@@ -814,14 +836,13 @@ fn read_project_files(entry_path: &Path) -> Result<Vec<(String, String)>, Error>
             .to_string();
         files.push((name, std::fs::read_to_string(&path)?));
     }
-    Ok(files)
+    serde_json::to_string(&files).map_err(Error::other)
 }
 
-/// POST the whole project file set to the runtime's `/reload-project` as a
-/// JSON array of `[path, source]` pairs.
-fn post_reload_project(addr: &str, files: &[(String, String)]) -> Result<(u16, String), Error> {
-    let body = serde_json::to_string(files).map_err(Error::other)?;
-    http_post(addr, "/reload-project", "application/json", &body)
+/// POST the whole project file set (the `read_project_json` body) to the
+/// runtime's `/reload-project`.
+fn post_reload_project(addr: &str, files_json: &str) -> Result<(u16, String), Error> {
+    http_post(addr, "/reload-project", "application/json", files_json)
 }
 
 /// Minimal HTTP POST over std::net — one dependency-free request to the
