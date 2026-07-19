@@ -89,7 +89,7 @@ Remaining, roughly in priority order:
 - [ ] Native text input: route focus/keyboard into blitz (`Ui.textInput`'s
       wants-keyboard gate; blitz has `Input` events + form support). wasm
       inputs already work.
-- [ ] Record webview events for replay — needs their own `RecordedInput`
+- [x] Record webview events for replay — needs their own `RecordedInput`
       variant (a `UiEvent` entry would replay against the wrong handler
       table; TODO comments in both producers).
 - [ ] Reconcile the DOM instead of full reparse on change (also fixes

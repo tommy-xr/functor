@@ -812,9 +812,10 @@ impl GameProducer for FunctorLangWebGame {
         let handlers = std::mem::take(&mut self.webview_handlers);
         self.ctx().deliver_ui_event(&handlers, &event);
         self.webview_handlers = handlers;
-        // TODO(webview): record for replay once webview events get their own
-        // RecordedInput variant — a UiEvent entry would replay against the
-        // wrong (ui) handler table.
+        // Buffer for the frame-indexed input log like `ui_event` — its own
+        // variant, so replay resolves against the webview handler table.
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::WebviewEvent(event));
     }
 
     fn render(&mut self, frame_time: FrameTime) -> Frame {
@@ -1282,6 +1283,10 @@ pub fn drain_input(game: &mut dyn GameProducer, deliver: bool) {
             InputEvent::MouseMove { x, y } => game.mouse_move(x, y),
             InputEvent::MouseWheel { delta } => game.mouse_wheel(delta),
             InputEvent::UiEvent(event) => game.ui_event(event),
+            // Webview interactions arrive through their own queue
+            // (`take_webview_events`, drained by the frame loop), not the page
+            // input queue — but the shared enum makes the arm total.
+            InputEvent::WebviewEvent(event) => game.webview_event(event),
         }
     }
 }
@@ -1438,6 +1443,7 @@ fn input_marker(input: &InputEvent) -> (&'static str, String) {
         InputEvent::MouseMove { x, y } => ("mouse-move", format!("mouse move ({x}, {y})")),
         InputEvent::MouseWheel { delta } => ("mouse-wheel", format!("mouse wheel {delta:+}")),
         InputEvent::UiEvent(event) => ("ui-input", format!("UI {event:?}")),
+        InputEvent::WebviewEvent(event) => ("webview-input", format!("webview {event:?}")),
     }
 }
 

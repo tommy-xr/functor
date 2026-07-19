@@ -925,9 +925,10 @@ impl Game for FunctorLangGame {
         let handlers = std::mem::take(&mut self.webview_handlers);
         self.ctx().deliver_ui_event(&handlers, &event);
         self.webview_handlers = handlers;
-        // TODO(webview): record for replay once webview events get their own
-        // RecordedInput variant — a UiEvent entry would replay against the
-        // wrong (ui) handler table.
+        // Buffer for the frame-indexed input log like `ui_event` — its own
+        // variant, so replay resolves against the webview handler table.
+        self.input_buf
+            .push(functor_runtime_common::RecordedInput::WebviewEvent(event));
     }
 
     fn render(&mut self, frame_time: FrameTime) -> Frame {
@@ -2275,6 +2276,106 @@ mod tests {
             peak_y > 0.5,
             "the ghost should show the jump arc, peak y = {peak_y}"
         );
+    }
+
+    /// The webview flavor of the recorded-input replay (docs/time-travel.md
+    /// T6b): a live webview click is recorded as
+    /// `RecordedInput::WebviewEvent` and the forward-step replays it against
+    /// the WEBVIEW handler table. The game defines BOTH `ui` and `webview`
+    /// with DIFFERENT messages at slot 0, so replaying against the wrong (ui)
+    /// table — the hazard the dedicated variant exists to close — would
+    /// visibly diverge the model.
+    #[test]
+    fn forward_step_replays_recorded_webview_click_against_the_webview_table() {
+        use functor_runtime_common::ui::{UiEvent, UiEventKind};
+
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-webview-replay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.fun"),
+            "type Msg = | UiClicked | WebClicked\n\
+             let init = { ui: 0.0, web: 0.0, t: 0.0 }\n\
+             let update = (m, msg) =>\n\
+               match msg with\n\
+               | UiClicked => { m with ui: m.ui + 1.0 }\n\
+               | WebClicked => { m with web: m.web + 1.0 }\n\
+             let tick = (m, dt, tts) => { m with t: m.t + dt }\n\
+             let ui = (m) => Ui.button(\"ui\", UiClicked)\n\
+             let webview = (m) => Html.button([Attr.onClick(WebClicked)], [Html.text(\"web\")])\n\
+             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
+        assert!(game.has_webview, "the game must have a webview hook");
+
+        const SUB_DT: f32 = 1.0 / 60.0;
+        const K: usize = 5; // fork point
+        const N: usize = 10; // continuation window
+
+        // Drive K frames to the fork point.
+        let mut tts = 0.0f32;
+        for _ in 0..K {
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+        }
+        let fork_model = game.model.clone();
+        let fork_prev_tts = game.prev_tts;
+        let fork_tts = tts;
+
+        // Live continuation: a render adopts both handler tables (the tree the
+        // user saw), then the shell reports a webview click, then N frames run.
+        let _ = game.render(FrameTime { tts, dts: SUB_DT });
+        game.webview_event(UiEvent {
+            slot: 0,
+            kind: UiEventKind::Clicked,
+        });
+        let mut live: Vec<String> = Vec::with_capacity(N);
+        for _ in 0..N {
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+            live.push(game.model.to_string());
+        }
+        // The click routed to the WEBVIEW handler live: web = 1, ui untouched.
+        assert!(
+            live[0].contains("ui: 0") && live[0].contains("web: 1"),
+            "live click must hit the webview handler: {}",
+            live[0]
+        );
+
+        // The click was recorded as a WebviewEvent on the first continuation
+        // frame — the variant this test exists to pin.
+        let inputs = game.recorder.inputs_from(K as u64);
+        assert_eq!(inputs.len(), N, "one input entry per continuation frame");
+        let webview_events: usize = inputs
+            .iter()
+            .flatten()
+            .filter(|e| matches!(e, functor_runtime_common::RecordedInput::WebviewEvent(_)))
+            .count();
+        assert_eq!(webview_events, 1, "exactly one recorded webview click");
+
+        // Forward-step from the fork, replaying the recorded log: every frame's
+        // model reproduces the live continuation exactly (divisions = N fine
+        // steps of 1, so each boundary is one rendered frame).
+        let forward = functor_runtime_common::functor_lang_producer::forward_step_scene(
+            &game.session,
+            &fork_model,
+            game.has_physics,
+            game.has_subscriptions,
+            fork_prev_tts,
+            fork_tts,
+            SUB_DT,
+            N, // divisions
+            1, // steps per division
+            &inputs,
+        );
+        assert_eq!(forward.len(), N, "division count");
+        for (i, (m, _w)) in forward.iter().enumerate() {
+            assert_eq!(m.to_string(), live[i], "model diverged at frame {i}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Regression (xreview): under the fixed-timestep loop a live input can be
