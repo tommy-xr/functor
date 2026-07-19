@@ -20,9 +20,9 @@ const DEFAULT_PORT = 8077;
 
 // Command ids (kept in sync with package.json's contributes.commands and the
 // registrations in extension.js). Prefixed `functor-lang.` to match the
-// existing `functor-lang.openLivePreview` convention.
-const ATTACH_COMMAND = "functor-lang.inspector.attach";
-const DETACH_COMMAND = "functor-lang.inspector.detach";
+// existing `functor.openLivePreview` convention.
+const ATTACH_COMMAND = "functor.inspector.attach";
+const DETACH_COMMAND = "functor.inspector.detach";
 
 // --- webview relay --------------------------------------------------------
 // The preview webview forwards `functor-inspector-trace` window messages (from

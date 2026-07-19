@@ -1,5 +1,5 @@
 // Download-on-demand for the `functor` CLI the live preview spawns (see
-// extension.js resolveFunctorCli): when neither functor-lang.functorPath nor
+// extension.js resolveFunctorCli): when neither functor.functorPath nor
 // PATH resolves, the newest GitHub release's platform archive is offered as
 // a one-click download into the extension's global storage.
 //

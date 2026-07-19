@@ -1,6 +1,6 @@
 // Resolve the command used to launch the functor-lang-lsp language server:
 //
-//   1. the `functor-lang.serverPath` setting, when set — explicit always wins
+//   1. the `functor.serverPath` setting, when set — explicit always wins
 //   2. the binary bundled inside a platform-specific VSIX
 //      (server/functor-lang-lsp[.exe], staged by the release pipeline)
 //   3. bare "functor-lang-lsp", resolved from PATH (dev checkouts — see

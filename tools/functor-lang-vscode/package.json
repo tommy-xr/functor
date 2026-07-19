@@ -19,39 +19,39 @@
   "contributes": {
     "commands": [
       {
-        "command": "functor-lang.openLivePreview",
-        "title": "Functor Lang: Open Live Preview"
+        "command": "functor.openLivePreview",
+        "title": "Functor: Open Live Preview"
       },
       {
-        "command": "functor-lang.inspector.attach",
-        "title": "Functor Lang: Attach Inspector"
+        "command": "functor.inspector.attach",
+        "title": "Functor: Attach Inspector"
       },
       {
-        "command": "functor-lang.inspector.detach",
-        "title": "Functor Lang: Detach Inspector"
+        "command": "functor.inspector.detach",
+        "title": "Functor: Detach Inspector"
       },
       {
-        "command": "functor-lang.inspector._injectTrace",
-        "title": "Functor Lang: [test] Inject Inspector Trace"
+        "command": "functor.inspector._injectTrace",
+        "title": "Functor: [test] Inject Inspector Trace"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "functor-lang.inspector._injectTrace",
+          "command": "functor.inspector._injectTrace",
           "when": "functorLangTestHooks"
         }
       ]
     },
     "configuration": {
-      "title": "Functor Lang",
+      "title": "Functor",
       "properties": {
-        "functor-lang.functorPath": {
+        "functor.functorPath": {
           "type": "string",
           "default": "functor",
           "description": "Path to the `functor` CLI binary the live preview uses to serve the game. Resolved from PATH by default; when nothing runnable is found, the extension offers to download the newest release for this platform."
         },
-        "functor-lang.serverPath": {
+        "functor.serverPath": {
           "type": "string",
           "default": "",
           "description": "Path to the `functor-lang-lsp` language server binary. Empty (the default) uses the binary bundled with the extension, falling back to PATH."

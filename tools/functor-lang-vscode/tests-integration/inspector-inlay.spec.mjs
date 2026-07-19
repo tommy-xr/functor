@@ -12,7 +12,7 @@ import { test, expect, openFile, runCommand } from "./baseTest.mjs";
 import { EXPECTED_HINT, EXPECTED_RANGE_HINT } from "./trace.mjs";
 
 // The palette title of the guarded inject command (see extension.js).
-const INJECT_COMMAND = "Functor Lang: [test] Inject Inspector Trace";
+const INJECT_COMMAND = "Functor: [test] Inject Inspector Trace";
 // Distinctive substring to type into the palette (brackets omitted so fuzzy
 // matching isn't thrown off).
 const INJECT_QUERY = "Inject Inspector Trace";

@@ -1,5 +1,5 @@
 // The full wasm push path, end to end: open the live preview
-// (`Functor Lang: Open Live Preview` spawns `functor run wasm` and hosts the
+// (`Functor: Open Live Preview` spawns `functor run wasm` and hosts the
 // game in a webview), let the game RUN, pause it via the real scrubber
 // button, and assert the runtime-emitted `functor-inspector-trace`
 // (postMessage → webview relay → LSP notification) produces live-value inlay
@@ -21,7 +21,7 @@ test("live preview: pausing a real frame relays a trace and shows live hints", a
   workbox,
 }) => {
   await openFile(workbox, "game.fun");
-  await runCommand(workbox, "Functor Lang: Open Live Preview");
+  await runCommand(workbox, "Functor: Open Live Preview");
 
   // Step into the game page: workbench webview → active-frame → game iframe.
   const gamePage = workbox

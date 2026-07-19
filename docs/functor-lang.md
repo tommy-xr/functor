@@ -697,8 +697,8 @@ First-class `.fun` editor support, built on the `functor_lang` crate's front-end
       `textDocument/implementation`); `cargo test -p functor-lang -p functor-lang-lsp` green.
 - [x] **D4. Live game preview in the editor** (done 2026-07-03, needs C5).
       A VSCode webview panel hosting the wasm runtime: the extension's
-      **"Functor Lang: Open Live Preview"** command serves the project
-      (`functor run wasm --no-open`, binary from `functor-lang.functorPath`) in a
+      **"Functor: Open Live Preview"** command serves the project
+      (`functor run wasm --no-open`, binary from `functor.functorPath`) in a
       full-size iframe and pushes the LIVE buffer (300ms debounce, unsaved
       included) into it, and the new `functor_lang_set_source` wasm export mirrors
       the native reload path — parse → lower → check-as-warnings →

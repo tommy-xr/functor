@@ -19,7 +19,7 @@ makes **live-value inlay hints** appear in the editor for a `.fun` file.
    the on-disk `game.fun`** (the LSP's hash gate) and arms the inject seam via
    env (`FUNCTOR_LANG_TEST_HOOKS=1`, `FUNCTOR_INSPECTOR_TEST_TRACE=<file>`).
 2. The test opens `game.fun` (Quick Open) and runs
-   `Functor Lang: [test] Inject Inspector Trace` (Command Palette). That
+   `Functor: [test] Inject Inspector Trace` (Command Palette). That
    test-only command — registered **only** when `FUNCTOR_LANG_TEST_HOOKS=1` —
    forwards the trace through the exact
    `client.sendNotification("functor/inspector/trace", …)` call the real preview
