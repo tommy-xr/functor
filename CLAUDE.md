@@ -160,6 +160,7 @@ The wasm bundle is unaffected either way: `wasm-pack build` is release by defaul
 ```sh
 ./target/debug/functor -d examples/primitives run native   # opens a window (native is the default env)
 ./target/debug/functor -d examples/primitives run wasm      # serves the .fun + wasm at http://127.0.0.1:8080
+./target/debug/functor -d examples/primitives run vr        # runs it on an adb-attached headset (see runtime/functor-runtime-oculus/README.md), re-pushing on save
 ./target/debug/functor -d examples/primitives build [native|wasm]
 ./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; Functor Lang hot-reload is built in
 ```

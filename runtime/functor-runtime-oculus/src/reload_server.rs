@@ -26,8 +26,19 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// A pushed source body and the channel the frame loop answers on.
-pub type ReloadRequest = (String, mpsc::Sender<Result<String, String>>);
+/// What a push carries.
+pub enum ReloadBody {
+    /// A single pushed entry (`POST /reload-source`) — siblings keep their
+    /// last-pushed text.
+    Source(String),
+    /// A whole-project push (`POST /reload-project`): every file as
+    /// `(path, source)`, entry FIRST — the producer's `reload_project`
+    /// contract. The wire body is a JSON array of pairs.
+    Project(Vec<(String, String)>),
+}
+
+/// A pushed body and the channel the frame loop answers on.
+pub type ReloadRequest = (ReloadBody, mpsc::Sender<Result<String, String>>);
 
 /// Game source is KBs; an unbounded read is an OOM invitation (the desktop
 /// endpoint's bound).
@@ -122,7 +133,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<ReloadRequest>) -> Option<()>
     }
 
     match (method, path) {
-        ("POST", "/reload-source") => {
+        ("POST", "/reload-source") | ("POST", "/reload-project") => {
             // Bound the body; chunked bodies (no declared length) are
             // rejected the same way (the desktop endpoint's rule).
             let len = match content_length {
@@ -147,8 +158,27 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<ReloadRequest>) -> Option<()>
                 respond(&mut stream, 400, "Bad Request", "bad body");
                 return Some(());
             }
+            let reload = if path == "/reload-project" {
+                // The whole file set as a JSON array of (path, source)
+                // pairs, entry first. A malformed body is the pusher's
+                // mistake — reject before bothering the frame loop.
+                match serde_json::from_str::<Vec<(String, String)>>(&body) {
+                    Ok(files) => ReloadBody::Project(files),
+                    Err(error) => {
+                        respond(
+                            &mut stream,
+                            400,
+                            "Bad Request",
+                            &format!("body must be a JSON array of [path, source] pairs: {error}"),
+                        );
+                        return Some(());
+                    }
+                }
+            } else {
+                ReloadBody::Source(body)
+            };
             let (resp_tx, resp_rx) = mpsc::channel();
-            tx.send((body, resp_tx)).ok()?;
+            tx.send((reload, resp_tx)).ok()?;
             match resp_rx.recv_timeout(RELOAD_REPLY_TIMEOUT) {
                 Ok(Ok(status)) => respond(&mut stream, 200, "OK", &status),
                 // A load error in the pushed source — the pusher's mistake,
@@ -171,7 +201,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<ReloadRequest>) -> Option<()>
                 &mut stream,
                 200,
                 "OK",
-                "{\"service\":\"functor quest runtime\",\"endpoints\":[\"POST /reload-source\"]}",
+                "{\"service\":\"functor quest runtime\",\"endpoints\":[\"POST /reload-source\",\"POST /reload-project\"]}",
             );
         }
         _ => respond(&mut stream, 404, "Not Found", "unknown endpoint"),

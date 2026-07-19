@@ -301,6 +301,15 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
+        if matches!(environment, Environment::Vr) {
+            if !runner_args.is_empty() {
+                emit(Event::Warning {
+                    message: "runner args are ignored on vr (they configure the desktop runtime)"
+                        .to_string(),
+                });
+            }
+            return self.run_vr(working_directory).await;
+        }
         if matches!(environment, Environment::Wasm) {
             return self.run_wasm(working_directory, runner_args, develop).await;
         }
@@ -418,6 +427,103 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    }
+
+    /// `run vr` / `develop vr`: run the game on an adb-attached headset
+    /// running the functor VR runtime (a tool APK built once — see
+    /// runtime/functor-runtime-oculus/README.md). One command: launch the
+    /// app, forward the push port, push the whole project, then keep
+    /// watching and re-pushing on save (hot reload is built in, like
+    /// native — `run` and `develop` are the same here too), streaming the
+    /// headset's runtime log into this terminal.
+    async fn run_vr(&self, working_directory: &str) -> Result<(), Error> {
+        let entry_path = self.entry_path(working_directory)?;
+        let serial = adb_device().await?;
+        adb_require_runtime(&serial).await?;
+        // `am start` on the running singleTask activity is a no-op resume —
+        // idempotent, so no need to check whether the app is already up.
+        adb_run(&serial, &["shell", "am", "start", "-n", VR_COMPONENT]).await?;
+        let forward = format!("tcp:{VR_PORT}");
+        adb_run(&serial, &["forward", &forward, &forward]).await?;
+        spawn_logcat(&serial);
+        let addr = format!("127.0.0.1:{VR_PORT}");
+
+        // The initial push, with retries: a cold app start needs a moment
+        // to bind its endpoint. (The typecheck gate already ran — `run`
+        // builds before dispatching, same as native/wasm.)
+        let files = read_project_files(&entry_path)?;
+        let mut attempted = None;
+        for _ in 0..20 {
+            match post_reload_project(&addr, &files) {
+                Ok((200, body)) => {
+                    emit(Event::Info { message: body });
+                    attempted = Some(serde_json::to_string(&files).unwrap_or_default());
+                    break;
+                }
+                // The endpoint answered and said no — the project is the
+                // problem (shouldn't happen post-gate), not the transport.
+                Ok((status, body)) => {
+                    return Err(Error::other(format!("push rejected ({status}): {body}")))
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
+        let mut attempted = attempted.ok_or_else(|| {
+            Error::other(format!(
+                "cannot reach the headset's reload endpoint (http://{addr} via adb forward) — \
+is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
+            ))
+        })?;
+        emit(Event::Info {
+            message: format!(
+                "watching {} + siblings — edit and save to hot-reload on the headset \
+(Ctrl-C to stop)",
+                self.entry
+            ),
+        });
+
+        // The watch loop, shaped like `push --watch`: poll contents (not
+        // mtimes), track the last ATTEMPTED file set, and re-push the WHOLE
+        // set on any change (file = module — a sibling edit must ship too).
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            // Atomic-save editors briefly unlink files mid-save; wait for
+            // the next poll rather than failing the loop.
+            let Ok(files) = read_project_files(&entry_path) else {
+                continue;
+            };
+            let current = serde_json::to_string(&files).unwrap_or_default();
+            if current == attempted {
+                continue;
+            }
+            // The same check gate `run native` uses — structured file:line
+            // diagnostics beat the device's rendered 400 body, and a broken
+            // edit never leaves the machine.
+            if self.build(working_directory, false).is_err() {
+                emit(Event::Warning {
+                    message: "check failed — the headset keeps the previous program".to_string(),
+                });
+                attempted = current;
+                continue;
+            }
+            match post_reload_project(&addr, &files) {
+                Ok((200, body)) => {
+                    emit(Event::Info { message: body });
+                    attempted = current;
+                }
+                Ok((status, body)) => {
+                    emit(Event::Warning {
+                        message: format!("push rejected ({status}): {body}"),
+                    });
+                    attempted = current;
+                }
+                // Transport failure (cable out, app restarting): leave
+                // `attempted` alone so the same content retries next poll.
+                Err(e) => emit(Event::Warning {
+                    message: format!("push failed ({e}); retrying…"),
+                }),
+            }
         }
     }
 
@@ -576,10 +682,161 @@ fn refresh_manifest(working_directory: &str) {
     }
 }
 
+// --- `run vr` plumbing -------------------------------------------------------
+
+/// The functor VR runtime tool APK (runtime/functor-runtime-oculus).
+const VR_PACKAGE: &str = "dev.functor.runner";
+const VR_COMPONENT: &str = "dev.functor.runner/android.app.NativeActivity";
+/// Its device-loopback push port (`adb forward` bridges it to this machine).
+const VR_PORT: u16 = 8123;
+
+/// Run one adb command to completion; stdout on success, a rendered error
+/// (including the "adb isn't installed" case) otherwise.
+async fn adb_output(serial: Option<&str>, args: &[&str]) -> Result<String, Error> {
+    let mut cmd = tokio::process::Command::new("adb");
+    if let Some(serial) = serial {
+        cmd.args(["-s", serial]);
+    }
+    cmd.args(args);
+    let out = cmd.output().await.map_err(|e| {
+        Error::other(format!(
+            "cannot run adb ({e}) — install Android platform-tools and ensure `adb` is on PATH"
+        ))
+    })?;
+    if !out.status.success() {
+        return Err(Error::other(format!(
+            "adb {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// adb, success/failure only.
+async fn adb_run(serial: &str, args: &[&str]) -> Result<(), Error> {
+    adb_output(Some(serial), args).await.map(|_| ())
+}
+
+/// The attached device's serial: `ANDROID_SERIAL` when set (adb's own
+/// convention), else the single `adb devices` entry — zero or several is an
+/// error with the fix in the message.
+async fn adb_device() -> Result<String, Error> {
+    if let Ok(serial) = std::env::var("ANDROID_SERIAL") {
+        return Ok(serial);
+    }
+    let out = adb_output(None, &["devices"]).await?;
+    let devices: Vec<String> = out
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            match (fields.next(), fields.next()) {
+                (Some(serial), Some("device")) => Some(serial.to_string()),
+                _ => None,
+            }
+        })
+        .collect();
+    match devices.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(Error::other(
+            "no device attached (`adb devices` lists none) — connect the headset over USB \
+and accept its debugging prompt",
+        )),
+        _ => Err(Error::other(
+            "multiple devices attached — set ANDROID_SERIAL to pick one",
+        )),
+    }
+}
+
+/// The tool APK ships separately from games (games are text, pushed live) —
+/// require it up front with the install pointer, instead of a connection
+/// error after launch.
+async fn adb_require_runtime(serial: &str) -> Result<(), Error> {
+    let out = adb_output(Some(serial), &["shell", "pm", "list", "packages", VR_PACKAGE]).await?;
+    let installed = out
+        .lines()
+        .any(|line| line.trim() == format!("package:{VR_PACKAGE}"));
+    if installed {
+        Ok(())
+    } else {
+        Err(Error::other(format!(
+            "the functor VR runtime isn't installed on {serial} — build + install the tool APK \
+(see runtime/functor-runtime-oculus/README.md): npm run build:oculus:apk && \
+adb install -r target-android/debug/apk/functor_runtime_oculus.apk"
+        )))
+    }
+}
+
+/// Stream the headset's runtime log (`adb logcat -s functor`) into the CLI's
+/// event stream, so on-device `[functor-lang]` errors and `Debug.log` traces read
+/// like `run native`'s console. `-T 1` starts at now (no history replay).
+fn spawn_logcat(serial: &str) {
+    let serial = serial.to_string();
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut cmd = tokio::process::Command::new("adb");
+        cmd.args(["-s", &serial, "logcat", "-T", "1", "-v", "brief", "-s", "functor"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let Ok(mut child) = cmd.spawn() else {
+            emit(Event::Warning {
+                message: "cannot stream the headset log (adb logcat failed to start)".to_string(),
+            });
+            return;
+        };
+        let Some(stdout) = child.stdout.take() else {
+            return;
+        };
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            // brief format: `I/functor (12345): <message>` — keep the
+            // message, drop the logcat framing (separator lines have no
+            // "): " and are skipped).
+            if let Some((_, message)) = line.split_once("): ") {
+                emit(Event::Info {
+                    message: format!("headset: {message}"),
+                });
+            }
+        }
+    });
+}
+
+/// The project's `.fun`/`.funi` files as `(file name, source)`, entry FIRST —
+/// the `reload_project` wire contract (`file = module`, so names are enough).
+fn read_project_files(entry_path: &Path) -> Result<Vec<(String, String)>, Error> {
+    let mut files = Vec::new();
+    for path in functor_lang::project::project_files(entry_path)? {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error::other(format!("non-UTF8 file name: {}", path.display())))?
+            .to_string();
+        files.push((name, std::fs::read_to_string(&path)?));
+    }
+    Ok(files)
+}
+
+/// POST the whole project file set to the runtime's `/reload-project` as a
+/// JSON array of `[path, source]` pairs.
+fn post_reload_project(addr: &str, files: &[(String, String)]) -> Result<(u16, String), Error> {
+    let body = serde_json::to_string(files).map_err(Error::other)?;
+    http_post(addr, "/reload-project", "application/json", &body)
+}
+
 /// Minimal HTTP POST over std::net — one dependency-free request to the
 /// runner's tiny_http server. Returns (status, body). `Connection: close`
 /// keeps the read side trivial (read to EOF, split headers off).
 fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
+    http_post(addr, "/reload-source", "text/plain", source)
+}
+
+fn http_post(
+    addr: &str,
+    path: &str,
+    content_type: &str,
+    body: &str,
+) -> Result<(u16, String), Error> {
     use std::io::{Read, Write};
     use std::net::ToSocketAddrs;
     let timeout = std::time::Duration::from_secs(5);
@@ -594,11 +851,11 @@ fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> 
     stream.set_write_timeout(Some(timeout))?;
     write!(
         stream,
-        "POST /reload-source HTTP/1.1\r\nHost: {addr}\r\nContent-Type: text/plain\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: {content_type}\r\n\
 Content-Length: {}\r\nConnection: close\r\n\r\n",
-        source.len()
+        body.len()
     )?;
-    stream.write_all(source.as_bytes())?;
+    stream.write_all(body.as_bytes())?;
     let mut response = String::new();
     stream.read_to_string(&mut response)?;
     let status = response

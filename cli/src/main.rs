@@ -66,6 +66,9 @@ struct Args {
 enum Environment {
     Wasm,
     Native,
+    /// A headset running the functor VR runtime APK, attached over adb —
+    /// launches the app, pushes the project, and re-pushes on save.
+    Vr,
 }
 
 impl Environment {
@@ -77,6 +80,7 @@ impl Environment {
         match self {
             Environment::Wasm => "wasm",
             Environment::Native => "native",
+            Environment::Vr => "vr",
         }
     }
 }
@@ -97,7 +101,8 @@ enum Command {
         environment: Option<Environment>,
     },
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
-    /// server). E.g. `functor -d examples/primitives run native`.
+    /// server; `vr` runs it on an adb-attached headset, re-pushing on save).
+    /// E.g. `functor -d examples/primitives run native`.
     Run {
         #[arg(value_enum)]
         environment: Option<Environment>,

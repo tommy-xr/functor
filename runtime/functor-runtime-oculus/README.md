@@ -22,15 +22,19 @@ binding keeps the LAN out; note another app ON the device could reach
 loopback — an accepted dev-tool tradeoff):
 
 ```sh
-adb forward tcp:8123 tcp:8123
-functor -d mygame push 127.0.0.1:8123          # push once
-functor -d mygame push 127.0.0.1:8123 --watch  # push on every save
+functor -d mygame run vr    # the whole loop, one command
 ```
 
-(`functor push` is the desktop remote-develop command — the Quest endpoint
-speaks the same protocol, verified at ~12ms per push. Raw HTTP works too:
-`curl --fail-with-body -X POST --data-binary @game.fun
-http://127.0.0.1:8123/reload-source`.)
+`run vr` finds the adb device, launches this APK, forwards the port, pushes
+the whole project (`POST /reload-project` — sibling modules included), then
+re-checks + re-pushes on every save while streaming the headset's runtime
+log into the terminal. The pieces also work individually:
+
+```sh
+adb forward tcp:8123 tcp:8123
+functor -d mygame push 127.0.0.1:8123 [--watch]   # entry-only push (desktop remote-develop command)
+curl --fail-with-body -X POST --data-binary @game.fun http://127.0.0.1:8123/reload-source
+```
 
 Semantics match desktop hot-reload: the **model is preserved** (closures
 stored in the model rebind by def-name), a broken push returns the rendered
