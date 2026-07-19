@@ -287,6 +287,40 @@ try {
     if (await waitStatus("live", "after delete-sibling checks")) {
       console.log("delete-sibling checks keep the preview live ✓");
     }
+
+    // (e) Inline expect tests: typing expects earns live gutter states — a
+    // pass, a fail (with the decomposed actual-vs-expected detail, which
+    // also lands in Problems), and an unrunnable engine call.
+    await page.evaluate(
+      (src) => window.__ide.setActiveSource(src),
+      `${gameSource}let double = (x) => x * 2.0\n` +
+        `expect double(4.0) == 8.0\n` +
+        `expect double(4.0) == 9.0\n` +
+        `expect Scene.cube() == Scene.cube()\n`
+    );
+    const expectRows = await poll(
+      () => page.evaluate(() => window.__lang.expects()),
+      (rows) => rows.length === 3 && rows.every((r) => r.state !== "running")
+    );
+    const states = expectRows.map((r) => r.state).join(",");
+    if (states === "pass,fail,unrunnable") {
+      console.log("expect gutter settles to pass/fail/unrunnable ✓");
+    } else {
+      fail(`expect gutter states: ${states || "(none)"}`);
+    }
+    if ((expectRows[1] || {}).detail.includes("left: 8, right: 9")) {
+      console.log("failing expect carries the decomposed detail ✓");
+    } else {
+      fail(`fail detail: ${JSON.stringify(expectRows[1])}`);
+    }
+    const dots = await page.locator(".cm-expect").count();
+    if (dots === 3) console.log("expect gutter renders three dots ✓");
+    else fail(`expected 3 gutter dots, got ${dots}`);
+
+    await page.evaluate((src) => window.__ide.setActiveSource(src), gameSource);
+    if (await waitStatus("live", "after expect checks")) {
+      console.log("expect checks keep the preview live ✓");
+    }
   }
 
   console.log(process.exitCode ? "RESULT: FAIL" : "RESULT: PASS");

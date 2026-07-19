@@ -16,6 +16,17 @@ let update = (m: Model, msg: Msg) =>
   match msg with
   | Inc => { m with count: m.count + 1.0 }
 
+// Inline tests: `expect` runs under `functor-lang test game.fun` (and live
+// in the editor gutter — red/green as you type), never in the game loop.
+// The functional core makes MVU logic directly testable: update is just a
+// function of (model, msg).
+expect update(init, Inc).count == 1.0
+expect update(update(init, Inc), Inc).count == 2.0
+expect (
+  let clicked = update(init, Inc) in    // a let-in chain is the setup block
+  clicked.count > init.count
+)
+
 let tick = (m: Model, dt, tts) => m
 
 let draw = (m: Model, tts) =>
