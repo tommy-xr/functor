@@ -34,15 +34,21 @@ No install needed:
 
 ## Quick start
 
-**Install a prebuilt binary** — no toolchain needed. On macOS or Linux:
+**Install a prebuilt binary** — no toolchain needed.
 
 ```sh
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/tommy-xr/functor/main/install.sh | sh
 ```
 
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/tommy-xr/functor/main/install.ps1 | iex
+```
+
 This downloads the right binary for your platform into `~/.functor/bin` and prints
-the line to add it to your `PATH`. (Windows, or prefer to grab it by hand? Download
-the archive for your platform from the
+the line to add it to your `PATH`. (Prefer to grab it by hand? Download the archive
+for your platform from the
 [releases page](https://github.com/tommy-xr/functor/releases) and extract the
 single `functor` binary:)
 
