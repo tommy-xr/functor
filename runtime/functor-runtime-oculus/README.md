@@ -13,6 +13,29 @@ reaches session FOCUSED and renders the placeholder scene in stereo through
 the shared `render_frame` path. Remaining device bring-up: the Functor Lang producer,
 network reload, controller input, asymmetric-frustum projection.
 
+## The remote-develop loop (M1)
+
+The APK boots an embedded scene (`src/boot.fun`) and listens on **device
+loopback** for pushed source — `POST /reload-source`, the same endpoint the
+desktop debug server exposes. The dev PC reaches it over USB (loopback-only
+binding means nothing on the LAN can push code to the headset):
+
+```sh
+adb forward tcp:8123 tcp:8123
+curl --fail-with-body -X POST --data-binary @game.fun http://127.0.0.1:8123/reload-source
+```
+
+Semantics match desktop hot-reload: the **model is preserved** (closures
+stored in the model rebind by def-name), a broken push returns the rendered
+error with HTTP 400 and the old program keeps running, and a push landed
+while the headset dozes applies the moment the session resumes. Edit-on-save
+loop (watchexec is optional everywhere else too):
+
+```sh
+watchexec -w game.fun -- \
+  curl -s -X POST --data-binary @game.fun http://127.0.0.1:8123/reload-source
+```
+
 ## Headless iteration (no one wearing the headset)
 
 The device only promotes a session past IDLE when it believes it's worn, and

@@ -63,6 +63,11 @@ required = false
 [[package.metadata.android.uses_permission]]
 name = "com.oculus.permission.HAND_TRACKING"
 
+# Sockets — even the device-loopback reload endpoint — need this; binding
+# without it is EPERM.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
 # Without supportedDevices, Horizon OS treats the APK as an original-Quest
 # compat app (`VrRuntimeCompatHelper: DevicesSupported : 1 devices, quest`).
 [[package.metadata.android.application.meta_data]]
