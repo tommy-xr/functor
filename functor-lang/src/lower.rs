@@ -132,6 +132,8 @@ pub(crate) fn exports_of(program: &ast::Program) -> Exports {
                 exports.signatures.insert(decl.name.clone());
             }
             ast::Item::Open(_) => {}
+            // An expect binds nothing.
+            ast::Item::Expect(_) => {}
         }
     }
     exports
@@ -182,6 +184,8 @@ fn lower_module(
     for item in &program.items {
         match item {
             ast::Item::Open(_) => {}
+            // An expect declares no names.
+            ast::Item::Expect(_) => {}
             // A signature shares the value namespace with `let`s for DUPLICATE
             // DETECTION only — it is never lowered to a `Global` (references
             // stay `External`; `.funi` files have no value expressions, so
@@ -376,6 +380,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
     let mut types = Vec::new();
     let mut defs = Vec::new();
     let mut signatures = Vec::new();
+    let mut expects = Vec::new();
     for item in program.items {
         match item {
             // Opens were consumed in pass 1b; they leave no IR (and no
@@ -413,6 +418,19 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
                     span: decl.span,
                 });
             }
+            // An expect: no name, no DefId — its expression lowers like a
+            // def body (globals resolve canonically), kept in its own list
+            // so session loading never evaluates it.
+            ast::Item::Expect(decl) => {
+                expects.push(ExpectDef {
+                    module: match lowerer.project {
+                        Some(env) if env.name != env.entry => env.name.to_string(),
+                        _ => String::new(),
+                    },
+                    expr: lowerer.expr(decl.expr)?,
+                    span: decl.span,
+                });
+            }
         }
     }
     let bases = IdBases {
@@ -425,6 +443,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
             types,
             defs,
             signatures,
+            expects,
         },
         bases,
         lowerer.deps,

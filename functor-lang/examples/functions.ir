@@ -576,4 +576,5 @@ Module {
         },
     ],
     signatures: [],
+    expects: [],
 }

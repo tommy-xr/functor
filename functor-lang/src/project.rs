@@ -645,6 +645,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         types: Vec::new(),
         defs: Vec::new(),
         signatures: Vec::new(),
+        expects: Vec::new(),
     };
     let mut by_module: HashMap<String, Module> = files
         .iter()
@@ -656,6 +657,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         merged.types.extend(module.types);
         merged.defs.extend(module.defs);
         merged.signatures.extend(module.signatures);
+        merged.expects.extend(module.expects);
     }
 
     Ok(Project {

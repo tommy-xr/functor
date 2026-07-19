@@ -222,7 +222,7 @@ asset's (future) per-asset config seat; if both declare (`url` + local file), th
 wins with a warning. Auto-reimport watches sidecar mtimes too, and a failed remote fetch
 during auto-reimport keeps the existing manifest (offline must not strip clip constants).
 
-**Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|parse|ir <file.fun>`
+**Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|test|parse|ir <file.fun>`
 drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the
 `functor-lang` skill.
 

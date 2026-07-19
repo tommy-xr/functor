@@ -18,9 +18,10 @@ cargo run -q -p functor-lang -- ir file.fun      # name-resolved core IR (merged
 cargo run -q -p functor-lang -- run file.fun     # evaluate: main()'s result, or the entry's bindings
 cargo run -q -p functor-lang -- trace file.fun   # enter/exit call story with values (kept on failure)
 cargo run -q -p functor-lang -- check file.fun   # typechecker: ALL diagnostics, exit 1
+cargo run -q -p functor-lang -- test file.fun    # run the `expect` tests: per-test ok/FAILED, exit 1
 ```
 
-`ir`/`check`/`run`/`trace` treat the file as a PROJECT ENTRY: every sibling
+`ir`/`check`/`run`/`trace`/`test` treat the file as a PROJECT ENTRY: every sibling
 `.fun` in its directory loads with it (file = module — see Modules below),
 so scratch files must live in their own directory, not a shared one.
 
@@ -277,6 +278,43 @@ open Widget                                              // …or open, bringing
   modules that own several name each (`Scene.t`; `Physics.shape`/`body`/`world`;
   `Ui.view`/`anchor`; `Html.node`/`Attr.t`; `Asset.Model`/`Texture`/`Sound`). Physics query/event results are records
   (`Physics.position`, `Physics.rayHit`, `Physics.collisionEvent`).
+
+## Inline tests (`expect`)
+
+`expect <bool-expr>` is a top-level ITEM — an inline test written next to
+the code it exercises:
+
+```functor
+let area = (s: Shape): float => …
+
+expect area(Point) == 0.0
+expect area(Rect(3.0, 4.0)) == 12.0
+expect (                                      // any expression works — a
+  let m = tick(init, 0.016, 0.016) in         //   let-in chain is the
+  m.score == 0.0                              //   multi-step setup block
+)
+```
+
+- **Unnamed** — the span (`file:line`) is the test's identity. `expect` is
+  contextual (the `open` rule): only item position means a test, so the
+  name stays usable everywhere else. `.funi` files refuse it.
+- The expression must CHECK as `bool` (`check`: "an `expect` test:
+  expected bool, got …").
+- **Inert in the game loop**: `run native`/`run wasm`/`Session::load`
+  never evaluate expects — only `functor-lang test <entry.fun>` does (defs
+  load first, then each expect independently; one failure never stops the
+  rest; exit 1 on any failure). Sibling-module expects load and run with
+  the project.
+- A failed TOP-LEVEL comparison (`==`/`<`/`>`) is decomposed: the report
+  carries both sides' actual values (`left: 12, right: 12.5`).
+- Pipe-then-compare needs parens (pipelines bind loosest):
+  `expect (xs |> List.map(f)) == ys` — without them the `==` folds into
+  the pipe's argument.
+- Floats compare exactly; for computed floats prefer
+  `Math.abs(a - b) < 0.001` over `==`.
+- Under plain `functor-lang test` the engine prelude doesn't exist —
+  expects calling `Scene.*` etc. error at runtime. Test pure logic:
+  model/`tick`/`update` math.
 
 ## Semantics rules that WILL bite you
 
