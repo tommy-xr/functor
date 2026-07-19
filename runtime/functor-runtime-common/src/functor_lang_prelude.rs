@@ -6955,8 +6955,17 @@ the game dir"
         assert!(conns[1].listen);
     }
 
+    /// The outbound conn-command queue is PROCESS-GLOBAL (`net::CONN_OUT`),
+    /// and cargo runs these tests as parallel threads — any two tests that
+    /// push or drain it can steal each other's commands (a Windows-CI flake
+    /// caught exactly that: a broadcast's second Send vanished into a
+    /// concurrent test's clearing drain). Same rule as functor-netsim's
+    /// NET_LOCK: every test touching the queue takes this first.
+    static CONN_QUEUE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn effect_send_queues_a_conn_command() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::net::drain_conn_commands(); // clear
         let module =
             functor_lang::lower(functor_lang::parse("let main = () => Effect.send(7.0, \"hi\")").unwrap()).unwrap();
@@ -7060,6 +7069,7 @@ the game dir"
     /// effect-log record keeps the STRUCTURED payload.
     #[test]
     fn send_msg_queues_a_framed_send_and_logs_the_payload() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_conn_commands();
         let src = "type Wire = | Ping(n: float)\n\
                    let init = { n: 0.0 }\n\
@@ -7601,6 +7611,7 @@ a number",
     /// and a disconnect dropping a player.
     #[test]
     fn mp_server_broadcasts_the_world_to_every_client() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // project::load walks the entry's siblings (file = module) — the mp
         // example keeps its wire codec in a shared Protocol module — and
         // injects the built-in Net module, like the runner.
@@ -7705,6 +7716,7 @@ a number",
     /// doubles as a wire round-trip check between the two roles.
     #[test]
     fn mp_client_decodes_snapshots_and_sends_input() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/mp/client.fun");
         let project = functor_lang::project::load(&entry)
