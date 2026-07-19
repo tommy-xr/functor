@@ -440,6 +440,16 @@ pub fn run_expects(
 /// hot path branch-free. Total interpreter work is O(budget), so the budget
 /// bounds wall-clock up to the per-step constant; pick it accordingly
 /// (~10^6 is comfortably sub-second).
+///
+/// STACK CONTRACT for in-process embedding (the LSP / wasm IDE seam): a
+/// budgeted run cannot build a value nested deeper than `budget` levels (each
+/// level costs ≥ 1 step), but DROPPING a value that deep recurses to its
+/// depth (`Value` deliberately has no iterative Drop — one was measured at
+/// ~2x frame_bench). Run this on a worker thread whose stack covers the
+/// budget — ~100 bytes per level, so `budget * 100` bytes reserved (e.g.
+/// `std::thread::Builder::stack_size(256 << 20)` comfortably covers a 10^6
+/// budget; reserved virtual stack commits lazily). Rendering and comparison
+/// are depth-safe regardless (`Display`/`value_eq` are iterative).
 pub fn run_expects_budgeted(
     module: &Module,
     host: &mut dyn Host,
@@ -644,14 +654,16 @@ impl Session {
 /// A step budget for bounded evaluation ([`run_expects_budgeted`] — the live
 /// tooling seam: an editor evaluating on every edit must not hang on a
 /// runaway expect). A step is one function CALL (closures, builtins, ctors —
-/// [`Interp::call`]), or one element/byte a bulk builtin materializes or
-/// scans (`List.range`'s count; `List.append`/`flatten` output elements;
+/// [`Interp::call`]), one container CONSTRUCTED (list/tuple/record literals
+/// and updates — what makes value depth ≤ budget, the stack contract's
+/// arithmetic), or one element/byte a bulk builtin materializes or scans
+/// (`List.range`'s count; `List.append`/`flatten` output elements;
 /// `Text.concat`/`join`/`toBullets` output bytes; `reverse`/`maximum`/
 /// `split` input size). Charging GROWTH builtins by output is what makes
 /// the budget honest — `(x) => List.append(x, x)` doubles per call, so a
 /// per-call-only charge would allow exponential work under a linear budget.
-/// The per-node eval path is deliberately uncharged so the frame loop stays
-/// branch-free. `limit` is kept for the error message.
+/// The general per-node eval path is deliberately uncharged so the frame
+/// loop stays branch-free. `limit` is kept for the error message.
 #[derive(Clone, Copy)]
 struct Fuel {
     remaining: u64,
@@ -896,7 +908,14 @@ evaluation depth."
                     }),
                 }
             }
+            // Container CONSTRUCTION charges one step (the depth invariant
+            // behind run_expects_budgeted's stack contract: every level of a
+            // value's nesting was constructed once, so value depth ≤ budget.
+            // Without this, a nested literal in a fold body builds up to
+            // MAX_EVAL_DEPTH levels per single call charge). `fuel: None`
+            // (every game-loop path) makes each a one-branch no-op.
             ExprKind::Record(fields) => {
+                self.charge(1, expr.span)?;
                 let mut out = Vec::with_capacity(fields.len());
                 for field in fields {
                     out.push((field.name.clone(), self.eval(&field.value, env)?));
@@ -904,6 +923,7 @@ evaluation depth."
                 Ok(Value::Record(Rc::new(out)))
             }
             ExprKind::Tuple(items) => {
+                self.charge(1, expr.span)?;
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
                     values.push(self.eval(item, env)?);
@@ -911,6 +931,7 @@ evaluation depth."
                 Ok(Value::Tuple(Rc::new(values)))
             }
             ExprKind::List(items) => {
+                self.charge(1, expr.span)?;
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
                     out.push(self.eval(item, env)?);
@@ -918,6 +939,7 @@ evaluation depth."
                 Ok(Value::List(Rc::new(out)))
             }
             ExprKind::ListCons { items, tail } => {
+                self.charge(1, expr.span)?;
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
                     out.push(self.eval(item, env)?);
@@ -937,6 +959,7 @@ evaluation depth."
                 }
             }
             ExprKind::RecordUpdate { base, fields } => {
+                self.charge(1, expr.span)?;
                 let base_value = self.eval(base, env)?;
                 let Value::Record(base_fields) = &base_value else {
                     return Err(RunError {
@@ -2093,90 +2116,103 @@ fn pattern_binder_sites<'a>(pattern: &'a Pattern, out: &mut Vec<(BindingId, &'a 
 /// against the step budget, since a single `==` on a large value is O(size)
 /// work that no call-path charge sees (review probe: repeated big-list
 /// compares did ~9x10^8 uncharged comparisons under a 10^6 budget).
+/// Iterative (explicit pair worklist), NOT recursive: value depth is
+/// user-controlled (an iteratively-built `[acc]` nest goes far past any
+/// recursion limit), and this runs inside editor/tooling processes where a
+/// stack overflow is a host crash. Pairs push in reverse so comparison
+/// order stays left-to-right (first mismatch/error is the leftmost).
 fn value_eq(a: &Value, b: &Value, span: Span, compared: &mut u64) -> Result<bool, RunError> {
-    *compared += 1;
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => Ok(x == y),
-        (Value::String(x), Value::String(y)) => Ok(x == y),
-        (Value::Bool(x), Value::Bool(y)) => Ok(x == y),
-        (Value::List(xs), Value::List(ys)) => {
-            if xs.len() != ys.len() {
-                return Ok(false);
-            }
-            for (x, y) in xs.iter().zip(ys.iter()) {
-                if !value_eq(x, y, span, compared)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        // Structural, element-wise; arity difference is simply unequal.
-        (Value::Tuple(xs), Value::Tuple(ys)) => {
-            if xs.len() != ys.len() {
-                return Ok(false);
-            }
-            for (x, y) in xs.iter().zip(ys.iter()) {
-                if !value_eq(x, y, span, compared)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        (Value::Record(xs), Value::Record(ys)) => {
-            if xs.len() != ys.len() {
-                return Ok(false);
-            }
-            for (name, x) in xs.iter() {
-                match ys.iter().find(|(n, _)| n == name) {
-                    Some((_, y)) if value_eq(x, y, span, compared)? => {}
-                    _ => return Ok(false),
-                }
-            }
-            Ok(true)
-        }
-        // Structural: same constructor, equal args (a function argument
-        // still raises the function-comparison error below).
-        (Value::Variant { ctor: xc, args: xs }, Value::Variant { ctor: yc, args: ys }) => {
-            if xc != yc || xs.len() != ys.len() {
-                return Ok(false);
-            }
-            for (x, y) in xs.iter().zip(ys.iter()) {
-                if !value_eq(x, y, span, compared)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        // An unapplied constructor is a function value — no equality.
-        (
-            Value::Closure(_)
-            | Value::Partial(_)
-            | Value::Builtin(_)
-            | Value::HostFn(_)
-            | Value::Ctor { .. },
-            _,
-        )
-        | (
-            _,
-            Value::Closure(_)
-            | Value::Partial(_)
-            | Value::Builtin(_)
-            | Value::HostFn(_)
-            | Value::Ctor { .. },
-        ) => {
-            Err(RunError {
-                message: "functions cannot be compared with `==`".to_string(),
-                span,
-            })
-        }
-        (Value::HostData(_), _) | (_, Value::HostData(_)) => Err(RunError {
-            message: "host values cannot be compared with `==`".to_string(),
-            span,
-        }),
-        // Different kinds are simply unequal (structural, not typed — B4 adds
-        // the typechecker that would reject this statically).
-        _ => Ok(false),
+    /// Pending work. `MissingField` stands in for a record field whose name
+    /// the other record lacks — pushed IN POSITION so the not-equal verdict
+    /// lands in field order (an earlier field's function-comparison error
+    /// still fires first, exactly like the old interleaved walk).
+    enum Work<'a> {
+        Pair(&'a Value, &'a Value),
+        MissingField,
     }
+    let mut work: Vec<Work> = vec![Work::Pair(a, b)];
+    while let Some(item) = work.pop() {
+        let (a, b) = match item {
+            Work::Pair(a, b) => (a, b),
+            Work::MissingField => return Ok(false),
+        };
+        *compared += 1;
+        match (a, b) {
+            (Value::Number(x), Value::Number(y)) => {
+                if x != y {
+                    return Ok(false);
+                }
+            }
+            (Value::String(x), Value::String(y)) => {
+                if x != y {
+                    return Ok(false);
+                }
+            }
+            (Value::Bool(x), Value::Bool(y)) => {
+                if x != y {
+                    return Ok(false);
+                }
+            }
+            // Structural, element-wise; arity difference is simply unequal.
+            (Value::List(xs), Value::List(ys)) | (Value::Tuple(xs), Value::Tuple(ys)) => {
+                if xs.len() != ys.len() {
+                    return Ok(false);
+                }
+                work.extend(xs.iter().zip(ys.iter()).rev().map(|(x, y)| Work::Pair(x, y)));
+            }
+            (Value::Record(xs), Value::Record(ys)) => {
+                if xs.len() != ys.len() {
+                    return Ok(false);
+                }
+                for (name, x) in xs.iter().rev() {
+                    match ys.iter().find(|(n, _)| n == name) {
+                        Some((_, y)) => work.push(Work::Pair(x, y)),
+                        None => work.push(Work::MissingField),
+                    }
+                }
+            }
+            // Structural: same constructor, equal args (a function argument
+            // still raises the function-comparison error below).
+            (Value::Variant { ctor: xc, args: xs }, Value::Variant { ctor: yc, args: ys }) => {
+                if xc != yc || xs.len() != ys.len() {
+                    return Ok(false);
+                }
+                work.extend(xs.iter().zip(ys.iter()).rev().map(|(x, y)| Work::Pair(x, y)));
+            }
+            // An unapplied constructor is a function value — no equality.
+            (
+                Value::Closure(_)
+                | Value::Partial(_)
+                | Value::Builtin(_)
+                | Value::HostFn(_)
+                | Value::Ctor { .. },
+                _,
+            )
+            | (
+                _,
+                Value::Closure(_)
+                | Value::Partial(_)
+                | Value::Builtin(_)
+                | Value::HostFn(_)
+                | Value::Ctor { .. },
+            ) => {
+                return Err(RunError {
+                    message: "functions cannot be compared with `==`".to_string(),
+                    span,
+                })
+            }
+            (Value::HostData(_), _) | (_, Value::HostData(_)) => {
+                return Err(RunError {
+                    message: "host values cannot be compared with `==`".to_string(),
+                    span,
+                })
+            }
+            // Different kinds are simply unequal (structural, not typed — B4
+            // adds the typechecker that would reject this statically).
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
 }
 
 /// The trace label for a call site, from its callee's IR shape. Also used by
@@ -2500,6 +2536,48 @@ pub fn render_trace(events: &[TraceEvent]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod deep_value_tests {
+    use super::{value_eq, Span, Value};
+    use std::rc::Rc;
+
+    /// A list nested `depth` levels: `[[…[0]…]]`.
+    fn nest(depth: usize) -> Value {
+        let mut v = Value::Number(0.0);
+        for _ in 0..depth {
+            v = Value::List(Rc::new(vec![v]));
+        }
+        v
+    }
+
+    /// Display and value_eq must be ITERATIVE: on a deliberately SMALL stack
+    /// (512KB), walking a 200k-deep value recursively would overflow (~100 B
+    /// per frame ⇒ ~20MB), while the worklist versions stay flat. The built
+    /// values are `mem::forget`-leaked because `Value`'s drop glue IS
+    /// recursive by design (see the NOTE in `value.rs` and the stack
+    /// contract on `run_expects_budgeted`) — this pin is exactly about the
+    /// walks that must NOT share that constraint.
+    #[test]
+    fn display_and_eq_are_depth_safe_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let deep = nest(200_000);
+                let text = deep.to_string();
+                assert!(text.starts_with("[[[[") && text.len() > 400_000);
+                let mut compared = 0u64;
+                let same = value_eq(&deep, &deep.clone(), Span::new(0, 0), &mut compared)
+                    .expect("comparable");
+                assert!(same);
+                assert!(compared > 200_000);
+                std::mem::forget(deep);
+            })
+            .expect("spawn small-stack worker")
+            .join()
+            .expect("deep display/eq must complete on a small stack");
+    }
 }
 
 #[cfg(test)]
