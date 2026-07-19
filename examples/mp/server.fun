@@ -29,6 +29,8 @@ let toMsg = (ev: Net.NetEvent): Msg =>
   match ev with
   | Net.Connected(cid) => Joined(cid)
   | Net.Message(cid, text) => Moved(cid, text)
+  // The mp wire is the "vx vz" string; typed payloads are not part of it.
+  | Net.Data(_, _) => NetErr("unexpected typed message")
   | Net.Disconnected(cid) => Left(cid)
   | Net.Error(cid, message) => NetErr(message)
 

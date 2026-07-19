@@ -246,6 +246,16 @@ pub enum EffectTree {
         conn: f64,
         text: String,
     },
+    /// Send a plain-data VALUE on an open connection
+    /// (`Effect.sendMsg(id, msg)`). The payload is converted to its
+    /// [`EffectValue`] at construction (a closure inside is a teaching error
+    /// at the call site) and framed as [`TYPED_MSG_PREFIX`] + JSON on drain;
+    /// the receiving end decodes it back and delivers `Net.Data(id, value)`
+    /// through the connection's tagger. Tagger-less, like `Send`.
+    SendMsg {
+        conn: f64,
+        payload: EffectValue,
+    },
     /// An HTTP request (`Effect.httpGet`/`httpPost`). Unlike `Now`/`Random`
     /// (same-frame) or `Raycast` (same-frame deferred), the response lands
     /// FRAMES later: performing it mints a token, queues a
@@ -373,6 +383,10 @@ pub enum EffectValue {
     Bool(bool),
     Text(String),
     List(Vec<EffectValue>),
+    /// Structural tuple (at least two elements), mirroring [`Value::Tuple`] —
+    /// so an `Effect.sendMsg` payload carrying a tuple field roundtrips as a
+    /// tuple, not a list.
+    Tuple(Vec<EffectValue>),
     /// Field order is construction order (deterministic, like Functor Lang records).
     Record(Vec<(String, EffectValue)>),
     /// A variant value: a (canonical) constructor name and its positional
@@ -391,6 +405,9 @@ impl EffectValue {
             EffectValue::List(items) => {
                 Value::List(Rc::new(items.iter().map(EffectValue::to_functor_lang).collect()))
             }
+            EffectValue::Tuple(items) => {
+                Value::Tuple(Rc::new(items.iter().map(EffectValue::to_functor_lang).collect()))
+            }
             EffectValue::Record(fields) => Value::Record(Rc::new(
                 fields
                     .iter()
@@ -403,6 +420,85 @@ impl EffectValue {
             },
         }
     }
+}
+
+/// The inverse of [`EffectValue::to_functor_lang`]: the plain-data subset of
+/// [`Value`], for payloads the GAME hands the host (`Effect.sendMsg`). A
+/// non-data value — a closure, an unapplied constructor, a host handle — is a
+/// teaching error naming what was found: only what can cross the wire (and
+/// land in the effect log) is accepted.
+pub fn effect_value_from_value(value: &Value) -> Result<EffectValue, String> {
+    match value {
+        // JSON cannot carry NaN/Infinity — serde_json would write `null`,
+        // which the PEER then fails to decode (an asymmetric, silent loss).
+        // Refuse at the construction site instead, like a closure.
+        Value::Number(n) if !n.is_finite() => Err(format!(
+            "not plain data: a non-finite number ({n}) — the wire cannot carry NaN/Infinity"
+        )),
+        Value::Number(n) => Ok(EffectValue::Number(*n)),
+        Value::Bool(b) => Ok(EffectValue::Bool(*b)),
+        Value::String(s) => Ok(EffectValue::Text(s.to_string())),
+        Value::List(items) => Ok(EffectValue::List(
+            items.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
+        )),
+        Value::Tuple(items) => Ok(EffectValue::Tuple(
+            items.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
+        )),
+        Value::Record(fields) => Ok(EffectValue::Record(
+            fields
+                .iter()
+                .map(|(k, v)| Ok((k.clone(), effect_value_from_value(v)?)))
+                .collect::<Result<_, String>>()?,
+        )),
+        Value::Variant { ctor, args } => Ok(EffectValue::Variant(
+            ctor.to_string(),
+            args.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
+        )),
+        other => Err(format!(
+            "not plain data: {} — a message must be numbers, strings, bools, \
+lists, tuples, records, and variants of those (no functions, no host values)",
+            value_kind(other)
+        )),
+    }
+}
+
+/// A short human name for a [`Value`]'s kind, for teaching errors.
+fn value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Bool(_) => "a bool",
+        Value::List(_) => "a list",
+        Value::Tuple(_) => "a tuple",
+        Value::Record(_) => "a record",
+        Value::Variant { .. } => "a variant",
+        Value::Ctor { .. } => "an unapplied constructor",
+        Value::Closure(_) | Value::Partial(_) | Value::Builtin(_) | Value::HostFn(_) => {
+            "a function"
+        }
+        Value::HostData(_) => "an opaque host value",
+    }
+}
+
+/// The wire framing for `Effect.sendMsg` payloads: a control-character prefix
+/// (never produced by ordinary game text) followed by the payload's
+/// [`EffectValue`] as canonical JSON. `Net.Message` text without the prefix
+/// passes through untouched, so typed and plain-text traffic share a
+/// connection.
+pub const TYPED_MSG_PREFIX: &str = "\u{1}fun:";
+
+/// Frame a payload for the wire (see [`TYPED_MSG_PREFIX`]).
+pub fn encode_typed_msg(payload: &EffectValue) -> String {
+    let json = serde_json::to_string(payload)
+        .expect("EffectValue is a closed plain-data enum; serialization cannot fail");
+    format!("{TYPED_MSG_PREFIX}{json}")
+}
+
+/// Decode a wire text IF it is a typed-message frame: `None` for plain text,
+/// `Some(Err)` for a frame that does not parse (version skew, corruption).
+pub fn decode_typed_msg(text: &str) -> Option<Result<EffectValue, String>> {
+    let json = text.strip_prefix(TYPED_MSG_PREFIX)?;
+    Some(serde_json::from_str(json).map_err(|e| format!("malformed typed message: {e}")))
 }
 
 impl From<f64> for EffectValue {
@@ -2172,6 +2268,24 @@ fn register_effects(reg: &mut crate::host_registry::Registry) {
             Ok(FunctorLangEffect(EffectTree::Send { conn, text }))
         },
     );
+    // sendMsg(connId, msg): the typed sibling of `send` — msg is any
+    // plain-data value (usually a shared-module ADT variant); the other end
+    // receives it as `Net.Data(id, value)`. Converted to an EffectValue HERE
+    // so a non-data payload errors at the construction site, not mid-drain.
+    reg.fn2(
+        "Effect.sendMsg",
+        "Effect.sendMsg(connId, msg)",
+        |conn: f64, msg: Value| {
+            if conn < 0.0 || conn.fract() != 0.0 || conn > u64::MAX as f64 {
+                return Err(format!(
+                    "Effect.sendMsg: connId must be a non-negative whole number, got {conn}"
+                ));
+            }
+            let payload = effect_value_from_value(&msg)
+                .map_err(|e| format!("Effect.sendMsg: {e}"))?;
+            Ok(FunctorLangEffect(EffectTree::SendMsg { conn, payload }))
+        },
+    );
     // httpGet(url, tagger) / httpPost(url, body, tagger). The tagger is a
     // function of the Net.HttpResponse; performing the effect (drain) mints a
     // token, queues the request, and registers the tagger by token — see
@@ -3229,15 +3343,28 @@ fn collect_conn_subs(sub: &SubTree, out: &mut Vec<NetConnSub>) {
 /// canonical ctor names come from the built-in `Net` module (see
 /// `functor_lang::project`); `text` is the message/error payload (unused for
 /// Connected/Disconnected).
+///
+/// An inbound message carrying the [`TYPED_MSG_PREFIX`] frame (an
+/// `Effect.sendMsg` from the other end) decodes into `Net.Data(id, value)`
+/// instead of `Net.Message`; a frame that does not parse (version skew,
+/// corruption) becomes `Net.Error` rather than leaking the raw frame as text.
+/// This is the single decode site — the native, wasm, and netsim paths all
+/// deliver through it.
 pub fn net_event_value(kind: NetEventKind, conn: u64, text: &str) -> EffectValue {
     let id = EffectValue::Number(conn as f64);
     match kind {
         NetEventKind::Connected => EffectValue::Variant("Net.Connected".into(), vec![id]),
         NetEventKind::Disconnected => EffectValue::Variant("Net.Disconnected".into(), vec![id]),
-        NetEventKind::Message => EffectValue::Variant(
-            "Net.Message".into(),
-            vec![id, EffectValue::Text(text.to_string())],
-        ),
+        NetEventKind::Message => match decode_typed_msg(text) {
+            Some(Ok(payload)) => EffectValue::Variant("Net.Data".into(), vec![id, payload]),
+            Some(Err(error)) => {
+                EffectValue::Variant("Net.Error".into(), vec![id, EffectValue::Text(error)])
+            }
+            None => EffectValue::Variant(
+                "Net.Message".into(),
+                vec![id, EffectValue::Text(text.to_string())],
+            ),
+        },
         NetEventKind::Error => EffectValue::Variant(
             "Net.Error".into(),
             vec![id, EffectValue::Text(text.to_string())],
@@ -3688,6 +3815,9 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         EffectTree::None
         | EffectTree::Physics(_)
         | EffectTree::Send { .. }
+        // sendMsg is Send-shaped: fire-and-forget; the DELIVERY on the other
+        // end folds through that game's `update`, not this one's.
+        | EffectTree::SendMsg { .. }
         // The request is fire-and-forget; its RESPONSE needs `update`, but
         // that arrives frames later through the producer's HTTP pump.
         | EffectTree::Http { .. }
@@ -3824,6 +3954,26 @@ dropping the rest"
                 log.push(EffectRecord {
                     kind: "net.send",
                     value: EffectValue::Text(text),
+                });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::SendMsg { conn, payload } => {
+                // Typed sibling of Send: same fire-and-forget queueing, with
+                // the payload framed as TYPED_MSG_PREFIX + JSON. The log
+                // record keeps the STRUCTURED payload, so typed traffic is
+                // observable/replayable as data, not as an opaque string.
+                if !suppress_outbound {
+                    crate::net::push_conn_command(crate::net::ConnCommand::Send {
+                        conn: conn as crate::net::ConnectionId,
+                        payload: encode_typed_msg(&payload).into_bytes(),
+                    });
+                }
+                log.push(EffectRecord {
+                    kind: "net.sendMsg",
+                    value: payload,
                 });
                 if log.len() > EFFECT_LOG_CAP {
                     log.remove(0);
@@ -6806,8 +6956,17 @@ the game dir"
         assert!(conns[1].listen);
     }
 
+    /// The outbound conn-command queue is PROCESS-GLOBAL (`net::CONN_OUT`),
+    /// and cargo runs these tests as parallel threads — any two tests that
+    /// push or drain it can steal each other's commands (a Windows-CI flake
+    /// caught exactly that: a broadcast's second Send vanished into a
+    /// concurrent test's clearing drain). Same rule as functor-netsim's
+    /// NET_LOCK: every test touching the queue takes this first.
+    static CONN_QUEUE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn effect_send_queues_a_conn_command() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::net::drain_conn_commands(); // clear
         let module =
             functor_lang::lower(functor_lang::parse("let main = () => Effect.send(7.0, \"hi\")").unwrap()).unwrap();
@@ -6853,6 +7012,121 @@ the game dir"
             }
             other => panic!("expected a variant, got {other}"),
         }
+    }
+
+    /// The typed-message spine: a nested plain-data payload roundtrips
+    /// Value → EffectValue → wire frame → EffectValue → Value, and an inbound
+    /// frame decodes as `Net.Data(id, payload)` — while plain text stays
+    /// `Net.Message` and a corrupt frame becomes a loud `Net.Error`.
+    #[test]
+    fn send_msg_payload_roundtrips_and_decodes_as_net_data() {
+        let payload = EffectValue::Variant(
+            "Protocol.Ping".into(),
+            vec![EffectValue::Record(vec![
+                ("n".into(), EffectValue::Number(2.0)),
+                (
+                    "pos".into(),
+                    EffectValue::Tuple(vec![EffectValue::Number(1.0), EffectValue::Number(-3.5)]),
+                ),
+                ("tags".into(), EffectValue::List(vec![EffectValue::Text("a".into())])),
+                ("ok".into(), EffectValue::Bool(true)),
+            ])],
+        );
+        let wire = encode_typed_msg(&payload);
+        assert!(wire.starts_with(TYPED_MSG_PREFIX));
+        assert_eq!(decode_typed_msg(&wire).unwrap().unwrap(), payload);
+        assert_eq!(
+            effect_value_from_value(&payload.to_functor_lang()).unwrap(),
+            payload
+        );
+
+        assert_eq!(
+            net_event_value(NetEventKind::Message, 7, &wire),
+            EffectValue::Variant(
+                "Net.Data".into(),
+                vec![EffectValue::Number(7.0), payload]
+            )
+        );
+        assert_eq!(
+            net_event_value(NetEventKind::Message, 7, "plain text"),
+            EffectValue::Variant(
+                "Net.Message".into(),
+                vec![EffectValue::Number(7.0), EffectValue::Text("plain text".into())]
+            )
+        );
+        match net_event_value(NetEventKind::Message, 7, &format!("{TYPED_MSG_PREFIX}not json")) {
+            EffectValue::Variant(ctor, args) => {
+                assert_eq!(ctor, "Net.Error");
+                assert!(
+                    matches!(&args[1], EffectValue::Text(t) if t.contains("malformed typed message")),
+                    "unexpected error payload: {args:?}"
+                );
+            }
+            other => panic!("expected Net.Error, got {other:?}"),
+        }
+    }
+
+    /// Effect.sendMsg performs like Send (a framed ConnCommand::Send) and its
+    /// effect-log record keeps the STRUCTURED payload.
+    #[test]
+    fn send_msg_queues_a_framed_send_and_logs_the_payload() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::net::drain_conn_commands();
+        let src = "type Wire = | Ping(n: float)\n\
+                   let init = { n: 0.0 }\n\
+                   let update = (m, msg) => m\n\
+                   let tick = (m, dt: float, tts: float) => (m, Effect.sendMsg(7.0, Ping(2.0)))\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let tick = session.global("tick").unwrap();
+        let model = session.global("init").unwrap();
+        let (mut m, fx) = split_model_effect(
+            session
+                .apply(tick, vec![model, Value::Number(0.5), Value::Number(0.5)], "tick", &mut FunctorHost)
+                .unwrap(),
+        );
+        let mut log = EffectLog::new();
+        let _ = drain_effects(
+            &session,
+            &mut m,
+            fx.expect("an effect"),
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |r| panic!("unexpected report: {r}"),
+            false,
+        );
+        let expected = EffectValue::Variant("Ping".into(), vec![EffectValue::Number(2.0)]);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].kind, "net.sendMsg");
+        assert_eq!(log[0].value, expected);
+        let cmds = crate::net::drain_conn_commands();
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            crate::net::ConnCommand::Send { conn: 7, payload } => {
+                assert_eq!(payload, encode_typed_msg(&expected).as_bytes());
+            }
+            other => panic!("expected a framed Send, got {other:?}"),
+        }
+    }
+
+    /// A payload that cannot cross the wire — a function, or a non-finite
+    /// number (JSON has no NaN/Infinity; serde_json would write `null` and
+    /// only the PEER's decode would fail) — is a teaching error at the
+    /// construction site, not a silent drop mid-drain or on the far end.
+    #[test]
+    fn send_msg_rejects_a_function_payload() {
+        let msg = run_fail("let main = () => Effect.sendMsg(1.0, (x) => x)");
+        assert!(
+            msg.contains("not plain data") && msg.contains("a function"),
+            "expected the plain-data teaching error, got: {msg}"
+        );
+        let msg = run_fail("let main = () => Effect.sendMsg(1.0, 1.0 / 0.0)");
+        assert!(
+            msg.contains("non-finite"),
+            "expected the non-finite teaching error, got: {msg}"
+        );
     }
 
     /// Effect.send rejects a garbage connection id rather than truncating it
@@ -7338,6 +7612,7 @@ a number",
     /// and a disconnect dropping a player.
     #[test]
     fn mp_server_broadcasts_the_world_to_every_client() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // project::load walks the entry's siblings (file = module) — the mp
         // example keeps its wire codec in a shared Protocol module — and
         // injects the built-in Net module, like the runner.
@@ -7442,6 +7717,7 @@ a number",
     /// doubles as a wire round-trip check between the two roles.
     #[test]
     fn mp_client_decodes_snapshots_and_sends_input() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/mp/client.fun");
         let project = functor_lang::project::load(&entry)

@@ -19,6 +19,9 @@ let toMsg = (ev: Net.NetEvent): Msg =>
   match ev with
   | Net.Connected(id) => ClientConnected(id)
   | Net.Message(id, text) => Received(id, text)
+  // This demo speaks plain text; a typed payload (Effect.sendMsg) is not
+  // part of its protocol.
+  | Net.Data(id, _) => Received(id, "<typed message>")
   | Net.Disconnected(id) => ClientLeft(id)
   | Net.Error(id, message) => ConnError(message)
 

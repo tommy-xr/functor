@@ -94,15 +94,64 @@ Sub.connect(url, tagger)   // tagger: (Net.NetEvent) => Msg
 // server: accepts many; yields per-client events (native only for TCP/UDP/WS)
 Sub.listen(addr, tagger)   // tagger: (Net.NetEvent) => Msg
 
-Effect.send(connId, text)  // send on an open connection
+Effect.send(connId, text)     // send on an open connection
+Effect.sendMsg(connId, msg)   // send a plain-data VALUE; received as Net.Data(id, value)
 ```
 
 `Net` is a built-in module, always in scope:
 `type NetEvent = | Connected(id: Float) | Message(id: Float, text: String) |
-Disconnected(id: Float) | Error(id: Float, text: String)`. The connection id is
+Data(id: Float, value: NetData) | Disconnected(id: Float) |
+Error(id: Float, text: String)`. The connection id is
 assigned by the runtime and reported via `Connected`; the game stores it in its
 model and names it in `Effect.send`. `examples/wsdemo` (client) and
 `examples/wsserverdemo` (server) are the ports.
+
+**Typed messages.** `Effect.sendMsg(connId, msg)` sends any plain-data value —
+usually a variant of an ADT declared in a module BOTH ends load (a shared
+sibling under a multi-entry project), so the protocol typechecks identically on
+each side. The host converts the payload to the broker's serializable
+`EffectValue` at the call site (a closure/host value inside is a teaching
+error), frames it as a control-prefixed JSON text on the existing transport,
+and the receiving end decodes it back and delivers `Net.Data(id, value)`
+through the connection's tagger — the game matches `value` directly against the
+shared ADT's constructors. Plain-text `Effect.send` traffic shares the
+connection untouched (interop with non-Functor peers); a frame that fails to
+decode (version skew, corruption) arrives as `Net.Error`. Typed sends land in
+the structured effect log as data (`net.sendMsg` records), so they replay and
+introspect like every other effect. The netsim fixtures
+(`runtime/functor-netsim/tests/fixtures/typed/`) are the reference: an
+escalating typed ping/pong with no string codec anywhere.
+
+Two sharp edges, by design: (1) constructors match by their **canonical tag**,
+which includes the module prefix — `Protocol.Ping` sent from one end only matches
+`Protocol.Ping` patterns on the other, so declare the ADT in ONE shared module
+loaded identically by both roles (an entry-declared copy would tag bare `Ping`
+and fall through the peer's catch-all silently). (2) Non-finite numbers
+(NaN/Infinity) are refused at the `sendMsg` call site — JSON cannot carry them.
+Note: adding `Data` to `NetEvent` was a check-time **breaking change** — a
+pre-existing game matching `Net.NetEvent` without a catch-all needs a
+`Net.Data` arm to typecheck again.
+
+**Codec evolution (intent, not built).** The wire codec is a two-function seam
+(`encode_typed_msg`/`decode_typed_msg`) over the serde-derived `EffectValue`,
+and the `\u{1}fun:` prefix is a frame DISCRIMINATOR, not part of the payload —
+a different tag can select a different codec per frame, so JSON and a binary
+format (CBOR/postcard/…) can coexist on one connection and be adopted
+incrementally. The plan when bandwidth starts to matter (the Phase 4 UDP path
+and the netcode epic's snapshot deltas, not the WS lobby flows): negotiate the
+codec **per connection** at the handshake — both-Functor peers may agree on a
+compact binary format, anything else falls back to JSON (which also preserves
+the non-Functor interop story). Games never see the codec: same values in,
+same values out, and the effect log stores the structured `EffectValue`, not
+wire bytes, so replay/introspection are format-independent. Deliberately NOT
+planned: user-authored encoder/decoder surfaces (Elm-style) — `sendMsg` exists
+to kill hand-rolled codecs; full wire control stays with the `Effect.send`
+text escape hatch (and a future `Effect.sendBytes`). Two prerequisites for a
+non-self-describing binary format: the protocol-hash handshake (postcard/
+bincode decode drift into wrong VALUES rather than failing loud, unlike
+JSON/CBOR), and a bytes-inbound path through the shells (WS binary frames;
+`NetEvent` text is `String` today). Cheaper first lever for WS: compression
+(permessage-deflate), which changes no formats at all.
 
 ## Test harness / SDK
 

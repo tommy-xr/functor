@@ -113,9 +113,17 @@ impl Project {
 /// error strings. Mirrors F#'s `Functor.Net.NetEvent`. `HttpResponse` is the
 /// value handed to an `Effect.httpGet`/`httpPost` tagger: `Response` for a
 /// completed request (any HTTP status), `Failure` for a transport error.
+///
+/// `Data(id, value)` is an `Effect.sendMsg` payload decoded back into a
+/// plain-data value. Its field is deliberately typed with the UNDECLARED name
+/// `NetData`, which the checker resolves to `Unknown` — the gradual seam: the
+/// payload's real type is whatever ADT the two ends share (the same
+/// shared-module declaration on both sides), so games match it directly
+/// against their own constructors.
 const NET_MODULE_SRC: &str = "type NetEvent =\n\
      | Connected(id: Float)\n\
      | Message(id: Float, text: String)\n\
+     | Data(id: Float, value: NetData)\n\
      | Disconnected(id: Float)\n\
      | Error(id: Float, text: String)\n\
      type HttpResponse =\n\

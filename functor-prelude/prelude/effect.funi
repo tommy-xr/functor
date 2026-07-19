@@ -14,6 +14,11 @@ let random : ((float) => 'msg) => t
 let batch : (List<t>) => t
 // Send text to a live connection (connId, text).
 let send : (float, string) => t
+// Send a plain-data VALUE to a live connection — usually a variant of an ADT
+// declared in a module both ends share, so the protocol typechecks on both
+// sides. The other end receives it as `Net.Data(id, value)`. A function or
+// host value inside the payload is a teaching error.
+let sendMsg : (float, 'a) => t
 // The tagger is a function of the `Net.HttpResponse`.
 let httpGet : (string, (Net.HttpResponse) => 'msg) => t
 let httpPost : (string, string, (Net.HttpResponse) => 'msg) => t
