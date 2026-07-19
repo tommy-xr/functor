@@ -12,8 +12,10 @@ Language support for `.fun` source files and `.funi` interface files
   included, ~300ms debounce) with the model preserved — type, and the running
   game updates without losing state. A broken edit keeps the old program
   running; push results land in the status bar (errors also in the
-  "Functor Lang Preview" output channel). Needs the `functor` CLI on PATH (or point
-  the `functor-lang.functorPath` setting at the binary).
+  "Functor Lang Preview" output channel). Uses the `functor` CLI: the
+  `functor-lang.functorPath` setting (PATH by default), else a previously
+  downloaded copy, else the extension offers to download the newest GitHub
+  release for your platform (~17 MB, into the extension's global storage).
 
 ## The `functor-lang-lsp` language server
 

@@ -49,7 +49,7 @@
         "functor-lang.functorPath": {
           "type": "string",
           "default": "functor",
-          "description": "Path to the `functor` CLI binary the live preview uses to serve the game (resolved from PATH by default)."
+          "description": "Path to the `functor` CLI binary the live preview uses to serve the game. Resolved from PATH by default; when nothing runnable is found, the extension offers to download the newest release for this platform."
         },
         "functor-lang.serverPath": {
           "type": "string",
@@ -85,7 +85,7 @@
     ]
   },
   "scripts": {
-    "test": "node --test client/inspector.test.js client/server-path.test.js",
+    "test": "node --test client/inspector.test.js client/server-path.test.js client/cli-download.test.js",
     "test:e2e": "playwright test -c tests-integration/playwright.config.mjs",
     "vscode:prepublish": "node ../../scripts/generate-icons.mjs",
     "package:vsix": "npx --yes @vscode/vsce@3.9.2 package --out functor-lang-vscode.vsix",
