@@ -43,6 +43,17 @@
 //! ([`WebviewOverlay::hit_interactive_css`]) is a point-in-rect test against
 //! the worker's latest snapshot of interactive-element boxes, so the run
 //! loop's synchronous press decision never waits on the worker.
+//!
+//! Keyboard: clicking an `<input>` focuses it (blitz's pointer handling),
+//! which flips the `wants_keyboard` latch the shell routes on (the
+//! `Ui.textInput` focus gate). The shell's keystrokes cross the channel as
+//! plain [`WebviewKey`]s, are lowered to blitz key events
+//! (`webview_keys::lower_key`), and type into the focused field; the DOM
+//! `input` events they generate come back as `TextChanged` [`UiEvent`]s.
+//! Because a controlled input's keystroke re-renders the HTML (a FRESH
+//! document), focus is restored across rebuilds by the focused element's
+//! `data-fn-input` slot, caret at the end. IME composition is not wired
+//! (follow-up).
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
@@ -61,6 +72,8 @@ use functor_runtime_common::ui::{PointerState, UiEvent, UiEventKind};
 use glow::HasContext;
 use markup5ever::LocalName;
 
+use crate::webview_keys::{lower_key, WebviewKey};
+
 /// How long the main thread will block for the worker's FIRST frame when the
 /// webview first activates (capture determinism — see the module doc).
 /// Generous because a debug-build retina paint is ~600ms; it is paid at most
@@ -68,11 +81,14 @@ use markup5ever::LocalName;
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What one webview frame produced: interactions to fold through `update`,
-/// and whether the pointer is over an interactive element (the shell's
-/// click-arbitration latch, like `ui_wants_pointer`).
+/// whether the pointer is over an interactive element (the shell's
+/// click-arbitration latch, like `ui_wants_pointer`), and whether a text
+/// input is focused (the shell's keyboard-routing latch, like
+/// `ui_wants_keyboard`).
 pub struct WebviewOutput {
     pub events: Vec<UiEvent>,
     pub wants_pointer: bool,
+    pub wants_keyboard: bool,
 }
 
 impl WebviewOutput {
@@ -80,6 +96,7 @@ impl WebviewOutput {
         WebviewOutput {
             events: Vec::new(),
             wants_pointer: false,
+            wants_keyboard: false,
         }
     }
 }
@@ -106,6 +123,9 @@ struct WorkerInput {
     dpi_scale: f32,
     /// Pointer sample in framebuffer pixels (the overlays' shared space).
     pointer: PointerState,
+    /// Keyboard events for the focused text input this frame, in order
+    /// (collected by the shell only while `wants_keyboard` — the focus gate).
+    keys: Vec<WebviewKey>,
     /// The animation clock blitz `resolve(t)` ticks on (the shell owns it).
     clock: f64,
     /// Bumped on `Clear`; outputs stamped with an older epoch are stale
@@ -128,6 +148,9 @@ struct WorkerOutput {
     epoch: u64,
     events: Vec<UiEvent>,
     wants_pointer: bool,
+    /// Whether the document's focused node is an editable text input — the
+    /// shell's keyboard-routing latch (`webview_wants_keyboard`).
+    wants_keyboard: bool,
     /// CSS-px boxes `(x, y, w, h)` of elements carrying `data-fn-click` /
     /// `data-fn-input`, from the resolved layout. `None` = unchanged since
     /// the last send (the main thread keeps its snapshot).
@@ -206,6 +229,7 @@ pub struct WebviewOverlay {
     /// buttons that keep their place across re-renders — the repeat-click
     /// case — test identically to the old live hit-test).
     wants_pointer: bool,
+    wants_keyboard: bool,
     interactive_rects: Vec<(f32, f32, f32, f32)>,
     /// Size of the currently uploaded texture (0 = nothing to composite).
     tex_w: u32,
@@ -294,6 +318,7 @@ impl WebviewOverlay {
             epoch: 0,
             waited_first_frame: false,
             wants_pointer: false,
+            wants_keyboard: false,
             interactive_rects: Vec::new(),
             tex_w: 0,
             tex_h: 0,
@@ -319,10 +344,12 @@ impl WebviewOverlay {
     /// results non-blocking, upload the newest frame (if any) as the overlay
     /// texture, and composite the quad. `pointer.pos` is in framebuffer
     /// pixels (the egui overlays' space); the worker divides by `dpi_scale`
-    /// for blitz's CSS px. `clock` is the shell's frame time (`tts`, seconds)
-    /// — the clock CSS animations tick on, so `--fixed-time` pins webview
-    /// poses too (deterministic captures) and pausing freezes the overlay's
-    /// animations coherently with the game.
+    /// for blitz's CSS px. `keys` is this frame's keyboard input for the
+    /// focused text field, in order (the shell collects it only while
+    /// `wants_keyboard` — the focus gate). `clock` is the shell's frame time
+    /// (`tts`, seconds) — the clock CSS animations tick on, so `--fixed-time`
+    /// pins webview poses too (deterministic captures) and pausing freezes
+    /// the overlay's animations coherently with the game.
     pub fn frame(
         &mut self,
         fb_width: u32,
@@ -330,6 +357,7 @@ impl WebviewOverlay {
         dpi_scale: f32,
         html: Option<&str>,
         pointer: PointerState,
+        keys: Vec<WebviewKey>,
         clock: f64,
     ) -> WebviewOutput {
         let Some(html) = html else {
@@ -341,6 +369,7 @@ impl WebviewOverlay {
                 self.active = false;
                 self.last_html = None;
                 self.wants_pointer = false;
+                self.wants_keyboard = false;
                 self.interactive_rects = Vec::new();
                 self.tex_w = 0;
                 self.tex_h = 0;
@@ -352,6 +381,7 @@ impl WebviewOverlay {
                         fb_height,
                         dpi_scale,
                         pointer: PointerState::default(),
+                        keys: Vec::new(),
                         clock,
                         epoch: self.epoch,
                     });
@@ -381,6 +411,7 @@ impl WebviewOverlay {
                 fb_height,
                 dpi_scale,
                 pointer,
+                keys,
                 clock,
                 epoch: self.epoch,
             });
@@ -415,6 +446,7 @@ impl WebviewOverlay {
             }
             events.extend(out.events);
             self.wants_pointer = out.wants_pointer;
+            self.wants_keyboard = out.wants_keyboard;
             if let Some(rects) = out.interactive_rects {
                 self.interactive_rects = rects;
             }
@@ -476,6 +508,7 @@ impl WebviewOverlay {
         WebviewOutput {
             events,
             wants_pointer: self.wants_pointer,
+            wants_keyboard: self.wants_keyboard,
         }
     }
 }
@@ -520,6 +553,7 @@ struct WorkerState {
     /// Last-sent snapshots, so an idle cycle sends nothing at all.
     sent_rects: Vec<(f32, f32, f32, f32)>,
     sent_wants_pointer: bool,
+    sent_wants_keyboard: bool,
 }
 
 impl WorkerState {
@@ -540,6 +574,7 @@ impl WorkerState {
             generation: 0,
             sent_rects: Vec::new(),
             sent_wants_pointer: false,
+            sent_wants_keyboard: false,
         }
     }
 
@@ -547,10 +582,10 @@ impl WorkerState {
     /// cycle worked): reconcile the DOM once against the batch's LAST HTML
     /// directive — intermediate documents would never be painted, so parsing
     /// them would only let a backlog starve the worker (e.g. a debug build
-    /// with per-frame re-renders) — then feed every pointer sample of the
-    /// current epoch, in order, so no press/release edge is coalesced away.
-    /// The expensive resolve+paint happens once, in
-    /// [`WorkerState::finish_cycle`].
+    /// with per-frame re-renders) — then feed every pointer/keyboard sample
+    /// of the current epoch, in order, so no press/release edge (or
+    /// keystroke) is coalesced away. The expensive resolve+paint happens
+    /// once, in [`WorkerState::finish_cycle`].
     fn run_cycle(&mut self, batch: Vec<WorkerInput>) -> Option<WorkerOutput> {
         let last = batch.last().expect("batch is non-empty");
         let epoch = last.epoch;
@@ -568,18 +603,18 @@ impl WorkerState {
         self.view_h = last.fb_height;
         self.view_scale = scale;
 
-        // Split the batch: the last HTML directive wins; pointer samples
-        // stamped with an OLDER epoch belong to a document Cleared mid-batch
-        // — the main thread discards their results anyway, so don't
-        // synthesize edges from them on the new document.
+        // Split the batch: the last HTML directive wins; pointer/keyboard
+        // samples stamped with an OLDER epoch belong to a document Cleared
+        // mid-batch — the main thread discards their results anyway, so
+        // don't synthesize edges from them on the new document.
         let mut html_action: Option<HtmlMsg> = None;
-        let mut pointers: Vec<PointerState> = Vec::with_capacity(batch.len());
+        let mut samples: Vec<(PointerState, Vec<WebviewKey>)> = Vec::with_capacity(batch.len());
         for input in batch {
             if !matches!(input.html, HtmlMsg::Unchanged) {
                 html_action = Some(input.html);
             }
             if input.epoch == epoch {
-                pointers.push(input.pointer);
+                samples.push((input.pointer, input.keys));
             }
         }
 
@@ -595,9 +630,17 @@ impl WorkerState {
                 // equal and never be re-sent (dead press arbitration).
                 self.sent_rects = Vec::new();
                 self.sent_wants_pointer = false;
+                self.sent_wants_keyboard = false;
                 return None;
             }
             Some(HtmlMsg::Set(html)) => {
+                // Focus survival across re-renders: every keystroke in a
+                // controlled input changes the model → new HTML → a FRESH
+                // document, which would drop focus (and the wants-keyboard
+                // latch) after the first character. Remember the focused
+                // element's handler slot — the stable identity across
+                // rebuilds — and re-focus the matching node below.
+                let focused_slot = self.doc.as_ref().and_then(focused_input_slot);
                 let viewport =
                     Viewport::new(self.view_w, self.view_h, scale, ColorScheme::Dark);
                 let mut doc = HtmlDocument::from_html(
@@ -633,6 +676,19 @@ impl WorkerState {
                 // of pressing the button (the repeated-click repro). Resolve
                 // now so same-cycle events see real geometry.
                 doc.resolve(self.clock);
+                // Re-focus the input the OLD document had focused (matched by
+                // its `data-fn-input` slot), caret at the end — the
+                // documented controlled-input semantics ("an update that
+                // transforms the text resets the cursor to the end"). A
+                // vanished slot (the input left the tree) just drops focus.
+                if let Some(id) = focused_slot.and_then(|slot| find_input_by_slot(&doc, slot)) {
+                    doc.set_focus_to(id);
+                    let mut sink = EventCollector { events: Vec::new() };
+                    let mut driver = EventDriver::new(&mut doc as &mut dyn Document, &mut sink);
+                    for ev in lower_key(&WebviewKey::End) {
+                        driver.handle_ui_event(ev);
+                    }
+                }
                 self.doc = Some(doc);
                 self.dirty = true;
                 // Re-establish hover on the fresh DOM: clearing `hover_pos`
@@ -659,8 +715,12 @@ impl WorkerState {
         }
 
         let mut events: Vec<UiEvent> = Vec::new();
-        for pointer in pointers {
+        for (pointer, keys) in samples {
+            // Pointer before keys within one frame's sample: a click that
+            // focuses a field and the keys typed the same frame land in
+            // program order (focus first, then text).
             self.apply_pointer(pointer, scale, &mut events);
+            self.apply_keys(keys, &mut events);
         }
         self.finish_cycle(events)
     }
@@ -726,6 +786,40 @@ impl WorkerState {
         events.extend(collector.events);
     }
 
+    /// Feed one frame's keyboard input for the focused text field through
+    /// blitz's editing stack (a no-op without a document). Each key lowers to
+    /// the `KeyDown`/`KeyUp` pair blitz edits on (`webview_keys::lower_key`);
+    /// the resulting DOM `input` events come back through the collector as
+    /// slot-stamped `TextChanged` [`UiEvent`]s. `Escape` instead DEFOCUSES
+    /// the field (blitz has no built-in Escape behavior), dropping the
+    /// wants-keyboard latch so the shell's next Escape releases the cursor —
+    /// the `Ui.textInput` two-step rule.
+    fn apply_keys(&mut self, keys: Vec<WebviewKey>, events: &mut Vec<UiEvent>) {
+        let Some(doc) = &mut self.doc else {
+            return;
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let mut collector = EventCollector { events: Vec::new() };
+        for key in &keys {
+            if matches!(key, WebviewKey::Escape) {
+                // Blur directly: the driver has no defocus event, and no
+                // handler observes blur — the latch flip is the effect.
+                doc.clear_focus();
+            } else {
+                let mut driver = EventDriver::new(doc as &mut dyn Document, &mut collector);
+                for ev in lower_key(key) {
+                    driver.handle_ui_event(ev);
+                }
+            }
+        }
+        // Any key changes what's painted: text, caret/selection, or the
+        // focus ring (Escape).
+        self.dirty = true;
+        events.extend(collector.events);
+    }
+
     /// Resolve + repaint once for the whole input batch, and package the
     /// results. Returns `None` when there is nothing to report (idle).
     fn finish_cycle(&mut self, events: Vec<UiEvent>) -> Option<WorkerOutput> {
@@ -740,6 +834,10 @@ impl WorkerState {
             .get_hover_node_id()
             .map(|id| chain_has_handler(doc, id))
             .unwrap_or(false);
+        // Keyboard latch: an editable element is focused (a click on an
+        // `<input>` focuses it in blitz's pointer handling; Escape or a
+        // click elsewhere clears it).
+        let wants_keyboard = focused_editable(doc);
         // Repaint when dirty OR while CSS animations/transitions are active:
         // `resolve(t)` above already advanced blitz's clock, and
         // `is_animating()` reports live @keyframes/transitions, so ticking
@@ -787,14 +885,17 @@ impl WorkerState {
             && events.is_empty()
             && rects_msg.is_none()
             && wants_pointer == self.sent_wants_pointer
+            && wants_keyboard == self.sent_wants_keyboard
         {
             return None; // truly idle — keep both channels quiet
         }
         self.sent_wants_pointer = wants_pointer;
+        self.sent_wants_keyboard = wants_keyboard;
         Some(WorkerOutput {
             epoch: self.epoch,
             events,
             wants_pointer,
+            wants_keyboard,
             interactive_rects: rects_msg,
             frame,
         })
@@ -858,6 +959,48 @@ pub fn render_html_to_rgba(html: &str, width: u32, height: u32, scale: f32) -> V
         &mut buf,
     );
     buf
+}
+
+/// Whether the document's focused node is an editable text element — the
+/// keyboard-routing latch (`wants_keyboard`).
+fn focused_editable(doc: &BaseDocument) -> bool {
+    doc.get_focussed_node_id()
+        .and_then(|id| doc.get_node(id))
+        .and_then(|node| node.element_data())
+        .is_some_and(|el| el.text_input_data().is_some())
+}
+
+/// The `data-fn-input` slot of the focused element (walking up like the
+/// bubble chain, though the slot sits on the `<input>` itself) — the stable
+/// identity used to restore focus across document rebuilds.
+fn focused_input_slot(doc: &BaseDocument) -> Option<u32> {
+    let input = LocalName::from("data-fn-input");
+    let mut current = doc.get_focussed_node_id();
+    while let Some(id) = current {
+        let node = doc.get_node(id)?;
+        if let Some(slot) = node.attr(input.clone()).and_then(|v| v.parse::<u32>().ok()) {
+            return Some(slot);
+        }
+        current = node.parent;
+    }
+    None
+}
+
+/// Find the element carrying `data-fn-input="slot"` — the re-focus target
+/// after a rebuild ([`focused_input_slot`]'s inverse).
+fn find_input_by_slot(doc: &BaseDocument, slot: u32) -> Option<usize> {
+    let input = LocalName::from("data-fn-input");
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        if node.attr(input.clone()).and_then(|v| v.parse::<u32>().ok()) == Some(slot) {
+            return Some(id);
+        }
+        stack.extend(node.children.iter().copied());
+    }
+    None
 }
 
 /// Whether `node_id` or any ancestor carries a webview handler attribute —
@@ -927,5 +1070,157 @@ fn pointer_event(x: f32, y: f32, primary_held: bool) -> BlitzPointerEvent {
         details: Default::default(),
         element: Default::default(),
         active_pointers: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Headless keyboard/focus tests driving the worker's real cycle
+    //! ([`WorkerState::run_cycle`]) — the exact code the render thread runs,
+    //! no GL and no window: synthetic clicks focus, `WebviewKey`s type
+    //! through blitz's editing stack, and focus survives a document rebuild.
+
+    use super::*;
+
+    const FB: (u32, u32) = (400, 300);
+
+    /// A controlled input (slot 0, seeded from `value`) at the top-left —
+    /// margins zeroed so the input's 200x30 box sits at the origin — plus a
+    /// label that changes across "re-renders".
+    fn page(value: &str, label: &str) -> String {
+        format!(
+            "<style>html,body{{margin:0}}input{{width:200px;height:30px}}</style>\
+             <div><input value=\"{value}\" data-fn-input=\"0\"><p>{label}</p></div>"
+        )
+    }
+
+    fn input(html: Option<&str>, pointer: PointerState, keys: Vec<WebviewKey>) -> WorkerInput {
+        WorkerInput {
+            html: match html {
+                Some(h) => HtmlMsg::Set(Arc::from(h)),
+                None => HtmlMsg::Unchanged,
+            },
+            fb_width: FB.0,
+            fb_height: FB.1,
+            dpi_scale: 1.0,
+            pointer,
+            keys,
+            clock: 0.0,
+            epoch: 0,
+        }
+    }
+
+    fn hover(x: f32, y: f32, down: bool) -> PointerState {
+        PointerState {
+            pos: Some((x, y)),
+            primary_down: down,
+        }
+    }
+
+    /// Click inside the input (press then release, two frame samples) — the
+    /// synthetic version of the shell's press/release edges.
+    fn click_input(state: &mut WorkerState) -> Option<WorkerOutput> {
+        let down = input(None, hover(50.0, 15.0, true), vec![]);
+        let up = input(None, hover(50.0, 15.0, false), vec![]);
+        state.run_cycle(vec![down, up])
+    }
+
+    fn text_changes(out: &WorkerOutput) -> Vec<&str> {
+        out.events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                UiEventKind::TextChanged(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn click_focuses_the_input_and_typing_emits_text_changed() {
+        let mut state = WorkerState::new();
+        let out = state
+            .run_cycle(vec![input(Some(&page("", "hello")), PointerState::default(), vec![])])
+            .expect("first cycle paints");
+        assert!(!out.wants_keyboard, "nothing focused on load");
+
+        let out = click_input(&mut state).expect("click cycle reports");
+        assert!(out.wants_keyboard, "clicking the input focuses it");
+
+        let out = state
+            .run_cycle(vec![input(
+                None,
+                hover(50.0, 15.0, false),
+                vec![WebviewKey::Char('h'), WebviewKey::Char('i')],
+            )])
+            .expect("typing cycle reports");
+        assert_eq!(text_changes(&out), vec!["h", "hi"], "each keystroke emits the full value");
+        assert!(out.wants_keyboard);
+    }
+
+    #[test]
+    fn backspace_and_enter_edit_through_the_os_specific_lowering() {
+        let mut state = WorkerState::new();
+        state.run_cycle(vec![input(Some(&page("hi", "x")), PointerState::default(), vec![])]);
+        click_input(&mut state);
+        // Backspace exercises the per-OS lowering (Apple standard keybinding
+        // on macOS, a plain KeyDown elsewhere) against real blitz.
+        let out = state
+            .run_cycle(vec![input(None, hover(50.0, 15.0, false), vec![WebviewKey::Backspace])])
+            .expect("edit cycle reports");
+        assert_eq!(text_changes(&out), vec!["h"]);
+    }
+
+    #[test]
+    fn focus_survives_a_rebuild_with_the_caret_at_the_end() {
+        let mut state = WorkerState::new();
+        state.run_cycle(vec![input(Some(&page("", "greeting")), PointerState::default(), vec![])]);
+        click_input(&mut state);
+        let out = state
+            .run_cycle(vec![input(None, hover(50.0, 15.0, false), vec![WebviewKey::Char('h'), WebviewKey::Char('i')])])
+            .expect("typing reports");
+        assert_eq!(text_changes(&out), vec!["h", "hi"]);
+
+        // The controlled round-trip: the model echoes the value into NEW html
+        // (label changed too) — a fresh document. Focus must survive by slot.
+        let out = state
+            .run_cycle(vec![input(Some(&page("hi", "Hello, hi!")), hover(50.0, 15.0, false), vec![])])
+            .expect("rebuild cycle reports");
+        assert!(out.wants_keyboard, "focus restored on the rebuilt document");
+
+        // Caret restored to the END: the next character appends (a lost
+        // caret would prepend "!hi").
+        let out = state
+            .run_cycle(vec![input(None, hover(50.0, 15.0, false), vec![WebviewKey::Char('!')])])
+            .expect("post-rebuild typing reports");
+        assert_eq!(text_changes(&out), vec!["hi!"]);
+    }
+
+    #[test]
+    fn escape_defocuses_and_drops_the_keyboard_latch() {
+        let mut state = WorkerState::new();
+        state.run_cycle(vec![input(Some(&page("", "x")), PointerState::default(), vec![])]);
+        let out = click_input(&mut state).expect("click cycle reports");
+        assert!(out.wants_keyboard);
+        let out = state
+            .run_cycle(vec![input(None, hover(50.0, 15.0, false), vec![WebviewKey::Escape])])
+            .expect("escape cycle reports");
+        assert!(!out.wants_keyboard, "Escape blurs the field");
+    }
+
+    #[test]
+    fn a_vanished_slot_drops_focus_instead_of_guessing() {
+        let mut state = WorkerState::new();
+        state.run_cycle(vec![input(Some(&page("", "x")), PointerState::default(), vec![])]);
+        click_input(&mut state);
+        // Rebuild WITHOUT the input: no node carries the slot — focus (and
+        // the latch) must drop, not land somewhere arbitrary.
+        let out = state
+            .run_cycle(vec![input(
+                Some("<style>html,body{margin:0}</style><p>gone</p>"),
+                hover(50.0, 15.0, false),
+                vec![],
+            )])
+            .expect("rebuild cycle reports");
+        assert!(!out.wants_keyboard);
     }
 }

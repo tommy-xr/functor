@@ -543,6 +543,12 @@ fn service_debug_request(
     held_keys: &mut BTreeSet<InputKey>,
     mouse_pos: &mut (i32, i32),
     clock: &mut GameClock,
+    // The webview keyboard gate, mirrored from the GLFW routing: `Some` iff a
+    // webview text field is focused (`webview_wants_keyboard`), and injected
+    // keys then type into it (queued into the next frame's WorkerInput)
+    // instead of reaching the game. Always `None` in the headless loop, which
+    // has no webview overlay.
+    mut webview_keyboard: Option<&mut Vec<crate::webview_keys::WebviewKey>>,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) {
     match req {
@@ -589,18 +595,34 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::Input(cmd, resp) => {
             let result = match cmd {
-                debug_server::InputCommand::Key { key, down } => match key_from_str(&key) {
-                    Some(k) => {
-                        game.key_event(k as i32, down);
+                debug_server::InputCommand::Key { key, down } => {
+                    // The focus gate first (the GLFW routing rule): while a
+                    // webview field is focused, an injected press types into
+                    // it (or is swallowed if unmapped, like non-edit GLFW
+                    // presses) and its release is swallowed too — never a
+                    // phantom edge to the game's `input` hook.
+                    if let Some(webview_keys) = webview_keyboard.as_deref_mut() {
                         if down {
-                            held_keys.insert(k);
-                        } else {
-                            held_keys.remove(&k);
+                            if let Some(k) = crate::webview_keys::webview_key_from_str(&key) {
+                                webview_keys.push(k);
+                            }
                         }
                         Ok(())
+                    } else {
+                        match key_from_str(&key) {
+                            Some(k) => {
+                                game.key_event(k as i32, down);
+                                if down {
+                                    held_keys.insert(k);
+                                } else {
+                                    held_keys.remove(&k);
+                                }
+                                Ok(())
+                            }
+                            None => Err(format!("unknown key: {}", key)),
+                        }
                     }
-                    None => Err(format!("unknown key: {}", key)),
-                },
+                }
                 debug_server::InputCommand::MouseMove { x, y } => {
                     *mouse_pos = (x, y);
                     game.mouse_move(x, y);
@@ -713,6 +735,7 @@ fn run_headless(
                     &mut held_keys,
                     &mut mouse_pos,
                     &mut clock,
+                    None, // no webview overlay in headless
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -903,6 +926,15 @@ pub fn run(args: Args) {
         // `input` hook, and Escape defocuses the field instead of releasing
         // the cursor (docs/ui-interaction.md U4).
         let mut ui_wants_keyboard = false;
+        // Same latch for the webview overlay (an `Html.input` is focused in
+        // the blitz document): keyboard input routes to the webview under
+        // the identical rules — see the `ui_wants_keyboard` arms below.
+        let mut webview_wants_keyboard = false;
+        // Keyboard input queued for the focused webview field, drained into
+        // each frame's WorkerInput. Persistent (not per-frame) because the
+        // debug server's injected keys land AFTER the frame's overlay pass —
+        // they type on the next frame, like a keystroke between frames.
+        let mut webview_keys: Vec<crate::webview_keys::WebviewKey> = Vec::new();
         // The time-travel console (`~`): HIDDEN by default in the native game
         // (it's a dev tool you summon with `~`, which also frees the cursor so
         // you can scrub right away; --scrubber starts it open, e.g. for
@@ -1116,9 +1148,22 @@ pub fn run(args: Args) {
             // pinned nothing is collected — typing is inert like all other
             // window input.
             let mut ui_keyboard: Vec<functor_runtime_common::ui::UiKeyboardEvent> = Vec::new();
+            // Webview keystrokes collect into the persistent `webview_keys`
+            // queue (declared above the loop). The webview arms sit FIRST:
+            // it draws above the game UI, so when both latches are somehow up
+            // the webview field wins (the scrubber-over-ui rule, keyboard
+            // flavor).
             for (_, event) in glfw::flush_messages(&events) {
+                use crate::webview_keys::WebviewKey;
                 match event {
                     glfw::WindowEvent::Close => window.set_should_close(true),
+                    // Printable text for a focused webview field (the egui
+                    // Char rule below, webview flavor).
+                    glfw::WindowEvent::Char(c)
+                        if webview_wants_keyboard && !ignore_user_input =>
+                    {
+                        webview_keys.push(WebviewKey::Char(c));
+                    }
                     // Printable text for a focused field. Only meaningful
                     // while the overlay wants the keyboard; otherwise Char
                     // events are dropped (the game hears keys, not text).
@@ -1127,6 +1172,15 @@ pub fn run(args: Args) {
                     {
                         ui_keyboard
                             .push(functor_runtime_common::ui::UiKeyboardEvent::Char(c));
+                    }
+                    // While a webview field is focused, Escape DEFOCUSES it
+                    // (the worker blurs the blitz document — blitz has no
+                    // built-in Escape) instead of releasing the cursor; the
+                    // next Escape then falls through to the arm below.
+                    glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _)
+                        if webview_wants_keyboard && !ignore_user_input =>
+                    {
+                        webview_keys.push(WebviewKey::Escape);
                     }
                     // While a field is focused, Escape DEFOCUSES it (egui's
                     // built-in) instead of releasing the cursor — the next
@@ -1158,10 +1212,11 @@ Escape again to quit"
                     // free-look. Before the `ignore_user_input` catch-all so it
                     // works while the clock is pinned (paused). Never grabs the
                     // pointer on a hidden window. Guarded off while a text
-                    // field is focused — typing '`' must insert, not toggle
-                    // (the char arrives via the Char arm above).
+                    // field (egui or webview) is focused — typing '`' must
+                    // insert, not toggle (the char arrives via a Char arm
+                    // above).
                     glfw::WindowEvent::Key(Key::GraveAccent, _, Action::Press, _)
-                        if !ui_wants_keyboard =>
+                        if !ui_wants_keyboard && !webview_wants_keyboard =>
                     {
                         scrubber_visible = !scrubber_visible;
                         if !hidden {
@@ -1209,6 +1264,15 @@ Escape again to quit"
                                 } else {
                                     window.set_cursor_mode(glfw::CursorMode::Disabled);
                                     cursor_captured = true;
+                                    // Entering free-look: blur any focused
+                                    // webview field. The recapturing click
+                                    // never reaches the blitz document (the
+                                    // captured pointer is hidden from the
+                                    // overlay), so without this the field
+                                    // would keep eating WASD as text.
+                                    if webview_wants_keyboard {
+                                        webview_keys.push(WebviewKey::Escape);
+                                    }
                                 }
                             }
                             Action::Release => mouse_primary_down = false,
@@ -1243,13 +1307,17 @@ Escape again to quit"
                         let k = map_key(key);
                         // Deliver the release only if the game SAW the press
                         // (it's in held_keys) — a press swallowed by a focused
-                        // text field must not leak a phantom release edge to
-                        // the game's `input` hook (xreview). Unknown keys are
-                        // never tracked; keep their pre-existing passthrough,
-                        // but not while a field is focused.
+                        // text field (egui or webview) must not leak a phantom
+                        // release edge to the game's `input` hook (xreview).
+                        // Unknown keys are never tracked; keep their
+                        // pre-existing passthrough, but not while a field is
+                        // focused.
                         let was_held = held_keys.remove(&k);
                         if !ignore_user_input
-                            && (was_held || (k == InputKey::Unknown && !ui_wants_keyboard))
+                            && (was_held
+                                || (k == InputKey::Unknown
+                                    && !ui_wants_keyboard
+                                    && !webview_wants_keyboard))
                         {
                             game.key_event(k as i32, false);
                         }
@@ -1271,6 +1339,31 @@ Escape again to quit"
                         mouse_primary_clicked = false;
                     }
                     _ if ignore_user_input => {}
+                    // While a webview field is focused, key presses drive the
+                    // WEBVIEW: the editing subset maps to `WebviewKey`s the
+                    // render worker lowers to blitz key events (Repeat works —
+                    // each press lowers to a full pair), printable keys arrive
+                    // via the Char arm, and the game's `input` hook hears none
+                    // of it (the focus gate — presses swallowed here never
+                    // enter held_keys, so the release arm can't leak a
+                    // phantom edge either).
+                    glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _)
+                        if webview_wants_keyboard =>
+                    {
+                        let mapped = match key {
+                            Key::Backspace => Some(WebviewKey::Backspace),
+                            Key::Delete => Some(WebviewKey::Delete),
+                            Key::Left => Some(WebviewKey::Left),
+                            Key::Right => Some(WebviewKey::Right),
+                            Key::Home => Some(WebviewKey::Home),
+                            Key::End => Some(WebviewKey::End),
+                            Key::Enter => Some(WebviewKey::Enter),
+                            _ => None,
+                        };
+                        if let Some(mapped) = mapped {
+                            webview_keys.push(mapped);
+                        }
+                    }
                     // While a field is focused, key presses drive the OVERLAY:
                     // the editing subset maps across (press+release pairs are
                     // synthesized by the lowering, so Repeat works), printable
@@ -1927,9 +2020,11 @@ Escape again to quit"
                 dpi_scale,
                 webview_html.as_deref(),
                 webview_pointer,
+                std::mem::take(&mut webview_keys),
                 time.tts as f64,
             );
             webview_wants_pointer = webview_out.wants_pointer;
+            webview_wants_keyboard = webview_out.wants_keyboard;
             if !ignore_user_input {
                 for event in webview_out.events {
                     game.webview_event(event);
@@ -2093,6 +2188,14 @@ Escape again to quit"
                         &mut held_keys,
                         &mut mouse_pos,
                         &mut clock,
+                        // The webview focus gate: injected keys type into a
+                        // focused webview field (queued for the next frame's
+                        // overlay pass) instead of reaching the game.
+                        if webview_wants_keyboard {
+                            Some(&mut webview_keys)
+                        } else {
+                            None
+                        },
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             encode_framebuffer_png(&gl, fb_width as u32, fb_height as u32)

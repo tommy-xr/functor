@@ -86,14 +86,17 @@ Prototype landed 2026-07-18: `webview(model)` → `Html.*`/`Attr.*` tree, blitz
 (CPU-painted) natively, DOM overlay on wasm; clicks fold through `update`.
 Remaining, roughly in priority order:
 
-- [ ] Native text input: route focus/keyboard into blitz (`Ui.textInput`'s
-      wants-keyboard gate; blitz has `Input` events + form support). wasm
-      inputs already work.
+- [x] Native text input (2026-07-18): GLFW keys route into blitz while an
+      `Html.input` is focused (`Ui.textInput`'s wants-keyboard gate; Escape
+      defocuses first), and focus survives the per-keystroke document rebuild
+      via the `data-fn-input` slot (caret to end). IME composition (CJK/
+      dead keys) deferred — blitz has `Ime` events when we want it.
 - [x] Record webview events for replay — needs their own `RecordedInput`
       variant (a `UiEvent` entry would replay against the wrong handler
       table; TODO comments in both producers).
-- [ ] Reconcile the DOM instead of full reparse on change (also fixes
-      focus/caret loss in wasm controlled inputs, and native selection state).
+- [ ] Reconcile the DOM instead of full reparse on change (would preserve
+      native selection state and text-input scroll across re-renders; the
+      focus/caret loss itself is now papered over by the slot-restore).
 - [ ] Cache the serialized HTML in the producer (today: tree clone +
       `to_html` per frame per shell — the `webview_bench` numbers).
 - [x] Tick CSS animations/transitions: the render worker repaints while

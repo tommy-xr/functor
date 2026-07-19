@@ -65,6 +65,9 @@ blitz-traits = "=0.3.0-beta.1"
 anyrender = "=0.11.1"
 anyrender_vello_cpu = "=0.14.0"
 markup5ever = "0.39"
+# The key/code/modifier vocabulary of blitz's BlitzKeyEvent (keep in lockstep
+# with the version blitz-traits uses).
+keyboard-types = "0.7"
 
 [dev-dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
