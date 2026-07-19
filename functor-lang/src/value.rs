@@ -233,87 +233,121 @@ impl Value {
     }
 }
 
+// NOTE on deep values and the native stack: `Value` deliberately has NO
+// manual `Drop` — an iterative-teardown Drop was built and measured at ~2x
+// frame_bench wall-clock (every dying container paid worklist/TLS churn that
+// compiled drop glue does for free), so dropping a deeply nested value
+// (an iteratively-built `[acc]` fold nest) still recurses to the value's
+// depth, like any Rust tree. Bounded evaluation makes this safe by
+// arithmetic instead: a budgeted run cannot BUILD a value deeper than its
+// step budget, so tooling that evaluates user code in-process runs it on a
+// worker thread whose stack scales with the budget (~100 bytes/level — see
+// `run_expects_budgeted`). `Display` and `value_eq` are iterative, so
+// rendering/comparing a deep value is depth-safe everywhere.
+
 impl fmt::Display for Value {
+    /// Iterative (explicit work stack), NOT recursive: a value's nesting
+    /// depth is user-controlled (a fold wrapping `[acc]` per step builds
+    /// depth far past any recursion limit for one budget-charge per level),
+    /// and rendering runs inside editor/tooling processes where a stack
+    /// overflow is a host crash, not an error. Output is byte-identical to
+    /// the old recursive rendering (pinned by the run/trace goldens).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Value::Number(n) => write!(f, "{n}"),
-            Value::String(s) => write!(f, "{s:?}"),
-            Value::Bool(b) => write!(f, "{b}"),
-            Value::Tuple(items) => {
-                write!(f, "(")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{item}")?;
-                }
-                write!(f, ")")
-            }
-            Value::List(items) => {
-                write!(f, "[")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{item}")?;
-                }
-                write!(f, "]")
-            }
-            Value::Record(fields) => {
-                write!(f, "{{ ")?;
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{name}: {value}")?;
-                }
-                write!(f, " }}")
-            }
-            Value::Variant { ctor, args } => {
-                write!(f, "{ctor}")?;
-                if args.is_empty() {
-                    return Ok(());
-                }
-                write!(f, "(")?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{arg}")?;
-                }
-                write!(f, ")")
-            }
-            Value::Ctor { name, .. } => write!(f, "<ctor {name}>"),
-            Value::Closure(closure) => {
-                write!(f, "<fn(")?;
-                for (i, param) in closure.params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", param.name)?;
-                }
-                write!(f, ")>")
-            }
-            Value::Partial(p) => {
-                // How many args are still needed, derived live from the
-                // callee's arity (a Partial's callee is always a closure,
-                // ctor, or builtin — see [`Partial`]).
-                let arity = match &p.callee {
-                    Value::Closure(c) => c.params.len(),
-                    Value::Ctor { arity, .. } => *arity,
-                    Value::Builtin(b) => crate::eval::builtin_arity(*b),
-                    _ => p.applied.len(),
-                };
-                write!(
-                    f,
-                    "<partial {} more>",
-                    arity.saturating_sub(p.applied.len())
-                )
-            }
-            Value::Builtin(b) => write!(f, "<builtin {}>", builtin_name(*b)),
-            Value::HostFn(path) => write!(f, "<host {path}>"),
-            Value::HostData(data) => write!(f, "<{}>", data.type_name()),
+        /// Pending work: a value to render, or literal text (separators,
+        /// closers, field names — all borrowed from `self` or 'static).
+        enum Tok<'a> {
+            Val(&'a Value),
+            Text(&'a str),
         }
+        let mut stack: Vec<Tok> = vec![Tok::Val(self)];
+        while let Some(tok) = stack.pop() {
+            let value = match tok {
+                Tok::Text(s) => {
+                    f.write_str(s)?;
+                    continue;
+                }
+                Tok::Val(value) => value,
+            };
+            match value {
+                Value::Number(n) => write!(f, "{n}")?,
+                Value::String(s) => write!(f, "{s:?}")?,
+                Value::Bool(b) => write!(f, "{b}")?,
+                // Sequences push their parts in REVERSE (the stack pops
+                // last-in-first), so text still emits left-to-right.
+                Value::Tuple(items) => {
+                    f.write_str("(")?;
+                    stack.push(Tok::Text(")"));
+                    for (i, item) in items.iter().enumerate().rev() {
+                        stack.push(Tok::Val(item));
+                        if i > 0 {
+                            stack.push(Tok::Text(", "));
+                        }
+                    }
+                }
+                Value::List(items) => {
+                    f.write_str("[")?;
+                    stack.push(Tok::Text("]"));
+                    for (i, item) in items.iter().enumerate().rev() {
+                        stack.push(Tok::Val(item));
+                        if i > 0 {
+                            stack.push(Tok::Text(", "));
+                        }
+                    }
+                }
+                Value::Record(fields) => {
+                    f.write_str("{ ")?;
+                    stack.push(Tok::Text(" }"));
+                    for (i, (name, value)) in fields.iter().enumerate().rev() {
+                        stack.push(Tok::Val(value));
+                        stack.push(Tok::Text(": "));
+                        stack.push(Tok::Text(name));
+                        if i > 0 {
+                            stack.push(Tok::Text(", "));
+                        }
+                    }
+                }
+                Value::Variant { ctor, args } => {
+                    write!(f, "{ctor}")?;
+                    if !args.is_empty() {
+                        f.write_str("(")?;
+                        stack.push(Tok::Text(")"));
+                        for (i, arg) in args.iter().enumerate().rev() {
+                            stack.push(Tok::Val(arg));
+                            if i > 0 {
+                                stack.push(Tok::Text(", "));
+                            }
+                        }
+                    }
+                }
+                Value::Ctor { name, .. } => write!(f, "<ctor {name}>")?,
+                Value::Closure(closure) => {
+                    write!(f, "<fn(")?;
+                    for (i, param) in closure.params.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", param.name)?;
+                    }
+                    write!(f, ")>")?
+                }
+                Value::Partial(p) => {
+                    // How many args are still needed, derived live from the
+                    // callee's arity (a Partial's callee is always a closure,
+                    // ctor, or builtin — see [`Partial`]).
+                    let arity = match &p.callee {
+                        Value::Closure(c) => c.params.len(),
+                        Value::Ctor { arity, .. } => *arity,
+                        Value::Builtin(b) => crate::eval::builtin_arity(*b),
+                        _ => p.applied.len(),
+                    };
+                    write!(f, "<partial {} more>", arity.saturating_sub(p.applied.len()))?
+                }
+                Value::Builtin(b) => write!(f, "<builtin {}>", builtin_name(*b))?,
+                Value::HostFn(path) => write!(f, "<host {path}>")?,
+                Value::HostData(data) => write!(f, "<{}>", data.type_name())?,
+            }
+        }
+        Ok(())
     }
 }
 

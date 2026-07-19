@@ -256,6 +256,22 @@ fn text_join_doubling_cannot_amplify_past_the_budget() {
 }
 
 #[test]
+fn container_construction_is_charged() {
+    // The depth-amplifier probe: a fold whose body is a NESTED LITERAL adds
+    // ~5 levels of value depth per single call charge — under per-call-only
+    // charging this passes a 4k budget (~2k call charges for 1000
+    // iterations) while building 5000 levels deep. Container-construction
+    // charges (~5k more) must trip it — the arithmetic behind the
+    // run_expects_budgeted stack contract (value depth ≤ budget).
+    let src = "let deep = List.range(1000.0) |> List.fold((acc, x) => [[[[[acc]]]]], [0.0])\n\
+               expect List.length(deep) == 1.0\n";
+    let failure = functor_lang::run_expects_budgeted(&lower(src), &mut NoHost, Some(4_000))
+        .err()
+        .expect("the def-load fold should exceed the budget");
+    assert!(failure.error.message.contains("step budget"));
+}
+
+#[test]
 fn structural_equality_is_charged_by_size() {
     // A single `==` on a large value is O(size) work no call charge sees:
     // comparing a 500-element list 50 times is ~25k comparison nodes on a
@@ -286,6 +302,40 @@ fn unbudgeted_run_expects_is_unbounded() {
                expect sum(10000.0) == 49995000.0\n";
     let out = reports(src);
     assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+}
+
+// ------------------------------------------------- deep values must not crash
+
+#[test]
+fn deep_values_are_safe_under_the_documented_stack_contract() {
+    // A fold wrapping `[acc]` per step builds value DEPTH iteratively —
+    // ~50k levels here, far past any recursion limit. The run_expects_budgeted
+    // stack contract: a budgeted run can't build deeper than its budget, so
+    // in-process embedders run it on a worker whose stack covers the budget
+    // (~100 B/level). This test IS that embedding: budget 500k on a worker
+    // with a 256MB stack — build, compare (iterative value_eq, both the
+    // passing and the Display-rendered failing case), and the deep value's
+    // DROP (recursive, hence the contract) must all complete. On the default
+    // 2MB test-thread stack the drop alone aborted the process.
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(|| {
+            let src = "let nest = List.range(50000.0) |> List.fold((acc, x) => [acc], [0.0])\n\
+                       expect nest == nest\n\
+                       expect nest == [1.0]\n";
+            let out = functor_lang::run_expects_budgeted(&lower(src), &mut NoHost, Some(500_000))
+                .unwrap_or_else(|failure| panic!("defs should load: {}", failure.error.message));
+            assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+            let ExpectOutcome::Fail(Some(cmp)) = &out[1].outcome else {
+                panic!("expected a decomposed failure");
+            };
+            // The rendering really is the ~50k-deep value, not a truncation.
+            assert!(cmp.lhs.starts_with("[[[["));
+            assert!(cmp.lhs.len() > 100_000);
+        })
+        .expect("spawn worker")
+        .join()
+        .expect("deep-value worker must complete without overflowing");
 }
 
 // ---------------------------------------------------- inert in the game loop
