@@ -49,15 +49,9 @@ let tick = (m: Model, dt: float, tts: float) => m
 
 let draw = (m: Model, tts: float) =>
   // One green cube per registered server, in a row — an at-a-glance registry.
-  let nodes =
+  View.frame(
     m.entries |> List.map((e) =>
       Scene.cube()
       |> Scene.scale(0.7)
       |> Scene.translate(Vec3.make(e.cid * 1.5, 0.0, 0.0))
-      |> Scene.lit(Color.rgb(0.35, 0.85, 0.45))) in
-  let ground = Scene.plane() |> Scene.scale(8.0) |> Scene.lit(Color.rgb(0.18, 0.2, 0.28)) in
-  Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 4.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.group([ground, ..nodes]),
-    [ Light.ambient(Color.rgb(0.35, 0.35, 0.42)),
-      Light.directional(Vec3.make(-0.4, -1.0, -0.35), Color.rgb(1.0, 0.95, 0.85), 1.1) ])
+      |> Scene.lit(Color.rgb(0.35, 0.85, 0.45))))

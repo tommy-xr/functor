@@ -9,19 +9,22 @@
 // per-frame reconciler opens it on the next frame (a model-driven
 // connection set). While the list is empty it simply asks again on each
 // (empty) reply — naive once-per-round-trip polling until a server appears.
+// If the discovered server dies (or a stale listing fails to connect), the
+// client falls back to Discovering and resumes polling instead of wedging.
 
 type Phase =
   | Discovering
   | Joining(addr: string)
   | Playing(addr: string, motd: string)
 
-type Model = { phase: Phase }
+type Model = { masterConn: float, phase: Phase }
 
 type Msg =
   | MasterUp(id: float)
   | FromMaster(id: float, wire: Protocol.Wire)
   | ServerUp(id: float)
   | FromServer(id: float, wire: Protocol.Wire)
+  | ServerGone
   | Ignore
 
 let fromMaster = (ev: Net.NetEvent): Msg =>
@@ -34,13 +37,17 @@ let fromServer = (ev: Net.NetEvent): Msg =>
   match ev with
   | Net.Connected(id) => ServerUp(id)
   | Net.Data(id, wire) => FromServer(id, wire)
+  // The discovered server dying — or a stale listing that never connects —
+  // must not wedge the client: fall back to discovery.
+  | Net.Disconnected(_) => ServerGone
+  | Net.Error(_, _) => ServerGone
   | _ => Ignore
 
-let init = { phase: Discovering }
+let init = { masterConn: -1.0, phase: Discovering }
 
 let update = (m: Model, msg: Msg) =>
   match msg with
-  | MasterUp(id) => (m, Effect.sendMsg(id, Protocol.ListServers))
+  | MasterUp(id) => ({ m with masterConn: id }, Effect.sendMsg(id, Protocol.ListServers))
   | FromMaster(id, wire) =>
       (match wire with
        | Protocol.Servers(servers) =>
@@ -57,6 +64,14 @@ let update = (m: Model, msg: Msg) =>
             | Joining(addr) => { m with phase: Playing(addr, motd) }
             | _ => m)
        | _ => m)
+  | ServerGone =>
+      // Drop the dead server connection and re-ask NOW — nothing else would
+      // (the master link stays quiet once a non-empty list was delivered).
+      // Already-Discovering dedups the Error+Disconnected double event.
+      (match m.phase with
+       | Discovering => m
+       | _ => ({ m with phase: Discovering },
+               Effect.sendMsg(m.masterConn, Protocol.ListServers)))
   | Ignore => m
 
 let subscriptions = (m: Model) =>
@@ -77,10 +92,4 @@ let draw = (m: Model, tts: float) =>
     | Discovering => Color.rgb(0.6, 0.6, 0.6)
     | Joining(_) => Color.rgb(0.35, 0.60, 0.95)
     | Playing(_, _) => Color.rgb(0.35, 0.85, 0.45) in
-  let cube = Scene.cube() |> Scene.lit(color) in
-  let ground = Scene.plane() |> Scene.scale(8.0) |> Scene.lit(Color.rgb(0.18, 0.2, 0.28)) in
-  Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 3.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.group([ground, cube]),
-    [ Light.ambient(Color.rgb(0.35, 0.35, 0.42)),
-      Light.directional(Vec3.make(-0.4, -1.0, -0.35), Color.rgb(1.0, 0.95, 0.85), 1.1) ])
+  View.frame([Scene.cube() |> Scene.lit(color)])

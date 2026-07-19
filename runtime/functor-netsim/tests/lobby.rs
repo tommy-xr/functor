@@ -60,5 +60,9 @@ fn client_discovers_the_server_through_the_master_and_joins() {
         client_state.contains("Playing") && client_state.contains("hello, newcomer"),
         "client should reach Playing via the discovered server: {client_state}"
     );
-    assert!(server_state.contains("players: 1"), "server should count the join: {server_state}");
+    // A non-empty roster: the joined client's cid is on the list.
+    assert!(
+        server_state.contains("joined: [") && !server_state.contains("joined: []"),
+        "server should have the client on its roster: {server_state}"
+    );
 }
