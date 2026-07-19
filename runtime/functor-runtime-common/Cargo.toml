@@ -43,10 +43,10 @@ async-trait = "0.1.80"
 # lines). The shell installs the logger; here we only emit through `log::*!`.
 log = "0.4"
 gltf = { version = "1.4.1", features = ["names", "KHR_materials_pbrSpecularGlossiness"] }
-
-[dev-dependencies]
-# The host prelude `.funi` interface text, for the drift test that keeps the
-# declared Scene.* signatures in sync with the `PATHS` host registry.
+# The host prelude `.funi` interface text: the embedded producer
+# (`functor_lang_game_embedded`) links pushed sources against it, and the drift
+# test keeps the declared Scene.* signatures in sync with the host registry.
+# Zero-dependency by design, so safe on every target (wasm included).
 functor-prelude = { path = "../../functor-prelude" }
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]

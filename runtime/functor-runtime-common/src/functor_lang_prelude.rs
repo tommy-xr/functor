@@ -429,8 +429,9 @@ pub struct RealEffects {
 
 /// Epoch seconds from the platform clock. `std::time::SystemTime` is
 /// unimplemented on `wasm32-unknown-unknown` (it panics), so the browser
-/// build asks `Date.now()` instead.
-fn epoch_seconds() -> f64 {
+/// build asks `Date.now()` instead. `pub(crate)`: the embedded producer
+/// times reloads with it (its only portable ms clock).
+pub(crate) fn epoch_seconds() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
         js_sys::Date::now() / 1000.0

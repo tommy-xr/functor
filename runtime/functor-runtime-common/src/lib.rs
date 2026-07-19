@@ -69,6 +69,7 @@ mod light;
 pub mod manifest;
 pub mod material;
 pub mod math;
+pub mod functor_lang_game_embedded;
 pub mod functor_lang_prelude;
 pub mod host_registry;
 pub mod functor_lang_producer;

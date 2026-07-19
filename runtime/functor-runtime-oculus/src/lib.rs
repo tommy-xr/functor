@@ -30,7 +30,9 @@ use std::sync::Arc;
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use cgmath::{Quaternion, Rotation, Vector3};
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::{Camera, Frame, FrameTime, SceneContext, Viewport};
+use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
+use functor_runtime_common::protocol::GameProducer;
+use functor_runtime_common::{Camera, FrameTime, SceneContext, Viewport};
 use khronos_egl as egl;
 use openxr as xr;
 
@@ -249,24 +251,10 @@ fn camera_from_view(view: &xr::View) -> Camera {
 /// empty scene under a shadow-casting directional light, so `render_frame`
 /// runs the full shadow + forward pipeline every frame — the point of phase 1
 /// is proving the shared renderer's whole GLES path, not just a clear.
-fn placeholder_frame() -> Frame {
-    use cgmath::SquareMatrix;
-    let light = functor_runtime_common::Light::Directional {
-        direction: [-0.4, -1.0, -0.3],
-        color: [1.0, 1.0, 1.0],
-        intensity: 1.0,
-        casts_shadows: true,
-    };
-    let mut frame = Frame::new(
-        Camera::default(),
-        functor_runtime_common::Scene3D {
-            obj: functor_runtime_common::SceneObject::Group(vec![]),
-            xform: cgmath::Matrix4::identity(),
-        },
-    );
-    frame.lights = vec![light];
-    frame
-}
+/// The boot scene: what the tool APK renders before any game is pushed
+/// (the network reload replaces it live, model preserved). Interpreted by
+/// the same embedded producer a pushed game runs under.
+const BOOT_SCENE: &str = include_str!("boot.fun");
 
 #[no_mangle]
 pub fn android_main(app: AndroidApp) {
@@ -276,6 +264,31 @@ pub fn android_main(app: AndroidApp) {
             .with_tag("functor"),
     );
     log::info!("functor oculus runtime starting");
+
+    // Route runtime events (asset errors, hot-reload status, Debug.log
+    // traces) into logcat — without a sink they fall back to eprintln!,
+    // which Android discards.
+    functor_runtime_common::events::set_sink(Box::new(|event| {
+        use functor_runtime_common::events::RuntimeEvent as R;
+        match event {
+            R::AssetError { path, message } => match path {
+                Some(path) => {
+                    log::error!("asset '{path}' failed to load; using fallback: {message}")
+                }
+                None => log::error!("asset failed to load; using fallback: {message}"),
+            },
+            R::HotReload { ok, message } => {
+                if ok {
+                    log::info!("hot-reload: {message}");
+                } else {
+                    log::error!("hot-reload: {message}");
+                }
+            }
+            R::FunctorLangTrace { message } => log::info!("{message}"),
+            // CLI-stream concerns; quiet on device.
+            R::Ready | R::FrameStats { .. } | R::CaptureWritten { .. } => {}
+        }
+    }));
 
     // Meta's runtime refuses to bind a session to an activity that isn't
     // resumed with a window ("xrCreateSession: Activity is not yet in the
@@ -422,6 +435,14 @@ pub fn android_main(app: AndroidApp) {
     let scene_context = SceneContext::new();
     let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
 
+    // The real Functor Lang producer, booting the embedded scene. A broken embedded
+    // scene is a build bug, not a runtime condition — fail loud.
+    let mut game = FunctorLangEmbeddedGame::create(vec![(
+        "boot.fun".to_string(),
+        BOOT_SCENE.to_string(),
+    )])
+    .expect("embedded boot scene loads");
+
     let start = std::time::Instant::now();
     // Lazy: seconds pass between android_main and the first rendered frame
     // (session READY), and the session can pause — the first frame after
@@ -521,9 +542,19 @@ pub fn android_main(app: AndroidApp) {
         };
         last_tts = Some(tts);
 
-        // TODO(device bring-up): Functor Lang producer + debug server here — the game
-        // produces this frame; today it's the placeholder scene.
-        let frame = placeholder_frame();
+        // The game produces this frame (subscriptions → update → tick →
+        // physics inside `tick`; `render` = the pure `draw`). The game's own
+        // camera is ignored below — per-eye HMD-pose cameras own the view.
+        game.check_hot_reload(frame_time.clone());
+        game.tick(frame_time.clone());
+        let frame = game.render(frame_time.clone());
+        // No audio/HTTP/preload hosts on device yet (M1): drain the command
+        // queues so they don't grow unbounded. Games using those effects run;
+        // the effects just don't produce sound/replies here yet.
+        let _ = game.audio_drain_commands();
+        let _ = game.net_drain_commands();
+        let _ = game.net_drain_conn_commands();
+        let _ = game.preload_drain_commands();
 
         for (eye, view) in eyes.iter_mut().zip(views.iter()) {
             use glow::HasContext;
