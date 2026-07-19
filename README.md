@@ -35,7 +35,7 @@ No install needed:
 ## Quick start (local)
 
 Prereqs: **Rust stable** with the `wasm32-unknown-unknown` target, **Node 22+**, and
-**`wasm-pack`** (exact known-good versions in [Prerequisites](#prerequisites) below).
+**`wasm-pack`** (exact known-good versions in [DEVELOPMENT.md](DEVELOPMENT.md#prerequisites)).
 
 ```sh
 # 1. Build the single `functor` binary (wasm bundle first, then the CLI).
@@ -49,8 +49,9 @@ npm run build:cli
 ./target/debug/functor -d my-game run native
 ```
 
-See [Building the CLI](#building-the-cli) and [Running a sample](#running-a-sample)
-for the full details (wasm target, serving to the browser, sample assets).
+See [DEVELOPMENT.md](DEVELOPMENT.md) for build-from-source details (prerequisites,
+the wasm target) and [Running a sample](#running-a-sample) below for serving to the
+browser and fetching sample assets.
 
 ## Writing a game
 
@@ -109,41 +110,6 @@ time-travel scrubber you see at [functor.games](https://functor.games) (design n
 | `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
 | `examples/*/` | Sample games — e.g. `hello` (a lineup of glTF sample models with a WASD + mouse free-look camera), `primitives`, `lighting` |
 
-## Prerequisites
-
-Install the following (the versions in parentheses are known-good):
-
-- [Rust](https://rustup.rs/) stable (`1.91`) with the wasm target:
-  `rustup target add wasm32-unknown-unknown`
-- [Node.js + npm](https://nodejs.org/) (`node 22`, `npm 10`)
-- [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) (`0.12+`) — `npm install -g wasm-pack`
-
-`watchexec` is no longer needed — Functor Lang hot-reload is built into the runtime, so
-`functor develop` needs no external file watcher. There is also **no .NET / Fable
-dependency**: the toolchain is Rust + Node only.
-
-On Linux you also need the native GL/X11 dev packages (see
-`.github/workflows/build-native.yml` for the exact `apt` list).
-
-## Building the CLI
-
-Build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compile
-time (via `include_bytes!`), so the wasm bundle must exist before the `functor` binary is built.
-
-```sh
-wasm-pack build runtime/functor-runtime-web --target=web     # web bundle (embedded into the CLI)
-cargo build --bin functor                                    # the CLI (embeds the desktop runtime)
-```
-
-Or use the bundled convenience script, which runs both in order:
-
-```sh
-npm run build:cli
-```
-
-This produces a single binary in `target/debug/`: `functor` (the CLI, with the desktop
-runtime linked in as a library and run in-process — there is no separate `functor-runner`).
-
 ## Running a sample
 
 Some samples reference glTF model assets that aren't checked in (they download from
@@ -179,16 +145,8 @@ The `run` command interprets the game's `.fun` and launches it — no build step
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
 | `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime |
 
-### What `build`/`run` do under the hood
-
-1. `build` loads the project (the entry `.fun` plus every sibling `.fun` — file = module)
-   and typechecks the whole program; diagnostics are errors here.
-2. (native) `run` runs the desktop runtime in-process on the entry `.fun` (no separate
-   process); it **interprets** the `.fun` each frame and hot-reloads it on save,
-   preserving the model.
-3. (wasm) `run` serves the project directory — the `.fun` ships as text; the embedded
-   web runtime fetches and interprets it. (File-watch hot-reload is native-only;
-   reload the page to pick up saved edits.)
+For build-from-source instructions and what `build`/`run` do under the hood, see
+[DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Credits
 

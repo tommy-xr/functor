@@ -118,7 +118,6 @@ effects are reset on reload (an in-flight HTTP tagger would dangle). Native watc
 | `cli/` | The `functor` CLI (`build`/`run`/`develop`/`init`); Functor Lang projects route through `cli/src/commands/functor_lang_project.rs` |
 | `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
 | `examples/*/` | Sample games (each a dir with `functor.json` + `game.fun`) — e.g. `hello`, `primitives`, `lighting`, `physics` |
-| `docs/todo.md` | The backlog — incomplete work only |
 
 Functor Lang files use `file = module`: every sibling `.fun` in the entry's directory loads with it. The
 language, prelude, and semantics are documented in the **`functor-lang` skill** — treat it and
@@ -137,6 +136,9 @@ Functor Lang hot-reload is built into the runtime, so `develop` does not need it
 npm run build:cli           # the wasm bundle, then the functor CLI (debug)
 npm run build:cli:release   # same, but target/release/functor
 ```
+
+(The human-facing docs mirror this split: `README.md` covers installing and using
+Functor; `DEVELOPMENT.md` covers building the CLI from source.)
 
 Produces `target/debug/functor` (or `target/release/functor`) — a single binary with the
 desktop runtime built in. **Use the RELEASE binary for interactive native testing** — the
