@@ -5,6 +5,11 @@
 // blitz (Stylo + Taffy + Parley) composited over the 3D frame; on wasm it is
 // a real DOM overlay above the canvas. An `Attr.onClick` click delivers its
 // msg verbatim through `update` — the `Ui.button` loop, with CSS styling.
+//
+// Styling is split two ways: per-element INLINE styles are typed
+// (`Attr.styles([Style.fontSizePx(40.0), …])` — a typo is a check error),
+// while the cascade half (selectors, :hover) stays a CSS string in
+// `Html.style`.
 
 type Model = { count: float, spin: float }
 type Msg =
@@ -34,8 +39,9 @@ let draw = (m: Model, tts) =>
     ],
   )
 
-// The stylesheet is plain CSS in a string — themeable without touching the
-// tree. .hud is a fixed-width card pinned by its margin; buttons get :hover.
+// The stylesheet keeps the cascade half of CSS — selectors, :hover, the
+// gradient — themeable without touching the tree. .hud is a fixed-width card
+// pinned by its margin; buttons get :hover.
 let css = "
   .hud { display: flex; flex-direction: column; gap: 12px; width: 300px;
          margin: 24px; padding: 20px;
@@ -43,8 +49,6 @@ let css = "
          border: 2px solid #8be9fd; border-radius: 14px;
          font-family: sans-serif; color: #f8f8f2; }
   .hud h1 { margin: 0; font-size: 22px; color: #8be9fd; }
-  .count { font-size: 40px; font-weight: bold; text-align: center; }
-  .row { display: flex; gap: 10px; justify-content: center; }
   button { padding: 8px 18px; font-size: 18px; font-weight: bold;
            background: #50fa7b; color: #1e1e3c; border: none; border-radius: 8px; }
   button:hover { background: #f1fa8c; }
@@ -56,8 +60,12 @@ let webview = (m: Model) =>
     Html.style(css),
     Html.div([Attr.class("hud")], [
       Html.h1([], [Html.text("Functor webview")]),
-      Html.div([Attr.class("count")], [Html.text(Text.fixed(m.count, 0.0))]),
-      Html.div([Attr.class("row")], [
+      // Typed inline styles: `Style.fontSizPx(40.0)` would be a check error.
+      Html.div(
+        [Attr.styles([Style.fontSizePx(40.0), Style.bold(), Style.textCenter()])],
+        [Html.text(Text.fixed(m.count, 0.0))],
+      ),
+      Html.div([Attr.styles([Style.flexRow(), Style.gapPx(10.0), Style.justifyCenter()])], [
         Html.button([Attr.onClick(Dec)], [Html.text("-")]),
         Html.button([Attr.onClick(Inc)], [Html.text("+")]),
         Html.button([Attr.class("ghost"), Attr.onClick(Reset)], [Html.text("Reset")]),

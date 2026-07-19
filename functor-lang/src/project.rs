@@ -69,6 +69,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Ui",
     "Html",
     "Attr",
+    "Style",
     "AudioSource",
     "AudioScene",
     "Debug",

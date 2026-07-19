@@ -194,7 +194,7 @@ let grab = (s) =>
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude namespace (Net, Key, Random, List, Text, Math, Debug, Scene,
   Anim, Asset, Camera, Frame, Light, Fog, Color, Vec3, Skybox, Angle, Texture,
-  Time, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr, AudioSource, AudioScene) is a
+  Time, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr, Style, AudioSource, AudioScene) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
   manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -249,7 +249,7 @@ open Widget                                              // …or open, bringing
 - This is how the **engine prelude's types are declared**: the `functor-prelude`
   crate ships a `.funi` for every host namespace (`Scene`, `Asset`, `Camera`,
   `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`,
-  `Sub`, `Effect`, `Physics`, `Ui`, `Html`, `Attr`, `AudioSource`, `AudioScene`),
+  `Sub`, `Effect`, `Physics`, `Ui`, `Html`, `Attr`, `Style`, `AudioSource`, `AudioScene`),
   loaded by the
   runner so engine calls carry real types (no longer `Unknown`). Each module's
   primary opaque handle is `Mod.t` (`Camera.t`, `Frame.t`, `Effect.t`, …);
@@ -655,6 +655,29 @@ Html.input([attr, …])                                      //   Parley) CPU-pa
 Attr.class("…") / Attr.style("…") / Attr.id("…")           // plain attributes; Attr.attr(name,
 Attr.value("…") / Attr.placeholder("…")                    //   value) for anything else
 Attr.attr("name", "value")
+Attr.styles([Style.widthPx(300.0), …])                     // TYPED inline styles: the Style list
+                                                           //   folds into ONE style="k: v; k: v"
+                                                           //   attribute at construction (the
+                                                           //   elm-css split: inline declarations
+                                                           //   typed; the cascade — selectors,
+                                                           //   :hover, keyframes — stays a string
+                                                           //   in Html.style)
+Style.flexRow() / Style.flexColumn()                       // display:flex + direction; a bare
+Style.gapPx(n)                                             //   string/number where a Style goes
+Style.justifyStart() / justifyCenter() / justifyEnd()      //   is a teaching error (the Angle
+Style.justifyBetween()                                     //   rule)
+Style.alignStart() / alignCenter() / alignEnd()
+Style.widthPx(n) / widthPct(n) / heightPx(n) / heightPct(n)
+Style.paddingPx(n) / Style.marginPx(n)                     // all sides
+Style.color(color) / Style.background(color)               // Color.t — the ONE color type across
+                                                           //   3D and UI, formatted rgb(r, g, b)
+Style.fontSizePx(n) / Style.bold() / Style.textCenter()
+Style.borderPx(n, color)                                   // solid border
+Style.roundedPx(n)                                         // border-radius
+Style.opacity(n)                                           // 0..1 (out of range errors)
+Style.raw("property", "value")                             // the escape hatch for the long tail
+                                                           //   of CSS; the property name is
+                                                           //   validated like Attr.attr
 Attr.onClick(msg)                                          // INTERACTIVE (the Ui.button shape):
                                                            //   a click on the element (or a
                                                            //   descendant — DOM bubbling)
