@@ -110,3 +110,18 @@ fn while_pending_checks_clean_in_both_positions() {
     );
     assert!(diags.is_empty(), "whilePending should check clean: {diags:?}");
 }
+
+/// `Effect.preload`/`preloadThen` check clean with Asset values and produce
+/// Effect.t (usable in the (model, effect) seam).
+#[test]
+fn preload_checks_clean() {
+    let diags = check(
+        "type Msg = | Warm\n\
+         let boss = Asset.model(\"boss.glb\")\n\
+         let a = Effect.preload(boss)\n\
+         let b = Effect.preloadThen(boss, Warm)\n\
+         let c = Effect.batch([a, b])\n\
+         let update = (m, msg) => match msg with | Warm => (m, Effect.preload(Asset.texture(\"wood.png\")))",
+    );
+    assert!(diags.is_empty(), "preload should check clean: {diags:?}");
+}

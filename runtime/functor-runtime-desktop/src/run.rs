@@ -693,9 +693,12 @@ fn run_headless(
         dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
 
         // The frame is pure data (no GL); it powers GET /scene. Drain and drop
-        // audio commands (no device in headless) so they don't pile up.
+        // audio and preload commands (no device / no asset cache in headless)
+        // so they don't pile up. Like playThen, a preloadThen's message never
+        // delivers headless — the known Sub.assets-under---headless gap.
         let frame = game.render(time.clone());
         let _ = game.audio_drain_commands();
+        let _ = game.preload_drain_commands();
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {
@@ -1076,6 +1079,15 @@ pub fn run(args: Args) {
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
             game.push_asset_progress(asset_cache.progress());
+
+            // Effect.preload (B.5): warm the cache with this frame's queued
+            // preloads and drive in-flight ones to settlement; a settled
+            // preloadThen delivers its message through update.
+            let preload_commands =
+                serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
+            for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
+                game.preload_push_settled(token);
+            }
 
             // Asset hot-reload, the twin of the .fun check above: a model/
             // texture saved on disk is evicted from the caches so the next

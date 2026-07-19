@@ -25,3 +25,14 @@ let play : ('sound) => t
 let playAt : ('sound, Vec3.t) => t
 // Play once and deliver `'msg` (a message VALUE, not a tagger) when it finishes.
 let playThen : ('sound, 'msg) => t
+// Warm the asset cache ahead of `draw` referencing the asset (a model or
+// texture Asset VALUE — sounds decode at play time, nothing to warm; the
+// host teaches). Declarative loading stays the default; preload is the
+// imperative prefetch (start streaming the boss when the player grabs the
+// key). Counts in Sub.assets like any load.
+let preload : ('asset) => t
+// Preload and deliver `'msg` (a message VALUE, like playThen) through
+// `update` when the load SETTLES — loaded or failed (Sub.assets' failed
+// list says which). Works on wasm too (the shell's own driver detects
+// settlement, unlike audio finishes).
+let preloadThen : ('asset, 'msg) => t

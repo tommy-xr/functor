@@ -290,6 +290,28 @@ pub enum EffectTree {
         sound: String,
         message: Value,
     },
+    /// Warm the asset cache ahead of `draw` referencing the asset
+    /// (`Effect.preload`) — the imperative prefetch; declarative loading
+    /// (draw references it → it loads) stays the default. Fire-and-forget:
+    /// queues a [`crate::asset::preload::PreloadCommand`] the shell drains
+    /// into a cache load and then POLLS to settlement (the
+    /// `resolve_while_pending` liveness rule — an unpolled preload would
+    /// strand in `Sub.assets`' total).
+    PreloadAsset {
+        kind: crate::asset::preload::PreloadKind,
+        locator: String,
+    },
+    /// A preload whose settlement is reported back frames later
+    /// (`Effect.preloadThen`) — the [`Self::PlayAudioThen`] shape: mint a
+    /// token, register `message` by it, queue a tokened command. When the
+    /// shell reports the load SETTLED — loaded OR failed (`Sub.assets`'
+    /// `failed` list says which) — the producer delivers `message` VERBATIM
+    /// through `update`.
+    PreloadAssetThen {
+        kind: crate::asset::preload::PreloadKind,
+        locator: String,
+        message: Value,
+    },
 }
 
 pub struct FunctorLangEffect(pub EffectTree);
@@ -2211,6 +2233,80 @@ fn register_effects(reg: &mut crate::host_registry::Registry) {
             })
         },
     );
+    // Warm the asset cache ahead of `draw` referencing the asset — the
+    // imperative prefetch (start streaming the boss when the player picks up
+    // the key). Declarative loading stays the default; a preload just makes
+    // the later reference a cache hit. Asset VALUES only (a new post-B.3
+    // surface grows no new string coercion).
+    reg.fn1(
+        "Effect.preload",
+        "Effect.preload(asset) — a model or texture Asset value to start loading now",
+        |asset: PreloadableAsset| {
+            FunctorLangEffect(EffectTree::PreloadAsset {
+                kind: asset.kind,
+                locator: asset.locator,
+            })
+        },
+    );
+    // Preload and deliver `msg` (a message VALUE, like playThen) through
+    // `update` when the load SETTLES — loaded or failed (Sub.assets' failed
+    // list says which).
+    reg.fn2(
+        "Effect.preloadThen",
+        "Effect.preloadThen(asset, msg) — a model or texture Asset value, and the \
+message delivered when its load settles",
+        |asset: PreloadableAsset, msg: Value| {
+            FunctorLangEffect(EffectTree::PreloadAssetThen {
+                kind: asset.kind,
+                locator: asset.locator,
+                message: msg,
+            })
+        },
+    );
+}
+
+/// An `Effect.preload` argument: a MODEL or TEXTURE Asset value. Sounds
+/// teach (they decode at play time, outside the asset cache — there is
+/// nothing to warm), and bare strings teach toward the constructors — a new
+/// post-flag-day surface accepts no string coercion.
+struct PreloadableAsset {
+    kind: crate::asset::preload::PreloadKind,
+    locator: String,
+}
+
+impl crate::host_registry::FromArg for PreloadableAsset {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        if let Some(asset) = asset_of(value) {
+            let kind = match asset.kind {
+                AssetKind::Model => crate::asset::preload::PreloadKind::Model,
+                AssetKind::Texture => crate::asset::preload::PreloadKind::Texture,
+                AssetKind::Sound => {
+                    return Err(RunError {
+                        message: format!(
+                            "{path}: sounds have nothing to preload (they decode at play \
+time, outside the asset cache) — preload applies to model and texture assets"
+                        ),
+                        span,
+                    })
+                }
+            };
+            return Ok(PreloadableAsset {
+                kind,
+                locator: asset.path.clone(),
+            });
+        }
+        let message = match value {
+            Value::String(s) => format!(
+                "{path}: expected an Asset value, got a bare string (\"{s}\") — construct \
+one with Asset.model/texture(…) first"
+            ),
+            other => format!(
+                "{path}: expected an Asset value (Asset.model/texture(…)), got {}",
+                other.kind_name()
+            ),
+        };
+        Err(RunError { message, span })
+    }
 }
 
 /// The Sub vocabulary — what the optional `subscriptions` hook returns.
@@ -3224,6 +3320,43 @@ pub fn clear_audio_completions() {
     PENDING_AUDIO.with(|m| m.borrow_mut().clear());
 }
 
+thread_local! {
+    /// In-flight `Effect.preloadThen` completion MESSAGES, keyed by the
+    /// preload's token — the asset analogue of [`PENDING_AUDIO`], with the
+    /// same rules: a plain message VALUE delivered verbatim; bounded (a
+    /// shell that drops the command leaves its message un-taken); cleared on
+    /// hot reload (a stored message may close over the OLD session).
+    static PENDING_PRELOAD: std::cell::RefCell<std::collections::HashMap<u64, Value>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Register a `preloadThen` completion message for `token` (see
+/// [`PENDING_PRELOAD`]; the cap and eviction mirror
+/// [`register_audio_completion`]).
+pub fn register_preload_completion(token: u64, message: Value) {
+    PENDING_PRELOAD.with(|m| {
+        let mut map = m.borrow_mut();
+        map.insert(token, message);
+        while map.len() > PENDING_AUDIO_CAP {
+            if let Some(oldest) = map.keys().copied().min() {
+                map.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    });
+}
+
+/// Take the completion message for a settled preload's `token`, if any.
+pub fn take_preload_completion(token: u64) -> Option<Value> {
+    PENDING_PRELOAD.with(|m| m.borrow_mut().remove(&token))
+}
+
+/// Drop all in-flight `preloadThen` completion messages (hot reload).
+pub fn clear_preload_completions() {
+    PENDING_PRELOAD.with(|m| m.borrow_mut().clear());
+}
+
 /// What an interactive UI widget delivers when the shell reports an
 /// interaction on it (docs/ui-interaction.md): either a message VALUE handed
 /// to `update` verbatim (a button — the `Sub.every` shape) or a TAGGER applied
@@ -3533,9 +3666,12 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         | EffectTree::Http { .. }
         // Audio one-shots are fire-and-forget too. `playThen`'s completion
         // needs `update`, but arrives frames later via the audio-finished
-        // hook — the same shape as Http.
+        // hook — the same shape as Http. Preloads likewise: `preloadThen`'s
+        // settlement arrives via the shell's preload driver.
         | EffectTree::PlayAudio { .. }
-        | EffectTree::PlayAudioThen { .. } => false,
+        | EffectTree::PlayAudioThen { .. }
+        | EffectTree::PreloadAsset { .. }
+        | EffectTree::PreloadAssetThen { .. } => false,
         EffectTree::Now { .. } | EffectTree::Random { .. } | EffectTree::Raycast { .. } => true,
         EffectTree::Batch(items) => items.iter().any(needs_update),
     }
@@ -3734,6 +3870,53 @@ dropping the rest"
                 log.push(EffectRecord {
                     kind: "audio.playThen",
                     value: EffectValue::Text(sound),
+                });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::PreloadAsset { kind, locator } => {
+                // Fire-and-forget prefetch: queue a PreloadCommand for the
+                // shell's driver (drained via preload_drain_commands). No
+                // token — nothing folds back through update.
+                if !suppress_outbound {
+                    crate::asset::preload::push_command(crate::asset::preload::PreloadCommand {
+                        kind,
+                        locator: locator.clone(),
+                        token: None,
+                    });
+                }
+                log.push(EffectRecord {
+                    kind: "asset.preload",
+                    value: EffectValue::Text(locator),
+                });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::PreloadAssetThen {
+                kind,
+                locator,
+                message,
+            } => {
+                // The playThen shape: mint a token, register the completion
+                // MESSAGE by it, queue a tokened command. Settlement lands
+                // frames later; the producer's preload-settled hook delivers
+                // the message then.
+                if !suppress_outbound {
+                    let token = crate::asset::preload::next_token();
+                    register_preload_completion(token, message);
+                    crate::asset::preload::push_command(crate::asset::preload::PreloadCommand {
+                        kind,
+                        locator: locator.clone(),
+                        token: Some(token),
+                    });
+                }
+                log.push(EffectRecord {
+                    kind: "asset.preloadThen",
+                    value: EffectValue::Text(locator),
                 });
                 if log.len() > EFFECT_LOG_CAP {
                     log.remove(0);
@@ -6954,6 +7137,141 @@ the game dir"
 
         // The token is consumed (a duplicate/late finish finds no message).
         assert!(take_audio_completion(token).is_none());
+    }
+
+    // --- Effect.preload / preloadThen (Track B.5) ---
+
+    /// `Effect.preload` queues a shell command for the right pipeline and
+    /// logs; `preloadThen` additionally registers its completion message,
+    /// which the settled hook folds through `update` verbatim — the playThen
+    /// shape, driven end to end with no shell.
+    #[test]
+    fn preload_queues_commands_and_completes_through_update() {
+        let _guard = crate::audio::OUTBOUND_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = crate::asset::preload::drain_commands(); // clear the shared queue
+        clear_preload_completions();
+        let src = "\
+            type Model = | Cold | Warm\n\
+            let init = Cold\n\
+            let boss = Asset.model(\"boss.glb\")\n\
+            let wood = Asset.texture(\"wood.png\")\n\
+            let warm = Effect.batch([Effect.preload(wood), Effect.preloadThen(boss, Warm)])\n\
+            let update = (m: Model, msg: Model) => msg\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").unwrap();
+        let mut log = EffectLog::new();
+
+        let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
+        let _ = drain_effects(
+            &session,
+            &mut model,
+            warm,
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+            false,
+        );
+        let kinds: Vec<&str> = log.iter().map(|r| r.kind).collect();
+        assert!(kinds.contains(&"asset.preload"), "{kinds:?}");
+        assert!(kinds.contains(&"asset.preloadThen"), "{kinds:?}");
+
+        // Two commands queued: the tokenless texture warm, the tokened model.
+        let commands = crate::asset::preload::drain_commands();
+        let token = match commands.as_slice() {
+            [
+                crate::asset::preload::PreloadCommand {
+                    kind: crate::asset::preload::PreloadKind::Texture,
+                    locator: tex,
+                    token: None,
+                },
+                crate::asset::preload::PreloadCommand {
+                    kind: crate::asset::preload::PreloadKind::Model,
+                    locator: model_loc,
+                    token: Some(t),
+                },
+            ] => {
+                assert_eq!(tex, "wood.png");
+                assert_eq!(model_loc, "boss.glb");
+                *t
+            }
+            other => panic!("expected texture+tokened model commands, got: {other:?}"),
+        };
+
+        // The load settles: take the registered message and fold it through
+        // `update` (delivered verbatim — no tagger).
+        let message = take_preload_completion(token).expect("a message for the token");
+        let (model, _) = split_model_effect(
+            session
+                .call("update", vec![model, message], &mut FunctorHost)
+                .unwrap(),
+        );
+        assert_eq!(model.to_string(), "Warm");
+
+        // Consumed: a duplicate/late settle finds no message.
+        assert!(take_preload_completion(token).is_none());
+    }
+
+    /// Under a suppressed-outbound runner (fake/dry-run/replay) preloads log
+    /// but queue nothing and register nothing — the deterministic test seam.
+    #[test]
+    fn preload_suppressed_outbound_only_logs() {
+        let _guard = crate::audio::OUTBOUND_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = crate::asset::preload::drain_commands();
+        clear_preload_completions();
+        let src = "\
+            let init = 0.0\n\
+            let warm = Effect.preloadThen(Asset.model(\"boss.glb\"), 1.0)\n\
+            let update = (m, msg) => msg\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut model = session.global("init").unwrap();
+        let mut log = EffectLog::new();
+        let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
+        let _ = drain_effects(
+            &session,
+            &mut model,
+            warm,
+            &mut FakeEffects::new(0.0, vec![]),
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+            true, // suppress_outbound
+        );
+        assert_eq!(log.last().map(|r| r.kind), Some("asset.preloadThen"));
+        assert!(crate::asset::preload::drain_commands().is_empty());
+    }
+
+    /// Preload teaches: sounds have nothing to warm, and bare strings must
+    /// construct an Asset value first (no new string coercion post-B.3).
+    #[test]
+    fn preload_teaching_errors() {
+        for (src, want) in [
+            (
+                "let main = () => Effect.preload(Asset.sound(\"boom.ogg\"))",
+                "Effect.preload: sounds have nothing to preload (they decode at play time, \
+outside the asset cache) — preload applies to model and texture assets",
+            ),
+            (
+                "let main = () => Effect.preload(\"boss.glb\")",
+                "Effect.preload: expected an Asset value, got a bare string (\"boss.glb\") — \
+construct one with Asset.model/texture(…) first",
+            ),
+            (
+                "let main = () => Effect.preloadThen(42.0, 1.0)",
+                "Effect.preloadThen: expected an Asset value (Asset.model/texture(…)), got \
+a number",
+            ),
+        ] {
+            assert_eq!(fail_message(src), want, "for {src}");
+        }
     }
 
     /// `PENDING_AUDIO` is bounded: because audio finishes are best-effort (a

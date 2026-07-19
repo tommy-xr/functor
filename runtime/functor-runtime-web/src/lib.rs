@@ -1293,6 +1293,16 @@ async fn run_async() -> Result<(), JsValue> {
             // producer only acts when it changed since the game last saw it.
             game.push_asset_progress(asset_cache.progress());
 
+            // Effect.preload (B.5): warm the cache with this frame's queued
+            // preloads and drive in-flight ones to settlement. Unlike audio
+            // finishes (undetectable on Web Audio today), preload settlement
+            // comes from the driver's own polling — preloadThen works on wasm.
+            let preload_commands =
+                serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
+            for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
+                game.preload_push_settled(token);
+            }
+
             for sub in &sub_frames {
                 game.tick(sub.clone());
             }

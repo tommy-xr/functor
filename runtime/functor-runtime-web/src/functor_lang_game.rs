@@ -24,9 +24,9 @@ use std::cell::RefCell;
 use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
 use functor_runtime_common::functor_lang_prelude::{
-    audio_scene_of, clear_audio_completions, clear_http_taggers, contains_effect, frame_value,
-    html_node_value, take_ui_handlers, view_value, EffectLog, EffectRunner, EffectTree,
-    FunctorHost, NetEventKind, RealEffects, UiHandler,
+    audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
+    contains_effect, frame_value, html_node_value, take_ui_handlers, view_value, EffectLog,
+    EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_swap, FrameCtx, JournalEntry, Reporter, SpanSource,
@@ -476,6 +476,7 @@ impl FunctorLangWebGame {
         self.pending_events.clear();
         clear_http_taggers();
         clear_audio_completions();
+        clear_preload_completions();
         // The widget handler table holds msgs/taggers into the OLD session;
         // the next render's `ui(model)` rebuilds it against the new one.
         self.ui_handlers.clear();
@@ -1036,6 +1037,11 @@ AudioScene.empty), got {}",
     }
     fn audio_push_finished(&mut self, token: i32) {
         self.ctx().deliver_audio_completion(token as u64);
+    }
+
+    // preload_drain_commands: the trait default drains the shared queue.
+    fn preload_push_settled(&mut self, token: u64) {
+        self.ctx().deliver_preload_completion(token);
     }
 
     fn quit(&mut self) {

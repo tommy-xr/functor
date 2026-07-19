@@ -120,14 +120,20 @@ impl AssetCache {
             let default_asset = pipeline.unloaded_asset(context);
 
             let context = super::AssetPipelineContext {};
-            let pipeline = pipeline.clone();
+            let inner_pipeline = pipeline.clone();
             // If bytes are already cached, return a handle immediately
             let future = async move {
-                let decoded = Arc::new(pipeline.process(bytes, self_arc.as_ref(), context));
+                let decoded = Arc::new(inner_pipeline.process(bytes, self_arc.as_ref(), context));
                 progress.lock().unwrap().loaded.insert(asset_path_owned);
                 Ok(decoded)
             };
-            return Arc::new(AssetHandle::new(future, Arc::new(default_asset)));
+            let handle = Arc::new(AssetHandle::new(future, Arc::new(default_asset)));
+            // Cache the handle like the cold path below does — without this,
+            // every later request down this branch (bytes cached by ANOTHER
+            // pipeline's load: e.g. preloaded as a model, then sampled as a
+            // texture) minted a fresh handle and re-decoded per call.
+            pipeline.cache(asset_path, handle.clone());
+            return handle;
         }
 
         let context = AssetPipelineContext {};
@@ -339,6 +345,32 @@ mod tests {
         for f in [placeholder, real] {
             let _ = std::fs::remove_file(&f);
         }
+    }
+
+    /// The cached-bytes branch must CACHE its handle like the cold path: a
+    /// path whose bytes another pipeline loaded (preloaded as a model, then
+    /// requested as a texture) must hand back one stable handle, not a fresh
+    /// re-decoding handle per call.
+    #[test]
+    fn cached_bytes_branch_caches_the_handle() {
+        let cache = Arc::new(AssetCache::new());
+        let pipeline_a = super::super::build_pipeline(Box::new(BytesLen));
+        let pipeline_b = super::super::build_pipeline(Box::new(BytesLen));
+        let path = temp_file("cross-pipeline.bin", b"12345");
+
+        // Pipeline A's cold load populates the bytes cache.
+        settle(&cache.load_asset_with_pipeline(pipeline_a.clone(), &path));
+
+        // Pipeline B's first request goes down the cached-bytes branch...
+        let first = cache.load_asset_with_pipeline(pipeline_b.clone(), &path);
+        // ...and a second request must return the SAME handle, not a fresh
+        // re-decoding one.
+        let second = cache.load_asset_with_pipeline(pipeline_b.clone(), &path);
+        assert!(Arc::ptr_eq(&first, &second), "handle must be cached");
+        settle(&first);
+        assert_eq!(*first.get(), 5);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Liveness: a STARTED chain entry keeps being driven to settled even

@@ -34,6 +34,7 @@ use crate::functor_lang_prelude::{
     frame_value, http_response_value,
     needs_update, net_conn_subs, net_event_value, perform_deferred_queries, physics_event_taggers,
     physics_scene_value, split_model_effect, sub_messages_for_frame, take_audio_completion,
+    take_preload_completion,
     take_http_tagger, take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree,
     FunctorHost, NetEventKind, UiHandler,
 };
@@ -92,6 +93,9 @@ pub enum Provenance {
     NetEvent,
     HttpResponse,
     AudioFinished,
+    /// A `preloadThen` load settled (loaded or failed) — the shell's preload
+    /// driver reported it.
+    PreloadSettled,
     UiEvent,
     /// The frame's pure render pass — never journaled during play; the trace
     /// builder synthesizes one draw invocation against the frozen model.
@@ -137,6 +141,7 @@ impl Provenance {
             Provenance::NetEvent => format!("net event: {}", msg()),
             Provenance::HttpResponse => format!("http response: {}", msg()),
             Provenance::AudioFinished => format!("audio finished: {}", msg()),
+            Provenance::PreloadSettled => format!("preload settled: {}", msg()),
             Provenance::UiEvent => format!("ui event: {}", msg()),
             Provenance::Draw => "draw".to_string(),
         }
@@ -1039,6 +1044,22 @@ carries no payload to tag; dropped",
         };
         let args = vec![self.model.clone(), message];
         journal_push("update", &args, Provenance::AudioFinished);
+        match self.session.call("update", args, &mut FunctorHost) {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.reporter.frame_error("update", &err),
+        }
+    }
+
+    /// Route a SETTLED `preloadThen` (loaded or failed) to the completion
+    /// MESSAGE registered when it fired — the audio-completion shape:
+    /// delivered verbatim, orphaned tokens (a reload dropped the message
+    /// mid-flight) silently ignored.
+    pub fn deliver_preload_completion(&mut self, token: u64) {
+        let Some(message) = take_preload_completion(token) else {
+            return;
+        };
+        let args = vec![self.model.clone(), message];
+        journal_push("update", &args, Provenance::PreloadSettled);
         match self.session.call("update", args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error("update", &err),

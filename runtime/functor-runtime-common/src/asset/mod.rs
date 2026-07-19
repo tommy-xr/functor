@@ -6,6 +6,7 @@ mod asset_pipeline;
 mod renderable_asset;
 
 pub mod pipelines;
+pub mod preload;
 
 pub use asset_cache::*;
 pub use asset_handle::*;
