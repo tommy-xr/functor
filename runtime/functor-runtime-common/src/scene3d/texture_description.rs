@@ -13,6 +13,15 @@ pub enum TextureDescription {
     /// same UVs show a file texture and a render target flipped relative to
     /// each other.
     RenderTarget(String),
+    /// A file texture with placeholder fallbacks tried WHILE IT LOADS
+    /// (`Asset.whilePending`): the first loaded chain entry binds until
+    /// `file` itself is ready; a FAILED `file` falls back like a plain
+    /// `File` (failure is not pending — it must stay visible). Emitted only
+    /// when a chain exists, so plain textures keep the `File` wire shape.
+    FileWhilePending {
+        file: String,
+        while_pending: Vec<String>,
+    },
 }
 
 impl TextureDescription {

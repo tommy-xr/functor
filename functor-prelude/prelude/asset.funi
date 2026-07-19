@@ -17,3 +17,13 @@ type Sound
 let model : (string) => Model
 let texture : (string) => Texture
 let sound : (string) => Sound
+
+// A placeholder rendered WHILE the asset streams in, instead of the empty /
+// checkerboard fallback (subject-last, so it pipes:
+// `asset |> Asset.whilePending(placeholder)`). The placeholder is just
+// another asset of the SAME kind, so it chains — a low-poly proxy can carry
+// its own placeholder. Models and textures only (sounds decode at play time
+// — no pending state; the host teaches). A FAILED asset still shows the
+// fallback: failure is not pending. Gradually typed ('a ties the result to
+// the asset's kind); the flag day tightens the kinds.
+let whilePending : ('placeholder, 'asset) => 'asset

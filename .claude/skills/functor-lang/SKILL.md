@@ -412,6 +412,21 @@ Asset.sound("boom.ogg")                                    //   per KIND (types 
                                                            //   tightens them to the Asset
                                                            //   kinds; the constructors are
                                                            //   fully typed now
+asset |> Asset.whilePending(placeholder)                   // placeholder rendered WHILE the
+                                                           //   asset streams in (instead of
+                                                           //   the empty/checkerboard
+                                                           //   fallback). Subject-last:
+                                                           //   pipes. The placeholder is
+                                                           //   just another SAME-KIND asset,
+                                                           //   so it chains (a low-poly
+                                                           //   proxy can carry its own).
+                                                           //   Models + textures only —
+                                                           //   sounds decode at play time
+                                                           //   (no pending state; teaching
+                                                           //   error). A FAILED asset still
+                                                           //   shows the fallback: failure
+                                                           //   is not pending, and
+                                                           //   Sub.assets still reports it
 Scene.group([scene, …])
 Color.rgb(r, g, b)                                         // Color VALUES only (the
                                                            //   Angle rule): every color
