@@ -1,4 +1,4 @@
-// wasm remote-asset e2e: prove that a URL asset (`Scene.model("http://…")`)
+// wasm remote-asset e2e: prove that a URL asset (`Scene.model(Asset.model("http://…"))`)
 // actually loads over the network in a real browser wasm runtime — the
 // browser-side twin of runtime/functor-runtime-desktop/tests/remote_assets.rs.
 //
@@ -155,7 +155,7 @@ function buildBundle(goodUrl, badUrl, softUrl) {
     JSON.stringify({ language: "functor-lang", entry: "game.fun" }, null, 2),
   );
   const soft = softUrl
-    ? `\n      Scene.model("${softUrl}") |> Scene.translate(Vec3.make(0.0 - 3.0, 0.0, 0.0)),`
+    ? `\n      Scene.model(Asset.model("${softUrl}")) |> Scene.translate(Vec3.make(0.0 - 3.0, 0.0, 0.0)),`
     : "";
   writeFileSync(
     join(dir, "game.fun"),
@@ -168,8 +168,8 @@ let draw = (model, tts) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 2.0, 0.0 - 6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([
-      Scene.model("${goodUrl}"),
-      Scene.model("${badUrl}") |> Scene.translate(Vec3.make(3.0, 0.0, 0.0)),${soft}
+      Scene.model(Asset.model("${goodUrl}")),
+      Scene.model(Asset.model("${badUrl}")) |> Scene.translate(Vec3.make(3.0, 0.0, 0.0)),${soft}
     ]))
 `,
   );

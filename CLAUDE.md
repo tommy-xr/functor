@@ -166,10 +166,8 @@ The wasm bundle is unaffected either way: `wasm-pack build` is release by defaul
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with
 the fetch/reimport hints), a URL verifies via the remote disk cache then a HEAD request
-(provably-404 = error; offline/unverifiable = warning, so offline builds stay usable). In
-projects with a generated `assets.fun`, bare-string asset args to consumers
-(`Scene.model("x.glb")`, `Effect.play`, `AudioSource.*`) get a deprecation warning pointing at
-the manifest. `build wasm`
+(provably-404 = error; offline/unverifiable = warning, so offline builds stay usable). Bare
+strings at asset consumers are check-time errors since the flag day (B.6). `build wasm`
 then also exports a **self-contained static web bundle** to `<project>/dist/web` — the rendered
 host page + the embedded web runtime + a copy of the project directory (hidden files and `dist/`
 excluded), with a warn-only lint for string-literal asset references that won't be in the bundle.
@@ -198,6 +196,12 @@ constants), so deleting or renaming an asset needs an explicit rerun:
 The generator core is shared Rust (`functor_runtime_common::manifest`, IO-free) so future
 tooling (the browser IDE's wasm build) emits byte-identical manifests; the CLI command owns
 scanning, model inspection, and file IO.
+
+**The flag day (B.6) has landed**: asset consumers (`Scene.model`, `Effect.play/playAt/
+playThen`, `AudioSource.ambient/at` sound args) take branded `Asset` values ONLY — the
+generated manifest's `Assets.*`, or `Asset.model/texture/sound(…)` at a data boundary. A bare
+path string is a check-time error and a runtime teaching error. (`Texture.file`, `Skybox.files`,
+`Anim.clip` names, and AudioSource KEYS are not asset coercion and keep their strings.)
 
 **Remote (CDN) assets** are declared with a **sidecar**: `<name>.asset.json` containing
 `{ "url": "https://…", "kind"?: "model"|"texture"|"sound" }` (`kind` only when the url's

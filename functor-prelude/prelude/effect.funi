@@ -18,13 +18,12 @@ let send : (float, string) => t
 let httpGet : (string, (Net.HttpResponse) => 'msg) => t
 let httpPost : (string, string, (Net.HttpResponse) => 'msg) => t
 // Fire-and-forget audio one-shots. `play` is non-spatial; `playAt` positioned.
-// The sound parameter accepts a path string OR an `Asset.Sound` during the
-// typed-asset migration (gradually typed — no union type); the flag day
-// tightens it, and the host teaches wrong-kind assets at runtime.
-let play : ('sound) => t
-let playAt : ('sound, Vec3.t) => t
+// Since the flag day (B.6) the sound is the branded `Asset.Sound`; bare
+// strings are check-time errors here and teaching errors at runtime.
+let play : (Asset.Sound) => t
+let playAt : (Asset.Sound, Vec3.t) => t
 // Play once and deliver `'msg` (a message VALUE, not a tagger) when it finishes.
-let playThen : ('sound, 'msg) => t
+let playThen : (Asset.Sound, 'msg) => t
 // Warm the asset cache ahead of `draw` referencing the asset (a model or
 // texture Asset VALUE — sounds decode at play time, nothing to warm; the
 // host teaches). Declarative loading stays the default; preload is the

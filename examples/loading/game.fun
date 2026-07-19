@@ -110,7 +110,7 @@ let shark =
 
 let models = () =>
   Scene.group([
-    Scene.model("https://assets.babylonjs.com/meshes/ExplodingBarrel.glb")
+    Scene.model(Asset.model("https://assets.babylonjs.com/meshes/ExplodingBarrel.glb"))
       |> Scene.scale(0.35)
       |> Scene.translate(Vec3.make(0.0, -1.2, 0.0)),
     Scene.model(shark)
@@ -119,7 +119,7 @@ let models = () =>
       |> Scene.translate(Vec3.make(-2.2, 0.7, 0.0)),
     // Deliberately mixed sizes (2KB box, 2.9MB barrel, 15MB shark): assets
     // settle in size order, so the staggered pop-in is visible.
-    Scene.model("https://assets.babylonjs.com/meshes/box.glb")
+    Scene.model(Asset.model("https://assets.babylonjs.com/meshes/box.glb"))
       |> Scene.scale(0.8)
       |> Scene.rotateY(Angle.degrees(30.0))
       |> Scene.translate(Vec3.make(2.4, 0.2, 0.0)),

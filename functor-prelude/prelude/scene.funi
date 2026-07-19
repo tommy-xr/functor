@@ -20,11 +20,11 @@ let cylinder : () => t
 let quad : () => t
 let plane : () => t
 
-// Assets and generated surfaces. During the typed-asset migration, `model`
-// accepts a path string OR an `Asset.Model` value (there is no union type, so
-// the parameter is gradually typed); the flag day tightens it to
-// `(Asset.Model) => t`, and the host teaches wrong-kind assets at runtime.
-let model : ('asset) => t
+// Assets and generated surfaces. Since the flag day (B.6), `model` takes the
+// branded `Asset.Model` — the generated manifest's constants, or
+// `Asset.model(…)` at a data boundary; a bare string is a check-time error
+// here and a teaching error at runtime.
+let model : (Asset.Model) => t
 let heightmap : (List<List<float>>) => t
 
 // Composition.
@@ -35,9 +35,10 @@ let group : (List<t>) => t
 let color : (Color.t, t) => t
 let lit : (Color.t, t) => t
 let emissive : (Color.t, t) => t
-// Texture parameters accept a `Texture.t` OR an `Asset.Texture` during the
-// typed-asset migration (gradually typed — no union type); the flag day
-// tightens them, and the host teaches bare strings / wrong kinds at runtime.
+// Texture parameters accept a `Texture.t` OR an `Asset.Texture` — two brands,
+// no union type, so they stay gradually typed (bare strings never coerced
+// here; the host teaches them and wrong kinds at runtime). Unifying the two
+// texture brands is a future design question (the Texture.raw era).
 let litTexture : ('texture, t) => t
 let emissiveTexture : ('texture, t) => t
 let litNormalMapped : (Color.t, 'texture, t) => t

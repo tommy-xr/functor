@@ -219,7 +219,7 @@ let fire = (model) =>
             vz: s.vel.z + Math.cos(s.heading) * bulletSpeed,
             ttl: bulletLife } in
   ({ model with bullets: [b, ..model.bullets], fireHeld: true },
-   Effect.play("laser.ogg"))
+   Effect.play(Assets.laser))
 
 // GLFW key repeats arrive as isDown = true, so firing latches on the
 // rising edge (fireHeld clears on release).
@@ -289,7 +289,7 @@ let tickPlaying = (model, dt, tts) =>
   let gained = struck |> List.fold((acc, a) => acc + pointsFor(a.size), 0.0) in
   let anyKill = (match struck with | [] => false | _ => true) in
   let killFx = (match anyKill with
-                | true => [Effect.play("explosion.ogg")]
+                | true => [Effect.play(Assets.explosion)]
                 | false => []) in
   let shield = Lib.floorAt(0.0, model.shield - dt) in
   let shipHit = Lib.and(shield == 0.0,
@@ -305,9 +305,9 @@ let tickPlaying = (model, dt, tts) =>
     (let lives = model.lives - 1.0 in
      match lives < 1.0 with
      | true => ({ base with lives: 0.0, phase: Lost },
-                fxOf(Lib.append(killFx, [Effect.play("ship-explosion.ogg")])))
+                fxOf(Lib.append(killFx, [Effect.play(Assets.ship_explosion)])))
      | false => ({ base with lives: lives, ship: newShip, shield: respawnShield },
-                 fxOf(Lib.append(killFx, [Effect.play("ship-explosion.ogg")]))))
+                 fxOf(Lib.append(killFx, [Effect.play(Assets.ship_explosion)]))))
   | false =>
     (match rocks with
      | [] =>
@@ -387,7 +387,7 @@ let shipBody = (thrusting) =>
     // The glb's craft_racer node carries a baked [2, 0, 1.5] placement
     // translation (kit-scene leftover) — counter it first or the body
     // renders displaced from the ship's true position.
-    Scene.model("ship.glb")
+    Scene.model(Assets.ship)
       |> Scene.translate(Vec3.make(0.0 - 2.0, 0.0, 0.0 - 1.5))
       |> Scene.rotateY(Angle.degrees(180.0))
       |> Scene.scale(1.5),
@@ -465,7 +465,7 @@ let soundScape = (model) =>
   | Playing =>
     (match model.held.thrust with
      | true => AudioScene.create([
-         AudioSource.ambient("thrust", "thrust-loop.ogg") |> AudioSource.gain(0.45)])
+         AudioSource.ambient("thrust", Assets.thrust_loop) |> AudioSource.gain(0.45)])
      | false => AudioScene.empty())
   | _ => AudioScene.empty()
 

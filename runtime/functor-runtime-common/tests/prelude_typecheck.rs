@@ -79,22 +79,36 @@ fn asset_constructors_are_typed() {
     );
 }
 
-/// During the typed-asset migration, asset-consuming functions accept BOTH
-/// the bare path string (deprecated at the flag day) and the branded Asset
-/// value — their asset parameter is gradually typed, so both forms check
-/// clean; the host enforces kinds at runtime.
+/// Since the flag day (B.6), asset consumers take the branded Asset kinds:
+/// Asset values check clean, and the retired bare-string coercion is a
+/// CHECK-TIME error — stronger than the pre-B.1 stringly-typed surface.
 #[test]
-fn asset_consumers_accept_both_forms() {
+fn asset_consumers_take_asset_values_only() {
     let diags = check(
-        "let byString = Scene.model(\"shark.glb\")\n\
-         let byAsset = Scene.model(Asset.model(\"shark.glb\"))\n\
+        "let byAsset = Scene.model(Asset.model(\"shark.glb\"))\n\
          let tex = Scene.plane() |> Scene.litTexture(Asset.texture(\"wood.png\"))\n\
          let texFile = Scene.plane() |> Scene.litTexture(Texture.file(\"wood.png\"))\n\
          let sfx = Effect.play(Asset.sound(\"boom.ogg\"))\n\
-         let sfxString = Effect.play(\"boom.ogg\")\n\
          let bed = AudioSource.ambient(\"bed\", Asset.sound(\"wind.ogg\"))",
     );
-    assert!(diags.is_empty(), "both forms should check clean: {diags:?}");
+    assert!(diags.is_empty(), "asset forms should check clean: {diags:?}");
+
+    // The retired coercions fail the CHECK, naming the Asset kind.
+    let diags = check("let s = Scene.model(\"shark.glb\")");
+    assert!(
+        diags.iter().any(|m| m.contains("Model")),
+        "bare model path must be a check error: {diags:?}"
+    );
+    let diags = check("let s = Effect.play(\"boom.ogg\")");
+    assert!(
+        diags.iter().any(|m| m.contains("Sound")),
+        "bare sound path must be a check error: {diags:?}"
+    );
+    let diags = check("let s = AudioSource.ambient(\"bed\", \"wind.ogg\")");
+    assert!(
+        diags.iter().any(|m| m.contains("Sound")),
+        "bare soundscape path must be a check error: {diags:?}"
+    );
 }
 
 /// `Asset.whilePending` is gradually typed but ties its result to the asset

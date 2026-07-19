@@ -72,7 +72,7 @@ let tick = (model, dt, tts) =>
 // Xbot stands ~1.8 units tall, Y-up, at authored scale; glTF forward is +Z,
 // so turn each figure to face the camera.
 let figure = (anim: Anim.t, x: float): Scene.t =>
-  Scene.model("Xbot.glb")
+  Scene.model(Assets.xbot)
     |> Scene.animate(anim)
     |> Scene.rotateY(Angle.degrees(180.0))
     |> Scene.translate(Vec3.make(x, 0.0, 0.0))

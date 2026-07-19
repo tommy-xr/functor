@@ -15,16 +15,11 @@
 //! Dynamic (non-literal) constructor args can't be checked — that's the
 //! catalog pattern's data boundary, deliberately unlinted.
 //!
-//! Separately, bare-string asset args to the CONSUMERS (`Scene.model("x.glb")`,
-//! `Effect.play`, `AudioSource.*` — the pre-manifest form the flag day will
-//! retire) get a deprecation **warning** pointing at the manifest — but only
-//! in projects that HAVE a generated `assets.fun`: a project that hasn't
-//! opted into the typed world isn't nagged on every build.
-//!
 //! The walk is over the lowered IR (`Call { callee: External(path), args }`),
-//! not raw tokens, so `Asset.model("x.glb")` (sanctioned constructor) and
-//! `Scene.model("x.glb")` (deprecated coercion) are distinguished precisely,
-//! and every finding carries the call site's span.
+//! not raw tokens, so every finding carries the call site's span. (The
+//! pre-flag-day deprecation warnings for bare-string consumer args lived
+//! here too; since B.6 those are check-time type errors and runtime teaching
+//! errors, so the lint retired.)
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -67,7 +62,6 @@ pub enum UrlVerdict {
 pub fn verify_assets(
     module: &Module,
     project_dir: &Path,
-    has_generated_manifest: bool,
     probe_url: &mut dyn FnMut(&str) -> UrlVerdict,
 ) -> AssetFindings {
     let mut findings = AssetFindings::default();
@@ -148,28 +142,6 @@ renamed or removed, rerun `functor import`"
                     });
                 }
                 return;
-            }
-            // The deprecated coercions: a bare path string where an Asset
-            // value belongs. Only nag projects that have a manifest.
-            if !has_generated_manifest {
-                return;
-            }
-            let deprecated = match path.as_str() {
-                "Scene.model" | "Effect.play" | "Effect.playAt" | "Effect.playThen" => {
-                    string_arg(args, 0)
-                }
-                "AudioSource.ambient" | "AudioSource.at" => string_arg(args, 1),
-                _ => None,
-            };
-            if let Some((s, span)) = deprecated {
-                findings.warnings.push(Finding {
-                    span,
-                    message: format!(
-                        "bare asset path \"{s}\" — reference the generated manifest \
-(Assets.*) or construct an Asset.* value; the string form will become an error at the \
-flag day"
-                    ),
-                });
             }
         });
     }
@@ -311,10 +283,9 @@ mod tests {
     fn run(
         src: &str,
         dir: &Path,
-        has_manifest: bool,
         probe: &mut dyn FnMut(&str) -> UrlVerdict,
     ) -> AssetFindings {
-        verify_assets(&project(src).module, dir, has_manifest, probe)
+        verify_assets(&project(src).module, dir, probe)
     }
 
     fn no_probe(url: &str) -> UrlVerdict {
@@ -331,7 +302,6 @@ mod tests {
         let f = run(
             "let a = Asset.model(\"here.glb\")\nlet b = Asset.texture(\"gone.png\")",
             &dir,
-            false,
             &mut no_probe,
         );
         assert_eq!(f.errors.len(), 1, "only the missing file errors");
@@ -351,7 +321,6 @@ mod tests {
              let c = Asset.sound(\"https://cdn/gone.ogg\")\n\
              let d = Asset.texture(\"https://cdn/dark.png\")",
             &dir,
-            false,
             &mut |url| {
                 probes.push(url.to_string());
                 match url {
@@ -379,7 +348,6 @@ mod tests {
              let b = Asset.model(\"https://cdn/b.glb\")\n\
              let c = Asset.model(\"https://cdn/c.glb\")",
             &std::env::temp_dir(),
-            false,
             &mut |_| {
                 probes += 1;
                 UrlVerdict::Offline("connection refused".to_string())
@@ -395,31 +363,10 @@ mod tests {
         let f = run(
             "let make = (p) => Asset.model(p)\nlet a = make(\"anything.glb\")",
             &std::env::temp_dir(),
-            false,
             &mut no_probe,
         );
         assert!(f.errors.is_empty());
         assert!(f.warnings.is_empty());
     }
 
-    #[test]
-    fn bare_string_consumers_warn_only_with_a_manifest() {
-        let src = "let s = Scene.model(\"shark.glb\")\n\
-                   let e = Effect.play(\"boom.ogg\")\n\
-                   let v = AudioSource.ambient(\"bed\", \"wind.ogg\")\n\
-                   let ok = Scene.model(Asset.model(\"https://cdn/x.glb\"))";
-        let mut ok_probe = |_: &str| UrlVerdict::Ok;
-        let without = run(src, &std::env::temp_dir(), false, &mut ok_probe);
-        assert!(
-            without.warnings.is_empty(),
-            "no manifest -> no nagging: {:?}",
-            without.warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
-        );
-        let with = run(src, &std::env::temp_dir(), true, &mut ok_probe);
-        assert_eq!(with.warnings.len(), 3, "one per bare-string consumer arg");
-        assert!(with.warnings.iter().all(|w| w.message.contains("flag day")));
-        // The AudioSource KEY ("bed") is identity, not an asset — the warning
-        // must cite the SOUND arg.
-        assert!(with.warnings[2].message.contains("wind.ogg"));
-    }
 }
