@@ -45,13 +45,13 @@ let glyphCubes = (gx, gz, s, rows) =>
 
 // A word centered on (cx, cz): glyphs are 3 cells + 1 gap wide (4*s pitch).
 let word = (s, cx, cz, glyphs) =>
-  let count = Lib.length(glyphs) in
+  let count = List.length(glyphs) in
   let width = count * 4.0 * s - s in
   // startX/row origin are CELL CENTERS, hence the half-cell offsets.
   let startX = cx - width * 0.5 + s * 0.5 in
   let folded = glyphs |> List.fold((acc, g) =>
     let (gx, out) = acc in
-    (gx + 4.0 * s, Lib.append(glyphCubes(gx, cz - 2.0 * s, s, g), out)),
+    (gx + 4.0 * s, glyphCubes(gx, cz - 2.0 * s, s, g) |> List.append(out)),
     (startX, [])) in
   let (ignored, cubes) = folded in
   Scene.group(cubes)
