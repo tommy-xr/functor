@@ -542,8 +542,12 @@ pub fn android_main(app: AndroidApp) {
         // GL/XR to swap programs, so a push lands even while the headset
         // dozes (session IDLE) — it shows the moment the session resumes.
         if let Some(rx) = &reload_rx {
-            while let Ok((source, resp)) = rx.try_recv() {
-                let _ = resp.send(game.reload_source(&source));
+            while let Ok((body, resp)) = rx.try_recv() {
+                let result = match body {
+                    reload_server::ReloadBody::Source(source) => game.reload_source(&source),
+                    reload_server::ReloadBody::Project(files) => game.reload_project(&files),
+                };
+                let _ = resp.send(result);
             }
         }
 
