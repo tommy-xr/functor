@@ -35,7 +35,7 @@ follows.
 ## 1. Prerequisites
 
 - Built CLI: if `target/debug/functor` / `functor-runner` are missing, run
-  `npm run build:cli` first (slow; only needed once).
+  `npm run build:cli:debug` first (only needed once; the fast debug build is fine for captures).
 - `python3` with PIL (`Pillow`) for GIF assembly + verification.
 - Run multi-step shell blocks under **`bash`** (heredoc), not the default zsh —
   zsh misparses hex gist IDs like `832ee3…` as math expressions and aborts.

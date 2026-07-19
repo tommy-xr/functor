@@ -9,7 +9,7 @@ import { defineConfig, devices } from "@playwright/test";
 // The dev server serves one sample, chosen by FUNCTOR_SAMPLE (default
 // "lighting"); the spec runs that sample's wasm-tagged scenarios.
 //
-// Prerequisite: `npm run build:cli` (rebuilds the embedded web runtime + CLI).
+// Prerequisite: `npm run build:cli:debug` (rebuilds the embedded web runtime + CLI).
 // Run: `npm run test:wasm-golden`   Update: `npm run test:wasm-golden:update`.
 const SAMPLE = process.env.FUNCTOR_SAMPLE || "lighting";
 
@@ -46,7 +46,7 @@ export default defineConfig({
   ],
   webServer: {
     // Builds the selected sample's game wasm and serves it at :8080. Needs the
-    // CLI built with the current web runtime bundle (`npm run build:cli`).
+    // CLI built with the current web runtime bundle (`npm run build:cli:debug`).
     // `--no-open` keeps the headless run from popping a stray system browser tab
     // (Playwright drives its own browser).
     command: `./target/debug/functor -d examples/${SAMPLE} run wasm --no-open`,

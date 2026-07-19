@@ -53,7 +53,7 @@
 // Run manually (needs the built CLI + Playwright's Chromium — `npx playwright
 // install chromium`, the same one wasm-smoke uses):
 //
-//   npm run build:cli                       # once, so target/debug/functor embeds the runtime
+//   npm run build:cli:debug                 # once, so target/debug/functor embeds the runtime
 //   node e2e/remote-assets.mjs              # the hermetic case
 //   FUNCTOR_REMOTE_E2E_NETWORK=1 node e2e/remote-assets.mjs   # + the live-CDN case
 import { spawnSync } from "node:child_process";

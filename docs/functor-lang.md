@@ -547,7 +547,7 @@ Starts once A2 + B3 exist.
         errors** (the strict gate; the runner keeps them warnings),
         `run native` spawns the interpreter (proven byte-identical to a
         direct runner invocation), `develop` = `run` (hot reload is built
-        in — no watchexec), wasm errors cleanly until C5.
+        in — no external file watcher), wasm errors cleanly until C5.
         *Verify (done):* SDK e2e asserts two key events reach the model
         with canonical names (14/14 suite); CLI build/run/wasm probes.
       - [x] **C4b-1. Mouse + the lit prelude + the primitives port.**
