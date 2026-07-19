@@ -21,7 +21,6 @@ export const EXAMPLES = [
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
   { id: "toss", label: "Bouncing balls", source: "examples/toss/game.fun" },
-  { id: "trajectory", label: "Trajectory", source: "examples/trajectory/game.fun" },
   { id: "mario", label: "Platformer", source: "examples/mario/game.fun" },
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm
   // runtime fetch()es those cross-origin (CORS-permitting), so unlike the
