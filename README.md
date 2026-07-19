@@ -27,7 +27,7 @@ No install needed:
 
 - **[functor.games](https://functor.games)** — the landing page's hero is a live
   Functor Lang scene you can edit in place (the GIF above).
-- **[functor.games/sandbox.html](https://functor.games/sandbox.html)** — a full
+- **[functor.games/sandbox](https://functor.games/sandbox)** — a full
   in-browser sandbox: edit a `.fun`, watch it hot-reload, and scrub the timeline.
 
 (The redesigned pages ship with this branch.)
