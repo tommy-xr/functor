@@ -128,6 +128,15 @@ jobs:
           pattern: lsp-*
           path: lsp
 
+      # The platform archives — each VSIX also bundles its platform's functor
+      # CLI, so the extension is an all-in-one install (archive names are
+      # unique, so a flat merge is safe).
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: functor-*
+          path: cli
+          merge-multiple: true
+
       # Root deps too: the extension's vscode:prepublish hook runs the repo's
       # icon generator (scripts/generate-icons.mjs).
       - name: Install npm dependencies
@@ -147,14 +156,21 @@ jobs:
             x86_64-pc-windows-msvc:win32-x64; do
             target="${pair%%:*}"
             vt="${pair##*:}"
-            rm -rf server && mkdir server
+            rm -rf server bin && mkdir server bin
             if [[ "$vt" == win32-x64 ]]; then
               cp "$GITHUB_WORKSPACE/lsp/lsp-$target/functor-lang-lsp.exe" server/
+              # The zip carries the binary at the archive root. unzip, NOT
+              # tar: ubuntu's GNU tar cannot read zip (bsdtar is a mac thing).
+              unzip -o -j "$GITHUB_WORKSPACE/cli/functor-$VERSION-$target.zip" functor.exe -d bin
             else
               # download-artifact does not preserve the exec bit; vsce records
               # file modes into the VSIX, so restore it before packaging.
               cp "$GITHUB_WORKSPACE/lsp/lsp-$target/functor-lang-lsp" server/
               chmod +x server/functor-lang-lsp
+              # The tarball nests functor-<version>-<target>/functor.
+              tar -xzf "$GITHUB_WORKSPACE/cli/functor-$VERSION-$target.tar.gz" -C bin \
+                --strip-components=1 "functor-$VERSION-$target/functor"
+              chmod +x bin/functor
             fi
             npx --yes @vscode/vsce@3.9.2 package --target "$vt" --pre-release \
               --out "out/functor-lang-$VERSION-$vt.vsix"

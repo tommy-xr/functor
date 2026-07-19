@@ -48,8 +48,8 @@
       "properties": {
         "functor.functorPath": {
           "type": "string",
-          "default": "functor",
-          "description": "Path to the `functor` CLI binary the live preview uses to serve the game. Resolved from PATH by default; when nothing runnable is found, the extension offers to download the newest release for this platform."
+          "default": "",
+          "description": "Path to the `functor` CLI binary the live preview uses to serve the game. Empty (the default) resolves automatically: the binary bundled with the extension, else PATH, else a previously downloaded copy — offering a download of the newest release when none of those run."
         },
         "functor.serverPath": {
           "type": "string",
