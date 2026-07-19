@@ -7011,7 +7011,7 @@ the game dir"
     #[test]
     fn send_msg_payload_roundtrips_and_decodes_as_net_data() {
         let payload = EffectValue::Variant(
-            "Tproto.Ping".into(),
+            "Protocol.Ping".into(),
             vec![EffectValue::Record(vec![
                 ("n".into(), EffectValue::Number(2.0)),
                 (

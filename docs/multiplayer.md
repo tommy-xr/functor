@@ -123,14 +123,35 @@ introspect like every other effect. The netsim fixtures
 escalating typed ping/pong with no string codec anywhere.
 
 Two sharp edges, by design: (1) constructors match by their **canonical tag**,
-which includes the module prefix — `Tproto.Ping` sent from one end only matches
-`Tproto.Ping` patterns on the other, so declare the ADT in ONE shared module
+which includes the module prefix — `Protocol.Ping` sent from one end only matches
+`Protocol.Ping` patterns on the other, so declare the ADT in ONE shared module
 loaded identically by both roles (an entry-declared copy would tag bare `Ping`
 and fall through the peer's catch-all silently). (2) Non-finite numbers
 (NaN/Infinity) are refused at the `sendMsg` call site — JSON cannot carry them.
 Note: adding `Data` to `NetEvent` was a check-time **breaking change** — a
 pre-existing game matching `Net.NetEvent` without a catch-all needs a
 `Net.Data` arm to typecheck again.
+
+**Codec evolution (intent, not built).** The wire codec is a two-function seam
+(`encode_typed_msg`/`decode_typed_msg`) over the serde-derived `EffectValue`,
+and the `\u{1}fun:` prefix is a frame DISCRIMINATOR, not part of the payload —
+a different tag can select a different codec per frame, so JSON and a binary
+format (CBOR/postcard/…) can coexist on one connection and be adopted
+incrementally. The plan when bandwidth starts to matter (the Phase 4 UDP path
+and the netcode epic's snapshot deltas, not the WS lobby flows): negotiate the
+codec **per connection** at the handshake — both-Functor peers may agree on a
+compact binary format, anything else falls back to JSON (which also preserves
+the non-Functor interop story). Games never see the codec: same values in,
+same values out, and the effect log stores the structured `EffectValue`, not
+wire bytes, so replay/introspection are format-independent. Deliberately NOT
+planned: user-authored encoder/decoder surfaces (Elm-style) — `sendMsg` exists
+to kill hand-rolled codecs; full wire control stays with the `Effect.send`
+text escape hatch (and a future `Effect.sendBytes`). Two prerequisites for a
+non-self-describing binary format: the protocol-hash handshake (postcard/
+bincode decode drift into wrong VALUES rather than failing loud, unlike
+JSON/CBOR), and a bytes-inbound path through the shells (WS binary frames;
+`NetEvent` text is `String` today). Cheaper first lever for WS: compression
+(permessage-deflate), which changes no formats at all.
 
 ## Test harness / SDK
 

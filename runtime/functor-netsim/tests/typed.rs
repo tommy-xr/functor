@@ -1,6 +1,6 @@
 //! Netsim test of TYPED messages (`Effect.sendMsg` → `Net.Data`): a ping
 //! server and a client exchange a shared-module ADT (`tests/fixtures/typed/
-//! tproto.fun`) with no string codec — the value is framed by the host,
+//! protocol.fun`) with no string codec — the value is framed by the host,
 //! decoded by the host, and matched by ctor on the far side. The escalating
 //! ping/pong counter proves repeated typed round-trips in both directions,
 //! deterministically, with no GL and no sockets — including over a laggy
@@ -46,8 +46,8 @@ fn typed_messages_roundtrip_and_escalate() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_fixture(&mut sim, "tserver.fun");
-    let client = add_fixture(&mut sim, "tclient.fun");
+    let server = add_fixture(&mut sim, "server.fun");
+    let client = add_fixture(&mut sim, "client.fun");
 
     sim.step_n(30);
 
@@ -82,8 +82,8 @@ fn typed_messages_survive_a_laggy_link() {
     let _ = functor_runtime_common::net::drain_conn_commands();
 
     let mut sim = NetSim::new(1);
-    let server = add_fixture(&mut sim, "tserver.fun");
-    let client = add_fixture(&mut sim, "tclient.fun");
+    let server = add_fixture(&mut sim, "server.fun");
+    let client = add_fixture(&mut sim, "client.fun");
     sim.set_link(
         client,
         server,

@@ -1,12 +1,12 @@
-// tserver.fun — typed-message ping server: every `Tproto.Ping(n)` that
-// arrives as a decoded `Net.Data` value is answered with `Tproto.Pong(n+1)`
-// via `Effect.sendMsg`. No string wire anywhere — the shared Tproto ADT is
+// server.fun — typed-message ping server: every `Protocol.Ping(n)` that
+// arrives as a decoded `Net.Data` value is answered with `Protocol.Pong(n+1)`
+// via `Effect.sendMsg`. No string wire anywhere — the shared Protocol ADT is
 // the protocol.
 
 type Model = { pings: float }
 
 type Msg =
-  | Incoming(cid: float, wire: Tproto.Wire)
+  | Incoming(cid: float, wire: Protocol.Wire)
   | Ignore
 
 let toMsg = (ev: Net.NetEvent): Msg =>
@@ -20,8 +20,8 @@ let update = (m: Model, msg: Msg) =>
   match msg with
   | Incoming(cid, w) =>
       (match w with
-       | Tproto.Ping(n) =>
-           ({ pings: m.pings + 1.0 }, Effect.sendMsg(cid, Tproto.Pong(n + 1.0)))
+       | Protocol.Ping(n) =>
+           ({ pings: m.pings + 1.0 }, Effect.sendMsg(cid, Protocol.Pong(n + 1.0)))
        | _ => m)
   | Ignore => m
 

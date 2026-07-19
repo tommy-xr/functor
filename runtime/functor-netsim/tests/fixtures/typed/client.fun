@@ -1,6 +1,6 @@
-// tclient.fun — typed-message ping client: on connect it opens with
-// `Tproto.Ping(1)`; every `Tproto.Pong(n)` that arrives as a decoded
-// `Net.Data` value is recorded and answered with `Tproto.Ping(n+1)`, so the
+// client.fun — typed-message ping client: on connect it opens with
+// `Protocol.Ping(1)`; every `Protocol.Pong(n)` that arrives as a decoded
+// `Net.Data` value is recorded and answered with `Protocol.Ping(n+1)`, so the
 // exchange escalates — `lastPong`/`rounds` growing proves repeated typed
 // round-trips in BOTH directions.
 
@@ -8,7 +8,7 @@ type Model = { lastPong: float, rounds: float }
 
 type Msg =
   | Joined(id: float)
-  | Incoming(id: float, wire: Tproto.Wire)
+  | Incoming(id: float, wire: Protocol.Wire)
   | Ignore
 
 let toMsg = (ev: Net.NetEvent): Msg =>
@@ -21,12 +21,12 @@ let init = { lastPong: 0.0, rounds: 0.0 }
 
 let update = (m: Model, msg: Msg) =>
   match msg with
-  | Joined(id) => (m, Effect.sendMsg(id, Tproto.Ping(1.0)))
+  | Joined(id) => (m, Effect.sendMsg(id, Protocol.Ping(1.0)))
   | Incoming(id, w) =>
       (match w with
-       | Tproto.Pong(n) =>
+       | Protocol.Pong(n) =>
            ({ lastPong: n, rounds: m.rounds + 1.0 },
-            Effect.sendMsg(id, Tproto.Ping(n + 1.0)))
+            Effect.sendMsg(id, Protocol.Ping(n + 1.0)))
        | _ => m)
   | Ignore => m
 

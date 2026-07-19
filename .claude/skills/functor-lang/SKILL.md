@@ -217,7 +217,7 @@ let grab = (s) =>
   deliberately UNDECLARED (the gradual `Unknown` seam), so the bound value
   matches directly against whatever ADT the two ends share — declare the
   protocol ADT once in a shared sibling module and match its ctors
-  (`match w with | Tproto.Ping(n) => …`). A corrupt/version-skewed typed
+  (`match w with | Protocol.Ping(n) => …`). A corrupt/version-skewed typed
   frame arrives as `Net.Error`, never as garbled `Message` text. Ctors
   match by CANONICAL tag (module prefix included) — the same ADT declared
   separately on each end, or entry-declared on one side, tags differently
