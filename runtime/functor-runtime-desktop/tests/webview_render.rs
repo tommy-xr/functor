@@ -109,3 +109,66 @@ fn css_animation_ticks_under_the_clock() {
     assert_eq!(px(&at_half, w, 50, 50), [0, 0, 0, 0]);
     assert_eq!(px(&at_half, w, 150, 50), [255, 0, 0, 255]);
 }
+
+#[test]
+fn fresh_doc_anchored_at_zero_renders_the_clock_pose() {
+    // The worker's reparse path resolves a fresh document at 0.0 BEFORE the
+    // current clock (webview_overlay::run_cycle): blitz anchors an animation
+    // at the first resolve that sees it, so without the zero anchor a doc
+    // (re)parsed at clock T would render the from-pose (elapsed 0) — exactly
+    // what `--fixed-time T` captures hit, and why a model-driven re-render
+    // used to restart running @keyframes. This pins the anchoring semantics
+    // the fix relies on across blitz upgrades.
+    use anyrender::ImageRenderer;
+    use anyrender_vello_cpu::VelloCpuImageRenderer;
+    use blitz_dom::DocumentConfig;
+    use blitz_html::HtmlDocument;
+    use blitz_traits::shell::{ColorScheme, Viewport};
+
+    const ANIM_HTML: &str = r#"
+<html><head><style>
+  html, body { margin: 0; background: transparent; }
+  @keyframes slide { from { margin-left: 0px; } to { margin-left: 200px; } }
+  .box { width: 100px; height: 100px; background: rgb(255, 0, 0);
+         animation: slide 1s linear infinite; }
+</style></head>
+<body><div class="box"></div></body></html>
+"#;
+
+    let (w, h) = (400, 200);
+    let fresh_doc = || {
+        HtmlDocument::from_html(
+            ANIM_HTML,
+            DocumentConfig {
+                viewport: Some(Viewport::new(w, h, 1.0, ColorScheme::Dark)),
+                ..Default::default()
+            },
+        )
+        .into_inner()
+    };
+    let paint = |doc: &mut blitz_dom::BaseDocument| {
+        let mut renderer = VelloCpuImageRenderer::new(w, h);
+        let mut buf = Vec::new();
+        renderer.render_to_vec(
+            |scene| blitz_paint::paint_scene(scene, doc, 1.0, w, h, 0, 0),
+            &mut buf,
+        );
+        buf
+    };
+
+    // First resolve AT the clock (the old behavior): anchored at 0.5, so the
+    // pose is the from-pose — the box sits at the left edge.
+    let mut unanchored = fresh_doc();
+    unanchored.resolve(0.5);
+    let at_anchor = paint(&mut unanchored);
+    assert_eq!(px(&at_anchor, w, 50, 50), [255, 0, 0, 255]);
+
+    // Zero-anchored then resolved at the same clock (the worker's sequence):
+    // the pose is 0.5s into the animation — the box slid 100px right.
+    let mut anchored = fresh_doc();
+    anchored.resolve(0.0);
+    anchored.resolve(0.5);
+    let at_half = paint(&mut anchored);
+    assert_eq!(px(&at_half, w, 50, 50), [0, 0, 0, 0]);
+    assert_eq!(px(&at_half, w, 150, 50), [255, 0, 0, 255]);
+}
