@@ -126,8 +126,7 @@ language, prelude, and semantics are documented in the **`functor-lang` skill** 
 ## Commands
 
 **Prerequisites:** Rust stable + `wasm32-unknown-unknown` target, Node 22 / npm 10, and
-`wasm-pack`. **No .NET / Fable** — the toolchain is Rust + Node only. (No external file
-watcher either; Functor Lang hot-reload is built into the runtime, so `develop` does not need one.)
+`wasm-pack`.
 
 **Build the CLI.** Order matters — the CLI embeds the web runtime bundle at compile time via
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:

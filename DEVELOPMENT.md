@@ -13,10 +13,6 @@ Install the following (the versions in parentheses are known-good):
 - [Node.js + npm](https://nodejs.org/) (`node 22`, `npm 10`)
 - [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) (`0.12+`) — `npm install -g wasm-pack`
 
-Functor Lang hot-reload is built into the runtime, so `functor develop` needs no
-external file watcher. There is also **no .NET / Fable dependency**: the toolchain
-is Rust + Node only.
-
 On Linux you also need the native GL/X11 dev packages (see
 `.github/workflows/build-native.yml` for the exact `apt` list).
 
