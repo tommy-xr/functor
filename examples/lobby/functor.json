@@ -1,0 +1,8 @@
+{
+  "language": "functor-lang",
+  "entries": {
+    "client": "client.fun",
+    "server": "gameserver.fun",
+    "master": "master.fun"
+  }
+}

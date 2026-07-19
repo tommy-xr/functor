@@ -70,6 +70,7 @@ async function waitPortFree(timeoutMs) {
 // lifecycle by the producer tests + native debug-server verification.
 const EXCLUDE = new Set([
   "loading",
+  "lobby",
   "mp",
   "wsdemo",
   "wsserverdemo",
