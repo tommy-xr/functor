@@ -28,7 +28,7 @@ let clientStarted;
 // last-used port is persisted across sessions in globalState.
 let inspectorState;
 let inspectorStatus;
-const INSPECTOR_PORT_KEY = "functor-lang.inspector.port";
+const INSPECTOR_PORT_KEY = "functor.inspector.port";
 // The open preview panel, if any. A singleton: the dev server owns a fixed
 // port, so a second panel would race the first for it — and closing either
 // panel would kill the server out from under the other. Re-running the
@@ -45,6 +45,18 @@ let previewProjectDir;
 // The extension's global-storage dir (set in activate) — where a
 // downloaded-on-demand functor CLI is installed (see resolveFunctorCli).
 let globalStorageDir;
+// The "$(zap) functor" status bar item; its tooltip lists the extension,
+// language server, and functor CLI versions as they become known.
+let versionStatus;
+const versionInfo = { extension: "", server: "starting…", cli: "checking…" };
+function renderVersionStatus() {
+  if (!versionStatus) return;
+  const md = new vscode.MarkdownString();
+  md.appendMarkdown(`**functor** extension v${versionInfo.extension}\n\n`);
+  md.appendMarkdown(`- language server: ${versionInfo.server}\n`);
+  md.appendMarkdown(`- functor CLI: ${versionInfo.cli}\n`);
+  versionStatus.tooltip = md;
+}
 
 // Where `functor run wasm` serves the game — fixed by the CLI's dev server.
 const PREVIEW_URL = "http://127.0.0.1:8080";
@@ -70,10 +82,18 @@ function activate(context) {
   channel = vscode.window.createOutputChannel("Functor Lang");
   context.subscriptions.push(channel);
   elog("extension activated");
+  versionStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  versionStatus.text = "$(zap) functor";
+  versionInfo.extension = context.extension.packageJSON.version;
+  renderVersionStatus();
+  versionStatus.show();
+  context.subscriptions.push(versionStatus);
+  // Fills in the CLI line of the tooltip in the background.
+  probeCliVersion();
   // Setting > bundled platform binary > PATH; stdio is the
   // vscode-languageclient default.
   const serverCommand = resolveServerCommand(
-    vscode.workspace.getConfiguration("functor-lang").get("serverPath"),
+    vscode.workspace.getConfiguration("functor").get("serverPath"),
     context.extensionPath,
     process.platform,
     fs.existsSync
@@ -119,6 +139,11 @@ function activate(context) {
   clientStarted = client.start().then(
     () => {
       elog("language server started (functor-lang-lsp)");
+      const si = client.initializeResult && client.initializeResult.serverInfo;
+      versionInfo.server = si
+        ? `${si.name}${si.version ? ` v${si.version}` : ""}`
+        : "running (no serverInfo)";
+      renderVersionStatus();
       client.onNotification(inspector.COVERAGE, (params) => {
         const grouped = inspector.groupCoverage(params);
         if (!grouped) return;
@@ -128,11 +153,15 @@ function activate(context) {
         vscode.window.visibleTextEditors.forEach(paintCoverage);
       });
     },
-    (e) => elog(`language server FAILED to start: ${e && e.message ? e.message : e}`)
+    (e) => {
+      elog(`language server FAILED to start: ${e && e.message ? e.message : e}`);
+      versionInfo.server = "failed to start (see the Functor Lang output)";
+      renderVersionStatus();
+    }
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("functor-lang.openLivePreview", openLivePreview)
+    vscode.commands.registerCommand("functor.openLivePreview", openLivePreview)
   );
 
   // --- Test-only inspector-trace inject seam -------------------------------
@@ -148,7 +177,7 @@ function activate(context) {
     // `when: functorLangTestHooks` menu entry in package.json).
     vscode.commands.executeCommand("setContext", "functorLangTestHooks", true);
     context.subscriptions.push(
-      vscode.commands.registerCommand("functor-lang.inspector._injectTrace", async () => {
+      vscode.commands.registerCommand("functor.inspector._injectTrace", async () => {
         const file = process.env.FUNCTOR_INSPECTOR_TEST_TRACE;
         if (!file || !client) return;
         const doc = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -258,7 +287,21 @@ function waitForServer(timeoutMs) {
   });
 }
 
-// Resolve the `functor` CLI the preview spawns: the functor-lang.functorPath
+// Fill in the tooltip's CLI line: the configured/PATH binary, else a
+// previously downloaded copy. Runs in the background at activation.
+async function probeCliVersion() {
+  const configured =
+    vscode.workspace.getConfiguration("functor").get("functorPath") || "functor";
+  versionInfo.cli =
+    (await cliDownload.commandVersion(configured)) ||
+    (await cliDownload.commandVersion(
+      cliDownload.downloadedCliPath(globalStorageDir, process.platform)
+    )) ||
+    "not found — the live preview offers a download";
+  renderVersionStatus();
+}
+
+// Resolve the `functor` CLI the preview spawns: the functor.functorPath
 // setting (default: `functor` from PATH) → a previously downloaded copy in
 // global storage → offer to download the newest release's platform archive.
 // Returns the command to spawn, or null (unsupported platform, declined, or
@@ -279,7 +322,7 @@ function resolveFunctorCli() {
 
 async function resolveFunctorCliUncached() {
   const configured =
-    vscode.workspace.getConfiguration("functor-lang").get("functorPath") || "functor";
+    vscode.workspace.getConfiguration("functor").get("functorPath") || "functor";
   if (await cliDownload.commandWorks(configured)) return configured;
 
   const downloaded = cliDownload.downloadedCliPath(globalStorageDir, process.platform);
@@ -295,20 +338,20 @@ async function resolveFunctorCliUncached() {
     asset = cliDownload.pickAsset(releases, process.platform, process.arch);
   } catch (e) {
     vscode.window.showErrorMessage(
-      `Functor Lang: "${configured}" was not found, and querying GitHub releases failed ` +
-        `(${e.message}) — install the functor CLI and/or set functor-lang.functorPath.`
+      `Functor: "${configured}" was not found, and querying GitHub releases failed ` +
+        `(${e.message}) — install the functor CLI and/or set functor.functorPath.`
     );
     return null;
   }
   if (!asset) {
     vscode.window.showErrorMessage(
-      `Functor Lang: "${configured}" was not found and no prebuilt functor CLI exists for ` +
-        `${process.platform}-${process.arch} — build it from source and set functor-lang.functorPath.`
+      `Functor: "${configured}" was not found and no prebuilt functor CLI exists for ` +
+        `${process.platform}-${process.arch} — build it from source and set functor.functorPath.`
     );
     return null;
   }
   const choice = await vscode.window.showInformationMessage(
-    `Functor Lang: the functor CLI ("${configured}") was not found. ` +
+    `Functor: the functor CLI ("${configured}") was not found. ` +
       `Download functor v${asset.version} for this platform from GitHub releases (~17 MB)?`,
     "Download",
     "Cancel"
@@ -343,21 +386,24 @@ async function resolveFunctorCliUncached() {
         return bin;
       }
     );
-    if (!(await cliDownload.commandWorks(installed))) {
+    const installedVersion = await cliDownload.commandVersion(installed);
+    if (!installedVersion) {
       throw new Error("the downloaded binary did not run");
     }
+    versionInfo.cli = installedVersion;
+    renderVersionStatus();
     elog(`preview: downloaded functor v${asset.version} to ${installed}`);
     return installed;
   } catch (e) {
     vscode.window.showErrorMessage(
-      `Functor Lang: downloading the functor CLI failed (${e.message}) — install it ` +
-        `manually and/or set functor-lang.functorPath.`
+      `Functor: downloading the functor CLI failed (${e.message}) — install it ` +
+        `manually and/or set functor.functorPath.`
     );
     return null;
   }
 }
 
-// "Functor Lang: Open Live Preview" — serve the active file's project with
+// "Functor: Open Live Preview" — serve the active file's project with
 // `functor run wasm` and host the running game in a webview panel that
 // hot-reloads from the LIVE buffer (unsaved included), model preserved.
 async function openLivePreview() {
@@ -393,13 +439,13 @@ async function openLivePreview() {
 
   if (!editor || !editor.document.fileName.endsWith(".fun")) {
     vscode.window.showErrorMessage(
-      "Functor Lang: open the project's .fun file first — the preview serves the project it belongs to."
+      "Functor: open the project's .fun file first — the preview serves the project it belongs to."
     );
     return;
   }
   if (!project) {
     vscode.window.showErrorMessage(
-      `Functor Lang: no functor.json with "language": "functor-lang" found in any directory above ` +
+      `Functor: no functor.json with "language": "functor-lang" found in any directory above ` +
         `${editor.document.fileName} — create one ({"language": "functor-lang", "entry": "game.fun"}) ` +
         "in the project directory."
     );
@@ -437,7 +483,7 @@ async function openLivePreview() {
   child.stderr.on("data", (d) => log(d.toString()));
   child.on("error", (e) => {
     vscode.window.showErrorMessage(
-      `Functor Lang: cannot start "${functorPath}" (${e.message}) — set functor-lang.functorPath to the functor CLI binary.`
+      `Functor: cannot start "${functorPath}" (${e.message}) — set functor.functorPath to the functor CLI binary.`
     );
   });
   child.on("exit", (code) => log(`[functor exited with code ${code}]\n`));
@@ -540,13 +586,13 @@ async function openLivePreview() {
     readyTimeout = setTimeout(() => {
       if (ready || disposed) return;
       vscode.window.showErrorMessage(
-        `Functor Lang: ${PREVIEW_URL} answered but never announced the Functor Lang preview — ` +
+        `Functor: ${PREVIEW_URL} answered but never announced the Functor Lang preview — ` +
           `is something else using that port?`
       );
     }, SERVER_WAIT_MS);
   } else {
     vscode.window.showErrorMessage(
-      `Functor Lang: the functor dev server did not come up at ${PREVIEW_URL} — see the "Functor Lang Preview" output.`
+      `Functor: the functor dev server did not come up at ${PREVIEW_URL} — see the "Functor Lang Preview" output.`
     );
   }
 }

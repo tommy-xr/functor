@@ -881,7 +881,7 @@ errors), `run native`, `develop` (hot reload is built in), and `run wasm`
 (the `.fun` ships as text and is interpreted in the browser; file-watch hot
 reload is native-only — reload the page to pick up saved edits, or push
 source with a `{ type: "functor-lang-set-source", source }` postMessage to the page
-for a model-preserving in-place reload; the VSCode **"Functor Lang: Open Live
+for a model-preserving in-place reload; the VSCode **"Functor: Open Live
 Preview"** command does exactly that from the live buffer as you type).
 
 `examples/hello/game.fun` is the reference

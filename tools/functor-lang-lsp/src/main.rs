@@ -227,7 +227,14 @@ fn run(
                             "commands": ["functor.inspector.cycleExecution"],
                         },
                     },
-                    "serverInfo": { "name": "functor-lang-lsp" },
+                    // Version surfaces in the extension's status bar tooltip.
+                    // Release builds bake the release version via
+                    // FUNCTOR_RELEASE_VERSION (like the CLI); dev builds fall
+                    // back to the crate version.
+                    "serverInfo": {
+                        "name": "functor-lang-lsp",
+                        "version": option_env!("FUNCTOR_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+                    },
                 });
                 write_message(
                     writer,
@@ -1511,6 +1518,18 @@ mod inspector_server_tests {
             response(&out, 1)["result"]["capabilities"]["executeCommandProvider"]["commands"],
             json!(["functor.inspector.cycleExecution"])
         );
+    }
+
+    #[test]
+    fn initialize_reports_a_server_version() {
+        let out = drive(vec![json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} }
+        })]);
+        let info = &response(&out, 1)["result"]["serverInfo"];
+        assert_eq!(info["name"], json!("functor-lang-lsp"));
+        // Dev builds report the crate version (release builds bake
+        // FUNCTOR_RELEASE_VERSION instead).
+        assert_eq!(info["version"], json!(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

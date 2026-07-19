@@ -1,5 +1,5 @@
 // Download-on-demand for the `functor` CLI the live preview spawns (see
-// extension.js resolveFunctorCli): when neither functor-lang.functorPath nor
+// extension.js resolveFunctorCli): when neither functor.functorPath nor
 // PATH resolves, the newest GitHub release's platform archive is offered as
 // a one-click download into the extension's global storage.
 //
@@ -47,29 +47,41 @@ function downloadedCliPath(storageDir, platform) {
   return path.join(storageDir, "bin", platform === "win32" ? "functor.exe" : "functor");
 }
 
-// Does `cmd --version` run? ENOENT/any spawn error or nonzero exit → false.
-function commandWorks(cmd) {
+// `cmd --version`'s first stdout line, or null when it can't run (ENOENT/any
+// spawn error, nonzero exit, 10s hang). Doubles as the availability probe
+// (commandWorks) and the version shown in the status bar tooltip.
+function commandVersion(cmd) {
   return new Promise((resolve) => {
     let settled = false;
-    const done = (ok) => {
-      if (!settled) resolve(ok);
+    const done = (v) => {
+      if (!settled) resolve(v);
       settled = true;
     };
     let child;
     try {
-      child = spawn(cmd, ["--version"], { stdio: "ignore" });
+      child = spawn(cmd, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
     } catch {
-      return done(false);
+      return done(null);
     }
-    child.on("error", () => done(false));
-    child.on("exit", (code) => done(code === 0));
+    let out = "";
+    let exitCode = null;
+    child.stdout.on("data", (d) => (out += d));
+    child.on("error", () => done(null));
+    child.on("exit", (code) => (exitCode = code));
+    // 'close' (not 'exit') — stdout may still have undelivered data when the
+    // process exits; close fires after the stdio streams have drained.
+    child.on("close", () => done(exitCode === 0 ? out.trim().split("\n")[0] || "unknown" : null));
     setTimeout(() => {
-      done(false);
+      done(null);
       try {
         child.kill();
       } catch {}
     }, 10000).unref();
   });
+}
+
+async function commandWorks(cmd) {
+  return (await commandVersion(cmd)) !== null;
 }
 
 // GET returning parsed JSON. GitHub requires a User-Agent. Bounded: a stalled
@@ -172,6 +184,7 @@ module.exports = {
   assetTargetFor,
   pickAsset,
   downloadedCliPath,
+  commandVersion,
   commandWorks,
   fetchJson,
   download,
