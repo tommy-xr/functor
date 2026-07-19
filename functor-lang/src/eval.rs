@@ -366,6 +366,7 @@ pub fn run_with_host(
         recorder: None,
         depth: 0,
         call_depth: 0,
+        fuel: None,
         host,
     };
     match interp.run_module(module) {
@@ -422,6 +423,28 @@ pub fn run_expects(
     module: &Module,
     host: &mut dyn Host,
 ) -> Result<Vec<ExpectReport>, RunFailure> {
+    run_expects_budgeted(module, host, None)
+}
+
+/// [`run_expects`] with an optional step budget — the live-tooling seam: an
+/// editor evaluating on every (debounced) edit must never hang on a runaway
+/// expect. `budget` is the max interpreter steps for EACH phase — the def
+/// load, then every expect independently (the budget RESETS between expects,
+/// so one runaway is blamed precisely and cannot starve the rest). Exceeding
+/// it is a spanned [`ExpectOutcome::Error`] (or the returned `Err` when the
+/// def load itself exceeds it). A step is one function call, or one
+/// element/byte a bulk list/text builtin materializes or scans (see
+/// [`Fuel`] — growth builtins charge their OUTPUT, closing the
+/// doubling-amplifier hole) — the honest runaway proxy for a loop-free
+/// language, chosen over per-eval-node charging to keep the frame loop's
+/// hot path branch-free. Total interpreter work is O(budget), so the budget
+/// bounds wall-clock up to the per-step constant; pick it accordingly
+/// (~10^6 is comfortably sub-second).
+pub fn run_expects_budgeted(
+    module: &Module,
+    host: &mut dyn Host,
+    budget: Option<u64>,
+) -> Result<Vec<ExpectReport>, RunFailure> {
     let mut interp = Interp {
         globals: HashMap::new(),
         mut_slots: HashMap::new(),
@@ -430,6 +453,7 @@ pub fn run_expects(
         recorder: None,
         depth: 0,
         call_depth: 0,
+        fuel: budget.map(Fuel::new),
         host,
     };
     if let Err(error) = interp.eval_defs(module) {
@@ -441,9 +465,12 @@ pub fn run_expects(
     Ok(module
         .expects
         .iter()
-        .map(|expect| ExpectReport {
-            span: expect.span,
-            outcome: interp.eval_expect(expect),
+        .map(|expect| {
+            interp.fuel = budget.map(Fuel::new);
+            ExpectReport {
+                span: expect.span,
+                outcome: interp.eval_expect(expect),
+            }
         })
         .collect())
 }
@@ -471,6 +498,7 @@ impl Session {
             recorder: None,
             depth: 0,
             call_depth: 0,
+            fuel: None,
             host,
         };
         match interp.eval_defs(module) {
@@ -509,6 +537,7 @@ impl Session {
             recorder: None,
             depth: 0,
             call_depth: 0,
+            fuel: None,
             host,
         };
         interp.call(callee, args, name.to_string(), Span::new(0, 0), None)
@@ -532,6 +561,7 @@ impl Session {
             recorder: None,
             depth: 0,
             call_depth: 0,
+            fuel: None,
             host,
         };
         interp.call(callee, args, label.to_string(), Span::new(0, 0), None)
@@ -562,6 +592,7 @@ impl Session {
             recorder: Some(Recorder::new(true)),
             depth: 0,
             call_depth: 0,
+            fuel: None,
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
@@ -601,11 +632,38 @@ impl Session {
             recorder: Some(Recorder::new(false)),
             depth: 0,
             call_depth: 0,
+            fuel: None,
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
         let recorder = interp.recorder.expect("armed above");
         Ok((result, recorder.coverage_sorted()))
+    }
+}
+
+/// A step budget for bounded evaluation ([`run_expects_budgeted`] — the live
+/// tooling seam: an editor evaluating on every edit must not hang on a
+/// runaway expect). A step is one function CALL (closures, builtins, ctors —
+/// [`Interp::call`]), or one element/byte a bulk builtin materializes or
+/// scans (`List.range`'s count; `List.append`/`flatten` output elements;
+/// `Text.concat`/`join`/`toBullets` output bytes; `reverse`/`maximum`/
+/// `split` input size). Charging GROWTH builtins by output is what makes
+/// the budget honest — `(x) => List.append(x, x)` doubles per call, so a
+/// per-call-only charge would allow exponential work under a linear budget.
+/// The per-node eval path is deliberately uncharged so the frame loop stays
+/// branch-free. `limit` is kept for the error message.
+#[derive(Clone, Copy)]
+struct Fuel {
+    remaining: u64,
+    limit: u64,
+}
+
+impl Fuel {
+    fn new(limit: u64) -> Fuel {
+        Fuel {
+            remaining: limit,
+            limit,
+        }
     }
 }
 
@@ -623,6 +681,10 @@ struct Interp<'h> {
     recorder: Option<Recorder>,
     depth: usize,
     call_depth: usize,
+    /// The step budget, set only by [`run_expects_budgeted`]; `None` (the
+    /// norm — every game-loop path) means zero cost beyond one branch per
+    /// eval step, the same hot-path cost class as `recorder`.
+    fuel: Option<Fuel>,
     host: &'h mut dyn Host,
 }
 
@@ -714,6 +776,32 @@ impl Interp<'_> {
             // A non-function `main` is just a value; report it directly.
             _ => Ok(main),
         }
+    }
+
+    /// Consume `units` of the step budget, when one is set — a cheap `None`
+    /// test otherwise, and never on the per-eval-node path. The language has
+    /// no loops, so any unbounded computation must recurse or iterate
+    /// through builtin closure calls — both pass through [`Self::call`] —
+    /// or move bulk data through a list/text builtin, which charges the
+    /// size it materializes or scans (see [`Fuel`]).
+    fn charge(&mut self, units: u64, span: Span) -> Result<(), RunError> {
+        if let Some(fuel) = &mut self.fuel {
+            match fuel.remaining.checked_sub(units) {
+                Some(rest) => fuel.remaining = rest,
+                None => {
+                    return Err(RunError {
+                        message: format!(
+                            "evaluation exceeded its step budget ({} steps) — the embedding \
+tool bounds test evaluation (a live editor re-runs on every edit); look for runaway recursion \
+or an oversized computation",
+                            fuel.limit
+                        ),
+                        span,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn eval(&mut self, expr: &Expr, env: &Env) -> Result<Value, RunError> {
@@ -1129,7 +1217,16 @@ evaluation depth."
             BinOp::Div => self.arith(lhs, rhs, span, |a, b| a / b),
             BinOp::Lt => self.compare(lhs, rhs, span, |a, b| a < b),
             BinOp::Gt => self.compare(lhs, rhs, span, |a, b| a > b),
-            BinOp::Eq => Ok(Value::Bool(value_eq(&lhs, &rhs, span)?)),
+            BinOp::Eq => {
+                // Charge AFTER the walk (the count isn't known up front):
+                // one comparison can overshoot the budget by at most the
+                // value's size — itself budget-bounded to build — so total
+                // work stays O(budget).
+                let mut compared = 0u64;
+                let eq = value_eq(&lhs, &rhs, span, &mut compared)?;
+                self.charge(compared, span)?;
+                Ok(Value::Bool(eq))
+            }
         }
     }
 
@@ -1206,6 +1303,13 @@ evaluation depth."
             None => {}
         }
         // ---- Saturated (or host) dispatch — the original body, unchanged ----
+        // The step budget charges per CALL, not per eval node: the language
+        // has no loops, so unbounded work must pass through here (recursion,
+        // builtin per-element closure calls) or through `List.range`'s bulk
+        // charge — and keeping the per-node eval path branch-free costs the
+        // frame loop nothing (frame_bench-verified; a per-eval charge was a
+        // measured ~3% wall-clock regression).
+        self.charge(1, span)?;
         self.trace_enter(&label, &args);
         self.call_depth += 1;
         let result = match &callee {
@@ -1429,6 +1533,11 @@ evaluation depth."
             Builtin::ListRange => match args.as_slice() {
                 [Value::Number(n)] if n.is_finite() && *n <= 1_000_000.0 => {
                     let count = n.max(0.0) as usize;
+                    // The one bulk builtin with NO per-element eval: charge
+                    // its element count so a budget can't be sidestepped by
+                    // allocating in one step. (List.grid pays per cell via
+                    // its closure calls.)
+                    self.charge(count as u64, span)?;
                     Ok(Value::List(Rc::new(
                         (0..count).map(|i| Value::Number(i as f64)).collect(),
                     )))
@@ -1486,6 +1595,8 @@ most 1000000 cells"
             },
             Builtin::ListMaximum => match args.as_slice() {
                 [Value::List(items)] => {
+                    // O(n) scan: charge n (the List.reverse rule).
+                    self.charge(items.len() as u64, span)?;
                     let mut best: Option<f64> = None;
                     for item in items.iter() {
                         match item {
@@ -1518,6 +1629,12 @@ most 1000000 cells"
             // and yields `xs` followed by `ys` (the piped list stays the head).
             Builtin::ListAppend => match args.as_slice() {
                 [Value::List(other), Value::List(items)] => {
+                    // GROWTH builtin: charge the materialized output size,
+                    // else `d = (x) => List.append(x, x)` doubles per unit
+                    // charge — exponential work under a linear budget (the
+                    // review probe: 26 nestings = 134M elements, seconds of
+                    // wall-clock, ~56 charges).
+                    self.charge((items.len() + other.len()) as u64, span)?;
                     let mut out = Vec::with_capacity(items.len() + other.len());
                     out.extend(items.iter().cloned());
                     out.extend(other.iter().cloned());
@@ -1532,7 +1649,13 @@ most 1000000 cells"
                     let mut out = Vec::new();
                     for item in items.iter() {
                         match item {
-                            Value::List(inner) => out.extend(inner.iter().cloned()),
+                            Value::List(inner) => {
+                                // Growth builtin: charge per materialized
+                                // element (the List.append rule) — `[x, x]
+                                // |> List.flatten` doubles too.
+                                self.charge(inner.len() as u64, span)?;
+                                out.extend(inner.iter().cloned())
+                            }
                             other => {
                                 return err(format!(
                                     "List.flatten expects a list of lists, got {}",
@@ -1600,6 +1723,9 @@ most 1000000 cells"
             },
             Builtin::ListReverse => match args.as_slice() {
                 [Value::List(items)] => {
+                    // O(n) copy of already-paid elements: charge n so a
+                    // chain of unit-cost reverses can't go budget-quadratic.
+                    self.charge(items.len() as u64, span)?;
                     let mut out: Vec<Value> = items.iter().cloned().collect();
                     out.reverse();
                     Ok(Value::List(Rc::new(out)))
@@ -1612,6 +1738,9 @@ most 1000000 cells"
             },
             Builtin::TextConcat => match args.as_slice() {
                 [Value::String(a), Value::String(b)] => {
+                    // Growth builtin: charge output BYTES (the List.append
+                    // rule for strings — `Text.concat(s, s)` doubles).
+                    self.charge((a.len() + b.len()) as u64, span)?;
                     Ok(Value::String(Rc::from(format!("{a}{b}").as_str())))
                 }
                 _ => err("Text.concat(a, b) expects two strings".to_string()),
@@ -1642,7 +1771,12 @@ most 1000000 cells"
                     let mut lines = Vec::with_capacity(items.len());
                     for item in items.iter() {
                         match item {
-                            Value::String(s) => lines.push(format!("- {s}")),
+                            Value::String(s) => {
+                                // Growth builtin (string concatenation):
+                                // charge output bytes, like Text.concat.
+                                self.charge(s.len() as u64 + 3, span)?;
+                                lines.push(format!("- {s}"))
+                            }
                             other => {
                                 return err(format!(
                                     "Text.toBullets expects strings, got {}",
@@ -1663,6 +1797,9 @@ most 1000000 cells"
                     if sep.is_empty() {
                         return err("Text.split needs a non-empty separator".to_string());
                     }
+                    // O(input) scan + re-materialized pieces: charge input
+                    // bytes (no growth — output total ≈ input).
+                    self.charge(s.len() as u64, span)?;
                     let parts: Vec<Value> =
                         s.split(sep.as_ref()).map(|p| Value::String(Rc::from(p))).collect();
                     Ok(Value::List(Rc::new(parts)))
@@ -1675,7 +1812,12 @@ most 1000000 cells"
                     let mut parts = Vec::with_capacity(items.len());
                     for item in items.iter() {
                         match item {
-                            Value::String(s) => parts.push(s.to_string()),
+                            Value::String(s) => {
+                                // Growth builtin (string concatenation):
+                                // charge output bytes, like Text.concat.
+                                self.charge((s.len() + sep.len()) as u64, span)?;
+                                parts.push(s.to_string())
+                            }
                             other => {
                                 return err(format!(
                                     "Text.join expects strings, got {}",
@@ -1696,9 +1838,13 @@ most 1000000 cells"
             // this neutralizes (and the engine boundary rejects non-finite
             // numbers), so those degrade to 0 too.
             Builtin::TextParseFloat => match args.as_slice() {
-                [Value::String(s)] => Ok(Value::Number(
-                    s.trim().parse::<f64>().ok().filter(|n| n.is_finite()).unwrap_or(0.0),
-                )),
+                [Value::String(s)] => {
+                    // O(input) scan: charge input bytes (the Text.split rule).
+                    self.charge(s.len() as u64, span)?;
+                    Ok(Value::Number(
+                        s.trim().parse::<f64>().ok().filter(|n| n.is_finite()).unwrap_or(0.0),
+                    ))
+                }
                 _ => err("Text.parseFloat(s) expects one string".to_string()),
             },
             Builtin::MathClamp01 => match args.as_slice() {
@@ -1943,7 +2089,12 @@ fn pattern_binder_sites<'a>(pattern: &'a Pattern, out: &mut Vec<(BindingId, &'a 
 
 /// Structural equality for `==`. Functions have no equality — comparing them
 /// is a runtime error rather than a silent `false`.
-fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
+/// `compared` counts the value nodes visited — the Eq arm charges it
+/// against the step budget, since a single `==` on a large value is O(size)
+/// work that no call-path charge sees (review probe: repeated big-list
+/// compares did ~9x10^8 uncharged comparisons under a 10^6 budget).
+fn value_eq(a: &Value, b: &Value, span: Span, compared: &mut u64) -> Result<bool, RunError> {
+    *compared += 1;
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => Ok(x == y),
         (Value::String(x), Value::String(y)) => Ok(x == y),
@@ -1953,7 +2104,7 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
                 return Ok(false);
             }
             for (x, y) in xs.iter().zip(ys.iter()) {
-                if !value_eq(x, y, span)? {
+                if !value_eq(x, y, span, compared)? {
                     return Ok(false);
                 }
             }
@@ -1965,7 +2116,7 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
                 return Ok(false);
             }
             for (x, y) in xs.iter().zip(ys.iter()) {
-                if !value_eq(x, y, span)? {
+                if !value_eq(x, y, span, compared)? {
                     return Ok(false);
                 }
             }
@@ -1977,7 +2128,7 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
             }
             for (name, x) in xs.iter() {
                 match ys.iter().find(|(n, _)| n == name) {
-                    Some((_, y)) if value_eq(x, y, span)? => {}
+                    Some((_, y)) if value_eq(x, y, span, compared)? => {}
                     _ => return Ok(false),
                 }
             }
@@ -1990,7 +2141,7 @@ fn value_eq(a: &Value, b: &Value, span: Span) -> Result<bool, RunError> {
                 return Ok(false);
             }
             for (x, y) in xs.iter().zip(ys.iter()) {
-                if !value_eq(x, y, span)? {
+                if !value_eq(x, y, span, compared)? {
                     return Ok(false);
                 }
             }
