@@ -4,7 +4,10 @@
 //  * CSS-driven: the LIVE badge pulse and the energy-bar sweep are pure
 //    `@keyframes` in the stylesheet — the model never changes for them.
 //    The webview's animation clock is the GAME clock, so `--fixed-time T`
-//    renders them deterministically at time T (natively they tick live).
+//    renders them deterministically at time T. Use `infinite` loops (as
+//    here): a one-shot animation on an element appearing mid-session
+//    resolves as already-finished under the game-clock anchor and never
+//    plays (see webview_overlay.rs) (natively they tick live).
 //  * Model-driven: the boost counter re-renders through the Elm loop —
 //    Attr.onClick(Boost) delivers a msg through `update`, coexisting with
 //    the CSS animations.

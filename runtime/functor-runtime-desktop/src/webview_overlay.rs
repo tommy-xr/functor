@@ -619,7 +619,12 @@ impl WorkerState {
                 // re-render) restarts running @keyframes mid-loop, and
                 // `--fixed-time T` — where the first resolve already happens
                 // at T — pins animations to their from-pose instead of their
-                // pose at T.
+                // pose at T. Known constraint [xreview]: a NON-infinite
+                // (one-shot) animation on an element that appears mid-session
+                // resolves as already-finished under this anchor and never
+                // plays — per-animation start-time preservation needs the DOM
+                // reconciliation follow-up (docs/todo.md § Webview). Game
+                // HUDs should use `infinite` loops + transitions meanwhile.
                 doc.resolve(0.0);
                 // A fresh document has NO layout until resolved — the hover
                 // re-establishing move below would hit-test nothing, leaving
