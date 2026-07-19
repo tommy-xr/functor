@@ -96,11 +96,15 @@ Remaining, roughly in priority order:
       focus/caret loss in wasm controlled inputs, and native selection state).
 - [ ] Cache the serialized HTML in the producer (today: tree clone +
       `to_html` per frame per shell — the `webview_bench` numbers).
-- [ ] Tick CSS animations/transitions: repaint-while-animating (native is
-      dirty-flag only; we own blitz's clock via `resolve(t)`).
-- [ ] Debug-build usability: dirty-region repaint or downscaled raster
-      (full-window CPU paint is ~200× release — interactive native testing
-      uses release builds meanwhile).
+- [x] Tick CSS animations/transitions: the render worker repaints while
+      `doc.is_animating()` under our `resolve(t)` clock, so @keyframes and
+      `:hover` transitions render smoothly natively.
+- [ ] Debug-build usability: blitz parse/resolve/paint now runs on a worker
+      thread, so the ~200×-release debug paint no longer stalls the frame
+      loop — it shows up as overlay *latency* (~0.6s-late updates at retina
+      size) instead. Remaining: dirty-region repaint or downscaled raster to
+      shrink that latency (interactive native testing still prefers release
+      builds meanwhile).
 - [ ] Keep `site/player.html` in sync with `index-functor-lang.html` — the
       hand-copied page drifted three features behind (ui-pointer bridge,
       textInput keyboard route, webview overlay; caught+fixed 2026-07-18).
