@@ -36,6 +36,18 @@ These shape how features should be built. Weigh changes against them.
 4. **Fast inner loop.** Iterating and experimenting must be extremely fast for both humans and
    LLMs. Protect hot-reload, keep build steps minimal, and don't regress dev-loop latency.
 
+## Repository layout
+
+| Path | What it is |
+| --- | --- |
+| `functor-lang/` | The Functor Lang language crate — parser, IR, interpreter, typechecker (`functor-lang parse`/`ir`/`run`/`trace`/`check`) |
+| `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the Functor Lang prelude (`FunctorHost`) |
+| `runtime/functor-runtime-desktop/` | Desktop runtime (native/GLFW), including the Functor Lang producer — a library the `functor` CLI links in and runs in-process |
+| `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.fun` in the browser |
+| `cli/` | The `functor` CLI (`init` / `build` / `run` / `develop`) |
+| `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
+| `examples/*/` | Sample games — e.g. `hello` (a lineup of glTF sample models with a WASD + mouse free-look camera), `primitives`, `lighting` |
+
 ## Pull requests
 
 Prefix every PR title with a Conventional Commits-style type, optionally followed by a scope:

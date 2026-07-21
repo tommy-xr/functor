@@ -2,24 +2,47 @@
 
 # functor
 
-![Live-editing the hero scene's color while it hot-reloads with the model preserved, then scrubbing the running scene back through its own recorded timeline](docs/media/readme-hero.gif)
-
-*This is the live hero at [functor.games](https://functor.games): scrub the running
-scene back through its own recorded timeline (whole-game time travel), and
-live-edit the code to watch it hot-reload with the model preserved
-([still frame](docs/media/readme-hero.png)).*
-
-Functor is a functional toolkit for building 3D games in **Functor Lang** — Functor's
-own tiny, interpreted, F#-inspired game-logic language. You write your game as pure
-Model–View–Update functions in a `.fun` file: there is **no transpile or compile step
-for game logic** — the Rust runtime *interprets* the `.fun` directly, with
-state-preserving hot reload as you save, whole-game time travel over the running model,
-and the same source running on **native and wasm**.
-
-> **Status: alpha.** Functor is early software under active development — the
+> **Note: alpha software.** Functor is early software under active development — the
 > language, the prelude, and file formats can all change between releases without a
 > deprecation path. Binaries and changelogs are published on the
 > [releases page](https://github.com/tommy-xr/functor/releases).
+
+![Live-editing the hero scene's color so it hot-reloads with the model preserved, then scrubbing the running scene back through its recorded timeline and extrapolating its future](docs/media/readme-hero.gif)
+
+*This is the live hero at [functor.games](https://functor.games): live-edit the code
+and watch it hot-reload with the model preserved, scrub the running scene back
+through its own recorded timeline, then extrapolate to project its future forward
+(whole-game time travel) ([still frame](docs/media/readme-hero.png)).*
+
+## Core Principles
+
+- __Instant Feedback:__ changes made are instantly applied and visualized - whether that's a code change, an asset change, or the state of a test. You should always be able to tweak and play with the running code.
+- __Understandable State:__ the state of the program should be understandable and easily accessible. Many bugs - or complexity - stem from not fully understanding the state.
+- __For Humans and Coding Agents:__ the first two bullet points are for _humans._ However, coding agents are here... and they are powerful - functor games are introspectable by coding agents at runtime and headlessly runnable.
+
+## Features
+
+### Time-travel / extrapolation
+
+Use the scrubber bar to move backward and forward in time, and use the extrapolate button to project state forward (replaying key events / other effects in the process) 
+
+![visual of timeline extrapolation](docs/media/extrapolate.png)
+
+> try it yourself at https://functor.games/sandbox?example=mario
+
+### Live evaluation
+
+When a scene is paused, see live values flowing through the system - visualize what code paths were hit and with what values
+
+![visual of live values shown in the code editor](docs/media/readme-live-evaluation.png)
+
+> Try it yourself at https://functor.games/sandbox?example=monitor
+
+### Platform support
+
+- __Browser:__ WebAssembly
+- __Native Platforms:__ Windows, MacOS, Linux
+- __VR/XR__: Quest3, XReal One (planned, not supported yet)
 
 ## Try it in the browser
 
@@ -29,8 +52,6 @@ No install needed:
   Functor Lang scene you can edit in place (the GIF above).
 - **[functor.games/sandbox](https://functor.games/sandbox)** — a full
   in-browser sandbox: edit a `.fun`, watch it hot-reload, and scrub the timeline.
-
-(The redesigned pages ship with this branch.)
 
 ## Quick start
 
@@ -47,17 +68,12 @@ irm https://raw.githubusercontent.com/tommy-xr/functor/main/install.ps1 | iex
 ```
 
 This downloads the right binary for your platform into `~/.functor/bin` and prints
-the line to add it to your `PATH`. (Prefer to grab it by hand? Download the archive
+the line to add it to your `PATH`. 
+
+> (Prefer to grab it by hand? Download the archive
 for your platform from the
 [releases page](https://github.com/tommy-xr/functor/releases) and extract the
-single `functor` binary:)
-
-| Platform | Asset |
-| --- | --- |
-| macOS (Apple Silicon) | `functor-<version>-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `functor-<version>-x86_64-apple-darwin.tar.gz` |
-| Linux (x86-64) | `functor-<version>-x86_64-unknown-linux-gnu.tar.gz` |
-| Windows (x86-64) | `functor-<version>-x86_64-pc-windows-msvc.zip` |
+single `functor` binary)
 
 Then scaffold a game and run it — a window opens; edit `my-game/game.fun` and save
 to hot-reload with the model preserved:
@@ -68,6 +84,20 @@ functor -d my-game run native   # open a window and run it
 ```
 
 Prefer to build from source? See [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## Technology
+
+Functor is:
+- A __language__: a tiny, interpreted, F#/Elm inspired language (`.fun`)
+- A __runtime__: a Rust runtime that interprets the `.fun` file and accommodates hot-reload
+- An __editor__: at least, a VSCode extension (or editor on the web)
+
+Ultimately, Functor is an _experiment_ - what is game development like with functional programming? And namely if we impose some additional constraints - like pure functions and determinism - can we _improve_ the development experience?
+
+The functor runtime runs in both WebAssembly and native code - you write your game as pure Model-View-Update functions in a `.fun` file. 
+
+None of the ideas in functor are new, every idea here can be traced back to a particular [source of inspiration](INSPIRATION.md)
+
 
 ## Writing a game
 
@@ -88,43 +118,11 @@ let physics = (model) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [body, …]) 
 let soundScape = (model) => AudioScene.create([source, …])         // OPTIONAL looping audio
 ```
 
-The model-updating entry points (`tick`, `input`, `mouseMove`, `mouseWheel`,
-`update`) may return a `(model', effect)` tuple instead of a bare model; the
-effect's result folds back through `update`. (`init` is a plain value — no
-effect; `draw`/`physics`/`soundScape`/`ui`/`subscriptions` return their own
-specific values.) The full language and prelude
-(`Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*` / …)
-are documented in the `functor-lang` skill (`.claude/skills/functor-lang/`) and
-`docs/functor-lang.md`. See `examples/hello/game.fun` or
-`examples/primitives/game.fun` for complete games.
-
 Because the model is a plain, cheap-to-clone value the host holds between frames,
 the runtime can **hot-reload your edits with the model preserved** and **record the
 model every rendered frame** — that's what powers the live editing and whole-game
 time-travel scrubber you see at [functor.games](https://functor.games) (design notes:
 `docs/time-travel.md`).
-
-## Design principles
-
-- **Functional-core, imperative shell.** As much functionality as possible lives in the pure
-  functional core (the Functor Lang game logic); side effects are pushed to a thin imperative shell.
-- **LLM-native.** Functor functionality is introspectable by LLMs at runtime — favoring live
-  evaluation, a text-only runtime, and inspectable state.
-- **Simplicity and incrementality.** Prefer small, incremental PRs, leveraging stacked PRs where
-  applicable.
-- **Fast inner loop.** Iterating and experimenting is fast for both humans and LLMs.
-
-## Repository layout
-
-| Path | What it is |
-| --- | --- |
-| `functor-lang/` | The Functor Lang language crate — parser, IR, interpreter, typechecker (`functor-lang parse`/`ir`/`run`/`trace`/`check`) |
-| `runtime/functor-runtime-common/` | Shared Rust runtime: rendering, assets, geometry, materials, the Functor Lang prelude (`FunctorHost`) |
-| `runtime/functor-runtime-desktop/` | Desktop runtime (native/GLFW), including the Functor Lang producer — a library the `functor` CLI links in and runs in-process |
-| `runtime/functor-runtime-web/` | Web runtime (WebGL2); built into a wasm bundle, interprets the `.fun` in the browser |
-| `cli/` | The `functor` CLI (`init` / `build` / `run` / `develop`) |
-| `tools/` | Editor tooling: `functor-lang-vscode` (extension), `functor-lang-lsp` (language server), `functor-sdk` (TS debug-runtime SDK) |
-| `examples/*/` | Sample games — e.g. `hello` (a lineup of glTF sample models with a WASD + mouse free-look camera), `primitives`, `lighting` |
 
 ## Running a sample
 
@@ -166,6 +164,15 @@ use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 For build-from-source instructions and what `build`/`run` do under the hood, see
 [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## Open Questions
+
+__Is this actually a good idea or not?__ 
+
+I'm not sure yet. I'm interested to see what a full game looks like in this environment. There are several benefits to the constraints (ie, immutability + determinism = time-travel + extrapolation), but the ergonomics may still be challenging for writing a full game. Remains to be seen!
+
+Makes me think of John Carmack's comments in this [gamasutra article about functional programming](http://www.gamasutra.com/view/news/169296/Indepth_Functional_programming_in_C.php):
+> If you are in circumstances where you can undertake significant development work in a non-mainstream language, I'll cheer you on, but be prepared to take some hits in the name of progress.
 
 ## Credits
 
