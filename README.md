@@ -7,12 +7,12 @@
 > deprecation path. Binaries and changelogs are published on the
 > [releases page](https://github.com/tommy-xr/functor/releases).
 
-![Live-editing the hero scene's color while it hot-reloads with the model preserved, then scrubbing the running scene back through its own recorded timeline](docs/media/readme-hero.gif)
+![Live-editing the hero scene's color so it hot-reloads with the model preserved, then scrubbing the running scene back through its recorded timeline and extrapolating its future](docs/media/readme-hero.gif)
 
-*This is the live hero at [functor.games](https://functor.games): scrub the running
-scene back through its own recorded timeline (whole-game time travel), and
-live-edit the code to watch it hot-reload with the model preserved
-([still frame](docs/media/readme-hero.png)).*
+*This is the live hero at [functor.games](https://functor.games): live-edit the code
+and watch it hot-reload with the model preserved, scrub the running scene back
+through its own recorded timeline, then extrapolate to project its future forward
+(whole-game time travel) ([still frame](docs/media/readme-hero.png)).*
 
 ## Core Principles
 
@@ -20,16 +20,31 @@ live-edit the code to watch it hot-reload with the model preserved
 - __Understandable State:__ the state of the program should be understandable and easily accessible. Many bugs - or complexity - stem from not fully understanding the state.
 - __For Humans and Coding Agents:__ the first two bullet points are for _humans._ However, coding agents are here... and they are powerful - functor games are introspectable by coding agents at runtime and headlessly runnable.
 
-## Technology
+## Features
 
-Functor is:
-- A __language__: a tiny, interpreted, F#/Elm inspired language (`.fun`)
-- A __runtime__: a Rust runtime that interprets the `.fun` file and accomoodates hot-reload
-- An __editor__: at least, a VSCode extension (or editor on the web)
+### Time-travel / extrapolation
 
-Ultimately, Functor is an _experiment_ - what is game development like with functional programming? And namely if we impose some additional constraints - like pure functions and determinism - can we _improve_ the development experience?
+Use the scrubber bar to move backward and forward in time, and use the extrapolate button to project state forward (replaying key events / other effects in the process) 
 
-The functor runtime runs in both WebAssembly and native code - you write your game as pure Model-View-Update functions in a `.fun` file. 
+![visual of timeline extrapolation](docs/media/extrapolate.png)
+
+> try it yourself at https://functor.games/sandbox?example=mario
+
+### Live evaluation
+
+When a scene is paused, see live values flowing through the system - visualize what code paths were hit and with what values
+
+![visual of live values shown in the code editor](docs/media/readme-live-evaulation.png)
+
+> Try it yourself at https://functor.games/sandbox?example=monitor
+
+### Platform support
+
+> note: planned; not all platforms are supported yet
+
+- WebAssembly
+- Native: Windows, MacOS, Linux
+- VR/XR: Quest3, XReal One
 
 ## Try it in the browser
 
@@ -71,6 +86,20 @@ functor -d my-game run native   # open a window and run it
 ```
 
 Prefer to build from source? See [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## Technology
+
+Functor is:
+- A __language__: a tiny, interpreted, F#/Elm inspired language (`.fun`)
+- A __runtime__: a Rust runtime that interprets the `.fun` file and accomodates hot-reload
+- An __editor__: at least, a VSCode extension (or editor on the web)
+
+Ultimately, Functor is an _experiment_ - what is game development like with functional programming? And namely if we impose some additional constraints - like pure functions and determinism - can we _improve_ the development experience?
+
+The functor runtime runs in both WebAssembly and native code - you write your game as pure Model-View-Update functions in a `.fun` file. 
+
+None of the ideas in functor are new, every idea here can be traced back to a particular [source of inspiration](INSPIRATION.md)
+
 
 ## Writing a game
 
@@ -137,6 +166,15 @@ use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 For build-from-source instructions and what `build`/`run` do under the hood, see
 [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## Open Questions
+
+__Is this actually a good idea or not?__ 
+
+I'm not sure yet. I'm interested to see what a full game looks like in this environment. There are several benefits to the constraints (ie, immutability + determinism = time-travel + extrapolation), but the ergonomics may still be challenging for writing a full game. Remains to be seen!
+
+Makes me think of John Carmack's comments in this [gamasutra article about functional programming](http://www.gamasutra.com/view/news/169296/Indepth_Functional_programming_in_C.php):
+> If you are in circumstances where you can undertake significant development work in a non-mainstream language, I'll cheer you on, but be prepared to take some hits in the name of progress.
 
 ## Credits
 
