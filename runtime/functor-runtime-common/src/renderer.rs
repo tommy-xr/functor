@@ -13,13 +13,11 @@ use crate::{
 
 /// Render one `Frame` to the currently-bound (default) framebuffer.
 ///
-/// This is the *shared* per-frame render path: both shells — the desktop runner
-/// (`functor-runtime-desktop`) and the web runtime (`functor-runtime-web`) — call
-/// this with their own GL context, so the shadow + forward orchestration lives in
-/// one type-checked place instead of being copy-pasted (and drifting) between the
-/// two. The shells keep only what is genuinely platform-specific: creating the GL
-/// context, obtaining the `Frame` (dylib FFI vs. JsValue marshalling), computing
-/// the viewport (window framebuffer vs. canvas), input, and frame capture.
+/// This is the *shared* per-frame render path: the desktop, web, and XR shells
+/// call this with their own GL context, so the shadow + forward orchestration
+/// lives in one type-checked place instead of drifting between platforms. The
+/// shells keep only what is genuinely platform-specific: creating the GL
+/// context, obtaining the `Frame`, computing the viewport, input, and capture.
 ///
 /// Steps, mirroring what each shell used to do inline:
 /// 1. Render-target passes — each declared target's inner frame gets its own
@@ -47,6 +45,68 @@ pub fn render_frame(
     // The camera to render from — usually `&frame.camera`; stereo shells pass
     // each per-eye camera (`Camera::stereo_eyes`) with a per-eye viewport.
     camera: &Camera,
+    frame_time: FrameTime,
+    viewport: Viewport,
+    debug_render_mode: DebugRenderMode,
+) {
+    render_frame_inner(
+        gl,
+        shader_version,
+        asset_cache,
+        scene_context,
+        shadow_map,
+        frame,
+        camera,
+        None,
+        frame_time,
+        viewport,
+        debug_render_mode,
+    );
+}
+
+/// Render one `Frame` using an externally supplied projection matrix for the
+/// main pass. XR shells use this to preserve the runtime's exact asymmetric
+/// per-eye frustum; render-target passes retain their own cameras and ordinary
+/// symmetric projections.
+#[allow(clippy::too_many_arguments)]
+pub fn render_frame_with_projection(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    scene_context: &SceneContext,
+    shadow_map: &ShadowMap,
+    frame: &Frame,
+    camera: &Camera,
+    projection_matrix: &Matrix4<f32>,
+    frame_time: FrameTime,
+    viewport: Viewport,
+    debug_render_mode: DebugRenderMode,
+) {
+    render_frame_inner(
+        gl,
+        shader_version,
+        asset_cache,
+        scene_context,
+        shadow_map,
+        frame,
+        camera,
+        Some(projection_matrix),
+        frame_time,
+        viewport,
+        debug_render_mode,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_frame_inner(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    scene_context: &SceneContext,
+    shadow_map: &ShadowMap,
+    frame: &Frame,
+    camera: &Camera,
+    projection_matrix: Option<&Matrix4<f32>>,
     frame_time: FrameTime,
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
@@ -133,6 +193,7 @@ target frame are ignored (depth 1 only)",
             pass.frame.fog.as_ref(),
             pass.frame.skybox.as_ref(),
             width as f32 / height as f32,
+            None,
         );
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -189,6 +250,7 @@ target frame are ignored (depth 1 only)",
         frame.fog.as_ref(),
         frame.skybox.as_ref(),
         viewport.aspect(),
+        projection_matrix,
     );
 }
 
@@ -279,6 +341,7 @@ pub fn render_composited_frames(
             frame.fog.as_ref(),
             frame.skybox.as_ref(),
             width as f32 / height as f32,
+            None,
         );
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -369,6 +432,7 @@ fn forward_pass(
     fog: Option<&crate::fog::Fog>,
     skybox: Option<&crate::skybox::SkyboxDescription>,
     aspect: f32,
+    projection_matrix: Option<&Matrix4<f32>>,
 ) {
     let render_context = RenderContext {
         gl,
@@ -383,10 +447,13 @@ fn forward_pass(
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
     };
 
-    // The game supplies the camera; derive view/projection from it + the aspect.
+    // The game supplies the camera; derive its ordinary projection from the
+    // aspect unless a platform shell (XR) supplied an exact projection.
     let world_matrix = Matrix4::identity();
     let view_matrix = camera.view_matrix();
-    let projection_matrix = camera.projection_matrix(aspect);
+    let projection_matrix = projection_matrix
+        .copied()
+        .unwrap_or_else(|| camera.projection_matrix(aspect));
 
     // The skybox draws first, behind everything (it writes no depth); fog
     // does not apply to it — the sky IS the horizon.
