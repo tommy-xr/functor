@@ -34,17 +34,15 @@ Use the scrubber bar to move backward and forward in time, and use the extrapola
 
 When a scene is paused, see live values flowing through the system - visualize what code paths were hit and with what values
 
-![visual of live values shown in the code editor](docs/media/readme-live-evaulation.png)
+![visual of live values shown in the code editor](docs/media/readme-live-evaluation.png)
 
 > Try it yourself at https://functor.games/sandbox?example=monitor
 
 ### Platform support
 
-> note: planned; not all platforms are supported yet
-
-- WebAssembly
-- Native: Windows, MacOS, Linux
-- VR/XR: Quest3, XReal One
+- __Browser:__ WebAssembly
+- __Native Platforms:__ Windows, MacOS, Linux
+- __VR/XR__: Quest3, XReal One (planned, not supported yet)
 
 ## Try it in the browser
 
@@ -75,7 +73,7 @@ the line to add it to your `PATH`.
 > (Prefer to grab it by hand? Download the archive
 for your platform from the
 [releases page](https://github.com/tommy-xr/functor/releases) and extract the
-single `functor` binary:)
+single `functor` binary)
 
 Then scaffold a game and run it — a window opens; edit `my-game/game.fun` and save
 to hot-reload with the model preserved:
@@ -91,7 +89,7 @@ Prefer to build from source? See [DEVELOPMENT.md](DEVELOPMENT.md).
 
 Functor is:
 - A __language__: a tiny, interpreted, F#/Elm inspired language (`.fun`)
-- A __runtime__: a Rust runtime that interprets the `.fun` file and accomodates hot-reload
+- A __runtime__: a Rust runtime that interprets the `.fun` file and accommodates hot-reload
 - An __editor__: at least, a VSCode extension (or editor on the web)
 
 Ultimately, Functor is an _experiment_ - what is game development like with functional programming? And namely if we impose some additional constraints - like pure functions and determinism - can we _improve_ the development experience?
