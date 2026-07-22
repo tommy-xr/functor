@@ -13,6 +13,7 @@
 // build.mjs / README for the classification.
 export const EXAMPLES = [
   { id: "hero", label: "Neon grid", source: "site/examples/hero.fun" },
+  { id: "orbit", label: "Orbit", source: "site/examples/orbit.fun" },
   { id: "counter", label: "Counter", source: "examples/counter/game.fun" },
   { id: "primitives", label: "Primitives", source: "examples/primitives/game.fun" },
   { id: "ui", label: "UI widgets", source: "examples/ui/game.fun" },

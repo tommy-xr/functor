@@ -20,22 +20,28 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { installOverlay } from "./lib/overlay.mjs";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PORT = 8232; // dedicated port (time-travel uses 8231)
 const BASE = `http://127.0.0.1:${PORT}`;
-const GAME = process.env.DEMO_GAME || "examples/hero.fun";
+const GAME = process.env.DEMO_GAME || "examples/orbit.fun";
 const OUT = resolve(process.argv[2] || join(ROOT, "site/demos/instant-feedback.gif"));
 const WIDTH = 1120;
 const HEIGHT = 640;
 const GIF_WIDTH = 820;
-const FPS = Number(process.env.DEMO_FPS || 18);
+const FPS = Number(process.env.DEMO_FPS || 14);
 
-// The live edit: replace `find` (a number in the served scene) with `insert`.
-// Scene-specific — tied to examples/hero.fun's emissive green channel.
-const EDIT_FIND = "0.15 + 0.1";
-const EDIT_SELECT = "0.15";
-const EDIT_TYPE = "0.95";
+// The live edit: select `select` (a number, found by locating the unique `find`
+// string it begins) and type `type` over it. Scene-specific — tied to
+// examples/orbit.fun's orb scale, so the orbs visibly grow. The demo first
+// shrinks the scale silently (SHRINK) so the orbs start small on screen and the
+// recorded edit grows them dramatically — without touching orbit.fun itself.
+const SHRINK_FROM = "0.55)";
+const SHRINK_TO = "0.3";
+const EDIT_FIND = "0.3)";
+const EDIT_SELECT = "0.3";
+const EDIT_TYPE = "1.0";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,6 +87,7 @@ await page.goto(`${BASE}/demo-editor.html?game=${encodeURIComponent(GAME)}`, {
   waitUntil: "load",
 });
 await page.evaluate(() => window.__demoEditor.ready);
+const ov = await installOverlay(page);
 
 // The scene renders in a player iframe; the "mouse look" chip lives inside it,
 // so the hide style has to be injected into the frame, not the parent page.
@@ -90,6 +97,18 @@ await playerFrame()
   ?.addStyleTag({ content: '[title*="mouse"]{display:none!important}' })
   .catch(() => {});
 await sleep(3500); // let the scene go live and roll a little
+
+// Silently shrink the orbs first so they start small on screen — this push
+// hot-reloads before recording, so the viewer only sees the deliberate growth.
+await page.evaluate(
+  ({ from, to }) => {
+    const v = window.__demoEditor.view;
+    const i = v.state.doc.toString().indexOf(from);
+    if (i >= 0) v.dispatch({ changes: { from: i, to: i + from.length - 1, insert: to } });
+  },
+  { from: SHRINK_FROM, to: SHRINK_TO }
+);
+await sleep(900); // reload settles — orbs now small
 
 const framesDir = mkdtempSync(join(tmpdir(), "functor-if-"));
 let n = 0;
@@ -104,7 +123,11 @@ const hold = async (frames, ms = 25) => {
   }
 };
 
-// 1. Select the target number and hold a beat (the scene is running, magenta).
+// 0. Intro: the scene is running.
+await ov.caption("A live <b>Functor Lang</b> scene, running.");
+await hold(12, 60);
+
+// 1. Select the target number and name what we're about to change.
 await page.evaluate(
   ({ find, select }) => {
     const v = window.__demoEditor.view;
@@ -114,26 +137,22 @@ await page.evaluate(
   },
   { find: EDIT_FIND, select: EDIT_SELECT }
 );
+await ov.caption("Change a value — the orb <b>size</b>.");
 await sleep(500);
-await hold(8, 60);
+await hold(10, 60);
 
-// 2. Type the edit character by character (the new value appears). Under the
-//    300ms push debounce it coalesces to one clean hot-swap, and the grid
-//    recolors while the wave keeps rolling.
+// 2. Type the edit character by character, flashing each keystroke. Under the
+//    300ms push debounce (keystrokes are closer than that) it coalesces to one
+//    clean hot-swap, so the orbs grow while the ring keeps turning.
 for (const ch of EDIT_TYPE) {
   await page.keyboard.type(ch);
-  await sleep(110);
+  await ov.key(ch);
+  await sleep(170);
   await snap();
 }
 await sleep(550); // debounce + hot reload settle
-await hold(16, 70); // grid now green, still rolling
-
-// 3. Pause the scene — the paused-inspector live values flow inline.
-await playerFrame().evaluate(() => {
-  if (window.__scrub && !window.__scrub.paused()) window.__scrub.togglePause();
-});
-await sleep(1400);
-await hold(30, 55); // inline live values populated — hold to read them
+await ov.caption("The orbs grow <b>instantly</b> — no reload, still orbiting.");
+await hold(30, 75); // orbs now large, still orbiting — hold on the result
 
 await browser.close();
 server.kill();
