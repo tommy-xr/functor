@@ -53,29 +53,29 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(`${dist}/pkg`, { recursive: true });
 await mkdir(`${dist}/examples`, { recursive: true });
 
-// The latest release tag (vX.Y.Z), stamped into each page's header
-// version-badge so the deployed site names the release it accompanies. No
-// reachable tag (fresh history, shallow checkout) → the badge stays the
-// source's plain "alpha".
-let version = "";
+// The header version-badge names the build. On an exact release tag (vX.Y.Z)
+// it reads "vX.Y.Z · alpha"; every other checkout — local dev, ahead of a tag,
+// shallow, or no tags at all — reads "v0.0.0 · dev", so a dev build never
+// mislabels itself as the release it merely descends from.
+let badge = "v0.0.0 · dev";
 try {
-  const tag = execSync("git describe --tags --abbrev=0 --match 'v[0-9]*'", {
+  const tag = execSync("git describe --tags --exact-match --match 'v[0-9]*'", {
     cwd: root,
     stdio: ["ignore", "pipe", "ignore"],
   })
     .toString()
     .trim();
-  if (/^v\d+\.\d+\.\d+$/.test(tag)) version = tag;
+  if (/^v\d+\.\d+\.\d+$/.test(tag)) badge = `${tag} · alpha`;
 } catch {}
 
 for (const page of PAGES) {
-  if (version && page.endsWith(".html")) {
+  if (page.endsWith(".html")) {
     const html = await readFile(`${site}${page}`, "utf8");
     await writeFile(
       `${dist}/${page}`,
       html.replace(
         /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
-        `$1${version} · alpha$2`
+        `$1${badge}$2`
       )
     );
   } else {
