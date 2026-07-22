@@ -8,16 +8,20 @@ stereo is "render it twice with shell-supplied cameras"; Functor Lang games are 
 interpreted at runtime, so the headset runtime is a **tool APK built once** and
 games deploy over the network.
 
-## Shipped
+## Milestones
 
 | PR | What | Status |
 | --- | --- | --- |
 | [#175](https://github.com/tommy-xr/functor/pull/175) | `--stereo-sbs`: side-by-side stereo in functor-runner (`Camera::stereo_eyes`, `render_frame` takes the camera explicitly) | merged |
 | [#177](https://github.com/tommy-xr/functor/pull/177) | `--xreal-tracking`: Xreal One 3DoF head tracking — IMU over TCP (the glasses expose a USB network interface; no drivers), gyro-bias calibration + Mahony fusion, head rotation composed onto the game camera in its local basis | merged |
 | [#185](https://github.com/tommy-xr/functor/pull/185) | Axis remap corrected from a live wear-test (raw sensor frame is right/down/forward — the optical convention; the first guess was an improper det −1 transform, which mirrors gyro vs accel) + auto/yaw-only recenter | merged |
-| [#183](https://github.com/tommy-xr/functor/pull/183) | Network hot-reload: `POST /reload-source` on the debug server (model preserved, broken push keeps the old program), `--debug-bind`, `functor push <addr> [--watch]` | open, CI green |
-| [#189](https://github.com/tommy-xr/functor/pull/189) | Quest OpenXR runtime shell (`runtime/functor-runtime-oculus`): EGL/GLES 3.2 + openxr 0.21 + android-activity, per-eye sRGB swapchains, head-pose cameras, renders through the shared `render_frame`. Builds to a signed APK (`npm run build:oculus[:apk]`) | open, CI green |
-| `feat/oculus-functor-lang-producer` | Functor Lang producer + debug server shared into `functor_runtime_common`; the Quest shell boots an embedded demo game (`src/demo.fun`), serves `/state` `/scene` `/reload-source` LAN-wide on :8077 — `functor push <quest-ip>:8077` replaces the running game live | branch pushed; PR after #183/#189 merge |
+| [#183](https://github.com/tommy-xr/functor/pull/183) | Network hot-reload: `POST /reload-source`, `--debug-bind`, and `functor push <addr> [--watch]` | merged |
+| [#189](https://github.com/tommy-xr/functor/pull/189) | Quest OpenXR shell: EGL/GLES 3.2, per-eye sRGB swapchains, head-pose cameras, shared renderer | merged |
+| [#428](https://github.com/tommy-xr/functor/pull/428) | Embedded Functor Lang producer: the tool APK interprets pushed games directly | merged |
+| [#430](https://github.com/tommy-xr/functor/pull/430) | Device-loopback source reload over adb forwarding | merged |
+| [#431](https://github.com/tommy-xr/functor/pull/431) | `functor run vr`: launch, forward, whole-project push, watch, and log streaming | merged |
+| [#437](https://github.com/tommy-xr/functor/pull/437) | Exact asymmetric OpenXR projections, fixing binocular double vision | merged; Quest 3 verified |
+| `feat/isomorphic-vr-debug-capture` | Shared desktop/Quest debug protocol, whole-project REPL, raw stereo capture, TypeScript SDK parity, device benchmark | current branch; Quest 3 verified |
 
 ## Working today on the Xreal One
 
@@ -52,20 +56,38 @@ magnetometer; the Xreal Eye's 6DoF is not host-accessible).
 
 ## Device-day checklist (Quest 3)
 
-1. Merge #183 and #189 (both green), then the producer PR.
-2. Download the Meta OpenXR Mobile SDK; copy
-   `libopenxr_loader.so` → `runtime/functor-runtime-oculus/lib/arm64-v8a/`
-   (license-gated, can't be fetched automatically — see the crate README).
-3. Quest in developer mode, USB: `cargo apk run` from the crate dir
-   (env vars per README). Expect the cube-ring demo in-headset.
-4. `functor -d yourgame push <quest-ip>:8077` from the Mac — live-edit the
-   game running in the headset.
+Use the **`vr-device-loop` skill** (`.claude/skills/vr-device-loop/`) for the
+full, proven sequence. The short path is:
+
+1. Put the standard Khronos Android OpenXR loader in
+   `runtime/functor-runtime-oculus/lib/arm64-v8a/` (the crate README has the
+   Maven command), then `npm run build:oculus:apk` and `adb install -r …`.
+2. Run `functor -d yourgame run vr`. It uses device-loopback port 8123 through
+   adb, pushes every `.fun`/`.funi`, and re-pushes on save.
+3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and
+   restart NativeActivity with `am start -S`. Wait for `/state`'s frame to
+   advance; server readiness alone does not mean XR is rendering.
+4. Capture with `POST /capture` using curl's `--fail` and retry flags. A focused
+   Quest 3 returns a raw 3360x1760 left/right PNG.
+5. Install a non-debuggable release APK, push the explicit workload, and run
+   `npm run bench:quest -- --label NAME --warmup 10 --seconds 30`.
+
+The first measured Quest 3 release run (`primitives`, 15 seconds after a
+5-second warmup) sustained 72.7 FPS mean / 72 FPS minimum, with zero stale or
+torn frames and 3.09 ms mean application time.
 
 ## After bring-up (in rough order)
 
-- Visual pass: gamma, then `GL_OVR_multiview2`. Exact asymmetric eye frusta
-  now pass through the shared renderer's raw-projection seam.
+- Make the game camera the VR tracking origin (position/orientation and clip
+  range) so identical `Frame` values have the same world framing on desktop and
+  Quest; compose the live head/eye pose on top.
+- Sync or host project assets so texture/model/audio locators work in the
+  laptop-to-headset loop; whole-project reload currently transfers source only.
 - Controllers + a VR `InputContext` (head/hands) with desktop mouse/keyboard
   emulation, shock2quest-style, so VR games iterate without a headset.
-- On-device frame capture (`POST /capture` currently returns 503 on the
-  headset) to restore the golden/agent-verification loop there.
+- Add a browser surface over the isomorphic debug API for edit/push/inspect/
+  capture without target-specific SDK calls.
+- Make the release APK reproducible and publishable (release signing, CI
+  artifact, install/update documentation).
+- Visual/performance pass: gamma, then `GL_OVR_multiview2`; compare the current
+  two-pass device benchmark against multiview on the same headset.

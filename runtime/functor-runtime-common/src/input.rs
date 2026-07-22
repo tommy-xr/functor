@@ -108,6 +108,33 @@ impl Key {
         Key::ALL.into_iter().find(|k| *k as i32 == value)
     }
 
+    /// Parse the case-insensitive wire/display spelling used by debug input
+    /// (`"w"`, `"Up"`, `"space"`, or a bare digit). Keeping this beside the
+    /// canonical enum makes desktop and device debug servers accept exactly
+    /// the same key names.
+    pub fn from_name(name: &str) -> Option<Key> {
+        let name = name.to_ascii_lowercase();
+        if name.len() == 1 {
+            let byte = name.as_bytes()[0];
+            if byte.is_ascii_lowercase() {
+                return Key::from_i32((byte - b'a') as i32 + Key::A as i32);
+            }
+            if byte.is_ascii_digit() {
+                return Key::from_i32((byte - b'0') as i32 + Key::Num0 as i32);
+            }
+        }
+        match name.as_str() {
+            "up" => Some(Key::Up),
+            "down" => Some(Key::Down),
+            "left" => Some(Key::Left),
+            "right" => Some(Key::Right),
+            "space" => Some(Key::Space),
+            "enter" => Some(Key::Enter),
+            "escape" => Some(Key::Escape),
+            _ => None,
+        }
+    }
+
     /// The key's short display name — `"W"`, `"Up"`, `"Space"`, bare digits
     /// (`"1"`, not `"Num1"`) — for human-facing labels like the web timeline's
     /// input markers. Games no longer see this: the `input` hook receives the
@@ -211,5 +238,17 @@ mod tests {
         }
         assert_eq!(Key::from_i32(Key::ALL.len() as i32), None);
         assert_eq!(Key::from_i32(-1), None);
+    }
+
+    #[test]
+    fn from_name_accepts_the_shared_debug_wire_spellings() {
+        assert_eq!(Key::from_name("w"), Some(Key::W));
+        assert_eq!(Key::from_name("W"), Some(Key::W));
+        assert_eq!(Key::from_name("Up"), Some(Key::Up));
+        assert_eq!(Key::from_name("SPACE"), Some(Key::Space));
+        assert_eq!(Key::from_name("0"), Some(Key::Num0));
+        assert_eq!(Key::from_name("9"), Some(Key::Num9));
+        assert_eq!(Key::from_name("unknown"), None);
+        assert_eq!(Key::from_name(""), None);
     }
 }

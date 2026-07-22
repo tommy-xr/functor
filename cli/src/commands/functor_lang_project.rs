@@ -846,7 +846,7 @@ fn post_reload_project(addr: &str, files_json: &str) -> Result<(u16, String), Er
 }
 
 /// Minimal HTTP POST over std::net — one dependency-free request to the
-/// runner's tiny_http server. Returns (status, body). `Connection: close`
+/// runner's shared debug HTTP server. Returns (status, body). `Connection: close`
 /// keeps the read side trivial (read to EOF, split headers off).
 fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
     http_post(addr, "/reload-source", "text/plain", source)

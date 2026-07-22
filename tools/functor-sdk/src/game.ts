@@ -2,6 +2,7 @@ import type { HttpClient } from "./client.js";
 import type {
   InputCommand,
   KeyName,
+  ProjectSources,
   RuntimeState,
   Scene,
   WaitForOptions,
@@ -38,6 +39,11 @@ export class FunctorClient {
     return this.http.getJson<Scene>("/scene");
   }
 
+  /** Current paused-inspector trace JSON. Its nested value schema is open. */
+  trace(): Promise<unknown> {
+    return this.http.getJson<unknown>("/trace");
+  }
+
   /** Keys the runtime currently considers held (structured, game-agnostic). */
   async heldKeys(): Promise<KeyName[]> {
     return (await this.state()).input.held_keys;
@@ -53,6 +59,23 @@ export class FunctorClient {
   /** Capture the next rendered frame as PNG bytes. */
   capture(): Promise<Buffer> {
     return this.http.postBinary("/capture");
+  }
+
+  // --- Program lifecycle --------------------------------------------------
+
+  /** Hot-reload one raw Functor Lang entry source, preserving the model. */
+  reloadSource(source: string): Promise<string> {
+    return this.http.postRawText("/reload-source", source);
+  }
+
+  /** Hot-reload a complete sibling-module project, preserving the model. */
+  reloadProject(files: ProjectSources): Promise<string> {
+    return this.http.postText("/reload-project", files);
+  }
+
+  /** Restore the recorded model and physics state at a rendered frame. */
+  rewind(frame: number): Promise<string> {
+    return this.http.postText("/rewind", { frame });
   }
 
   // --- Drive: input --------------------------------------------------------

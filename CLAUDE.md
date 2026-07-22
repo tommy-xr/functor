@@ -177,6 +177,13 @@ The wasm bundle is unaffected either way: `wasm-pack build` is release by defaul
 ./target/debug/functor -d examples/primitives develop [native|wasm]   # = run; Functor Lang hot-reload is built in
 ```
 
+For Quest build/install, XR-session recovery, live push, raw stereo capture, and
+on-device benchmarking, use the **`vr-device-loop` skill**
+(`.claude/skills/vr-device-loop/`). In particular, recreate `adb forward` after
+every reconnect and wait for `/state`'s frame to advance before capturing; the
+debug server remains reachable while a dozing XR session correctly returns 503
+for `/capture`.
+
 Instead of one `entry`, a project may declare named **`entries`**
 (`{"entries": {"client": "client.fun", "server": "server.fun"}}`) — roles sharing one
 directory of sibling modules (file = module). `--entry <name>` picks the role

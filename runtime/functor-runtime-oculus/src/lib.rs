@@ -25,14 +25,20 @@
 //! fork predates the 0.18 release that shipped GLES/Android support),
 //! `android-activity` instead of the deprecated `ndk-glue`.
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{mpsc, Arc};
+use std::time::Instant;
 
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use cgmath::{Quaternion, Rotation, Vector3};
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::debug_protocol::{
+    CaptureError, DebugRequest, InputCommand, RuntimeInput, RuntimeMouse, RuntimeState,
+    RuntimeView, RuntimeViewport, TimeCommand,
+};
 use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
 use functor_runtime_common::protocol::GameProducer;
-use functor_runtime_common::{Camera, FrameTime, SceneContext, Viewport};
+use functor_runtime_common::{Camera, Frame, FrameTime, GameClock, Key, SceneContext, Viewport};
 use khronos_egl as egl;
 use openxr as xr;
 
@@ -80,7 +86,9 @@ fn init_egl() -> EglContext {
         // Size to the driver's real count — Adreno exposes hundreds, and a
         // truncated list can hide the one config we need (`get_configs` fills
         // only up to the Vec's capacity).
-        let count = instance.get_config_count(display).expect("EGL config count");
+        let count = instance
+            .get_config_count(display)
+            .expect("EGL config count");
         let mut configs = Vec::with_capacity(count);
         instance
             .get_configs(display, &mut configs)
@@ -151,6 +159,7 @@ struct EyeTarget {
     framebuffers: Vec<glow::Framebuffer>,
     width: u32,
     height: u32,
+    capture_supported: bool,
 }
 
 fn create_eye_target(
@@ -161,10 +170,10 @@ fn create_eye_target(
     use glow::HasContext;
     let width = view.recommended_image_rect_width;
     let height = view.recommended_image_rect_height;
-    let swapchain = session
-        .create_swapchain(&xr::SwapchainCreateInfo {
+    let create = |usage_flags| {
+        session.create_swapchain(&xr::SwapchainCreateInfo {
             create_flags: xr::SwapchainCreateFlags::EMPTY,
-            usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::SAMPLED,
+            usage_flags,
             format: COLOR_FORMAT,
             sample_count: 1,
             width,
@@ -173,7 +182,23 @@ fn create_eye_target(
             array_size: 1,
             mip_count: 1,
         })
-        .expect("create swapchain");
+    };
+    // Readback makes the image a transfer source under OpenXR. Prefer a
+    // swapchain that declares that usage, but do not make the entire VR app
+    // unstartable on a runtime that cannot provide it: rendering remains
+    // available and `/capture` reports 503 instead.
+    let base_usage = xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::SAMPLED;
+    let (swapchain, capture_supported) =
+        match create(base_usage | xr::SwapchainUsageFlags::TRANSFER_SRC) {
+            Ok(swapchain) => (swapchain, true),
+            Err(xr::sys::Result::ERROR_FEATURE_UNSUPPORTED) => {
+                log::warn!(
+                    "OpenXR runtime does not support transfer-source swapchains; capture disabled"
+                );
+                (create(base_usage).expect("create swapchain"), false)
+            }
+            Err(error) => panic!("create swapchain: {error}"),
+        };
 
     // Wrap every swapchain image in an FBO with a fresh depth renderbuffer.
     let framebuffers = swapchain
@@ -187,7 +212,9 @@ fn create_eye_target(
                 glow::FRAMEBUFFER,
                 glow::COLOR_ATTACHMENT0,
                 glow::TEXTURE_2D,
-                Some(glow::NativeTexture(std::num::NonZeroU32::new(texture).unwrap())),
+                Some(glow::NativeTexture(
+                    std::num::NonZeroU32::new(texture).unwrap(),
+                )),
                 0,
             );
             let depth = gl.create_renderbuffer().expect("depth rb");
@@ -221,6 +248,7 @@ fn create_eye_target(
         framebuffers,
         width,
         height,
+        capture_supported,
     }
 }
 
@@ -257,7 +285,151 @@ const BOOT_SCENE: &str = include_str!("boot.fun");
 /// The push endpoint's device-loopback port (`adb forward tcp:8123 tcp:8123`).
 const RELOAD_PORT: u16 = 8123;
 
-mod reload_server;
+#[derive(Default)]
+struct DebugLoopState {
+    frame_count: u64,
+    held_keys: BTreeSet<Key>,
+    mouse: (i32, i32),
+    last_frame: Option<Frame>,
+    pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
+}
+
+fn service_debug_request(
+    request: DebugRequest,
+    game: &mut dyn GameProducer,
+    clock: &mut GameClock,
+    debug: &mut DebugLoopState,
+    eyes: &[EyeTarget],
+    session_running: bool,
+) {
+    match request {
+        DebugRequest::Capture(response) => {
+            if !session_running {
+                let _ = response.send(Err(CaptureError::Unavailable(
+                    "capture is unavailable while the XR session is not rendering".to_string(),
+                )));
+            } else if eyes.iter().any(|eye| !eye.capture_supported) {
+                let _ = response.send(Err(CaptureError::Unavailable(
+                    "capture is unsupported by this OpenXR runtime".to_string(),
+                )));
+            } else if debug.pending_capture.is_some() {
+                let _ = response.send(Err(CaptureError::Failed(
+                    "another capture is already pending".to_string(),
+                )));
+            } else {
+                debug.pending_capture = Some(response);
+            }
+        }
+        DebugRequest::State(response) => {
+            let width = eyes
+                .iter()
+                .try_fold(0_u32, |total, eye| total.checked_add(eye.width))
+                .unwrap_or(u32::MAX);
+            let height = eyes.iter().map(|eye| eye.height).max().unwrap_or(0);
+            let names = ["left", "right"];
+            let views = eyes
+                .iter()
+                .enumerate()
+                .map(|(index, eye)| {
+                    RuntimeView::new(
+                        names.get(index).copied().unwrap_or("view"),
+                        eye.width,
+                        eye.height,
+                    )
+                })
+                .collect();
+            let _ = response.send(RuntimeState {
+                frame: debug.frame_count,
+                tts: clock.current_tts(),
+                viewport: RuntimeViewport::new(width, height),
+                views,
+                model: game.state_debug(),
+                input: RuntimeInput {
+                    held_keys: debug.held_keys.iter().copied().collect(),
+                    mouse: RuntimeMouse {
+                        x: debug.mouse.0,
+                        y: debug.mouse.1,
+                    },
+                },
+            });
+        }
+        DebugRequest::Scene(response) => {
+            let json = debug
+                .last_frame
+                .as_ref()
+                .map(|frame| serde_json::to_string_pretty(frame))
+                .transpose()
+                .unwrap_or_else(|error| Some(format!("{{\"error\":{:?}}}", error.to_string())))
+                .unwrap_or_else(|| "{\"error\":\"no frame rendered yet\"}".to_string());
+            let _ = response.send(json);
+        }
+        DebugRequest::Trace(response) => {
+            let _ = response.send(game.inspector_trace(clock.is_paused()));
+        }
+        DebugRequest::Input(command, response) => {
+            let result = match command {
+                InputCommand::Key { key, down } => match Key::from_name(&key) {
+                    Some(key) if down => {
+                        game.key_event(key as i32, true);
+                        debug.held_keys.insert(key);
+                        Ok(())
+                    }
+                    Some(key) => {
+                        if debug.held_keys.remove(&key) {
+                            game.key_event(key as i32, false);
+                        }
+                        Ok(())
+                    }
+                    None => Err(format!("unknown key: {key}")),
+                },
+                InputCommand::MouseMove { x, y } => {
+                    debug.mouse = (x, y);
+                    game.mouse_move(x, y);
+                    Ok(())
+                }
+                InputCommand::MouseWheel { delta } => {
+                    game.mouse_wheel(delta);
+                    Ok(())
+                }
+                InputCommand::UiEvent { slot, kind } => {
+                    game.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    Ok(())
+                }
+                InputCommand::WebviewEvent { slot, kind } => {
+                    game.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    Ok(())
+                }
+            };
+            if clock.is_paused() {
+                game.absorb_paused_input();
+            }
+            let _ = response.send(result);
+        }
+        DebugRequest::Time(command, response) => {
+            match command {
+                TimeCommand::Set { tts } => clock.set(tts),
+                TimeCommand::Advance { dts } => clock.advance(dts),
+                TimeCommand::Resume => clock.resume(),
+            }
+            let _ = response.send(());
+        }
+        DebugRequest::ReloadSource(source, response) => {
+            let _ = response.send(game.reload_source(&source));
+        }
+        DebugRequest::ReloadProject(files, response) => {
+            let _ = response.send(game.reload_project(&files));
+        }
+        DebugRequest::Rewind(frame, response) => {
+            let result = game.rewind_scene_to(frame);
+            if result.is_ok() {
+                if let Some(tts) = game.current_scene_tts() {
+                    clock.rebase(tts as f32);
+                }
+            }
+            let _ = response.send(result);
+        }
+    }
+}
 
 #[no_mangle]
 pub fn android_main(app: AndroidApp) {
@@ -344,9 +516,8 @@ pub fn android_main(app: AndroidApp) {
     // OpenXR: libopenxr_loader.so (Khronos or Meta's) is dlopen'd (the
     // crate's `loaded` feature); the Android loader hook must run before
     // create_instance.
-    let entry = unsafe { xr::Entry::load() }.expect(
-        "load libopenxr_loader.so — is an OpenXR loader bundled in the APK? (see README)",
-    );
+    let entry = unsafe { xr::Entry::load() }
+        .expect("load libopenxr_loader.so — is an OpenXR loader bundled in the APK? (see README)");
     entry
         .initialize_android_loader()
         .expect("initialize android loader");
@@ -387,8 +558,7 @@ pub fn android_main(app: AndroidApp) {
         reqs.max_api_version_supported
     );
     assert!(
-        requested >= reqs.min_api_version_supported
-            && requested <= reqs.max_api_version_supported,
+        requested >= reqs.min_api_version_supported && requested <= reqs.max_api_version_supported,
         "GLES {GLES_MAJOR}.{GLES_MINOR} outside the runtime's supported range"
     );
 
@@ -440,37 +610,27 @@ pub fn android_main(app: AndroidApp) {
 
     // The real Functor Lang producer, booting the embedded scene. A broken embedded
     // scene is a build bug, not a runtime condition — fail loud.
-    let mut game = FunctorLangEmbeddedGame::create(vec![(
-        "boot.fun".to_string(),
-        BOOT_SCENE.to_string(),
-    )])
-    .expect("embedded boot scene loads");
+    let mut game =
+        FunctorLangEmbeddedGame::create(vec![("boot.fun".to_string(), BOOT_SCENE.to_string())])
+            .expect("embedded boot scene loads");
 
-    // The push endpoint: POST /reload-source on device loopback — the dev PC
-    // reaches it via `adb forward tcp:8123 tcp:8123` (see README). A bind
-    // failure (port taken) degrades to boot-scene-only, loudly.
-    let reload_rx = match reload_server::spawn(RELOAD_PORT) {
+    // The isomorphic debug endpoint lives on device loopback. The dev PC and
+    // browser reach it through `adb forward tcp:8123 tcp:8123` (see README).
+    // A bind failure degrades to a standalone boot scene, loudly.
+    let debug_rx = match functor_runtime_common::debug_http::spawn(("127.0.0.1", RELOAD_PORT)) {
         Ok(rx) => {
-            log::info!("reload endpoint: POST http://127.0.0.1:{RELOAD_PORT}/reload-source");
+            log::info!("debug endpoint: http://127.0.0.1:{RELOAD_PORT}");
             Some(rx)
         }
         Err(error) => {
-            log::error!("reload endpoint failed to bind port {RELOAD_PORT}: {error}");
+            log::error!("debug endpoint failed to bind port {RELOAD_PORT}: {error}");
             None
         }
     };
 
-    let start = std::time::Instant::now();
-    // Lazy: seconds pass between android_main and the first rendered frame
-    // (session READY), and the session can pause — the first frame after
-    // either must not hand the game a giant dts.
-    let mut last_tts: Option<f32> = None;
-    // Freeze the game clock across session pauses (headset off, system
-    // menu): paused wall-clock must not enter `tts`, or the first resumed
-    // frame hands the game the whole gap as `dts` and fires subscriptions
-    // over it in one burst.
-    let mut paused_offset = std::time::Duration::ZERO;
-    let mut paused_at: Option<std::time::Instant> = None;
+    let mut clock = GameClock::new(None);
+    let mut last_frame_at: Option<Instant> = None;
+    let mut debug = DebugLoopState::default();
     let mut session_running = false;
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
@@ -513,17 +673,18 @@ pub fn android_main(app: AndroidApp) {
                                 .begin(xr::ViewConfigurationType::PRIMARY_STEREO)
                                 .expect("session begin");
                             session_running = true;
-                            if let Some(paused) = paused_at.take() {
-                                paused_offset += paused.elapsed();
-                            }
+                            // The system-menu/headset-off gap is not game time.
+                            last_frame_at = None;
                         }
                         xr::SessionState::STOPPING => {
+                            if let Some(response) = debug.pending_capture.take() {
+                                let _ = response.send(Err(CaptureError::Unavailable(
+                                    "capture cancelled because the XR session stopped".to_string(),
+                                )));
+                            }
                             session.end().expect("session end");
                             session_running = false;
-                            paused_at = Some(std::time::Instant::now());
-                            // Belt-and-braces with the frozen clock: the
-                            // first resumed frame gets dts = 0.
-                            last_tts = None;
+                            last_frame_at = None;
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
                             quit = true;
@@ -536,16 +697,19 @@ pub fn android_main(app: AndroidApp) {
             }
         }
 
-        // Apply pushed reloads BEFORE the session gate: the producer needs no
-        // GL/XR to swap programs, so a push lands even while the headset
-        // dozes (session IDLE) — it shows the moment the session resumes.
-        if let Some(rx) = &reload_rx {
-            while let Ok((body, resp)) = rx.try_recv() {
-                let result = match body {
-                    reload_server::ReloadBody::Source(source) => game.reload_source(&source),
-                    reload_server::ReloadBody::Project(files) => game.reload_project(&files),
-                };
-                let _ = resp.send(result);
+        // Service debug requests before the XR session gate. Source reload,
+        // state, trace, input, and time control remain useful while the headset
+        // dozes; capture reports an honest 503 until rendering resumes.
+        if let Some(rx) = &debug_rx {
+            while let Ok(request) = rx.try_recv() {
+                service_debug_request(
+                    request,
+                    &mut game,
+                    &mut clock,
+                    &mut debug,
+                    &eyes,
+                    session_running,
+                );
             }
         }
 
@@ -558,6 +722,15 @@ pub fn android_main(app: AndroidApp) {
         frame_stream.begin().expect("frame begin");
 
         if !xr_frame_state.should_render {
+            // READY can remain true while the compositor temporarily declines
+            // pixels. Do not strand a request until the HTTP timeout (or make
+            // every retry report "already pending"); answer honestly now.
+            if let Some(response) = debug.pending_capture.take() {
+                let _ = response.send(Err(CaptureError::Unavailable(
+                    "capture is unavailable because the XR compositor declined rendering"
+                        .to_string(),
+                )));
+            }
             frame_stream
                 .end(
                     xr_frame_state.predicted_display_time,
@@ -576,20 +749,24 @@ pub fn android_main(app: AndroidApp) {
             )
             .expect("locate views");
 
-        // Frame time from the pause-frozen wall clock; fixed-timestep
-        // sub-frames (the desktop GameClock pattern) are a follow-up.
-        let tts = start.elapsed().saturating_sub(paused_offset).as_secs_f32();
+        let now = Instant::now();
+        let real_delta = last_frame_at
+            .replace(now)
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        let sub_frames = clock.fixed_frames(real_delta);
         let frame_time = FrameTime {
-            dts: last_tts.map_or(0.0, |last| tts - last),
-            tts,
+            dts: 0.0,
+            tts: clock.current_tts(),
         };
-        last_tts = Some(tts);
 
         // The game produces this frame (subscriptions → update → tick →
         // physics inside `tick`; `render` = the pure `draw`). The game's own
         // camera is ignored below — per-eye HMD-pose cameras own the view.
         game.check_hot_reload(frame_time.clone());
-        game.tick(frame_time.clone());
+        for sub_frame in &sub_frames {
+            game.tick(sub_frame.clone());
+            debug.frame_count += 1;
+        }
         let frame = game.render(frame_time.clone());
         // No audio/HTTP/preload/asset hosts on device yet (M1): drain the
         // command queues so they don't grow unbounded (and
@@ -600,6 +777,10 @@ pub fn android_main(app: AndroidApp) {
         let _ = game.net_drain_commands();
         let _ = game.net_drain_conn_commands();
         let _ = game.preload_drain_commands();
+
+        let capture_due = debug.pending_capture.is_some();
+        let mut captured_eyes = capture_due.then(Vec::new);
+        let mut capture_error = None;
 
         for (eye, view) in eyes.iter_mut().zip(views.iter()) {
             use glow::HasContext;
@@ -632,6 +813,19 @@ pub fn android_main(app: AndroidApp) {
                 Viewport::new(eye.width, eye.height),
                 functor_runtime_common::DebugRenderMode::Default,
             );
+            if let Some(captured) = &mut captured_eyes {
+                // A render-target pass is allowed to change the ambient FBO;
+                // bind the swapchain image explicitly at the readback seam.
+                unsafe {
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(eye.framebuffers[image_index]));
+                    match functor_runtime_common::frame_capture::read_bound_framebuffer_rgba(
+                        &gl, eye.width, eye.height,
+                    ) {
+                        Ok(pixels) => captured.push(pixels),
+                        Err(error) => capture_error = Some(error),
+                    }
+                }
+            }
             unsafe {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             }
@@ -668,7 +862,41 @@ pub fn android_main(app: AndroidApp) {
                     .views(&projection_views)],
             )
             .expect("frame end");
+
+        // The current frame is no longer borrowed by either eye. Move it into
+        // the inspector cache instead of cloning its scene every rendered tick.
+        debug.last_frame = Some(frame);
+        if let Some(response) = debug.pending_capture.take() {
+            let result = if let Some(error) = capture_error {
+                Err(CaptureError::Failed(error))
+            } else if eyes.len() != 2 || captured_eyes.as_ref().map(Vec::len) != Some(2) {
+                Err(CaptureError::Failed(format!(
+                    "stereo capture requires two rendered views (got {})",
+                    captured_eyes.as_ref().map_or(0, Vec::len)
+                )))
+            } else if eyes[0].width != eyes[1].width || eyes[0].height != eyes[1].height {
+                Err(CaptureError::Failed(format!(
+                    "stereo capture requires equal eye sizes (left {}x{}, right {}x{})",
+                    eyes[0].width, eyes[0].height, eyes[1].width, eyes[1].height
+                )))
+            } else {
+                let captured = captured_eyes.expect("two captured views checked above");
+                functor_runtime_common::frame_capture::encode_stereo_side_by_side_png(
+                    eyes[0].width,
+                    eyes[0].height,
+                    &captured[0],
+                    &captured[1],
+                )
+                .map_err(CaptureError::Failed)
+            };
+            let _ = response.send(result);
+        }
     }
 
+    if let Some(response) = debug.pending_capture.take() {
+        let _ = response.send(Err(CaptureError::Unavailable(
+            "capture cancelled because the XR runtime is exiting".to_string(),
+        )));
+    }
     log::info!("functor oculus runtime exiting");
 }

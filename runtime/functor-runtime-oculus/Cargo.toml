@@ -35,7 +35,7 @@ glow = "0.17"
 cgmath = "0.18"
 log = "0.4"
 android_logger = "0.14"
-# The /reload-project wire body: a JSON array of (path, source) pairs.
+# Frame/trace debug responses.
 serde_json = "1.0"
 
 # cargo-apk packaging metadata (`cargo apk build` from this directory).

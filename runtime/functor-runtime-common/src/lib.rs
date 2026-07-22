@@ -54,10 +54,14 @@ pub mod asset;
 pub mod audio;
 mod camera;
 pub mod composite;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod debug_http;
+pub mod debug_protocol;
 pub mod events;
 pub mod fog;
 pub mod gpu_counters;
 mod frame;
+pub mod frame_capture;
 mod frame_time;
 pub mod game_clock;
 pub mod geometry;

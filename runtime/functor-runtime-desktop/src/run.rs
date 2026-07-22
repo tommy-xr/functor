@@ -79,37 +79,11 @@ fn map_key(key: Key) -> InputKey {
     }
 }
 
-/// Map a key name (case-insensitive: "w", "Up", "space", …) to the canonical
-/// engine key, for the debug server's POST /input. Letters rely on the
-/// contiguous A..Z discriminants.
-fn key_from_str(name: &str) -> Option<InputKey> {
-    let name = name.to_ascii_lowercase();
-    if name.len() == 1 {
-        let c = name.as_bytes()[0];
-        if c.is_ascii_lowercase() {
-            return InputKey::from_i32((c - b'a') as i32 + InputKey::A as i32);
-        }
-        if c.is_ascii_digit() {
-            return InputKey::from_i32((c - b'0') as i32 + InputKey::Num0 as i32);
-        }
-    }
-    match name.as_str() {
-        "up" => Some(InputKey::Up),
-        "down" => Some(InputKey::Down),
-        "left" => Some(InputKey::Left),
-        "right" => Some(InputKey::Right),
-        "space" => Some(InputKey::Space),
-        "enter" => Some(InputKey::Enter),
-        "escape" => Some(InputKey::Escape),
-        _ => None,
-    }
-}
-
 /// Parse an `--input-script` file into a frame → events map for deterministic
 /// scripted playback (docs/time-travel.md T6b). Each non-blank, non-comment
 /// line is `<frame:int> <KeyName> <down|up>` — e.g. `0 Right down`, `18 Up down`.
 /// `#` starts a comment (to end of line); the key name goes through the same
-/// `key_from_str` map the debug server's POST /input uses. Events are stored as
+/// [`InputKey::from_name`] map the debug server's POST /input uses. Events are stored as
 /// raw `RecordedInput::Key` so playback re-runs the identical live input path.
 fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, String> {
     let text = std::fs::read_to_string(path)
@@ -130,7 +104,7 @@ fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, St
         let frame: u64 = parts[0]
             .parse()
             .map_err(|_| format!("{path}:{lineno}: bad frame number `{}`", parts[0]))?;
-        let key = key_from_str(parts[1])
+        let key = InputKey::from_name(parts[1])
             .ok_or_else(|| format!("{path}:{lineno}: unknown key `{}`", parts[1]))?;
         let is_down = match parts[2].to_ascii_lowercase().as_str() {
             "down" => true,
@@ -396,51 +370,13 @@ fn parse_stereo_ipd(s: &str) -> Result<f32, String> {
     Ok(v)
 }
 
-/// Read back the framebuffer just rendered (called before swap_buffers, so the
-/// back buffer) and encode it as PNG bytes. Returns an error string if the
-/// readback can't be turned into a valid image. Shared by `--capture-frame`
-/// (writes the bytes to a file) and the debug server's `POST /capture` (streams
-/// the bytes back over HTTP), so both produce byte-identical PNGs.
-unsafe fn encode_framebuffer_png(
-    gl: &glow::Context,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, String> {
-    let stride = (width * 4) as usize;
-    let mut pixels = vec![0u8; stride * height as usize];
-    gl.read_pixels(
-        0,
-        0,
-        width as i32,
-        height as i32,
-        glow::RGBA,
-        glow::UNSIGNED_BYTE,
-        glow::PixelPackData::Slice(Some(&mut pixels)),
-    );
-
-    // GL rows are bottom-up; flip into image (top-down) order.
-    let mut flipped = vec![0u8; pixels.len()];
-    for row in 0..height as usize {
-        let src = (height as usize - 1 - row) * stride;
-        flipped[row * stride..(row + 1) * stride].copy_from_slice(&pixels[src..src + stride]);
-    }
-
-    let img = image::RgbaImage::from_raw(width, height, flipped)
-        .ok_or_else(|| "framebuffer size mismatch".to_string())?;
-    let mut bytes: Vec<u8> = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut bytes),
-        image::ImageFormat::Png,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(bytes)
-}
-
 /// Read back the framebuffer and write it as a PNG file. Exits the process with
 /// an error if the capture cannot be written, so scripts don't mistake a failed
 /// capture for a pass.
 unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path: &str) {
-    let result = encode_framebuffer_png(gl, width, height)
+    let result = functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
+        gl, width, height,
+    )
         .and_then(|bytes| std::fs::write(path, bytes).map_err(|e| e.to_string()));
     match result {
         Ok(()) => functor_runtime_common::events::emit(
@@ -563,11 +499,16 @@ fn service_debug_request(
             let _ = resp.send(debug_server::RuntimeState {
                 frame: frame_count,
                 tts,
-                width,
-                height,
+                viewport: debug_server::RuntimeViewport::new(width, height),
+                views: vec![debug_server::RuntimeView::new("main", width, height)],
                 model: game.state_debug(),
-                held_keys: held_keys.iter().copied().collect(),
-                mouse: *mouse_pos,
+                input: debug_server::RuntimeInput {
+                    held_keys: held_keys.iter().copied().collect(),
+                    mouse: debug_server::RuntimeMouse {
+                        x: mouse_pos.0,
+                        y: mouse_pos.1,
+                    },
+                },
             });
         }
         debug_server::DebugRequest::Scene(resp) => {
@@ -583,6 +524,9 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::ReloadSource(source, resp) => {
             let _ = resp.send(game.reload_source(&source));
+        }
+        debug_server::DebugRequest::ReloadProject(files, resp) => {
+            let _ = resp.send(game.reload_project(&files));
         }
         debug_server::DebugRequest::Rewind(frame, resp) => {
             let result = game.rewind_scene_to(frame);
@@ -615,7 +559,7 @@ fn service_debug_request(
                             }
                             Ok(())
                         } else {
-                            match key_from_str(&key) {
+                            match InputKey::from_name(&key) {
                                 Some(k) => {
                                     game.key_event(k as i32, true);
                                     held_keys.insert(k);
@@ -625,7 +569,7 @@ fn service_debug_request(
                             }
                         }
                     } else {
-                        match key_from_str(&key) {
+                        match InputKey::from_name(&key) {
                             Some(k) => {
                                 // Deliver the release only if the game saw
                                 // the press (mirrors the GLFW release arm).
@@ -2229,7 +2173,11 @@ Escape again to quit"
                         },
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
-                            encode_framebuffer_png(&gl, fb_width as u32, fb_height as u32)
+                            functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
+                                &gl,
+                                fb_width as u32,
+                                fb_height as u32,
+                            )
                                 .map_err(debug_server::CaptureError::Failed)
                         },
                     );

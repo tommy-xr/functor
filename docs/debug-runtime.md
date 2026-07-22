@@ -1,13 +1,12 @@
 # Debug runtime
 
-An optional HTTP control server on the desktop runtime (run in-process by the `functor`
-CLI) that lets
+An HTTP control server shared by the desktop and Quest runtimes that lets
 an external client — a script, a test, or an LLM — **observe** and **drive** a running
 game without a GPU window of its own. It is the runtime arm of Functor's LLM-native
 goal: capture frames, query state, control the frame clock, and inject input over a
 localhost socket.
 
-Start it by passing `--debug-port <PORT>`:
+On desktop, start it by passing `--debug-port <PORT>`:
 
 ```sh
 # the CLI runs the game in-process and interprets the .fun
@@ -19,6 +18,23 @@ exposes it to the LAN for remote develop (see `POST /reload-source`) — there i
 so bind wide only on networks where arbitrary game-code pushes are acceptable. HTTP
 handlers never touch GL; each request is handed to the render loop and fulfilled once
 per frame.
+
+On Quest the same protocol is always available on device loopback port 8123.
+Forward it over USB, then use the same `curl` or SDK calls:
+
+```sh
+adb forward tcp:8123 tcp:8123
+curl -s localhost:8123/ | jq
+```
+
+The wire surface is intentionally isomorphic. Target differences appear as data:
+desktop `/state.views` contains one `main` view, while Quest contains `left` and
+`right`; Quest `/capture` is a side-by-side PNG of those two raw eye buffers.
+The server answers browser CORS/private-network preflights for a **locally served**
+web IDE. Browser origins are accepted only when their host is exactly `localhost`,
+`127.0.0.1`, or `[::1]`; hosted sites are rejected so they cannot drive the
+unauthenticated developer control port. Close the adb forward and desktop runner
+when they are not in use.
 
 ## Headless mode
 
@@ -60,12 +76,14 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, `viewport`, `input` (structured `held_keys` + `mouse`), `model` (Rust `Debug` text) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse`), `model` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
 | `POST /time` | control the frame clock (see below) |
 | `POST /reload-source` | swap game logic from the request body (see below) |
+| `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first |
+| `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
 
 ### `POST /input`
 
@@ -115,6 +133,9 @@ functor -d mygame push <host>:<port> --watch  # re-push on every save
 
 (`curl --data-binary @game.fun http://<host>:<port>/reload-source` works too.)
 
+`functor run vr` uses `/reload-project`, so sibling `.fun`/`.funi` modules have
+the same file-as-module behavior on Quest as on desktop.
+
 ## Two workflows
 
 **Observe a human playing.** Leave the clock on wall-clock and poll:
@@ -140,7 +161,9 @@ curl -s -X POST $H/capture -o step.png
 ## Tooling
 
 A typed TypeScript SDK over these endpoints (single-client + a multi-client lockstep
-session for simulating multiplayer games) lives in `tools/functor-sdk` *(planned)*.
+session for simulating multiplayer games) lives in `tools/functor-sdk`. A client can
+point at either `http://127.0.0.1:8077` (desktop) or the adb-forwarded
+`http://127.0.0.1:8123` (Quest) without changing API calls.
 
 ## Future directions
 
@@ -151,4 +174,3 @@ session for simulating multiplayer games) lives in `tools/functor-sdk` *(planned
 - **Richer observation.** `/state.input` now reports held keys + mouse as structured
   JSON (game-agnostic, runtime-owned). Still open: a parseable snapshot of the game
   *model* itself (today `Debug` text — the model isn't `Serialize`).
-- **Discoverability/ergonomics.** First-class `pause` / single-`step` verbs.

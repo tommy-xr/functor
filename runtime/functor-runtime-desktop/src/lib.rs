@@ -15,7 +15,7 @@ pub mod game;
 pub mod functor_lang_game;
 
 // The run loop and its supporting modules pull native-only deps (glfw, tokio,
-// reqwest, rodio, tiny_http, …) declared under this crate's
+// reqwest, rodio, …) declared under this crate's
 // `cfg(not(wasm32))` target section, so they are gated to native builds. The
 // wasm-visible surface stays exactly `game` + `functor_lang_game` (the producers).
 #[cfg(not(target_arch = "wasm32"))]

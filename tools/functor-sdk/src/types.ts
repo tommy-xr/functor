@@ -14,13 +14,27 @@ export interface InputSnapshot {
   mouse: { x: number; y: number };
 }
 
+export interface RuntimeViewport {
+  width: number;
+  height: number;
+}
+
+/** One render view. Desktop reports `main`; stereo XR reports `left` and
+ * `right`. Names are intentionally open-ended for future runtime targets. */
+export interface RuntimeView {
+  name: string;
+  viewport: RuntimeViewport;
+}
+
 /** Runtime state from `GET /state`. `input` is structured and game-agnostic;
  * `model` is the game model rendered with Rust's pretty-`Debug` (not structured
  * JSON), so reading fields from it is best-effort string matching. */
 export interface RuntimeState {
   frame: number;
   tts: number;
-  viewport: { width: number; height: number };
+  /** Combined/legacy output extent. Use `views` when view identity matters. */
+  viewport: RuntimeViewport;
+  views: RuntimeView[];
   input: InputSnapshot;
   model: string;
 }
@@ -49,7 +63,17 @@ export interface Scene {
 export type InputCommand =
   | { type: "key"; key: string; down: boolean }
   | { type: "mouse_move"; x: number; y: number }
-  | { type: "mouse_wheel"; delta: number };
+  | { type: "mouse_wheel"; delta: number }
+  | { type: "ui_event"; slot: number; kind: UiEventKind }
+  | { type: "webview_event"; slot: number; kind: UiEventKind };
+
+export type UiEventKind =
+  | "Clicked"
+  | { SliderChanged: number }
+  | { TextChanged: string };
+
+/** Whole-project wire body for `POST /reload-project`, entry file first. */
+export type ProjectSources = Array<[path: string, source: string]>;
 
 /** Options for polling helpers like `waitFor` / `waitForState`. */
 export interface WaitForOptions {
