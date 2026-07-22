@@ -21,9 +21,18 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="landing-page">
+    <!-- Backdrop: a slow cyan/violet/pink aurora wash. Purely decorative. -->
+    <div class="site-backdrop" aria-hidden="true"></div>
+
     <header class="site-header">
       <a class="wordmark" href="./"><svg class="wordmark-mark" viewBox="366 163 385 690" fill="currentColor" aria-hidden="true"><path d="M382 341 545 179H735L615 300H548L382 466Z"/><path d="M382 493 497 380V748L382 837Z"/><path d="M518 426H693L597 522H518Z"/></svg>FUNCTOR</a>
       <span class="version-badge" title="Functor is alpha software — everything may change between releases">alpha</span>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" hidden />
+      <label class="nav-burger" for="nav-toggle" aria-label="Toggle menu">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
+        </svg>
+      </label>
       <nav class="site-nav">
         <a href="sandbox.html">Sandbox</a>
         <a href="docs.html">Docs</a>
@@ -36,15 +45,13 @@
     <section class="hero">
       <div class="hero-copy">
         <h1 class="hero-title">FUNCTOR</h1>
-        <p class="hero-tagline">A functional toolkit for 3D games.</p>
+        <p class="hero-tagline">Game development from an alternate timeline.</p>
         <p class="hero-sub">
-          Write your game in Functor Lang — a tiny interpreted language — and edit it live while
-          it runs, with the model preserved mid-frame. Every session records itself, so you can
-          pause the running game and scrub back through its timeline.
+          A free, open-source 3D game engine.
         </p>
         <div class="hero-actions">
           <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
-          <a class="button-ghost" href="docs.html">Get started</a>
+          <a class="button-pink" href="docs.html">Get started</a>
         </div>
       </div>
       <div class="hero-demo">
@@ -58,119 +65,109 @@
           <!-- Reserved slot: commit 5 mounts a small editable code panel here. -->
           <div id="hero-editor" class="hero-editor" hidden></div>
         </div>
-        <p class="hero-caption">
-          This is live. Change a number and watch it take hold mid-wave — or drag the
-          timeline to rewind the scene.
-        </p>
       </div>
     </section>
 
-    <section class="code-sample">
-      <h2>The language</h2>
-      <p>
-        Model–View–Update, all the way down. This is real Functor Lang — hit
-        <strong>▶ try it</strong> to open it live in the sandbox.
-      </p>
-      <pre><code><span class="tok-c">// a pulsing sphere with a beat counter</span>
-<span class="tok-k">type</span> <span class="tok-t">Msg</span> = | <span class="tok-t">Beat</span>
-
-<span class="tok-k">let</span> init = { spin: <span class="tok-n">0.0</span>, beat: <span class="tok-n">0.0</span> }
-
-<span class="tok-k">let</span> tick = (model, dt: <span class="tok-t">Float</span>, tts: <span class="tok-t">Float</span>) =>
-  { model <span class="tok-k">with</span> spin: model.spin + dt }
-
-<span class="tok-k">let</span> update = (model, msg) =>
-  <span class="tok-k">match</span> msg <span class="tok-k">with</span>
-  | <span class="tok-t">Beat</span> => { model <span class="tok-k">with</span> beat: model.beat + <span class="tok-n">1.0</span> }
-
-<span class="tok-k">let</span> subscriptions = (model) => <span class="tok-t">Sub</span>.every(<span class="tok-t">Time</span>.seconds(<span class="tok-n">1.0</span>), <span class="tok-t">Beat</span>)
-
-<span class="tok-k">let</span> draw = (model, tts: <span class="tok-t">Float</span>) =>
-  <span class="tok-t">Frame</span>.create(
-    <span class="tok-t">Camera</span>.lookAt(<span class="tok-n">0.0</span>, <span class="tok-n">2.0</span>, <span class="tok-n">-6.0</span>, <span class="tok-n">0.0</span>, <span class="tok-n">0.0</span>, <span class="tok-n">0.0</span>),
-    <span class="tok-t">Scene</span>.sphere()
-      |> <span class="tok-t">Scene</span>.emissive(<span class="tok-n">1.0</span>, <span class="tok-n">0.3</span>, <span class="tok-n">0.8</span>)
-      |> <span class="tok-t">Scene</span>.scale(<span class="tok-n">1.0</span> + <span class="tok-n">0.2</span> * <span class="tok-t">Math</span>.sin(model.spin * <span class="tok-n">4.0</span>)))</code><a
-        class="try-button"
-        href="sandbox.html#src=Ly8gYSBwdWxzaW5nIHNwaGVyZSB3aXRoIGEgYmVhdCBjb3VudGVyCnR5cGUgTXNnID0gfCBCZWF0CgpsZXQgaW5pdCA9IHsgc3BpbjogMC4wLCBiZWF0OiAwLjAgfQoKbGV0IHRpY2sgPSAobW9kZWwsIGR0OiBGbG9hdCwgdHRzOiBGbG9hdCkgPT4KICB7IG1vZGVsIHdpdGggc3BpbjogbW9kZWwuc3BpbiArIGR0IH0KCmxldCB1cGRhdGUgPSAobW9kZWwsIG1zZykgPT4KICBtYXRjaCBtc2cgd2l0aAogIHwgQmVhdCA9PiB7IG1vZGVsIHdpdGggYmVhdDogbW9kZWwuYmVhdCArIDEuMCB9CgpsZXQgc3Vic2NyaXB0aW9ucyA9IChtb2RlbCkgPT4gU3ViLmV2ZXJ5KFRpbWUuc2Vjb25kcygxLjApLCBCZWF0KQoKbGV0IGRyYXcgPSAobW9kZWwsIHR0czogRmxvYXQpID0-CiAgRnJhbWUuY3JlYXRlKAogICAgQ2FtZXJhLmxvb2tBdCgwLjAsIDIuMCwgLTYuMCwgMC4wLCAwLjAsIDAuMCksCiAgICBTY2VuZS5zcGhlcmUoKQogICAgICB8PiBTY2VuZS5lbWlzc2l2ZSgxLjAsIDAuMywgMC44KQogICAgICB8PiBTY2VuZS5zY2FsZSgxLjAgKyAwLjIgKiBNYXRoLnNpbihtb2RlbC5zcGluICogNC4wKSkp"
-        title="Open this program live in the sandbox"
-        target="_blank"
-        >▶ try it</a></pre>
+    <section class="fun-interstitial">
+      <p>Put the <span class="fun-accent">fun</span> in functional programming.</p>
     </section>
 
     <section class="differentiators">
-      <h2 class="section-title">What makes it different</h2>
+      <h2 class="section-title">Features</h2>
       <div class="features">
         <div class="feature">
-          <h2>Whole-game time travel</h2>
+          <h2>Instant Feedback</h2>
           <p>
-            Every session records itself as it runs. Pause, drag the timeline back, and
-            single-step forward — the whole game replays, deterministically.
+            Edit your game while it runs. The runtime swaps your code under the live model —
+            no rebuild, no restart, no losing your place.
           </p>
         </div>
         <div class="feature">
-          <h2>State-preserving hot reload</h2>
+          <h2>Travel Through Time</h2>
           <p>
-            Save an edit and the runtime swaps the program under the running model. Closures
-            rebind to the new code and their captured values carry over — the ball keeps bouncing,
-            mid-arc, with your new gravity.
+            Rewind while editing, make changes, or extrapolate forward to see how your edits
+            ripple through gameplay.
           </p>
         </div>
         <div class="feature">
-          <h2>Pure MVU + honest effects</h2>
+          <h2>Batteries Included</h2>
           <p>
-            A game is pure Model–View–Update. Effects are values too — randomness, time, network —
-            performed by the shell and folded back through <code>update</code>.
+            Asset management, networking, physics, and spatial audio — in the box, ready to use.
           </p>
         </div>
         <div class="feature">
-          <h2>One source, every target</h2>
+          <h2>Introspective</h2>
           <p>
-            The same <code>.fun</code> runs on desktop GL, browser WebGL2, and Quest OpenXR — one
-            renderer behind all three: primitives, glTF, lighting and shadows, physics, spatial
-            audio.
+            Analyze the live values coursing through your game at any moment — nothing is hidden
+            behind opaque binary state.
+          </p>
+        </div>
+        <div class="feature">
+          <h2>LLM-Native</h2>
+          <p>
+            Games run and respond headlessly, so your favorite coding agent can build right
+            alongside you.
           </p>
         </div>
       </div>
-      <p class="llm-banner">
-        <strong>LLM-native.</strong> The runtime is introspectable at runtime: a text-only path
-        with no GPU window, live evaluation, and serializable state an agent can drive and observe.
-      </p>
     </section>
 
     <section class="how-it-works">
-      <h2>How it works</h2>
-      <ol>
-        <li>
-          <strong>Games are written in Functor Lang</strong> — a small, interpreted, F#-inspired functional
-          language. There is no compile step: the source ships as text and a tree-walking
-          interpreter inside the runtime evaluates it, natively and in the browser.
-        </li>
-        <li>
-          <strong>Because there is no build, the same source runs live in the browser</strong> —
-          that is the in-page <a href="sandbox.html">sandbox</a>: edit the code and the runtime
-          swaps the program under the running model, no rebuild.
-        </li>
-        <li>
-          <strong>The runtime is the imperative shell</strong>: rendering, input, physics
-          stepping, audio, networking. Your game stays a pure
-          <code>model → Frame</code> function.
-        </li>
-      </ol>
+      <h2>How does it work?</h2>
+      <p>
+        Functor is a functional language built for game development, inspired by Elm and F#.
+        Pure functions, interpreted, no compilation. Functor lives in a Rust runtime that does
+        the heavy lifting — graphics and physics.
+      </p>
+    </section>
+
+    <section class="platforms">
+      <h2 class="section-title">Build and run anywhere</h2>
+      <div class="platform-grid">
+        <div class="platform">
+          <div class="platform-icons">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.2 4v7.1H3zm8.4-1.3L21 2.5v8.6h-9.6zM3 12.9h7.2V20L3 18.9zm8.4 0H21v8.6l-9.6-1.3z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.22-3.91-1.21-1.77-3.1-2.02-3.77-2.05-1.6-.16-3.13.94-3.94.94-.81 0-2.07-.92-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.83 1.3 10.4.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.29-1.28 3.15-2.54.99-1.46 1.4-2.87 1.42-2.94-.03-.01-2.72-1.04-2.75-4.13zM14.6 4.6c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg>
+          </div>
+          <h3>Native</h3>
+          <p>Windows · macOS</p>
+        </div>
+        <div class="platform">
+          <div class="platform-icons">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.5 3.9 5.7 3.9 9s-1.4 6.5-3.9 9c-2.5-2.5-3.9-5.7-3.9-9S9.5 5.5 12 3z" /></svg>
+          </div>
+          <h3>Browser</h3>
+          <p>WebAssembly · no install</p>
+        </div>
+        <div class="platform">
+          <div class="platform-icons">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4.2 8.5h15.6c.94 0 1.7.76 1.7 1.7v3.4c0 .94-.76 1.7-1.7 1.7h-3.9c-.53 0-1.03-.25-1.35-.68l-1.03-1.37c-.68-.9-2.06-.9-2.74 0l-1.03 1.37c-.32.43-.82.68-1.35.68H4.2c-.94 0-1.7-.76-1.7-1.7v-3.4c0-.94.76-1.7 1.7-1.7z" /></svg>
+          </div>
+          <h3>VR</h3>
+          <p>Meta Quest</p>
+        </div>
+      </div>
     </section>
 
     <section class="cta-band">
       <h2>Build a game as a pure function.</h2>
-      <p>Nothing to install — write Functor Lang in the browser and watch it hot-reload live.</p>
+      <p>Nothing to install — try in the browser now.</p>
       <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
     </section>
 
-    <hr class="gradient-rule" />
-
     <footer class="landing-footer">
-      <p>
-        <a href="https://github.com/tommy-xr/functor">github.com/tommy-xr/functor</a>
-        · built with functor — the demo above is a <code>.fun</code> file
+      <div class="footer-brand">
+        <svg class="wordmark-mark" viewBox="366 163 385 690" fill="currentColor" aria-hidden="true"><path d="M382 341 545 179H735L615 300H548L382 466Z"/><path d="M382 493 497 380V748L382 837Z"/><path d="M518 426H693L597 522H518Z"/></svg>
+        <span>FUNCTOR</span>
+      </div>
+      <nav class="footer-links">
+        <a href="sandbox.html">Sandbox</a>
+        <a href="docs.html">Docs</a>
+        <a href="https://github.com/tommy-xr/functor">GitHub</a>
+      </nav>
+      <p class="footer-tagline">
+        Free &amp; open source ·
+        <a href="https://github.com/tommy-xr/functor/blob/main/LICENSE">MIT License</a>
       </p>
     </footer>
 

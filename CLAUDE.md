@@ -269,6 +269,18 @@ assembles the GIF, hosts the binaries in a gist, and embeds them in the PR body 
 and it runs the capture in a subagent so the image-heavy work stays out of the
 main context.
 
+## The marketing site (`site/`)
+
+When working on the marketing site (`site/` — the landing page, sandbox, and docs;
+static HTML/CSS/JS built by `site/build.mjs`, served with `npm run site:serve`),
+**use the `frontend-design` skill** for any visual/layout/copy work. It calibrates the
+design toward a distinctive, intentional aesthetic and away from generic defaults —
+load it before editing markup or styles. The site has an established look (synthwave:
+dark-violet base, cyan primary + pink accent, Orbitron display / JetBrains Mono body,
+a shared spacing scale in `:root`); extend that system rather than inventing a new one,
+and verify changes by building and screenshotting (headless Chrome via Playwright works)
+across desktop **and** mobile widths.
+
 ## Performance-sensitive changes
 
 Whenever a change touches a **per-frame hot path** — the interpreter/evaluator
