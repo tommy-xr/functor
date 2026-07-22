@@ -78,7 +78,8 @@ pub const PROTOCOL_VERSION: u32 = 2;
 /// inbox scalars, `render` returns the [`crate::Frame`]).
 ///
 /// Impls: the Functor Lang interpreter producers `FunctorLangGame` / `ReplayGame` (desktop)
-/// and `FunctorLangWebGame` (web). The seam exists so a producer can be swapped
+/// and the shared `FunctorLangEmbeddedGame` (web + Quest, via a `ProducerPlatform`).
+/// The seam exists so a producer can be swapped
 /// without the shells knowing what language or pipeline produced the logic —
 /// see `docs/functor-lang.md`, Track A2.
 ///

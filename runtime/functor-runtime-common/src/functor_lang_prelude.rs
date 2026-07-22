@@ -541,11 +541,10 @@ pub(crate) fn epoch_seconds() -> f64 {
     }
 }
 
-/// Milliseconds on the shared portable clock (see [`epoch_seconds`]). `pub` so
-/// both producers — the embedded one in this crate and the web one in the
-/// separate `functor-runtime-web` crate — time reloads/rewinds/seeks with the
-/// same clock instead of each reaching for a platform-specific `Date::now()`.
-pub fn now_ms() -> f64 {
+/// Milliseconds on the shared portable clock (see [`epoch_seconds`]). The
+/// embedded producer times reloads/rewinds/seeks with it — one portable clock
+/// instead of a platform-specific `Date::now()`.
+pub(crate) fn now_ms() -> f64 {
     epoch_seconds() * 1000.0
 }
 
