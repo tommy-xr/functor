@@ -29,7 +29,8 @@
     "test:site": "node e2e/site-sandbox.mjs",
     "test:ide": "node e2e/ide-project.mjs",
     "test:ide-page": "node e2e/ide-page.mjs",
-    "demo:time-travel": "node site/demos/time-travel.mjs"
+    "demo:time-travel": "node site/demos/time-travel.mjs",
+    "demo:instant-feedback": "node site/demos/instant-feedback.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
