@@ -4,20 +4,21 @@ The Quest (Meta Horizon OS) runtime shell: an OpenXR + EGL/GLES Android
 `cdylib` that renders through the same `functor_runtime_common::render_frame`
 path as the desktop and web shells. Like `functor-runner` on desktop, this is
 a **tool APK, built once** — games are not baked in; they arrive as Functor Lang source
-over the network (the `POST /reload-source` remote-develop loop).
+over the shared debug-runtime protocol.
 
 ## Status
 
-The OpenXR shell, interpreted Functor Lang producer, and USB remote-develop
-loop are **verified on hardware** (Quest 3, Horizon OS v205). Per-eye rendering
-uses each view's exact asymmetric OpenXR frustum. Remaining device bring-up:
-controller input and asset sync.
+The OpenXR shell, interpreted Functor Lang producer, USB remote-develop loop,
+and exact asymmetric per-eye projection are **verified on hardware** (Quest 3,
+Horizon OS v205). The shared debug/REPL protocol adds raw stereo framebuffer
+capture and desktop-isomorphic control. Remaining device work includes
+controller/hand input, asset sync, and multiview rendering.
 
 ## The remote-develop loop (M1)
 
 The APK boots an embedded scene (`src/boot.fun`) and listens on **device
-loopback** for pushed source — `POST /reload-source`, the same endpoint the
-desktop debug server exposes. The dev PC reaches it over USB (loopback-only
+loopback** on port 8123 for the same debug protocol as desktop. The dev PC
+reaches it over USB (loopback-only
 binding keeps the LAN out; note another app ON the device could reach
 loopback — an accepted dev-tool tradeoff):
 
@@ -34,7 +35,39 @@ log into the terminal. The pieces also work individually:
 adb forward tcp:8123 tcp:8123
 functor -d mygame push 127.0.0.1:8123 [--watch]   # entry-only push (desktop remote-develop command)
 curl --fail-with-body -X POST --data-binary @game.fun http://127.0.0.1:8123/reload-source
+curl -s http://127.0.0.1:8123/state | jq
+curl --fail --show-error --retry 30 --retry-delay 1 \
+  --retry-connrefused --retry-all-errors -X POST \
+  http://127.0.0.1:8123/capture -o quest-stereo.png
 ```
+
+`GET /`, `GET /state`, `GET /scene`, `GET /trace`, `POST /capture`,
+`POST /input`, `POST /time`, `POST /reload-source`, `POST /reload-project`,
+and `POST /rewind` have the same request/response forms as desktop. `/state`
+reports `left` and `right` views; `/capture` returns their raw framebuffer
+pixels as one left-then-right side-by-side PNG, before compositor warping.
+The server is reachable while the headset dozes, but capture correctly returns
+503 until XR is rendering. After any adb reconnect, recreate the port forward;
+poll `/state` until `frame` advances before capture so cached paused state is not
+mistaken for readiness.
+
+## Benchmark on the actual headset
+
+Build/install a release APK, push the game to measure, then collect the Quest's
+own VrApi timing plus process memory (the script does not install or push, so
+the workload is explicit):
+
+```sh
+ANDROID_HOME=… ANDROID_NDK_ROOT=… CARGO_TARGET_DIR=$PWD/target-android \
+  cargo apk build --release --manifest-path runtime/functor-runtime-oculus/Cargo.toml
+adb install -r target-android/release/apk/functor_runtime_oculus.apk
+functor -d examples/synthwave run vr
+npm run bench:quest -- --label synthwave --warmup 10 --seconds 30
+```
+
+The report uses Meta's on-device one-second telemetry buckets: FPS, stale/torn
+frames, application and compositor time, combined CPU/GPU time and load. It
+also includes PSS/RSS and graphics memory from `dumpsys meminfo`.
 
 Semantics match desktop hot-reload: the **model is preserved** (closures
 stored in the model rebind by def-name), a broken push returns the rendered

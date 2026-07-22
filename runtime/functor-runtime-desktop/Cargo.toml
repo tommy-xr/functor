@@ -39,7 +39,6 @@ log = "0.4"
 functor-netsim = { path = "./../functor-netsim" }
 glfw = { version = "0.56.0" }
 tokio = { version = "1", features = ["full"] }
-tiny_http = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # Audio playback (the host owns the device so it survives hot reload). cpal needs
 # ALSA dev headers on Linux (libasound2-dev) — installed in the Build Native CI.
@@ -71,6 +70,7 @@ keyboard-types = "0.7"
 
 [dev-dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
+tiny_http = "0.12"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features=["HtmlCanvasElement", "WebGl2RenderingContext", "Window"] }

@@ -72,6 +72,12 @@ pub struct FunctorLangGame {
     /// changes on disk (last-write-wins, from either side — the existing
     /// push contract, now per file).
     pushed_entry: Option<String>,
+    /// The last WHOLE project accepted over `reload_project`. Unlike an
+    /// entry-only push, these sources are a closed in-memory file set. A
+    /// subsequent `reload_source` replaces its entry while retaining its
+    /// siblings; any on-disk project edit clears it (disk is the newer whole
+    /// project in the desktop shell's last-write-wins model).
+    pushed_project: Option<Vec<(String, String)>>,
     /// The lowered (merged) module the current session came from — kept so
     /// a reload can rebind model-stored closures (old module × new module).
     module: functor_lang::ir::Module,
@@ -262,6 +268,30 @@ fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String>
     let project =
         functor_lang::project::load_with_prelude(entry, &overrides, &functor_prelude::modules())
             .map_err(|e| format!("cannot load {}", e.render()))?;
+    finish_load(path, project)
+}
+
+/// Load an exact in-memory project: entry first, then sibling modules. This
+/// is the desktop counterpart of the embedded/Quest producer's whole-project
+/// push and deliberately performs no filesystem reads.
+fn load_sources(files: &[(String, String)]) -> Result<Loaded, String> {
+    let path = files
+        .first()
+        .map(|(path, _)| path.as_str())
+        .unwrap_or("game.fun");
+    let sources = files
+        .iter()
+        .map(|(path, source)| (PathBuf::from(path), source.clone()))
+        .collect();
+    let project =
+        functor_lang::project::load_sources_with_prelude(sources, &functor_prelude::modules())
+            .map_err(|e| format!("cannot load {}", e.render()))?;
+    finish_load(path, project)
+}
+
+/// Contract-check the already linked project. Both disk-backed and pushed
+/// projects pass through this one validation path.
+fn finish_load(path: &str, project: functor_lang::project::Project) -> Result<Loaded, String> {
     // Type diagnostics are advisory in the dev loop: print, keep going.
     for diag in project.check() {
         eprintln!(
@@ -425,6 +455,7 @@ impl FunctorLangGame {
             path: path.to_string(),
             stamp,
             pushed_entry: None,
+            pushed_project: None,
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
@@ -658,6 +689,13 @@ impl Game for FunctorLangGame {
         if stamp == self.stamp {
             return;
         }
+        // Any disk edit is newer than a closed whole-project push, so return
+        // to the filesystem project. Entry-only pushes retain their existing
+        // per-file last-write-wins behavior below.
+        if self.pushed_project.is_some() {
+            self.pushed_project = None;
+            self.pushed_entry = None;
+        }
         // Disk wins for the ENTRY only when the entry file itself changed;
         // a sibling-only change reloads around a pushed entry buffer, so a
         // live-preview push isn't silently reverted by editing a sibling.
@@ -713,8 +751,21 @@ impl Game for FunctorLangGame {
         // already on disk here is either in this load or older than the
         // push — absorbing its mtime is correct either way.
         let stamp = project_stamp(&self.path);
-        let loaded = load_source(&self.path, source.to_string())?;
-        self.pushed_entry = Some(source.to_string());
+        let pushed_project = self.pushed_project.as_ref().map(|files| {
+            let mut files = files.clone();
+            files[0].1 = source.to_string();
+            files
+        });
+        let loaded = match &pushed_project {
+            Some(files) => load_sources(files),
+            None => load_source(&self.path, source.to_string()),
+        }?;
+        if let Some(files) = pushed_project {
+            self.pushed_project = Some(files);
+            self.pushed_entry = None;
+        } else {
+            self.pushed_entry = Some(source.to_string());
+        }
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
             format!("; {rebound} stored closure(s) rebound")
@@ -726,6 +777,37 @@ impl Game for FunctorLangGame {
         let status = format!(
             "reloaded {} from pushed source in {:.2}ms (model preserved{stored}{history})",
             self.path,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        events::emit(RuntimeEvent::HotReload {
+            ok: true,
+            message: status.clone(),
+        });
+        Ok(status)
+    }
+
+    fn reload_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        if files.is_empty() {
+            return Err("a pushed project needs at least the entry file".to_string());
+        }
+        let started = Instant::now();
+        let stamp = project_stamp(&self.path);
+        let loaded = load_sources(files)?;
+        self.pushed_project = Some(files.to_vec());
+        self.pushed_entry = None;
+        let (rebound, history_replay) = self.swap_in(loaded);
+        let stored = if rebound > 0 {
+            format!("; {rebound} stored closure(s) rebound")
+        } else {
+            String::new()
+        };
+        let history = replay_status(history_replay);
+        self.stamp = stamp;
+        let status = format!(
+            "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
+(model preserved{stored}{history})",
+            self.path,
+            files.len(),
             started.elapsed().as_secs_f64() * 1000.0
         );
         events::emit(RuntimeEvent::HotReload {
@@ -1518,6 +1600,55 @@ mod tests {
             "3",
             "an on-disk entry edit wins over the stale push"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shared debug protocol's whole-project route must be real on
+    /// desktop too: pushed siblings are linked from memory, an entry-only
+    /// follow-up retains them, and a broken push keeps the accepted program.
+    #[test]
+    fn pushed_project_reloads_all_sources_in_memory() {
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-project-push",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.fun");
+        std::fs::write(&entry, format!("{BASE}let probe = 1.0\n")).expect("write entry");
+        let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
+
+        let pushed_entry = format!("{BASE}let probe = Config.k\n");
+        let files = vec![
+            ("game.fun".to_string(), pushed_entry.clone()),
+            ("config.fun".to_string(), "let k = 7.0\n".to_string()),
+        ];
+        let status = game
+            .reload_project(&files)
+            .expect("project push should load");
+        assert!(status.contains("2 file(s)"), "unexpected status: {status}");
+        assert_eq!(
+            game.session.global("probe").expect("probe").to_string(),
+            "7"
+        );
+
+        // Entry-only pushes after a project push keep the pushed siblings,
+        // matching the embedded producer rather than consulting disk.
+        game.reload_source(&format!("{BASE}let probe = Config.k + 2.0\n"))
+            .expect("entry push should retain project siblings");
+        assert_eq!(
+            game.session.global("probe").expect("probe").to_string(),
+            "9"
+        );
+
+        let broken = vec![("game.fun".to_string(), "let init =".to_string())];
+        assert!(game.reload_project(&broken).is_err());
+        assert_eq!(
+            game.session.global("probe").expect("probe").to_string(),
+            "9",
+            "a rejected project push must keep the previous program"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

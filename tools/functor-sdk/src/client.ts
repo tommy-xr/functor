@@ -30,6 +30,12 @@ export class HttpClient {
     return JSON.parse(await res.text()) as T;
   }
 
+  /** GET a plain-text body (also useful for JSON with a caller-owned schema). */
+  async getText(path: string): Promise<string> {
+    const res = await this.send("GET", path);
+    return res.text();
+  }
+
   /** POST a JSON body to an endpoint that replies with plain text (e.g. `ok`). */
   async postText(path: string, body?: unknown): Promise<string> {
     const res = await this.send("POST", path, body);
@@ -42,17 +48,35 @@ export class HttpClient {
     return Buffer.from(await res.arrayBuffer());
   }
 
+  /** POST a caller-provided body without JSON stringification. */
+  async postRawText(
+    path: string,
+    body: string,
+    contentType = "text/plain; charset=utf-8",
+  ): Promise<string> {
+    const res = await this.send("POST", path, body, contentType);
+    return res.text();
+  }
+
   private async send(
     method: string,
     path: string,
     body?: unknown,
+    rawContentType?: string,
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const response = await fetch(url, {
       method,
       headers:
-        body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+        body !== undefined
+          ? { "Content-Type": rawContentType ?? "application/json" }
+          : undefined,
+      body:
+        body === undefined
+          ? undefined
+          : rawContentType === undefined
+            ? JSON.stringify(body)
+            : String(body),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
