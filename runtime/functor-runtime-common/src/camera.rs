@@ -100,6 +100,53 @@ impl Camera {
     pub fn projection_matrix(&self, aspect: f32) -> Matrix4<f32> {
         perspective(Rad(self.fov_radians), aspect, self.near, self.far)
     }
+
+    /// Build an asymmetric perspective projection from four view-space field-
+    /// of-view angles. This is the projection form supplied per eye by XR
+    /// runtimes, where the optical center usually does not sit at the middle
+    /// of the render target.
+    ///
+    /// Angles are measured from the forward axis: left/down are negative and
+    /// right/up are positive. The resulting matrix uses OpenGL's right-handed
+    /// view convention and `[-1, 1]` clip-space depth, matching
+    /// [`view_matrix`](Self::view_matrix) and the shared GLES renderer.
+    pub fn projection_matrix_from_fov_angles(
+        &self,
+        angle_left: f32,
+        angle_right: f32,
+        angle_down: f32,
+        angle_up: f32,
+    ) -> Matrix4<f32> {
+        let left = angle_left.tan();
+        let right = angle_right.tan();
+        let down = angle_down.tan();
+        let up = angle_up.tan();
+        let width = right - left;
+        let height = up - down;
+        let depth = self.far - self.near;
+
+        // Column-major OpenGL projection. Writing this directly (instead of
+        // cgmath::frustum) also preserves OpenXR's valid reversed-angle form,
+        // where a negative width or height intentionally flips the image.
+        Matrix4::new(
+            2.0 / width,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            2.0 / height,
+            0.0,
+            0.0,
+            (right + left) / width,
+            (up + down) / height,
+            -(self.far + self.near) / depth,
+            -1.0,
+            0.0,
+            0.0,
+            -(2.0 * self.far * self.near) / depth,
+            0.0,
+        )
+    }
 }
 
 impl Default for Camera {
@@ -136,6 +183,65 @@ mod tests {
         // Horizontal scale shrinks by exactly the aspect ratio (so geometry
         // keeps its proportions; you just see more to the sides).
         assert!(approx(wide.x.x, square.x.x / 2.0));
+    }
+
+    #[test]
+    fn symmetric_fov_angles_match_the_standard_perspective() {
+        let cam = Camera::default();
+        let aspect = 1.37;
+        let half_vertical = cam.fov_radians / 2.0;
+        let half_horizontal = (half_vertical.tan() * aspect).atan();
+        let symmetric = cam.projection_matrix(aspect);
+        let from_angles = cam.projection_matrix_from_fov_angles(
+            -half_horizontal,
+            half_horizontal,
+            -half_vertical,
+            half_vertical,
+        );
+
+        let symmetric: &[f32; 16] = symmetric.as_ref();
+        let from_angles: &[f32; 16] = from_angles.as_ref();
+        for (actual, expected) in from_angles.iter().zip(symmetric.iter()) {
+            assert!(approx(*actual, *expected), "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn asymmetric_fov_edges_map_to_clip_space_edges() {
+        use cgmath::Vector4;
+
+        let cam = Camera::default();
+        let angles = (-0.82_f32, 0.71_f32, -0.76_f32, 0.88_f32);
+        let projection =
+            cam.projection_matrix_from_fov_angles(angles.0, angles.1, angles.2, angles.3);
+        let near = cam.near;
+        let project = |x: f32, y: f32| {
+            let clip = projection * Vector4::new(x, y, -near, 1.0);
+            [clip.x / clip.w, clip.y / clip.w]
+        };
+
+        assert!(approx(project(near * angles.0.tan(), 0.0)[0], -1.0));
+        assert!(approx(project(near * angles.1.tan(), 0.0)[0], 1.0));
+        assert!(approx(project(0.0, near * angles.2.tan())[1], -1.0));
+        assert!(approx(project(0.0, near * angles.3.tan())[1], 1.0));
+    }
+
+    #[test]
+    fn reversed_fov_angles_preserve_requested_clip_space_flip() {
+        use cgmath::Vector4;
+
+        let cam = Camera::default();
+        let left = 0.71_f32;
+        let right = -0.82_f32;
+        let projection = cam.projection_matrix_from_fov_angles(left, right, -0.76, 0.88);
+        let project_x = |angle: f32| {
+            let clip = projection
+                * Vector4::new(cam.near * angle.tan(), 0.0, -cam.near, 1.0);
+            clip.x / clip.w
+        };
+
+        assert!(approx(project_x(left), -1.0));
+        assert!(approx(project_x(right), 1.0));
     }
 
     // Eyes must sit `ipd` apart along the camera's right vector, with both

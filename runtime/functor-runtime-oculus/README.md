@@ -8,10 +8,10 @@ over the network (the `POST /reload-source` remote-develop loop).
 
 ## Status
 
-Phase 1 **verified on hardware** (Quest 3, Horizon OS v205): the OpenXR shell
-reaches session FOCUSED and renders the placeholder scene in stereo through
-the shared `render_frame` path. Remaining device bring-up: the Functor Lang producer,
-network reload, controller input, asymmetric-frustum projection.
+The OpenXR shell, interpreted Functor Lang producer, and USB remote-develop
+loop are **verified on hardware** (Quest 3, Horizon OS v205). Per-eye rendering
+uses each view's exact asymmetric OpenXR frustum. Remaining device bring-up:
+controller input and asset sync.
 
 ## The remote-develop loop (M1)
 

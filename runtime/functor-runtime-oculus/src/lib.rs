@@ -224,11 +224,9 @@ fn create_eye_target(
     }
 }
 
-/// Derive a Functor `Camera` from an OpenXR eye view. The vertical field of
-/// view is symmetrized (`angle_up - angle_down`) — Quest eye frusta are
-/// mildly asymmetric, so this is approximate. TODO(device bring-up): teach
-/// the shared renderer to take a raw projection matrix so the exact
-/// asymmetric frustum (and correct stereo overlap) is used.
+/// Derive a Functor `Camera` from an OpenXR eye view. The exact asymmetric
+/// projection is built separately from `view.fov` and passed directly to the
+/// shared renderer; this camera owns the eye pose and clip distances.
 fn camera_from_view(view: &xr::View) -> Camera {
     let p = view.pose.position;
     let o = view.pose.orientation;
@@ -614,14 +612,22 @@ pub fn android_main(app: AndroidApp) {
                 gl.disable(glow::SCISSOR_TEST);
                 gl.enable(glow::DEPTH_TEST);
             }
-            functor_runtime_common::render_frame(
+            let camera = camera_from_view(view);
+            let projection = camera.projection_matrix_from_fov_angles(
+                view.fov.angle_left,
+                view.fov.angle_right,
+                view.fov.angle_down,
+                view.fov.angle_up,
+            );
+            functor_runtime_common::render_frame_with_projection(
                 &gl,
                 "#version 300 es",
                 asset_cache.clone(),
                 &scene_context,
                 &shadow_map,
                 &frame,
-                &camera_from_view(view),
+                &camera,
+                &projection,
                 frame_time.clone(),
                 Viewport::new(eye.width, eye.height),
                 functor_runtime_common::DebugRenderMode::Default,

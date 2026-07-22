@@ -63,8 +63,8 @@ magnetometer; the Xreal Eye's 6DoF is not host-accessible).
 
 ## After bring-up (in rough order)
 
-- Visual pass: gamma, asymmetric eye frusta (needs a raw-projection seam in
-  the shared renderer), then `GL_OVR_multiview2`.
+- Visual pass: gamma, then `GL_OVR_multiview2`. Exact asymmetric eye frusta
+  now pass through the shared renderer's raw-projection seam.
 - Controllers + a VR `InputContext` (head/hands) with desktop mouse/keyboard
   emulation, shock2quest-style, so VR games iterate without a headset.
 - On-device frame capture (`POST /capture` currently returns 503 on the
