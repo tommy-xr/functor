@@ -72,43 +72,92 @@
       <p>Put the <span class="fun-accent">fun</span> in functional programming.</p>
     </section>
 
-    <section class="differentiators">
+    <section class="features-section">
       <h2 class="section-title">Features</h2>
-      <div class="features">
-        <div class="feature">
-          <h2>Instant Feedback</h2>
-          <p>
-            Edit your game while it runs. The runtime swaps your code under the live model —
-            no rebuild, no restart, no losing your place.
-          </p>
-        </div>
-        <div class="feature">
-          <h2>Travel Through Time</h2>
-          <p>
-            Rewind while editing, make changes, or extrapolate forward to see how your edits
-            ripple through gameplay.
-          </p>
-        </div>
-        <div class="feature">
-          <h2>Batteries Included</h2>
-          <p>
-            Asset management, networking, physics, and spatial audio — in the box, ready to use.
-          </p>
-        </div>
-        <div class="feature">
-          <h2>Introspective</h2>
-          <p>
-            Analyze the live values coursing through your game at any moment — nothing is hidden
-            behind opaque binary state.
-          </p>
-        </div>
-        <div class="feature">
-          <h2>LLM-Native</h2>
-          <p>
-            Games run and respond headlessly, so your favorite coding agent can build right
-            alongside you.
-          </p>
-        </div>
+      <div class="feature-rows">
+        <article class="feature-row">
+          <div class="feature-media">
+            <img
+              src="media/feature-instant-feedback.gif"
+              alt="Editing a value in the live editor grows the orbs on screen instantly — no reload"
+              loading="lazy"
+            />
+          </div>
+          <div class="feature-body">
+            <h3>Instant Feedback</h3>
+            <p>
+              Edit your game while it runs. The runtime swaps your code under the live model —
+              no rebuild, no restart, no losing your place.
+            </p>
+          </div>
+        </article>
+
+        <article class="feature-row">
+          <div class="feature-media">
+            <img
+              src="media/feature-time-travel.gif"
+              alt="Rewinding a physics scene and extrapolating its future along the timeline"
+              loading="lazy"
+            />
+          </div>
+          <div class="feature-body">
+            <h3>Travel Through Time</h3>
+            <p>
+              Rewind while editing, make changes, or extrapolate forward to see how your edits
+              ripple through gameplay.
+            </p>
+          </div>
+        </article>
+
+        <article class="feature-row">
+          <div class="feature-media">
+            <img
+              src="media/feature-batteries.gif"
+              alt="A rigged character streamed from a CDN, animating with an idle/walk/run blend"
+              loading="lazy"
+            />
+          </div>
+          <div class="feature-body">
+            <h3>Batteries Included</h3>
+            <p>
+              Asset management, networking, physics, and spatial audio — in the box, ready to use.
+            </p>
+          </div>
+        </article>
+
+        <article class="feature-row">
+          <div class="feature-media">
+            <img
+              src="media/feature-introspective.gif"
+              alt="Live values from the running game appearing inline in the code as time scrubs"
+              loading="lazy"
+            />
+          </div>
+          <div class="feature-body">
+            <h3>Introspective</h3>
+            <p>
+              Analyze the live values coursing through your game at any moment — nothing is hidden
+              behind opaque binary state.
+            </p>
+          </div>
+        </article>
+
+        <article class="feature-row">
+          <div class="feature-media">
+            <img
+              src="media/feature-llm-native.gif"
+              alt="A terminal driving a headless game over HTTP: pausing it and inspecting its render tree"
+              loading="lazy"
+            />
+          </div>
+          <div class="feature-body">
+            <h3>LLM-Native</h3>
+            <p>
+              Games run and respond headlessly, so your favorite coding agent can build right
+              alongside you.
+            </p>
+          </div>
+        </article>
       </div>
     </section>
 
@@ -172,5 +221,6 @@
     </footer>
 
     <script type="module" src="assets/hero.js"></script>
+    <script type="module" src="assets/features.js"></script>
   </body>
 </html>

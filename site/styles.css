@@ -410,41 +410,131 @@ a:hover {
   text-align: center;
 }
 
-/* Five feature cards: flex-wrap + centered so a wrapped row (e.g. the orphan
-   5th) stays centered instead of stranded left. */
-.features {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 24px;
+/* Feature showcase: alternating gif ↔ text rows. Each media card lifts with a
+   shadow as its row scrolls into focus (features.js toggles .in-view). */
+.feature-rows {
   max-width: 1100px;
   margin: 0 auto;
-  padding: var(--space-md) var(--space-md) 0;
+  padding: var(--space-lg) var(--space-md) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xl);
+  counter-reset: feat;
 }
 
-.feature {
-  flex: 1 1 180px;
-  max-width: 240px;
-  background: var(--bg-panel);
+.feature-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  align-items: center;
+  gap: var(--space-xl);
+  counter-increment: feat;
+}
+
+/* Alternate the media to the right on even rows. */
+.feature-row:nth-child(even) .feature-media {
+  order: 2;
+}
+
+.feature-media {
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 20px 22px 18px;
-  box-shadow: 0 16px 38px -26px rgba(0, 0, 0, 0.85);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0d0221;
+  line-height: 0;
+  box-shadow: 0 16px 40px -30px rgba(0, 0, 0, 0.6);
+  transition: box-shadow 0.6s ease 0.1s;
 }
 
-.feature h2 {
-  font-size: 0.72rem;
-  font-family: var(--font-mono);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--cyan);
-  margin: 0 0 10px;
+.feature-media img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
-.feature p {
+.feature-body {
+  position: relative;
+}
+
+/* A big, hollow index numeral (01…05) — editorial cue + sense of progression. */
+.feature-body::before {
+  content: counter(feat, decimal-leading-zero);
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 3.2rem;
+  line-height: 1;
+  margin: 0 0 12px -1px;
+  color: transparent;
+  -webkit-text-stroke: 1px rgba(65, 216, 230, 0.4);
+}
+
+.feature-body h3 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin: 0 0 14px;
+}
+
+.feature-body p {
   color: var(--text-dim);
-  font-size: 0.92rem;
+  font-size: 1rem;
+  line-height: 1.7;
+  max-width: 30rem;
+}
+
+/* Scroll-into-focus reveal — gated on .reveal (added by features.js) so the rows
+   stay visible if the script never runs. The media slides in from its own side
+   (reinforcing the alternation); the copy fades up just behind it. */
+.feature-rows.reveal .feature-media {
+  opacity: 0;
+  transition: box-shadow 0.6s ease 0.1s, transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1),
+    opacity 0.7s ease;
+}
+
+.feature-rows.reveal .feature-row:nth-child(odd) .feature-media {
+  transform: translateX(-36px);
+}
+
+.feature-rows.reveal .feature-row:nth-child(even) .feature-media {
+  transform: translateX(36px);
+}
+
+.feature-rows.reveal .feature-body {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s ease 0.12s, transform 0.6s ease 0.12s;
+}
+
+.feature-rows.reveal .feature-row.in-view .feature-media,
+.feature-rows.reveal .feature-row.in-view .feature-body {
+  opacity: 1;
+  transform: none;
+}
+
+/* The focus shadow: a deep drop plus a faint cyan glow. */
+.feature-row.in-view .feature-media {
+  box-shadow: 0 34px 80px -30px rgba(0, 0, 0, 0.85), 0 0 60px -34px rgba(65, 216, 230, 0.5);
+}
+
+/* Stack to one column on narrow viewports (media always on top). */
+@media (max-width: 760px) {
+  .feature-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+  }
+  .feature-row:nth-child(even) .feature-media {
+    order: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feature-rows.reveal .feature-media,
+  .feature-rows.reveal .feature-body {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
 }
 
 /* Platforms — three grouped cards (Native / Browser / VR), centered like the
