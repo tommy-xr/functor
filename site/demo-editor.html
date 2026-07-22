@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon.ico" sizes="any" />
+    <title>functor — demo editor</title>
+    <meta
+      name="description"
+      content="A standalone, full-featured Functor Lang editor beside a live scene — used to record the site's feature-showcase demos."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <!-- Reuses the sandbox's full-height split layout (.sandbox-page /
+       .sandbox-split / .editor-pane / .preview-pane), minus all the chrome:
+       no header, picker, reset, or status bar. It exists to be recorded. -->
+  <body class="sandbox-page demo-editor-page">
+    <main class="sandbox-split">
+      <section class="editor-pane">
+        <div id="editor"></div>
+      </section>
+      <section class="preview-pane">
+        <iframe id="player" title="live game preview" allow="pointer-lock"></iframe>
+      </section>
+    </main>
+
+    <script type="module" src="assets/demo-editor.js"></script>
+  </body>
+</html>
