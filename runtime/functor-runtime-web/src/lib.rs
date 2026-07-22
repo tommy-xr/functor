@@ -11,6 +11,7 @@ use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
+use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
 use functor_runtime_common::net::{ConnCommand, HttpMethod, NetCommand};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
@@ -25,6 +26,7 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 use wasm_bindgen::prelude::*;
 
 mod functor_lang_game;
+use functor_lang_game::WebPlatform;
 
 fn window() -> web_sys::Window {
     web_sys::window().expect("no global `window` exists")
@@ -184,12 +186,12 @@ fn parse_project_files(value: &JsValue) -> Option<Vec<(String, String)>> {
 /// `run_async` to fail loud with.
 async fn create_functor_lang_game(
     entry: &str,
-) -> Result<functor_lang_game::FunctorLangWebGame, String> {
+) -> Result<FunctorLangEmbeddedGame, String> {
     // A page that already holds every source in memory (the IDE's
     // `?project=inline` boot) injects them directly — nothing to fetch, and
     // module names come from the given paths exactly as in the fetch path.
     if let Some(sources) = functor_lang_project_sources() {
-        return functor_lang_game::FunctorLangWebGame::create(sources);
+        return FunctorLangEmbeddedGame::create(sources, Box::new(WebPlatform::new()));
     }
     // The CLI injects the whole project file list; a page that set only the
     // entry (or none) falls back to loading the entry alone.
@@ -207,7 +209,7 @@ async fn create_functor_lang_game(
         }
         sources.push((path.clone(), src));
     }
-    functor_lang_game::FunctorLangWebGame::create(sources)
+    FunctorLangEmbeddedGame::create(sources, Box::new(WebPlatform::new()))
 }
 
 thread_local! {

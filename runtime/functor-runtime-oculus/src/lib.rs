@@ -36,7 +36,7 @@ use functor_runtime_common::debug_protocol::{
     CaptureError, DebugRequest, InputCommand, RuntimeInput, RuntimeMouse, RuntimeState,
     RuntimeView, RuntimeViewport, TimeCommand,
 };
-use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
+use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::{Camera, Frame, FrameTime, GameClock, Key, SceneContext, Viewport};
 use khronos_egl as egl;
@@ -610,9 +610,11 @@ pub fn android_main(app: AndroidApp) {
 
     // The real Functor Lang producer, booting the embedded scene. A broken embedded
     // scene is a build bug, not a runtime condition — fail loud.
-    let mut game =
-        FunctorLangEmbeddedGame::create(vec![("boot.fun".to_string(), BOOT_SCENE.to_string())])
-            .expect("embedded boot scene loads");
+    let mut game = FunctorLangEmbeddedGame::create(
+        vec![("boot.fun".to_string(), BOOT_SCENE.to_string())],
+        Box::new(NativePlatform),
+    )
+    .expect("embedded boot scene loads");
 
     // The isomorphic debug endpoint lives on device loopback. The dev PC and
     // browser reach it through `adb forward tcp:8123 tcp:8123` (see README).

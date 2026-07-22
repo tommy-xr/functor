@@ -46,6 +46,41 @@ fn replay_status(history_replay: Option<(usize, f64)>) -> String {
     })
 }
 
+/// The platform seam between the shared producer and its shell — the only place
+/// the two shells genuinely differ (everything else is one shared body). A
+/// native shell (Quest/host tests) installs the `log`-crate sink and has no
+/// draw-error overlay; the web shell installs a console/event-sink bridge and
+/// drives a DOM overlay. Passed to [`FunctorLangEmbeddedGame::create`] and held
+/// for the producer's lifetime.
+pub trait ProducerPlatform {
+    /// One-time, process-global logging/trace/event sink setup. Run at the top
+    /// of `create` before the first load so load errors surface.
+    fn install_sinks(&self);
+    /// Show (`Some(message)`) or hide (`None`) a draw-error overlay, deduped by
+    /// the impl so a persistent error doesn't rewrite it every frame. Native:
+    /// no-op (the native shells have no such overlay).
+    fn set_draw_overlay(&mut self, error: Option<&str>);
+    /// Called at the end of a successful reload (`swap_in`). The shell may have
+    /// hidden the overlay out-of-band (the web push path hides it in JS), so
+    /// this resets any dedupe shadow, letting the reloaded program's first draw
+    /// re-show the overlay if it still errors. Native: no-op.
+    fn on_reload(&mut self);
+}
+
+/// The native platform (Quest shell, host tests): routes diagnostics through
+/// the `log` facade (whose backend the shell owns) and has no draw overlay.
+pub struct NativePlatform;
+
+impl ProducerPlatform for NativePlatform {
+    fn install_sinks(&self) {
+        // Route Functor Lang `Debug.log` traces through the runtime event stream
+        // (whose sink the shell owns) — the desktop producer's rule.
+        crate::functor_lang_prelude::install_debug_log_sink();
+    }
+    fn set_draw_overlay(&mut self, _error: Option<&str>) {}
+    fn on_reload(&mut self) {}
+}
+
 pub struct FunctorLangEmbeddedGame {
     path: String,
     /// The project's source files (entry FIRST, then siblings) as
@@ -152,6 +187,10 @@ pub struct FunctorLangEmbeddedGame {
     /// Per-file sha256 of the loaded `.fun` source, computed at load / reload
     /// (not per frame) — the wire contract's `sources`.
     source_hashes: Vec<InspectorSource>,
+    /// The shell seam: installs the diagnostics sinks and drives the optional
+    /// draw-error overlay. `NativePlatform` for the Quest shell / host tests;
+    /// the web shell passes its own DOM-overlay platform.
+    platform: Box<dyn ProducerPlatform>,
 }
 
 /// A successfully loaded, contract-validated game module (the desktop
@@ -309,10 +348,13 @@ impl FunctorLangEmbeddedGame {
     /// Build the producer from in-memory project sources (entry FIRST, then
     /// siblings). Errors come back fully rendered for the shell to fail loud
     /// with (a boot either gets a valid game or an error).
-    pub fn create(sources: Vec<(String, String)>) -> Result<FunctorLangEmbeddedGame, String> {
-        // Route Functor Lang `Debug.log` traces through the runtime event stream
-        // (whose sink the shell owns) — the desktop producer's rule.
-        crate::functor_lang_prelude::install_debug_log_sink();
+    pub fn create(
+        sources: Vec<(String, String)>,
+        platform: Box<dyn ProducerPlatform>,
+    ) -> Result<FunctorLangEmbeddedGame, String> {
+        // Install the shell's diagnostics sinks BEFORE the first load so load
+        // errors surface (native: the `log` sink; web: console/event bridge).
+        platform.install_sinks();
         let path = sources
             .first()
             .map(|(p, _)| p.clone())
@@ -362,6 +404,7 @@ impl FunctorLangEmbeddedGame {
             last_webview: None,
             webview_handlers: Vec::new(),
             last_frame: empty_frame(),
+            platform,
         })
     }
 
@@ -457,6 +500,10 @@ impl FunctorLangEmbeddedGame {
             self.last_webview = None;
         }
         self.reporter.reset();
+        // The shell may have hidden the draw-error overlay out-of-band during
+        // the reload; reset the platform's dedupe shadow so the reloaded
+        // program's first draw re-shows it if that program's `draw` still errors.
+        self.platform.on_reload();
         (report.rebound, history_replay)
     }
 
@@ -771,17 +818,23 @@ impl GameProducer for FunctorLangEmbeddedGame {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => {
                     self.last_frame = frame.clone();
+                    // A live draw clears any draw-error overlay: the shell is
+                    // rendering again (a transient/first-frame error recovers).
+                    self.platform.set_draw_overlay(None);
                 }
                 None => {
-                    self.reporter.report_once(format!(
+                    let rendered = format!(
                         "[functor-lang] draw must return Frame.create(camera, scene), got {}",
                         value.kind_name()
-                    ));
+                    );
+                    self.reporter.report_once(rendered.clone());
+                    self.platform.set_draw_overlay(Some(&rendered));
                 }
             },
             Err(err) => {
                 let rendered = self.reporter.render_frame_error("draw", &err);
-                self.reporter.report_once(rendered);
+                self.reporter.report_once(rendered.clone());
+                self.platform.set_draw_overlay(Some(&rendered));
             }
         }
         // The optional HUD, evaluated beside `draw` (same settled model) and
@@ -1038,9 +1091,11 @@ let draw = (model, tts) =>
 
     #[test]
     fn boots_ticks_renders_and_reloads_preserving_the_model() {
-        let mut game =
-            FunctorLangEmbeddedGame::create(vec![("game.fun".to_string(), BOOT.to_string())])
-                .expect("boot scene loads");
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), BOOT.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("boot scene loads");
 
         // A few frames advance the model and produce a real (non-empty) frame.
         for i in 1..=3 {
