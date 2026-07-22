@@ -79,15 +79,6 @@ a:hover {
   background-clip: padding-box;
 }
 
-/* Flourish (b): the one decorative divider — a thin cyan→pink rule. */
-.gradient-rule {
-  height: 1px;
-  border: 0;
-  max-width: 780px;
-  margin: 0 auto;
-  background: linear-gradient(90deg, var(--cyan), var(--pink));
-}
-
 /* ------------------------------------------------------------- site header */
 
 /* Shared top bar across the landing, sandbox, and docs pages: wordmark left,
@@ -118,6 +109,12 @@ a:hover {
   margin-left: auto;
 }
 
+/* The toggle checkbox is irrelevant off the mobile breakpoint (nav is always
+   shown), so drop it from the layout and tab order there. */
+.nav-toggle {
+  display: none;
+}
+
 /* Hamburger toggle — hidden until the mobile breakpoint (landing only). */
 .nav-burger {
   display: none;
@@ -136,6 +133,27 @@ a:hover {
 @media (max-width: 620px) {
   .landing-page .nav-burger {
     display: inline-flex;
+  }
+
+  /* Keyboard-reachable but visually hidden — clip (not display:none) so it
+     stays focusable; keyboard focus lands here and Space toggles the menu. */
+  .landing-page .nav-toggle {
+    display: block;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+  }
+
+  /* Surface that focus on the visible burger. */
+  .landing-page .nav-toggle:focus-visible ~ .nav-burger {
+    color: var(--cyan);
+    outline: 2px solid var(--cyan);
+    outline-offset: 3px;
+    border-radius: 3px;
   }
 
   /* Collapse the links into a dropdown that the checkbox reveals. */
@@ -341,7 +359,6 @@ a:hover {
 }
 
 .button-primary,
-.button-ghost,
 .button-pink {
   font-family: var(--font-mono);
   font-weight: 600;
@@ -380,17 +397,6 @@ a:hover {
   border-color: #5ce2ee;
   transform: translateY(-2px);
   box-shadow: 0 10px 22px -10px rgba(0, 0, 0, 0.75), 0 0 26px -6px rgba(65, 216, 230, 0.7);
-}
-
-.button-ghost {
-  color: var(--text-dim);
-  border: 1px solid var(--line);
-}
-
-.button-ghost:hover {
-  text-decoration: none;
-  color: var(--cyan);
-  border-color: var(--cyan);
 }
 
 /* Differentiators + section titles. */
