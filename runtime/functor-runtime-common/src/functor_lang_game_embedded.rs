@@ -26,8 +26,8 @@ use functor_lang::{Session, Value};
 
 use crate::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    contains_effect, epoch_seconds, frame_value, html_node_value, take_ui_handlers, view_value,
-    EffectLog, EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
+    contains_effect, frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog,
+    EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
     journal_arm, journal_swap, FrameCtx, JournalEntry, Reporter, SpanSource,
@@ -39,11 +39,6 @@ use crate::timetravel::SceneRecorder;
 use crate::ui::View;
 use crate::webview::HtmlNode;
 use crate::{Frame, FrameTime};
-
-/// Milliseconds on the shared portable clock (see `epoch_seconds`).
-fn now_ms() -> f64 {
-    epoch_seconds() * 1000.0
-}
 
 fn replay_status(history_replay: Option<(usize, f64)>) -> String {
     history_replay.map_or_else(String::new, |(frames, elapsed_ms)| {
