@@ -25,7 +25,7 @@ use functor_lang::project::SourceMap;
 use functor_lang::{Session, Value};
 use functor_runtime_common::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    contains_effect, frame_value, html_node_value, take_ui_handlers, view_value, EffectLog,
+    contains_effect, frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog,
     EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
@@ -494,7 +494,7 @@ impl FunctorLangWebGame {
         // generation anchored at this rebound live frame.
         self.recorder
             .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
-        let replay_started = js_sys::Date::now();
+        let replay_started = now_ms();
         let history_replay = match
             functor_runtime_common::functor_lang_producer::materialize_counterfactual_history(
                 &self.session,
@@ -505,7 +505,7 @@ impl FunctorLangWebGame {
                 !self.input_buf.is_empty(),
             )
         {
-            Ok(frames) => frames.map(|frames| (frames, js_sys::Date::now() - replay_started)),
+            Ok(frames) => frames.map(|frames| (frames, now_ms() - replay_started)),
             Err(error) => {
                 self.reporter.report_once(format!("[functor-lang] {error}"));
                 None
@@ -588,7 +588,7 @@ impl GameProducer for FunctorLangWebGame {
         // push keeps the old program (and the error goes back to the pusher,
         // who is looking at the source that caused it). No mtime bookkeeping
         // — the browser has no file watcher; pushes are the only reload.
-        let started = js_sys::Date::now();
+        let started = now_ms();
         // The push replaces the ENTRY buffer; siblings keep their last-fetched
         // text (the web has no filesystem to re-read, unlike the desktop
         // producer). A load failure leaves `self.sources` untouched.
@@ -610,7 +610,7 @@ impl GameProducer for FunctorLangWebGame {
         let status = format!(
             "reloaded {} from pushed source in {:.2}ms (model preserved{stored}{history})",
             self.path,
-            js_sys::Date::now() - started
+            now_ms() - started
         );
         web_sys::console::log_1(&format!("[functor-lang] {status}").into());
         Ok(status)
@@ -625,7 +625,7 @@ impl GameProducer for FunctorLangWebGame {
         if files.is_empty() {
             return Err("a pushed project needs at least the entry file".to_string());
         }
-        let started = js_sys::Date::now();
+        let started = now_ms();
         let loaded = load_source(files)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
@@ -641,7 +641,7 @@ impl GameProducer for FunctorLangWebGame {
 (model preserved{stored}{history})",
             self.path,
             files.len(),
-            js_sys::Date::now() - started
+            now_ms() - started
         );
         web_sys::console::log_1(&format!("[functor-lang] {status}").into());
         Ok(status)
