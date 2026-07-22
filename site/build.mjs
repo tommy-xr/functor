@@ -53,13 +53,18 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(`${dist}/pkg`, { recursive: true });
 await mkdir(`${dist}/examples`, { recursive: true });
 
-// The header version-badge names the build. On an exact release tag (vX.Y.Z)
-// it reads "vX.Y.Z · alpha"; every other checkout — local dev, ahead of a tag,
-// shallow, or no tags at all — reads "v0.0.0 · dev", so a dev build never
-// mislabels itself as the release it merely descends from.
+// The header version-badge names the build. A deploy (CI — the functor.games
+// build) names the release it ships from: the nearest reachable vX.Y.Z, walked
+// back from HEAD (hence the deploy's fetch-depth: 0). A local build is stricter
+// — only an exact, clean release tag counts; dev work, a commit ahead of a tag,
+// or a dirty tag checkout all read "v0.0.0 · dev", so a working copy never
+// mislabels itself as a release it merely descends from.
 let badge = "v0.0.0 · dev";
 try {
-  const tag = execSync("git describe --tags --exact-match --match 'v[0-9]*'", {
+  const describe = process.env.CI
+    ? "git describe --tags --abbrev=0 --match 'v[0-9]*'"
+    : "git describe --tags --exact-match --dirty --match 'v[0-9]*'";
+  const tag = execSync(describe, {
     cwd: root,
     stdio: ["ignore", "pipe", "ignore"],
   })
