@@ -18,7 +18,6 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
   /* Spacing scale — a single rhythm the whole landing page snaps to. */
-  --space-xs: 8px;
   --space-sm: 16px;
   --space-md: 24px;
   --space-lg: 40px;

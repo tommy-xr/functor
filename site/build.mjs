@@ -59,10 +59,12 @@ await mkdir(`${dist}/examples`, { recursive: true });
 // mislabels itself as the release it merely descends from.
 let badge = "v0.0.0 · dev";
 try {
-  const tag = execSync("git describe --tags --exact-match --match 'v[0-9]*'", {
-    cwd: root,
-    stdio: ["ignore", "pipe", "ignore"],
-  })
+  // --dirty appends "-dirty" when tracked files are modified, so a release tag
+  // with local edits fails the semver test below and falls through to "dev".
+  const tag = execSync(
+    "git describe --tags --exact-match --dirty --match 'v[0-9]*'",
+    { cwd: root, stdio: ["ignore", "pipe", "ignore"] }
+  )
     .toString()
     .trim();
   if (/^v\d+\.\d+\.\d+$/.test(tag)) badge = `${tag} · alpha`;
