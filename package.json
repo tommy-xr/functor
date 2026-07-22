@@ -32,7 +32,8 @@
     "demo:time-travel": "node site/demos/time-travel.mjs",
     "demo:instant-feedback": "node site/demos/instant-feedback.mjs",
     "demo:batteries-included": "node site/demos/batteries-included.mjs",
-    "demo:introspective": "node site/demos/introspective.mjs"
+    "demo:introspective": "node site/demos/introspective.mjs",
+    "demo:llm-native": "node site/demos/llm-native.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
