@@ -31,6 +31,7 @@
     "test:ide-page": "node e2e/ide-page.mjs",
     "demo:time-travel": "node site/demos/time-travel.mjs",
     "demo:instant-feedback": "node site/demos/instant-feedback.mjs",
+    "demo:batteries-included": "node site/demos/batteries-included.mjs",
     "demo:introspective": "node site/demos/introspective.mjs"
   },
   "devDependencies": {

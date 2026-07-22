@@ -14,6 +14,9 @@
 export const EXAMPLES = [
   { id: "hero", label: "Neon grid", source: "site/examples/hero.fun" },
   { id: "orbit", label: "Orbit", source: "site/examples/orbit.fun" },
+  // Single-file + a CORS-friendly CDN model (jsDelivr mirror of BabylonJS/Assets),
+  // so the rigged character streams and animates in the single-buffer sandbox.
+  { id: "batteries", label: "Animation", source: "site/examples/batteries.fun" },
   { id: "counter", label: "Counter", source: "examples/counter/game.fun" },
   { id: "primitives", label: "Primitives", source: "examples/primitives/game.fun" },
   { id: "ui", label: "UI widgets", source: "examples/ui/game.fun" },
