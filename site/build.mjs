@@ -18,7 +18,7 @@ const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = `${site}dist`;
 
-const PAGES = ["index.html", "sandbox.html", "ide.html", "player.html", "docs.html", "styles.css"];
+const PAGES = ["index.html", "sandbox.html", "ide.html", "player.html", "docs.html", "demo-editor.html", "styles.css"];
 
 // Favicons, generated from docs/media/functor-icon.svg by `npm run generate:icons`
 // (gitignored — site:build regenerates them first). Copied defensively so a stale
@@ -116,7 +116,7 @@ if (langPkgPresent) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`, `${site}src/ide.js`, `${site}src/docs.js`, `${site}src/hero.js`],
+  entryPoints: [`${site}src/sandbox.js`, `${site}src/ide.js`, `${site}src/docs.js`, `${site}src/hero.js`, `${site}src/demo-editor.js`],
   bundle: true,
   minify: true,
   format: "esm",
