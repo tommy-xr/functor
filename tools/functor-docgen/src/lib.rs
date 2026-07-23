@@ -113,7 +113,7 @@ pub fn write_file(path: &Path, contents: &str) -> io::Result<()> {
 /// CRLF on Windows, so freshness is intentionally line-ending agnostic.
 pub fn file_is_current(path: &Path, generated: &str) -> io::Result<bool> {
     let existing = std::fs::read_to_string(path)?;
-    Ok(existing == generated || existing.replace("\r\n", "\n") == generated)
+    Ok(normalize_newlines(&existing) == normalize_newlines(generated))
 }
 
 pub fn render_markdown(reference: &ApiReference) -> String {
@@ -188,7 +188,11 @@ fn extract_module(name: String, source: String) -> Result<ApiModule, GenerateErr
 fn declaration_at(source: &str, span: Span) -> Option<String> {
     source
         .get(span.start..span.end)
-        .map(|text| text.trim().to_string())
+        .map(|text| normalize_newlines(text.trim()))
+}
+
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn module_doc(source: &str) -> Option<String> {
@@ -263,5 +267,21 @@ mod tests {
         std::fs::write(&path, "one\r\ntwo\r\n").unwrap();
         assert!(super::file_is_current(&path, "one\ntwo\n").unwrap());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn declarations_are_identical_across_source_line_endings() {
+        let lf = "//! Points.\n/// A point.\ntype Point = {\n  x: float,\n  y: float\n}\n";
+        let crlf = lf.replace('\n', "\r\n");
+        let lf_reference =
+            generate_from_modules([("Geometry".to_string(), lf.to_string())]).unwrap();
+        let crlf_reference = generate_from_modules([("Geometry".to_string(), crlf)]).unwrap();
+        assert_eq!(
+            lf_reference.modules[0].items[0].declaration,
+            crlf_reference.modules[0].items[0].declaration
+        );
+        assert!(!crlf_reference.modules[0].items[0]
+            .declaration
+            .contains('\r'));
     }
 }
