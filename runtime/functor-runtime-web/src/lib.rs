@@ -1178,7 +1178,7 @@ async fn run_async() -> Result<(), JsValue> {
         const LIVE_PREVIEW_INTERVAL_MS: f32 = 100.0;
         let mut preview_cache: Option<(
             (Option<u64>, u32, bool, u64, bool, bool, usize, u32),
-            functor_runtime_common::ScenePreview,
+            functor_runtime_common::FramePreview,
         )> = None;
         let mut preview_refresh: u32 = 0;
         let mut next_live_preview_refresh: f32 = 0.0;
@@ -1329,7 +1329,7 @@ async fn run_async() -> Result<(), JsValue> {
 
             // Scene-diff preview (docs/time-travel.md T6): the DOM preview
             // <select>'s trail/strobe overlays, from ONE shared forward-sim —
-            // `scene_preview`, the same step the desktop shell runs. While live,
+            // `frame_preview`, the same step the desktop shell runs. While live,
             // its anchor follows the newest frame; pausing freezes that anchor
             // instead of enabling the preview. Script inputs are `None`: web has
             // no --input-script.
@@ -1384,9 +1384,9 @@ async fn run_async() -> Result<(), JsValue> {
                     let divisions = ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
                     let copies = ((preview_rate as f32 * preview_window).round() as usize)
                         .clamp(1, divisions);
-                    let p = functor_runtime_common::scene_preview(
+                    let p = functor_runtime_common::frame_preview(
                         &**game,
-                        &frame.scene,
+                        &frame,
                         frame_time.tts as f64,
                         None,
                         &functor_runtime_common::PreviewOptions {
@@ -1508,12 +1508,7 @@ async fn run_async() -> Result<(), JsValue> {
             // are never on together here — unlike the desktop flag path, where
             // --ghost --trajectory composes the trail into the ghost frames.)
             if let Some(p) = &preview {
-                if let Some(t) = &p.trail {
-                    functor_runtime_common::overlay(&mut frame.scene, t.clone());
-                }
-                if let Some(s) = &p.strobe {
-                    functor_runtime_common::overlay(&mut frame.scene, s.clone());
-                }
+                p.apply_all(&mut frame);
             }
 
             // Shadow + forward passes, shared with the desktop runtime. Each
