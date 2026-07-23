@@ -1,0 +1,24 @@
+// Regenerate the checked-in API reference artifacts from the exact `.funi`
+// prelude embedded in Functor.
+//
+//   npm run generate:docs
+//   npm run check:docs
+
+import { spawnSync } from "node:child_process";
+
+const check = process.argv.includes("--check");
+const outputs = [
+  ["markdown", "docs/api-reference.md"],
+  ["json", "site/generated/api-reference.json"],
+];
+
+for (const [format, path] of outputs) {
+  const mode = check ? ["--check", path] : ["--output", path];
+  const result = spawnSync(
+    "cargo",
+    ["run", "-q", "-p", "functor-docgen", "--", "--format", format, ...mode],
+    { stdio: "inherit" },
+  );
+  if (result.status !== 0) process.exit(result.status ?? 1);
+  console.log(`${check ? "✓" : "generated"} ${path}`);
+}

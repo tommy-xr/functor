@@ -33,6 +33,7 @@ playwright-report
 bin
 obj
 target
+.fastembed_cache/
 
 # Output
 .ionide

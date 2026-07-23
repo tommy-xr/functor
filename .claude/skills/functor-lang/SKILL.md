@@ -290,6 +290,12 @@ open Widget                                              // …or open, bringing
   modules that own several name each (`Scene.t`; `Physics.shape`/`body`/`world`;
   `Ui.view`/`anchor`; `Html.node`/`Attr.t`; `Asset.Model`/`Texture`/`Sound`). Physics query/event results are records
   (`Physics.position`, `Physics.rayHit`, `Physics.collisionEvent`).
+- Prelude interface documentation uses `//!` for the module overview and `///`
+  directly above a type/signature for its public API prose. Plain `//` remains
+  an ordinary comment and still appears in user-code hover for backwards
+  compatibility. `functor docs` renders the embedded prelude as Markdown or
+  JSON; in the repository, `npm run generate:docs` refreshes the checked-in
+  reference artifacts and `npm run check:docs` verifies they are current.
 
 ## Inline tests (`expect`)
 
