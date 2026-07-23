@@ -9,11 +9,6 @@
 
 ![Live-editing the hero scene's color so it hot-reloads with the model preserved, then scrubbing the running scene back through its recorded timeline and extrapolating its future](docs/media/readme-hero.gif)
 
-*This is the live hero at [functor.games](https://functor.games): live-edit the code
-and watch it hot-reload with the model preserved, scrub the running scene back
-through its own recorded timeline, then extrapolate to project its future forward
-(whole-game time travel) ([still frame](docs/media/readme-hero.png)).*
-
 ## Core Principles
 
 - __Instant Feedback:__ changes made are instantly applied and visualized - whether that's a code change, an asset change, or the state of a test. You should always be able to tweak and play with the running code.
