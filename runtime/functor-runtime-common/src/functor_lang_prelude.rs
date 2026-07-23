@@ -4629,6 +4629,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         );
         let json = serde_json::to_string(&frame).expect("sprite frame serializes");
         assert!(json.contains(r#""sprite_layers""#), "json: {json}");
+        assert!(json.contains(r#""FileClamped""#), "json: {json}");
         assert!(json.contains(r#""hero.png""#), "json: {json}");
         let back: Frame = serde_json::from_str(&json).expect("sprite frame deserializes");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);

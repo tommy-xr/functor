@@ -190,6 +190,14 @@ fn bind_texture_description(
                 .asset_cache
                 .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
             asset.get().bind(unit, context);
+            set_bound_texture_wrap(unit, true, context);
+        }
+        TextureDescription::FileClamped(file) => {
+            let asset = context
+                .asset_cache
+                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+            asset.get().bind(unit, context);
+            set_bound_texture_wrap(unit, false, context);
         }
         // `Asset.whilePending`: the first loaded chain entry binds while the
         // primary streams in (instead of the checkerboard fallback); a FAILED
@@ -208,6 +216,23 @@ fn bind_texture_description(
                 while_pending,
             )
             .bind(unit, context);
+            set_bound_texture_wrap(unit, true, context);
+        }
+        TextureDescription::FileClampedWhilePending {
+            file,
+            while_pending,
+        } => {
+            let asset = context
+                .asset_cache
+                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+            crate::asset::resolve_while_pending(
+                &context.asset_cache,
+                &scene_context.texture_pipeline,
+                &asset,
+                while_pending,
+            )
+            .bind(unit, context);
+            set_bound_texture_wrap(unit, false, context);
         }
         TextureDescription::RenderTarget(id) => {
             // Select the unit BEFORE any lazy fallback creation: creating the
@@ -234,6 +259,25 @@ Frame.withRenderTarget declares it — binding the magenta fallback"
                 context.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             }
         }
+    }
+}
+
+/// File textures share cached GL objects, so every bind reasserts the caller's
+/// wrapping mode rather than leaking a prior model/sprite use of that texture.
+fn set_bound_texture_wrap(unit: u32, repeat: bool, context: &RenderContext) {
+    let wrap = if repeat {
+        glow::REPEAT
+    } else {
+        glow::CLAMP_TO_EDGE
+    };
+    unsafe {
+        context.gl.active_texture(glow::TEXTURE0 + unit);
+        context
+            .gl
+            .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, wrap as i32);
+        context
+            .gl
+            .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, wrap as i32);
     }
 }
 

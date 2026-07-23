@@ -68,7 +68,8 @@
 /// the current version.
 ///
 /// v3: 2D sprite passes — `Frame.sprite_layers` (defaulted and omitted when
-/// empty, so pre-v3 frames stay byte-compatible).
+/// empty, so pre-v3 frames stay byte-compatible) and clamp-to-edge file texture
+/// variants used by sprite images.
 ///
 /// v2: `Asset.whilePending` — `ModelDescription.while_pending` (defaulted,
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-

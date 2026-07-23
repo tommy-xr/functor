@@ -128,6 +128,11 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                     file,
                     while_pending,
                 } => (file, while_pending),
+                TextureDescription::FileClamped(path) => (path, vec![]),
+                TextureDescription::FileClampedWhilePending {
+                    file,
+                    while_pending,
+                } => (file, while_pending),
                 TextureDescription::RenderTarget(_) => {
                     return Err(
                         "Sprite.image expects an image asset, not a render target".to_string()
@@ -348,9 +353,9 @@ fn lower_sprite(value: &Value, tint: [f32; 4]) -> Result<Scene3D, String> {
                 while_pending.push(path.to_string());
             }
             let texture = if while_pending.is_empty() {
-                TextureDescription::File(path.to_string())
+                TextureDescription::FileClamped(path.to_string())
             } else {
-                TextureDescription::FileWhilePending {
+                TextureDescription::FileClampedWhilePending {
                     file: path.to_string(),
                     while_pending,
                 }
