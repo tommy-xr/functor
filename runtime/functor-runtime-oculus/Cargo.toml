@@ -32,7 +32,6 @@ ndk-context = "0.1"
 khronos-egl = { version = "6.0", features = ["dynamic"] }
 libloading = "0.8"
 glow = "0.17"
-cgmath = "0.18"
 log = "0.4"
 android_logger = "0.14"
 # Frame/trace debug responses.

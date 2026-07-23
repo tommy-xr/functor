@@ -51,6 +51,15 @@ Layout decision: Functor Lang lives **in this repo** as crates in the root works
 (e.g. `functor-lang/`), keeping the loop with its forcing client tight. Extract later if
 the standalone direction takes off.
 
+### Cross-target camera contract
+
+`Frame.camera` describes the same authored view on desktop, web, and XR. An XR
+shell treats it as the reference center-eye rig: the first valid headset pose
+is neutral, and later head/eye translation and rotation compose in the
+camera's local basis. The game therefore owns locomotion, orientation, and
+near/far clipping without needing a VR-specific model; OpenXR owns the
+physical IPD and exact asymmetric per-eye optical projection.
+
 ## Milestone 0 — de-risking spike (throwaway)
 
 The one real bet: **can a tree-walking interpreter run per-frame game logic at

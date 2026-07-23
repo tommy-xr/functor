@@ -1,7 +1,89 @@
-use cgmath::{perspective, vec3, Matrix4, Point3, Rad};
+use cgmath::{perspective, vec3, InnerSpace, Matrix4, Point3, Quaternion, Rad, Rotation, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::math::Angle;
+
+/// A pose reported by a tracking system, in its right-handed local space.
+///
+/// The orientation is a unit quaternion in `[x, y, z, w]` order. Tracking
+/// local `+X` is right, `+Y` is up, and `-Z` is forward, matching OpenXR.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrackingPose {
+    pub position: [f32; 3],
+    pub orientation: [f32; 4],
+}
+
+impl TrackingPose {
+    pub const IDENTITY: TrackingPose = TrackingPose {
+        position: [0.0, 0.0, 0.0],
+        orientation: [0.0, 0.0, 0.0, 1.0],
+    };
+
+    pub fn new(position: [f32; 3], orientation: [f32; 4]) -> Self {
+        Self {
+            position,
+            orientation,
+        }
+    }
+
+    /// The center pose between two tracked eyes. Position is the midpoint;
+    /// orientation is the shortest-path halfway rotation. Returns `None` for
+    /// non-finite positions or invalid quaternions.
+    pub fn midpoint(left: Self, right: Self) -> Option<Self> {
+        let lp = left.position_vector()?;
+        let rp = right.position_vector()?;
+        let lq = left.unit_orientation()?;
+        let mut rq = right.unit_orientation()?;
+        if lq.dot(rq) < 0.0 {
+            rq = -rq;
+        }
+        let orientation = lq.slerp(rq, 0.5).normalize();
+        let position = (lp + rp) * 0.5;
+        Some(Self::from_parts(position, orientation))
+    }
+
+    fn position_vector(self) -> Option<Vector3<f32>> {
+        self.position
+            .iter()
+            .all(|component| component.is_finite())
+            .then(|| Vector3::from(self.position))
+    }
+
+    fn unit_orientation(self) -> Option<Quaternion<f32>> {
+        let [x, y, z, w] = self.orientation;
+        let q = Quaternion::new(w, x, y, z);
+        let magnitude2 = q.magnitude2();
+        (self
+            .orientation
+            .iter()
+            .all(|component| component.is_finite())
+            && magnitude2.is_normal())
+        .then(|| q / magnitude2.sqrt())
+    }
+
+    fn from_parts(position: Vector3<f32>, orientation: Quaternion<f32>) -> Self {
+        Self {
+            position: position.into(),
+            orientation: [
+                orientation.v.x,
+                orientation.v.y,
+                orientation.v.z,
+                orientation.s,
+            ],
+        }
+    }
+}
+
+/// A tracked pose mapped into the authored camera's world-space rig.
+///
+/// Controller/hand input can use the same mapping as the eye cameras, keeping
+/// rendered hands and head motion in one coordinate system.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MappedTrackingPose {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub up: [f32; 3],
+}
 
 /// A camera description produced by the game's `draw3d`. Stores plain scalars
 /// (so it serializes cleanly across the wasm boundary); the runtime turns it
@@ -87,6 +169,81 @@ impl Camera {
             ..self.clone()
         };
         (shifted(-1.0), shifted(1.0))
+    }
+
+    /// Map a live tracking pose into this authored camera's local rig.
+    ///
+    /// `reference` is the tracking-space center-eye pose captured when the rig
+    /// is established. At that pose, the mapped position and orientation equal
+    /// this camera exactly. Subsequent room-scale translation and rotation are
+    /// applied in the camera's local right/up/backward basis, so moving the
+    /// authored camera moves the whole rig without discarding live tracking.
+    pub fn map_tracking_pose(
+        &self,
+        reference: TrackingPose,
+        tracked: TrackingPose,
+    ) -> Option<MappedTrackingPose> {
+        let eye = Vector3::from(self.eye);
+        let target = Vector3::from(self.target);
+        let authored_up = Vector3::from(self.up);
+        let gaze = target - eye;
+        let gaze_distance = gaze.magnitude();
+        let right = gaze.cross(authored_up);
+        if !eye.x.is_finite()
+            || !eye.y.is_finite()
+            || !eye.z.is_finite()
+            || !gaze_distance.is_normal()
+            || !right.magnitude().is_normal()
+        {
+            return None;
+        }
+
+        let forward = gaze / gaze_distance;
+        let right = right.normalize();
+        let up = right.cross(forward).normalize();
+        let backward = -forward;
+        let to_world = |v: Vector3<f32>| right * v.x + up * v.y + backward * v.z;
+
+        let reference_position = reference.position_vector()?;
+        let tracked_position = tracked.position_vector()?;
+        let reference_orientation = reference.unit_orientation()?;
+        let tracked_orientation = tracked.unit_orientation()?;
+        let inverse_reference = reference_orientation.conjugate();
+
+        let local_offset = inverse_reference.rotate_vector(tracked_position - reference_position);
+        let local_orientation = inverse_reference * tracked_orientation;
+        let world_position = eye + to_world(local_offset);
+        let world_forward =
+            to_world(local_orientation.rotate_vector(-Vector3::unit_z())).normalize();
+        let world_up = to_world(local_orientation.rotate_vector(Vector3::unit_y())).normalize();
+
+        Some(MappedTrackingPose {
+            position: world_position.into(),
+            forward: world_forward.into(),
+            up: world_up.into(),
+        })
+    }
+
+    /// Compose one tracked eye onto this authored camera. Invalid tracking or
+    /// a degenerate authored camera falls back to the authored camera for this
+    /// frame rather than injecting NaNs into the renderer.
+    ///
+    /// The authored camera keeps its target distance, field-of-view value, and
+    /// clip range. XR shells override only the optical projection with the
+    /// runtime's exact per-eye FOV.
+    pub fn compose_tracked_view(&self, reference: TrackingPose, tracked: TrackingPose) -> Camera {
+        let Some(mapped) = self.map_tracking_pose(reference, tracked) else {
+            return self.clone();
+        };
+        let distance = (Vector3::from(self.target) - Vector3::from(self.eye)).magnitude();
+        let position = Vector3::from(mapped.position);
+        let target = position + Vector3::from(mapped.forward) * distance;
+        Camera {
+            eye: mapped.position,
+            target: target.into(),
+            up: mapped.up,
+            ..self.clone()
+        }
     }
 
     pub fn view_matrix(&self) -> Matrix4<f32> {
@@ -235,8 +392,7 @@ mod tests {
         let right = -0.82_f32;
         let projection = cam.projection_matrix_from_fov_angles(left, right, -0.76, 0.88);
         let project_x = |angle: f32| {
-            let clip = projection
-                * Vector4::new(cam.near * angle.tan(), 0.0, -cam.near, 1.0);
+            let clip = projection * Vector4::new(cam.near * angle.tan(), 0.0, -cam.near, 1.0);
             clip.x / clip.w
         };
 
@@ -309,6 +465,134 @@ mod tests {
             assert_eq!(l.eye, cam.eye);
             assert_eq!(r.eye, cam.eye);
         }
+    }
+
+    #[test]
+    fn identity_tracking_pose_preserves_the_authored_camera() {
+        let camera = Camera::look_at(
+            [3.0, 2.0, -4.0],
+            [7.0, 3.0, 2.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(67.0),
+        );
+        let composed = camera.compose_tracked_view(TrackingPose::IDENTITY, TrackingPose::IDENTITY);
+
+        for i in 0..3 {
+            assert!(approx(composed.eye[i], camera.eye[i]));
+            assert!(approx(composed.target[i], camera.target[i]));
+        }
+        let authored_matrix = camera.view_matrix();
+        let composed_matrix = composed.view_matrix();
+        let authored_view: &[f32; 16] = authored_matrix.as_ref();
+        let composed_view: &[f32; 16] = composed_matrix.as_ref();
+        for (actual, expected) in composed_view.iter().zip(authored_view.iter()) {
+            assert!(approx(*actual, *expected), "{actual} != {expected}");
+        }
+        assert_eq!(composed.fov_radians, camera.fov_radians);
+        assert_eq!(composed.near, camera.near);
+        assert_eq!(composed.far, camera.far);
+    }
+
+    #[test]
+    fn tracked_eye_offsets_preserve_stereo_about_the_authored_camera() {
+        let camera = Camera::first_person(
+            [2.0, 3.0, 4.0],
+            Angle::from_degrees(0.0),
+            Angle::from_degrees(0.0),
+            Angle::from_degrees(60.0),
+        );
+        let half_ipd = 0.032;
+        let left_pose = TrackingPose::new([-half_ipd, 1.6, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        let right_pose = TrackingPose::new([half_ipd, 1.6, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        let reference = TrackingPose::midpoint(left_pose, right_pose).unwrap();
+        let left = camera.compose_tracked_view(reference, left_pose);
+        let right = camera.compose_tracked_view(reference, right_pose);
+        let (expected_left, expected_right) = camera.stereo_eyes(half_ipd * 2.0);
+
+        for i in 0..3 {
+            assert!(approx(left.eye[i], expected_left.eye[i]));
+            assert!(approx(right.eye[i], expected_right.eye[i]));
+            assert!(approx(
+                left.target[i] - left.eye[i],
+                right.target[i] - right.eye[i]
+            ));
+        }
+    }
+
+    #[test]
+    fn tracking_translation_uses_the_authored_camera_basis() {
+        let camera = Camera::look_at(
+            [10.0, 2.0, 20.0],
+            [15.0, 2.0, 20.0], // authored forward = +X
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(45.0),
+        );
+        let tracked = TrackingPose::new([1.0, 0.5, -2.0], [0.0, 0.0, 0.0, 1.0]);
+        let mapped = camera
+            .map_tracking_pose(TrackingPose::IDENTITY, tracked)
+            .unwrap();
+
+        // For an authored +X gaze, local tracking +X/+Y/-Z map to world
+        // +Z/+Y/+X respectively.
+        assert!(approx(mapped.position[0], 12.0));
+        assert!(approx(mapped.position[1], 2.5));
+        assert!(approx(mapped.position[2], 21.0));
+    }
+
+    #[test]
+    fn tracking_rotation_is_relative_to_the_reference_pose() {
+        use cgmath::{Deg, Rotation3};
+
+        let camera = Camera::first_person(
+            [1.0, 2.0, 3.0],
+            Angle::from_degrees(0.0),
+            Angle::from_degrees(0.0),
+            Angle::from_degrees(45.0),
+        );
+        let reference_q = Quaternion::from_angle_y(Deg(35.0));
+        let relative_q = Quaternion::from_angle_y(Deg(20.0));
+        let tracked_q = reference_q * relative_q;
+        let pose =
+            |q: Quaternion<f32>| TrackingPose::new([0.0, 0.0, 0.0], [q.v.x, q.v.y, q.v.z, q.s]);
+        let composed = camera.compose_tracked_view(pose(reference_q), pose(tracked_q));
+        let got = (Vector3::from(composed.target) - Vector3::from(composed.eye)).normalize();
+        let yaw = 20.0_f32.to_radians();
+        let expected = Vector3::new(yaw.sin(), 0.0, yaw.cos());
+
+        assert!(got.dot(expected) > 0.9999, "forward = {got:?}");
+    }
+
+    #[test]
+    fn midpoint_handles_equivalent_opposite_quaternion_signs() {
+        let left = TrackingPose::new([-0.03, 1.0, 2.0], [0.0, 0.0, 0.0, 1.0]);
+        let right = TrackingPose::new([0.03, 1.0, 2.0], [0.0, 0.0, 0.0, -1.0]);
+        let midpoint = TrackingPose::midpoint(left, right).unwrap();
+
+        assert_eq!(midpoint.position, [0.0, 1.0, 2.0]);
+        assert!(approx(midpoint.orientation[3].abs(), 1.0));
+    }
+
+    #[test]
+    fn invalid_tracking_or_authored_camera_falls_back_without_nans() {
+        let camera = Camera::default();
+        let invalid = TrackingPose::new([f32::NAN, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
+        let fallback = camera.compose_tracked_view(TrackingPose::IDENTITY, invalid);
+        assert_eq!(fallback.eye, camera.eye);
+        assert_eq!(fallback.target, camera.target);
+
+        let degenerate = Camera::look_at(
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(45.0),
+        );
+        let fallback =
+            degenerate.compose_tracked_view(TrackingPose::IDENTITY, TrackingPose::IDENTITY);
+        assert!(fallback.eye.iter().all(|component| component.is_finite()));
+        assert!(fallback
+            .target
+            .iter()
+            .all(|component| component.is_finite()));
     }
 
     #[test]

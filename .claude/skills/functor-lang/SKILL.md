@@ -580,6 +580,13 @@ anim |> Anim.rotate("jointName", ax, ay, az)               // additive local XYZ
                                                            //   enclosing mask still can)
 Camera.lookAt(eye, target)                                 // two Vec3s; up=+Y, fov 45°
 Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles for the rest
+                                                           //   On XR this is the authored
+                                                           //   reference center-eye rig:
+                                                           //   live head/eye deltas compose
+                                                           //   in its local basis. Position,
+                                                           //   orientation, near/far remain
+                                                           //   game-owned; OpenXR owns IPD
+                                                           //   and per-eye optical FOV
 Light.ambient(color) / Light.point(pos, color, intensity, range)
 Light.directional(dir, color, intensity) |> Light.castShadows
 Light.spot(pos, dir, color, intensity, range, coneAngle)
