@@ -46,7 +46,7 @@ Asset management, animation, physics, and spatial audio — in the box. Stream a
 
 > Try it yourself at https://functor.games/sandbox?example=batteries
 
-### AI-native
+### AI native
 
 Games run and respond headlessly. Drive and inspect a running game entirely over HTTP — read its live state and render tree, inject input, capture frames — the way a coding agent would.
 
