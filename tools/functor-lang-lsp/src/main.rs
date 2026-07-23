@@ -1124,9 +1124,10 @@ fn owns(file: &functor_lang::project::SourceFile, offset: usize) -> bool {
 fn localize(project: &functor_lang::project::Project, span: functor_lang::Span) -> Option<(String, Value)> {
     let file = project.sources.file_at(span.start);
     let path = if file.path.to_str().is_some_and(|p| p.starts_with('<')) {
-        // A synthetic source (`<prelude>/Scene.funi`, `<builtin>/Random.funi`,
-        // `<builtin>/Net.fun`) — materialize its text so the editor can open
-        // it. Definition targets in Net/Random/Key land here too.
+        // A synthetic source (`<prelude>/Scene.funi`, `<stdlib>/Option.fun`,
+        // `<builtin>/Random.funi`) — materialize its text so the editor can
+        // open it. Definition targets in Net/Random/Key/Option/Result land
+        // here too.
         materialize_synthetic(file)?
     } else {
         file.path.clone()

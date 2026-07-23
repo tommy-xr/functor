@@ -508,9 +508,17 @@ snapshots — no GPU, fully agent-verifiable.
       themselves as `<stdlib>/…` or `<prelude>/…`. The existing language-owned
       `Net.fun`, `Key.fun`, and `Random.funi` now go through this path instead
       of bespoke pushes. Compatibility wrappers keep every current prelude
-      caller unchanged. This is the distribution substrate for the core
-      Option/Result modules and the engine-bundled Animator follow-ups; those
-      modules are deliberately separate slices.
+      caller unchanged. This is the distribution substrate for reusable core
+      and engine modules; consumers do not need a package/import step.
+      **Part 4 — core Option/Result — done (2026-07-23):** bundled ordinary
+      `.fun` implementations now provide generic `Option.t<'value>`
+      (`Some`/`None`) and `Result.t<'value, 'error>` (`Ok`/`Error`) in every
+      embedding, including the plain language CLI. Their subject-last helper
+      APIs cover mapping/binding, lazy/eager defaults, predicates, filtering
+      or error mapping, and `Option.toList` / `Result.toOption`; their
+      `<stdlib>/…` sources participate in the normal parser, checker,
+      dependency graph, evaluator, source maps, and hot-reload rebind path.
+      Engine-bundled Animator remains a separate follow-up.
 - [x] **Language: inline `expect` tests** (done 2026-07-19; design note in
       `~/notes` `inline-expect-tests.md` — the live red/green editor arc
       builds on this). `expect <bool-expr>` is a top-level item (contextual

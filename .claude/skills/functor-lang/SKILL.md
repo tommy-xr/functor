@@ -202,7 +202,8 @@ let grab = (s) =>
   (they evaluate first); siblings may reference the entry (`Game.foo`) if
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
-  builtin/prelude namespace (Net, Key, Random, List, Text, Math, Debug, Scene,
+  builtin/prelude or bundled-core namespace (Net, Key, Random, Option, Result,
+  List, Text, Math, Debug, Scene,
   Anim, Asset, Camera, Frame, Light, Fog, Color, Vec3, Skybox, Angle, Texture,
   Time, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr, Style, AudioSource, AudioScene) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
@@ -232,8 +233,9 @@ let grab = (s) =>
   reason keys stopped being strings. `Random` is likewise built-in (the
   abstract `Random.Seed` — see the Random builtins above).
 - **Bundled modules use the ordinary module semantics.** The language-owned
-  `Net.fun` / `Key.fun` implementations and `Random.funi` interface are
-  in-memory sources distributed with every embedding. Hosts may inject
+  `Net.fun` / `Key.fun` builtins, `Random.funi` interface, and
+  `Option.fun` / `Result.fun` standard-library implementations are in-memory
+  sources distributed with every embedding. Hosts may inject
   additional bundled `.fun` implementations and `.funi` interfaces through
   the same project linker: they parse, lower, check, evaluate, participate in
   dependency ordering, appear in source maps (`<stdlib>/…` / `<prelude>/…`),
@@ -379,6 +381,40 @@ expect (                                      // any expression works — a
   which loop in the interpreter and consume no evaluation depth. A hand-rolled
   recursive list walk trips the cap around n≈60; the depth error names the cap
   value (128) and points at `List.fold`.
+
+## Standard library modules
+
+`Option` and `Result` are bundled `.fun` modules available in every project and
+under the plain `functor-lang` CLI. They are ordinary, generic ADTs — match
+their qualified constructors directly, annotate with `Option.t<'value>` /
+`Result.t<'value, 'error>`, and use their helpers subject-last so pipelines
+read naturally:
+
+```functor
+let label =
+  Option.Some(41.0)
+  |> Option.map((n) => n + 1.0)
+  |> Option.defaultWith(() => 0.0)
+
+let message = (result: Result.t<float, string>) =>
+  match result with
+  | Result.Ok(value) => Text.fromFloat(value)
+  | Result.Error(error) => error
+```
+
+`Option.Some(value)` / `Option.None` ·
+`Option.map(fn, option)` · `Option.bind(fn, option)` ·
+`Option.defaultValue(fallback, option)` ·
+`Option.defaultWith(() => fallback, option)` (the callback runs only for
+`None`) · `Option.isSome(option)` · `Option.isNone(option)` ·
+`Option.filter(predicate, option)` · `Option.toList(option)`.
+
+`Result.Ok(value)` / `Result.Error(error)` ·
+`Result.map(fn, result)` · `Result.mapError(fn, result)` ·
+`Result.bind(fn, result)` · `Result.defaultValue(fallback, result)` ·
+`Result.defaultWith(errorToValue, result)` (the callback receives the error
+and runs only for `Error`) · `Result.isOk(result)` ·
+`Result.isError(result)` · `Result.toOption(result)`.
 
 ## Builtins (the whole registry)
 

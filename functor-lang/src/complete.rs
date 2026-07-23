@@ -869,6 +869,38 @@ mod tests {
         assert_eq!(find(&items, "map").kind, CompletionKind::Function);
     }
 
+    // Bundled stdlib modules complete from their ordinary inferred `.fun`
+    // definitions, including generic signatures and constructors.
+    #[test]
+    fn standard_library_member_completion() {
+        let option = game(STUB, &[], "let s = Option.");
+        assert_eq!(
+            find(&option, "map").detail.as_deref(),
+            Some("Option.map : (('a) => 'b, Option.t<'a>) => Option.t<'b>")
+        );
+        assert_eq!(find(&option, "map").kind, CompletionKind::Function);
+        assert_eq!(
+            find(&option, "Some").detail.as_deref(),
+            Some("Option.Some : ('value) => t<'value>")
+        );
+        assert_eq!(find(&option, "Some").kind, CompletionKind::Constructor);
+        assert_eq!(
+            find(&option, "None").detail.as_deref(),
+            Some("Option.None : t<'value>")
+        );
+
+        let result = game(STUB, &[], "let s = Result.");
+        for member in ["map", "mapError", "bind", "defaultValue", "toOption"] {
+            assert!(
+                has(&result, member),
+                "missing {member} in {:?}",
+                labels(&result)
+            );
+        }
+        assert_eq!(find(&result, "Ok").kind, CompletionKind::Constructor);
+        assert_eq!(find(&result, "Error").kind, CompletionKind::Constructor);
+    }
+
     // Builtin module `Math.` — the function builtins complete as functions, but
     // the constant `Math.pi` completes as a Value (not a callable).
     #[test]

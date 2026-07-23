@@ -787,11 +787,9 @@ let bad = f() + 1.0
 /// lowering (the backward-compatibility pin: bare names, IDs from zero,
 /// spans from zero).
 #[test]
-fn single_file_project_adds_only_the_builtin_modules() {
-    // A project always includes the built-in `Net` and `Random` prelude
-    // modules (so any game can `match ev with | Net.Connected(id) => …` and
-    // seed the PRNG), so its merged IR is plain lowering's defs/types PLUS
-    // theirs — nothing else changes.
+fn single_file_project_adds_only_the_core_modules() {
+    // A project always includes the language-owned modules, so its merged IR
+    // is plain lowering's defs/types plus those modules — nothing else changes.
     let src = "type Shape = | Circle(radius: float) | Point\n\
                let area = (s: Shape): float =>\n\
                match s with | Circle(r) => 3.14 * r * r | Point => 0.0\n\
@@ -811,9 +809,9 @@ fn single_file_project_adds_only_the_builtin_modules() {
     for ty in &plain.types {
         assert!(proj_types.contains(&ty.name.as_str()));
     }
-    // The ONLY additions are the built-in modules': Net's canonicalized
+    // The ONLY additions are the core modules': Net's canonicalized
     // `Net.NetEvent` / `Net.HttpResponse`, Random's abstract `Random.Seed`,
-    // and the input-key variant `Key.t`.
+    // the input-key variant `Key.t`, and the stdlib's generic Option/Result.
     assert!(
         proj_types.contains(&"Net.NetEvent") && proj_types.contains(&"Net.HttpResponse"),
         "the built-in Net module must be injected: {proj_types:?}"
@@ -826,11 +824,80 @@ fn single_file_project_adds_only_the_builtin_modules() {
         proj_types.contains(&"Key.t"),
         "the built-in Key module must be injected: {proj_types:?}"
     );
+    assert!(
+        proj_types.contains(&"Option.t") && proj_types.contains(&"Result.t"),
+        "the bundled stdlib modules must be injected: {proj_types:?}"
+    );
     assert_eq!(
         proj_types.len(),
-        plain.types.len() + 4,
-        "no types beyond the entry's + Net's two + Random.Seed + Key.t"
+        plain.types.len() + 6,
+        "no types beyond the entry's + Net(2) + Random + Key + Option + Result"
     );
+}
+
+#[test]
+fn bundled_option_module_runs_and_checks() {
+    let src = "let main = () =>\n\
+               let kept = Option.Some(20.0)\n\
+                 |> Option.map((n) => n + 1.0)\n\
+                 |> Option.bind((n) => Option.Some(n * 2.0))\n\
+                 |> Option.filter((n) => n > 40.0) in\n\
+               let removed = kept |> Option.filter((n) => n > 100.0) in\n\
+               let flags =\n\
+                 if Option.isSome(kept) && Option.isNone(removed) then 1.0 else 0.0 in\n\
+               Option.defaultValue(0.0, kept)\n\
+                 + Option.defaultWith(() => 5.0, removed)\n\
+                 + List.length(Option.toList(kept))\n\
+                 + flags\n";
+    let project = load("option-stdlib", &[("game.fun", src)]);
+    let diags = project.check();
+    assert!(diags.is_empty(), "Option API should check: {diags:?}");
+
+    let record = functor_lang::run(&project.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("Option API should run: {}", f.error.message));
+    match record.outcome {
+        RunOutcome::Main(Value::Number(n)) => assert_eq!(n, 49.0),
+        _ => panic!("expected a numeric main result"),
+    }
+
+    let option = project
+        .sources
+        .files()
+        .iter()
+        .find(|file| file.module == "Option")
+        .expect("Option source is mapped");
+    assert_eq!(option.path, PathBuf::from("<stdlib>/Option.fun"));
+    assert!(!option.interface);
+}
+
+#[test]
+fn bundled_result_module_runs_and_checks() {
+    let src = "let main = () =>\n\
+               let good = Result.Ok(20.0)\n\
+                 |> Result.map((n) => n + 1.0)\n\
+                 |> Result.bind((n) => Result.Ok(n * 2.0)) in\n\
+               let bad = Result.Error(\"no\")\n\
+                 |> Result.map((n) => n + 1.0)\n\
+                 |> Result.mapError((e) => Text.concat(e, \"!\")) in\n\
+               let flags =\n\
+                 if Result.isOk(good) && Result.isError(bad) then 1.0 else 0.0 in\n\
+               let options =\n\
+                 Option.defaultValue(0.0, Result.toOption(good))\n\
+                   + (if Option.isNone(Result.toOption(bad)) then 1.0 else 0.0) in\n\
+               Result.defaultValue(0.0, good)\n\
+                 + Result.defaultWith((e) => if e == \"no!\" then 5.0 else 0.0, bad)\n\
+                 + flags\n\
+                 + options\n";
+    let project = load("result-stdlib", &[("game.fun", src)]);
+    let diags = project.check();
+    assert!(diags.is_empty(), "Result API should check: {diags:?}");
+
+    let record = functor_lang::run(&project.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("Result API should run: {}", f.error.message));
+    match record.outcome {
+        RunOutcome::Main(Value::Number(n)) => assert_eq!(n, 91.0),
+        _ => panic!("expected a numeric main result"),
+    }
 }
 
 /// The built-in `Key` module: the `input` hook's key variant. Qualified
