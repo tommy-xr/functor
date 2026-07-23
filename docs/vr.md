@@ -23,7 +23,7 @@ games deploy over the network.
 | [#437](https://github.com/tommy-xr/functor/pull/437) | Exact asymmetric OpenXR projections, fixing binocular double vision | merged; Quest 3 verified |
 | [#438](https://github.com/tommy-xr/functor/pull/438) | Shared desktop/Quest debug protocol, whole-project REPL, raw stereo capture, TypeScript SDK parity, device benchmark | merged; Quest 3 verified |
 | [#453](https://github.com/tommy-xr/functor/pull/453) | Compose live OpenXR head/eye tracking onto the authored `Frame.camera` rig | merged; Quest 3 verified |
-| current change | Push project `.glb` models, textures, and sounds through the shared debug protocol; initialize the first pushed project from `init` | Quest 3 verified with synthwave textures + animated Xbot |
+| [#460](https://github.com/tommy-xr/functor/pull/460) | Push project `.glb` models, textures, and sounds through the shared debug protocol; initialize the first pushed project from `init` | draft; Quest 3 verified with synthwave textures + animated Xbot |
 
 ## Working today on the Xreal One
 
