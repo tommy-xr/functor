@@ -10,9 +10,10 @@
 //   - a breaking commit since the last release tag
 //     (`type!:` subject or a "BREAKING CHANGE:" body)   → minor bump
 //   - any change to the language/prelude surface
-//     (functor-prelude/prelude/*.funi) since the last
-//     tag, even if no commit message says so — the
-//     signatures are the honest record of that surface  → minor bump
+//     (functor-prelude/prelude/*.funi or
+//     functor-prelude/stdlib/*.fun) since the last tag,
+//     even if no commit message says so — these bundled
+//     modules are the honest record of that surface       → minor bump
 //   - anything else                                     → patch bump
 // From 1.0.0 on, the same signals map to major (breaking) and minor
 // (feat / surface change).
@@ -47,7 +48,14 @@ const breaking =
   subjects.some((s) => /^[a-z]+(\(.+\))?!:/.test(s)) ||
   /BREAKING[ -]CHANGE:/.test(git("log", `${last}..HEAD`, "--format=%b"));
 const feature = subjects.some((s) => /^feat(\(.+\))?:/.test(s));
-const surface = git("diff", "--name-only", `${last}..HEAD`, "--", "functor-prelude/prelude/*.funi")
+const surface = git(
+  "diff",
+  "--name-only",
+  `${last}..HEAD`,
+  "--",
+  "functor-prelude/prelude/*.funi",
+  "functor-prelude/stdlib/*.fun",
+)
   .split("\n")
   .filter(Boolean);
 

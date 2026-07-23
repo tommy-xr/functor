@@ -262,12 +262,13 @@ fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String>
         Some(src) => std::collections::HashMap::from([(entry.to_path_buf(), src)]),
         None => std::collections::HashMap::new(),
     };
-    // Inject the host prelude `.funi` interfaces so `Scene.*` (etc.) typecheck
-    // against real types (docs/functor-lang-interfaces.md). Check-time only — the FunctorHost still
-    // provides the actual runtime values.
-    let project =
-        functor_lang::project::load_with_prelude(entry, &overrides, &functor_prelude::modules())
-            .map_err(|e| format!("cannot load {}", e.render()))?;
+    // Link the engine's executable `.fun` modules and host `.funi` interfaces.
+    let project = functor_lang::project::load_with_bundled_modules(
+        entry,
+        &overrides,
+        &functor_prelude::bundled_modules(),
+    )
+    .map_err(|e| format!("cannot load {}", e.render()))?;
     finish_load(path, project)
 }
 
@@ -283,9 +284,11 @@ fn load_sources(files: &[(String, String)]) -> Result<Loaded, String> {
         .iter()
         .map(|(path, source)| (PathBuf::from(path), source.clone()))
         .collect();
-    let project =
-        functor_lang::project::load_sources_with_prelude(sources, &functor_prelude::modules())
-            .map_err(|e| format!("cannot load {}", e.render()))?;
+    let project = functor_lang::project::load_sources_with_bundled_modules(
+        sources,
+        &functor_prelude::bundled_modules(),
+    )
+    .map_err(|e| format!("cannot load {}", e.render()))?;
     finish_load(path, project)
 }
 

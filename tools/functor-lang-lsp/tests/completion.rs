@@ -1,5 +1,5 @@
 //! B-layer completion tests: drive `functor_lang::complete::complete` directly
-//! against the **real** engine prelude (`functor_prelude::modules()`) — no
+//! against the **real** engine bundle (`functor_prelude::bundled_modules()`) — no
 //! server spawn, no framed stdio. The A-layer unit tests in `complete.rs` use
 //! inline throwaway preludes for exact-label assertions; here we pin the real
 //! `scene.funi` surface so drift in the shipped prelude is caught.
@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use functor_lang::complete::{complete, CompletionKind};
-use functor_lang::project::{load_sources_with_prelude, Project};
+use functor_lang::project::{load_sources_with_bundled_modules, Project};
 
 /// A minimal, valid single-file project — the last-good parse the broken live
 /// buffers complete against. The real prelude gives it `Scene.*`.
@@ -15,8 +15,8 @@ const STUB: &str = "let main = () => 1.0";
 
 fn project() -> Project {
     let sources = vec![(PathBuf::from("game.fun"), STUB.to_string())];
-    let prelude = functor_prelude::modules();
-    load_sources_with_prelude(sources, &prelude)
+    let bundled = functor_prelude::bundled_modules();
+    load_sources_with_bundled_modules(sources, &bundled)
         .unwrap_or_else(|e| panic!("project loads: {}", e.render()))
 }
 
@@ -60,4 +60,24 @@ fn real_prelude_partial_member_filters() {
     let live = "let s = Scene.cu";
     let items = complete(&project, "Game", live, live.len());
     assert_eq!(labels(&items), ["cube"]);
+}
+
+#[test]
+fn bundled_animator_member_completion() {
+    let project = project();
+    let live = "let pose = Animator.";
+    let items = complete(&project, "Game", live, live.len());
+    let names = labels(&items);
+    for member in ["start", "play", "pose"] {
+        assert!(
+            names.contains(&member.to_string()),
+            "missing {member} in {names:?}"
+        );
+    }
+    assert!(
+        !names.contains(&"smoothstep".to_string()),
+        "implementation helper leaked into the public API: {names:?}"
+    );
+    let pose = find(&items, "pose");
+    assert_eq!(pose.kind, CompletionKind::Function);
 }

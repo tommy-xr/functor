@@ -1,19 +1,42 @@
-//! The Functor host prelude as Functor Lang interface files (`.funi`).
+//! The Functor host bundle: interface files (`.funi`) and reusable Functor
+//! Lang implementation modules (`.fun`).
 //!
 //! The Functor Lang typechecker resolves host externals (`Scene.cube`, …) against
 //! interface-only modules injected at load time (see
-//! [`functor_lang::project::load_with_prelude`] and `docs/functor-lang-interfaces.md`). This crate holds the
-//! authoritative `.funi` text for those modules and exposes it as
-//! `(module name, source)` pairs — the exact shape the loader wants.
+//! [`functor_lang::project::load_with_bundled_modules`] and
+//! `docs/functor-lang-interfaces.md`). This crate holds the authoritative
+//! engine-owned source for every target.
 //!
-//! The `.funi` here declares only TYPES; the Rust implementations live in
+//! The `.funi` files declare only TYPES; their Rust implementations live in
 //! `functor_runtime_common::functor_lang_prelude::FunctorHost`. A drift test in that
-//! crate keeps the two in sync.
+//! crate keeps the two in sync. Bundled `.fun` files are ordinary executable
+//! modules linked and evaluated by `functor-lang`.
+
+use functor_lang::project::BundledModule;
+
+/// The complete engine-owned Functor Lang bundle.
+///
+/// Hosts should pass this to the `*_with_bundled_modules` loader matching
+/// their source form. Keeping interfaces and implementations together makes
+/// their availability identical in native, wasm, CLI, and editor tooling.
+pub fn bundled_modules() -> Vec<BundledModule> {
+    let mut bundled = modules()
+        .into_iter()
+        .map(|(name, src)| BundledModule::interface(name, src))
+        .collect::<Vec<_>>();
+    bundled.push(BundledModule::implementation(
+        "Animator",
+        include_str!("../stdlib/animator.fun"),
+    ));
+    bundled
+}
 
 /// The host prelude interface modules, as `(module name, .funi source)` pairs.
 ///
 /// The module name is what qualified access uses (`Scene.cube`); it is derived
 /// here explicitly rather than from a file name so the loader gets it verbatim.
+/// This interface-only view remains useful to the registry drift tests; hosts
+/// should load [`bundled_modules`] instead.
 pub fn modules() -> Vec<(String, String)> {
     vec![
         module("Scene", include_str!("../prelude/scene.funi")),
@@ -44,4 +67,24 @@ pub fn modules() -> Vec<(String, String)> {
 
 fn module(name: &str, src: &str) -> (String, String) {
     (name.to_string(), src.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use functor_lang::project::BundledModuleKind;
+
+    #[test]
+    fn engine_bundle_contains_interfaces_and_animator_implementation() {
+        let bundled = bundled_modules();
+        assert!(bundled.iter().any(|module| {
+            module.name() == "Scene" && module.kind() == BundledModuleKind::Interface
+        }));
+        let animator = bundled
+            .iter()
+            .find(|module| module.name() == "Animator")
+            .expect("Animator is distributed with every engine host");
+        assert_eq!(animator.kind(), BundledModuleKind::Implementation);
+        assert!(animator.source().contains("let pose"));
+    }
 }

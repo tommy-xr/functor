@@ -1,20 +1,20 @@
-//! The host prelude (`functor-prelude`) as a check-time overlay (funi 2e):
+//! The engine bundle (`functor-prelude`): reusable `.fun` modules execute,
 //! host calls get real types, and the MVU `(model, effect)` lift still works
 //! now that `Effect` has a concrete type instead of the old `Unknown` seam.
 
 use std::collections::HashMap;
 
-/// Check `src` as a single-file game WITH the host prelude injected.
+/// Check `src` as a single-file game with the complete engine bundle.
 fn check(src: &str) -> Vec<String> {
     let dir =
         std::env::temp_dir().join(format!("functor-prelude-typecheck-{}", src.len()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("game.fun"), src).unwrap();
-    let project = match functor_lang::project::load_with_prelude(
+    let project = match functor_lang::project::load_with_bundled_modules(
         &dir.join("game.fun"),
         &HashMap::new(),
-        &functor_prelude::modules(),
+        &functor_prelude::bundled_modules(),
     ) {
         Ok(project) => project,
         Err(e) => {
@@ -57,6 +57,21 @@ fn host_calls_have_real_types() {
          Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
     );
     assert!(diags.iter().any(|m| m.contains("Frame.t")), "{diags:?}");
+}
+
+/// Engine-owned `.fun` modules participate in the same typecheck as the host
+/// interfaces they build upon.
+#[test]
+fn animator_is_available_without_a_project_sibling() {
+    let diags = check(
+        "let state = Animator.start(\"idle\", 0.0)\n\
+         let next = Animator.play(\"run\", 1.0, state)\n\
+         let pose : Anim.t = Animator.pose(next, 0.5, 1.25)",
+    );
+    assert!(
+        diags.is_empty(),
+        "bundled Animator should check clean: {diags:?}"
+    );
 }
 
 // --- typed assets (Track B.1) ---

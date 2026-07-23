@@ -398,10 +398,9 @@ fn single(src: &str) -> Vec<(PathBuf, String)> {
     vec![(PathBuf::from(USER_FILE), src.to_string())]
 }
 
-/// Load a file set as a project with the host prelude injected (so `Scene.*` /
-/// `Camera.*` / … typecheck), mirroring the LSP.
+/// Load a file set with the complete engine bundle, mirroring the LSP.
 fn load_sources(sources: Vec<(PathBuf, String)>) -> Result<Project, project::ProjectError> {
-    project::load_sources_with_prelude(sources, &functor_prelude::modules())
+    project::load_sources_with_bundled_modules(sources, &functor_prelude::bundled_modules())
 }
 
 /// Parse the `*_project` file-set payload: a JSON array of

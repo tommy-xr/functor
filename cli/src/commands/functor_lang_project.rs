@@ -186,14 +186,13 @@ impl FunctorLangProject {
         // A load failure (parse error, bad module name, cycle) is a positioned
         // diagnostic too — surface its file:line:col structurally, like a check
         // error, rather than flattening it into the final text-only error.
-        // Inject the host prelude `.funi` interfaces so the game's `Scene.*`
-        // (etc.) externals typecheck against real types instead of `Unknown`
-        // (docs/functor-lang-interfaces.md). Check-time only — runtime evaluation is unchanged
-        // (the host provides the actual values).
-        let project = match functor_lang::project::load_with_prelude(
+        // Inject the engine's bundled `.fun` modules and `.funi` interfaces
+        // so reusable modules such as `Animator` execute and host externals
+        // such as `Scene.*` typecheck against their real types.
+        let project = match functor_lang::project::load_with_bundled_modules(
             &path,
             &std::collections::HashMap::new(),
-            &functor_prelude::modules(),
+            &functor_prelude::bundled_modules(),
         ) {
             Ok(project) => project,
             Err(e) => {
@@ -1047,10 +1046,10 @@ examples move?",
                         continue;
                     }
                 };
-                match functor_lang::project::load_with_prelude(
+                match functor_lang::project::load_with_bundled_modules(
                     &entry,
                     &std::collections::HashMap::new(),
-                    &functor_prelude::modules(),
+                    &functor_prelude::bundled_modules(),
                 ) {
                     Ok(loaded) => {
                         for diag in loaded.check() {

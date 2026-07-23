@@ -111,6 +111,22 @@ impl BundledModule {
         BundledModule::new(name, src, BundledModuleKind::Interface, "<prelude>")
     }
 
+    /// Module name used by qualified access (`Animator`, `Scene`, …).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Embedded source text linked for this module.
+    pub fn source(&self) -> &str {
+        &self.src
+    }
+
+    /// Whether this descriptor carries executable `.fun` source or a
+    /// host-backed `.funi` interface.
+    pub fn kind(&self) -> BundledModuleKind {
+        self.kind
+    }
+
     fn builtin(
         name: impl Into<String>,
         src: impl Into<String>,
@@ -565,7 +581,8 @@ namespace `{module}` — rename the file",
                 path,
                 format!(
                     "module name `{module}` (from {}) collides with the bundled module \
-namespace `{module}` — rename the file",
+namespace `{module}` — remove the file to use the bundled module, or rename it \
+if it is a customized module",
                     file_name(path)
                 ),
             ));

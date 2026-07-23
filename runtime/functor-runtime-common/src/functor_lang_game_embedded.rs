@@ -225,13 +225,13 @@ fn load_source(sources: &[(String, String)]) -> Result<Loaded, String> {
         .iter()
         .map(|(p, s)| (std::path::PathBuf::from(p), s.clone()))
         .collect();
-    // Link the entry with its siblings, injecting the host prelude `.funi`
-    // interfaces so `Scene.*` (etc.) typecheck against real types — the exact
-    // path the other producers run (docs/functor-lang-interfaces.md). Check-time only;
-    // the FunctorHost still provides the actual runtime values.
-    let project =
-        functor_lang::project::load_sources_with_prelude(pairs, &functor_prelude::modules())
-            .map_err(|e| format!("cannot load {}", e.render()))?;
+    // Link the same executable `.fun` modules and host `.funi` interfaces as
+    // the other producers.
+    let project = functor_lang::project::load_sources_with_bundled_modules(
+        pairs,
+        &functor_prelude::bundled_modules(),
+    )
+    .map_err(|e| format!("cannot load {}", e.render()))?;
     let module = project.module;
     let source_map = project.sources;
     // Type diagnostics are advisory in the dev loop: warn, keep going

@@ -44,6 +44,9 @@ dist/
 # perf output
 perf*
 
+# Local semantic-review model/index cache.
+.fastembed_cache/
+
 # MacOS
 .DS_Store
 

@@ -1,4 +1,5 @@
-// Animator — a derived crossfade over Anim clips, in pure Functor Lang.
+// Animator — the engine-bundled derived crossfade over Anim clips, in pure
+// Functor Lang.
 //
 // The engine's Anim.* algebra is stateless: a pose is a function of explicit
 // playheads and weights. This module derives smooth clip transitions from
@@ -44,17 +45,15 @@ let play = (clip: string, tts: float, st) =>
       fadeStart: tts,
     }
 
-let smoothstep = (t: float): float =>
-  let c = Math.clamp01(t) in
-  c * c * (3.0 - 2.0 * c)
-
 // The derived pose: a smoothstep crossfade from `prev` to `current` over
 // `fade` seconds, collapsing to the bare current clip once settled. A
 // non-positive fade is a hard cut (guards the divide).
 let pose = (st, fade: float, tts: float): Anim.t =>
   let w =
     (match fade > 0.0 with
-     | true => smoothstep((tts - st.fadeStart) / fade)
+     | true =>
+       let c = Math.clamp01((tts - st.fadeStart) / fade) in
+       c * c * (3.0 - 2.0 * c)
      | false => 1.0) in
   match w < 1.0 with
   | true =>

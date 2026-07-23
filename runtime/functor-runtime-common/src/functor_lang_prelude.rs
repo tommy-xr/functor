@@ -5092,10 +5092,10 @@ Color.rgb(r, g, b)"
              let good = () => Physics.position(Physics.tag(\"ball\"))\n",
         )
         .unwrap();
-        let project = functor_lang::project::load_with_prelude(
+        let project = functor_lang::project::load_with_bundled_modules(
             &dir.join("game.fun"),
             &Default::default(),
-            &functor_prelude::modules(),
+            &functor_prelude::bundled_modules(),
         )
         .unwrap_or_else(|e| panic!("loads: {}", e.render()));
         let diags: Vec<String> = project.check().into_iter().map(|d| d.message).collect();
@@ -5263,6 +5263,44 @@ Anim.clip(\"walk\", tts)"
             failure.error.message.contains("(anim, weight)"),
             "message: {}",
             failure.error.message
+        );
+    }
+
+    #[test]
+    fn bundled_animator_executes_against_anim_host() {
+        let sources = vec![(
+            std::path::PathBuf::from("game.fun"),
+            "let main =\n\
+             Animator.pose(\n\
+               Animator.play(\"run\", 2.0, Animator.start(\"idle\", 0.0)),\n\
+               1.0,\n\
+               2.5)"
+                .to_string(),
+        )];
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            sources,
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|error| panic!("bundle loads: {}", error.render()));
+        let diagnostics = project.check();
+        assert!(
+            diagnostics.is_empty(),
+            "Animator should typecheck against Anim: {diagnostics:#?}"
+        );
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|failure| panic!("session loads: {}", failure.error.message));
+        let value = session.global("main").expect("entry value");
+        let AnimExpr::Blend(entries) = anim_of(&value, "test", Span::new(0, 0)).expect("Anim") else {
+            panic!("mid-transition Animator pose should be a blend");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(
+            matches!(&entries[0], (AnimExpr::Clip { name, playhead }, weight)
+                if name == "idle" && (*playhead - 2.5).abs() < 1e-6 && (*weight - 0.5).abs() < 1e-6)
+        );
+        assert!(
+            matches!(&entries[1], (AnimExpr::Clip { name, playhead }, weight)
+                if name == "run" && (*playhead - 0.5).abs() < 1e-6 && (*weight - 0.5).abs() < 1e-6)
         );
     }
 

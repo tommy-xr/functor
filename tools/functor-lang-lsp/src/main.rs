@@ -633,12 +633,18 @@ fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
 /// leak in). `None` on a non-`file:` URI or a load failure.
 fn load_project(uri: &str, documents: &HashMap<String, String>) -> Option<functor_lang::project::Project> {
     let path = uri_to_path(uri)?;
-    // The engine prelude (`Scene.*`, `Camera.*`, …) as a check-time overlay, so
-    // the editor shows real host types (`Scene.cube() : Scene.t`) instead of
-    // `Unknown`. This is what makes the LSP host-aware; the runtime injects the
-    // same set (funi 2e).
-    let prelude = functor_prelude::modules();
-    let single_file = || functor_lang::project::load_single_file(&path, documents.get(uri)?, &prelude).ok();
+    // The complete engine bundle: executable modules such as `Animator` plus
+    // `.funi` interfaces that give host calls their real types. The runtimes
+    // inject the same set.
+    let bundled = functor_prelude::bundled_modules();
+    let single_file = || {
+        functor_lang::project::load_single_file_with_bundled_modules(
+            &path,
+            documents.get(uri)?,
+            &bundled,
+        )
+        .ok()
+    };
     match discover_entry(&path) {
         Some(entry) => {
             let overrides: HashMap<PathBuf, String> = documents
@@ -649,7 +655,11 @@ fn load_project(uri: &str, documents: &HashMap<String, String>) -> Option<functo
             // file. A nearest `functor.json` whose entry lives in another dir,
             // or a broken sibling that fails the load, must not strip the open
             // buffer of all features — fall back to a single-file view.
-            match functor_lang::project::load_with_prelude(&entry, &overrides, &prelude) {
+            match functor_lang::project::load_with_bundled_modules(
+                &entry,
+                &overrides,
+                &bundled,
+            ) {
                 Ok(project) if project.sources.file_by_path(&path).is_some() => Some(project),
                 _ => single_file(),
             }
@@ -1135,7 +1145,7 @@ fn localize(project: &functor_lang::project::Project, span: functor_lang::Span) 
     Some((path_to_uri(&path), local_range(file, span)))
 }
 
-/// The embedded prelude `.funi` interfaces written out as real files, so the
+/// Embedded synthetic modules written out as real files, so the
 /// editor can OPEN them (go-to-definition targets, browsable docs). Written
 /// once per content hash — a new prelude version gets a fresh directory, and
 /// an unchanged one reuses it — and marked read-only best-effort (they are
@@ -1153,9 +1163,9 @@ fn materialize_synthetic(file: &functor_lang::project::SourceFile) -> Option<std
     let dir = DIR
         .get_or_init(|| {
             let mut hasher = DefaultHasher::new();
-            for (name, src) in &functor_prelude::modules() {
-                name.hash(&mut hasher);
-                src.hash(&mut hasher);
+            for module in &functor_prelude::bundled_modules() {
+                module.name().hash(&mut hasher);
+                module.source().hash(&mut hasher);
             }
             let dir =
                 std::env::temp_dir().join(format!("functor-prelude-{:016x}", hasher.finish()));
