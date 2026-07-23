@@ -25,7 +25,7 @@
 //! fork predates the 0.18 release that shipped GLES/Android support),
 //! `android-activity` instead of the deprecated `ndk-glue`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
@@ -289,6 +289,8 @@ fn service_debug_request(
     debug: &mut DebugLoopState,
     eyes: &[EyeTarget],
     session_running: bool,
+    asset_cache: &Arc<AssetCache>,
+    scene_context: &SceneContext,
 ) {
     match request {
         DebugRequest::Capture(response) => {
@@ -406,6 +408,36 @@ fn service_debug_request(
         }
         DebugRequest::ReloadProject(files, response) => {
             let _ = response.send(game.reload_project(&files));
+        }
+        DebugRequest::LoadProject(files, response) => {
+            let result = game.load_project(&files);
+            if result.is_ok() {
+                clock.restart();
+                debug.frame_count = 0;
+            }
+            let _ = response.send(result);
+        }
+        DebugRequest::ReloadAsset(asset, response) => {
+            let changed = asset_cache.replace_uploaded(&asset.path, asset.bytes);
+            if changed {
+                scene_context.evict_asset(&asset.path);
+            }
+            let status = if changed { "reloaded" } else { "unchanged" };
+            log::info!("{status} project asset '{}'", asset.path);
+            let _ = response.send(Ok(format!("{status} asset {}", asset.path)));
+        }
+        DebugRequest::SyncAssets(paths, response) => {
+            let current: HashSet<String> = paths.into_iter().collect();
+            let removed = asset_cache.retain_uploaded(&current);
+            for path in &removed {
+                scene_context.evict_asset(path);
+                log::info!("removed project asset '{path}'");
+            }
+            let _ = response.send(Ok(format!(
+                "synced {} asset(s), removed {}",
+                current.len(),
+                removed.len()
+            )));
         }
         DebugRequest::Rewind(frame, response) => {
             let result = game.rewind_scene_to(frame);
@@ -713,6 +745,8 @@ pub fn android_main(app: AndroidApp) {
                     &mut debug,
                     &eyes,
                     session_running,
+                    &asset_cache,
+                    &scene_context,
                 );
             }
         }
@@ -809,16 +843,15 @@ pub fn android_main(app: AndroidApp) {
         // the authored center-eye rig; live OpenXR eye deltas compose onto it
         // below, so the same camera positions the world on every target.
         game.check_hot_reload(frame_time.clone());
+        game.push_asset_progress(asset_cache.progress());
         for sub_frame in &sub_frames {
             game.tick(sub_frame.clone());
             debug.frame_count += 1;
         }
         let frame = game.render(frame_time.clone());
-        // No audio/HTTP/preload/asset hosts on device yet (M1): drain the
-        // command queues so they don't grow unbounded (and
-        // `push_asset_progress` is deliberately never fed — `Sub.assets`
-        // stays quiet). Games using those effects run; the effects just
-        // don't produce sound/replies here yet.
+        // No audio/HTTP/preload hosts on device yet: drain their command
+        // queues so they don't grow unbounded. Asset progress is real and fed
+        // above; the remaining effects run but do not produce sound/replies.
         let _ = game.audio_drain_commands();
         let _ = game.net_drain_commands();
         let _ = game.net_drain_conn_commands();

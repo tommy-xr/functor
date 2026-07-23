@@ -115,6 +115,15 @@ pub trait GameProducer {
         Err("this producer does not support project reload (not an .fun game)".to_string())
     }
 
+    /// Load a complete pushed project as a NEW game. Unlike
+    /// [`GameProducer::reload_project`], this takes the model from the new
+    /// program's `init` and resets producer-owned runtime history. Device
+    /// shells use it for their first project push; later edits use
+    /// `reload_project` so the live model survives.
+    fn load_project(&mut self, _files: &[(String, String)]) -> Result<String, String> {
+        Err("this producer does not support project loading (not an .fun game)".to_string())
+    }
+
     /// Rewind the whole scene — model AND physics world — to an earlier
     /// RENDERED frame, restoring both to the state they had at the end of that
     /// frame and branching the recorded future from there (docs/time-travel.md

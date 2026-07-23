@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::{Frame, FrameTime, GameClock, RecordedInput, SceneContext};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use functor_runtime_common::Key as InputKey;
 use glfw::{Action, Key};
@@ -476,13 +476,16 @@ fn service_debug_request(
     req: debug_server::DebugRequest,
     game: &mut dyn Game,
     frame: &Frame,
-    frame_count: u64,
+    frame_count: &mut u64,
     tts: f32,
     width: u32,
     height: u32,
     held_keys: &mut BTreeSet<InputKey>,
     mouse_pos: &mut (i32, i32),
     clock: &mut GameClock,
+    asset_cache: &Arc<AssetCache>,
+    scene_context: &SceneContext,
+    mut audio_player: Option<&mut audio::AudioPlayer>,
     // The webview keyboard gate, mirrored from the GLFW routing: `Some` iff a
     // webview text field is focused (`webview_wants_keyboard`), and injected
     // keys then type into it (queued into the next frame's WorkerInput)
@@ -497,7 +500,7 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::State(resp) => {
             let _ = resp.send(debug_server::RuntimeState {
-                frame: frame_count,
+                frame: *frame_count,
                 tts,
                 viewport: debug_server::RuntimeViewport::new(width, height),
                 views: vec![debug_server::RuntimeView::new("main", width, height)],
@@ -527,6 +530,40 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::ReloadProject(files, resp) => {
             let _ = resp.send(game.reload_project(&files));
+        }
+        debug_server::DebugRequest::LoadProject(files, resp) => {
+            let result = game.load_project(&files);
+            if result.is_ok() {
+                clock.restart();
+                *frame_count = 0;
+            }
+            let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::ReloadAsset(asset, resp) => {
+            let changed = asset_cache.replace_uploaded(&asset.path, asset.bytes);
+            if changed {
+                scene_context.evict_asset(&asset.path);
+                if let Some(player) = audio_player.as_deref_mut() {
+                    player.evict_asset(&asset.path);
+                }
+            }
+            let status = if changed { "reloaded" } else { "unchanged" };
+            let _ = resp.send(Ok(format!("{status} asset {}", asset.path)));
+        }
+        debug_server::DebugRequest::SyncAssets(paths, resp) => {
+            let current: HashSet<String> = paths.into_iter().collect();
+            let removed = asset_cache.retain_uploaded(&current);
+            for path in &removed {
+                scene_context.evict_asset(path);
+                if let Some(player) = audio_player.as_deref_mut() {
+                    player.evict_asset(path);
+                }
+            }
+            let _ = resp.send(Ok(format!(
+                "synced {} asset(s), removed {}",
+                current.len(),
+                removed.len()
+            )));
         }
         debug_server::DebugRequest::Rewind(frame, resp) => {
             let result = game.rewind_scene_to(frame);
@@ -640,6 +677,11 @@ fn run_headless(
     let mut clock = GameClock::new(fixed_time);
     let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
     let mut mouse_pos: (i32, i32) = (0, 0);
+    // Keep the debug protocol target-isomorphic even without pixels: uploaded
+    // assets can be accepted now and are ready if headless rendering gains an
+    // asset path later.
+    let asset_cache = Arc::new(AssetCache::new());
+    let scene_context = SceneContext::new();
 
     // Same networking machinery as the windowed loop — driving networked/stateful
     // games is the whole point of a headless runner. Audio is omitted (no device
@@ -687,13 +729,16 @@ fn run_headless(
                     req,
                     &mut *game,
                     &frame,
-                    frame_count,
+                    &mut frame_count,
                     time.tts,
                     0, // no framebuffer in headless
                     0,
                     &mut held_keys,
                     &mut mouse_pos,
                     &mut clock,
+                    &asset_cache,
+                    &scene_context,
+                    None,
                     None, // no webview overlay in headless
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
@@ -1019,7 +1064,7 @@ pub fn run(args: Args) {
         // the game before the next tick (like net results). The player is `mut`
         // so the listener can be updated from each frame's camera.
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<u64>();
-        let mut audio_player = audio::AudioPlayer::new(audio_tx);
+        let mut audio_player = audio::AudioPlayer::new(audio_tx, asset_cache.clone());
 
         // Xreal head tracking: a background thread owns the TCP stream +
         // sensor fusion; the loop reads the latest orientation each frame and
@@ -1097,6 +1142,9 @@ pub fn run(args: Args) {
                     log::info!("asset '{}' changed on disk; reloading", path);
                     asset_cache.evict(&path);
                     scene_context.evict_asset(&path);
+                    if let Some(player) = &mut audio_player {
+                        player.evict_asset(&path);
+                    }
                 }
             }
 
@@ -2156,13 +2204,16 @@ Escape again to quit"
                         req,
                         &mut *game,
                         &frame,
-                        frame_count,
+                        &mut frame_count,
                         time.tts,
                         fb_width as u32,
                         fb_height as u32,
                         &mut held_keys,
                         &mut mouse_pos,
                         &mut clock,
+                        &asset_cache,
+                        &scene_context,
+                        audio_player.as_mut(),
                         // The webview focus gate: injected keys type into a
                         // focused webview field (queued for the next frame's
                         // overlay pass) instead of reaching the game.

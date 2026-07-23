@@ -42,12 +42,6 @@ const RESERVED_ROOT: &[&str] = &[
     "timeline-model.js",
 ];
 
-/// Extensions the runtime fetches at runtime: models (plus the external
-/// buffers/images a non-embedded `.gltf` references), audio, textures.
-const ASSET_EXTENSIONS: &[&str] = &[
-    "glb", "gltf", "bin", "wav", "ogg", "mp3", "png", "jpg", "jpeg", "hdr",
-];
-
 #[derive(Debug)]
 pub struct WasmExport {
     /// The bundle directory: `<project>/dist/web`.
@@ -225,10 +219,7 @@ fn missing_asset_references(root: &Path, entry: &str) -> Vec<String> {
 fn is_asset_path(s: &str) -> bool {
     // A URL ("https://cdn/x.png") is fetched remotely, not from the bundle.
     !s.contains("://")
-        && Path::new(s)
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|ext| ASSET_EXTENSIONS.iter().any(|a| ext.eq_ignore_ascii_case(a)))
+        && functor_runtime_common::asset::is_project_asset_file(Path::new(s))
 }
 
 /// Will the path `s` be present in the exported bundle at the URL the

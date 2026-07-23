@@ -83,6 +83,9 @@ screenshot run has no reason to grab your mouse.
 | `POST /time` | control the frame clock (see below) |
 | `POST /reload-source` | swap game logic from the request body (see below) |
 | `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first |
+| `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init` |
+| `POST /reload-asset` | upload one project-relative texture/model/audio asset as a binary path+bytes envelope |
+| `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
 
 ### `POST /input`
@@ -133,8 +136,36 @@ functor -d mygame push <host>:<port> --watch  # re-push on every save
 
 (`curl --data-binary @game.fun http://<host>:<port>/reload-source` works too.)
 
-`functor run vr` uses `/reload-project`, so sibling `.fun`/`.funi` modules have
-the same file-as-module behavior on Quest as on desktop.
+`functor run vr` uses `/load-project` for the initial push, so the headset
+starts with the project's `init` model. Its watch loop then uses
+`/reload-project`, preserving that live model across edits. Both routes carry
+all sibling `.fun`/`.funi` modules, with the same file-as-module behavior as
+desktop.
+
+### Project asset sync
+
+Source and assets remain separate operations. `POST /reload-asset` carries one
+file: a big-endian four-byte UTF-8 path length, that many path bytes, then the
+raw asset bytes. Paths are forward-slash, project-relative locators with no
+`.`/`..` segments. One file may be up to 256 MB. After uploading added or
+changed files, `POST /sync-assets` receives the complete current path list and
+evicts uploads deleted on the host.
+
+`functor run vr` performs this automatically for self-contained `.glb` models,
+textures, and sounds. (`.gltf` models with external URI dependencies remain a
+renderer limitation and are not live-synchronized.) It scans recursively,
+excluding hidden paths and the generated root `dist/` tree; the watch loop
+fingerprints metadata and reads large bytes only when an asset changes.
+Replacing an upload evicts cached model/texture/skybox decodes so the next
+frame uses the new bytes. The TypeScript SDK exposes the same flow as
+`client.reloadAsset(path, bytes)` and `client.reloadAssets(files)`. It also
+distinguishes `client.loadProject(files)` (new `init` model) from
+`client.reloadProject(files)` (model preserved).
+
+Sound bytes participate in transport/cache synchronization, but the Quest
+shell does not yet have an Android audio-output host. They therefore do not
+drive `Sub.assets` or play yet; audio output remains a separate device-runtime
+milestone.
 
 ## Two workflows
 

@@ -507,6 +507,57 @@ impl FunctorLangEmbeddedGame {
         (report.rebound, history_replay)
     }
 
+    /// Install a freshly loaded project as a NEW game. This is deliberately
+    /// separate from `swap_in`: a device runtime boots a tiny placeholder
+    /// program, so its first real project cannot preserve that unrelated
+    /// model or runtime history.
+    fn reset_in(&mut self, loaded: Loaded) {
+        self.ctx().close_all_connections();
+        physics::remove_world(physics::DEFAULT_WORLD);
+        clear_http_taggers();
+        clear_audio_completions();
+        clear_preload_completions();
+
+        self.source_hashes = inspector_sources(&loaded.sources);
+        self.last_frame_journal.clear();
+        self.journal_ring.clear();
+        self.runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
+        self.cached_trace = None;
+        journal_swap();
+        self.reporter
+            .set_source(SpanSource::Project(loaded.sources));
+        self.module = loaded.module;
+        self.session = loaded.session;
+        self.model = loaded.init;
+        self.has_input = loaded.has_input;
+        self.has_mouse_move = loaded.has_mouse_move;
+        self.has_mouse_wheel = loaded.has_mouse_wheel;
+        self.has_subscriptions = loaded.has_subscriptions;
+        self.prev_tts = None;
+        self.asset_progress = None;
+        self.delivered_asset_progress = None;
+        self.has_physics = loaded.has_physics;
+        self.has_soundscape = loaded.has_soundscape;
+        self.last_soundscape_json = empty_soundscape_json();
+        self.has_ui = loaded.has_ui;
+        self.last_view = View::Empty;
+        self.ui_handlers.clear();
+        self.has_webview = loaded.has_webview;
+        self.last_webview = None;
+        self.webview_handlers.clear();
+        self.effect_runner = RealEffects::new();
+        self.effect_log = EffectLog::new();
+        self.deferred_queries.clear();
+        self.pending_events.clear();
+        self.physics_rt = physics::SteppedPhysics::new();
+        self.physics_frame = 0;
+        self.recorder = SceneRecorder::new();
+        self.input_buf.clear();
+        self.last_frame = empty_frame();
+        self.reporter.reset();
+        self.platform.on_reload();
+    }
+
     /// Bundle this producer's per-frame state into the shared [`FrameCtx`]
     /// (docs/time-travel.md T6a) — the frame body and its helpers (`absorb`,
     /// `pump_subscriptions`, `step_physics`, `deliver_*`) live there, one copy
@@ -600,6 +651,25 @@ impl GameProducer for FunctorLangEmbeddedGame {
         let status = format!(
             "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
 (model preserved{stored}{history})",
+            self.path,
+            files.len(),
+            now_ms() - started
+        );
+        log::info!("[functor-lang] {status}");
+        Ok(status)
+    }
+
+    fn load_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        if files.is_empty() {
+            return Err("a pushed project needs at least the entry file".to_string());
+        }
+        let started = now_ms();
+        let loaded = load_source(files)?;
+        self.sources = files.to_vec();
+        self.path = files[0].0.clone();
+        self.reset_in(loaded);
+        let status = format!(
+            "loaded {} ({} file(s)) from pushed project in {:.2}ms (model initialized)",
             self.path,
             files.len(),
             now_ms() - started
@@ -1135,5 +1205,34 @@ let draw = (model, tts) =>
         let ft = frame_time(0.1, 0.016);
         game.tick(ft.clone());
         let _ = game.render(ft); // still renders under the old program
+    }
+
+    #[test]
+    fn loading_a_new_project_initializes_its_own_model() {
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("boot.fun".to_string(), BOOT.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("boot scene loads");
+        game.tick(frame_time(0.016, 0.016));
+
+        let project = BOOT
+            .replace("spin:", "speed:")
+            .replace("model.spin", "model.speed");
+        let status = game
+            .load_project(&[("game.fun".to_string(), project)])
+            .expect("new project loads");
+
+        assert!(status.contains("model initialized"), "{status}");
+        let model = game.state_debug();
+        assert!(model.contains("speed"), "{model}");
+        assert!(!model.contains("spin"), "{model}");
+        let ft = frame_time(0.032, 0.016);
+        game.tick(ft.clone());
+        let frame = game.render(ft);
+        assert!(
+            !matches!(&frame.scene.obj, crate::SceneObject::Group(children) if children.is_empty()),
+            "new project renders with its initialized model"
+        );
     }
 }

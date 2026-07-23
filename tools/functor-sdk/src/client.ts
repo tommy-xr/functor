@@ -58,11 +58,22 @@ export class HttpClient {
     return res.text();
   }
 
+  /** POST caller-provided bytes without JSON stringification. */
+  async postRawBinary(
+    path: string,
+    body: Uint8Array,
+    contentType = "application/octet-stream",
+  ): Promise<string> {
+    const res = await this.send("POST", path, body, contentType, true);
+    return res.text();
+  }
+
   private async send(
     method: string,
     path: string,
     body?: unknown,
     rawContentType?: string,
+    binary = false,
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const response = await fetch(url, {
@@ -74,6 +85,8 @@ export class HttpClient {
       body:
         body === undefined
           ? undefined
+          : binary
+            ? (body as Uint8Array)
           : rawContentType === undefined
             ? JSON.stringify(body)
             : String(body),

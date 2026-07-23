@@ -36,6 +36,27 @@ const png = await game.capture();// PNG bytes of the frame
 `FunctorRunner.connect(url)` attaches to an already-running runtime instead of
 spawning one (and won't kill it on dispose).
 
+Project assets can be pushed from Node or a loopback-hosted browser without
+target-specific APIs:
+
+```ts
+const quest = await FunctorRunner.connect("http://127.0.0.1:8123");
+await quest.reloadAssets([
+  ["models/Xbot.glb", new Uint8Array(await modelFile.arrayBuffer())],
+  ["textures/grid.png", new Uint8Array(await textureFile.arrayBuffer())],
+]);
+await quest.loadProject([
+  ["game.fun", gameSource],
+  ["assets.fun", assetManifestSource],
+]);
+```
+
+Files upload individually, then one manifest removes stale uploads. Upload the
+initial asset set before `loadProject` so `init` and the first frame see it
+resident. The same calls work against desktop and the adb-forwarded Quest runtime.
+`loadProject` initializes a new game from `init`; use `reloadProject` for later
+source edits that should preserve the live model.
+
 By default the runner is launched with `--hidden`: the GL window is never shown
 and never steals focus or the cursor, but keeps its GL context, so `capture()`
 works. Pass `visible: true` to show the window (e.g. to watch a script drive the

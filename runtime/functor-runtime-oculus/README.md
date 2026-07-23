@@ -9,10 +9,11 @@ over the shared debug-runtime protocol.
 ## Status
 
 The OpenXR shell, interpreted Functor Lang producer, USB remote-develop loop,
-authored-camera rig, and exact asymmetric per-eye projection are verified on
-Quest 3. The shared debug/REPL protocol adds raw stereo framebuffer capture and
-desktop-isomorphic control. Remaining device work includes controller/hand
-input, asset sync, and multiview rendering.
+authored-camera rig, exact asymmetric per-eye projection, and project asset
+sync are implemented for Quest 3. The shared debug/REPL protocol adds raw
+stereo framebuffer capture and desktop-isomorphic control. Remaining device
+work includes controller/hand input, an Android audio host, and multiview
+rendering.
 
 ## Camera contract
 
@@ -41,10 +42,20 @@ loopback — an accepted dev-tool tradeoff):
 functor -d mygame run vr    # the whole loop, one command
 ```
 
-`run vr` finds the adb device, launches this APK, forwards the port, pushes
-the whole project (`POST /reload-project` — sibling modules included), then
-re-checks + re-pushes on every save while streaming the headset's runtime
-log into the terminal. The pieces also work individually:
+`run vr` finds the adb device, launches this APK, forwards the port, loads
+the whole source project (`POST /load-project` — sibling modules included)
+plus its model/texture/audio files, then re-checks + re-pushes changed source
+or assets on every save while streaming the headset's runtime log into the
+terminal. The initial load takes the model from `init`; later source pushes use
+`POST /reload-project` and preserve it. Assets transfer individually through
+`POST /reload-asset`; a final
+`POST /sync-assets` manifest removes deleted uploads and changed render assets
+are decoded again on the next frame. The pieces also work individually:
+
+Sound bytes are synchronized into the device cache, but Quest audio playback
+is still pending its Android audio host; the shell currently drains audio
+commands without playing them. Sounds therefore do not yet drive
+`Sub.assets`, whose current load/decode pipeline covers models and textures.
 
 ```sh
 adb forward tcp:8123 tcp:8123
@@ -57,14 +68,15 @@ curl --fail --show-error --retry 30 --retry-delay 1 \
 ```
 
 `GET /`, `GET /state`, `GET /scene`, `GET /trace`, `POST /capture`,
-`POST /input`, `POST /time`, `POST /reload-source`, `POST /reload-project`,
-and `POST /rewind` have the same request/response forms as desktop. `/state`
-reports `left` and `right` views; `/capture` returns their raw framebuffer
-pixels as one left-then-right side-by-side PNG, before compositor warping.
-The server is reachable while the headset dozes, but capture correctly returns
-503 until XR is rendering. After any adb reconnect, recreate the port forward;
-poll `/state` until `frame` advances before capture so cached paused state is not
-mistaken for readiness.
+`POST /input`, `POST /time`, `POST /reload-source`, `POST /load-project`,
+`POST /reload-project`, `POST /reload-asset`, `POST /sync-assets`, and
+`POST /rewind` have the same
+request/response forms as desktop. `/state` reports `left` and `right` views;
+`/capture` returns their raw framebuffer pixels as one left-then-right
+side-by-side PNG, before compositor warping. The server is reachable while the
+headset dozes, but capture correctly returns 503 until XR is rendering. After
+any adb reconnect, recreate the port forward; poll `/state` until `frame`
+advances before capture so cached paused state is not mistaken for readiness.
 
 ## Benchmark on the actual headset
 

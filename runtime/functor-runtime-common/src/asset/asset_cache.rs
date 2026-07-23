@@ -36,6 +36,9 @@ struct ProgressState {
 pub struct AssetCache {
     bytes_cache: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     progress: Arc<Mutex<ProgressState>>,
+    /// Paths whose bytes came from the debug protocol rather than disk/CDN.
+    /// The final manifest of each sync removes uploads deleted on the host.
+    uploaded_paths: Mutex<HashSet<String>>,
 }
 
 impl AssetCache {
@@ -43,6 +46,7 @@ impl AssetCache {
         AssetCache {
             bytes_cache: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(Mutex::new(ProgressState::default())),
+            uploaded_paths: Mutex::new(HashSet::new()),
         }
     }
 
@@ -66,6 +70,13 @@ impl AssetCache {
         self.bytes_cache.lock().unwrap().keys().cloned().collect()
     }
 
+    /// Clone bytes already resident in the shared cache without starting a
+    /// filesystem/network load. Native audio uses this for remotely uploaded
+    /// sounds; render pipelines use the async handle path below.
+    pub fn cached_bytes(&self, path: &str) -> Option<Vec<u8>> {
+        self.bytes_cache.lock().unwrap().get(path).cloned()
+    }
+
     /// Forget the cached bytes for `path` so the next load re-reads the file
     /// (asset hot-reload). Pipelines cache decoded handles separately — evict
     /// there too (`SceneContext::evict_asset` does both). The path counts as
@@ -75,6 +86,53 @@ impl AssetCache {
         let mut progress = self.progress.lock().unwrap();
         progress.loaded.remove(path);
         progress.failed.remove(path);
+    }
+
+    /// Install bytes uploaded by a remote-development client. Returns whether
+    /// the bytes changed and decoded pipeline handles therefore need eviction.
+    ///
+    /// Uploaded bytes use the exact locator as the cache key, so existing
+    /// renderer code remains unaware of where they came from. A later draw
+    /// decodes from this warm byte cache instead of touching Android's
+    /// filesystem.
+    pub fn replace_uploaded(&self, path: &str, bytes: Vec<u8>) -> bool {
+        let changed = {
+            let mut cache = self.bytes_cache.lock().unwrap();
+            if cache.get(path).is_some_and(|current| *current == bytes) {
+                false
+            } else {
+                cache.insert(path.to_string(), bytes);
+                true
+            }
+        };
+        self.uploaded_paths.lock().unwrap().insert(path.to_string());
+        if changed {
+            let mut progress = self.progress.lock().unwrap();
+            progress.loaded.remove(path);
+            progress.failed.remove(path);
+        }
+        changed
+    }
+
+    /// Complete an uploaded-project sync, forgetting assets that are absent
+    /// from its current manifest. Returns removed locators so shells can evict
+    /// their decoded model/texture/skybox handles too.
+    pub fn retain_uploaded(&self, current: &HashSet<String>) -> Vec<String> {
+        let removed = {
+            let mut uploaded = self.uploaded_paths.lock().unwrap();
+            let mut removed: Vec<String> = uploaded.difference(current).cloned().collect();
+            removed.sort();
+            uploaded.retain(|path| current.contains(path));
+            removed
+        };
+        for path in &removed {
+            self.bytes_cache.lock().unwrap().remove(path);
+            let mut progress = self.progress.lock().unwrap();
+            progress.started.remove(path);
+            progress.loaded.remove(path);
+            progress.failed.remove(path);
+        }
+        removed
     }
 
     /// Whether `path` was started but has not yet settled (loaded or failed)
@@ -299,6 +357,43 @@ mod tests {
         assert_eq!((progress.loaded, progress.total), (1, 2));
 
         let _ = std::fs::remove_file(&good);
+    }
+
+    #[test]
+    fn uploaded_bytes_replace_disk_loading_and_report_real_changes() {
+        let cache = AssetCache::new();
+        assert!(cache.replace_uploaded("textures/a.png", vec![1, 2, 3]));
+        assert!(!cache.replace_uploaded("textures/a.png", vec![1, 2, 3]));
+        assert!(cache.replace_uploaded("textures/a.png", vec![4, 5]));
+        assert_eq!(
+            cache
+                .bytes_cache
+                .lock()
+                .unwrap()
+                .get("textures/a.png")
+                .cloned(),
+            Some(vec![4, 5])
+        );
+    }
+
+    #[test]
+    fn uploaded_manifest_removes_deleted_assets_only() {
+        let cache = AssetCache::new();
+        cache.replace_uploaded("keep.glb", vec![1]);
+        cache.replace_uploaded("delete.png", vec![2]);
+        {
+            let mut progress = cache.progress.lock().unwrap();
+            progress.started.insert("delete.png".to_string());
+            progress.loaded.insert("delete.png".to_string());
+        }
+
+        let current = HashSet::from(["keep.glb".to_string()]);
+        assert_eq!(cache.retain_uploaded(&current), vec!["delete.png"]);
+        let bytes = cache.bytes_cache.lock().unwrap();
+        assert!(bytes.contains_key("keep.glb"));
+        assert!(!bytes.contains_key("delete.png"));
+        drop(bytes);
+        assert_eq!(cache.progress(), AssetProgress::default());
     }
 
     /// `Asset.whilePending` resolution: the first LOADED chain entry stands
