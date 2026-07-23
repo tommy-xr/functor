@@ -231,6 +231,16 @@ let grab = (s) =>
   (`key == Key.Enter`); a typo (`Key.Enterr`) is a load-time error — the
   reason keys stopped being strings. `Random` is likewise built-in (the
   abstract `Random.Seed` — see the Random builtins above).
+- **Bundled modules use the ordinary module semantics.** The language-owned
+  `Net.fun` / `Key.fun` implementations and `Random.funi` interface are
+  in-memory sources distributed with every embedding. Hosts may inject
+  additional bundled `.fun` implementations and `.funi` interfaces through
+  the same project linker: they parse, lower, check, evaluate, participate in
+  dependency ordering, appear in source maps (`<stdlib>/…` / `<prelude>/…`),
+  and rebind stored closures like project modules. Their namespaces are
+  reserved automatically. They are fixed for the lifetime of the host binary
+  and therefore are re-linked on a project hot reload but are not themselves
+  file-watched.
 - Constructor names must be unique per MODULE (not per project); values
   from a non-entry module display with their canonical tag
   (`Utils.Circle(2)` in run/trace/`/state` output). The entry's own names

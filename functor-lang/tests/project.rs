@@ -1269,6 +1269,177 @@ fn injected_prelude_types_host_externals() {
     );
 }
 
+// ── Bundled implementation modules ──────────────────────────────────────
+
+/// A bundled `.fun` module is real executable language code, not an
+/// interface-shaped host external.
+#[test]
+fn bundled_implementation_module_runs_and_checks() {
+    let sources = vec![(
+        PathBuf::from("game.fun"),
+        "let main = () => Stdlib.double(21.0)\n".to_string(),
+    )];
+    let bundled = [functor_lang::project::BundledModule::implementation(
+        "Stdlib",
+        "let double = (n: float): float => n * 2.0\n",
+    )];
+    let project = functor_lang::project::load_sources_with_bundled_modules(sources, &bundled)
+        .unwrap_or_else(|e| panic!("bundled module should load: {}", e.render()));
+
+    let diags = project.check();
+    assert!(diags.is_empty(), "bundled module should check: {diags:?}");
+    let record = functor_lang::run(&project.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("bundled module should run: {}", f.error.message));
+    match record.outcome {
+        RunOutcome::Main(Value::Number(n)) => assert_eq!(n, 42.0),
+        _ => panic!("expected a numeric main result"),
+    }
+
+    let stdlib = project
+        .sources
+        .files()
+        .iter()
+        .find(|file| file.module == "Stdlib")
+        .expect("bundled source is mapped");
+    assert_eq!(stdlib.path, PathBuf::from("<stdlib>/Stdlib.fun"));
+    assert!(!stdlib.interface);
+}
+
+/// Engine stdlib code can depend on an injected host interface: all bundled
+/// modules share the normal export/dependency graph.
+#[test]
+fn bundled_implementation_can_depend_on_interface() {
+    let sources = vec![(
+        PathBuf::from("game.fun"),
+        "let unused = () => Animator.pose()\nlet main = () => 0.0\n".to_string(),
+    )];
+    let bundled = [
+        functor_lang::project::BundledModule::interface("Anim", "type t\nlet rest : () => t\n"),
+        functor_lang::project::BundledModule::implementation(
+            "Animator",
+            "let pose = (): Anim.t => Anim.rest()\n",
+        ),
+    ];
+    let project = functor_lang::project::load_sources_with_bundled_modules(sources, &bundled)
+        .unwrap_or_else(|e| panic!("bundled dependency should load: {}", e.render()));
+    let diags = project.check();
+    assert!(
+        diags.is_empty(),
+        "implementation should typecheck against interface: {diags:?}"
+    );
+}
+
+#[test]
+fn stored_closure_from_bundled_module_rebinds_across_reload() {
+    let sources = || {
+        vec![(
+            PathBuf::from("game.fun"),
+            "let main = () => Stdlib.makeAdder(3.0)\n".to_string(),
+        )]
+    };
+    let old_bundled = [functor_lang::project::BundledModule::implementation(
+        "Stdlib",
+        "let makeAdder = (n) => (x) => x + n\n",
+    )];
+    let old = functor_lang::project::load_sources_with_bundled_modules(sources(), &old_bundled)
+        .unwrap_or_else(|e| panic!("old bundled module should load: {}", e.render()));
+    let record = functor_lang::run(&old.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("old bundled module should run: {}", f.error.message));
+    let RunOutcome::Main(stored) = record.outcome else {
+        panic!("expected a stored closure");
+    };
+
+    let new_bundled = [functor_lang::project::BundledModule::implementation(
+        "Stdlib",
+        "let makeAdder = (n) => (x) => x + n * 10.0\n",
+    )];
+    let new = functor_lang::project::load_sources_with_bundled_modules(sources(), &new_bundled)
+        .unwrap_or_else(|e| panic!("new bundled module should load: {}", e.render()));
+    let (rebound, report) = functor_lang::rebind_value(&stored, &old.module, &new.module);
+    assert_eq!(report.rebound, 1, "warnings: {:?}", report.warnings);
+
+    let session = functor_lang::Session::load(&new.module, &mut functor_lang::NoHost)
+        .unwrap_or_else(|f| panic!("new bundled module should load: {}", f.error.message));
+    let result = session
+        .apply(
+            rebound,
+            vec![Value::Number(2.0)],
+            "bundled closure",
+            &mut functor_lang::NoHost,
+        )
+        .expect("rebound bundled closure should apply");
+    assert_eq!(number(&result), 32.0);
+}
+
+#[test]
+fn project_file_cannot_shadow_a_bundled_module() {
+    let sources = vec![
+        (
+            PathBuf::from("game.fun"),
+            "let main = () => 0.0\n".to_string(),
+        ),
+        (
+            PathBuf::from("animator.fun"),
+            "let pose = 1.0\n".to_string(),
+        ),
+    ];
+    let bundled = [functor_lang::project::BundledModule::implementation(
+        "Animator",
+        "let pose = 2.0\n",
+    )];
+    let err = match functor_lang::project::load_sources_with_bundled_modules(sources, &bundled) {
+        Err(err) => err.render(),
+        Ok(_) => panic!("project shadowing should fail"),
+    };
+    assert_eq!(
+        err,
+        "animator.fun:1:1: module name `Animator` (from animator.fun) collides with the bundled \
+module namespace `Animator` — rename the file"
+    );
+}
+
+#[test]
+fn single_file_named_like_a_bundled_module_uses_main_label() {
+    let path = PathBuf::from("animator.fun");
+    let bundled = [functor_lang::project::BundledModule::implementation(
+        "Animator",
+        "let pose = 2.0\n",
+    )];
+    let project = functor_lang::project::load_single_file_with_bundled_modules(
+        &path,
+        "let main = () => Animator.pose\n",
+        &bundled,
+    )
+    .unwrap_or_else(|e| panic!("single-file label should not shadow: {}", e.render()));
+
+    assert_eq!(project.entry, "Main");
+    assert!(
+        project.check().is_empty(),
+        "bundled module should remain usable"
+    );
+}
+
+#[test]
+fn duplicate_bundled_module_descriptors_are_refused() {
+    let sources = vec![(
+        PathBuf::from("game.fun"),
+        "let main = () => 0.0\n".to_string(),
+    )];
+    let bundled = [
+        functor_lang::project::BundledModule::implementation("Shared", "let x = 1.0\n"),
+        functor_lang::project::BundledModule::interface("Shared", "let x : float\n"),
+    ];
+    let err = match functor_lang::project::load_sources_with_bundled_modules(sources, &bundled) {
+        Err(err) => err.render(),
+        Ok(_) => panic!("duplicate bundled modules should fail"),
+    };
+    assert_eq!(
+        err,
+        "<prelude>/Shared.funi:1:1: bundled module `Shared` is already supplied by \
+<stdlib>/Shared.fun"
+    );
+}
+
 /// Editor temp files and other non-identifier `.fun` stems (`.#game.fun`,
 /// `2d.fun`) are ignored by the loader, not treated as modules — so a stray
 /// temp file next to `game.fun` can't break the load (or hot reload). Their

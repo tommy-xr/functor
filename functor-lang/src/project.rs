@@ -75,6 +75,73 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Debug",
 ];
 
+/// One source module bundled by the language or a host rather than read from
+/// the user's project directory.
+///
+/// Implementation modules are ordinary `.fun` code with executable bodies;
+/// interface modules are `.funi` declarations whose values remain
+/// host-provided externals. Both travel through the same parser, lowerer,
+/// checker, dependency graph, evaluator, source map, and reload-rebind path as
+/// project modules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BundledModuleKind {
+    Implementation,
+    Interface,
+}
+
+/// An in-memory module distributed with the language or host runtime.
+#[derive(Clone, Debug)]
+pub struct BundledModule {
+    name: String,
+    src: String,
+    kind: BundledModuleKind,
+    directory: &'static str,
+}
+
+impl BundledModule {
+    /// Bundle a reusable `.fun` implementation module. Diagnostics and
+    /// go-to-definition identify it as `<stdlib>/{name}.fun`.
+    pub fn implementation(name: impl Into<String>, src: impl Into<String>) -> BundledModule {
+        BundledModule::new(name, src, BundledModuleKind::Implementation, "<stdlib>")
+    }
+
+    /// Bundle a host `.funi` interface module. Diagnostics and
+    /// go-to-definition keep the established `<prelude>/{name}.funi` path.
+    pub fn interface(name: impl Into<String>, src: impl Into<String>) -> BundledModule {
+        BundledModule::new(name, src, BundledModuleKind::Interface, "<prelude>")
+    }
+
+    fn builtin(
+        name: impl Into<String>,
+        src: impl Into<String>,
+        kind: BundledModuleKind,
+    ) -> BundledModule {
+        BundledModule::new(name, src, kind, "<builtin>")
+    }
+
+    fn new(
+        name: impl Into<String>,
+        src: impl Into<String>,
+        kind: BundledModuleKind,
+        directory: &'static str,
+    ) -> BundledModule {
+        BundledModule {
+            name: name.into(),
+            src: src.into(),
+            kind,
+            directory,
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        let extension = match self.kind {
+            BundledModuleKind::Implementation => "fun",
+            BundledModuleKind::Interface => "funi",
+        };
+        PathBuf::from(format!("{}/{}.{}", self.directory, self.name, extension))
+    }
+}
+
 /// A loaded multi-file program: the merged module plus the per-file source
 /// map that renders its project-wide spans.
 pub struct Project {
@@ -157,6 +224,24 @@ const KEY_MODULE_SRC: &str = "type t =\n\
      | Up | Down | Left | Right\n\
      | Space | Enter | Escape\n\
      | Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9\n";
+
+/// Language-owned modules available in every embedding, including the plain
+/// `functor-lang` CLI. Keeping them in the same descriptor shape as host
+/// modules is the distribution seam for reusable `.fun` stdlib code.
+fn core_modules() -> Vec<BundledModule> {
+    vec![
+        BundledModule::builtin("Net", NET_MODULE_SRC, BundledModuleKind::Implementation),
+        BundledModule::builtin("Random", RANDOM_MODULE_SRC, BundledModuleKind::Interface),
+        BundledModule::builtin("Key", KEY_MODULE_SRC, BundledModuleKind::Implementation),
+    ]
+}
+
+fn prelude_modules(prelude: &[(String, String)]) -> Vec<BundledModule> {
+    prelude
+        .iter()
+        .map(|(name, src)| BundledModule::interface(name.clone(), src.clone()))
+        .collect()
+}
 
 pub struct SourceFile {
     pub path: PathBuf,
@@ -341,7 +426,7 @@ pub fn load_with_overrides(
     entry_path: &Path,
     overrides: &HashMap<PathBuf, String>,
 ) -> Result<Project, ProjectError> {
-    load_with_prelude(entry_path, overrides, &[])
+    load_with_bundled_modules(entry_path, overrides, &[])
 }
 
 /// [`load_with_overrides`], plus a set of injected PRELUDE interface modules —
@@ -355,6 +440,19 @@ pub fn load_with_prelude(
     entry_path: &Path,
     overrides: &HashMap<PathBuf, String>,
     prelude: &[(String, String)],
+) -> Result<Project, ProjectError> {
+    let bundled = prelude_modules(prelude);
+    load_with_bundled_modules(entry_path, overrides, &bundled)
+}
+
+/// [`load_with_overrides`], plus implementation and interface modules bundled
+/// by the embedding. Unlike project files they are supplied in memory and are
+/// never watched for edits. Their names are reserved automatically, so a user
+/// file cannot shadow a bundled module.
+pub fn load_with_bundled_modules(
+    entry_path: &Path,
+    overrides: &HashMap<PathBuf, String>,
+    bundled: &[BundledModule],
 ) -> Result<Project, ProjectError> {
     let at = |path: &Path, message: String| ProjectError {
         path: path.to_path_buf(),
@@ -382,7 +480,7 @@ pub fn load_with_prelude(
 
     // The ENTRY is always loaded, so its stem must name a valid module even
     // when it has no siblings — an on-disk one-file project must NOT take the
-    // single-source `Main` fallback in `load_sources_with_prelude`, which
+    // single-source `Main` fallback in `load_sources_with_bundled_modules`, which
     // exists for the inline wasm/docs single-entry case where the path is
     // only a label.
     module_name(entry_path).map_err(|message| at(entry_path, message))?;
@@ -398,7 +496,7 @@ pub fn load_with_prelude(
         };
         sources.push((path.clone(), src));
     }
-    load_sources_with_prelude(sources, prelude)
+    load_sources_with_bundled_modules(sources, bundled)
 }
 
 /// Link an already-read set of project sources (entry FIRST, then siblings —
@@ -412,6 +510,18 @@ pub fn load_sources_with_prelude(
     sources: Vec<(PathBuf, String)>,
     prelude: &[(String, String)],
 ) -> Result<Project, ProjectError> {
+    let bundled = prelude_modules(prelude);
+    load_sources_with_bundled_modules(sources, &bundled)
+}
+
+/// Link already-read project sources plus implementation and interface
+/// modules supplied by the embedding. This is the shared in-memory seam used
+/// by native, wasm, editor tooling, and future stdlib modules.
+pub fn load_sources_with_bundled_modules(
+    sources: Vec<(PathBuf, String)>,
+    bundled: &[BundledModule],
+) -> Result<Project, ProjectError> {
+    let core = core_modules();
     let at = |path: &Path, message: String| ProjectError {
         path: path.to_path_buf(),
         line: 1,
@@ -429,7 +539,7 @@ pub fn load_sources_with_prelude(
     let mut base = 0usize;
     for (path, src) in sources.iter() {
         let module = if single {
-            single_module_name(path)
+            single_module_name(path, bundled, &core)
         } else {
             module_name(path).map_err(|message| at(path, message))?
         };
@@ -438,6 +548,18 @@ pub fn load_sources_with_prelude(
                 path,
                 format!(
                     "module name `{module}` (from {}) collides with the builtin/prelude \
+namespace `{module}` — rename the file",
+                    file_name(path)
+                ),
+            ));
+        }
+        // Include core dynamically so future stdlib modules are reserved even
+        // before they are added to the host-oriented protected-name list.
+        if bundled.iter().chain(&core).any(|item| item.name == module) {
+            return Err(at(
+                path,
+                format!(
+                    "module name `{module}` (from {}) collides with the bundled module \
 namespace `{module}` — rename the file",
                     file_name(path)
                 ),
@@ -466,67 +588,48 @@ come from file names, capitalized",
         // next file's base.
         base += len + 1;
     }
-    push_prelude(&mut files, prelude);
+    push_bundled(&mut files, bundled)?;
+    push_bundled(&mut files, &core)?;
     link(files)
 }
 
-/// Append injected PRELUDE interface modules to `files` (after the project's
-/// own files), assigning span bases past the last one. They are exempt from
-/// the protected-namespace check — they OWN those namespaces.
-fn push_prelude(files: &mut Vec<SourceFile>, prelude: &[(String, String)]) {
+/// Append bundled modules to `files`, assigning span bases past the last one.
+/// They are exempt from the project-file protected-namespace check because
+/// they own their namespaces. Duplicate descriptors still fail loudly.
+fn push_bundled(
+    files: &mut Vec<SourceFile>,
+    bundled: &[BundledModule],
+) -> Result<(), ProjectError> {
     let mut base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
-    for (module, src) in prelude {
+    for item in bundled {
+        let path = item.path();
+        if let Some(previous) = files.iter().find(|file| file.module == item.name) {
+            return Err(ProjectError {
+                path,
+                line: 1,
+                col: 1,
+                message: format!(
+                    "bundled module `{}` is already supplied by {}",
+                    item.name,
+                    previous.path.display()
+                ),
+            });
+        }
         files.push(SourceFile {
-            interface: true,
-            path: PathBuf::from(format!("<prelude>/{module}.funi")),
-            module: module.clone(),
-            src: src.clone(),
+            interface: item.kind == BundledModuleKind::Interface,
+            path,
+            module: item.name.clone(),
+            src: item.src.clone(),
             base,
         });
-        base += src.len() + 1;
+        base += item.src.len() + 1;
     }
+    Ok(())
 }
 
-/// Parse, lower, and link a set of source files into one merged module,
-/// injecting the built-in `Net` module. Shared by the filesystem loader
-/// and the single-source (wasm) loader.
-fn link(mut files: Vec<SourceFile>) -> Result<Project, ProjectError> {
-    // The built-in `Net` module: a prelude-provided ADT always in scope, so
-    // any game can `match ev with | Net.Connected(id) => …` without declaring
-    // the type. Canonicalized to `Net.NetEvent` / `Net.Connected` / …; the
-    // host builds matching `Net.*` values. Appended LAST so the entry stays
-    // index 0. Both the filesystem and single-source loaders reach it here.
-    let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
-    files.push(SourceFile {
-        interface: false,
-        path: PathBuf::from("<builtin>/Net.fun"),
-        module: "Net".to_string(),
-        src: NET_MODULE_SRC.to_string(),
-        base,
-    });
-
-    // The built-in `Random` interface module — the abstract `Seed` type and
-    // the signatures that brand the Random builtins (see RANDOM_MODULE_SRC).
-    let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
-    files.push(SourceFile {
-        interface: true,
-        path: PathBuf::from("<builtin>/Random.funi"),
-        module: "Random".to_string(),
-        src: RANDOM_MODULE_SRC.to_string(),
-        base,
-    });
-
-    // The built-in `Key` module — the `input` hook's key variant (see
-    // KEY_MODULE_SRC).
-    let base = files.last().map_or(0, |f| f.base + f.src.len() + 1);
-    files.push(SourceFile {
-        interface: false,
-        path: PathBuf::from("<builtin>/Key.fun"),
-        module: "Key".to_string(),
-        src: KEY_MODULE_SRC.to_string(),
-        base,
-    });
-
+/// Parse, lower, and link a complete set of project and bundled source files
+/// into one merged module.
+fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     let entry = files[0].module.clone();
 
     // Parse every file (spans land in the project-wide space).
@@ -670,15 +773,16 @@ allowed (within one file, definitions may still be mutually recursive)",
 
 /// Load a project from ONE in-memory entry source (no filesystem) — the
 /// wasm producer's path, where the game is fetched as a single text and
-/// there are no sibling files. The built-in `Net` module is still injected.
+/// there are no sibling files. The core bundled modules are still injected.
 pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectError> {
-    let files = vec![SourceFile {
+    let mut files = vec![SourceFile {
         interface: false,
         path: PathBuf::from(format!("{module}.fun")),
         module: module.to_string(),
         src: src.to_string(),
         base: 0,
     }];
+    push_bundled(&mut files, &core_modules())?;
     link(files)
 }
 
@@ -693,7 +797,20 @@ pub fn load_single_file(
     src: &str,
     prelude: &[(String, String)],
 ) -> Result<Project, ProjectError> {
-    let module = single_module_name(path);
+    let bundled = prelude_modules(prelude);
+    load_single_file_with_bundled_modules(path, src, &bundled)
+}
+
+/// Load one in-memory file plus implementation and interface modules supplied
+/// by the embedding. The synthetic modules are available for checking,
+/// completion, navigation, and evaluation but are not project files.
+pub fn load_single_file_with_bundled_modules(
+    path: &Path,
+    src: &str,
+    bundled: &[BundledModule],
+) -> Result<Project, ProjectError> {
+    let core = core_modules();
+    let module = single_module_name(path, bundled, &core);
     let mut files = vec![SourceFile {
         interface: is_interface(path),
         path: path.to_path_buf(),
@@ -701,19 +818,25 @@ pub fn load_single_file(
         src: src.to_string(),
         base: 0,
     }];
-    push_prelude(&mut files, prelude);
+    push_bundled(&mut files, bundled)?;
+    push_bundled(&mut files, &core)?;
     link(files)
 }
 
 /// The module name for a SINGLE-source project (one entry, no siblings): the
 /// file's derived name, or `Main` when the stem isn't an identifier OR
-/// capitalizes to a protected namespace (`net.fun` → `Net`), which would
-/// otherwise collide with the builtin module `link` injects and fail the load.
-/// A single file is its own bare entry, so the name only labels it — nothing
-/// references it by name.
-fn single_module_name(path: &Path) -> String {
+/// capitalizes to a protected or bundled namespace (`net.fun` → `Net`), which
+/// would otherwise collide with an injected module and fail the load. A single
+/// file is its own bare entry, so the name only labels it — nothing references
+/// it by name.
+fn single_module_name(path: &Path, bundled: &[BundledModule], core: &[BundledModule]) -> String {
     match module_name(path) {
-        Ok(name) if !PROTECTED_NAMESPACES.contains(&name.as_str()) => name,
+        Ok(name)
+            if !PROTECTED_NAMESPACES.contains(&name.as_str())
+                && !bundled.iter().chain(core).any(|item| item.name == name) =>
+        {
+            name
+        }
         _ => "Main".to_string(),
     }
 }
