@@ -1072,6 +1072,7 @@ a:hover {
 }
 
 .docs-nav {
+  min-width: 0;
   position: sticky;
   top: 24px;
   align-self: start;
@@ -1082,6 +1083,7 @@ a:hover {
 }
 
 .docs-nav a {
+  white-space: nowrap;
   color: var(--text-dim);
   border-left: 2px solid var(--line);
   padding-left: 12px;
@@ -1097,6 +1099,10 @@ a:hover {
   font-family: var(--font-display);
   letter-spacing: 0.06em;
   font-size: 1.7rem;
+}
+
+.docs-main {
+  min-width: 0;
 }
 
 .docs-main h2 {
@@ -1198,16 +1204,339 @@ a:hover {
   font-style: italic;
 }
 
+.docs-callout {
+  padding: 14px 16px;
+  border: 1px solid rgba(65, 216, 230, 0.25);
+  border-left: 3px solid var(--cyan);
+  border-radius: 6px;
+  background: rgba(65, 216, 230, 0.045);
+}
+
+/* ---------------------------------------------------------- API reference */
+
+.api-layout {
+  grid-template-columns: 200px minmax(0, 860px);
+  max-width: 1140px;
+}
+
+.api-nav {
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.api-nav-heading {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.api-nav > div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.api-intro {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 28px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(65, 216, 230, 0.07), transparent 44%),
+    linear-gradient(315deg, rgba(232, 88, 184, 0.055), transparent 48%),
+    var(--bg-panel);
+}
+
+.api-intro::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--cyan), #7664d8 58%, var(--pink));
+}
+
+.api-intro h1 {
+  margin: 5px 0 10px;
+}
+
+.docs-main .api-kicker {
+  margin: 0;
+  color: var(--cyan);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+}
+
+.api-intro > p:last-of-type {
+  max-width: 68ch;
+  margin-bottom: 22px;
+}
+
+.api-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  align-items: center;
+  color: var(--text-dim);
+  font-size: 0.77rem;
+}
+
+.api-meta strong {
+  color: var(--text);
+}
+
+.api-meta a {
+  margin-left: auto;
+}
+
+.api-search {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.api-search-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+
+.api-search-box:focus-within {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px rgba(65, 216, 230, 0.1);
+}
+
+.api-search-box svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+
+.api-search-box input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.api-search-box input::placeholder {
+  color: #6c6685;
+}
+
+.api-search-box kbd {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  font: inherit;
+  font-size: 0.7rem;
+}
+
+.docs-main .api-results {
+  min-height: 1.5em;
+  margin: 0 0 6px;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.api-module {
+  scroll-margin-top: 24px;
+}
+
+.api-module[hidden],
+.api-item[hidden],
+.api-nav a[hidden] {
+  display: none;
+}
+
+.api-module > h2 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.api-module-count {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.67rem;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+}
+
+.api-module > p {
+  max-width: 72ch;
+}
+
+.api-items {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.api-item {
+  min-width: 0;
+  scroll-margin-top: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-left: 2px solid #4a416b;
+  border-radius: 5px;
+  background: rgba(22, 18, 38, 0.72);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.api-item:hover,
+.api-item:target {
+  border-left-color: var(--cyan);
+  background: var(--bg-panel);
+}
+
+.api-item h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+
+.api-item h3 a {
+  color: var(--amber);
+}
+
+.api-item h3 a:hover {
+  color: var(--cyan);
+  text-decoration: none;
+}
+
+.api-kind {
+  padding: 1px 6px;
+  border: 1px solid rgba(65, 216, 230, 0.25);
+  border-radius: 999px;
+  color: var(--cyan);
+  font-size: 0.58rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.api-kind-type {
+  border-color: rgba(232, 88, 184, 0.28);
+  color: var(--pink);
+}
+
+.docs-main pre.api-declaration {
+  margin: 0;
+  padding: 10px 12px;
+  border-left-width: 2px;
+  border-left-color: var(--amber);
+  background: var(--bg);
+  font-size: 0.78rem;
+}
+
+.api-item > p:last-child {
+  margin-bottom: 0;
+}
+
 @media (max-width: 720px) {
+  .docs-page .site-header {
+    padding-inline: 16px;
+  }
+
+  .docs-page .site-nav {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: flex-start;
+    gap: 16px;
+    margin-left: 0;
+    overflow-x: auto;
+  }
+
   .docs-layout {
     grid-template-columns: 1fr;
+    gap: 22px;
+    padding: 22px 16px 60px;
   }
 
   .docs-nav {
     position: static;
     flex-direction: row;
-    flex-wrap: wrap;
-    gap: 12px;
+    flex-wrap: nowrap;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .api-nav {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .api-nav-heading {
+    flex-basis: auto;
+  }
+
+  .api-nav > div:last-child {
+    width: 100%;
+    flex-direction: row;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .api-nav a {
+    flex: 0 0 auto;
+    padding: 3px 9px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+
+  .api-intro {
+    padding: 20px;
+  }
+
+  .api-intro h1 {
+    font-size: 1.45rem;
+  }
+
+  .api-meta a {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .api-search-box kbd {
+    display: none;
+  }
+
+  .api-item {
+    padding: 14px;
+  }
+
+  .docs-main table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
   }
 }
 

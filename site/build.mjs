@@ -11,6 +11,7 @@
 import { cp, mkdir, rm, access, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
+import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES } from "./src/examples.js";
 
@@ -18,7 +19,17 @@ const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = `${site}dist`;
 
-const PAGES = ["index.html", "sandbox.html", "ide.html", "player.html", "docs.html", "demo-editor.html", "styles.css"];
+const PAGES = [
+  "index.html",
+  "sandbox.html",
+  "ide.html",
+  "player.html",
+  "docs.html",
+  "docs/index.html",
+  "manual/index.html",
+  "demo-editor.html",
+  "styles.css",
+];
 
 // Favicons, generated from docs/media/functor-icon.svg by `npm run generate:icons`
 // (gitignored — site:build regenerates them first). Copied defensively so a stale
@@ -74,17 +85,19 @@ try {
 } catch {}
 
 for (const page of PAGES) {
+  const target = `${dist}/${page}`;
+  await mkdir(dirname(target), { recursive: true });
   if (page.endsWith(".html")) {
     const html = await readFile(`${site}${page}`, "utf8");
     await writeFile(
-      `${dist}/${page}`,
+      target,
       html.replace(
         /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
         `$1${badge}$2`
       )
     );
   } else {
-    await cp(`${site}${page}`, `${dist}/${page}`);
+    await cp(`${site}${page}`, target);
   }
 }
 for (const icon of ICONS) {
@@ -135,7 +148,15 @@ if (langPkgPresent) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`, `${site}src/ide.js`, `${site}src/docs.js`, `${site}src/hero.js`, `${site}src/demo-editor.js`, `${site}src/features.js`],
+  entryPoints: [
+    `${site}src/sandbox.js`,
+    `${site}src/ide.js`,
+    `${site}src/docs.js`,
+    `${site}src/api-docs.js`,
+    `${site}src/hero.js`,
+    `${site}src/demo-editor.js`,
+    `${site}src/features.js`,
+  ],
   bundle: true,
   minify: true,
   format: "esm",

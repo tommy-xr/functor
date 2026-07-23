@@ -1,8 +1,9 @@
 # site/ — functor's website + Functor Lang sandbox + IDE
 
 A fully static site: landing page (whose hero background is `examples/hero.fun`
-interpreted live by the wasm runtime), a single-file Functor Lang **sandbox**,
-and a multi-file **IDE**. Both editors push edits into the running game over the
+interpreted live by the wasm runtime), a hand-authored **manual**, a generated
+**API reference**, a single-file Functor Lang **sandbox**, and a multi-file
+**IDE**. Both editors push edits into the running game over the
 postMessage seam the VSCode live-preview panel uses, hot-reloading with the
 model preserved.
 
@@ -28,6 +29,11 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
   follow-up.
 - `src/functor-lang.js` — the Functor Lang CodeMirror language + synthwave theme,
   shared by both editors.
+- `manual/index.html` — getting started, the game contract, language principles,
+  and topic guides. Runnable examples link directly into the sandbox.
+- `docs/index.html` / `src/api-docs.js` — searchable API reference rendered from
+  `generated/api-reference.json`; refresh it with `npm run generate:docs`.
+- `docs.html` — compatibility redirect to the manual, preserving old anchors.
 - `src/examples.js` is the single source of truth for the sandbox's example set
   (id + dropdown label + repo source path). `build.mjs` copies each entry's
   `game.fun` at build time and `src/sandbox.js` builds the dropdown from the same

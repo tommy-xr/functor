@@ -53,7 +53,8 @@ for (const pre of document.querySelectorAll("pre.functor-lang")) {
     link.className = "try-button";
     link.textContent = "▶ try it";
     link.title = "Open this program live in the sandbox";
-    link.href = `sandbox.html#src=${toBase64Url(source)}`;
+    const sandboxHref = document.body.dataset.sandboxHref || "sandbox.html";
+    link.href = `${sandboxHref}#src=${toBase64Url(source)}`;
     link.target = "_blank";
     pre.appendChild(link);
   }

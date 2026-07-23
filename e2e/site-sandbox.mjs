@@ -29,7 +29,7 @@ import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
-const PORT = 8123;
+const PORT = Number(process.env.FUNCTOR_SITE_PORT ?? 8123);
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -379,14 +379,14 @@ for (const example of examples) {
   await page.close();
 }
 
-// --- 7. Docs page + "try it" into the sandbox. --------------------------------
+// --- 7. Manual + generated API reference. -------------------------------------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  await page.goto(`${BASE}/docs.html`);
+  await page.goto(`${BASE}/manual/`);
   const highlighted = await page.locator("pre.functor-lang span.tok-k").count();
   const tryButtons = await page.locator("a.try-button").count();
-  check("docs page highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
-  check("docs page offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
+  check("manual highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
+  check("manual offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
 
   // Follow the first try-it link in THIS page (target=_blank would detach).
   const href = await page.locator("a.try-button").first().getAttribute("href");
@@ -401,10 +401,24 @@ for (const example of examples) {
     // The first runnable is the magenta spinning cube on the GL clear color —
     // just assert something got drawn (not solid clear color everywhere is
     // hard to probe; the live status is the main assertion).
-    check("docs try-it program loads live in the sandbox", true, `center = rgb(${pixel})`);
+    check("manual try-it program loads live in the sandbox", true, `center = rgb(${pixel})`);
   } catch {
-    check("docs try-it program loads live in the sandbox", false, href);
+    check("manual try-it program loads live in the sandbox", false, href);
   }
+
+  await page.goto(`${BASE}/docs/`);
+  await page.waitForSelector(".api-item");
+  const modules = await page.locator(".api-module").count();
+  const declarations = await page.locator(".api-item").count();
+  check("API reference renders every generated module", modules === 23, `${modules} modules`);
+  check("API reference renders every generated declaration", declarations === 194, `${declarations} declarations`);
+  await page.locator("#api-search").fill("Scene.rotateY");
+  const visibleDeclarations = await page.locator(".api-item:visible").count();
+  check("API reference search narrows declarations", visibleDeclarations === 1, `${visibleDeclarations} visible`);
+
+  await page.goto(`${BASE}/docs.html#get-started`);
+  await page.waitForURL(/\/manual\/#get-started$/);
+  check("legacy docs.html preserves manual anchors", true, page.url());
   await page.close();
 }
 
