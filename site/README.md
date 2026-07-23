@@ -32,7 +32,8 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
 - `manual/index.html` — getting started, the game contract, language principles,
   and topic guides. Runnable examples link directly into the sandbox.
 - `docs/index.html` / `src/api-docs.js` — searchable API reference rendered from
-  `generated/api-reference.json`; refresh it with `npm run generate:docs`.
+  gitignored `generated/api-reference.json`. `site:build` regenerates it from
+  the embedded prelude; `npm run generate:docs` also creates the local Markdown.
 - `docs.html` — compatibility redirect to the manual, preserving old anchors.
 - `src/examples.js` is the single source of truth for the sandbox's example set
   (id + dropdown label + repo source path). `build.mjs` copies each entry's

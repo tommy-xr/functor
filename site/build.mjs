@@ -10,7 +10,7 @@
 
 import { cp, mkdir, rm, access, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES } from "./src/examples.js";
@@ -18,6 +18,28 @@ import { EXAMPLES } from "./src/examples.js";
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = `${site}dist`;
+
+// The API JSON is derived from the embedded `.funi` prelude and intentionally
+// gitignored. Generate the exact input this build consumes so a clean checkout
+// never depends on a stale or manually prepared artifact.
+const apiReference = `${site}generated/api-reference.json`;
+const docs = spawnSync(
+  "cargo",
+  [
+    "run",
+    "-q",
+    "-p",
+    "functor-docgen",
+    "--",
+    "--deny-undocumented",
+    "--format",
+    "json",
+    "--output",
+    apiReference,
+  ],
+  { cwd: root, stdio: "inherit" },
+);
+if (docs.status !== 0) process.exit(docs.status ?? 1);
 
 const PAGES = [
   "index.html",

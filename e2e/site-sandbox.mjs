@@ -32,14 +32,6 @@ import { chromium } from "@playwright/test";
 const PORT = Number(process.env.FUNCTOR_SITE_PORT ?? 8123);
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const API_REFERENCE = JSON.parse(
-  await readFile(`${ROOT}/site/generated/api-reference.json`, "utf8")
-);
-const API_MODULE_COUNT = API_REFERENCE.modules.length;
-const API_ITEM_COUNT = API_REFERENCE.modules.reduce(
-  (total, module) => total + module.items.length,
-  0
-);
 
 const GREEN = `let init = { t: 0.0 }
 let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
@@ -99,6 +91,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Build, then serve.
 const build = spawnSync("node", ["site/build.mjs"], { cwd: ROOT, stdio: "inherit" });
 if (build.status !== 0) process.exit(build.status ?? 1);
+
+// site:build creates this gitignored artifact from the embedded prelude. Read
+// expected totals only after that clean-checkout generation step.
+const API_REFERENCE = JSON.parse(
+  await readFile(`${ROOT}/site/generated/api-reference.json`, "utf8")
+);
+const API_MODULE_COUNT = API_REFERENCE.modules.length;
+const API_ITEM_COUNT = API_REFERENCE.modules.reduce(
+  (total, module) => total + module.items.length,
+  0
+);
 
 // The language-intel pkg is REQUIRED by this suite. build.mjs treats it as
 // optional (a site can ship without analysis), but the checks below must not
