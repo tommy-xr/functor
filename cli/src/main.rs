@@ -22,7 +22,8 @@ const VERSION: &str = match option_env!("FUNCTOR_RELEASE_VERSION") {
 ///
 /// Operates on a project directory (a `functor.json` with
 /// `"language": "functor-lang"`). Add `--json` to any command for a newline-delimited
-/// JSON event stream instead of human text (see `docs/cli-output.md`).
+/// JSON event stream instead of human text (see `docs/cli-output.md`). Data
+/// commands (`inspect`, `docs`) own stdout and expose their own format flags.
 #[derive(Parser, Debug)]
 #[command(author, version = VERSION, about, long_about = None)]
 struct Args {
@@ -71,6 +72,21 @@ enum Environment {
     Vr,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum DocsFormat {
+    Markdown,
+    Json,
+}
+
+impl From<&DocsFormat> for functor_docgen::OutputFormat {
+    fn from(value: &DocsFormat) -> Self {
+        match value {
+            DocsFormat::Markdown => Self::Markdown,
+            DocsFormat::Json => Self::Json,
+        }
+    }
+}
+
 impl Environment {
     fn default(maybe_env: &Option<Environment>) -> Environment {
         maybe_env.clone().unwrap_or(Environment::Native)
@@ -87,6 +103,21 @@ impl Environment {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Generate the Functor engine API reference from the embedded `.funi`
+    /// prelude. Writes Markdown to stdout by default.
+    Docs {
+        /// Generated representation.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: DocsFormat,
+
+        /// Write the generated reference to this path instead of stdout.
+        #[arg(short, long, conflicts_with = "check")]
+        output: Option<PathBuf>,
+
+        /// Verify that this file matches the generated reference.
+        #[arg(long, value_name = "PATH", conflicts_with = "output")]
+        check: Option<PathBuf>,
+    },
     /// Scaffold a new Functor Lang project (defaults to the 3d template).
     Init {
         #[arg(value_enum, default_value = "3d")]
@@ -190,6 +221,10 @@ enum InspectTarget {
 async fn main() -> tokio::io::Result<()> {
     let started = Instant::now();
     let args = Args::parse();
+    if let Err(message) = validate_args(&args) {
+        eprintln!("error: {message}");
+        process::exit(2);
+    }
 
     output::init(
         args.json,
@@ -230,8 +265,32 @@ async fn main() -> tokio::io::Result<()> {
         };
         return finish_inspect(res);
     }
+    if let Command::Docs {
+        format,
+        output,
+        check,
+    } = &args.command
+    {
+        let res = commands::docs::execute(
+            functor_docgen::OutputFormat::from(format),
+            output.as_deref(),
+            check.as_deref(),
+        );
+        return finish_inspect(res);
+    }
 
     finish(run(&args).await, started)
+}
+
+fn validate_args(args: &Args) -> Result<(), &'static str> {
+    if args.json && matches!(&args.command, Command::Docs { .. }) {
+        Err(
+            "`--json` selects the CLI event stream and is not valid for `docs`; \
+use `functor docs --format json`",
+        )
+    } else {
+        Ok(())
+    }
 }
 
 /// Emit `CommandStarted`, validate the project, dispatch, and return the
@@ -299,7 +358,10 @@ async fn run(args: &Args) -> io::Result<()> {
         let project =
             config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
         return match &args.command {
-            Command::Init { .. } | Command::Inspect { .. } | Command::Import => {
+            Command::Docs { .. }
+            | Command::Init { .. }
+            | Command::Inspect { .. }
+            | Command::Import => {
                 unreachable!("is_routed excludes")
             }
             // `build` is the strict typecheck gate — nothing compiles for
@@ -342,6 +404,7 @@ async fn run(args: &Args) -> io::Result<()> {
 
     match &args.command {
         Command::Init { .. } => unreachable!("init is handled before metadata validation"),
+        Command::Docs { .. } => unreachable!("docs is handled before metadata validation"),
         // The F#/Fable pipeline was removed in E3: every Functor project is now
         // Functor Lang (functor.json `"language": "functor-lang"`), routed above. A project that
         // isn't Functor Lang has no build/run/develop/push path.
@@ -387,6 +450,7 @@ fn take_entry_arg(runner_args: &[String]) -> io::Result<(Option<String>, Vec<Str
 fn command_name(command: &Command) -> &'static str {
     match command {
         Command::Init { .. } => "init",
+        Command::Docs { .. } => "docs",
         Command::Build { .. } => "build",
         Command::Run { .. } => "run",
         Command::Develop { .. } => "develop",
@@ -481,7 +545,7 @@ fn get_working_directory(args: &Args) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{run, take_entry_arg, Args};
+    use super::{run, take_entry_arg, validate_args, Args};
     use clap::Parser;
     use std::fs;
 
@@ -512,6 +576,13 @@ mod tests {
     fn take_entry_arg_rejects_a_dangling_flag() {
         let err = take_entry_arg(&strings(&["--entry"])).unwrap_err();
         assert!(err.to_string().contains("requires a value"), "{err}");
+    }
+
+    #[test]
+    fn docs_rejects_the_global_event_json_flag() {
+        let args = Args::try_parse_from(["functor", "--json", "docs"]).unwrap();
+        let error = validate_args(&args).unwrap_err();
+        assert!(error.contains("docs --format json"), "{error}");
     }
 
     #[tokio::test]

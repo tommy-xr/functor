@@ -9,6 +9,7 @@ members = [
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",
+    "tools/functor-docgen",
     "tools/functor-lang-lsp",
     "tools/functor-lang-wasm",
 ]

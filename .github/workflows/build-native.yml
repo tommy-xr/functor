@@ -59,6 +59,9 @@ jobs:
       - name: Run tests
         run: cargo test -p functor_runtime_common -p functor-lang
 
+      - name: Validate API documentation generation
+        run: npm run check:docs
+
       # Building the web bundle is necessary for the CLI,
       # since the cli includes the web bundle for dev server
       - name: Build runtime wasm bundle

@@ -1,3 +1,4 @@
+pub mod docs;
 pub mod import;
 pub mod init;
 pub mod inspect;

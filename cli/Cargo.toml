@@ -22,6 +22,7 @@ functor-lang = { path = "../functor-lang" }
 # The host prelude `.funi` interfaces — injected at load time so a game's
 # `Scene.*` calls typecheck against real types (docs/functor-lang-interfaces.md).
 functor-prelude = { path = "../functor-prelude" }
+functor-docgen = { path = "../tools/functor-docgen" }
 clap = { version = "4.5.6", features = ["derive"] }
 colored = "2.1.0"
 # The `log` facade: the CLI installs a logger that turns any `log!` (its own or

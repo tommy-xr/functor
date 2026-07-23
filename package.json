@@ -16,6 +16,8 @@
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "generate:icons": "node scripts/generate-icons.mjs",
     "generate:audio": "node scripts/generate-audio.mjs",
+    "generate:docs": "node scripts/generate-docs.mjs",
+    "check:docs": "node scripts/generate-docs.mjs --check",
     "test:golden": "npm run fetch:assets && npm run build:cli:debug && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture",
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",

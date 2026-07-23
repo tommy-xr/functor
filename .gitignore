@@ -33,6 +33,7 @@ playwright-report
 bin
 obj
 target
+.fastembed_cache/
 
 # Output
 .ionide
@@ -68,3 +69,8 @@ site/apple-touch-icon.png
 tools/functor-lang-vscode/images/functor-lang-file-dark.png
 tools/functor-lang-vscode/images/functor-lang-file-light.png
 tools/functor-lang-vscode/images/functor-lang-extension.png
+
+# API reference artifacts — derived from the embedded `.funi` prelude.
+# `npm run generate:docs` recreates them; site:build regenerates its JSON input.
+docs/api-reference.md
+site/generated/api-reference.json

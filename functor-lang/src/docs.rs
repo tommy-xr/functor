@@ -21,12 +21,34 @@ use crate::Span;
 pub fn doc_comment(sources: &SourceMap, span: Span) -> Option<String> {
     let file = sources.file_at(span.start);
     let local = span.start.checked_sub(file.base)?;
-    if local > file.src.len() {
+    doc_comment_in_source(&file.src, Span::new(local, local))
+}
+
+/// The doc-comment block directly above a file-local `span`.
+///
+/// This is the source-only half of [`doc_comment`], shared with tooling that
+/// parses standalone `.funi` text without constructing a whole [`SourceMap`].
+pub fn doc_comment_in_source(source: &str, span: Span) -> Option<String> {
+    comment_block_in_source(source, span, false)
+}
+
+/// The explicit public-doc block (`///`) directly above a file-local `span`.
+///
+/// Unlike [`doc_comment_in_source`], ordinary `//` comments are excluded:
+/// generated API references use this stricter contract so section headings
+/// and implementation notes cannot be misattributed to one member.
+pub fn public_doc_comment_in_source(source: &str, span: Span) -> Option<String> {
+    comment_block_in_source(source, span, true)
+}
+
+fn comment_block_in_source(source: &str, span: Span, public_only: bool) -> Option<String> {
+    let local = span.start;
+    if local > source.len() {
         return None;
     }
     // `get` rather than a slice: definition spans from the parser always sit
     // on char boundaries, but the span is caller-supplied public API.
-    let above = file.src.get(..local)?;
+    let above = source.get(..local)?;
 
     let mut lines: Vec<&str> = Vec::new();
     let mut fragments = above.lines().rev();
@@ -43,8 +65,22 @@ pub fn doc_comment(sources: &SourceMap, span: Span) -> Option<String> {
     }
     for line in fragments {
         let trimmed = line.trim_start();
-        match trimmed.strip_prefix("//") {
-            Some(rest) => lines.push(rest.strip_prefix(' ').unwrap_or(rest)),
+        let rest = if public_only {
+            trimmed.strip_prefix("///")
+        } else {
+            trimmed.strip_prefix("//")
+        };
+        match rest {
+            Some(rest) => {
+                let rest = if public_only {
+                    rest
+                } else {
+                    // `///` is the explicit public-doc spelling. Plain `//`
+                    // remains supported for existing Functor code and hovers.
+                    rest.strip_prefix('/').unwrap_or(rest)
+                };
+                lines.push(rest.strip_prefix(' ').unwrap_or(rest));
+            }
             None => break,
         }
     }
@@ -57,8 +93,9 @@ pub fn doc_comment(sources: &SourceMap, span: Span) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::doc_comment;
+    use super::{doc_comment, doc_comment_in_source, public_doc_comment_in_source};
     use crate::project::load_single_source;
+    use crate::Span;
 
     /// The entry's own defs: a comment block right above a `let` attaches;
     /// a blank line breaks attachment.
@@ -106,7 +143,10 @@ mod tests {
                     let make : (float) => t\n\
                     let size : (t) => float\n";
         let project = crate::project::load_sources_with_prelude(
-            vec![(std::path::PathBuf::from("game.fun"), "let x = 0.0\n".to_string())],
+            vec![(
+                std::path::PathBuf::from("game.fun"),
+                "let x = 0.0\n".to_string(),
+            )],
             &[("Widget".to_string(), funi.to_string())],
         )
         .unwrap_or_else(|e| panic!("loads: {}", e.render()));
@@ -142,6 +182,30 @@ mod tests {
         assert_eq!(
             doc_comment(&project.sources, map.span).as_deref(),
             Some("Transform a present value; leave `None` unchanged.")
+        );
+    }
+
+    #[test]
+    fn source_only_extraction_understands_explicit_doc_comments() {
+        let src = "/// Make a widget.\nlet make : () => t\n";
+        let start = src.find("let make").unwrap();
+        assert_eq!(
+            doc_comment_in_source(src, Span::new(start, start)).as_deref(),
+            Some("Make a widget.")
+        );
+    }
+
+    #[test]
+    fn public_extraction_excludes_ordinary_comments() {
+        let src = "// A section heading.\nlet make : () => t\n";
+        let start = src.find("let make").unwrap();
+        assert_eq!(
+            public_doc_comment_in_source(src, Span::new(start, start)),
+            None
+        );
+        assert_eq!(
+            doc_comment_in_source(src, Span::new(start, start)).as_deref(),
+            Some("A section heading.")
         );
     }
 }
