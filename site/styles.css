@@ -410,41 +410,132 @@ a:hover {
   text-align: center;
 }
 
-/* Five feature cards: flex-wrap + centered so a wrapped row (e.g. the orphan
-   5th) stays centered instead of stranded left. */
-.features {
+/* Feature showcase: alternating gif ↔ text rows. Full-width bands alternate a
+   faint dark fill for a calm section-to-section rhythm; each media card lifts
+   with a shadow as its row scrolls into focus (features.js toggles .in-view). */
+.feature-rows {
+  padding-top: var(--space-md);
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 24px;
+  flex-direction: column;
+}
+
+.feature-band {
+  padding: var(--space-xl) var(--space-md);
+}
+
+.feature-band:nth-child(odd) {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.feature-row {
   max-width: 1100px;
   margin: 0 auto;
-  padding: var(--space-md) var(--space-md) 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  align-items: center;
+  gap: var(--space-xl);
 }
 
-.feature {
-  flex: 1 1 180px;
-  max-width: 240px;
-  background: var(--bg-panel);
+/* Alternate the media to the right on the untinted bands. */
+.feature-band:nth-child(even) .feature-media {
+  order: 2;
+}
+
+.feature-media {
+  position: relative;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 20px 22px 18px;
-  box-shadow: 0 16px 38px -26px rgba(0, 0, 0, 0.85);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0d0221;
+  line-height: 0;
+  box-shadow: 0 18px 44px -30px rgba(0, 0, 0, 0.6);
+  transition: box-shadow 0.6s ease 0.1s, border-color 0.5s ease;
 }
 
-.feature h2 {
-  font-size: 0.72rem;
-  font-family: var(--font-mono);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--cyan);
-  margin: 0 0 10px;
+/* A thin cyan→pink chrome line along the top edge — the site accent, echoing the
+   footer rule. Brightens as the card comes into focus. */
+.feature-media::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  z-index: 1;
+  background: linear-gradient(90deg, var(--cyan), var(--pink));
+  opacity: 0.2;
+  transition: opacity 0.5s ease;
 }
 
-.feature p {
+.feature-media img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.feature-body h3 {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin: 0 0 14px;
+}
+
+.feature-body p {
   color: var(--text-dim);
-  font-size: 0.92rem;
+  font-size: 1rem;
+  line-height: 1.7;
+  max-width: 30rem;
+}
+
+/* Scroll-into-focus reveal — gated on .reveal (added by features.js) so the rows
+   stay visible if the script never runs. The media slides in from its own side
+   (reinforcing the alternation); the copy fades up just behind it. */
+.feature-rows.reveal .feature-media {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: box-shadow 0.6s ease 0.1s, transform 0.5s ease, opacity 0.5s ease;
+}
+
+.feature-rows.reveal .feature-body {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.45s ease 0.06s, transform 0.45s ease 0.06s;
+}
+
+.feature-rows.reveal .feature-row.in-view .feature-media,
+.feature-rows.reveal .feature-row.in-view .feature-body {
+  opacity: 1;
+  transform: none;
+}
+
+/* Focus state: the border warms to cyan, the top accent brightens, and the card
+   lifts with a deep drop + faint cyan glow. */
+.feature-row.in-view .feature-media {
+  border-color: rgba(65, 216, 230, 0.28);
+  box-shadow: 0 34px 80px -30px rgba(0, 0, 0, 0.85), 0 0 60px -36px rgba(65, 216, 230, 0.3);
+}
+
+.feature-row.in-view .feature-media::after {
+  opacity: 0.45;
+}
+
+/* Stack to one column on narrow viewports (media always on top). */
+@media (max-width: 760px) {
+  .feature-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+  }
+  .feature-row:nth-child(even) .feature-media {
+    order: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feature-rows.reveal .feature-media,
+  .feature-rows.reveal .feature-body {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
 }
 
 /* Platforms — three grouped cards (Native / Browser / VR), centered like the

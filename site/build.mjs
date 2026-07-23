@@ -99,6 +99,10 @@ for (const file of PKG_FILES) {
 }
 await cp(SCRUBBER, `${dist}/scrubber.js`);
 await cp(TIMELINE_MODEL, `${dist}/timeline-model.js`);
+// Feature-showcase GIFs (committed + optimised in site/media) → dist/media. They
+// are regenerated from the site/demos scripts; the committed copies are what the
+// landing page embeds (building them in CI would need the runtime + Playwright).
+await cp(`${site}media`, `${dist}/media`, { recursive: true }).catch(() => {});
 for (const { id, source } of EXAMPLES) {
   await cp(`${root}${source}`, `${dist}/examples/${id}.fun`);
 }
@@ -121,7 +125,7 @@ if (langPkgPresent) {
 }
 
 await esbuild.build({
-  entryPoints: [`${site}src/sandbox.js`, `${site}src/ide.js`, `${site}src/docs.js`, `${site}src/hero.js`, `${site}src/demo-editor.js`],
+  entryPoints: [`${site}src/sandbox.js`, `${site}src/ide.js`, `${site}src/docs.js`, `${site}src/hero.js`, `${site}src/demo-editor.js`, `${site}src/features.js`],
   bundle: true,
   minify: true,
   format: "esm",
