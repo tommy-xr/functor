@@ -7,10 +7,22 @@ const results = document.querySelector("#api-results");
 
 const slug = (name) => `api-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
+const appendInlineProse = (parent, prose) => {
+  let cursor = 0;
+  for (const match of prose.matchAll(/`([^`\n]+)`/g)) {
+    parent.append(document.createTextNode(prose.slice(cursor, match.index)));
+    const code = document.createElement("code");
+    code.textContent = match[1];
+    parent.append(code);
+    cursor = match.index + match[0].length;
+  }
+  parent.append(document.createTextNode(prose.slice(cursor)));
+};
+
 const appendProse = (parent, prose) => {
   for (const paragraph of prose.split(/\n\s*\n/)) {
     const p = document.createElement("p");
-    p.textContent = paragraph.replace(/\n/g, " ");
+    appendInlineProse(p, paragraph.replace(/\n/g, " "));
     parent.append(p);
   }
 };

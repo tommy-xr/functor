@@ -6,11 +6,22 @@
 // regexes, so a static-HTML variant beats dragging CodeMirror onto the docs
 // page. Keep the two classifications in sync.
 
-const KEYWORDS = new Set(["let", "type", "match", "with", "mut", "in"]);
+const KEYWORDS = new Set([
+  "let",
+  "type",
+  "match",
+  "with",
+  "mut",
+  "in",
+  "if",
+  "then",
+  "else",
+  "not",
+]);
 const ATOMS = new Set(["true", "false"]);
 
 const TOKEN =
-  /\/\/[^\n]*|"(?:[^"\\]|\\.)*"?|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|[+\-*/<>=|]/g;
+  /\/\/[^\n]*|"(?:[^"\\]|\\.)*"?|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|&&|\|\||[+\-*/<>=|]/g;
 
 const escapeHtml = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

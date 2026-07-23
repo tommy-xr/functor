@@ -25,13 +25,21 @@
 //   wasm-pack build runtime/functor-runtime-web --target=web   # once
 //   node e2e/site-sandbox.mjs
 import { spawn, spawnSync } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 const PORT = Number(process.env.FUNCTOR_SITE_PORT ?? 8123);
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const API_REFERENCE = JSON.parse(
+  await readFile(`${ROOT}/site/generated/api-reference.json`, "utf8")
+);
+const API_MODULE_COUNT = API_REFERENCE.modules.length;
+const API_ITEM_COUNT = API_REFERENCE.modules.reduce(
+  (total, module) => total + module.items.length,
+  0
+);
 
 const GREEN = `let init = { t: 0.0 }
 let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
@@ -410,8 +418,22 @@ for (const example of examples) {
   await page.waitForSelector(".api-item");
   const modules = await page.locator(".api-module").count();
   const declarations = await page.locator(".api-item").count();
-  check("API reference renders every generated module", modules === 23, `${modules} modules`);
-  check("API reference renders every generated declaration", declarations === 194, `${declarations} declarations`);
+  check(
+    "API reference renders every generated module",
+    modules === API_MODULE_COUNT,
+    `${modules}/${API_MODULE_COUNT} modules`
+  );
+  check(
+    "API reference renders every generated declaration",
+    declarations === API_ITEM_COUNT,
+    `${declarations}/${API_ITEM_COUNT} declarations`
+  );
+  const inlineCode = await page.locator("#api-scene-littexture p code").allTextContents();
+  check(
+    "API reference renders Markdown backticks as inline code",
+    inlineCode.includes("Texture.t") && inlineCode.includes("Asset.Texture"),
+    inlineCode.join(", ")
+  );
   await page.locator("#api-search").fill("Scene.rotateY");
   const visibleDeclarations = await page.locator(".api-item:visible").count();
   check("API reference search narrows declarations", visibleDeclarations === 1, `${visibleDeclarations} visible`);

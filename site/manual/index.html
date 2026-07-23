@@ -186,7 +186,7 @@ let draw = (m, tts) =>
               <tr><td><code>init</code></td><td><code>{ … }</code></td><td>the initial model — a <em>value</em>, not a function</td></tr>
               <tr><td><code>tick</code></td><td><code>(model, dt, tts) => model'</code></td><td>per-frame step; <code>dt</code> seconds since last frame, <code>tts</code> total time</td></tr>
               <tr><td><code>draw</code></td><td><code>(model, tts) => Frame</code></td><td>pure frame description</td></tr>
-              <tr><td><code>input</code></td><td><code>(model, key, isDown) => model'</code></td><td>optional; <code>key</code> is <code>"W"</code>, <code>"Up"</code>, <code>"Space"</code>, … — key <em>repeats</em> arrive as <code>isDown = true</code>, so latch if you need edges</td></tr>
+              <tr><td><code>input</code></td><td><code>(model, key, isDown) => model'</code></td><td>optional; <code>key</code> is a <code>Key.t</code> variant such as <code>Key.W</code>, <code>Key.Up</code>, or <code>Key.Space</code> — key <em>repeats</em> arrive as <code>isDown = true</code>, so latch if you need edges</td></tr>
               <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
               <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
               <tr><td><code>update</code></td><td><code>(model, msg) => model'</code></td><td>optional; messages are your variant values</td></tr>
@@ -228,9 +228,11 @@ let scores = [1.0, 2.0, 3.0]</pre>
           <pre class="functor-lang">let area = (w: Float, h: Float): Float => w * h   // annotations optional
 let describe = (score) => Text.concat("score: ", Text.fromFloat(score))</pre>
           <p>
-            Typing is <em>gradual</em>: unannotated values check against everything; annotations
-            buy diagnostics (<code>functor build</code> reports them all). Recursion depth is
-            capped (~200) — deep iteration belongs in <code>List.*</code>.
+            Typing uses Hindley–Milner inference with let-polymorphism: unannotated code still
+            gets full types, and bad calls or mixed-element lists are errors. <em>Gradual</em>
+            <code>Unknown</code> values remain only at genuinely dynamic seams. Annotations make
+            intent explicit; <code>functor build</code> reports all diagnostics. Evaluation depth
+            is capped at 128 — deep iteration belongs in <code>List.*</code>.
           </p>
 
           <h3>Records</h3>
@@ -269,11 +271,15 @@ let area = (s: Shape): Float =>
           </p>
 
           <h3>The conditional</h3>
-          <p>There is no <code>if</code>/<code>else</code>. The conditional is a bool-literal match:</p>
+          <p>
+            <code>if</code> is an expression, so both branches are required. Chain with
+            <code>else if</code>; there is no <code>elif</code> keyword. A bool-literal
+            <code>match</code> is equally valid.
+          </p>
           <pre class="functor-lang">let sizeOf = (n: Float): String =>
-  match n > 10.0 with
-  | true => "big"
-  | false => "small"</pre>
+  if n > 100.0 then "huge"
+  else if n > 10.0 then "big"
+  else "small"</pre>
 
           <h3>Pipelines</h3>
           <p>
@@ -428,7 +434,7 @@ let span = (a, b) =>
           <ul>
             <li><code>x |> f(a)</code> is <code>f(a, x)</code> — pipelines <em>append</em> (thread-last).</li>
             <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
-            <li>No <code>if</code>/<code>else</code> — use a bool-literal <code>match</code>.</li>
+            <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens.</li>
@@ -437,8 +443,9 @@ let span = (a, b) =>
             <li>Engine values (<code>&lt;Scene></code>, <code>&lt;Frame></code>, …) are opaque: pass them around, don't compare or inspect them.</li>
           </ul>
           <p class="docs-footnote">
-            This page tracks the language exactly — if a construct isn't here, it doesn't parse.
-            The roadmap lives in <a href="https://github.com/tommy-xr/functor/blob/main/docs/functor-lang.md">docs/functor-lang.md</a>.
+            This manual covers the supported language surface and the engine's core workflows.
+            The detailed language design and roadmap live in
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/functor-lang.md">docs/functor-lang.md</a>.
           </p>
         </section>
       </main>
