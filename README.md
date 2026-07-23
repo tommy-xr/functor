@@ -26,7 +26,7 @@ through its own recorded timeline, then extrapolate to project its future forwar
 
 Use the scrubber bar to move backward and forward in time, and use the extrapolate button to project state forward (replaying key events / other effects in the process) 
 
-![visual of timeline extrapolation](docs/media/extrapolate.png)
+![Rewinding a physics scene on the timeline and extrapolating its future](site/media/feature-time-travel.gif)
 
 > try it yourself at https://functor.games/sandbox?example=mario
 
@@ -34,9 +34,23 @@ Use the scrubber bar to move backward and forward in time, and use the extrapola
 
 When a scene is paused, see live values flowing through the system - visualize what code paths were hit and with what values
 
-![visual of live values shown in the code editor](docs/media/readme-live-evaluation.png)
+![Live values from the running game appearing inline in the code as time scrubs](site/media/feature-introspective.gif)
 
-> Try it yourself at https://functor.games/sandbox?example=monitor
+> Try it yourself at https://functor.games/sandbox?example=orbit
+
+### Batteries included
+
+Asset management, animation, physics, and spatial audio — in the box. Stream a rigged model straight from a URL and the runtime skins and blends its clips; there's no asset pipeline to set up.
+
+![A rigged character streamed from a CDN, animating with an idle/walk/run blend](site/media/feature-batteries.gif)
+
+> Try it yourself at https://functor.games/sandbox?example=batteries
+
+### AI-native
+
+Games run and respond headlessly. Drive and inspect a running game entirely over HTTP — read its live state and render tree, inject input, capture frames — the way a coding agent would.
+
+![A terminal driving a headless game over HTTP: pausing it and inspecting its render tree](site/media/feature-llm-native.gif)
 
 ### Platform support
 
