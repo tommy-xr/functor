@@ -6,6 +6,8 @@ type t
 
 let create : (Camera.t, Scene.t) => t
 let createLit : (Camera.t, Scene.t, List<Light.t>) => t
+// A standalone 2D frame. Sprite.t stays pure data until this boundary.
+let create2D : (Camera2D.t, Sprite.t) => t
 // Frame LAST (subject-last), so they pipe: `Frame.createLit(…) |> Frame.withFog(fog)`.
 // `withRenderTarget(target, targetFrame, frame)` renders `targetFrame` into
 // `target` each frame, before `frame`'s main pass.
@@ -16,3 +18,5 @@ let withSkybox : (Skybox.t, t) => t
 // default. Frame LAST, so it pipes:
 // `frame |> Frame.withClearColor(Color.rgb(0.1, 0.0, 0.2))`.
 let withClearColor : (Color.t, t) => t
+// Add an ordered sprite pass above the frame's 3D scene. Frame LAST.
+let with2D : (Camera2D.t, Sprite.t, t) => t

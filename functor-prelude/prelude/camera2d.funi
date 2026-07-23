@@ -1,0 +1,11 @@
+// camera2d.funi — center-origin, Y-up cameras for Sprite scenes.
+
+type t
+
+// The visible world width and height at zoom 1. The renderer preserves this
+// aspect ratio and letterboxes rather than stretching.
+let create : (float, float) => t
+
+// Camera LAST, so they pipe.
+let at : (float, float, t) => t
+let zoom : (float, t) => t

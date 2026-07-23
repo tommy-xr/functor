@@ -204,8 +204,9 @@ let grab = (s) =>
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude or bundled-core namespace (Net, Key, Random, Option, Result,
   List, Text, Math, Debug, Scene,
-  Anim, Asset, Camera, Frame, Light, Fog, Color, Vec3, Skybox, Angle, Texture,
-  Time, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr, Style, AudioSource, AudioScene) is a
+  Sprite, Anim, Asset, Camera, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
+  Angle, Texture, Time, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
+  Style, AudioSource, AudioScene) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
   manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -281,9 +282,10 @@ open Widget                                              // …or open, bringing
 - **Runtime is unchanged**: an interface member stays an `External` (the host
   provides its value at run time), so `.funi` is a pure check-time overlay.
 - This is how the **engine prelude's types are declared**: the `functor-prelude`
-  crate ships a `.funi` for every host namespace (`Scene`, `Asset`, `Camera`,
-  `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`, `Texture`, `Angle`, `Time`,
-  `Sub`, `Effect`, `Physics`, `Ui`, `Html`, `Attr`, `Style`, `AudioSource`, `AudioScene`),
+  crate ships a `.funi` for every host namespace (`Scene`, `Sprite`, `Asset`,
+  `Camera`, `Camera2D`, `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`,
+  `Texture`, `Angle`, `Time`, `Sub`, `Effect`, `Physics`, `Ui`, `Html`, `Attr`,
+  `Style`, `AudioSource`, `AudioScene`),
   loaded by the
   runner so engine calls carry real types (no longer `Unknown`). Each module's
   primary opaque handle is `Mod.t` (`Camera.t`, `Frame.t`, `Effect.t`, …);
@@ -623,6 +625,28 @@ Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles f
                                                            //   orientation, near/far remain
                                                            //   game-owned; OpenXR owns IPD
                                                            //   and per-eye optical FOV
+Camera2D.create(width, height)                             // center-origin, +X right, +Y up;
+                                                           //   width/height are visible world
+                                                           //   units at zoom 1; the renderer
+                                                           //   aspect-fits without stretching
+camera2d |> Camera2D.at(x, y)                              // pan the world-space view
+camera2d |> Camera2D.zoom(k)                               // positive zoom; larger = closer
+Sprite.blank()
+Sprite.rectangle(color, width, height) / Sprite.square(color, size)
+Sprite.image(width, height, texture)                       // Asset.Texture only; the locator
+                                                           //   becomes plain sprite data
+Sprite.group([sprite, …])                                  // painter order: later is above
+sprite |> Sprite.move(x, y) / moveX(x) / moveY(y)
+sprite |> Sprite.rotate(angle)                             // +angle is counter-clockwise
+sprite |> Sprite.scale(k) / scaleXY(x, y)
+sprite |> Sprite.fade(alpha) / tint(color)                 // multiply through the subtree
+                                                           // Sprite.t is deliberately PLAIN
+                                                           // DATA at runtime (private variants,
+                                                           // lists, numbers, strings), despite
+                                                           // its abstract interface type: it
+                                                           // compares, displays, snapshots, and
+                                                           // survives hot reload. Lowering to
+                                                           // Scene3D happens at Frame.create2D
 Light.ambient(color) / Light.point(pos, color, intensity, range)
 Light.directional(dir, color, intensity) |> Light.castShadows
 Light.spot(pos, dir, color, intensity, range, coneAngle)
@@ -633,6 +657,9 @@ Light.spot(pos, dir, color, intensity, range, coneAngle)
                                                            //   |> Light.castShadows
 Frame.create(camera, scene)                                // what draw returns
 Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
+Frame.create2D(camera2d, sprite)                           // a 2D-only frame
+frame |> Frame.with2D(camera2d, sprite)                    // layer 2D above a 3D/earlier 2D
+                                                           // frame; layers render in call order
 RenderTarget.named("id")                                   // offscreen texture, 512x512…
 RenderTarget.named("id") |> RenderTarget.sized(w, h)       // …unless sized. Declare ONCE,
                                                            //   use the VALUE at both sites
@@ -1045,9 +1072,11 @@ stored in the model likewise adopt the edited declaration's arity.
 
 Transforms wrap in Group nodes: the **outer call applies last in world
 space** — `s |> Scene.rotateY(r) |> Scene.translate(Vec3.make(x, 0.0, 0.0))` rotates in
-place, then moves (the order the source reads). Engine values (`<Scene>`,
-`<Camera>`, `<Frame>`) are opaque: they can be passed around but not
-inspected, compared, or serialized.
+place, then moves (the order the source reads). Most engine values (`<Scene>`,
+`<Camera>`, `<Camera2D>`, `<Frame>`) are opaque: they can be passed around but
+not inspected, compared, or serialized. `Sprite.t` is the deliberate
+exception: its abstract type hides a private plain-data picture tree, so sprite
+values do support structural display/equality, snapshots, and hot reload.
 
 ## Typechecking model (Hindley–Milner + gradual seams)
 

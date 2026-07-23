@@ -23,6 +23,8 @@ pub fn modules() -> Vec<(String, String)> {
         module("Color", include_str!("../prelude/color.funi")),
         module("Vec3", include_str!("../prelude/vec3.funi")),
         module("Camera", include_str!("../prelude/camera.funi")),
+        module("Camera2D", include_str!("../prelude/camera2d.funi")),
+        module("Sprite", include_str!("../prelude/sprite.funi")),
         module("Frame", include_str!("../prelude/frame.funi")),
         module("Light", include_str!("../prelude/light.funi")),
         module("Fog", include_str!("../prelude/fog.funi")),

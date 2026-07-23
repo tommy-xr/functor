@@ -1,0 +1,28 @@
+// sprite.funi — pure, inspectable 2D picture values.
+//
+// Unlike Scene.t/Frame.t, Sprite.t is represented at runtime as ordinary
+// Functor Lang variants/lists/numbers/strings. It can therefore be compared,
+// inspected, serialized, stored in a model, and carried through time travel.
+// The abstract interface type keeps the internal rendering schema private.
+
+type t
+
+// Centered primitives.
+let blank : () => t
+let rectangle : (Color.t, float, float) => t
+let square : (Color.t, float) => t
+// width, height, texture asset.
+let image : (float, float, Asset.Texture) => t
+
+// Painter's-order composition: earlier items are behind later items.
+let group : (List<t>) => t
+
+// Sprite LAST, so every transform pipes.
+let move : (float, float, t) => t
+let moveX : (float, t) => t
+let moveY : (float, t) => t
+let rotate : (Angle.t, t) => t
+let scale : (float, t) => t
+let scaleXY : (float, float, t) => t
+let fade : (float, t) => t
+let tint : (Color.t, t) => t

@@ -1,4 +1,4 @@
-// mario — a pure-model side-view platformer (walk, jump, gravity) with a
+// mario — a pure-model 2D sprite platformer (walk, jump, gravity) with a
 // CHASM: two ground platforms with a visible gap between them. Inspired by
 // Elm's classic Mario demo. Everything the simulation needs lives IN the
 // model, and there is deliberately NO `physics` hook — the whole state
@@ -15,11 +15,11 @@
 
 // --- Tunables (tweak these to change whether the jump clears the chasm) ---
 let runSpeed = 8.0        // horizontal speed while a direction is held
-let jumpVelocity = 12.0   // upward launch speed on jump
+let jumpVelocity = 13.0   // upward launch speed on jump
 let gravity = 30.0        // downward acceleration
 
 // A jump launched at the edge covers runSpeed * (2*jumpVelocity/gravity)
-//   = 8 * (2*12/30) = 6.4 units horizontally at the same height it started.
+//   = 8 * (2*13/30) = 6.93 units horizontally at the same height it started.
 // The chasm is 6.0 wide (chasmHalf 3.0), so the DEFAULT jump clears it with
 // a small margin — but lowering jumpVelocity (or raising gravity) a little
 // makes the character fall short. That knife-edge is the whole point.
@@ -36,10 +36,6 @@ let fallLimit = -2.0      // fall past this (into the chasm) and respawn.
                           // (chasmHalf 3.0), so it visibly FALLS IN rather than
                           // snapping up onto the far platform from below. The
                           // default jump clears with y still above this line.
-
-// Character box half-extents (feet are at model.y; the box is drawn centered
-// half a height above).
-let charHalfH = 0.6
 
 let startModel =
   { x: startX, y: groundTop, vx: 0.0, vy: 0.0,
@@ -72,10 +68,14 @@ let overSolid = (x) =>
   | true => true
   | false => overRight(x)
 
-// Landed = over a platform AND at/below the surface (falling in).
-let landed = (nx, ny) =>
+// Land only while crossing the surface from above. Checking the previous Y
+// prevents a late jump from snapping upward through the far platform.
+let landed = (wasY, nx, ny) =>
   match overSolid(nx) with
-  | true => ny < groundTop
+  | true =>
+    (match wasY < groundTop with
+     | true => false
+     | false => ny < groundTop)
   | false => false
 
 // Jump only from the ground; airborne jump requests are ignored (so GLFW key
@@ -104,7 +104,7 @@ let tick = (model, dt, tts) =>
   let vy1 = model.vy - gravity * dt in
   let nx = model.x + vx * dt in
   let ny = model.y + vy1 * dt in
-  match landed(nx, ny) with
+  match landed(model.y, nx, ny) with
   | true =>
     { model with x: nx, y: groundTop, vx: vx, vy: 0.0, grounded: true }
   | false =>
@@ -113,31 +113,67 @@ let tick = (model, dt, tts) =>
      | false =>
        { model with x: nx, y: ny, vx: vx, vy: vy1, grounded: false })
 
-// --- Rendering ---
+// --- 2D rendering ---
 
-// A ground platform: a wide, deep box whose TOP face sits at groundTop.
+let sky = () =>
+  Sprite.rectangle(Color.rgb(0.20, 0.64, 0.88), 24.0, 13.5)
+
+// Simple geometric scenery keeps the Elm-playground flavor alongside the
+// image sprites. Earlier group entries draw behind later ones.
+let hill = (x, y, size, color) =>
+  Sprite.square(color, size)
+    |> Sprite.rotate(Angle.degrees(45.0))
+    |> Sprite.move(x, y)
+
+let backdrop = () =>
+  Sprite.group([
+    sky(),
+    hill(-8.0, -3.0, 8.0, Color.rgb(0.35, 0.73, 0.52)),
+    hill(-1.0, -3.8, 7.0, Color.rgb(0.29, 0.66, 0.45)),
+    hill(7.0, -3.2, 9.0, Color.rgb(0.38, 0.76, 0.50)),
+  ])
+
+let groundTile = (x) =>
+  Sprite.image(1.0, 1.0, Assets.ground)
+    |> Sprite.move(x, groundTop - 0.5)
+
+// A platform combines a cheap filled body with one row of textured top tiles.
+// Widths in this level are whole numbers, so List.range gives one tile/unit.
 let platform = (cx, width) =>
-  Scene.cube()
-    |> Scene.scaleXYZ(width, 2.0, 4.0)
-    |> Scene.lit(Color.rgb(0.30, 0.68, 0.36))
-    |> Scene.translate(Vec3.make(cx, groundTop - 1.0, 0.0))
+  let firstX = cx - width / 2.0 + 0.5 in
+  let tiles =
+    List.range(width)
+      |> List.map((i) => groundTile(firstX + i))
+      |> Sprite.group in
+  Sprite.group([
+    Sprite.rectangle(Color.rgb(0.63, 0.39, 0.20), width, 2.0)
+      |> Sprite.move(cx, groundTop - 1.5),
+    tiles,
+  ])
 
-let character = (model) =>
-  Scene.cube()
-    |> Scene.scaleXYZ(0.8, 1.2, 0.8)
-    |> Scene.lit(Color.rgb(0.95, 0.35, 0.25))
-    |> Scene.translate(Vec3.make(model.x, model.y + charHalfH, 0.0))
+let characterAsset = (model, tts) =>
+  if not model.grounded then Assets.hero_jump
+  else if model.vx == 0.0 then Assets.hero_idle
+  else if Math.mod(Math.floor(tts * 8.0), 2.0) == 0.0 then Assets.hero_walk_1
+  else Assets.hero_walk_2
+
+let faceCharacter = (model, sprite) =>
+  if model.vx < 0.0 then sprite |> Sprite.scaleXY(-1.0, 1.0) else sprite
+
+let character = (model, tts) =>
+  Sprite.image(1.6, 1.6, characterAsset(model, tts))
+    |> faceCharacter(model)
+    |> Sprite.move(model.x, model.y + 0.8)
+
+let world = (model, tts) =>
+  Sprite.group([
+    backdrop(),
+    // Left platform: x in [leftEdge, -chasmHalf]; right: [chasmHalf, rightEdge].
+    platform((leftEdge - chasmHalf) / 2.0, -chasmHalf - leftEdge),
+    platform((rightEdge + chasmHalf) / 2.0, rightEdge - chasmHalf),
+    character(model, tts),
+  ])
 
 let draw = (model, tts) =>
-  Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 3.0, 20.0), Vec3.make(0.0, 1.0, 0.0)),
-    Scene.group([
-      // Left platform: x in [leftEdge, -chasmHalf]; right: [chasmHalf, rightEdge].
-      platform((leftEdge - chasmHalf) / 2.0, -chasmHalf - leftEdge),
-      platform((rightEdge + chasmHalf) / 2.0, rightEdge - chasmHalf),
-      character(model),
-    ]),
-    [
-      Light.ambient(Color.rgb(0.18, 0.18, 0.22)),
-      Light.directional(Vec3.make(-0.4, -1.0, -0.5), Color.rgb(1.0, 0.98, 0.92), 0.9) |> Light.castShadows,
-    ])
+  Frame.create2D(Camera2D.create(24.0, 13.5), world(model, tts))
+    |> Frame.withClearColor(Color.rgb(0.08, 0.16, 0.25))

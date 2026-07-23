@@ -23,8 +23,9 @@
 //!
 //! # Per-frame, logic → runtime
 //!
-//! - [`crate::Frame`] — camera + [`crate::Scene3D`] + [`crate::Light`]s; the
-//!   value returned by `draw3d`, also serialized verbatim for `GET /scene`.
+//! - [`crate::Frame`] — a camera + [`crate::Scene3D`] + [`crate::Light`]s and
+//!   ordered [`crate::SpriteLayer`]s; the value returned by `draw`, also
+//!   serialized verbatim for `GET /scene`.
 //! - [`crate::ui::View`] — the declarative UI tree (`emit_ui`).
 //! - Drained command queues, each a JSON array over the boundary:
 //!   [`crate::net::NetCommand`] (HTTP), [`crate::net::ConnCommand`]
@@ -66,11 +67,14 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v3: 2D sprite passes — `Frame.sprite_layers` (defaulted and omitted when
+/// empty, so pre-v3 frames stay byte-compatible).
+///
 /// v2: `Asset.whilePending` — `ModelDescription.while_pending` (defaulted,
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -448,6 +452,7 @@ mod tests {
                 "px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg",
             )),
             clear_color: Some([0.2, 0.4, 0.6]),
+            sprite_layers: vec![],
         };
         assert_json_stable(&frame);
 
@@ -463,6 +468,7 @@ mod tests {
         assert!(legacy.fog.is_none());
         assert!(legacy.skybox.is_none());
         assert!(legacy.clear_color.is_none());
+        assert!(legacy.sprite_layers.is_empty());
     }
 
     // The render-target wire vocabulary: the reader (a texture by target id)

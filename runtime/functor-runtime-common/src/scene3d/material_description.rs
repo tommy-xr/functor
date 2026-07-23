@@ -67,6 +67,21 @@ impl MaterialDescription {
         }
     }
 
+    /// A fullbright texture multiplied by an RGBA tint. Sprite lowering uses
+    /// this for composable `Sprite.tint` + `Sprite.fade`.
+    pub fn emissive_texture_tinted(
+        tex: TextureDescription,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) -> MaterialDescription {
+        MaterialDescription::Emissive {
+            color: vec4(r, g, b, a),
+            texture: Some(tex),
+        }
+    }
+
     /// A diffuse-lit solid color.
     pub fn lit(r: f32, g: f32, b: f32, a: f32) -> MaterialDescription {
         MaterialDescription::Lit {
