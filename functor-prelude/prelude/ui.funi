@@ -1,35 +1,36 @@
-// ui.funi — the `Ui` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// The optional `ui = (model) => …` hook's vocabulary: text lines stacked in a
-// column, pinned to a screen corner.
+//! Lightweight game UI views returned by the optional `ui` hook.
+//!
+//! Compose text and widgets into rows or columns, then pin them to a screen
+//! anchor with `Ui.panel`.
 
-// The opaque view handle (`Ui.view` from game code).
+/// An opaque UI view.
 type view
-// The opaque panel-anchor handle (`Ui.anchor` from game code).
+/// An opaque screen anchor.
 type anchor
 
+/// Create a text view.
 let text : (string) => view
+/// Create a colored text view.
 let textColor : (Color.t, string) => view
+/// Stack views vertically.
 let column : (List<view>) => view
+/// Arrange views horizontally.
 let row : (List<view>) => view
-// view LAST (subject-last), so it pipes: `Ui.column([…]) |> Ui.panel(Ui.topLeft())`.
+/// Pin a view to an anchor; the view is last for piping.
 let panel : (anchor, view) => view
+/// Anchor a panel to the top-left corner.
 let topLeft : () => anchor
+/// Anchor a panel to the top-right corner.
 let topRight : () => anchor
+/// Anchor a panel to the bottom-left corner.
 let bottomLeft : () => anchor
+/// Anchor a panel to the bottom-right corner.
 let bottomRight : () => anchor
-// Pins a panel to the screen center — e.g. `menuColumn |> Ui.panel(Ui.center())`.
+/// Anchor a panel to the center of the screen.
 let center : () => anchor
-// Interactive widgets (docs/ui-interaction.md); like Sub.every's msg, 'msg is
-// erased by the opaque `view` — the msg↔update link is checked at runtime.
-// A click delivers `msg` verbatim through `update`.
+/// Create a button that delivers a message through `update` when clicked.
 let button : (string, 'msg) => view
-// A controlled slider: shows `value` (from the model); a drag applies the
-// tagger to the new value and the message folds through `update`.
-// (Function-typed params can't be written in signatures yet, so the tagger
-// is typed by inference at the call site.)
+/// Create a controlled slider from minimum, maximum, value, and tagger.
 let slider : (float, float, float, 'tagger) => view
-// A controlled single-line text input: shows `value` (from the model); an
-// edit applies the tagger to the new text.
+/// Create a controlled text input whose tagger receives edited text.
 let textInput : (string, 'tagger) => view

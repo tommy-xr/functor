@@ -1,11 +1,12 @@
-// time.funi — the `Time` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// A branded duration (seconds): timing functions (`Sub.every`) accept ONLY
-// `Time.t` values, so a bare number is rejected with a teaching error.
+//! Branded durations used by timing APIs such as `Sub.every`.
+//!
+//! Constructing a `Time.t` explicitly prevents milliseconds and seconds from
+//! being mixed accidentally.
 
-// The opaque duration handle (`Time.t` from game code).
+/// An opaque duration.
 type t
 
+/// Construct a duration from seconds.
 let seconds : (float) => t
+/// Construct a duration from milliseconds.
 let millis : (float) => t

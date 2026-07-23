@@ -1,25 +1,30 @@
-// attr.funi — the `Attr` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// Attributes for `Html.*` elements — CSS classes, inline styles, and the
-// event handlers that route interactions back through `update`.
+//! Attributes and event handlers for `Html` elements.
+//!
+//! Event attributes deliver messages through the game's `update` function.
 
-// The opaque attribute handle.
+/// An opaque HTML attribute.
 type t
 
+/// Set the element's CSS class string.
 let class : (string) => t
+/// Set the element's raw inline `style` string.
 let style : (string) => t
-// Typed inline styles (the `Style` module): the list folds into ONE
-// `style="k: v; k: v"` attribute at construction.
+/// Combine typed `Style` values into one inline style attribute.
 let styles : (List<Style.t>) => t
+/// Set the element's `id`.
 let id : (string) => t
-// Any attribute by name: `Attr.attr("placeholder", "Your name")`.
+/// Set a safe attribute by name and value.
+///
+/// Names must start with a letter and then contain only letters, digits, or
+/// dashes. Executable, navigating, document-embedding, and runtime-reserved
+/// names (`on*`, `href`, `action`, `formaction`, `srcdoc`, and `data-fn-*`) are
+/// refused.
 let attr : (string, string) => t
-// The controlled value of an `Html.input`.
+/// Set the controlled value of an `Html.input`.
 let value : (string) => t
+/// Set an input's placeholder text.
 let placeholder : (string) => t
-// Like Ui.button's msg: delivered VERBATIM through `update` when the element
-// is clicked ('msg is erased by the opaque t; checked at runtime).
+/// Deliver a message through `update` when the element is clicked.
 let onClick : ('msg) => t
-// Like Ui.textInput's tagger: applied to the new text on each edit.
+/// Apply a tagger to edited text and deliver its message through `update`.
 let onInput : ('tagger) => t

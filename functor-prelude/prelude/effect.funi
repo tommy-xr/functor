@@ -1,42 +1,40 @@
-// effect.funi — the `Effect` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// Effects: fire-and-forget commands returned beside the model, folded back
-// through `update`. The `'msg` type variable is the game's message type.
+//! Commands returned beside a model and performed by the runtime.
+//!
+//! Results are converted into game messages and folded back through `update`.
+//! Effects remain outside the game's pure functional core.
 
-// The opaque effect handle (`Effect.t` from game code).
+/// An opaque effect command.
 type t
 
+/// Produce no command.
 let none : () => t
-// The tagger is applied by the producer with the performed result value.
+/// Read the current Unix time in seconds and tag the result as a message.
 let now : ((float) => 'msg) => t
+/// Generate a random float in `0..1` and tag it as a message.
 let random : ((float) => 'msg) => t
+/// Combine effects to be performed together.
 let batch : (List<t>) => t
-// Send text to a live connection (connId, text).
+/// Send text over a live connection by connection ID.
 let send : (float, string) => t
-// Send a plain-data VALUE to a live connection — usually a variant of an ADT
-// declared in a module both ends share, so the protocol typechecks on both
-// sides. The other end receives it as `Net.Data(id, value)`. A function or
-// host value inside the payload is a teaching error.
+/// Send a plain-data value over a live connection.
+///
+/// The peer receives `Net.Data(id, value)`. Functions and opaque host values
+/// cannot be sent.
 let sendMsg : (float, 'a) => t
-// The tagger is a function of the `Net.HttpResponse`.
+/// Perform an HTTP GET and tag its `Net.HttpResponse` as a message.
 let httpGet : (string, (Net.HttpResponse) => 'msg) => t
+/// Perform an HTTP POST with a text body and tag its response as a message.
 let httpPost : (string, string, (Net.HttpResponse) => 'msg) => t
-// Fire-and-forget audio one-shots. `play` is non-spatial; `playAt` positioned.
-// Since the flag day (B.6) the sound is the branded `Asset.Sound`; bare
-// strings are check-time errors here and teaching errors at runtime.
+/// Play a non-spatial sound once.
 let play : (Asset.Sound) => t
+/// Play a spatial sound once at a world position.
 let playAt : (Asset.Sound, Vec3.t) => t
-// Play once and deliver `'msg` (a message VALUE, not a tagger) when it finishes.
+/// Play a sound once and deliver a message when playback finishes.
 let playThen : (Asset.Sound, 'msg) => t
-// Warm the asset cache ahead of `draw` referencing the asset (a model or
-// texture Asset VALUE — sounds decode at play time, nothing to warm; the
-// host teaches). Declarative loading stays the default; preload is the
-// imperative prefetch (start streaming the boss when the player grabs the
-// key). Counts in Sub.assets like any load.
+/// Begin loading a model or texture before it is referenced by `draw`.
 let preload : ('asset) => t
-// Preload and deliver `'msg` (a message VALUE, like playThen) through
-// `update` when the load SETTLES — loaded or failed (Sub.assets' failed
-// list says which). Works on wasm too (the shell's own driver detects
-// settlement, unlike audio finishes).
+/// Preload an asset and deliver a message when the load settles.
+///
+/// Settlement includes success and failure; `Sub.assets` reports which assets
+/// failed.
 let preloadThen : ('asset, 'msg) => t

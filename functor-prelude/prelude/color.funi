@@ -1,11 +1,9 @@
-// color.funi — the `Color` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//! RGB colors shared by rendering, lighting, fog, and UI APIs.
 
-// The opaque color handle (`Color.t` from game code): an RGB color with
-// channels normally in 0..1 (emissive/HDR uses may exceed 1). The Angle rule
-// applied to color — every material/light/fog/UI color parameter takes a
-// Color VALUE, never three bare floats, so channel swaps and argument
-// miscounts are unrepresentable.
+/// An opaque RGB color.
+///
+/// Channels are normally in `0..1`; emissive and HDR uses may exceed `1`.
 type t
 
+/// Construct a color from red, green, and blue channels.
 let rgb : (float, float, float) => t

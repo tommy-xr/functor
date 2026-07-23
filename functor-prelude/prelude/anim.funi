@@ -1,39 +1,36 @@
-// anim.funi — the `Anim` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude).
-//
-// An Anim is a declarative pose expression a scene model renders with
-// (`scene |> Scene.animate(anim)`). Playheads and blend weights are explicit
-// values the game derives (typically from `tts` and model state) — the engine
-// owns no animation clock, so poses rewind and replay exactly.
+//! Declarative animation poses attached to scene models with `Scene.animate`.
+//!
+//! Playheads and blend weights are values derived by the game, so the engine
+//! owns no hidden animation clock and poses rewind and replay deterministically.
 
-// The opaque animation-expression handle, referred to as `Anim.t`.
+/// An opaque animation pose expression.
 type t
 
-// Sample the named glTF clip at a playhead in seconds (loops by the clip's
-// duration; negative playheads wrap backwards from the end).
+/// Sample a named glTF clip at a playhead in seconds.
+///
+/// The clip loops by its duration; negative playheads wrap backwards from the
+/// end.
 let clip : (string, float) => t
 
-// A weighted mix: [(anim, weight), …]. Weights are normalized; non-positive
-// weights drop their entry.
+/// Blend a list of `(animation, weight)` pairs.
+///
+/// Weights are normalized and entries with non-positive weights are ignored.
 let blend : (List<(t, float)>) => t
 
-// The bind (rest) pose — the base for purely programmatic posing
-// (Anim.rotate on a model with no authored clips, e.g. a hand).
+/// Return the bind pose as a base for programmatic posing.
 let rest : () => t
 
-// Additive layer (base LAST, so it pipes):
-// walk |> Anim.add(Anim.clip("headShake", tts), 1.0)
-// The weight clamps to [0, 1]; the delta applies where the base has
-// influence (a joint the base doesn't drive stays at bind — use rotate for
-// unconditional per-joint control).
+/// Apply an additive animation layer to a base pose.
+///
+/// The base is last for piping. Weight is clamped to `0..1`, and the delta
+/// applies only where the base has influence.
 let add : (t, float, t) => t
 
-// Restrict an anim's influence to the subtrees rooted at the named joints
-// (a name covers itself and every descendant).
+/// Restrict a pose to the subtrees rooted at the named joints.
 let mask : (List<string>, t) => t
 
-// Post-multiply an additive local XYZ Euler rotation onto one joint —
-// programmatic per-joint control (head aim, finger curl). Angle values only.
-// The joint counts as fully driven: masks/zero-weight blends BENEATH this
-// node can't drop it (an enclosing mask still can).
+/// Add a local XYZ Euler rotation to one joint.
+///
+/// The joint is fully driven by this node; an enclosing mask can still exclude
+/// it.
 let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t

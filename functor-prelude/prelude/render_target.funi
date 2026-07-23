@@ -1,12 +1,9 @@
-// render_target.funi — the `RenderTarget` host module (interface only;
-// implemented in Rust by FunctorHost in functor_runtime_common::functor_lang_prelude).
-// See docs/functor-lang-interfaces.md.
+//! Named off-screen render targets for render-to-texture effects.
 
-// The opaque render-target handle (`RenderTarget.t` from game code).
+/// An opaque render target identity and size.
 type t
 
-// A named target (512x512 unless piped through `RenderTarget.sized`).
+/// Create a stable, named 512×512 render target.
 let named : (string) => t
-// Target LAST (subject-last), so it pipes:
-// `RenderTarget.named("x") |> RenderTarget.sized(256.0, 256.0)`.
+/// Set target width and height; the target is last for piping.
 let sized : (float, float, t) => t

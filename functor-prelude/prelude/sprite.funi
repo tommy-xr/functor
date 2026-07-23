@@ -1,28 +1,38 @@
-// sprite.funi — pure, inspectable 2D picture values.
-//
-// Unlike Scene.t/Frame.t, Sprite.t is represented at runtime as ordinary
-// Functor Lang variants/lists/numbers/strings. It can therefore be compared,
-// inspected, serialized, stored in a model, and carried through time travel.
-// The abstract interface type keeps the internal rendering schema private.
+//! Pure, inspectable 2D picture values.
+//!
+//! Unlike `Scene.t` and `Frame.t`, `Sprite.t` is represented at runtime as
+//! ordinary Functor Lang data. It can be compared, inspected, serialized,
+//! stored in a model, and carried through time travel while its internal
+//! rendering schema stays private.
 
+/// An abstract plain-data 2D picture.
 type t
 
-// Centered primitives.
+/// Create an empty picture.
 let blank : () => t
+/// Create a centered rectangle with positive width and height.
 let rectangle : (Color.t, float, float) => t
+/// Create a centered square with a positive side length.
 let square : (Color.t, float) => t
-// width, height, texture asset.
+/// Create a centered, textured rectangle with positive width and height.
 let image : (float, float, Asset.Texture) => t
 
-// Painter's-order composition: earlier items are behind later items.
+/// Group pictures in painter's order, with earlier items behind later items.
 let group : (List<t>) => t
 
-// Sprite LAST, so every transform pipes.
+/// Move a picture by the given X and Y offsets; the picture is last for piping.
 let move : (float, float, t) => t
+/// Move a picture along X; the picture is last for piping.
 let moveX : (float, t) => t
+/// Move a picture along Y; the picture is last for piping.
 let moveY : (float, t) => t
+/// Rotate a picture around its center; the picture is last for piping.
 let rotate : (Angle.t, t) => t
+/// Scale a picture uniformly; the picture is last for piping.
 let scale : (float, t) => t
+/// Scale a picture independently along X and Y; the picture is last for piping.
 let scaleXY : (float, float, t) => t
+/// Multiply a picture's opacity by an alpha from 0 to 1.
 let fade : (float, t) => t
+/// Multiply a picture's color by a tint; the picture is last for piping.
 let tint : (Color.t, t) => t

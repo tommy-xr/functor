@@ -1,12 +1,13 @@
-// angle.funi — the `Angle` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// A branded angle: rotation/camera functions accept ONLY `Angle.t` values, so a
-// bare number is rejected with a teaching error. Build one with `Angle.degrees`
-// or `Angle.radians`.
+//! Branded angles used by cameras, rotations, and spot lights.
+//!
+//! Angle-taking APIs require an `Angle.t`, preventing radians and degrees from
+//! being mixed accidentally. Construct one with `Angle.degrees` or
+//! `Angle.radians`.
 
-// The opaque angle handle (`Angle.t` from game code).
+/// An opaque angle value.
 type t
 
+/// Construct an angle from degrees.
 let degrees : (float) => t
+/// Construct an angle from radians.
 let radians : (float) => t
