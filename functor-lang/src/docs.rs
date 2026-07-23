@@ -125,4 +125,23 @@ mod tests {
         );
         assert_eq!(doc_comment(&project.sources, sig("Widget.size")), None);
     }
+
+    /// Bundled `.fun` implementations retain their own API documentation,
+    /// just like project definitions and prelude signatures.
+    #[test]
+    fn standard_library_defs_attach_their_source_docs() {
+        let project =
+            load_single_source("game", "let main = () => Option.None\n")
+                .unwrap_or_else(|e| panic!("loads: {}", e.render()));
+        let map = project
+            .module
+            .defs
+            .iter()
+            .find(|def| def.name == "Option.map")
+            .expect("Option.map definition");
+        assert_eq!(
+            doc_comment(&project.sources, map.span).as_deref(),
+            Some("Transform a present value; leave `None` unchanged.")
+        );
+    }
 }

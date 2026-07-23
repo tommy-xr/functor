@@ -225,6 +225,9 @@ const KEY_MODULE_SRC: &str = "type t =\n\
      | Space | Enter | Escape\n\
      | Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9\n";
 
+const OPTION_MODULE_SRC: &str = include_str!("../stdlib/option.fun");
+const RESULT_MODULE_SRC: &str = include_str!("../stdlib/result.fun");
+
 /// Language-owned modules available in every embedding, including the plain
 /// `functor-lang` CLI. Keeping them in the same descriptor shape as host
 /// modules is the distribution seam for reusable `.fun` stdlib code.
@@ -233,6 +236,8 @@ fn core_modules() -> Vec<BundledModule> {
         BundledModule::builtin("Net", NET_MODULE_SRC, BundledModuleKind::Implementation),
         BundledModule::builtin("Random", RANDOM_MODULE_SRC, BundledModuleKind::Interface),
         BundledModule::builtin("Key", KEY_MODULE_SRC, BundledModuleKind::Implementation),
+        BundledModule::implementation("Option", OPTION_MODULE_SRC),
+        BundledModule::implementation("Result", RESULT_MODULE_SRC),
     ]
 }
 
