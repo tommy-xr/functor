@@ -189,7 +189,12 @@ const loadInline = (b64u) => {
 
 const loadExample = async (id) => {
   const token = ++loadToken;
-  const url = `examples/${encodeURIComponent(id)}.fun`;
+  const example = EXAMPLES.find((candidate) => candidate.id === id);
+  const files = [
+    `examples/${encodeURIComponent(id)}.fun`,
+    ...(example?.siblings?.map(({ output }) => output) ?? []),
+  ];
+  const url = files[0];
   const response = await fetch(url);
   if (token !== loadToken) return; // a newer load superseded this one
   if (!response.ok) {
@@ -202,7 +207,9 @@ const loadExample = async (id) => {
   // switching examples resets state; the ready announcement re-arms pushes.
   setDoc(source);
   setStatus("busy", "◌ loading…");
-  frame.src = `player.html?game=${encodeURIComponent(url)}`;
+  const params = new URLSearchParams({ game: url });
+  for (const file of files) params.append("file", file);
+  frame.src = `player.html?${params}`;
 };
 
 for (const example of EXAMPLES) {

@@ -141,6 +141,9 @@
       // push, which deliberately preserves the running model.
       const src = params.get("src");
       const requested = params.get("game");
+      const requestedFiles = params
+        .getAll("file")
+        .filter((path) => path && !path.startsWith("/") && !path.includes(":"));
       // ?project=inline: the HOSTING page owns the whole file set (the IDE)
       // and delivers it by postMessage — nothing is fetched. The boot is
       // deferred until the first `functor-lang-set-project` arrives (see the
@@ -156,6 +159,11 @@
         window.__functorLangGamePath = src
           ? "data:text/plain;base64," + src.replace(/-/g, "+").replace(/_/g, "/")
           : game.split("/").map(encodeURIComponent).join("/");
+        if (!src && requestedFiles.length > 0) {
+          window.__functorLangProjectFiles = requestedFiles.map((path) =>
+            path.split("/").map(encodeURIComponent).join("/")
+          );
+        }
       }
 
       // Map a browser KeyboardEvent.code to the canonical key code expected by
