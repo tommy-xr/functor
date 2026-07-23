@@ -2,9 +2,9 @@
 // pushed over the network (POST /reload-source replaces it live, model
 // preserved). VR-adapted from the CLI's 3d template: a floor plane for
 // spatial reference, and a spinning cube + sphere ~2.5m in front of the
-// stage origin at standing eye height. The camera below is ignored on the
-// headset (per-eye HMD-pose cameras own the view — look around!); it makes
-// the same scene sensible if run on desktop.
+// stage origin at standing eye height. The authored camera is the reference
+// center-eye pose on the headset; live head/eye motion composes onto it, so
+// this scene starts with the same framing on desktop and in VR.
 
 let init = {}
 

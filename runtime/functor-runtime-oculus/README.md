@@ -9,10 +9,25 @@ over the shared debug-runtime protocol.
 ## Status
 
 The OpenXR shell, interpreted Functor Lang producer, USB remote-develop loop,
-and exact asymmetric per-eye projection are **verified on hardware** (Quest 3,
-Horizon OS v205). The shared debug/REPL protocol adds raw stereo framebuffer
-capture and desktop-isomorphic control. Remaining device work includes
-controller/hand input, asset sync, and multiview rendering.
+authored-camera rig, and exact asymmetric per-eye projection are verified on
+Quest 3. The shared debug/REPL protocol adds raw stereo framebuffer capture and
+desktop-isomorphic control. Remaining device work includes controller/hand
+input, asset sync, and multiview rendering.
+
+## Camera contract
+
+`Frame.camera` stays target-independent. On Quest its pose is the center-eye
+view when tracking is established; live OpenXR eye poses are applied as
+reference-relative translation and rotation in that camera's local basis.
+Changing the game camera therefore moves the whole play-space rig (locomotion),
+while moving your head remains live and shell-owned. The authored near/far clip
+range is preserved. OpenXR still owns IPD and the exact per-eye optical FOV.
+
+The reference center is the midpoint of the first valid left/right eye poses.
+It survives source reload and session doze; an OpenXR reference-space change
+recenters it at the runtime's announced change time. Existing desktop games
+therefore begin with their authored framing instead of inheriting the Quest's
+absolute stage coordinates.
 
 ## The remote-develop loop (M1)
 

@@ -21,7 +21,7 @@ games deploy over the network.
 | [#430](https://github.com/tommy-xr/functor/pull/430) | Device-loopback source reload over adb forwarding | merged |
 | [#431](https://github.com/tommy-xr/functor/pull/431) | `functor run vr`: launch, forward, whole-project push, watch, and log streaming | merged |
 | [#437](https://github.com/tommy-xr/functor/pull/437) | Exact asymmetric OpenXR projections, fixing binocular double vision | merged; Quest 3 verified |
-| `feat/isomorphic-vr-debug-capture` | Shared desktop/Quest debug protocol, whole-project REPL, raw stereo capture, TypeScript SDK parity, device benchmark | current branch; Quest 3 verified |
+| [#438](https://github.com/tommy-xr/functor/pull/438) | Shared desktop/Quest debug protocol, whole-project REPL, raw stereo capture, TypeScript SDK parity, device benchmark | merged; Quest 3 verified |
 
 ## Working today on the Xreal One
 
@@ -53,6 +53,11 @@ magnetometer; the Xreal Eye's 6DoF is not host-accessible).
 - The shared shaders are gamma-naive; the Quest's sRGB swapchain will render
   brighter than desktop until the pipeline is gamma-explicit (TODO'd at
   `COLOR_FORMAT`).
+- **Quest camera composition:** the first valid center-eye tracking pose maps
+  to the authored `Frame.camera`. Later eye translation/rotation composes in
+  that camera's local basis; authored camera changes move the rig, while
+  OpenXR owns IPD/optical FOV and the camera keeps its near/far range. Verified
+  on Quest 3 with raw stereo capture and a live authored-camera translation.
 
 ## Device-day checklist (Quest 3)
 
@@ -76,11 +81,14 @@ The first measured Quest 3 release run (`primitives`, 15 seconds after a
 5-second warmup) sustained 72.7 FPS mean / 72 FPS minimum, with zero stale or
 torn frames and 3.09 ms mean application time.
 
+The authored-camera release verification sustained 72 FPS minimum in two
+30-second `primitives` runs (3.31–3.36 ms mean application time). A
+source/geometry-heavy `synthwave` run also held 72 FPS minimum with zero stale
+or torn frames; texture assets were not synchronized, so that run is not a
+final texture-pipeline measurement.
+
 ## After bring-up (in rough order)
 
-- Make the game camera the VR tracking origin (position/orientation and clip
-  range) so identical `Frame` values have the same world framing on desktop and
-  Quest; compose the live head/eye pose on top.
 - Sync or host project assets so texture/model/audio locators work in the
   laptop-to-headset loop; whole-project reload currently transfers source only.
 - Controllers + a VR `InputContext` (head/hands) with desktop mouse/keyboard

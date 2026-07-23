@@ -30,7 +30,6 @@ use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
-use cgmath::{Quaternion, Rotation, Vector3};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::debug_protocol::{
     CaptureError, DebugRequest, InputCommand, RuntimeInput, RuntimeMouse, RuntimeState,
@@ -38,7 +37,9 @@ use functor_runtime_common::debug_protocol::{
 };
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
-use functor_runtime_common::{Camera, Frame, FrameTime, GameClock, Key, SceneContext, Viewport};
+use functor_runtime_common::{
+    Frame, FrameTime, GameClock, Key, SceneContext, TrackingPose, Viewport,
+};
 use khronos_egl as egl;
 use openxr as xr;
 
@@ -252,25 +253,12 @@ fn create_eye_target(
     }
 }
 
-/// Derive a Functor `Camera` from an OpenXR eye view. The exact asymmetric
-/// projection is built separately from `view.fov` and passed directly to the
-/// shared renderer; this camera owns the eye pose and clip distances.
-fn camera_from_view(view: &xr::View) -> Camera {
+/// Convert OpenXR's pose layout into the shell-independent tracking pose used
+/// by the authored camera rig.
+fn tracking_pose_from_view(view: &xr::View) -> TrackingPose {
     let p = view.pose.position;
     let o = view.pose.orientation;
-    let q = Quaternion::new(o.w, o.x, o.y, o.z);
-    let eye = Vector3::new(p.x, p.y, p.z);
-    let forward = q.rotate_vector(-Vector3::unit_z());
-    let up = q.rotate_vector(Vector3::unit_y());
-    let target = eye + forward;
-    Camera {
-        eye: [eye.x, eye.y, eye.z],
-        target: [target.x, target.y, target.z],
-        up: [up.x, up.y, up.z],
-        fov_radians: view.fov.angle_up - view.fov.angle_down,
-        near: 0.1,
-        far: 100.0,
-    }
+    TrackingPose::new([p.x, p.y, p.z], [o.x, o.y, o.z, o.w])
 }
 
 /// Placeholder frame until the Functor Lang producer is wired (device bring-up): an
@@ -576,14 +564,19 @@ pub fn android_main(app: AndroidApp) {
 
     // STAGE (floor-origin, room-scale) preferred; LOCAL (head-origin) is the
     // portable baseline when the runtime has no stage bounds set up.
-    let stage = session
-        .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
-        .unwrap_or_else(|e| {
-            log::warn!("STAGE reference space unavailable ({e}); falling back to LOCAL");
-            session
-                .create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)
-                .expect("local space")
-        });
+    let (stage, stage_type) =
+        match session.create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY) {
+            Ok(stage) => (stage, xr::ReferenceSpaceType::STAGE),
+            Err(e) => {
+                log::warn!("STAGE reference space unavailable ({e}); falling back to LOCAL");
+                (
+                    session
+                        .create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)
+                        .expect("local space"),
+                    xr::ReferenceSpaceType::LOCAL,
+                )
+            }
+        };
 
     let view_config_views = instance
         .enumerate_view_configuration_views(system, xr::ViewConfigurationType::PRIMARY_STEREO)
@@ -634,6 +627,11 @@ pub fn android_main(app: AndroidApp) {
     let mut last_frame_at: Option<Instant> = None;
     let mut debug = DebugLoopState::default();
     let mut session_running = false;
+    // The first valid center-eye pose becomes the tracking origin for the
+    // authored `Frame.camera`. It survives source reload and session doze so
+    // model-driven locomotion and physical room-scale motion remain additive.
+    let mut tracking_reference: Option<TrackingPose> = None;
+    let mut tracking_reference_reset_at: Option<xr::Time> = None;
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
 
@@ -695,6 +693,10 @@ pub fn android_main(app: AndroidApp) {
                     }
                 }
                 InstanceLossPending(_) => quit = true,
+                ReferenceSpaceChangePending(e) if e.reference_space_type() == stage_type => {
+                    tracking_reference_reset_at = Some(e.change_time());
+                    log::info!("tracking-space change pending; camera rig will recenter");
+                }
                 _ => {}
             }
         }
@@ -743,13 +745,54 @@ pub fn android_main(app: AndroidApp) {
             continue;
         }
 
-        let (_, views) = session
+        if tracking_reference_reset_at.is_some_and(|change_time| {
+            xr_frame_state.predicted_display_time.as_nanos() >= change_time.as_nanos()
+        }) {
+            tracking_reference = None;
+            tracking_reference_reset_at = None;
+        }
+
+        let (view_state, views) = session
             .locate_views(
                 xr::ViewConfigurationType::PRIMARY_STEREO,
                 xr_frame_state.predicted_display_time,
                 &stage,
             )
             .expect("locate views");
+        let tracking_valid = view_state.contains(xr::ViewStateFlags::POSITION_VALID)
+            && view_state.contains(xr::ViewStateFlags::ORIENTATION_VALID);
+        if !tracking_valid {
+            // OpenXR leaves the view poses undefined when either validity bit
+            // is absent. Do not read those poses or submit them for compositor
+            // reprojection; a mono authored-camera fallback would be actively
+            // misleading here.
+            if let Some(response) = debug.pending_capture.take() {
+                let _ = response.send(Err(CaptureError::Unavailable(
+                    "capture is unavailable because XR tracking is invalid".to_string(),
+                )));
+            }
+            frame_stream
+                .end(
+                    xr_frame_state.predicted_display_time,
+                    xr::EnvironmentBlendMode::OPAQUE,
+                    &[],
+                )
+                .expect("frame end (invalid tracking)");
+            last_frame_at = None;
+            continue;
+        }
+        if tracking_reference.is_none() {
+            tracking_reference = views.first().and_then(|left| {
+                let left = tracking_pose_from_view(left);
+                views
+                    .get(1)
+                    .and_then(|right| TrackingPose::midpoint(left, tracking_pose_from_view(right)))
+                    .or_else(|| TrackingPose::midpoint(left, left))
+            });
+            if tracking_reference.is_some() {
+                log::info!("camera rig centered: Frame.camera is the reference center-eye pose");
+            }
+        }
 
         let now = Instant::now();
         let real_delta = last_frame_at
@@ -762,8 +805,9 @@ pub fn android_main(app: AndroidApp) {
         };
 
         // The game produces this frame (subscriptions → update → tick →
-        // physics inside `tick`; `render` = the pure `draw`). The game's own
-        // camera is ignored below — per-eye HMD-pose cameras own the view.
+        // physics inside `tick`; `render` = the pure `draw`). Frame.camera is
+        // the authored center-eye rig; live OpenXR eye deltas compose onto it
+        // below, so the same camera positions the world on every target.
         game.check_hot_reload(frame_time.clone());
         for sub_frame in &sub_frames {
             game.tick(sub_frame.clone());
@@ -795,7 +839,13 @@ pub fn android_main(app: AndroidApp) {
                 gl.disable(glow::SCISSOR_TEST);
                 gl.enable(glow::DEPTH_TEST);
             }
-            let camera = camera_from_view(view);
+            let camera = tracking_reference
+                .map(|reference| {
+                    frame
+                        .camera
+                        .compose_tracked_view(reference, tracking_pose_from_view(view))
+                })
+                .unwrap_or_else(|| frame.camera.clone());
             let projection = camera.projection_matrix_from_fov_angles(
                 view.fov.angle_left,
                 view.fov.angle_right,

@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cgmath::{InnerSpace, Quaternion, Rotation, Rotation3, Vector3, Zero};
-use functor_runtime_common::Camera;
+use functor_runtime_common::{Camera, TrackingPose};
 
 pub const DEFAULT_ADDR: &str = "169.254.2.1:52998";
 
@@ -250,44 +250,14 @@ pub fn gyro_bias(samples: &[ImuSample]) -> Vector3<f32> {
 }
 
 /// Rotate a game camera by the (recentered) head orientation. `q` is in the
-/// head frame — x right, y up, z forward — so it's applied in the *camera's
-/// local basis*: whatever direction the game camera faces, looking left turns
-/// the view left. Falls back to the unrotated camera for a degenerate gaze
-/// (same guard as `Camera::stereo_eyes`).
+/// head frame — x right, y up, z backward — so the shared tracked-camera rig
+/// applies it in the camera's local basis: whatever direction the game camera
+/// faces, looking left turns the view left.
 pub fn apply_head_rotation(camera: &Camera, q: Quaternion<f32>) -> Camera {
-    let eye = Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]);
-    let target = Vector3::new(camera.target[0], camera.target[1], camera.target[2]);
-    let up = Vector3::new(camera.up[0], camera.up[1], camera.up[2]);
-
-    let gaze = target - eye;
-    let dist = gaze.magnitude();
-    let right = gaze.cross(up);
-    if !dist.is_normal() || !right.magnitude().is_normal() {
-        return camera.clone();
-    }
-    let f = gaze / dist;
-    let r = right.normalize();
-    let u = r.cross(f).normalize();
-    // Right-handed camera basis (r, u, b) with b = backward — matching the
-    // head frame — so quaternion rotations keep their sign when mapped
-    // through it. (Using forward as the third axis would make the basis
-    // left-handed and mirror every head turn.)
-    let b = -f;
-
-    // Head-local gaze (−z) and up, rotated by the head orientation…
-    let f_local = q.rotate_vector(-Vector3::unit_z());
-    let u_local = q.rotate_vector(Vector3::unit_y());
-    // …mapped back into the world through the camera basis.
-    let to_world = |v: Vector3<f32>| r * v.x + u * v.y + b * v.z;
-    let new_f = to_world(f_local);
-    let new_u = to_world(u_local);
-
-    let new_target = eye + new_f * dist;
-    Camera {
-        target: [new_target.x, new_target.y, new_target.z],
-        up: [new_u.x, new_u.y, new_u.z],
-        ..camera.clone()
-    }
+    camera.compose_tracked_view(
+        TrackingPose::IDENTITY,
+        TrackingPose::new([0.0, 0.0, 0.0], [q.v.x, q.v.y, q.v.z, q.s]),
+    )
 }
 
 /// Handle to the background reader thread. The thread owns the TCP
