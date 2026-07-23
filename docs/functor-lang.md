@@ -490,6 +490,18 @@ snapshots — no GPU, fully agent-verifiable.
       implementation satisfies its interface; consumers typecheck against
       the `.funi` alone. The LLM payoff is the point: an interface file is
       the concise, load-into-context summary of a module.
+      **Part 3 — bundled implementation modules — substrate done
+      (2026-07-23):** generalized the interface-injection path into one
+      bundled-source descriptor for executable `.fun` implementations and
+      host-backed `.funi` interfaces. Both use the ordinary project linker
+      (parse/lower/check/dependency order/eval/source maps/rebind), while
+      bundled names are reserved automatically and synthetic sources identify
+      themselves as `<stdlib>/…` or `<prelude>/…`. The existing language-owned
+      `Net.fun`, `Key.fun`, and `Random.funi` now go through this path instead
+      of bespoke pushes. Compatibility wrappers keep every current prelude
+      caller unchanged. This is the distribution substrate for the core
+      Option/Result modules and the engine-bundled Animator follow-ups; those
+      modules are deliberately separate slices.
 - [x] **Language: inline `expect` tests** (done 2026-07-19; design note in
       `~/notes` `inline-expect-tests.md` — the live red/green editor arc
       builds on this). `expect <bool-expr>` is a top-level item (contextual
