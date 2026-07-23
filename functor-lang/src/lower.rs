@@ -661,6 +661,16 @@ impl Lowerer<'_> {
             }
             ast::ExprKind::Number(n) => ExprKind::Number(n),
             ast::ExprKind::String(s) => ExprKind::String(s),
+            ast::ExprKind::InterpolatedString(parts) => {
+                let mut lowered = Vec::with_capacity(parts.len());
+                for part in parts {
+                    lowered.push(match part {
+                        ast::StringPart::Text(text) => StringPart::Text(text),
+                        ast::StringPart::Expr(expr) => StringPart::Expr(self.expr(expr)?),
+                    });
+                }
+                ExprKind::InterpolatedString(lowered)
+            }
             ast::ExprKind::Bool(b) => ExprKind::Bool(b),
             ast::ExprKind::Record(fields) => {
                 let mut lowered: Vec<Field> = Vec::new();

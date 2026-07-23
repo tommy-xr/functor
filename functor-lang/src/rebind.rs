@@ -460,6 +460,13 @@ fn collect(expr: &Expr, def: &str, path: &mut Vec<String>, index: &mut ModuleInd
                 seg(item, format!("({i})"), path, index);
             }
         }
+        ExprKind::InterpolatedString(parts) => {
+            for (i, part) in parts.iter().enumerate() {
+                if let crate::ir::StringPart::Expr(expr) = part {
+                    seg(expr, format!("{{{i}}}"), path, index);
+                }
+            }
+        }
         ExprKind::Call { callee, args } => {
             seg(callee, "callee".to_string(), path, index);
             for (i, arg) in args.iter().enumerate() {
@@ -606,6 +613,13 @@ pub(crate) fn each_child<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
         ExprKind::Tuple(items) => {
             for item in items {
                 f(item);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let crate::ir::StringPart::Expr(expr) = part {
+                    f(expr);
+                }
             }
         }
         ExprKind::Let { value, body, .. } => {

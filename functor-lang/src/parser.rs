@@ -30,8 +30,9 @@
 //! mul       := unary (("*" | "/") unary)*           (left-assoc)
 //! unary     := "-" unary | postfix
 //! postfix   := primary ("(" expr,* ")" | "." ident)*
-//! primary   := number | string | "true" | "false" | qualifiedIdent
+//! primary   := number | string | interpolatedString | "true" | "false" | qualifiedIdent
 //!            | record | list | tuple | lambda | "(" expr ")"
+//! interpolatedString := '$"' (text | "{{" | "}}" | "{" expr "}")* '"'
 //! tuple     := "(" expr ("," expr)+ ","? ")"
 //! record    := "{" (ident ":" expr),* "}"
 //!            | "{" expr "with" (ident ":" expr),+ "}"
@@ -1182,6 +1183,7 @@ and an `else` branch)",
                     span,
                 })
             }
+            TokenKind::InterpolatedStart => self.interpolated_string(),
             TokenKind::True => {
                 self.bump();
                 Ok(Expr {
@@ -1207,6 +1209,40 @@ and an `else` branch)",
                 }
             }
             _ => self.error("an expression"),
+        }
+    }
+
+    fn interpolated_string(&mut self) -> Result<Expr, ParseError> {
+        let open = self.bump();
+        let mut parts = Vec::new();
+        loop {
+            match self.peek_kind() {
+                TokenKind::InterpolatedText(text) => {
+                    let text = text.clone();
+                    self.bump();
+                    parts.push(StringPart::Text(text));
+                }
+                TokenKind::InterpolatedOpen => {
+                    self.bump();
+                    let expr = self.expr()?;
+                    self.expect(
+                        TokenKind::InterpolatedClose,
+                        "`}` after interpolation expression",
+                    )?;
+                    parts.push(StringPart::Expr(expr));
+                }
+                TokenKind::InterpolatedEnd => {
+                    let close = self.bump();
+                    return Ok(Expr {
+                        kind: ExprKind::InterpolatedString(parts),
+                        span: open.span.to(close.span),
+                    });
+                }
+                _ => {
+                    return self
+                        .error("interpolated string text, an interpolation expression, or `\"`")
+                }
+            }
         }
     }
 

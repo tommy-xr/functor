@@ -84,10 +84,13 @@ let sumList = (xs: List<float>): float =>     // list PATTERNS: [] / [a,b] / [h,
   | [] => 0.0
   | [head, ..rest] => head + sumList(rest)    // refutable; needs a catch-all or [..r]
 let s = "text\n"                              // strings: escapes \" \\ \n \t
+let label = $"score: {threshold}; {{ready}}"  // interpolation: `$"…"` with full expressions in {}
+                                              //   strings inline raw; other values use canonical
+                                              //   display; {{ and }} are literal braces
 let flag = true                               // bools
 
 let isHigh = (score: float): bool => score > threshold   // annotations OPTIONAL (gradual)
-let describe = (score) => Text.concat("score: ", Text.fromFloat(score))
+let describe = (score) => $"score: {score}"
 
 let report = (scores) =>
   scores

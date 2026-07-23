@@ -102,6 +102,75 @@ fn error_unterminated_string() {
 }
 
 #[test]
+fn interpolated_string_parses_text_and_full_expression_holes() {
+    let src = r#"let label = $"score: {1.0 + 2.0}; {{ready}}""#;
+    let program = functor_lang::parse(src).expect("source should parse");
+    let Item::Let(binding) = &program.items[0] else {
+        panic!("expected a let binding");
+    };
+    let ExprKind::InterpolatedString(parts) = &binding.value.kind else {
+        panic!("expected an interpolated string");
+    };
+    assert_eq!(parts.len(), 3);
+    assert!(matches!(
+        &parts[0],
+        functor_lang::ast::StringPart::Text(text) if text == "score: "
+    ));
+    assert!(matches!(
+        &parts[1],
+        functor_lang::ast::StringPart::Expr(expr)
+            if matches!(expr.kind, ExprKind::Binary { .. })
+    ));
+    assert!(matches!(
+        &parts[2],
+        functor_lang::ast::StringPart::Text(text) if text == "; {ready}"
+    ));
+    assert_eq!(
+        &src[binding.value.span.start..binding.value.span.end],
+        &src[12..]
+    );
+}
+
+#[test]
+fn interpolation_errors_are_targeted_and_spanned() {
+    assert_eq!(
+        parse_err(r#"let s = $"hello {name"#),
+        ("unterminated interpolation hole".to_string(), 1, 17)
+    );
+    assert_eq!(
+        parse_err(r#"let s = $"hello }""#),
+        (
+            "unmatched `}` in interpolated string (write `}}` for a literal brace)".to_string(),
+            1,
+            17
+        )
+    );
+    assert_eq!(
+        parse_err(r#"let s = $"hello {}""#),
+        (
+            "expected an expression, found `}` in an interpolated string".to_string(),
+            1,
+            18
+        )
+    );
+}
+
+#[test]
+fn deeply_nested_interpolation_is_a_clean_error() {
+    let depth = 1000;
+    let mut src = String::from("let s = ");
+    for _ in 0..depth {
+        src.push_str("$\"{");
+    }
+    src.push_str("\"x\"");
+    for _ in 0..depth {
+        src.push_str("}\"");
+    }
+    let (message, _, _) = parse_err(&src);
+    assert_eq!(message, "interpolation nested too deeply");
+}
+
+#[test]
 fn error_record_field_missing_colon() {
     assert_eq!(
         parse_err("let p = { x: 1.0, y }"),

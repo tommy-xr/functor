@@ -301,6 +301,12 @@ mod tests {
     }
 
     #[test]
+    fn interpolation_reference_resolves_to_the_parameter() {
+        let src = r#"let f = (score: float): string => $"score: {score}""#;
+        assert_eq!(def_at(src, "score}\""), Some("score: float"));
+    }
+
+    #[test]
     fn let_reference_resolves_to_the_binder_region() {
         let src = "let f = (x) => let y = x in y + 1.0";
         assert_eq!(def_at(src, "y +"), Some("let y = "));

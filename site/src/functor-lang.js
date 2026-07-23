@@ -23,13 +23,70 @@ const ATOMS = new Set(["true", "false"]);
 
 export const functorLangLanguage = StreamLanguage.define({
   name: "functor-lang",
-  token(stream) {
+  startState: () => ({ contexts: [] }),
+  copyState: (state) => ({
+    contexts: state.contexts.map((context) => ({ ...context })),
+  }),
+  token(stream, state) {
+    const context = state.contexts.at(-1);
+    if (context?.kind === "interpolated") {
+      if (stream.match('\\"') || stream.match("\\\\") || stream.match("\\n") || stream.match("\\t")) {
+        return "string";
+      }
+      if (stream.match("{{") || stream.match("}}")) return "string";
+      if (stream.match('"')) {
+        state.contexts.pop();
+        return "string";
+      }
+      if (stream.match("{")) {
+        state.contexts.push({ kind: "hole", braces: 0 });
+        return "bracket";
+      }
+      while (!stream.eol() && !/["\\{}]/.test(stream.peek())) stream.next();
+      if (stream.pos === stream.start) stream.next();
+      return "string";
+    }
+    if (context?.kind === "string") {
+      while (!stream.eol()) {
+        if (stream.next() === "\\") stream.next();
+        else if (stream.current().endsWith('"')) {
+          state.contexts.pop();
+          break;
+        }
+      }
+      return "string";
+    }
     if (stream.eatSpace()) return null;
     if (stream.match("//")) {
       stream.skipToEnd();
       return "comment";
     }
-    if (stream.match(/^"(?:[^"\\]|\\.)*"?/)) return "string";
+    if (stream.match('$"')) {
+      state.contexts.push({ kind: "interpolated" });
+      return "string";
+    }
+    if (stream.match('"')) {
+      state.contexts.push({ kind: "string" });
+      while (!stream.eol()) {
+        if (stream.next() === "\\") stream.next();
+        else if (stream.current().endsWith('"')) {
+          state.contexts.pop();
+          break;
+        }
+      }
+      return "string";
+    }
+    if (context?.kind === "hole") {
+      if (stream.match("{")) {
+        context.braces += 1;
+        return "bracket";
+      }
+      if (stream.match("}")) {
+        if (context.braces === 0) state.contexts.pop();
+        else context.braces -= 1;
+        return "bracket";
+      }
+    }
     if (stream.match(/^\d+(\.\d+)?/)) return "number";
     // Uppercase head: constructors and prelude namespaces (Scene, Math, …).
     if (stream.match(/^[A-Z][A-Za-z0-9_]*/)) return "typeName";

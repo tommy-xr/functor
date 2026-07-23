@@ -531,6 +531,18 @@ snapshots — no GPU, fully agent-verifiable.
       `animator.fun` example module should remove that file to use the bundled
       API, or rename it if they maintain a customized implementation; bundled
       namespaces cannot be shadowed.
+- [x] **Language: string interpolation** (done 2026-07-23). An explicit
+      F#-style `$"score: {score}"` literal accepts full Functor expressions
+      in each `{…}` hole and evaluates them left-to-right. String values
+      insert their raw contents; every other value uses the same deterministic
+      structural rendering as `run`/`trace`, so numbers, bools, lists, records,
+      tuples, and variants work without a separate conversion function.
+      Existing string escapes remain unchanged, and `{{` / `}}` emit literal
+      braces. Interpolation expressions participate in normal name resolution,
+      typechecking, editor navigation, coverage, and hot-reload rebinding.
+      *Verify:* parser/error-span tests, checker traversal, nested
+      interpolation + structural-brace runtime tests, full language suite,
+      and the release `frame_bench` acceptance comparison.
 - [x] **Language: inline `expect` tests** (done 2026-07-19; design note in
       `~/notes` `inline-expect-tests.md` — the live red/green editor arc
       builds on this). `expect <bool-expr>` is a top-level item (contextual

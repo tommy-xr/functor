@@ -218,7 +218,7 @@ fn context_at(live_text: &str, offset: usize) -> Context {
         return Context::None;
     }
     let prefix = &live_text[..offset];
-    let Ok(mut tokens) = crate::lexer::lex(prefix, 0) else {
+    let Some(mut tokens) = lex_completion_prefix(prefix) else {
         return Context::None;
     };
     tokens.pop(); // drop the Eof sentinel the lexer always appends
@@ -289,7 +289,13 @@ fn context_at(live_text: &str, offset: usize) -> Context {
         },
         // A literal / range touching the cursor offers nothing — there is no
         // member completion off a number or string in v1.
-        TokenKind::Number(_) | TokenKind::Str(_) | TokenKind::DotDot | TokenKind::TypeVar(_)
+        TokenKind::Number(_)
+        | TokenKind::Str(_)
+        | TokenKind::InterpolatedStart
+        | TokenKind::InterpolatedText(_)
+        | TokenKind::InterpolatedEnd
+        | TokenKind::DotDot
+        | TokenKind::TypeVar(_)
             if touches =>
         {
             Context::None
@@ -300,6 +306,47 @@ fn context_at(live_text: &str, offset: usize) -> Context {
             partial: String::new(),
         },
     }
+}
+
+/// Lex a cursor prefix, recovering the deliberately unfinished delimiters
+/// that occur while typing inside an interpolation hole. The synthetic suffix
+/// is discarded by span before context classification, so it can only make
+/// the real prefix lexable; it never becomes a completion token itself.
+fn lex_completion_prefix(prefix: &str) -> Option<Vec<Token>> {
+    match crate::lexer::lex(prefix, 0) {
+        Ok(tokens) => return Some(tokens),
+        Err(error) if error.message.starts_with("unterminated ") => {}
+        Err(_) => return None,
+    }
+    // Editor recovery, not language acceptance: eight unfinished nested
+    // templates is ample for a live cursor and keeps a broken-buffer
+    // completion request bounded to a small number of lexer passes.
+    for depth in 1..=8 {
+        let suffix = "}\"".repeat(depth);
+        let recovered = format!("{prefix}{suffix}");
+        if let Ok(mut tokens) = crate::lexer::lex(&recovered, 0) {
+            if tokens.iter().any(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Str(_) | TokenKind::InterpolatedText(_)
+                ) && token.span.start < prefix.len()
+                    && token.span.end > prefix.len()
+            }) {
+                return None;
+            }
+            let in_interpolation_hole = tokens.iter().any(|token| {
+                token.kind == TokenKind::InterpolatedOpen && token.span.end <= prefix.len()
+            }) && tokens.iter().any(|token| {
+                token.kind == TokenKind::InterpolatedClose && token.span.start >= prefix.len()
+            });
+            if !in_interpolation_hole {
+                continue;
+            }
+            tokens.retain(|token| token.kind == TokenKind::Eof || token.span.end <= prefix.len());
+            return Some(tokens);
+        }
+    }
+    None
 }
 
 /// The dotted qualifier ending at `tokens[end]` (an `Ident`): walk back over an
@@ -1385,6 +1432,27 @@ mod tests {
     #[test]
     fn cursor_in_string_is_empty() {
         let live = "let s = \"Scene.";
+        let items = game(STUB, &[("Scene", SCENE)], live);
+        assert!(items.is_empty(), "{:?}", labels(&items));
+    }
+
+    #[test]
+    fn completion_works_inside_an_interpolation_hole() {
+        let items = game(STUB, &[("Scene", SCENE)], r#"let s = $"scene: {Scene."#);
+        assert!(has(&items, "cube"), "{:?}", labels(&items));
+    }
+
+    #[test]
+    fn local_completion_works_inside_a_fresh_interpolation_hole() {
+        let src = r#"let f = (score: float): string => $"score: {score}""#;
+        let hole = src.rfind("score").unwrap();
+        let items = fresh(src, &[], hole + 3);
+        assert!(has(&items, "score"), "{:?}", labels(&items));
+    }
+
+    #[test]
+    fn cursor_in_a_string_inside_an_interpolation_hole_is_empty() {
+        let live = r#"let s = $"text: {"Scene."#;
         let items = game(STUB, &[("Scene", SCENE)], live);
         assert!(items.is_empty(), "{:?}", labels(&items));
     }

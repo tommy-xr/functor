@@ -139,6 +139,9 @@ pub struct Expr {
 pub enum ExprKind {
     Number(f64),
     String(String),
+    /// `$"score: {score}"`, retaining expression nodes so interpolation
+    /// participates in checking, tooling, tracing, and hot reload normally.
+    InterpolatedString(Vec<StringPart>),
     Bool(bool),
     /// Reference to an enclosing lambda's parameter. `name` duplicates the
     /// binding's name for readability; `binding` is authoritative.
@@ -248,6 +251,12 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+}
+
+#[derive(Debug)]
+pub enum StringPart {
+    Text(String),
+    Expr(Expr),
 }
 
 /// One lowered `| pattern => body` arm. Pattern variables are bindings

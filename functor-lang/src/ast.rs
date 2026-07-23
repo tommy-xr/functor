@@ -126,6 +126,9 @@ pub enum ExprKind {
     /// Ints and floats both parse to f64 (Functor Lang has one number type for now).
     Number(f64),
     String(String),
+    /// `$"score: {score}"` — text and full expression holes, evaluated
+    /// left-to-right. `{{` / `}}` produce literal braces.
+    InterpolatedString(Vec<StringPart>),
     Bool(bool),
     /// A possibly-qualified name: `x` is `["x"]`, `Text.toBullets` is
     /// `["Text", "toBullets"]`. The parser absorbs a `.segment` into the
@@ -235,6 +238,12 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+}
+
+#[derive(Debug)]
+pub enum StringPart {
+    Text(String),
+    Expr(Expr),
 }
 
 /// One `| pattern => body` arm of a `match`.
