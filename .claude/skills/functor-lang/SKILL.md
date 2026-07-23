@@ -294,8 +294,8 @@ open Widget                                              // …or open, bringing
   directly above a type/signature for its public API prose. Plain `//` remains
   an ordinary comment and still appears in user-code hover for backwards
   compatibility. `functor docs` renders the embedded prelude as Markdown or
-  JSON; in the repository, `npm run generate:docs` refreshes the checked-in
-  reference artifacts and `npm run check:docs` verifies they are current.
+  JSON; in the repository, `npm run generate:docs` recreates the gitignored
+  local reference artifacts and `npm run check:docs` validates both renderers.
 
 ## Inline tests (`expect`)
 

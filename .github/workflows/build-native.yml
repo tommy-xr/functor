@@ -59,7 +59,7 @@ jobs:
       - name: Run tests
         run: cargo test -p functor_runtime_common -p functor-lang
 
-      - name: Check generated API documentation
+      - name: Validate API documentation generation
         run: npm run check:docs
 
       # Building the web bundle is necessary for the CLI,

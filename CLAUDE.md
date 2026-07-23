@@ -160,8 +160,9 @@ The wasm bundle is unaffected either way: `wasm-pack build` is release by defaul
 `run wasm` and the site always ship optimized wasm.
 
 **Generate the API reference.** The lightweight generator reads the exact `.funi`
-prelude embedded in Functor and refreshes the checked-in Markdown + JSON artifacts;
-it does not build the GL-linked CLI or the wasm runtime:
+prelude embedded in Functor and recreates gitignored local Markdown + JSON artifacts;
+it does not build the GL-linked CLI or the wasm runtime. The check command validates
+both renderers without requiring generated files to exist:
 
 ```sh
 npm run generate:docs

@@ -1,5 +1,6 @@
-// Regenerate the checked-in API reference artifacts from the exact `.funi`
-// prelude embedded in Functor.
+// Regenerate the gitignored API reference artifacts from the exact `.funi`
+// prelude embedded in Functor. `--check` validates both renderers without
+// requiring generated files to exist.
 //
 //   npm run generate:docs
 //   npm run check:docs
@@ -13,12 +14,12 @@ const outputs = [
 ];
 
 for (const [format, path] of outputs) {
-  const mode = check ? ["--check", path] : ["--output", path];
+  const mode = check ? [] : ["--output", path];
   const result = spawnSync(
     "cargo",
     ["run", "-q", "-p", "functor-docgen", "--", "--format", format, ...mode],
-    { stdio: "inherit" },
+    { stdio: check ? ["ignore", "ignore", "inherit"] : "inherit" },
   );
   if (result.status !== 0) process.exit(result.status ?? 1);
-  console.log(`${check ? "✓" : "generated"} ${path}`);
+  console.log(check ? `✓ ${format} generation` : `generated ${path}`);
 }
