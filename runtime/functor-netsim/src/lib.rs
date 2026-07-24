@@ -22,6 +22,7 @@ use functor_runtime_common::net::{
     ConnCommand, ConnectionId, LinkProfile, NetEvent, NodeId, VirtualNet,
 };
 use functor_runtime_common::protocol::GameProducer;
+use functor_runtime_common::timetravel::{History, DEFAULT_HISTORY_FRAMES};
 use functor_runtime_common::FrameTime;
 
 pub use functor_runtime_common::net::LinkProfile as Link;
@@ -130,6 +131,28 @@ impl Instance {
     }
 }
 
+/// The harness-owned half of a whole-environment snapshot.
+///
+/// Whole-environment time travel splits in two, along the line the code already
+/// draws: **each producer records and restores its own model** (`SceneRecorder`
+/// runs inside the frame body `tick` executes, and `seek_scene_to` restores it),
+/// so the sim only has to snapshot what lives OUTSIDE the producers — the
+/// network and the routing tables built from it.
+///
+/// This is a plain deep copy, unlike the model ring's `Rc` structural sharing:
+/// what keeps it affordable is that the models are not in here at all, and what
+/// remains (in-flight packets and undelivered events) is bounded by the traffic
+/// actually crossing a frame. It is the part to measure first if the ring ever
+/// shows up in a profile.
+#[derive(Clone)]
+struct SimSnapshot {
+    vnet: VirtualNet,
+    /// authority -> (server instance, its listen key).
+    listeners: HashMap<String, (InstanceId, String)>,
+    /// Per-instance `(keys, outbox)`, positionally indexed by [`InstanceId`].
+    routes: Vec<(HashMap<ConnectionId, String>, Vec<ConnCommand>)>,
+}
+
 /// A deterministic in-process multiplayer simulation.
 pub struct NetSim {
     vnet: VirtualNet,
@@ -138,6 +161,28 @@ pub struct NetSim {
     listeners: HashMap<String, (InstanceId, String)>,
     frame: u64,
     dt: f32,
+    /// Per-frame ring of the harness state, the network half of a whole-
+    /// environment scrub. Shares the producers' horizon so [`frame_range`] and
+    /// each instance's `scene_frame_range` agree on what is still reachable.
+    ///
+    /// [`frame_range`]: NetSim::frame_range
+    history: History<SimSnapshot>,
+    /// Frame the sim is parked on, if a [`seek`](NetSim::seek) is in effect.
+    scrub_pos: Option<u64>,
+    /// Link impairment as CONFIGURED (as opposed to as recorded), so a restore
+    /// brings back the traffic without undoing the caller's current settings.
+    /// See [`reapply_link_config`](NetSim::reapply_link_config).
+    links: HashMap<(InstanceId, InstanceId), LinkProfile>,
+    partitioned: std::collections::HashSet<(InstanceId, InstanceId)>,
+}
+
+/// An unordered instance pair, so link config is keyed the same either way round.
+fn pair(a: InstanceId, b: InstanceId) -> (InstanceId, InstanceId) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 impl NetSim {
@@ -148,6 +193,10 @@ impl NetSim {
             listeners: HashMap::new(),
             frame: 0,
             dt: 1.0 / 60.0,
+            history: History::bounded(DEFAULT_HISTORY_FRAMES),
+            scrub_pos: None,
+            links: HashMap::new(),
+            partitioned: std::collections::HashSet::new(),
         }
     }
 
@@ -157,7 +206,24 @@ impl NetSim {
     /// Producers share this process's runtime — including the process-global
     /// net-command queue — so [`step`](Self::step) drains each one's outbound
     /// commands atomically to keep them isolated.
+    ///
+    /// # Panics
+    ///
+    /// If the sim has already stepped. Every instance must join before frame 0
+    /// so that sim frame `f` and each producer's rendered frame `f` name the
+    /// same instant — the alignment [`seek`](Self::seek) rests on. A late joiner
+    /// would start recording at ITS frame 0 while the sim was at frame `n`, and
+    /// the snapshots taken before it joined describe a network that has no node
+    /// for it. Late join is a real feature (a player connecting mid-session),
+    /// but it needs per-instance frame offsets in the snapshot; until then this
+    /// is a loud error rather than a silently skewed timeline.
     pub fn add_producer(&mut self, producer: Box<dyn GameProducer>) -> InstanceId {
+        assert_eq!(
+            self.frame, 0,
+            "add_producer after the sim has stepped: every instance must join \
+             before frame 0, or its recorded frames no longer align with the \
+             sim's (see NetSim::seek)"
+        );
         let node = self.vnet.add_node();
         let id = self.instances.len();
         self.instances.push(Instance::from_producer(producer, node));
@@ -166,19 +232,53 @@ impl NetSim {
 
     /// Set the link impairment (latency/jitter/loss/reorder) between two instances.
     pub fn set_link(&mut self, a: InstanceId, b: InstanceId, profile: LinkProfile) {
+        self.links.insert(pair(a, b), profile);
         self.vnet
             .set_link(self.instances[a].node, self.instances[b].node, profile);
     }
 
     /// Cut traffic between two instances until [`heal`](Self::heal).
     pub fn partition(&mut self, a: InstanceId, b: InstanceId) {
+        self.partitioned.insert(pair(a, b));
         self.vnet
             .partition(self.instances[a].node, self.instances[b].node);
     }
 
     pub fn heal(&mut self, a: InstanceId, b: InstanceId) {
+        self.partitioned.remove(&pair(a, b));
         self.vnet
             .heal(self.instances[a].node, self.instances[b].node);
+    }
+
+    /// Re-apply the CURRENT link configuration over a restored network.
+    ///
+    /// Impairment is configuration, not simulation state: rewinding must bring
+    /// back the packets that were in flight, but not silently undo the profile
+    /// the caller has since dialed in. Keeping it live is what makes the
+    /// "rewind, worsen the link, watch it again" gesture work — and when
+    /// nothing was changed, re-applying is identical to restoring, so exact
+    /// replay is unaffected.
+    /// The configuration is authoritative over EVERY pair, not just the ones it
+    /// names: a heal performed while parked has to survive the restore too, and
+    /// that is only expressible by healing the pairs the config doesn't list.
+    fn reapply_link_config(&mut self) {
+        let links: Vec<((InstanceId, InstanceId), LinkProfile)> =
+            self.links.iter().map(|(k, v)| (*k, *v)).collect();
+        for ((a, b), profile) in links {
+            self.vnet
+                .set_link(self.instances[a].node, self.instances[b].node, profile);
+        }
+        let partitioned = self.partitioned.clone();
+        for a in 0..self.instances.len() {
+            for b in (a + 1)..self.instances.len() {
+                let (na, nb) = (self.instances[a].node, self.instances[b].node);
+                if partitioned.contains(&pair(a, b)) {
+                    self.vnet.partition(na, nb);
+                } else {
+                    self.vnet.heal(na, nb);
+                }
+            }
+        }
     }
 
     /// The Debug-formatted model of an instance.
@@ -196,6 +296,10 @@ impl NetSim {
     }
 
     /// The current simulation frame (number of [`step`](Self::step)s taken).
+    ///
+    /// This is the LIVE frame and does not move while a [`seek`](Self::seek) is
+    /// parked — a viewer labelling "you are here" wants
+    /// [`scrub_pos`](Self::scrub_pos) first, falling back to this.
     pub fn frame(&self) -> u64 {
         self.frame
     }
@@ -234,6 +338,18 @@ impl NetSim {
     /// commands they produced through the virtual network, advance it one tick,
     /// and deliver the resulting events back to each instance.
     pub fn step(&mut self) {
+        // Stepping on from a scrubbed frame commits the branch first. A failed
+        // commit leaves the sim parked (nothing was mutated — `commit_branch`
+        // preflights) rather than advancing a half-rewound environment.
+        if let Some(frame) = self.scrub_pos {
+            match self.commit_branch(frame) {
+                Ok(()) => self.scrub_pos = None,
+                Err(e) => {
+                    eprintln!("[netsim] {e} — staying parked on frame {frame}");
+                    return;
+                }
+            }
+        }
         let time = FrameTime {
             tts: self.frame as f32 * self.dt,
             dts: self.dt,
@@ -276,7 +392,155 @@ impl NetSim {
         }
 
         self.vnet.advance(1);
+
+        // THE SNAPSHOT CUT, and it is load-bearing. Only `deliver` touches a
+        // producer's model outside `tick` (`deliver_net_event` folds an inbound
+        // message through `update` on the spot), so here — after this frame's
+        // sends are routed and the network has advanced, but before delivery —
+        // every instance's model is still EXACTLY the one its `SceneRecorder`
+        // recorded for this frame. That is what makes a seek coherent: the
+        // restored models and the restored network name the same instant.
+        //
+        // The pending deliveries are captured inside the network snapshot, so
+        // committing a branch replays them (see `commit_branch`) and the
+        // original frame order is reproduced exactly.
+        let settled = self.frame - 1;
+        self.history.record(settled, &self.snapshot());
+
         self.deliver();
+    }
+
+    /// The harness state as of right now.
+    fn snapshot(&self) -> SimSnapshot {
+        SimSnapshot {
+            vnet: self.vnet.clone(),
+            listeners: self.listeners.clone(),
+            routes: self
+                .instances
+                .iter()
+                .map(|inst| (inst.keys.clone(), inst.outbox.clone()))
+                .collect(),
+        }
+    }
+
+    fn restore(&mut self, snapshot: SimSnapshot) {
+        self.vnet = snapshot.vnet;
+        self.listeners = snapshot.listeners;
+        for (inst, (keys, outbox)) in self.instances.iter_mut().zip(snapshot.routes) {
+            inst.keys = keys;
+            inst.outbox = outbox;
+        }
+        self.reapply_link_config();
+    }
+
+    /// The frames a [`seek`](Self::seek) can currently reach, or `None` before
+    /// the first [`step`](Self::step).
+    pub fn frame_range(&self) -> Option<(u64, u64)> {
+        self.history.recorded_range()
+    }
+
+    /// Verify every instance can actually restore `frame` BEFORE anything is
+    /// mutated, so a seek/branch is all-or-nothing.
+    ///
+    /// This cannot be delegated to the producers: `SceneRecorder::seek_scene_to`
+    /// and `rewind_scene_to` **clamp** to their own recorded range and return
+    /// `Ok` (`timetravel.rs`), and their only hard failures are an empty history
+    /// or a pruned *physics* frame — which a game without physics never reaches.
+    /// So a producer whose ring has pruned past `frame` would silently restore a
+    /// DIFFERENT frame and report success, quietly desynchronizing the panes
+    /// from each other and from the network. Checking the ranges here turns that
+    /// into a loud error.
+    fn preflight(&self, frame: u64, op: &str) -> Result<(), String> {
+        for (id, inst) in self.instances.iter().enumerate() {
+            let range = inst.producer.scene_frame_range().ok_or_else(|| {
+                format!("{op}: instance {id} has recorded no frames to restore")
+            })?;
+            if frame < range.0 || frame > range.1 {
+                return Err(format!(
+                    "{op}: instance {id} cannot restore sim frame {frame} — it \
+                     retains frames {}..={} (its history was pruned, or it did \
+                     not step with the sim)",
+                    range.0, range.1
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The frame a [`seek`](Self::seek) has parked the sim on, if any.
+    pub fn scrub_pos(&self) -> Option<u64> {
+        self.scrub_pos
+    }
+
+    /// **Whole-environment seek.** Restore every instance's model AND the
+    /// network to the state they settled in at `frame` — so a rewound frame
+    /// shows each client's own lagging view, the server's authoritative one, and
+    /// the packets that were genuinely mid-flight between them at that frame.
+    ///
+    /// Non-destructive **while parked**, in the same sense as the single-game
+    /// scrubber: the recorded future is retained on both sides (the sim's ring
+    /// and every producer's), so the caller can drag freely. The next
+    /// [`step`](Self::step) is what commits the branch and drops that future.
+    /// Because a scrub-back is a plain restore and never a re-step, **this needs
+    /// no determinism at all** — the same property `History` relies on for one
+    /// game holds for N games plus the network.
+    ///
+    /// The parked state is the frame as a viewer SAW it — the snapshot cut is
+    /// taken before delivery, so the seek finishes the frame by replaying its
+    /// pending deliveries. Seeking is therefore idempotent (each seek restores
+    /// from the recorded frame and re-delivers), and `seek(f)` then
+    /// [`state`](Self::state) equals what `state` returned live at frame `f`.
+    ///
+    /// `frame` is clamped into [`frame_range`](Self::frame_range). Errors if
+    /// nothing is recorded yet, or if any instance refuses the seek (reported
+    /// with the instance id; instances that already seeked are left where they
+    /// are, since the caller's recourse is another seek).
+    pub fn seek(&mut self, frame: u64) -> Result<String, String> {
+        let (lo, hi) = self
+            .frame_range()
+            .ok_or_else(|| "seek: nothing recorded yet".to_string())?;
+        let frame = frame.clamp(lo, hi);
+        self.preflight(frame, "seek")?;
+        for (id, inst) in self.instances.iter_mut().enumerate() {
+            inst.producer
+                .seek_scene_to(frame)
+                .map_err(|e| format!("seek: instance {id}: {e}"))?;
+        }
+        let snapshot = self.history.seek(frame).clone();
+        self.restore(snapshot);
+        self.deliver();
+        self.scrub_pos = Some(frame);
+        Ok(format!("scrubbed to sim frame {frame}"))
+    }
+
+    /// Commit the branch a [`seek`](Self::seek) parked on: drop the recorded
+    /// future beyond the scrubbed frame on both sides (the sim's ring and every
+    /// producer's), and finish that frame by running its pending deliveries.
+    ///
+    /// Called automatically by [`step`](Self::step) — resuming from a scrubbed
+    /// frame is what commits the branch, matching the single-game scrubber
+    /// (`run.rs`, "resuming from there is what commits the branch").
+    ///
+    /// Rebuilt from the RECORDED frame rather than from whatever the seek left
+    /// on screen: `rewind_scene_to` resets each model to its recorded frame,
+    /// the network snapshot is restored again, and the frame's pending
+    /// deliveries are replayed. So the branch point is the genuine end of frame
+    /// `frame` no matter how the user dragged the scrubber to get there, and
+    /// stepping on from an untouched scrub reproduces the original timeline
+    /// exactly instead of shifting the network by a frame.
+    fn commit_branch(&mut self, frame: u64) -> Result<(), String> {
+        self.preflight(frame, "branch")?;
+        let snapshot = self.history.seek(frame).clone();
+        for (id, inst) in self.instances.iter_mut().enumerate() {
+            inst.producer
+                .rewind_scene_to(frame)
+                .map_err(|e| format!("branch: instance {id}: {e}"))?;
+        }
+        self.restore(snapshot);
+        self.history.truncate_from(frame + 1);
+        self.frame = frame + 1;
+        self.deliver();
+        Ok(())
     }
 
     /// Advance the simulation by `n` frames.
