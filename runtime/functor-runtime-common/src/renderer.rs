@@ -59,6 +59,8 @@ pub fn render_frame(
         frame,
         camera,
         None,
+        None,
+        None,
         frame_time,
         viewport,
         debug_render_mode,
@@ -67,8 +69,11 @@ pub fn render_frame(
 
 /// Render one `Frame` using an externally supplied projection matrix for the
 /// main pass. XR shells use this to preserve the runtime's exact asymmetric
-/// per-eye frustum; render-target passes retain their own cameras and ordinary
-/// symmetric projections.
+/// per-eye frustum. `lod_camera`, `lod_view_projections`, and the shared LOD
+/// scale describe the tracked stereo pair used by both eye calls, so terrain
+/// draws the union of both eye frusta without regenerating per eye.
+/// Render-target passes retain their own cameras and ordinary symmetric
+/// projections.
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame_with_projection(
     gl: &glow::Context,
@@ -79,6 +84,11 @@ pub fn render_frame_with_projection(
     frame: &Frame,
     camera: &Camera,
     projection_matrix: &Matrix4<f32>,
+    lod_camera: &Camera,
+    lod_view_projections: &[Matrix4<f32>],
+    lod_projection_scale: f32,
+    lod_viewport_height: f32,
+    terrain_frame_id: u64,
     frame_time: FrameTime,
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
@@ -92,6 +102,13 @@ pub fn render_frame_with_projection(
         frame,
         camera,
         Some(projection_matrix),
+        Some((
+            lod_camera,
+            lod_view_projections,
+            lod_projection_scale,
+            lod_viewport_height,
+        )),
+        Some(terrain_frame_id),
         frame_time,
         viewport,
         debug_render_mode,
@@ -108,10 +125,14 @@ fn render_frame_inner(
     frame: &Frame,
     camera: &Camera,
     projection_matrix: Option<&Matrix4<f32>>,
+    lod_view: Option<(&Camera, &[Matrix4<f32>], f32, f32)>,
+    terrain_frame_id: Option<u64>,
     frame_time: FrameTime,
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
 ) {
+    scene_context.begin_terrain_frame(terrain_frame_id);
+
     // Allocate buffers for EVERY declared target up front, so a target whose
     // scene samples a later-declared target reads last frame's image (initially
     // the clear color) rather than the magenta fallback. A duplicate id is a
@@ -190,6 +211,11 @@ target frame are ignored (depth 1 only)",
             pass.frame.fog.as_ref(),
             pass.frame.skybox.as_ref(),
             width as f32 / height as f32,
+            height as f32,
+            &pass.frame.camera,
+            None,
+            None,
+            None,
             None,
         );
         render_sprite_layers(
@@ -256,6 +282,11 @@ target frame are ignored (depth 1 only)",
         frame.fog.as_ref(),
         frame.skybox.as_ref(),
         viewport.aspect(),
+        viewport.height as f32,
+        lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
+        lod_view.map(|(_, projections, _, _)| projections),
+        lod_view.map(|(_, _, projection_scale, _)| projection_scale),
+        lod_view.map(|(_, _, _, viewport_height)| viewport_height),
         projection_matrix,
     );
 
@@ -333,6 +364,11 @@ fn render_sprite_layers(
             None,
             None,
             fitted.aspect(),
+            fitted.height as f32,
+            &camera,
+            None,
+            None,
+            None,
             Some(&projection),
         );
     }
@@ -394,6 +430,7 @@ pub fn render_composited_frames(
         return;
     }
     let weights = normalize_weights(&weights[..n]);
+    scene_context.begin_terrain_frame(None);
 
     // 1. Render each input frame into its own full-viewport offscreen target,
     //    at its own frame time.
@@ -444,6 +481,11 @@ pub fn render_composited_frames(
             frame.fog.as_ref(),
             frame.skybox.as_ref(),
             width as f32 / height as f32,
+            height as f32,
+            &frame.camera,
+            None,
+            None,
+            None,
             None,
         );
         render_sprite_layers(
@@ -544,8 +586,22 @@ fn forward_pass(
     fog: Option<&crate::fog::Fog>,
     skybox: Option<&crate::skybox::SkyboxDescription>,
     aspect: f32,
+    viewport_height: f32,
+    lod_camera: &Camera,
+    lod_view_projections: Option<&[Matrix4<f32>]>,
+    lod_projection_scale: Option<f32>,
+    lod_viewport_height: Option<f32>,
     projection_matrix: Option<&Matrix4<f32>>,
 ) {
+    let default_lod_projection = lod_camera.projection_matrix(aspect);
+    let mut terrain_frusta = [Matrix4::from_scale(1.0); 2];
+    let supplied_frusta = lod_view_projections.unwrap_or(&[]);
+    let lod_frustum_count = supplied_frusta.len().clamp(1, terrain_frusta.len());
+    if supplied_frusta.is_empty() {
+        terrain_frusta[0] = default_lod_projection * lod_camera.view_matrix();
+    } else {
+        terrain_frusta[..lod_frustum_count].copy_from_slice(&supplied_frusta[..lod_frustum_count]);
+    }
     let render_context = RenderContext {
         gl,
         shader_version,
@@ -557,6 +613,16 @@ fn forward_pass(
         shadow,
         fog,
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
+        lod_camera_pos: cgmath::Vector3::new(
+            lod_camera.eye[0],
+            lod_camera.eye[1],
+            lod_camera.eye[2],
+        ),
+        lod_view_projections: terrain_frusta,
+        lod_frustum_count,
+        lod_projection_scale: lod_projection_scale
+            .unwrap_or_else(|| default_lod_projection.y.y.abs()),
+        viewport_height: lod_viewport_height.unwrap_or(viewport_height),
     };
 
     // The game supplies the camera; derive its ordinary projection from the

@@ -206,6 +206,14 @@ pub fn render_shadow_pass(
         // Fog is a forward-pass concern; the depth pass renders no color.
         fog: None,
         camera_pos: cgmath::Vector3::new(0.0, 0.0, 0.0),
+        // Terrain currently skips the shadow-only pass; keep a complete
+        // context so adding that pass later cannot accidentally select LOD
+        // independently for the two eyes.
+        lod_camera_pos: cgmath::Vector3::new(0.0, 0.0, 0.0),
+        lod_view_projections: [Matrix4::identity(); 2],
+        lod_frustum_count: 1,
+        lod_projection_scale: 1.0,
+        viewport_height: shadow_map.size as f32,
     };
 
     let mut depth_material = DepthMaterial::create();

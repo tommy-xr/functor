@@ -92,6 +92,7 @@ pub mod skybox;
 mod shader_program;
 mod sprite2d;
 pub mod terrain;
+mod terrain_renderer;
 pub mod texture;
 pub mod timetravel;
 pub mod trajectory;
