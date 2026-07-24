@@ -14,6 +14,7 @@ use std::time::Instant;
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputSnapshot, MouseSnapshot, RecordedInput, SceneContext,
+    XrInputSnapshot,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -81,14 +82,65 @@ fn map_key(key: Key) -> InputKey {
     }
 }
 
-fn sampled_input_snapshot(held_keys: &BTreeSet<InputKey>, mouse_pos: (i32, i32)) -> InputSnapshot {
+fn sampled_input_snapshot(
+    held_keys: &BTreeSet<InputKey>,
+    mouse_pos: (i32, i32),
+    xr: Option<XrInputSnapshot>,
+) -> InputSnapshot {
     InputSnapshot {
         held_keys: held_keys.iter().copied().collect(),
         mouse: MouseSnapshot {
             x: mouse_pos.0,
             y: mouse_pos.1,
         },
-        xr: None,
+        xr,
+    }
+}
+
+fn desktop_input_snapshot(
+    held_keys: &BTreeSet<InputKey>,
+    mouse_pos: (i32, i32),
+    emulate_xr: bool,
+    xr_primary_down: bool,
+    xr_surface: (i32, i32),
+) -> InputSnapshot {
+    let xr = emulate_xr.then(|| {
+        crate::desktop_xr_emulator::sample(held_keys, mouse_pos, xr_primary_down, xr_surface)
+    });
+    sampled_input_snapshot(held_keys, mouse_pos, xr)
+}
+
+fn refresh_fixed_input_levels(
+    snapshot: &mut InputSnapshot,
+    held_keys: &BTreeSet<InputKey>,
+    xr_primary_down: bool,
+) {
+    snapshot.held_keys = held_keys.iter().copied().collect();
+    if let Some(xr) = snapshot.xr.as_mut() {
+        crate::desktop_xr_emulator::update_right_controls(
+            &mut xr.right,
+            held_keys,
+            xr_primary_down,
+        );
+    }
+}
+
+fn apply_scripted_events(
+    game: &mut dyn Game,
+    held_keys: &mut BTreeSet<InputKey>,
+    events: &[RecordedInput],
+) {
+    for event in events {
+        if let RecordedInput::Key { code, is_down } = event {
+            game.key_event(*code, *is_down);
+            if let Some(key) = InputKey::from_i32(*code) {
+                if *is_down {
+                    held_keys.insert(key);
+                } else {
+                    held_keys.remove(&key);
+                }
+            }
+        }
     }
 }
 
@@ -208,6 +260,14 @@ pub struct Args {
     /// CI / scripted / LLM-driven runs.
     #[arg(long)]
     headless: bool,
+
+    /// Synthesize an XR head and two controllers from desktop input, using the
+    /// same `Input.snapshot.xr` shape as Quest. The mouse moves the right
+    /// controller; left-click/Space is trigger, Enter is squeeze, arrows are
+    /// the thumbstick, and 1/2/3 are controller buttons. Intended for
+    /// developing and capturing XR games without wearing a headset.
+    #[arg(long)]
+    emulate_xr: bool,
 
     /// Create the GL window hidden: it is never shown, never takes focus, and
     /// never captures the cursor, so a run doesn't steal input from the user.
@@ -495,6 +555,8 @@ fn service_debug_request(
     height: u32,
     held_keys: &mut BTreeSet<InputKey>,
     mouse_pos: &mut (i32, i32),
+    state_input: InputSnapshot,
+    emulate_xr: bool,
     clock: &mut GameClock,
     asset_cache: &Arc<AssetCache>,
     scene_context: &SceneContext,
@@ -506,7 +568,8 @@ fn service_debug_request(
     // has no webview overlay.
     mut webview_keyboard: Option<&mut Vec<crate::webview_keys::WebviewKey>>,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
-) {
+) -> bool {
+    let mut sampled_input_changed = false;
     match req {
         debug_server::DebugRequest::Capture(resp) => {
             let _ = resp.send(capture());
@@ -518,14 +581,7 @@ fn service_debug_request(
                 viewport: debug_server::RuntimeViewport::new(width, height),
                 views: vec![debug_server::RuntimeView::new("main", width, height)],
                 model: game.state_debug(),
-                input: debug_server::InputSnapshot {
-                    held_keys: held_keys.iter().copied().collect(),
-                    mouse: debug_server::MouseSnapshot {
-                        x: mouse_pos.0,
-                        y: mouse_pos.1,
-                    },
-                    xr: None,
-                },
+                input: state_input,
             });
         }
         debug_server::DebugRequest::Scene(resp) => {
@@ -593,6 +649,11 @@ fn service_debug_request(
             let _ = resp.send(result);
         }
         debug_server::DebugRequest::Input(cmd, resp) => {
+            sampled_input_changed = matches!(
+                &cmd,
+                debug_server::InputCommand::Key { .. }
+                    | debug_server::InputCommand::MouseMove { .. }
+            );
             let result = match cmd {
                 debug_server::InputCommand::Key { key, down } => {
                     // The focus gate first (the GLFW routing rule): while a
@@ -635,7 +696,9 @@ fn service_debug_request(
                 }
                 debug_server::InputCommand::MouseMove { x, y } => {
                     *mouse_pos = (x, y);
-                    game.mouse_move(x, y);
+                    if !emulate_xr {
+                        game.mouse_move(x, y);
+                    }
                     Ok(())
                 }
                 debug_server::InputCommand::MouseWheel { delta } => {
@@ -668,6 +731,7 @@ fn service_debug_request(
             let _ = resp.send(());
         }
     }
+    sampled_input_changed
 }
 
 /// Headless game loop: drives the game + debug server with no GL window, for CI /
@@ -680,6 +744,9 @@ fn run_headless(
     mut game: Box<dyn Game>,
     debug_requests: Option<std::sync::mpsc::Receiver<debug_server::DebugRequest>>,
     fixed_time: Option<f32>,
+    emulate_xr: bool,
+    input_script: Option<HashMap<u64, Vec<RecordedInput>>>,
+    script_dt: f32,
 ) {
     // Stderr, not stdout: keep the CLI's `--json` ndjson stream (stdout) clean
     // even under `--headless`. This is an out-of-band notice, not an event.
@@ -690,7 +757,11 @@ fn run_headless(
     let mut frame_count: u64 = 0;
     let mut clock = GameClock::new(fixed_time);
     let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
-    let mut mouse_pos: (i32, i32) = (0, 0);
+    let mut mouse_pos: (i32, i32) = if emulate_xr {
+        crate::desktop_xr_emulator::centered_pointer(crate::desktop_xr_emulator::reference_surface())
+    } else {
+        (0, 0)
+    };
     // Keep the debug protocol target-isomorphic even without pixels: uploaded
     // assets can be accepted now and are ready if headless rendering gains an
     // asset path later.
@@ -708,6 +779,9 @@ fn run_headless(
 
     loop {
         let elapsed = start_time.elapsed().as_secs_f32();
+        if input_script.is_some() {
+            clock.step(script_dt);
+        }
         // Fixed-timestep model loop, same as the windowed loop (docs/time-travel
         // .md): 0..N fixed 1/60 steps per iteration (one per debug `/time advance`,
         // one {dts:0} under a pin, none while paused). `time` carries the settled
@@ -724,8 +798,20 @@ fn run_headless(
         game.check_hot_reload(time.clone());
         deliver_net_ws(&mut *game, &net_rx, &ws_rx);
         for sub in &sub_frames {
+            if let Some(events) = input_script
+                .as_ref()
+                .and_then(|script| script.get(&frame_count))
+            {
+                apply_scripted_events(&mut *game, &mut held_keys, events);
+            }
             if game.samples_input() {
-                let snapshot = sampled_input_snapshot(&held_keys, mouse_pos);
+                let snapshot = desktop_input_snapshot(
+                    &held_keys,
+                    mouse_pos,
+                    emulate_xr,
+                    false,
+                    crate::desktop_xr_emulator::reference_surface(),
+                );
                 game.sampled_input(&snapshot);
             }
             game.tick(sub.clone());
@@ -743,6 +829,13 @@ fn run_headless(
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {
+                let state_input = desktop_input_snapshot(
+                    &held_keys,
+                    mouse_pos,
+                    emulate_xr,
+                    false,
+                    crate::desktop_xr_emulator::reference_surface(),
+                );
                 service_debug_request(
                     req,
                     &mut *game,
@@ -753,6 +846,8 @@ fn run_headless(
                     0,
                     &mut held_keys,
                     &mut mouse_pos,
+                    state_input,
+                    emulate_xr,
                     &mut clock,
                     &asset_cache,
                     &scene_context,
@@ -852,7 +947,14 @@ pub fn run(args: Args) {
                 "warning: --xreal-tracking has no effect in --headless mode (no view to rotate)"
             );
         }
-        run_headless(game, debug_requests, args.fixed_time);
+        run_headless(
+            game,
+            debug_requests,
+            args.fixed_time,
+            args.emulate_xr,
+            input_script,
+            args.script_dt,
+        );
         return;
     }
 
@@ -909,7 +1011,7 @@ pub fn run(args: Args) {
             // click recaptures; Escape while released quits. Losing focus
             // also releases, so cmd-tabbing away hands the pointer back.
             // A hidden window never gets focus, so it must not grab the cursor.
-            if !hidden {
+            if !hidden && !args.emulate_xr {
                 window.set_cursor_mode(glfw::CursorMode::Disabled);
             }
 
@@ -1024,16 +1126,29 @@ pub fn run(args: Args) {
         // GLFW event stream and the debug server's POST /input. Generic and
         // serializable, unlike the game model (which is Debug text only).
         let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
-        let mut mouse_pos: (i32, i32) = (0, 0);
+        let mut mouse_pos: (i32, i32) = if args.emulate_xr {
+            crate::desktop_xr_emulator::centered_pointer(window.get_size())
+        } else {
+            (0, 0)
+        };
+        let mut xr_primary_down = false;
+        let mut xr_primary_clicked = false;
         // `--fixed-time` is a deterministic capture pin: the one zero-delta
-        // bootstrap step must not observe cursor motion or release bookkeeping
-        // from the host window. An explicit input script remains authoritative
-        // and uses the live runtime-owned snapshot below.
-        let fixed_input_snapshot = InputSnapshot::default();
+        // bootstrap step must not observe cursor motion from the host window.
+        // Explicit debug input remains authoritative; key release/focus-loss
+        // bookkeeping also clears held levels so fixed captures cannot stick.
+        // An input script uses the live runtime-owned snapshot below.
+        let mut fixed_input_snapshot = desktop_input_snapshot(
+            &held_keys,
+            mouse_pos,
+            args.emulate_xr,
+            false,
+            window.get_size(),
+        );
         // Whether the window owns the pointer (free-look). See the Escape /
         // MouseButton / Focus arms in the event loop. A hidden window never
         // captures (and never receives the events that would toggle this).
-        let mut cursor_captured = !hidden;
+        let mut cursor_captured = !hidden && !args.emulate_xr;
 
         use glfw::Context;
 
@@ -1254,6 +1369,9 @@ Escape again to quit"
                             if scrubber_visible {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
                                 cursor_captured = false;
+                            } else if args.emulate_xr {
+                                window.set_cursor_mode(glfw::CursorMode::Normal);
+                                cursor_captured = false;
                             } else {
                                 window.set_cursor_mode(glfw::CursorMode::Disabled);
                                 cursor_captured = true;
@@ -1290,6 +1408,9 @@ Escape again to quit"
                                 {
                                     mouse_primary_down = true;
                                     mouse_primary_clicked = true;
+                                } else if args.emulate_xr {
+                                    xr_primary_down = !ignore_user_input;
+                                    xr_primary_clicked = xr_primary_down;
                                 } else {
                                     window.set_cursor_mode(glfw::CursorMode::Disabled);
                                     cursor_captured = true;
@@ -1304,7 +1425,10 @@ Escape again to quit"
                                     }
                                 }
                             }
-                            Action::Release => mouse_primary_down = false,
+                            Action::Release => {
+                                mouse_primary_down = false;
+                                xr_primary_down = false;
+                            }
                             Action::Repeat => {}
                         }
                     }
@@ -1350,6 +1474,13 @@ Escape again to quit"
                         {
                             game.key_event(k as i32, false);
                         }
+                        if clock.is_fixed_time() && was_held {
+                            refresh_fixed_input_levels(
+                                &mut fixed_input_snapshot,
+                                &held_keys,
+                                xr_primary_down || xr_primary_clicked,
+                            );
+                        }
                     }
                     glfw::WindowEvent::Focus(false) => {
                         for k in std::mem::take(&mut held_keys) {
@@ -1366,6 +1497,15 @@ Escape again to quit"
                         // press — clear it so the scrubber stays live. [xreview]
                         mouse_primary_down = false;
                         mouse_primary_clicked = false;
+                        xr_primary_down = false;
+                        xr_primary_clicked = false;
+                        if clock.is_fixed_time() {
+                            refresh_fixed_input_levels(
+                                &mut fixed_input_snapshot,
+                                &held_keys,
+                                false,
+                            );
+                        }
                     }
                     _ if ignore_user_input => {}
                     // While a webview field is focused, key presses drive the
@@ -1462,28 +1602,24 @@ Escape again to quit"
             for sub in &sub_frames {
                 if let Some(script) = input_script.as_ref().filter(|_| !args.ghost) {
                     if let Some(events) = script.get(&frame_count) {
-                        for ev in events {
-                            if let RecordedInput::Key { code, is_down } = ev {
-                                game.key_event(*code, *is_down);
-                                if let Some(key) = InputKey::from_i32(*code) {
-                                    if *is_down {
-                                        held_keys.insert(key);
-                                    } else {
-                                        held_keys.remove(&key);
-                                    }
-                                }
-                            }
-                        }
+                        apply_scripted_events(&mut *game, &mut held_keys, events);
                     }
                 }
                 if game.samples_input() {
                     if clock.is_fixed_time() && input_script.is_none() {
                         game.sampled_input(&fixed_input_snapshot);
                     } else {
-                        let snapshot = sampled_input_snapshot(&held_keys, mouse_pos);
+                        let snapshot = desktop_input_snapshot(
+                            &held_keys,
+                            mouse_pos,
+                            args.emulate_xr,
+                            xr_primary_down || xr_primary_clicked,
+                            window.get_size(),
+                        );
                         game.sampled_input(&snapshot);
                     }
                 }
+                xr_primary_clicked = false;
                 game.tick(sub.clone());
                 if args.capture_at_frame == Some(frame_count) {
                     capture_due = true;
@@ -2232,7 +2368,19 @@ Escape again to quit"
             // reads from). GL stays on this thread; we only reply over channels.
             if let Some(rx) = &debug_requests {
                 while let Ok(req) = rx.try_recv() {
-                    service_debug_request(
+                    let fixed_sample = clock.is_fixed_time() && input_script.is_none();
+                    let state_input = if fixed_sample {
+                        fixed_input_snapshot.clone()
+                    } else {
+                        desktop_input_snapshot(
+                            &held_keys,
+                            mouse_pos,
+                            args.emulate_xr,
+                            xr_primary_down || xr_primary_clicked,
+                            window.get_size(),
+                        )
+                    };
+                    let sampled_input_changed = service_debug_request(
                         req,
                         &mut *game,
                         &frame,
@@ -2242,6 +2390,8 @@ Escape again to quit"
                         fb_height as u32,
                         &mut held_keys,
                         &mut mouse_pos,
+                        state_input,
+                        args.emulate_xr,
                         &mut clock,
                         &asset_cache,
                         &scene_context,
@@ -2264,6 +2414,15 @@ Escape again to quit"
                                 .map_err(debug_server::CaptureError::Failed)
                         },
                     );
+                    if fixed_sample && sampled_input_changed {
+                        fixed_input_snapshot = desktop_input_snapshot(
+                            &held_keys,
+                            mouse_pos,
+                            args.emulate_xr,
+                            xr_primary_down || xr_primary_clicked,
+                            window.get_size(),
+                        );
+                    }
                 }
             }
 
@@ -2328,5 +2487,27 @@ mod tests {
         assert!(parse_input_script(bad_key.to_str().unwrap()).is_err());
         let bad_dir = write_tmp("functor-test-baddir.script", "0 Right sideways\n");
         assert!(parse_input_script(bad_dir.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn fixed_level_refresh_preserves_mouse_and_tracked_poses() {
+        let mut snapshot =
+            desktop_input_snapshot(&BTreeSet::new(), (100, 200), true, false, (800, 600));
+        let pose = snapshot
+            .xr
+            .as_ref()
+            .and_then(|xr| xr.right.grip)
+            .expect("emulated grip");
+        let held = BTreeSet::from([InputKey::Space]);
+
+        refresh_fixed_input_levels(&mut snapshot, &held, false);
+
+        assert_eq!(snapshot.mouse, MouseSnapshot { x: 100, y: 200 });
+        assert_eq!(
+            snapshot.xr.as_ref().and_then(|xr| xr.right.grip),
+            Some(pose)
+        );
+        assert_eq!(snapshot.xr.as_ref().unwrap().right.trigger, 1.0);
+        assert_eq!(snapshot.held_keys, vec![InputKey::Space]);
     }
 }

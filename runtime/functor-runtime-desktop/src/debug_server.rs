@@ -9,8 +9,6 @@ pub use functor_runtime_common::debug_protocol::{
     CaptureError, DebugRequest, InputCommand, RuntimeState, RuntimeView, RuntimeViewport,
     TimeCommand,
 };
-pub use functor_runtime_common::{InputSnapshot, MouseSnapshot};
-
 /// Start the debug server and return the frame loop's request receiver.
 ///
 /// `127.0.0.1` keeps it local; `0.0.0.0` exposes it for remote development.
