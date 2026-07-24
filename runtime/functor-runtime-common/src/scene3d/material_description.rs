@@ -8,6 +8,17 @@ use crate::{
     RenderContext, SceneContext, TextureDescription,
 };
 
+/// Texture filtering selected by a lowered sprite image.
+///
+/// This lives in the serializable material description rather than GPU state
+/// so native/web frames and extrapolation copies carry the same sampling
+/// choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpriteSampling {
+    Linear,
+    Nearest,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MaterialDescription {
     #[serde(
@@ -39,6 +50,18 @@ pub enum MaterialDescription {
         #[serde(default)]
         normal_map: Option<TextureDescription>,
     },
+    /// A fullbright sprite image. `source_pixels`, when present, is a
+    /// top-left-origin `[x, y, width, height]` rectangle in the source image.
+    SpriteTexture {
+        #[serde(
+            serialize_with = "serialize_vec4",
+            deserialize_with = "deserialize_vec4"
+        )]
+        color: Vector4<f32>,
+        texture: TextureDescription,
+        source_pixels: Option<[f32; 4]>,
+        sampling: SpriteSampling,
+    },
 }
 
 impl MaterialDescription {
@@ -67,18 +90,22 @@ impl MaterialDescription {
         }
     }
 
-    /// A fullbright texture multiplied by an RGBA tint. Sprite lowering uses
-    /// this for composable `Sprite.tint` + `Sprite.fade`.
-    pub fn emissive_texture_tinted(
+    /// A fullbright sprite texture with optional atlas source pixels and an
+    /// explicit sampling mode.
+    pub fn sprite_texture_tinted(
         tex: TextureDescription,
+        source_pixels: Option<[f32; 4]>,
+        sampling: SpriteSampling,
         r: f32,
         g: f32,
         b: f32,
         a: f32,
     ) -> MaterialDescription {
-        MaterialDescription::Emissive {
+        MaterialDescription::SpriteTexture {
             color: vec4(r, g, b, a),
-            texture: Some(tex),
+            texture: tex,
+            source_pixels,
+            sampling,
         }
     }
 
@@ -128,7 +155,7 @@ impl MaterialDescription {
                 color_material
             }
             MaterialDescription::Texture(t) => {
-                bind_texture_description(t, 0, context, scene_context);
+                bind_texture_description(t, 0, SpriteSampling::Linear, context, scene_context);
 
                 let mut basic_material = BasicMaterial::create();
                 basic_material.initialize(&context);
@@ -153,6 +180,18 @@ impl MaterialDescription {
                 lit_material.initialize(&context);
                 lit_material
             }
+            MaterialDescription::SpriteTexture {
+                color,
+                texture,
+                source_pixels,
+                sampling,
+            } => {
+                bind_texture_description(texture, 0, *sampling, context, scene_context);
+                let mut material =
+                    EmissiveMaterial::create_sprite(*color, source_pixels.map(Vector4::from));
+                material.initialize(&context);
+                material
+            }
         }
     }
 }
@@ -168,7 +207,7 @@ fn bind_optional_texture(
 ) -> bool {
     match texture {
         Some(t) => {
-            bind_texture_description(t, unit, context, scene_context);
+            bind_texture_description(t, unit, SpriteSampling::Linear, context, scene_context);
             true
         }
         None => false,
@@ -181,6 +220,7 @@ fn bind_optional_texture(
 fn bind_texture_description(
     texture: &TextureDescription,
     unit: u32,
+    sampling: SpriteSampling,
     context: &RenderContext,
     scene_context: &SceneContext,
 ) {
@@ -191,6 +231,7 @@ fn bind_texture_description(
                 .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
             asset.get().bind(unit, context);
             set_bound_texture_wrap(unit, true, context);
+            set_bound_texture_filter(unit, sampling, context);
         }
         TextureDescription::FileClamped(file) => {
             let asset = context
@@ -198,6 +239,7 @@ fn bind_texture_description(
                 .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
             asset.get().bind(unit, context);
             set_bound_texture_wrap(unit, false, context);
+            set_bound_texture_filter(unit, sampling, context);
         }
         // `Asset.whilePending`: the first loaded chain entry binds while the
         // primary streams in (instead of the checkerboard fallback); a FAILED
@@ -217,6 +259,7 @@ fn bind_texture_description(
             )
             .bind(unit, context);
             set_bound_texture_wrap(unit, true, context);
+            set_bound_texture_filter(unit, sampling, context);
         }
         TextureDescription::FileClampedWhilePending {
             file,
@@ -233,6 +276,7 @@ fn bind_texture_description(
             )
             .bind(unit, context);
             set_bound_texture_wrap(unit, false, context);
+            set_bound_texture_filter(unit, sampling, context);
         }
         TextureDescription::RenderTarget(id) => {
             // Select the unit BEFORE any lazy fallback creation: creating the
@@ -278,6 +322,24 @@ fn set_bound_texture_wrap(unit: u32, repeat: bool, context: &RenderContext) {
         context
             .gl
             .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, wrap as i32);
+    }
+}
+
+/// File textures share cached GL objects, so every material bind establishes
+/// its own filter rather than inheriting the previous sprite/model draw.
+fn set_bound_texture_filter(unit: u32, sampling: SpriteSampling, context: &RenderContext) {
+    let filter = match sampling {
+        SpriteSampling::Linear => glow::LINEAR,
+        SpriteSampling::Nearest => glow::NEAREST,
+    };
+    unsafe {
+        context.gl.active_texture(glow::TEXTURE0 + unit);
+        context
+            .gl
+            .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter as i32);
+        context
+            .gl
+            .tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter as i32);
     }
 }
 

@@ -46,12 +46,16 @@
 //! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
 //!   (center-origin, Y-up world units, aspect-fitted without stretching)
 //! Sprite.blank() / rectangle(color, w, h) / square(color, n) -> Sprite
-//! Sprite.image(w, h, texture) / Sprite.group([sprite, …])    -> Sprite
+//! Sprite.image(w, h, texture) / imageRegion(w, h, region, texture) -> Sprite
+//! Sprite.region(x, y, width, height)                         -> Sprite.region
+//! Sprite.group([sprite, …])                                  -> Sprite
 //! Sprite.move(x, y, sprite) / moveX / moveY                  -> Sprite
 //! Sprite.rotate(angle, sprite) / scale / scaleXY             -> Sprite
 //! Sprite.fade(alpha, sprite) / tint(color, sprite)           -> Sprite
+//! Sprite.nearest(sprite) / Sprite.linear(sprite)              -> Sprite
 //!   (the abstract Sprite.t is a private PLAIN-DATA picture tree; later
-//!    group items paint above earlier ones and subtree alpha/tint multiply)
+//!    group items paint above earlier ones; regions are top-left source
+//!    pixels; subtree alpha/tint/sampling compose)
 //! Frame.create2D(camera2d, sprite)                           -> Frame
 //! Frame.with2D(camera2d, sprite, frame)                      -> Frame
 //!   (2D-only frame, or a sprite layer above an existing frame)
@@ -155,7 +159,9 @@ use crate::fog::Fog;
 use crate::math::Angle;
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
-use crate::scene3d::{MaterialDescription, ModelDescription, ModelHandle, TextureDescription};
+use crate::scene3d::{
+    MaterialDescription, ModelDescription, ModelHandle, SpriteSampling, TextureDescription,
+};
 use crate::skybox::SkyboxDescription;
 use crate::ui::{self, View};
 use crate::webview::HtmlNode;
@@ -4605,6 +4611,28 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     }
 
     #[test]
+    fn sprite_regions_and_sampling_are_plain_inspectable_data() {
+        let sprite = eval(
+            "let main = () =>\n\
+             Sprite.imageRegion(\n\
+               2.0, 3.0,\n\
+               Sprite.region(96.0, 0.0, 96.0, 96.0),\n\
+               Asset.texture(\"hero-atlas.png\"))\n\
+             |> Sprite.nearest()",
+        );
+        assert!(
+            !matches!(sprite, Value::HostData(_)),
+            "atlas sprites must stay plain Functor Lang data"
+        );
+        assert!(sprite.is_reload_safe_snapshot());
+        assert_eq!(
+            sprite.to_string(),
+            "Sprite.Nearest(Sprite.ImageRegion(2, 3, 96, 0, 96, 96, \
+\"hero-atlas.png\", []))"
+        );
+    }
+
+    #[test]
     fn create2d_lowers_sprite_data_into_a_serializable_layer() {
         let frame = frame_of(
             "let main = () =>\n\
@@ -4631,8 +4659,49 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         assert!(json.contains(r#""sprite_layers""#), "json: {json}");
         assert!(json.contains(r#""FileClamped""#), "json: {json}");
         assert!(json.contains(r#""hero.png""#), "json: {json}");
+        assert!(json.contains(r#""sampling":"Linear""#), "json: {json}");
         let back: Frame = serde_json::from_str(&json).expect("sprite frame deserializes");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn create2d_lowers_atlas_pixels_and_sampling_into_the_material() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Sprite.imageRegion(\n\
+               1.6, 1.6,\n\
+               Sprite.region(192.0, 0.0, 96.0, 96.0),\n\
+               Asset.texture(\"hero-atlas.png\"))\n\
+             |> Sprite.nearest()\n\
+             |> Frame.create2D(Camera2D.create(24.0, 13.5))",
+        );
+        let json = serde_json::to_string(&frame).expect("atlas frame serializes");
+        assert!(json.contains(r#""SpriteTexture""#), "json: {json}");
+        assert!(
+            json.contains(r#""source_pixels":[192.0,0.0,96.0,96.0]"#),
+            "json: {json}"
+        );
+        assert!(json.contains(r#""sampling":"Nearest""#), "json: {json}");
+        assert!(json.contains(r#""hero-atlas.png""#), "json: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("atlas frame deserializes");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn inner_sprite_sampling_overrides_an_outer_group_choice() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Sprite.group([\n\
+               Sprite.image(1.0, 1.0, Asset.texture(\"nearest.png\")),\n\
+               Sprite.image(1.0, 1.0, Asset.texture(\"linear.png\"))\n\
+                 |> Sprite.linear(),\n\
+             ])\n\
+             |> Sprite.nearest()\n\
+             |> Frame.create2D(Camera2D.create(16.0, 9.0))",
+        );
+        let json = serde_json::to_string(&frame).expect("sampling frame serializes");
+        assert_eq!(json.matches(r#""sampling":"Nearest""#).count(), 1);
+        assert_eq!(json.matches(r#""sampling":"Linear""#).count(), 1);
     }
 
     #[test]
@@ -4645,6 +4714,22 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
             (
                 "Sprite.image(-1.0, 2.0, Asset.texture(\"hero.png\"))",
                 "Sprite.image width and height must be positive",
+            ),
+            (
+                "Sprite.imageRegion(-1.0, 2.0, Sprite.region(0.0, 0.0, 16.0, 16.0), Asset.texture(\"hero.png\"))",
+                "Sprite.imageRegion width and height must be positive",
+            ),
+            (
+                "Sprite.region(-1.0, 0.0, 16.0, 16.0)",
+                "Sprite.region x and y must be non-negative",
+            ),
+            (
+                "Sprite.region(0.0, 0.0, 0.0, 16.0)",
+                "Sprite.region width and height must be positive",
+            ),
+            (
+                "Sprite.region(0.5, 0.0, 16.0, 16.0)",
+                "Sprite.region coordinates and size must be whole source pixels",
             ),
             (
                 "Sprite.square(Color.rgb(1.0, 1.0, 1.0), 2.0) |> Sprite.fade(1.5)",

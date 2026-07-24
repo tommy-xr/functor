@@ -8,6 +8,11 @@
 /// An abstract plain-data 2D picture.
 type t
 
+/// A rectangular section of an image in whole source pixels. Coordinates use
+/// the conventional image origin: x grows right and y grows down from the
+/// top-left corner.
+type region
+
 /// Create an empty picture.
 let blank : () => t
 /// Create a centered rectangle with positive width and height.
@@ -16,6 +21,10 @@ let rectangle : (Color.t, float, float) => t
 let square : (Color.t, float) => t
 /// Create a centered, textured rectangle with positive width and height.
 let image : (float, float, Asset.Texture) => t
+/// Select a source rectangle without requiring the image's full dimensions.
+let imageRegion : (float, float, region, Asset.Texture) => t
+/// Construct a top-left-origin source rectangle as x, y, width, height.
+let region : (float, float, float, float) => region
 
 /// Group pictures in painter's order, with earlier items behind later items.
 let group : (List<t>) => t
@@ -36,3 +45,8 @@ let scaleXY : (float, float, t) => t
 let fade : (float, t) => t
 /// Multiply a picture's color by a tint; the picture is last for piping.
 let tint : (Color.t, t) => t
+
+/// Use crisp nearest-neighbor sampling for every image in the subtree.
+let nearest : (t) => t
+/// Use smooth linear sampling for every image in the subtree (the default).
+let linear : (t) => t

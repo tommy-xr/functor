@@ -14,6 +14,9 @@ struct FunctorLangCamera2D(Camera2D);
 /// reload like ordinary game data.
 struct FunctorLangSprite(Value);
 
+/// A plain-data, top-left-origin source rectangle in texture pixels.
+struct FunctorLangSpriteRegion([f32; 4]);
+
 impl HostData for FunctorLangCamera2D {
     fn type_name(&self) -> &'static str {
         "Camera2D"
@@ -56,6 +59,43 @@ impl crate::host_registry::FromArg for FunctorLangSprite {
     }
 }
 
+impl crate::host_registry::FromArg for FunctorLangSpriteRegion {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::Variant { ctor, args } = value else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected a Sprite.region, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let ("SpriteRegion.Region", [x, y, width, height]) = (ctor.as_ref(), args.as_slice())
+        else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected a Sprite.region, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let number = |value: &Value| match value {
+            Value::Number(n) if (*n as f32).is_finite() => Ok(*n as f32),
+            _ => Err(RunError {
+                message: format!("{path}: malformed Sprite.region data"),
+                span,
+            }),
+        };
+        Ok(FunctorLangSpriteRegion([
+            number(x)?,
+            number(y)?,
+            number(width)?,
+            number(height)?,
+        ]))
+    }
+}
+
 fn sprite_node(name: &str, args: Vec<Value>) -> Value {
     Value::Variant {
         ctor: Rc::from(format!("Sprite.{name}")),
@@ -63,8 +103,82 @@ fn sprite_node(name: &str, args: Vec<Value>) -> Value {
     }
 }
 
+fn sprite_region_node(x: f64, y: f64, width: f64, height: f64) -> Value {
+    Value::Variant {
+        ctor: Rc::from("SpriteRegion.Region"),
+        args: Rc::new(vec![
+            Value::Number(x),
+            Value::Number(y),
+            Value::Number(width),
+            Value::Number(height),
+        ]),
+    }
+}
+
 fn sprite_children(items: Vec<FunctorLangSprite>) -> Value {
     Value::List(Rc::new(items.into_iter().map(|item| item.0).collect()))
+}
+
+fn sprite_texture_parts(texture: FunctorLangTexture) -> Result<(String, Vec<String>), String> {
+    match texture.0 {
+        TextureDescription::File(path) | TextureDescription::FileClamped(path) => {
+            Ok((path, vec![]))
+        }
+        TextureDescription::FileWhilePending {
+            file,
+            while_pending,
+        }
+        | TextureDescription::FileClampedWhilePending {
+            file,
+            while_pending,
+        } => Ok((file, while_pending)),
+        TextureDescription::RenderTarget(_) => {
+            Err("Sprite images expect an image asset, not a render target".to_string())
+        }
+    }
+}
+
+fn sprite_image_node(
+    width: f64,
+    height: f64,
+    source_pixels: Option<[f32; 4]>,
+    texture: FunctorLangTexture,
+) -> Result<Value, String> {
+    if width <= 0.0 || height <= 0.0 {
+        let constructor = if source_pixels.is_some() {
+            "Sprite.imageRegion"
+        } else {
+            "Sprite.image"
+        };
+        return Err(format!(
+            "{constructor} width and height must be positive, got {width} × {height}"
+        ));
+    }
+    let (path, pending) = sprite_texture_parts(texture)?;
+    let mut args = vec![Value::Number(width), Value::Number(height)];
+    if let Some([x, y, source_width, source_height]) = source_pixels {
+        args.extend([
+            Value::Number(x as f64),
+            Value::Number(y as f64),
+            Value::Number(source_width as f64),
+            Value::Number(source_height as f64),
+        ]);
+    }
+    args.push(Value::String(path.into()));
+    args.push(Value::List(Rc::new(
+        pending
+            .into_iter()
+            .map(|path| Value::String(path.into()))
+            .collect(),
+    )));
+    Ok(sprite_node(
+        if source_pixels.is_some() {
+            "ImageRegion"
+        } else {
+            "Image"
+        },
+        args,
+    ))
 }
 
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
@@ -117,42 +231,39 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Sprite.image",
         "Sprite.image(width, height, texture)",
         |width: f64, height: f64, texture: FunctorLangTexture| {
-            if width <= 0.0 || height <= 0.0 {
+            sprite_image_node(width, height, None, texture)
+        },
+    );
+    reg.fn4(
+        "Sprite.region",
+        "Sprite.region(x, y, width, height)",
+        |x: f64, y: f64, width: f64, height: f64| {
+            if x < 0.0 || y < 0.0 {
                 return Err(format!(
-                    "Sprite.image width and height must be positive, got {width} × {height}"
+                    "Sprite.region x and y must be non-negative, got {x}, {y}"
                 ));
             }
-            let (path, pending) = match texture.0 {
-                TextureDescription::File(path) => (path, vec![]),
-                TextureDescription::FileWhilePending {
-                    file,
-                    while_pending,
-                } => (file, while_pending),
-                TextureDescription::FileClamped(path) => (path, vec![]),
-                TextureDescription::FileClampedWhilePending {
-                    file,
-                    while_pending,
-                } => (file, while_pending),
-                TextureDescription::RenderTarget(_) => {
-                    return Err(
-                        "Sprite.image expects an image asset, not a render target".to_string()
-                    )
-                }
-            };
-            Ok(sprite_node(
-                "Image",
-                vec![
-                    Value::Number(width),
-                    Value::Number(height),
-                    Value::String(path.into()),
-                    Value::List(Rc::new(
-                        pending
-                            .into_iter()
-                            .map(|path| Value::String(path.into()))
-                            .collect(),
-                    )),
-                ],
-            ))
+            if width <= 0.0 || height <= 0.0 {
+                return Err(format!(
+                    "Sprite.region width and height must be positive, got {width} × {height}"
+                ));
+            }
+            if [x, y, width, height]
+                .into_iter()
+                .any(|value| value.fract() != 0.0)
+            {
+                return Err(
+                    "Sprite.region coordinates and size must be whole source pixels".to_string(),
+                );
+            }
+            Ok(sprite_region_node(x, y, width, height))
+        },
+    );
+    reg.fn4(
+        "Sprite.imageRegion",
+        "Sprite.imageRegion(width, height, region, texture)",
+        |width: f64, height: f64, region: FunctorLangSpriteRegion, texture: FunctorLangTexture| {
+            sprite_image_node(width, height, Some(region.0), texture)
         },
     );
     reg.fn1(
@@ -234,6 +345,16 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             )
         },
     );
+    reg.fn1(
+        "Sprite.nearest",
+        "Sprite.nearest(sprite)",
+        |sprite: FunctorLangSprite| sprite_node("Nearest", vec![sprite.0]),
+    );
+    reg.fn1(
+        "Sprite.linear",
+        "Sprite.linear(sprite)",
+        |sprite: FunctorLangSprite| sprite_node("Linear", vec![sprite.0]),
+    );
 
     reg.fn2(
         "Camera2D.create",
@@ -274,7 +395,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         |camera: FunctorLangCamera2D, sprite: FunctorLangSprite| {
             let layer = SpriteLayer {
                 camera: camera.0,
-                scene: lower_sprite(&sprite.0, [1.0, 1.0, 1.0, 1.0])?,
+                scene: lower_sprite(&sprite.0, [1.0, 1.0, 1.0, 1.0], SpriteSampling::Linear)?,
             };
             Ok(FunctorLangFrame(Frame::with_2d(
                 Frame::new(Camera::default(), group(vec![], Matrix4::from_scale(1.0))),
@@ -288,7 +409,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         |camera: FunctorLangCamera2D, sprite: FunctorLangSprite, frame: FunctorLangFrame| {
             let layer = SpriteLayer {
                 camera: camera.0,
-                scene: lower_sprite(&sprite.0, [1.0, 1.0, 1.0, 1.0])?,
+                scene: lower_sprite(&sprite.0, [1.0, 1.0, 1.0, 1.0], SpriteSampling::Linear)?,
             };
             Ok(FunctorLangFrame(Frame::with_2d(frame.0, layer)))
         },
@@ -304,7 +425,11 @@ fn sprite_number(value: &Value, node: &str) -> Result<f32, String> {
     }
 }
 
-fn lower_sprite(value: &Value, tint: [f32; 4]) -> Result<Scene3D, String> {
+fn lower_sprite(
+    value: &Value,
+    tint: [f32; 4],
+    sampling: SpriteSampling,
+) -> Result<Scene3D, String> {
     let Value::Variant { ctor, args } = value else {
         return Err(format!(
             "invalid Sprite data: expected a sprite node, got {}",
@@ -331,54 +456,34 @@ fn lower_sprite(value: &Value, tint: [f32; 4]) -> Result<Scene3D, String> {
             Ok(transformed(leaf, Matrix4::from_nonuniform_scale(width, height, 1.0)).0)
         }
         ("Sprite.Image", [width, height, path, pending]) => {
-            let (width, height) = (
-                sprite_number(width, "Image")?,
-                sprite_number(height, "Image")?,
-            );
-            let Value::String(path) = path else {
-                return Err("invalid Image sprite data: expected a texture path".to_string());
-            };
-            let Value::List(pending) = pending else {
-                return Err(
-                    "invalid Image sprite data: expected placeholder texture paths".to_string(),
-                );
-            };
-            let mut while_pending = Vec::with_capacity(pending.len());
-            for item in pending.iter() {
-                let Value::String(path) = item else {
-                    return Err(
-                        "invalid Image sprite data: expected placeholder texture paths".to_string(),
-                    );
-                };
-                while_pending.push(path.to_string());
-            }
-            let texture = if while_pending.is_empty() {
-                TextureDescription::FileClamped(path.to_string())
-            } else {
-                TextureDescription::FileClampedWhilePending {
-                    file: path.to_string(),
-                    while_pending,
-                }
-            };
-            let leaf = material_scene(
-                MaterialDescription::emissive_texture_tinted(
-                    texture, tint[0], tint[1], tint[2], tint[3],
-                ),
-                FunctorLangScene(Scene3D::quad()),
-            );
-            // File textures upload top-row-first while GL's v=0 is the bottom;
-            // flip the leaf locally so source PNGs appear upright in Y-up space.
-            Ok(transformed(leaf, Matrix4::from_nonuniform_scale(width, -height, 1.0)).0)
+            lower_sprite_image(width, height, None, path, pending, tint, sampling)
         }
+        (
+            "Sprite.ImageRegion",
+            [width, height, x, y, source_width, source_height, path, pending],
+        ) => lower_sprite_image(
+            width,
+            height,
+            Some([
+                sprite_number(x, "ImageRegion")?,
+                sprite_number(y, "ImageRegion")?,
+                sprite_number(source_width, "ImageRegion")?,
+                sprite_number(source_height, "ImageRegion")?,
+            ]),
+            path,
+            pending,
+            tint,
+            sampling,
+        ),
         ("Sprite.Group", [Value::List(items)]) => {
             let scenes = items
                 .iter()
-                .map(|item| lower_sprite(item, tint))
+                .map(|item| lower_sprite(item, tint, sampling))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(group(scenes, Matrix4::from_scale(1.0)))
         }
         ("Sprite.Move", [x, y, child]) => Ok(transformed(
-            FunctorLangScene(lower_sprite(child, tint)?),
+            FunctorLangScene(lower_sprite(child, tint, sampling)?),
             Matrix4::from_translation(cgmath::vec3(
                 sprite_number(x, "Move")?,
                 sprite_number(y, "Move")?,
@@ -387,12 +492,12 @@ fn lower_sprite(value: &Value, tint: [f32; 4]) -> Result<Scene3D, String> {
         )
         .0),
         ("Sprite.Rotate", [angle, child]) => Ok(transformed(
-            FunctorLangScene(lower_sprite(child, tint)?),
+            FunctorLangScene(lower_sprite(child, tint, sampling)?),
             Matrix4::from_angle_z(cgmath::Rad(sprite_number(angle, "Rotate")?)),
         )
         .0),
         ("Sprite.Scale", [x, y, child]) => Ok(transformed(
-            FunctorLangScene(lower_sprite(child, tint)?),
+            FunctorLangScene(lower_sprite(child, tint, sampling)?),
             Matrix4::from_nonuniform_scale(
                 sprite_number(x, "Scale")?,
                 sprite_number(y, "Scale")?,
@@ -403,15 +508,71 @@ fn lower_sprite(value: &Value, tint: [f32; 4]) -> Result<Scene3D, String> {
         ("Sprite.Fade", [alpha, child]) => {
             let mut next = tint;
             next[3] *= sprite_number(alpha, "Fade")?;
-            lower_sprite(child, next)
+            lower_sprite(child, next, sampling)
         }
         ("Sprite.Tint", [r, g, b, child]) => {
             let mut next = tint;
             next[0] *= sprite_number(r, "Tint")?;
             next[1] *= sprite_number(g, "Tint")?;
             next[2] *= sprite_number(b, "Tint")?;
-            lower_sprite(child, next)
+            lower_sprite(child, next, sampling)
         }
+        ("Sprite.Nearest", [child]) => lower_sprite(child, tint, SpriteSampling::Nearest),
+        ("Sprite.Linear", [child]) => lower_sprite(child, tint, SpriteSampling::Linear),
         _ => Err(format!("invalid Sprite data: malformed {ctor} node")),
     }
+}
+
+fn lower_sprite_image(
+    width: &Value,
+    height: &Value,
+    source_pixels: Option<[f32; 4]>,
+    path: &Value,
+    pending: &Value,
+    tint: [f32; 4],
+    sampling: SpriteSampling,
+) -> Result<Scene3D, String> {
+    let (width, height) = (
+        sprite_number(width, "Image")?,
+        sprite_number(height, "Image")?,
+    );
+    let Value::String(path) = path else {
+        return Err("invalid Image sprite data: expected a texture path".to_string());
+    };
+    let Value::List(pending) = pending else {
+        return Err("invalid Image sprite data: expected placeholder texture paths".to_string());
+    };
+    let mut while_pending = Vec::with_capacity(pending.len());
+    for item in pending.iter() {
+        let Value::String(path) = item else {
+            return Err(
+                "invalid Image sprite data: expected placeholder texture paths".to_string(),
+            );
+        };
+        while_pending.push(path.to_string());
+    }
+    let texture = if while_pending.is_empty() {
+        TextureDescription::FileClamped(path.to_string())
+    } else {
+        TextureDescription::FileClampedWhilePending {
+            file: path.to_string(),
+            while_pending,
+        }
+    };
+    let leaf = material_scene(
+        MaterialDescription::sprite_texture_tinted(
+            texture,
+            source_pixels,
+            sampling,
+            tint[0],
+            tint[1],
+            tint[2],
+            tint[3],
+        ),
+        FunctorLangScene(Scene3D::quad()),
+    );
+    // File textures upload top-row-first while GL's v=0 is the bottom; flip
+    // the leaf locally so source PNGs and top-left atlas regions appear
+    // upright in Y-up space.
+    Ok(transformed(leaf, Matrix4::from_nonuniform_scale(width, -height, 1.0)).0)
 }

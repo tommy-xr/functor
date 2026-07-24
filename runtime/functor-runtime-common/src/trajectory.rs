@@ -453,6 +453,17 @@ fn faded_material(
             color: lerp(vec4(1.0, 1.0, 1.0, 1.0)),
             texture: Some(t.clone()),
         }),
+        Some(MaterialDescription::SpriteTexture {
+            color,
+            texture,
+            source_pixels,
+            sampling,
+        }) => Some(MaterialDescription::SpriteTexture {
+            color: lerp(*color),
+            texture: texture.clone(),
+            source_pixels: *source_pixels,
+            sampling: *sampling,
+        }),
         None => None,
     }
 }
@@ -487,6 +498,17 @@ fn alpha_faded_material(
         Some(MaterialDescription::Texture(texture)) => Some(MaterialDescription::Emissive {
             color: vec4(1.0, 1.0, 1.0, k),
             texture: Some(texture.clone()),
+        }),
+        Some(MaterialDescription::SpriteTexture {
+            color,
+            texture,
+            source_pixels,
+            sampling,
+        }) => Some(MaterialDescription::SpriteTexture {
+            color: fade(*color),
+            texture: texture.clone(),
+            source_pixels: *source_pixels,
+            sampling: *sampling,
         }),
         None => None,
     }
@@ -942,7 +964,7 @@ pub fn frame_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Camera, Camera2D, SpriteLayer};
+    use crate::{Camera, Camera2D, SpriteLayer, SpriteSampling, TextureDescription};
     use cgmath::vec3;
 
     fn ball_at(x: f32, y: f32) -> Scene3D {
@@ -1173,6 +1195,34 @@ mod tests {
         assert_eq!(colors[1].truncate(), vec3(0.0, 0.0, 1.0));
         assert!((colors[0].w - 0.8).abs() < 1e-4);
         assert!((colors[1].w - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sprite_strobes_preserve_atlas_regions_and_sampling() {
+        let material = MaterialDescription::SpriteTexture {
+            color: vec4(0.25, 0.5, 0.75, 0.8),
+            texture: TextureDescription::FileClamped("hero-atlas.png".to_string()),
+            source_pixels: Some([96.0, 0.0, 96.0, 96.0]),
+            sampling: SpriteSampling::Nearest,
+        };
+
+        match alpha_faded_material(Some(&material), 0.25) {
+            Some(MaterialDescription::SpriteTexture {
+                color,
+                texture,
+                source_pixels,
+                sampling,
+            }) => {
+                assert_eq!(color, vec4(0.25, 0.5, 0.75, 0.2));
+                assert!(matches!(
+                    texture,
+                    TextureDescription::FileClamped(path) if path == "hero-atlas.png"
+                ));
+                assert_eq!(source_pixels, Some([96.0, 0.0, 96.0, 96.0]));
+                assert_eq!(sampling, SpriteSampling::Nearest);
+            }
+            _ => panic!("expected a faded sprite texture"),
+        }
     }
 
     #[test]
