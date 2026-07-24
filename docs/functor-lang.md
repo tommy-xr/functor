@@ -859,6 +859,20 @@ Pull-based: port examples as Functor Lang proves itself; no flag-day.
       `fable_modules/`, the `.fs`/`.fsi`/`.rs` triplication, the dylib
       hot-reload path (done — the atomic cut). *Verify (done):* CI green with
       no dotnet installed; `npm run build:cli` needs only Rust + Node.
+- [x] **E4. World-scale terrain.** One immutable `Terrain.t` descriptor is
+      consumed by both `Scene.terrain` and `Physics.heightfield`, so visual
+      dimensions and collision cannot drift. Rendering keeps 16-bit height
+      samples on the GPU and draws a finite, frustum-culled quadtree as
+      instances of one 64×64 patch; center-eye LOD selection and skirts keep
+      it stereo-stable. Physics builds one Rapier heightfield from a bounded
+      1025² collision grid and structurally shares it across rewind
+      checkpoints, avoiding internal tile seams.
+      Height/slope layers and bounded camera-local instanced grass complete
+      the VR-conscious surface. `examples/terrain` is the 4×4 km reference,
+      using a compact generated source in-repo and documenting the 4096²
+      shipping-heightmap path. *Verify:* protocol/validation/LOD/collision tests,
+      native and wasm builds, release `frame_bench`, and deterministic visual
+      captures.
 
 ## Sequencing & risks
 
