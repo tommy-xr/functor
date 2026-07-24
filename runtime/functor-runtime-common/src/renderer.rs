@@ -28,6 +28,7 @@ use crate::{
 /// 2. Shadow pass — render the scene into `shadow_map` from the first
 ///    shadow-casting light (directional or spot), producing `ShadowUniforms`.
 /// 3. Forward pass — clear, then `Scene3D::render` with the lights + shadow map.
+/// 4. Sprite passes — ordered orthographic, alpha-blended layers above 3D.
 ///
 /// Known MVP cost: shells that call `render_frame` more than once per game frame
 /// (stereo per-eye, netsim panes) re-render the target passes each call —
@@ -119,11 +120,7 @@ fn render_frame_inner(
     let mut declared = std::collections::HashSet::new();
     for pass in &frame.render_targets {
         if declared.insert(pass.target.id.as_str()) {
-            scene_context.ensure_render_target(
-                gl,
-                &pass.target,
-                pass.frame.resolved_clear_color(),
-            );
+            scene_context.ensure_render_target(gl, &pass.target, pass.frame.resolved_clear_color());
         } else {
             scene_context.warn_once(
                 &format!("duplicate:{}", pass.target.id),
@@ -195,6 +192,15 @@ target frame are ignored (depth 1 only)",
             width as f32 / height as f32,
             None,
         );
+        render_sprite_layers(
+            gl,
+            shader_version,
+            asset_cache.clone(),
+            scene_context,
+            &pass.frame,
+            frame_time.clone(),
+            Viewport::new(width, height),
+        );
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
@@ -239,12 +245,12 @@ target frame are ignored (depth 1 only)",
     forward_pass(
         gl,
         shader_version,
-        asset_cache,
+        asset_cache.clone(),
         scene_context,
         &frame.scene,
         &frame.lights,
         camera,
-        frame_time,
+        frame_time.clone(),
         debug_render_mode,
         shadow,
         frame.fog.as_ref(),
@@ -252,6 +258,103 @@ target frame are ignored (depth 1 only)",
         viewport.aspect(),
         projection_matrix,
     );
+
+    render_sprite_layers(
+        gl,
+        shader_version,
+        asset_cache,
+        scene_context,
+        frame,
+        frame_time,
+        viewport,
+    );
+}
+
+/// Draw the frame's ordered 2D layers after its 3D pass. Sprite scenes reuse
+/// the shared quad/material/asset path, but get an orthographic camera and
+/// explicit alpha blending with no depth test. Group list order is therefore
+/// painter's order: later sprites appear on top.
+fn render_sprite_layers(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    scene_context: &SceneContext,
+    frame: &Frame,
+    frame_time: FrameTime,
+    viewport: Viewport,
+) {
+    if frame.sprite_layers.is_empty() {
+        return;
+    }
+
+    unsafe {
+        gl.disable(glow::DEPTH_TEST);
+        gl.enable(glow::BLEND);
+        // Straight-alpha RGB over, while destination alpha uses the standard
+        // source-over equation. Applying SRC_ALPHA to the alpha channel too
+        // would square edge alpha and leave captures/render targets translucent.
+        gl.blend_func_separate(
+            glow::SRC_ALPHA,
+            glow::ONE_MINUS_SRC_ALPHA,
+            glow::ONE,
+            glow::ONE_MINUS_SRC_ALPHA,
+        );
+    }
+
+    for layer in &frame.sprite_layers {
+        let fitted = layer.camera.fitted_viewport(viewport);
+        unsafe {
+            gl.viewport(
+                fitted.x as i32,
+                fitted.y as i32,
+                fitted.width as i32,
+                fitted.height as i32,
+            );
+            gl.scissor(
+                fitted.x as i32,
+                fitted.y as i32,
+                fitted.width as i32,
+                fitted.height as i32,
+            );
+        }
+        let camera = layer.camera.render_camera();
+        let projection = layer.camera.projection_matrix();
+        forward_pass(
+            gl,
+            shader_version,
+            asset_cache.clone(),
+            scene_context,
+            &layer.scene,
+            &[],
+            &camera,
+            frame_time.clone(),
+            DebugRenderMode::Default,
+            None,
+            None,
+            None,
+            fitted.aspect(),
+            Some(&projection),
+        );
+    }
+
+    unsafe {
+        // Later shell overlays (notably physics debug lines) inherit the frame
+        // viewport/scissor, so do not leak the last layer's aspect-fit box.
+        gl.viewport(
+            viewport.x as i32,
+            viewport.y as i32,
+            viewport.width as i32,
+            viewport.height as i32,
+        );
+        gl.scissor(
+            viewport.x as i32,
+            viewport.y as i32,
+            viewport.width as i32,
+            viewport.height as i32,
+        );
+        gl.disable(glow::BLEND);
+        gl.enable(glow::DEPTH_TEST);
+    }
 }
 
 /// Render K `Frame`s into K offscreen targets and composite them onto the bound
@@ -342,6 +445,15 @@ pub fn render_composited_frames(
             frame.skybox.as_ref(),
             width as f32 / height as f32,
             None,
+        );
+        render_sprite_layers(
+            gl,
+            shader_version,
+            asset_cache.clone(),
+            scene_context,
+            frame,
+            frame_time.clone(),
+            Viewport::new(width, height),
         );
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);

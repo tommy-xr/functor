@@ -663,6 +663,23 @@ Starts once A2 + B3 exist.
         *Verify (done):* prelude unit tests pin the skybox wire shape,
         face order, and teaching errors; deterministic captures show
         the sky behind the fogged colonnade.
+      - [x] **C4b-6. Plain-data 2D sprites** (done 2026-07-23):
+        `Sprite.rectangle`/`square`/`image`/`group` plus pipeable
+        move/rotate/scale/fade/tint transforms form a pure picture algebra.
+        Unlike the opaque 3D engine handles, `Sprite.t` is represented by
+        private ordinary Functor variants, lists, numbers, and strings: the
+        abstract `.funi` type hides the schema while structural equality,
+        debugger display, snapshots, and hot reload can still inspect it.
+        `Camera2D.create` defines a center-origin, Y-up world view with
+        aspect-preserving fit plus pan/zoom; `Frame.create2D` makes a 2D-only
+        frame and `Frame.with2D` layers sprites above an existing frame. The
+        host lowers the picture to the existing quad/material/texture path at
+        the frame boundary. `examples/mario` keeps its pure platformer model
+        and replaces the cube presentation with CC0 2D art.
+        *Verify (done):* prelude tests pin the plain-data representation and
+        protocol round-trip; Camera2D viewport tests cover letterbox and
+        pillarbox fitting; Mario typechecks and captures through the native
+        renderer.
 - [x] **C5. Wasm** (done 2026-07-03). `FunctorLangWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,

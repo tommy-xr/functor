@@ -3,9 +3,11 @@
 //! A [`functor_lang::Host`] giving Functor Lang programs the engine vocabulary: scene
 //! constructors, transforms, a camera, and frame assembly, all producing the
 //! exact protocol types this crate already speaks ([`Scene3D`], [`Camera`],
-//! [`Frame`] — see [`crate::protocol`]). Engine values cross into Functor Lang as
-//! opaque [`functor_lang::Value::HostData`]; Functor Lang code composes them and hands back a
-//! `Frame`, which the shells extract with [`frame_value`].
+//! [`Frame`] — see [`crate::protocol`]). Most engine values cross into Functor
+//! Lang as opaque [`functor_lang::Value::HostData`]; `Sprite.t` is the deliberate
+//! exception, represented by a private tree of ordinary Functor values so it
+//! stays inspectable and reload-safe. Functor Lang code hands back a `Frame`,
+//! which the shells extract with [`frame_value`].
 //!
 //! # Vocabulary
 //!
@@ -40,6 +42,19 @@
 //! Camera.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
 //! Frame.create(camera, scene)                               -> Frame
+//! Camera2D.create(width, height)                             -> Camera2D
+//! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
+//!   (center-origin, Y-up world units, aspect-fitted without stretching)
+//! Sprite.blank() / rectangle(color, w, h) / square(color, n) -> Sprite
+//! Sprite.image(w, h, texture) / Sprite.group([sprite, …])    -> Sprite
+//! Sprite.move(x, y, sprite) / moveX / moveY                  -> Sprite
+//! Sprite.rotate(angle, sprite) / scale / scaleXY             -> Sprite
+//! Sprite.fade(alpha, sprite) / tint(color, sprite)           -> Sprite
+//!   (the abstract Sprite.t is a private PLAIN-DATA picture tree; later
+//!    group items paint above earlier ones and subtree alpha/tint multiply)
+//! Frame.create2D(camera2d, sprite)                           -> Frame
+//! Frame.with2D(camera2d, sprite, frame)                      -> Frame
+//!   (2D-only frame, or a sprite layer above an existing frame)
 //! RenderTarget.named(id)                                    -> RenderTarget
 //! RenderTarget.sized(w, h, target)                          -> RenderTarget
 //!   (a named offscreen texture, 512x512 unless sized; declare ONCE, use the
@@ -144,7 +159,9 @@ use crate::scene3d::{MaterialDescription, ModelDescription, ModelHandle, Texture
 use crate::skybox::SkyboxDescription;
 use crate::ui::{self, View};
 use crate::webview::HtmlNode;
-use crate::{Camera, Frame, Light, Scene3D, SceneObject, Shape};
+use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
+
+mod sprite;
 
 /// A [`Scene3D`] as an opaque Functor Lang value.
 pub struct FunctorLangScene(pub Scene3D);
@@ -1176,6 +1193,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_branded_constructors(&mut reg);
         register_ui_anchors(&mut reg);
         register_scene(&mut reg);
+        sprite::register(&mut reg);
         register_camera(&mut reg);
         register_light(&mut reg);
         register_frame(&mut reg);
@@ -1694,6 +1712,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 fog: None,
                 skybox: None,
                 clear_color: None,
+                sprite_layers: vec![],
             })
         },
     );
@@ -4558,6 +4577,106 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         // And the whole thing round-trips through the protocol.
         let back: Frame = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn sprite_values_are_plain_inspectable_data() {
+        let sprite = eval(
+            "let main = () =>\n\
+             Sprite.square(Color.rgb(1.0, 0.5, 0.25), 2.0)\n\
+               |> Sprite.move(3.0, 4.0)",
+        );
+        assert!(
+            !matches!(sprite, Value::HostData(_)),
+            "Sprite.t must stay plain Functor Lang data"
+        );
+        assert!(sprite.is_reload_safe_snapshot());
+        assert_eq!(
+            sprite.to_string(),
+            "Sprite.Move(3, 4, Sprite.Rectangle(2, 2, 1, 0.5, 0.25))"
+        );
+        assert!(matches!(
+            eval(
+                "let a = () => Sprite.square(Color.rgb(1.0, 0.5, 0.25), 2.0)\n\
+                 let main = () => a() == a()"
+            ),
+            Value::Bool(true)
+        ));
+    }
+
+    #[test]
+    fn create2d_lowers_sprite_data_into_a_serializable_layer() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Sprite.image(2.0, 3.0, Asset.texture(\"hero.png\"))\n\
+               |> Sprite.tint(Color.rgb(0.5, 1.0, 0.25))\n\
+               |> Sprite.fade(0.75)\n\
+               |> Frame.create2D(\n\
+                    Camera2D.create(16.0, 9.0)\n\
+                      |> Camera2D.at(2.0, -1.0)\n\
+                      |> Camera2D.zoom(1.5))",
+        );
+        assert!(matches!(
+            &frame.scene.obj,
+            SceneObject::Group(items) if items.is_empty()
+        ));
+        assert_eq!(frame.sprite_layers.len(), 1);
+        assert_eq!(
+            frame.sprite_layers[0].camera,
+            Camera2D::new(16.0, 9.0)
+                .with_center(2.0, -1.0)
+                .with_zoom(1.5)
+        );
+        let json = serde_json::to_string(&frame).expect("sprite frame serializes");
+        assert!(json.contains(r#""sprite_layers""#), "json: {json}");
+        assert!(json.contains(r#""FileClamped""#), "json: {json}");
+        assert!(json.contains(r#""hero.png""#), "json: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("sprite frame deserializes");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn sprite_and_camera_domains_fail_loudly() {
+        for (src, expected) in [
+            (
+                "Sprite.rectangle(Color.rgb(1.0, 1.0, 1.0), 0.0, 2.0)",
+                "Sprite.rectangle width and height must be positive",
+            ),
+            (
+                "Sprite.image(-1.0, 2.0, Asset.texture(\"hero.png\"))",
+                "Sprite.image width and height must be positive",
+            ),
+            (
+                "Sprite.square(Color.rgb(1.0, 1.0, 1.0), 2.0) |> Sprite.fade(1.5)",
+                "Sprite.fade alpha must be between 0 and 1",
+            ),
+            (
+                "Camera2D.create(16.0, 0.0)",
+                "Camera2D.create width and height must be positive",
+            ),
+            (
+                "Camera2D.create(16.0, 9.0) |> Camera2D.zoom(0.0)",
+                "Camera2D.zoom scale must be positive",
+            ),
+            (
+                "Camera2D.create(1.0 / 0.0, 9.0)",
+                "expected a finite number",
+            ),
+            (
+                "Camera2D.create(16.0, 9.0) |> Camera2D.at(0.0 / 0.0, 0.0)",
+                "expected a finite number",
+            ),
+            (
+                "Camera2D.create(16.0, 9.0) |> Camera2D.zoom(100000000000000000000.0 * 100000000000000000000.0)",
+                "expected a finite number",
+            ),
+        ] {
+            let actual = run_fail(&format!("let main = () => {src}"));
+            assert!(
+                actual.contains(expected),
+                "`{src}` should contain `{expected}`, got `{actual}`"
+            );
+        }
     }
 
     // Milestone-0 quirk 1: the renderer drops a Material node's own xform, so

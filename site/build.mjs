@@ -103,8 +103,18 @@ await cp(TIMELINE_MODEL, `${dist}/timeline-model.js`);
 // are regenerated from the site/demos scripts; the committed copies are what the
 // landing page embeds (building them in CI would need the runtime + Playwright).
 await cp(`${site}media`, `${dist}/media`, { recursive: true }).catch(() => {});
-for (const { id, source } of EXAMPLES) {
-  await cp(`${root}${source}`, `${dist}/examples/${id}.fun`);
+for (const example of EXAMPLES) {
+  const files = [
+    { source: example.source, output: `examples/${example.id}.fun` },
+    ...(example.siblings ?? []),
+  ];
+  for (const { source, output } of [...files, ...(example.assets ?? [])]) {
+    const slash = output.lastIndexOf("/");
+    if (slash >= 0) {
+      await mkdir(`${dist}/${output.slice(0, slash)}`, { recursive: true });
+    }
+    await cp(`${root}${source}`, `${dist}/${output}`);
+  }
 }
 
 // The language-intelligence wasm, if it has been built. Absent → skip (build on).

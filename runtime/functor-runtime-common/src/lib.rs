@@ -90,6 +90,7 @@ mod shader;
 pub mod shadow;
 pub mod skybox;
 mod shader_program;
+mod sprite2d;
 pub mod texture;
 pub mod timetravel;
 pub mod trajectory;
@@ -109,6 +110,7 @@ pub use render_target::RenderTargetDescriptor;
 pub use renderer::*;
 pub use skybox::SkyboxDescription;
 pub use scene3d::*;
+pub use sprite2d::{Camera2D, SpriteLayer};
 pub use trajectory::{
     interactive_preview, overlay, scene_preview, trajectory_trail, InteractivePreview,
     PreviewMode, PreviewOptions, ScenePreview, StrobeOptions,

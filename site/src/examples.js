@@ -6,11 +6,13 @@
 // The site e2e derives its per-example smoke test from the rendered picker, so
 // it tracks this list automatically too.
 //
-// `source` is a path relative to the repo root. Every entry must be a SINGLE
-// .fun (the sandbox is a one-buffer editor — no sibling modules ship) and must
-// be either asset-free or reference its assets by absolute CDN URL (the wasm
-// runtime fetch()es those cross-origin; local asset files are NOT bundled). See
-// build.mjs / README for the classification.
+// `source` is a path relative to the repo root. Most entries are a single,
+// asset-free .fun (or use absolute CDN assets). A project that needs sibling
+// modules or local assets declares explicit sibling/asset
+// `{ source, output }` copies; the sandbox still edits only the canonical
+// `source` entry while the player fetches the complete project file list.
+// Asset outputs are relative to the site root because browser fetches resolve
+// `Asset.*` locators against player.html.
 export const EXAMPLES = [
   { id: "hero", label: "Neon grid", source: "site/examples/hero.fun" },
   { id: "orbit", label: "Orbit", source: "site/examples/orbit.fun" },
@@ -25,7 +27,21 @@ export const EXAMPLES = [
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
   { id: "toss", label: "Bouncing balls", source: "examples/toss/game.fun" },
-  { id: "mario", label: "Platformer", source: "examples/mario/game.fun" },
+  {
+    id: "mario",
+    label: "Platformer",
+    source: "examples/mario/game.fun",
+    siblings: [
+      { source: "examples/mario/assets.fun", output: "examples/assets.fun" },
+    ],
+    assets: [
+      { source: "examples/mario/ground.png", output: "ground.png" },
+      { source: "examples/mario/hero-idle.png", output: "hero-idle.png" },
+      { source: "examples/mario/hero-jump.png", output: "hero-jump.png" },
+      { source: "examples/mario/hero-walk-1.png", output: "hero-walk-1.png" },
+      { source: "examples/mario/hero-walk-2.png", output: "hero-walk-2.png" },
+    ],
+  },
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm
   // runtime fetch()es those cross-origin (CORS-permitting), so unlike the
   // local-asset examples this one runs in the single-buffer sandbox.

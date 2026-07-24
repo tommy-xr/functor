@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     fog::Fog, render_target::RenderTargetDescriptor, skybox::SkyboxDescription, Camera, Light,
-    Scene3D,
+    Scene3D, SpriteLayer,
 };
 
 /// A named offscreen pass: `frame` (its own camera/scene/lights) is rendered
@@ -14,9 +14,9 @@ pub struct RenderTargetPass {
     pub frame: Frame,
 }
 
-/// What a game's `draw3d` returns each frame: the camera, the scene to render,
-/// and the lights affecting it. Intentionally a growable record (post-processing
-/// etc. can be added later) so the render boundary signature doesn't churn.
+/// What a game's `draw` returns each frame: a 3D pass plus any ordered 2D
+/// sprite layers. Intentionally a growable record (post-processing etc. can be
+/// added later) so the render boundary signature doesn't churn.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub camera: Camera,
@@ -39,6 +39,10 @@ pub struct Frame {
     /// paints the background — it does not affect fog blending.
     #[serde(default)]
     pub clear_color: Option<[f32; 3]>,
+    /// Ordered center-origin, Y-up 2D passes. They render after the 3D scene;
+    /// later layers appear above earlier ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sprite_layers: Vec<SpriteLayer>,
 }
 
 impl Frame {
@@ -53,6 +57,7 @@ impl Frame {
             fog: None,
             skybox: None,
             clear_color: None,
+            sprite_layers: vec![],
         }
     }
 
@@ -99,6 +104,12 @@ impl Frame {
     /// Subject-last so it pipes (`frame |> Frame.withClearColor(r, g, b)`).
     pub fn with_clear_color(mut frame: Frame, r: f32, g: f32, b: f32) -> Frame {
         frame.clear_color = Some([r, g, b]);
+        frame
+    }
+
+    /// Add a 2D layer above the 3D pass and any earlier sprite layers.
+    pub fn with_2d(mut frame: Frame, layer: SpriteLayer) -> Frame {
+        frame.sprite_layers.push(layer);
         frame
     }
 }
