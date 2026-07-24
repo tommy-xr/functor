@@ -75,6 +75,9 @@ export type UiEventKind =
 /** Whole-project wire body for `POST /reload-project`, entry file first. */
 export type ProjectSources = Array<[path: string, source: string]>;
 
+/** Project-relative texture/model/audio bytes for the runtime asset cache. */
+export type ProjectAssets = Array<[path: string, bytes: Uint8Array]>;
+
 /** Options for polling helpers like `waitFor` / `waitForState`. */
 export interface WaitForOptions {
   /** Total time to wait before giving up, ms (default 10_000). */

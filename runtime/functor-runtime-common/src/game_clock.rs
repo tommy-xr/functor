@@ -240,6 +240,17 @@ impl GameClock {
         self.pending_frames = 0;
     }
 
+    /// Start a newly loaded game at its beginning while preserving an
+    /// unconditional `--fixed-time` capture pin.
+    pub fn restart(&mut self) {
+        self.game_time = 0.0;
+        self.accumulator = 0.0;
+        self.paused = false;
+        self.pending_step = None;
+        self.pending_frames = 0;
+        self.started = false;
+    }
+
     /// Pause and queue a one-frame step of `dt` seconds (Step / debug Advance).
     pub fn step(&mut self, dt: f32) {
         self.paused = true;
@@ -299,6 +310,26 @@ mod tests {
         clock.step_frames(5);
         clock.toggle_pause();
         assert_eq!(clock.pending_frames(), 0);
+    }
+
+    #[test]
+    fn restart_clears_live_history_but_preserves_fixed_time() {
+        let mut clock = GameClock::new(None);
+        let _ = clock.fixed_frames(0.25);
+        clock.pause();
+        clock.restart();
+        assert!(!clock.is_paused());
+        let first = clock.fixed_frames(0.0);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].dts, 0.0);
+        assert_eq!(first[0].tts, 0.0);
+
+        let mut fixed = GameClock::new(Some(3.0));
+        fixed.restart();
+        let pinned = fixed.fixed_frames(100.0);
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].dts, 0.0);
+        assert_eq!(pinned[0].tts, 3.0);
     }
 
     #[test]

@@ -16,10 +16,23 @@ use crate::{ui::UiEventKind, Key};
 pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 
 /// Version of the routes and JSON wire shapes in this module.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 1;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum accepted body size for either reload operation.
 pub const MAX_RELOAD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum accepted size of one uploaded project asset. Assets transfer one
+/// at a time so a project with several large models never has to exist as one
+/// giant request in either the CLI or the runtime.
+pub const MAX_ASSET_BYTES: usize = 256 * 1024 * 1024;
+
+/// Maximum UTF-8 byte length of an uploaded asset's project-relative path.
+pub const MAX_ASSET_PATH_BYTES: usize = 4 * 1024;
+
+/// Maximum JSON size of a complete uploaded-asset path manifest. This is
+/// intentionally larger than ordinary debug commands: projects can contain
+/// thousands of individually small assets.
+pub const MAX_ASSET_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 /// One endpoint in the canonical debug-runtime surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +96,21 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/reload-project",
         description: "swap the whole project from a JSON array of [path, source] pairs (entry first), model preserved — 400 with the load error on a broken push",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/load-project",
+        description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/reload-asset",
+        description: "upload one project asset as a binary path+bytes envelope and evict its decoded render data",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/sync-assets",
+        description: "finish an asset sync from a JSON array of current project-relative paths, removing uploads absent from the manifest",
     },
     DebugRoute {
         method: "POST",
@@ -209,6 +237,87 @@ pub enum CaptureError {
 /// A whole-project push: `(path, source)` pairs with the entry first.
 pub type ProjectSources = Vec<(String, String)>;
 
+/// One project-relative asset uploaded by `POST /reload-asset`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectAsset {
+    pub path: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The set of uploaded project assets that should remain available.
+pub type ProjectAssetPaths = Vec<String>;
+
+/// Encode one asset for `POST /reload-asset`: a big-endian u32 path length,
+/// UTF-8 project-relative path, then the raw file bytes.
+pub fn encode_project_asset(path: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    validate_project_asset_path(path)?;
+    let path_len = u32::try_from(path.len()).map_err(|_| "asset path is too long".to_string())?;
+    let mut body = Vec::with_capacity(4 + path.len() + bytes.len());
+    body.extend_from_slice(&path_len.to_be_bytes());
+    body.extend_from_slice(path.as_bytes());
+    body.extend_from_slice(bytes);
+    Ok(body)
+}
+
+/// Decode the binary body accepted by `POST /reload-asset`.
+pub fn decode_project_asset(body: Vec<u8>) -> Result<ProjectAsset, String> {
+    if body.len() < 4 {
+        return Err("asset body is missing its path length".to_string());
+    }
+    let path_len = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
+    if path_len > MAX_ASSET_PATH_BYTES {
+        return Err(format!(
+            "asset path is too long ({path_len} bytes; limit is {MAX_ASSET_PATH_BYTES})"
+        ));
+    }
+    let path_end = 4usize
+        .checked_add(path_len)
+        .filter(|end| *end <= body.len())
+        .ok_or_else(|| "asset body is shorter than its declared path".to_string())?;
+    let path = std::str::from_utf8(&body[4..path_end])
+        .map_err(|_| "asset path must be UTF-8".to_string())?
+        .to_string();
+    validate_project_asset_path(&path)?;
+    let bytes_len = body.len() - path_end;
+    if bytes_len > MAX_ASSET_BYTES {
+        return Err(format!(
+            "asset is too large ({bytes_len} bytes; limit is {MAX_ASSET_BYTES})"
+        ));
+    }
+    Ok(ProjectAsset {
+        path,
+        bytes: body[path_end..].to_vec(),
+    })
+}
+
+/// Asset locators uploaded from a project must be portable, relative paths.
+/// The bytes remain in memory, but rejecting ambiguous/escaping names keeps
+/// browser, desktop, and Quest lookups identical.
+pub fn validate_project_asset_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("asset path must not be empty".to_string());
+    }
+    if path.len() > MAX_ASSET_PATH_BYTES {
+        return Err(format!(
+            "asset path is too long ({} bytes; limit is {MAX_ASSET_PATH_BYTES})",
+            path.len()
+        ));
+    }
+    if path.contains('\\') {
+        return Err("asset path must use forward slashes".to_string());
+    }
+    if path.contains('\0') || path.contains("://") || path.starts_with('/') {
+        return Err("asset path must be project-relative".to_string());
+    }
+    if path
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err("asset path must not contain empty, `.` or `..` segments".to_string());
+    }
+    Ok(())
+}
+
 /// Request delivered from a runtime's transport thread to its frame loop.
 pub enum DebugRequest {
     Capture(Sender<Result<Vec<u8>, CaptureError>>),
@@ -219,6 +328,9 @@ pub enum DebugRequest {
     Time(TimeCommand, Sender<()>),
     ReloadSource(String, Sender<Result<String, String>>),
     ReloadProject(ProjectSources, Sender<Result<String, String>>),
+    LoadProject(ProjectSources, Sender<Result<String, String>>),
+    ReloadAsset(ProjectAsset, Sender<Result<String, String>>),
+    SyncAssets(ProjectAssetPaths, Sender<Result<String, String>>),
     Rewind(u64, Sender<Result<String, String>>),
 }
 
@@ -262,6 +374,37 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn project_asset_binary_round_trips_nested_paths_and_bytes() {
+        let body = encode_project_asset("models/ship.glb", &[0, 1, 2, 255]).unwrap();
+        assert_eq!(
+            decode_project_asset(body).unwrap(),
+            ProjectAsset {
+                path: "models/ship.glb".into(),
+                bytes: vec![0, 1, 2, 255],
+            }
+        );
+    }
+
+    #[test]
+    fn project_asset_paths_reject_escaping_or_ambiguous_names() {
+        for path in [
+            "",
+            "/ship.glb",
+            "../ship.glb",
+            "models/../ship.glb",
+            "models//ship.glb",
+            "models\\ship.glb",
+            "https://example.com/ship.glb",
+        ] {
+            assert!(
+                validate_project_asset_path(path).is_err(),
+                "should reject {path:?}"
+            );
+        }
+        assert!(validate_project_asset_path("models/ship.glb").is_ok());
     }
 
     #[test]
@@ -309,6 +452,9 @@ mod tests {
             "POST /time",
             "POST /reload-source",
             "POST /reload-project",
+            "POST /load-project",
+            "POST /reload-asset",
+            "POST /sync-assets",
             "POST /rewind",
         ]
         .into_iter()
@@ -332,6 +478,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 1);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 2);
     }
 }

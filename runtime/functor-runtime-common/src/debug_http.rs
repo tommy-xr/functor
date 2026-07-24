@@ -13,8 +13,8 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 
 use crate::debug_protocol::{
-    self, CaptureError, DebugRequest, InputCommand, ProjectSources, RewindCommand, RuntimeState,
-    TimeCommand,
+    self, CaptureError, DebugRequest, InputCommand, ProjectAssetPaths, ProjectSources,
+    RewindCommand, RuntimeState, TimeCommand,
 };
 
 const MAX_HEADER_LINE_BYTES: u64 = 8 * 1024;
@@ -82,12 +82,19 @@ fn parse_json<T: DeserializeOwned>(
     reader: &mut BufReader<TcpStream>,
     content_length: Option<usize>,
 ) -> Result<T, String> {
-    let body =
-        read_body(reader, content_length, MAX_COMMAND_BYTES).map_err(|error| match error {
-            BodyError::MissingLength => "missing Content-Length".to_string(),
-            BodyError::TooLarge => "body too large".to_string(),
-            BodyError::Invalid => "bad body".to_string(),
-        })?;
+    parse_json_capped(reader, content_length, MAX_COMMAND_BYTES)
+}
+
+fn parse_json_capped<T: DeserializeOwned>(
+    reader: &mut BufReader<TcpStream>,
+    content_length: Option<usize>,
+    max_bytes: usize,
+) -> Result<T, String> {
+    let body = read_body(reader, content_length, max_bytes).map_err(|error| match error {
+        BodyError::MissingLength => "missing Content-Length".to_string(),
+        BodyError::TooLarge => "body too large".to_string(),
+        BodyError::Invalid => "bad body".to_string(),
+    })?;
     serde_json::from_slice(&body).map_err(|error| error.to_string())
 }
 
@@ -347,7 +354,85 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
             respond_result(&mut stream, cors_origin, recv(resp_rx), "rewind")
         }
-        ("POST", "/reload-source") | ("POST", "/reload-project") => {
+        ("POST", "/reload-asset") => {
+            let body = match read_body(
+                &mut reader,
+                content_length,
+                debug_protocol::MAX_ASSET_BYTES + debug_protocol::MAX_ASSET_PATH_BYTES + 4,
+            ) {
+                Ok(body) => body,
+                Err(BodyError::MissingLength | BodyError::TooLarge) => {
+                    respond_text(
+                        &mut stream,
+                        cors_origin,
+                        413,
+                        "Payload Too Large",
+                        "asset too large (or missing Content-Length); limit is 256MB",
+                    );
+                    return Some(());
+                }
+                Err(BodyError::Invalid) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", "bad body");
+                    return Some(());
+                }
+            };
+            let asset = match debug_protocol::decode_project_asset(body) {
+                Ok(asset) => asset,
+                Err(error) => {
+                    respond_text(
+                        &mut stream,
+                        cors_origin,
+                        400,
+                        "Bad Request",
+                        &format!("bad asset body: {error}"),
+                    );
+                    return Some(());
+                }
+            };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::ReloadAsset(asset, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_result(&mut stream, cors_origin, recv(resp_rx), "asset reload")
+        }
+        ("POST", "/sync-assets") => {
+            let paths = match parse_json_capped::<ProjectAssetPaths>(
+                &mut reader,
+                content_length,
+                debug_protocol::MAX_ASSET_MANIFEST_BYTES,
+            ) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    respond_text(
+                        &mut stream,
+                        cors_origin,
+                        400,
+                        "Bad Request",
+                        &format!("body must be a JSON array of asset paths: {error}"),
+                    );
+                    return Some(());
+                }
+            };
+            if let Some(error) = paths
+                .iter()
+                .find_map(|path| debug_protocol::validate_project_asset_path(path).err())
+            {
+                respond_text(
+                    &mut stream,
+                    cors_origin,
+                    400,
+                    "Bad Request",
+                    &format!("bad asset manifest: {error}"),
+                );
+                return Some(());
+            }
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::SyncAssets(paths, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_result(&mut stream, cors_origin, recv(resp_rx), "asset sync")
+        }
+        ("POST", "/reload-source") | ("POST", "/reload-project") | ("POST", "/load-project") => {
             let body = match read_body(
                 &mut reader,
                 content_length,
@@ -370,7 +455,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 }
             };
             let (resp_tx, resp_rx) = mpsc::channel();
-            let request = if path == "/reload-project" {
+            let request = if path == "/reload-project" || path == "/load-project" {
                 let files = match serde_json::from_slice::<ProjectSources>(&body) {
                     Ok(files) => files,
                     Err(error) => {
@@ -384,7 +469,11 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                         return Some(());
                     }
                 };
-                DebugRequest::ReloadProject(files, resp_tx)
+                if path == "/load-project" {
+                    DebugRequest::LoadProject(files, resp_tx)
+                } else {
+                    DebugRequest::ReloadProject(files, resp_tx)
+                }
             } else {
                 let source = match String::from_utf8(body) {
                     Ok(source) => source,
@@ -601,6 +690,98 @@ mod tests {
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("reloaded project"));
+    }
+
+    #[test]
+    fn load_project_is_distinct_from_model_preserving_reload() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let body = r#"[["game.fun","let init = 1"]]"#;
+        let request = format!(
+            "POST /load-project HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let client = connect(&listener, request);
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+
+        match rx.recv().unwrap() {
+            DebugRequest::LoadProject(files, response) => {
+                assert_eq!(files, vec![("game.fun".into(), "let init = 1".into())]);
+                response.send(Ok("loaded project".into())).unwrap();
+            }
+            _ => panic!("expected new project load request"),
+        }
+
+        assert_eq!(server.join().unwrap(), Some(()));
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.ends_with("loaded project"));
+    }
+
+    #[test]
+    fn asset_manifest_accepts_more_than_the_ordinary_command_limit() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let paths: Vec<String> = (0..4_000)
+            .map(|index| format!("textures/{index:04}.png"))
+            .collect();
+        let body = serde_json::to_string(&paths).unwrap();
+        assert!(body.len() > MAX_COMMAND_BYTES);
+        let request = format!(
+            "POST /sync-assets HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let client = connect(&listener, request);
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+
+        match rx.recv().unwrap() {
+            DebugRequest::SyncAssets(actual, response) => {
+                assert_eq!(actual, paths);
+                response.send(Ok("synced assets".into())).unwrap();
+            }
+            _ => panic!("expected asset sync request"),
+        }
+
+        assert_eq!(server.join().unwrap(), Some(()));
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    }
+
+    #[test]
+    fn reload_asset_decodes_binary_and_round_trips_runtime_status() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let body = debug_protocol::encode_project_asset("textures/grid.png", &[0, 1, 255]).unwrap();
+        let mut request = format!(
+            "POST /reload-asset HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(&body);
+        let address = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream.write_all(&request).unwrap();
+            stream.shutdown(Shutdown::Write).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        });
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+
+        match rx.recv().unwrap() {
+            DebugRequest::ReloadAsset(asset, response) => {
+                assert_eq!(asset.path, "textures/grid.png");
+                assert_eq!(asset.bytes, vec![0, 1, 255]);
+                response.send(Ok("reloaded asset".into())).unwrap();
+            }
+            _ => panic!("expected asset reload request"),
+        }
+
+        assert_eq!(server.join().unwrap(), Some(()));
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.ends_with("reloaded asset"));
     }
 
     #[test]

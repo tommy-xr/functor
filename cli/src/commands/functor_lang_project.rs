@@ -439,6 +439,7 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
     /// headset's runtime log into this terminal.
     async fn run_vr(&self, working_directory: &str) -> Result<(), Error> {
         let entry_path = self.entry_path(working_directory)?;
+        let project_root = Path::new(working_directory);
         let serial = adb_device().await?;
         adb_require_runtime(&serial).await?;
         // `am start` on the running singleTask activity is a no-op resume —
@@ -449,22 +450,54 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         spawn_logcat(&serial);
         let addr = format!("127.0.0.1:{VR_PORT}");
 
-        // The initial push, with retries: a cold app start needs a moment
-        // to bind its endpoint. (The typecheck gate already ran — `run`
-        // builds before dispatching, same as native/wasm.)
+        // Wait for the cold app to bind its endpoint, clearing any previous
+        // project's upload manifest in the same round trip. Assets land
+        // BEFORE the new game starts, so its first Sub.assets snapshot cannot
+        // observe transient "missing on Android" failures.
+        let mut ready = false;
+        for _ in 0..20 {
+            match post_asset_manifest(&addr, &[]) {
+                Ok((200, _)) => {
+                    ready = true;
+                    break;
+                }
+                Ok((status, body)) => {
+                    return Err(Error::other(format!(
+                        "asset sync rejected ({status}): {body}"
+                    )))
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
+        if !ready {
+            return Err(Error::other(format!(
+                "cannot reach the headset's debug endpoint (http://{addr} via adb forward) — \
+is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
+            )));
+        }
+
+        let mut attempted_assets = project_asset_files(project_root)?;
+        let report = sync_project_assets(&addr, &attempted_assets, None)?;
+        let mut observed_assets = attempted_assets.clone();
+        emit(Event::Info {
+            message: format!(
+                "synced {} project asset(s) ({:.1} MB) to the headset",
+                report.files,
+                report.bytes as f64 / (1024.0 * 1024.0)
+            ),
+        });
+
+        // Load only after every initial asset is resident. Keep retries for a
+        // cable reconnect between the readiness probe and this request.
         let files = read_project_json(&entry_path)?;
         let mut attempted = None;
         for _ in 0..20 {
-            match post_reload_project(&addr, &files) {
+            match post_load_project(&addr, &files) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = Some(files.clone());
                     break;
                 }
-                // The endpoint answered and said no (400/413) — the project
-                // or protocol is the problem, not the transport. (A 503
-                // can't realistically arrive: the server's 30s reply
-                // timeout is far behind our 5s client read timeout.)
                 Ok((status, body)) => {
                     return Err(Error::other(format!("push rejected ({status}): {body}")))
                 }
@@ -479,7 +512,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         })?;
         emit(Event::Info {
             message: format!(
-                "watching {} + siblings — edit and save to hot-reload on the headset \
+                "watching {} + siblings + project assets — edit and save to hot-reload on the headset \
 (Ctrl-C to stop)",
                 self.entry
             ),
@@ -495,17 +528,54 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             let Ok(current) = read_project_json(&entry_path) else {
                 continue;
             };
-            if current == attempted {
+            let Ok(current_assets) = project_asset_files(project_root) else {
+                continue;
+            };
+            let assets_changed = current_assets != observed_assets;
+            if current == attempted && !assets_changed {
                 continue;
             }
             // The same check gate `run native` uses — structured file:line
             // diagnostics beat the device's rendered 400 body, and a broken
-            // edit never leaves the machine.
+            // edit never mutates either source OR assets on the headset.
             if self.build(working_directory, false).is_err() {
                 emit(Event::Warning {
                     message: "check failed — the headset keeps the previous program".to_string(),
                 });
                 attempted = current;
+                observed_assets = current_assets;
+                continue;
+            }
+            // An asset add/rename can regenerate assets.fun during `build`.
+            // Sync and push the exact post-build snapshots, in that order.
+            let current = read_project_json(&entry_path)?;
+            let current_assets = project_asset_files(project_root)?;
+            if current_assets != attempted_assets {
+                match sync_project_assets(&addr, &current_assets, Some(&attempted_assets)) {
+                    Ok(report) => {
+                        emit(Event::Info {
+                            message: format!(
+                                "synced {} changed asset(s) ({:.1} MB) to the headset",
+                                report.files,
+                                report.bytes as f64 / (1024.0 * 1024.0)
+                            ),
+                        });
+                        attempted_assets = current_assets.clone();
+                        observed_assets = current_assets;
+                    }
+                    // Leave the last synchronized inventory in place so the
+                    // same bytes retry after a cable reconnect/runtime restart.
+                    Err(e) => {
+                        emit(Event::Warning {
+                            message: format!("asset sync failed ({e}); retrying…"),
+                        });
+                        continue;
+                    }
+                }
+            } else {
+                observed_assets = current_assets;
+            }
+            if current == attempted {
                 continue;
             }
             match post_reload_project(&addr, &current) {
@@ -822,6 +892,158 @@ fn spawn_logcat(serial: &str) {
     });
 }
 
+/// One synchronizable project asset and the cheap metadata fingerprint used by
+/// the 300ms watch loop. Bytes are read only for the initial push or when this
+/// fingerprint changes, so large models are not re-read continuously.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProjectAssetFile {
+    locator: String,
+    disk_path: PathBuf,
+    len: u64,
+    modified_ns: u128,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AssetSyncReport {
+    files: usize,
+    bytes: u64,
+}
+
+/// Recursively collect self-contained GLB models, textures, and audio files.
+/// Hidden directories and the generated `dist/` tree never ship.
+fn project_asset_files(root: &Path) -> Result<Vec<ProjectAssetFile>, Error> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        is_root: bool,
+        out: &mut Vec<ProjectAssetFile>,
+    ) -> Result<(), Error> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| Error::other(format!("non-UTF8 file name: {:?}", name)))?;
+            if name.starts_with('.') || (is_root && name == "dist") {
+                continue;
+            }
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                visit(root, &path, false, out)?;
+                continue;
+            }
+            // Follow symlinked files (matching `build wasm`), but never recurse
+            // through symlinked directories.
+            let metadata = if file_type.is_symlink() {
+                match std::fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_file() => metadata,
+                    _ => continue,
+                }
+            } else if file_type.is_file() {
+                entry.metadata()?
+            } else {
+                continue;
+            };
+            if !functor_runtime_common::asset::is_live_project_asset_file(&path) {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| Error::other(format!("asset escaped project: {}", path.display())))?;
+            let locator = relative
+                .components()
+                .map(|component| {
+                    component.as_os_str().to_str().ok_or_else(|| {
+                        Error::other(format!("non-UTF8 asset path: {}", relative.display()))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join("/");
+            functor_runtime_common::debug_protocol::validate_project_asset_path(&locator)
+                .map_err(Error::other)?;
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |duration| duration.as_nanos());
+            out.push(ProjectAssetFile {
+                locator,
+                disk_path: path,
+                len: metadata.len(),
+                modified_ns,
+            });
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(root, root, true, &mut files)?;
+    files.sort_by(|a, b| a.locator.cmp(&b.locator));
+    Ok(files)
+}
+
+/// Push added/changed files individually, then finalize with the complete path
+/// manifest so assets deleted on the host disappear from the runtime cache.
+fn sync_project_assets(
+    addr: &str,
+    current: &[ProjectAssetFile],
+    previous: Option<&[ProjectAssetFile]>,
+) -> Result<AssetSyncReport, Error> {
+    let mut report = AssetSyncReport::default();
+    for asset in current {
+        let unchanged = previous.is_some_and(|files| {
+            files.iter().any(|old| {
+                old.locator == asset.locator
+                    && old.len == asset.len
+                    && old.modified_ns == asset.modified_ns
+            })
+        });
+        if unchanged {
+            continue;
+        }
+        let bytes = std::fs::read(&asset.disk_path)?;
+        let body =
+            functor_runtime_common::debug_protocol::encode_project_asset(&asset.locator, &bytes)
+                .map_err(Error::other)?;
+        let (status, response) = http_post_bytes(
+            addr,
+            "/reload-asset",
+            "application/octet-stream",
+            &body,
+            std::time::Duration::from_secs(30),
+        )?;
+        if status != 200 {
+            return Err(Error::other(format!(
+                "asset {} rejected ({status}): {response}",
+                asset.locator
+            )));
+        }
+        report.files += 1;
+        report.bytes += bytes.len() as u64;
+    }
+
+    let paths: Vec<&str> = current.iter().map(|asset| asset.locator.as_str()).collect();
+    let (status, response) = post_asset_manifest(addr, &paths)?;
+    if status != 200 {
+        return Err(Error::other(format!(
+            "asset manifest rejected ({status}): {response}"
+        )));
+    }
+    Ok(report)
+}
+
+fn post_asset_manifest(addr: &str, paths: &[&str]) -> Result<(u16, String), Error> {
+    let manifest = serde_json::to_vec(paths).map_err(Error::other)?;
+    http_post_bytes(
+        addr,
+        "/sync-assets",
+        "application/json",
+        &manifest,
+        std::time::Duration::from_secs(5),
+    )
+}
+
 /// The project's `.fun`/`.funi` files as the `/reload-project` wire body — a
 /// JSON array of `[file name, source]` pairs, entry FIRST (`file = module`,
 /// so names are enough). Serialized once: the watch loop's change-compare
@@ -845,6 +1067,12 @@ fn post_reload_project(addr: &str, files_json: &str) -> Result<(u16, String), Er
     http_post(addr, "/reload-project", "application/json", files_json)
 }
 
+/// Load the first pushed project as a new game, taking its model from `init`.
+/// Later watch-loop edits use `/reload-project` and preserve that model.
+fn post_load_project(addr: &str, files_json: &str) -> Result<(u16, String), Error> {
+    http_post(addr, "/load-project", "application/json", files_json)
+}
+
 /// Minimal HTTP POST over std::net — one dependency-free request to the
 /// runner's shared debug HTTP server. Returns (status, body). `Connection: close`
 /// keeps the read side trivial (read to EOF, split headers off).
@@ -858,11 +1086,26 @@ fn http_post(
     content_type: &str,
     body: &str,
 ) -> Result<(u16, String), Error> {
+    http_post_bytes(
+        addr,
+        path,
+        content_type,
+        body.as_bytes(),
+        std::time::Duration::from_secs(5),
+    )
+}
+
+fn http_post_bytes(
+    addr: &str,
+    path: &str,
+    content_type: &str,
+    body: &[u8],
+    timeout: std::time::Duration,
+) -> Result<(u16, String), Error> {
     use std::io::{Read, Write};
     use std::net::ToSocketAddrs;
-    let timeout = std::time::Duration::from_secs(5);
-    // connect_timeout, not connect: a blackholed host must fail in 5s, not
-    // the OS's ~75s TCP give-up.
+    // connect_timeout, not connect: a blackholed host must fail on our
+    // request budget, not the OS's ~75s TCP give-up.
     let sockaddr = addr
         .to_socket_addrs()?
         .next()
@@ -876,9 +1119,10 @@ fn http_post(
 Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
-    stream.write_all(body.as_bytes())?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
+    stream.write_all(body)?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    let response = String::from_utf8_lossy(&response);
     let status = response
         .lines()
         .next()
@@ -912,7 +1156,7 @@ fn entry_escapes_project(entry: &str) -> bool {
 mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
-    use super::{nth_line, FunctorLangConfig, FunctorLangEntries};
+    use super::{nth_line, project_asset_files, FunctorLangConfig, FunctorLangEntries};
 
     fn single(entry: &str) -> FunctorLangConfig {
         FunctorLangConfig {
@@ -994,6 +1238,35 @@ mod tests {
         };
         let err = config.select(None).unwrap_err();
         assert!(err.to_string().contains("must be a path"), "{err}");
+    }
+
+    #[test]
+    fn vr_asset_scan_is_recursive_and_skips_hidden_and_dist_files() {
+        let root = std::env::temp_dir().join(format!("functor-vr-assets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for directory in ["models", "textures/walls", ".cache", "dist/web"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        for (path, bytes) in [
+            ("models/ship.glb", b"model".as_slice()),
+            ("models/ship.bin", b"external buffer"),
+            ("models/ship.gltf", b"external model"),
+            ("textures/walls/grid.PNG", b"texture"),
+            ("theme.ogg", b"audio"),
+            ("notes.txt", b"not an asset"),
+            (".cache/hidden.png", b"hidden"),
+            ("dist/web/stale.glb", b"generated"),
+        ] {
+            std::fs::write(root.join(path), bytes).unwrap();
+        }
+
+        let files = project_asset_files(&root).unwrap();
+        let locators: Vec<&str> = files.iter().map(|asset| asset.locator.as_str()).collect();
+        assert_eq!(
+            locators,
+            vec!["models/ship.glb", "textures/walls/grid.PNG", "theme.ogg",]
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Every shipped example typechecks against the engine prelude — the

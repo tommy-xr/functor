@@ -2,6 +2,7 @@ import type { HttpClient } from "./client.js";
 import type {
   InputCommand,
   KeyName,
+  ProjectAssets,
   ProjectSources,
   RuntimeState,
   Scene,
@@ -71,6 +72,39 @@ export class FunctorClient {
   /** Hot-reload a complete sibling-module project, preserving the model. */
   reloadProject(files: ProjectSources): Promise<string> {
     return this.http.postText("/reload-project", files);
+  }
+
+  /** Load a complete sibling-module project as a new game, initializing its
+   * model from `init`. Use reloadProject for subsequent live edits. */
+  loadProject(files: ProjectSources): Promise<string> {
+    return this.http.postText("/load-project", files);
+  }
+
+  /** Upload one project-relative texture/model/audio asset. Existing decoded
+   * render data for the locator is evicted when the bytes changed. */
+  reloadAsset(path: string, bytes: Uint8Array): Promise<string> {
+    const pathBytes = new TextEncoder().encode(path);
+    if (pathBytes.byteLength > 0xffff_ffff) {
+      throw new Error("asset path is too long");
+    }
+    const body = new Uint8Array(4 + pathBytes.byteLength + bytes.byteLength);
+    new DataView(body.buffer).setUint32(0, pathBytes.byteLength, false);
+    body.set(pathBytes, 4);
+    body.set(bytes, 4 + pathBytes.byteLength);
+    return this.http.postRawBinary("/reload-asset", body);
+  }
+
+  /** Upload the current asset set, then remove uploads absent from its
+   * manifest. Files transfer individually so large projects stay bounded by
+   * their largest asset rather than total project size. */
+  async reloadAssets(files: ProjectAssets): Promise<string> {
+    for (const [path, bytes] of files) {
+      await this.reloadAsset(path, bytes);
+    }
+    return this.http.postText(
+      "/sync-assets",
+      files.map(([path]) => path),
+    );
   }
 
   /** Restore the recorded model and physics state at a rendered frame. */

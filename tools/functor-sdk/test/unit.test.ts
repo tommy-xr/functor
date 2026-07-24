@@ -3,7 +3,14 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { findRepoRoot, formatCrashOutput, stepAll, waitFor } from "../src/index.js";
+import {
+  findRepoRoot,
+  formatCrashOutput,
+  FunctorClient,
+  HttpClient,
+  stepAll,
+  waitFor,
+} from "../src/index.js";
 
 // Pure unit tests — no runtime required, always run.
 
@@ -95,4 +102,60 @@ test("waitFor throws on timeout with the description", async () => {
     ),
     /timed out after 20ms waiting for the impossible/,
   );
+});
+
+test("reloadAssets uploads binary envelopes then finalizes the manifest", async () => {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  const http = {
+    postRawBinary: async (path: string, body: Uint8Array) => {
+      calls.push({ path, body });
+      return "reloaded";
+    },
+    postText: async (path: string, body: unknown) => {
+      calls.push({ path, body });
+      return "synced";
+    },
+  } as HttpClient;
+  const client = new FunctorClient(http);
+
+  assert.equal(
+    await client.reloadAssets([["textures/grid.png", Uint8Array.of(0, 1, 255)]]),
+    "synced",
+  );
+  assert.equal(calls[0].path, "/reload-asset");
+  const envelope = calls[0].body as Uint8Array;
+  const pathLength = new DataView(
+    envelope.buffer,
+    envelope.byteOffset,
+    envelope.byteLength,
+  ).getUint32(0, false);
+  assert.equal(
+    new TextDecoder().decode(envelope.slice(4, 4 + pathLength)),
+    "textures/grid.png",
+  );
+  assert.deepEqual([...envelope.slice(4 + pathLength)], [0, 1, 255]);
+  assert.deepEqual(calls[1], {
+    path: "/sync-assets",
+    body: ["textures/grid.png"],
+  });
+});
+
+test("project load and reload use distinct lifecycle routes", async () => {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  const http = {
+    postText: async (path: string, body: unknown) => {
+      calls.push({ path, body });
+      return "ok";
+    },
+  } as HttpClient;
+  const client = new FunctorClient(http);
+  const files: [string, string][] = [["game.fun", "let init = 0"]];
+
+  await client.loadProject(files);
+  await client.reloadProject(files);
+
+  assert.deepEqual(calls, [
+    { path: "/load-project", body: files },
+    { path: "/reload-project", body: files },
+  ]);
 });

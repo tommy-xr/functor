@@ -22,7 +22,8 @@ games deploy over the network.
 | [#431](https://github.com/tommy-xr/functor/pull/431) | `functor run vr`: launch, forward, whole-project push, watch, and log streaming | merged |
 | [#437](https://github.com/tommy-xr/functor/pull/437) | Exact asymmetric OpenXR projections, fixing binocular double vision | merged; Quest 3 verified |
 | [#438](https://github.com/tommy-xr/functor/pull/438) | Shared desktop/Quest debug protocol, whole-project REPL, raw stereo capture, TypeScript SDK parity, device benchmark | merged; Quest 3 verified |
-| [#453](https://github.com/tommy-xr/functor/pull/453) | Compose live OpenXR head/eye tracking onto the authored `Frame.camera` rig | current PR; Quest 3 verified |
+| [#453](https://github.com/tommy-xr/functor/pull/453) | Compose live OpenXR head/eye tracking onto the authored `Frame.camera` rig | merged; Quest 3 verified |
+| [#460](https://github.com/tommy-xr/functor/pull/460) | Push project `.glb` models, textures, and sounds through the shared debug protocol; initialize the first pushed project from `init` | draft; Quest 3 verified with synthwave textures + animated Xbot |
 
 ## Working today on the Xreal One
 
@@ -69,7 +70,8 @@ full, proven sequence. The short path is:
    `runtime/functor-runtime-oculus/lib/arm64-v8a/` (the crate README has the
    Maven command), then `npm run build:oculus:apk` and `adb install -r …`.
 2. Run `functor -d yourgame run vr`. It uses device-loopback port 8123 through
-   adb, pushes every `.fun`/`.funi`, and re-pushes on save.
+   adb, loads every `.fun`/`.funi` plus project models/textures/sounds, and
+   re-pushes changed source or assets on save.
 3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and
    restart NativeActivity with `am start -S`. Wait for `/state`'s frame to
    advance; server readiness alone does not mean XR is rendering.
@@ -85,15 +87,16 @@ torn frames and 3.09 ms mean application time.
 The authored-camera release verification sustained 72 FPS minimum in two
 30-second `primitives` runs (3.31–3.36 ms mean application time). A
 source/geometry-heavy `synthwave` run also held 72 FPS minimum with zero stale
-or torn frames; texture assets were not synchronized, so that run is not a
-final texture-pipeline measurement.
+or torn frames. Project texture/model synchronization is now verified on Quest
+3 with the textured synthwave scene and the animated `Xbot.glb` example; a
+release performance pass over those asset-heavy scenes is still outstanding.
 
 ## After bring-up (in rough order)
 
-- Sync or host project assets so texture/model/audio locators work in the
-  laptop-to-headset loop; whole-project reload currently transfers source only.
 - Controllers + a VR `InputContext` (head/hands) with desktop mouse/keyboard
   emulation, shock2quest-style, so VR games iterate without a headset.
+- Add the Android audio host; sound bytes already synchronize, but Quest
+  currently drains playback commands.
 - Add a browser surface over the isomorphic debug API for edit/push/inspect/
   capture without target-specific SDK calls.
 - Make the release APK reproducible and publishable (release signing, CI

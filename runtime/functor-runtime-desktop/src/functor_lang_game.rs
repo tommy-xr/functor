@@ -638,6 +638,58 @@ impl FunctorLangGame {
         (report.rebound, history_replay)
     }
 
+    fn reset_in(&mut self, loaded: Loaded) {
+        self.ctx().close_all_connections();
+        physics::remove_world(physics::DEFAULT_WORLD);
+        clear_http_taggers();
+        clear_audio_completions();
+        clear_preload_completions();
+
+        self.source_hashes = inspector_sources(&loaded.sources);
+        self.last_frame_journal.clear();
+        self.journal_ring.clear();
+        self.runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
+        self.cached_trace = None;
+        journal_swap();
+        self.reporter
+            .set_source(SpanSource::Project(loaded.sources));
+        self.module = loaded.module;
+        self.session = loaded.session;
+        self.model = loaded.init;
+        self.has_input = loaded.has_input;
+        self.has_mouse_move = loaded.has_mouse_move;
+        self.has_mouse_wheel = loaded.has_mouse_wheel;
+        self.has_subscriptions = loaded.has_subscriptions;
+        self.prev_tts = None;
+        self.asset_progress = None;
+        self.delivered_asset_progress = None;
+        self.has_physics = loaded.has_physics;
+        self.has_soundscape = loaded.has_soundscape;
+        self.last_soundscape_json = empty_soundscape_json();
+        self.has_ui = loaded.has_ui;
+        self.last_view = View::Empty;
+        self.ui_handlers.clear();
+        self.has_webview = loaded.has_webview;
+        self.last_webview = None;
+        self.webview_handlers.clear();
+        self.effect_runner = RealEffects::new();
+        self.effect_log = EffectLog::new();
+        self.deferred_queries.clear();
+        self.pending_events.clear();
+        self.physics_rt = physics::SteppedPhysics::new();
+        self.physics_frame = 0;
+        self.recorder = SceneRecorder::new();
+        self.input_buf.clear();
+        self.last_frame = empty_frame();
+        self.reporter.reset();
+        self.frames = 0;
+        self.tick_ns = 0;
+        self.physics_ns = 0;
+        self.draw_ns = 0;
+        self.render_ns = 0;
+        self.swap_ns = 0;
+    }
+
     fn report_stats(&mut self) {
         if self.frames > 0 && self.frames % STATS_EVERY == 0 {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
@@ -807,6 +859,29 @@ impl Game for FunctorLangGame {
             "reloaded {} ({} file(s)) from pushed project in {:.2}ms \
 (model preserved{stored}{history})",
             self.path,
+            files.len(),
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        events::emit(RuntimeEvent::HotReload {
+            ok: true,
+            message: status.clone(),
+        });
+        Ok(status)
+    }
+
+    fn load_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
+        if files.is_empty() {
+            return Err("a pushed project needs at least the entry file".to_string());
+        }
+        let started = Instant::now();
+        let loaded = load_sources(files)?;
+        self.pushed_project = Some(files.to_vec());
+        self.pushed_entry = None;
+        self.reset_in(loaded);
+        self.stamp = project_stamp(&self.path);
+        let status = format!(
+            "loaded {} ({} file(s)) from pushed project in {:.2}ms (model initialized)",
+            files[0].0,
             files.len(),
             started.elapsed().as_secs_f64() * 1000.0
         );
@@ -1648,6 +1723,15 @@ mod tests {
             "9",
             "a rejected project push must keep the previous program"
         );
+
+        let new_game = BASE.replace("{ n: 0.0 }", "{ speed: 3.0 }");
+        let status = game
+            .load_project(&[("other.fun".to_string(), new_game)])
+            .expect("new project load should initialize its model");
+        assert!(status.contains("model initialized"), "{status}");
+        let model = game.state_debug();
+        assert!(model.contains("speed"), "{model}");
+        assert!(!model.contains("n:"), "{model}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

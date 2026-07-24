@@ -15,13 +15,13 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 
+use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::audio::{AudioCommand, AudioScene, AudioSource, Listener, SceneUpdate};
 use rodio::source::Source;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
@@ -129,13 +129,14 @@ pub struct AudioPlayer {
     // path instead (`RefCell` because `decode` takes `&self`). Not reset on hot
     // reload — a path that's still missing stays quiet until the file appears.
     warned_paths: RefCell<HashSet<String>>,
+    asset_cache: Arc<AssetCache>,
 }
 
 impl AudioPlayer {
     /// Open the default output device. `None` when there is no device (headless
     /// / CI) — the runner then simply drops audio commands. `completion_tx`
     /// carries finished `playThen` tokens back to the main loop.
-    pub fn new(completion_tx: Sender<u64>) -> Option<AudioPlayer> {
+    pub fn new(completion_tx: Sender<u64>, asset_cache: Arc<AssetCache>) -> Option<AudioPlayer> {
         match OutputStream::try_default() {
             Ok((stream, handle)) => Some(AudioPlayer {
                 _stream: stream,
@@ -148,12 +149,21 @@ impl AudioPlayer {
                 },
                 voices: HashMap::new(),
                 warned_paths: RefCell::new(HashSet::new()),
+                asset_cache,
             }),
             Err(e) => {
                 eprintln!("[audio] no output device, audio disabled: {e}");
                 None
             }
         }
+    }
+
+    /// Drop decoded/live state for a sound whose backing bytes changed.
+    /// Existing detached one-shots finish; the next command/soundscape frame
+    /// decodes the replacement bytes.
+    pub fn evict_asset(&mut self, path: &str) {
+        self.voices.retain(|_, voice| voice.source.sound != path);
+        self.warned_paths.borrow_mut().remove(path);
     }
 
     /// Update the listener from the render camera (called each frame).
@@ -303,15 +313,20 @@ impl AudioPlayer {
         }
     }
 
-    fn decode(&self, path: &str) -> Option<Decoder<BufReader<File>>> {
-        let file = match File::open(path) {
-            Ok(f) => f,
+    fn decode(&self, path: &str) -> Option<Decoder<BufReader<Cursor<Vec<u8>>>>> {
+        let bytes = match self
+            .asset_cache
+            .cached_bytes(path)
+            .map(Ok)
+            .unwrap_or_else(|| std::fs::read(path))
+        {
+            Ok(bytes) => bytes,
             Err(e) => {
                 self.warn_once(path, format_args!("[audio] open '{path}': {e}"));
                 return None;
             }
         };
-        match Decoder::new(BufReader::new(file)) {
+        match Decoder::new(BufReader::new(Cursor::new(bytes))) {
             Ok(s) => Some(s),
             Err(e) => {
                 self.warn_once(path, format_args!("[audio] decode '{path}': {e}"));
