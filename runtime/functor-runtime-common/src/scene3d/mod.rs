@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::{
     cell::{Cell, RefCell},
     sync::Arc,
@@ -60,6 +60,7 @@ pub struct SceneContext {
     heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
     terrain_decode_residency: RefCell<TerrainDecodeResidency>,
+    terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
     terrain_renderer: RefCell<TerrainRenderer>,
     terrain_frame_serial: Cell<u64>,
     // Render targets persist across frames/hot reloads, keyed by the target's
@@ -219,6 +220,7 @@ impl SceneContext {
             heightmaps: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
             terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
+            terrain_requests: RefCell::new(BTreeSet::new()),
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
@@ -257,11 +259,11 @@ impl SceneContext {
         asset_cache: &Arc<AssetCache>,
         commands: Vec<crate::asset::preload::PreloadCommand>,
     ) -> Vec<u64> {
-        {
-            let mut residency = self.terrain_decode_residency.borrow_mut();
-            residency.begin_epoch();
-            residency.evict_stale(|locator| self.heightmap_pipeline.evict(locator));
-        }
+        self.terrain_decode_residency.borrow_mut().begin_epoch();
+        self.drive_terrain_requests(asset_cache);
+        self.terrain_decode_residency
+            .borrow_mut()
+            .evict_stale(|locator| self.heightmap_pipeline.evict(locator));
         use crate::asset::preload::PreloadKind;
         let mut preloads = self.preloads.borrow_mut();
         for cmd in commands {
@@ -315,6 +317,54 @@ impl SceneContext {
         settled
     }
 
+    fn drive_terrain_requests(&self, asset_cache: &Arc<AssetCache>) {
+        self.terrain_requests
+            .borrow_mut()
+            .extend(crate::terrain::take_heightmap_requests());
+        self.terrain_requests.borrow_mut().retain(|source| {
+            let handle = asset_cache
+                .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &source.locator);
+            let resolved = crate::asset::resolve_while_pending_state(
+                asset_cache,
+                &self.heightmap_pipeline,
+                &handle,
+                &source.while_pending,
+            );
+            let primary_is_loading =
+                matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
+            self.terrain_decode_residency.borrow_mut().mark_source(
+                &source.locator,
+                &source.while_pending,
+                primary_is_loading,
+                |locator| asset_cache.is_unsettled(locator),
+            );
+            match resolved {
+                crate::asset::WhilePendingState::Loading(stand_in) => {
+                    if let Some(data) = stand_in {
+                        crate::terrain::publish_heightmap(source, data);
+                    }
+                    true
+                }
+                crate::asset::WhilePendingState::Loaded(data) => {
+                    crate::terrain::publish_heightmap(source, data);
+                    crate::asset::while_pending_chain_is_unsettled(
+                        asset_cache,
+                        &source.while_pending,
+                    )
+                }
+                crate::asset::WhilePendingState::Failed => {
+                    // Rendering uses the pipeline fallback after terminal
+                    // failure; publish that same flat surface for collision.
+                    crate::terrain::publish_heightmap(source, handle.fallback());
+                    crate::asset::while_pending_chain_is_unsettled(
+                        asset_cache,
+                        &source.while_pending,
+                    )
+                }
+            }
+        });
+    }
+
     fn draw_terrain(
         &self,
         render_context: &RenderContext,
@@ -341,6 +391,7 @@ impl SceneContext {
             &handle,
             &terrain.while_pending,
         );
+        let source_descriptor = terrain.source();
         let primary_is_loading =
             matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
         self.terrain_decode_residency.borrow_mut().mark_source(
@@ -350,12 +401,32 @@ impl SceneContext {
             |locator| render_context.asset_cache.is_unsettled(locator),
         );
         let source = match resolved {
-            crate::asset::WhilePendingState::Loaded(data)
-            | crate::asset::WhilePendingState::Loading(Some(data)) => data,
-            crate::asset::WhilePendingState::Loading(None)
-            | crate::asset::WhilePendingState::Failed => handle.fallback(),
+            crate::asset::WhilePendingState::Loaded(data) => {
+                crate::terrain::publish_heightmap(&source_descriptor, data.clone());
+                data
+            }
+            crate::asset::WhilePendingState::Loading(Some(data)) => {
+                crate::terrain::publish_heightmap(&source_descriptor, data.clone());
+                data
+            }
+            crate::asset::WhilePendingState::Loading(None) => handle.fallback(),
+            crate::asset::WhilePendingState::Failed => {
+                let fallback = handle.fallback();
+                crate::terrain::publish_heightmap(&source_descriptor, fallback.clone());
+                fallback
+            }
         };
-        crate::terrain::publish_heightmap(&terrain.heightmap, source.clone());
+        // Drawing ordinarily polls again next frame. If the node disappears,
+        // retain any source or placeholder already in flight so the shared
+        // asset-progress gate cannot be stranded indefinitely.
+        if primary_is_loading
+            || crate::asset::while_pending_chain_is_unsettled(
+                &render_context.asset_cache,
+                &terrain.while_pending,
+            )
+        {
+            crate::terrain::request_heightmap(source_descriptor);
+        }
         self.terrain_renderer.borrow_mut().draw(
             render_context,
             terrain,

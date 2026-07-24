@@ -1129,6 +1129,11 @@ pub fn android_main(app: AndroidApp) {
         // every target.
         game.check_hot_reload(frame_time.clone());
         game.push_asset_progress(asset_cache.progress());
+        let preload_commands =
+            serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
+        for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
+            game.preload_push_settled(token);
+        }
         for sub_frame in &sub_frames {
             if game.samples_input() {
                 game.sampled_input(&debug.input);
@@ -1137,13 +1142,12 @@ pub fn android_main(app: AndroidApp) {
             debug.frame_count += 1;
         }
         let frame = game.render(frame_time.clone());
-        // No audio/HTTP/preload hosts on device yet: drain their command
-        // queues so they don't grow unbounded. Asset progress is real and fed
-        // above; the remaining effects run but do not produce sound/replies.
+        // No audio/HTTP hosts on device yet: drain their command queues so
+        // they don't grow unbounded. Preloads and physics terrain requests
+        // are driven above through the shared asset cache.
         let _ = game.audio_drain_commands();
         let _ = game.net_drain_commands();
         let _ = game.net_drain_conn_commands();
-        let _ = game.preload_drain_commands();
 
         let capture_due = debug.pending_capture.is_some();
         let mut captured_eyes = capture_due.then(Vec::new);

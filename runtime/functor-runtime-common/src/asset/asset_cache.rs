@@ -265,8 +265,10 @@ pub fn resolve_while_pending<T: 'static>(
     }
 }
 
-/// Explicit state behind [`resolve_while_pending`]. Long-lived shell caches
-/// use this to retain stand-ins only while the primary is actually pending.
+/// Explicit state behind [`resolve_while_pending`]. Callers that hydrate
+/// long-lived shell resources need to distinguish a loaded placeholder from
+/// a loaded primary: the placeholder may be published, but the request must
+/// remain active so the primary future keeps advancing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WhilePendingState<T> {
     Loading(Option<Arc<T>>),
@@ -298,6 +300,18 @@ pub fn resolve_while_pending_state<T: 'static>(
         super::AssetPollState::Failed => WhilePendingState::Failed,
         super::AssetPollState::Loading => WhilePendingState::Loading(stand_in),
     }
+}
+
+/// Whether a placeholder in `while_pending` was started and still needs
+/// polling. Long-lived shell requests must remain registered until this is
+/// false even after the primary settles, or `Sub.assets` can be stranded.
+pub fn while_pending_chain_is_unsettled(
+    cache: &AssetCache,
+    while_pending: &[String],
+) -> bool {
+    while_pending
+        .iter()
+        .any(|locator| cache.is_unsettled(locator))
 }
 
 #[cfg(test)]
@@ -456,6 +470,92 @@ mod tests {
         for f in [placeholder, real] {
             let _ = std::fs::remove_file(&f);
         }
+    }
+
+    #[test]
+    fn while_pending_state_keeps_placeholder_requests_alive_until_primary_promotes() {
+        use std::{cell::Cell, rc::Rc, task::Poll};
+
+        let cache = Arc::new(AssetCache::new());
+        let pipeline = super::super::build_pipeline(Box::new(BytesLen));
+        let placeholder = temp_file("wp-promote-placeholder.bin", b"12");
+        let polls = Rc::new(Cell::new(0));
+        let primary = AssetHandle::new(
+            futures::future::poll_fn({
+                let polls = polls.clone();
+                move |_| {
+                    if polls.replace(polls.get() + 1) == 0 {
+                        Poll::Pending
+                    } else {
+                        Poll::Ready(Ok(Arc::new(7)))
+                    }
+                }
+            }),
+            Arc::new(0),
+        );
+
+        let first = resolve_while_pending_state(
+            &cache,
+            &pipeline,
+            &primary,
+            std::slice::from_ref(&placeholder),
+        );
+        assert!(matches!(
+            first,
+            WhilePendingState::Loading(Some(value)) if *value == 2
+        ));
+
+        let second = resolve_while_pending_state(
+            &cache,
+            &pipeline,
+            &primary,
+            std::slice::from_ref(&placeholder),
+        );
+        assert!(matches!(
+            second,
+            WhilePendingState::Loaded(value) if *value == 7
+        ));
+
+        let _ = std::fs::remove_file(placeholder);
+    }
+
+    #[test]
+    fn settled_primary_reports_a_still_pending_started_placeholder() {
+        let cache = Arc::new(AssetCache::new());
+        let pipeline = super::super::build_pipeline(Box::new(BytesLen));
+        let real = temp_file("wp-settled-primary.bin", b"1234567");
+        let primary = cache.load_asset_with_pipeline(pipeline.clone(), &real);
+        settle(&primary);
+
+        let pending = "wp/pending-placeholder.bin".to_string();
+        cache
+            .progress
+            .lock()
+            .unwrap()
+            .started
+            .insert(pending.clone());
+        pipeline.cache(
+            &pending,
+            Arc::new(AssetHandle::new(
+                std::future::pending::<Result<Arc<usize>, String>>(),
+                Arc::new(0),
+            )),
+        );
+        assert!(matches!(
+            resolve_while_pending_state(
+                &cache,
+                &pipeline,
+                &primary,
+                std::slice::from_ref(&pending)
+            ),
+            WhilePendingState::Loaded(value) if *value == 7
+        ));
+        assert!(while_pending_chain_is_unsettled(
+            &cache,
+            std::slice::from_ref(&pending)
+        ));
+
+        let _ = std::fs::remove_file(real);
     }
 
     /// The cached-bytes branch must CACHE its handle like the cold path: a

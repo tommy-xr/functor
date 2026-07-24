@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     sync::{Arc, Weak},
 };
 
@@ -11,15 +11,40 @@ thread_local! {
     /// Decoded terrain sources shared by the render and physics adapters on
     /// the runtime thread. The descriptor remains plain immutable data; this
     /// is only the shell-side hydration cache, analogous to GPU resources.
-    static HEIGHTMAPS: RefCell<HashMap<String, Weak<HeightmapData>>> =
+    static HEIGHTMAPS: RefCell<HashMap<TerrainSource, Weak<HeightmapData>>> =
         RefCell::new(HashMap::new());
+    /// Sources requested by `Physics.heightfield` since the shell last drove
+    /// terrain asset hydration. A set keeps repeated fixed substeps cheap.
+    static HEIGHTMAP_REQUESTS: RefCell<BTreeSet<TerrainSource>> =
+        RefCell::new(BTreeSet::new());
 }
 
-pub(crate) fn publish_heightmap(locator: &str, data: Arc<HeightmapData>) {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TerrainSource {
+    pub locator: String,
+    #[serde(default)]
+    pub while_pending: Vec<String>,
+}
+
+pub(crate) fn request_heightmap(source: TerrainSource) {
+    HEIGHTMAP_REQUESTS.with(|requests| {
+        requests.borrow_mut().insert(source);
+    });
+}
+
+pub(crate) fn take_heightmap_requests() -> Vec<TerrainSource> {
+    HEIGHTMAP_REQUESTS.with(|requests| {
+        std::mem::take(&mut *requests.borrow_mut())
+            .into_iter()
+            .collect()
+    })
+}
+
+pub(crate) fn publish_heightmap(source: &TerrainSource, data: Arc<HeightmapData>) {
     HEIGHTMAPS.with(|heightmaps| {
         let mut heightmaps = heightmaps.borrow_mut();
         let unchanged = heightmaps
-            .get(locator)
+            .get(source)
             .and_then(Weak::upgrade)
             // HeightmapData is Eq, so Arc equality first takes the pointer
             // fast path and only compares samples after a real reload.
@@ -28,9 +53,20 @@ pub(crate) fn publish_heightmap(locator: &str, data: Arc<HeightmapData>) {
             // The asset pipeline and current physics declaration own the
             // samples. This lookup bridge must not pin a 32 MiB 4096² map
             // after its runtime/project has gone away.
-            heightmaps.insert(locator.to_string(), Arc::downgrade(&data));
+            heightmaps.insert(source.clone(), Arc::downgrade(&data));
         }
     });
+}
+
+pub(crate) fn hydrated_heightmap(source: &TerrainSource) -> Option<Arc<HeightmapData>> {
+    HEIGHTMAPS.with(|heightmaps| {
+        let mut heightmaps = heightmaps.borrow_mut();
+        let hydrated = heightmaps.get(source).and_then(Weak::upgrade);
+        if hydrated.is_none() {
+            heightmaps.remove(source);
+        }
+        hydrated
+    })
 }
 
 /// The collision-relevant subset of a terrain descriptor.
@@ -39,7 +75,7 @@ pub(crate) fn publish_heightmap(locator: &str, data: Arc<HeightmapData>) {
 /// colors, or vegetation does not rebuild a multi-megabyte collider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerrainGeometry {
-    pub heightmap: String,
+    pub source: TerrainSource,
     pub width: f32,
     pub depth: f32,
     pub min_height: f32,
@@ -139,11 +175,18 @@ impl TerrainDescription {
 
     pub fn geometry(&self) -> TerrainGeometry {
         TerrainGeometry {
-            heightmap: self.heightmap.clone(),
+            source: self.source(),
             width: self.width,
             depth: self.depth,
             min_height: self.min_height,
             max_height: self.max_height,
+        }
+    }
+
+    pub fn source(&self) -> TerrainSource {
+        TerrainSource {
+            locator: self.heightmap.clone(),
+            while_pending: self.while_pending.clone(),
         }
     }
 }
@@ -185,14 +228,17 @@ mod tests {
 
     #[test]
     fn hydration_registry_does_not_retain_heightmap_samples() {
-        let locator = "weak-registry-test.png";
+        let source = TerrainSource {
+            locator: "weak-registry-test.png".to_string(),
+            while_pending: Vec::new(),
+        };
         let data = Arc::new(HeightmapData::flat());
         let weak = Arc::downgrade(&data);
-        publish_heightmap(locator, data.clone());
+        publish_heightmap(&source, data.clone());
         assert_eq!(Arc::strong_count(&data), 1);
 
         drop(data);
         assert!(weak.upgrade().is_none());
-        HEIGHTMAPS.with(|heightmaps| heightmaps.borrow_mut().remove(locator));
+        HEIGHTMAPS.with(|heightmaps| heightmaps.borrow_mut().remove(&source));
     }
 }

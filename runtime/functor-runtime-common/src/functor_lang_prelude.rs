@@ -2028,6 +2028,22 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
             }))
         },
     );
+    reg.fn2(
+        "Physics.heightfield",
+        "Physics.heightfield(tag, terrain)",
+        |tag: std::rc::Rc<str>, terrain: FunctorLangTerrain| {
+            // This constructor remains plain immutable protocol data. The
+            // physics adapter requests and hydrates the source whenever it
+            // consumes a scene, including bodies hoisted into eager globals.
+            FunctorLangBody(physics::Body::fixed(
+                tag.to_string(),
+                physics::Shape::Heightfield {
+                    geometry: terrain.0.geometry(),
+                    data: None,
+                },
+            ))
+        },
+    );
     // Bodies (tag, shape). The tag brand is erased at runtime, so it arrives
     // as the plain string (Rc<str>, allocation-light like `Physics.tag`).
     fn body_ctor(
@@ -6212,6 +6228,31 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         assert!(scene.bodies[2].sensor);
     }
 
+    #[test]
+    fn physics_heightfield_consumes_the_shared_terrain_descriptor() {
+        let value = eval(
+            "let terrain = Terrain.heightmap(Asset.texture(\"physics-terrain.png\"), 4000.0, 4000.0, -80.0, 520.0)\n\
+             let main = () => Physics.heightfield(Physics.tag(\"world\"), terrain)",
+        );
+        let Value::HostData(data) = value else {
+            panic!("expected Body host data");
+        };
+        let body = data
+            .as_any()
+            .downcast_ref::<FunctorLangBody>()
+            .expect("Body");
+        assert_eq!(body.0.kind, physics::BodyKind::Fixed);
+        let physics::Shape::Heightfield { geometry, data } = &body.0.shape else {
+            panic!("expected a heightfield");
+        };
+        assert_eq!((geometry.width, geometry.depth), (4000.0, 4000.0));
+        assert!(data.is_none(), "hydration belongs to World::reconcile");
+
+        let json = serde_json::to_string(&body.0).expect("serialize");
+        let back: physics::Body = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, body.0);
+    }
+
     // End to end across the seam: reconcile + step the singleton world the
     // way the FunctorLangGame driver does, then read it back from Functor Lang — the in-process
     // live read that is the whole point of the Functor Lang surface.
@@ -6275,7 +6316,9 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
                 .at([0.0, y, 0.0])],
             )
         };
-        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.reconcile(&ball_at(5.0)));
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&ball_at(5.0))
+        });
         let scoped = crate::physics::create_world([0.0, 0.0, 0.0]);
         crate::physics::with_world(scoped, |w| w.reconcile(&ball_at(9.0)));
 
