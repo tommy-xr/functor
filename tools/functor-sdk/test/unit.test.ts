@@ -104,6 +104,52 @@ test("waitFor throws on timeout with the description", async () => {
   );
 });
 
+test("xrInput returns the typed optional input domain", async () => {
+  const xr = {
+    head: {
+      position: [0, 0, 0] as [number, number, number],
+      orientation: [0, 0, 0, 1] as [number, number, number, number],
+    },
+    left: {
+      active: true,
+      grip: null,
+      aim: null,
+      trigger: 0.5,
+      squeeze: 0,
+      thumbstick: [0, 1] as [number, number],
+      primary_pressed: true,
+      secondary_pressed: false,
+      thumbstick_pressed: false,
+      menu_pressed: false,
+    },
+    right: {
+      active: false,
+      grip: null,
+      aim: null,
+      trigger: 0,
+      squeeze: 0,
+      thumbstick: [0, 0] as [number, number],
+      primary_pressed: false,
+      secondary_pressed: false,
+      thumbstick_pressed: false,
+      menu_pressed: false,
+    },
+  };
+  const http = {
+    getJson: async () => ({
+      frame: 1,
+      tts: 0,
+      viewport: { width: 1, height: 1 },
+      views: [],
+      model: "{}",
+      input: { held_keys: [], mouse: { x: 0, y: 0 }, xr },
+    }),
+  } as unknown as HttpClient;
+  const client = new FunctorClient(http);
+
+  assert.deepEqual(await client.xrInput(), xr);
+});
+
 test("reloadAssets uploads binary envelopes then finalizes the manifest", async () => {
   const calls: Array<{ path: string; body: unknown }> = [];
   const http = {

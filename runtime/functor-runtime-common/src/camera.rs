@@ -7,7 +7,7 @@ use crate::math::Angle;
 ///
 /// The orientation is a unit quaternion in `[x, y, z, w]` order. Tracking
 /// local `+X` is right, `+Y` is up, and `-Z` is forward, matching OpenXR.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TrackingPose {
     pub position: [f32; 3],
     pub orientation: [f32; 4],
@@ -42,6 +42,17 @@ impl TrackingPose {
         Some(Self::from_parts(position, orientation))
     }
 
+    /// Express `self` relative to a tracking-space reference pose.
+    ///
+    /// The result is target-neutral rig-local data: its origin/orientation are
+    /// the reference center eye, with OpenXR's +X right, +Y up, -Z forward
+    /// convention. Controller snapshots use this form so games can map poses
+    /// through the authored camera that belongs to the same model update.
+    pub fn relative_to(self, reference: Self) -> Option<Self> {
+        let (position, orientation) = Self::relative_parts(reference, self)?;
+        Some(Self::from_parts(position, orientation))
+    }
+
     fn position_vector(self) -> Option<Vector3<f32>> {
         self.position
             .iter()
@@ -71,6 +82,17 @@ impl TrackingPose {
                 orientation.s,
             ],
         }
+    }
+
+    fn relative_parts(reference: Self, tracked: Self) -> Option<(Vector3<f32>, Quaternion<f32>)> {
+        let reference_position = reference.position_vector()?;
+        let tracked_position = tracked.position_vector()?;
+        let inverse_reference = reference.unit_orientation()?.conjugate();
+        let tracked_orientation = tracked.unit_orientation()?;
+        Some((
+            inverse_reference.rotate_vector(tracked_position - reference_position),
+            inverse_reference * tracked_orientation,
+        ))
     }
 }
 
@@ -204,14 +226,7 @@ impl Camera {
         let backward = -forward;
         let to_world = |v: Vector3<f32>| right * v.x + up * v.y + backward * v.z;
 
-        let reference_position = reference.position_vector()?;
-        let tracked_position = tracked.position_vector()?;
-        let reference_orientation = reference.unit_orientation()?;
-        let tracked_orientation = tracked.unit_orientation()?;
-        let inverse_reference = reference_orientation.conjugate();
-
-        let local_offset = inverse_reference.rotate_vector(tracked_position - reference_position);
-        let local_orientation = inverse_reference * tracked_orientation;
+        let (local_offset, local_orientation) = TrackingPose::relative_parts(reference, tracked)?;
         let world_position = eye + to_world(local_offset);
         let world_forward =
             to_world(local_orientation.rotate_vector(-Vector3::unit_z())).normalize();
@@ -560,6 +575,35 @@ mod tests {
         let expected = Vector3::new(yaw.sin(), 0.0, yaw.cos());
 
         assert!(got.dot(expected) > 0.9999, "forward = {got:?}");
+    }
+
+    #[test]
+    fn tracking_pose_can_be_normalized_to_the_rig_reference() {
+        use cgmath::Rotation3;
+
+        let half_turn_y = Quaternion::from_angle_y(Rad(std::f32::consts::PI));
+        let pose = |position, orientation: Quaternion<f32>| {
+            TrackingPose::new(
+                position,
+                [
+                    orientation.v.x,
+                    orientation.v.y,
+                    orientation.v.z,
+                    orientation.s,
+                ],
+            )
+        };
+        let reference = pose([10.0, 2.0, 4.0], half_turn_y);
+        // World -X from a 180-degree-yaw reference is rig-local +X.
+        let tracked = pose([9.0, 2.5, 4.0], half_turn_y);
+        let relative = tracked.relative_to(reference).unwrap();
+        assert!(approx(relative.position[0], 1.0));
+        assert!(approx(relative.position[1], 0.5));
+        assert!(approx(relative.position[2], 0.0));
+        assert!(approx(relative.orientation[0], 0.0));
+        assert!(approx(relative.orientation[1], 0.0));
+        assert!(approx(relative.orientation[2], 0.0));
+        assert!(approx(relative.orientation[3].abs(), 1.0));
     }
 
     #[test]

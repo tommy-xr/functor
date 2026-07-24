@@ -76,7 +76,7 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse`), `model` (Rust `Debug` text) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse` + optional typed device domains), `model` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
@@ -107,6 +107,63 @@ frame's `ui(model)` tree, in construction order over the interactive widgets.
 An event for a slot the current view doesn't have is dropped (with a one-line
 runtime report), and the endpoint still returns 200 — delivery, not handling,
 is what's acknowledged.
+
+### Sampled input in `GET /state`
+
+`input` is runtime-owned data sampled for one simulation frame. Keyboard and
+mouse keep their existing event entry points; continuously sampled devices add
+typed sibling domains to the same record. Quest currently adds `xr` while head
+tracking is valid:
+
+```jsonc
+{
+  "held_keys": [],
+  "mouse": { "x": 0, "y": 0 },
+  "xr": {
+    "head": {
+      "position": [0.0, 0.0, 0.0],
+      "orientation": [0.0, 0.0, 0.0, 1.0]
+    },
+    "left": {
+      "active": true,
+      "grip": { "position": [-0.2, -0.3, -0.4], "orientation": [0, 0, 0, 1] },
+      "aim": { "position": [-0.2, -0.3, -0.4], "orientation": [0, 0, 0, 1] },
+      "trigger": 0.0,
+      "squeeze": 0.0,
+      "thumbstick": [0.0, 0.0],
+      "primary_pressed": false,
+      "secondary_pressed": false,
+      "thumbstick_pressed": false,
+      "menu_pressed": false
+    },
+    "right": {
+      "active": false,
+      "grip": null,
+      "aim": null,
+      "trigger": 0.0,
+      "squeeze": 0.0,
+      "thumbstick": [0.0, 0.0],
+      "primary_pressed": false,
+      "secondary_pressed": false,
+      "thumbstick_pressed": false,
+      "menu_pressed": false
+    }
+  }
+}
+```
+
+Tracked poses use OpenXR's rig-local convention: +X right, +Y up, -Z forward;
+quaternions are `[x, y, z, w]`. Head and controller poses are relative to the
+same center-eye reference that anchors the authored `Frame.camera`, so a game
+can map them through the camera from the same model update without mixing
+tracking-space coordinates into portable game state. `active` means an input
+source is available for that hand. Grip and aim are independently nullable
+because buttons can remain available during a temporary pose-tracking loss.
+Analog values are normalized to `0..1`; thumbstick axes to `-1..1`.
+
+Non-XR runtimes omit `xr`, preserving the previous desktop JSON shape. Future
+gamepad and mobile-touch support should add typed sibling fields rather than
+target-specific endpoints or string-keyed capability bags.
 
 ### `POST /time` — frame-loop control
 
@@ -202,6 +259,7 @@ point at either `http://127.0.0.1:8077` (desktop) or the adb-forwarded
   `--debug-port`, networked via `Sub.connect`/`Sub.listen`; pin all clocks and step
   them in lockstep, injecting input and observing state per client. This is the
   out-of-process counterpart to the in-process `functor-netsim` harness.
-- **Richer observation.** `/state.input` now reports held keys + mouse as structured
-  JSON (game-agnostic, runtime-owned). Still open: a parseable snapshot of the game
-  *model* itself (today `Debug` text — the model isn't `Serialize`).
+- **Richer observation.** `/state.input` reports held keys, mouse, and optional
+  typed sampled-device domains as game-agnostic runtime data. Still open: a
+  parseable snapshot of the game *model* itself (today `Debug` text — the model
+  isn't `Serialize`).

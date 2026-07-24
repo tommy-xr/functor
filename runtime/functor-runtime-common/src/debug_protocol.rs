@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ui::UiEventKind, Key};
+use crate::{ui::UiEventKind, InputSnapshot};
 
 /// Stable name returned by the discovery endpoint on every runtime target.
 pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
@@ -65,7 +65,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, viewport, views, input (held_keys + mouse), model (Debug text)",
+        description: "runtime state JSON: frame, tts, viewport, views, input snapshot (held_keys + mouse + optional xr), model (Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -164,20 +164,6 @@ impl RuntimeView {
     }
 }
 
-/// Runtime-owned input state, independent of the game model.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeInput {
-    pub held_keys: Vec<Key>,
-    pub mouse: RuntimeMouse,
-}
-
-/// Last known pointer position in output pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeMouse {
-    pub x: i32,
-    pub y: i32,
-}
-
 /// Snapshot returned by `GET /state`.
 ///
 /// `viewport`, `input`, and `model` retain the desktop wire shape. `views` is
@@ -190,7 +176,7 @@ pub struct RuntimeState {
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
     pub model: String,
-    pub input: RuntimeInput,
+    pub input: InputSnapshot,
 }
 
 impl RuntimeState {
@@ -338,6 +324,7 @@ pub enum DebugRequest {
 mod tests {
     use std::collections::BTreeSet;
 
+    use crate::Key;
     use serde_json::{json, Value};
 
     use super::*;
@@ -350,9 +337,10 @@ mod tests {
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: "Model {\n  label: \"hello\"\n}".into(),
-            input: RuntimeInput {
+            input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
-                mouse: RuntimeMouse { x: 10, y: 20 },
+                mouse: crate::MouseSnapshot { x: 10, y: 20 },
+                xr: None,
             },
         };
 

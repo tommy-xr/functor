@@ -25,20 +25,21 @@
 //! fork predates the 0.18 release that shipped GLES/Android support),
 //! `android-activity` instead of the deprecated `ndk-glue`.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::debug_protocol::{
-    CaptureError, DebugRequest, InputCommand, RuntimeInput, RuntimeMouse, RuntimeState,
-    RuntimeView, RuntimeViewport, TimeCommand,
+    CaptureError, DebugRequest, InputCommand, RuntimeState, RuntimeView, RuntimeViewport,
+    TimeCommand,
 };
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::{
-    Frame, FrameTime, GameClock, Key, SceneContext, TrackingPose, Viewport,
+    Frame, FrameTime, GameClock, InputSnapshot, Key, SceneContext, TrackingPose, Viewport,
+    XrControllerSnapshot, XrInputSnapshot,
 };
 use khronos_egl as egl;
 use openxr as xr;
@@ -254,11 +255,261 @@ fn create_eye_target(
 }
 
 /// Convert OpenXR's pose layout into the shell-independent tracking pose used
-/// by the authored camera rig.
-fn tracking_pose_from_view(view: &xr::View) -> TrackingPose {
-    let p = view.pose.position;
-    let o = view.pose.orientation;
+/// by the authored camera rig and sampled controller input.
+fn tracking_pose(pose: xr::Posef) -> TrackingPose {
+    let p = pose.position;
+    let o = pose.orientation;
     TrackingPose::new([p.x, p.y, p.z], [o.x, o.y, o.z, o.w])
+}
+
+fn tracking_pose_from_view(view: &xr::View) -> TrackingPose {
+    tracking_pose(view.pose)
+}
+
+/// OpenXR action set backing the target-neutral sampled-input snapshot.
+///
+/// One action per logical control uses left/right subaction paths. That keeps
+/// the public snapshot symmetric and lets another OpenXR target bind the same
+/// controls without introducing Quest button names into the engine contract.
+struct XrActions {
+    action_set: xr::ActionSet,
+    left_path: xr::Path,
+    right_path: xr::Path,
+    grip: xr::Action<xr::Posef>,
+    aim: xr::Action<xr::Posef>,
+    trigger: xr::Action<f32>,
+    squeeze: xr::Action<f32>,
+    thumbstick: xr::Action<xr::Vector2f>,
+    primary: xr::Action<bool>,
+    secondary: xr::Action<bool>,
+    thumbstick_click: xr::Action<bool>,
+    menu: xr::Action<bool>,
+    left_grip_space: xr::Space,
+    right_grip_space: xr::Space,
+    left_aim_space: xr::Space,
+    right_aim_space: xr::Space,
+}
+
+impl XrActions {
+    fn create(instance: &xr::Instance, session: &xr::Session<xr::OpenGlEs>) -> Self {
+        let left_path = instance
+            .string_to_path("/user/hand/left")
+            .expect("left hand path");
+        let right_path = instance
+            .string_to_path("/user/hand/right")
+            .expect("right hand path");
+        let hands = [left_path, right_path];
+        let action_set = instance
+            .create_action_set("gameplay", "Gameplay input", 0)
+            .expect("create gameplay action set");
+        let grip = action_set
+            .create_action::<xr::Posef>("grip_pose", "Grip pose", &hands)
+            .expect("create grip action");
+        let aim = action_set
+            .create_action::<xr::Posef>("aim_pose", "Aim pose", &hands)
+            .expect("create aim action");
+        let trigger = action_set
+            .create_action::<f32>("trigger", "Trigger", &hands)
+            .expect("create trigger action");
+        let squeeze = action_set
+            .create_action::<f32>("squeeze", "Squeeze", &hands)
+            .expect("create squeeze action");
+        let thumbstick = action_set
+            .create_action::<xr::Vector2f>("thumbstick", "Thumbstick", &hands)
+            .expect("create thumbstick action");
+        let primary = action_set
+            .create_action::<bool>("primary", "Primary button", &hands)
+            .expect("create primary action");
+        let secondary = action_set
+            .create_action::<bool>("secondary", "Secondary button", &hands)
+            .expect("create secondary action");
+        let thumbstick_click = action_set
+            .create_action::<bool>("thumbstick_click", "Thumbstick click", &hands)
+            .expect("create thumbstick click action");
+        let menu = action_set
+            .create_action::<bool>("menu", "Menu button", &hands)
+            .expect("create menu action");
+
+        let path = |value: &str| instance.string_to_path(value).expect("OpenXR input path");
+        let touch_profile = path("/interaction_profiles/oculus/touch_controller");
+        instance
+            .suggest_interaction_profile_bindings(
+                touch_profile,
+                &[
+                    xr::Binding::new(&grip, path("/user/hand/left/input/grip/pose")),
+                    xr::Binding::new(&grip, path("/user/hand/right/input/grip/pose")),
+                    xr::Binding::new(&aim, path("/user/hand/left/input/aim/pose")),
+                    xr::Binding::new(&aim, path("/user/hand/right/input/aim/pose")),
+                    xr::Binding::new(&trigger, path("/user/hand/left/input/trigger/value")),
+                    xr::Binding::new(&trigger, path("/user/hand/right/input/trigger/value")),
+                    xr::Binding::new(&squeeze, path("/user/hand/left/input/squeeze/value")),
+                    xr::Binding::new(&squeeze, path("/user/hand/right/input/squeeze/value")),
+                    xr::Binding::new(&thumbstick, path("/user/hand/left/input/thumbstick")),
+                    xr::Binding::new(&thumbstick, path("/user/hand/right/input/thumbstick")),
+                    xr::Binding::new(&primary, path("/user/hand/left/input/x/click")),
+                    xr::Binding::new(&primary, path("/user/hand/right/input/a/click")),
+                    xr::Binding::new(&secondary, path("/user/hand/left/input/y/click")),
+                    xr::Binding::new(&secondary, path("/user/hand/right/input/b/click")),
+                    xr::Binding::new(
+                        &thumbstick_click,
+                        path("/user/hand/left/input/thumbstick/click"),
+                    ),
+                    xr::Binding::new(
+                        &thumbstick_click,
+                        path("/user/hand/right/input/thumbstick/click"),
+                    ),
+                    xr::Binding::new(&menu, path("/user/hand/left/input/menu/click")),
+                ],
+            )
+            .expect("suggest Touch controller bindings");
+
+        // Portable simple-controller fallback for non-Meta OpenXR runtimes.
+        // Analog controls remain inactive; fully tracked grip/aim poses plus
+        // select/menu still populate the same typed snapshot.
+        instance
+            .suggest_interaction_profile_bindings(
+                path("/interaction_profiles/khr/simple_controller"),
+                &[
+                    xr::Binding::new(&grip, path("/user/hand/left/input/grip/pose")),
+                    xr::Binding::new(&grip, path("/user/hand/right/input/grip/pose")),
+                    xr::Binding::new(&aim, path("/user/hand/left/input/aim/pose")),
+                    xr::Binding::new(&aim, path("/user/hand/right/input/aim/pose")),
+                    xr::Binding::new(&primary, path("/user/hand/left/input/select/click")),
+                    xr::Binding::new(&primary, path("/user/hand/right/input/select/click")),
+                    xr::Binding::new(&menu, path("/user/hand/left/input/menu/click")),
+                    xr::Binding::new(&menu, path("/user/hand/right/input/menu/click")),
+                ],
+            )
+            .expect("suggest simple controller bindings");
+
+        session
+            .attach_action_sets(&[&action_set])
+            .expect("attach gameplay action set");
+        let left_grip_space = grip
+            .create_space(session, left_path, xr::Posef::IDENTITY)
+            .expect("left grip space");
+        let right_grip_space = grip
+            .create_space(session, right_path, xr::Posef::IDENTITY)
+            .expect("right grip space");
+        let left_aim_space = aim
+            .create_space(session, left_path, xr::Posef::IDENTITY)
+            .expect("left aim space");
+        let right_aim_space = aim
+            .create_space(session, right_path, xr::Posef::IDENTITY)
+            .expect("right aim space");
+
+        Self {
+            action_set,
+            left_path,
+            right_path,
+            grip,
+            aim,
+            trigger,
+            squeeze,
+            thumbstick,
+            primary,
+            secondary,
+            thumbstick_click,
+            menu,
+            left_grip_space,
+            right_grip_space,
+            left_aim_space,
+            right_aim_space,
+        }
+    }
+
+    fn sample(
+        &self,
+        session: &xr::Session<xr::OpenGlEs>,
+        stage: &xr::Space,
+        time: xr::Time,
+        reference: TrackingPose,
+        head: TrackingPose,
+    ) -> XrInputSnapshot {
+        let controller = |path, grip_space: &xr::Space, aim_space: &xr::Space| {
+            let grip_active = self.grip.is_active(session, path).unwrap_or(false);
+            let aim_active = self.aim.is_active(session, path).unwrap_or(false);
+            let trigger = self.trigger.state(session, path).expect("trigger state");
+            let squeeze = self.squeeze.state(session, path).expect("squeeze state");
+            let thumbstick = self
+                .thumbstick
+                .state(session, path)
+                .expect("thumbstick state");
+            let primary = self.primary.state(session, path).expect("primary state");
+            let secondary = self
+                .secondary
+                .state(session, path)
+                .expect("secondary state");
+            let thumbstick_click = self
+                .thumbstick_click
+                .state(session, path)
+                .expect("thumbstick click state");
+            let menu = self.menu.state(session, path).expect("menu state");
+            let locate = |active: bool, space: &xr::Space| {
+                active
+                    .then(|| space.locate(stage, time).ok())
+                    .flatten()
+                    .filter(|location| {
+                        location
+                            .location_flags
+                            .contains(xr::SpaceLocationFlags::POSITION_VALID)
+                            && location
+                                .location_flags
+                                .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+                            && location
+                                .location_flags
+                                .contains(xr::SpaceLocationFlags::POSITION_TRACKED)
+                            && location
+                                .location_flags
+                                .contains(xr::SpaceLocationFlags::ORIENTATION_TRACKED)
+                    })
+                    .and_then(|location| tracking_pose(location.pose).relative_to(reference))
+            };
+            XrControllerSnapshot {
+                active: grip_active
+                    || aim_active
+                    || trigger.is_active
+                    || squeeze.is_active
+                    || thumbstick.is_active
+                    || primary.is_active
+                    || secondary.is_active
+                    || thumbstick_click.is_active
+                    || menu.is_active,
+                grip: locate(grip_active, grip_space),
+                aim: locate(aim_active, aim_space),
+                trigger: trigger
+                    .is_active
+                    .then_some(trigger.current_state.clamp(0.0, 1.0))
+                    .unwrap_or(0.0),
+                squeeze: squeeze
+                    .is_active
+                    .then_some(squeeze.current_state.clamp(0.0, 1.0))
+                    .unwrap_or(0.0),
+                thumbstick: if thumbstick.is_active {
+                    [
+                        thumbstick.current_state.x.clamp(-1.0, 1.0),
+                        thumbstick.current_state.y.clamp(-1.0, 1.0),
+                    ]
+                } else {
+                    [0.0, 0.0]
+                },
+                primary_pressed: primary.is_active && primary.current_state,
+                secondary_pressed: secondary.is_active && secondary.current_state,
+                thumbstick_pressed: thumbstick_click.is_active && thumbstick_click.current_state,
+                menu_pressed: menu.is_active && menu.current_state,
+            }
+        };
+
+        XrInputSnapshot {
+            head: head.relative_to(reference),
+            left: controller(self.left_path, &self.left_grip_space, &self.left_aim_space),
+            right: controller(
+                self.right_path,
+                &self.right_grip_space,
+                &self.right_aim_space,
+            ),
+        }
+    }
 }
 
 /// Placeholder frame until the Functor Lang producer is wired (device bring-up): an
@@ -276,8 +527,7 @@ const RELOAD_PORT: u16 = 8123;
 #[derive(Default)]
 struct DebugLoopState {
     frame_count: u64,
-    held_keys: BTreeSet<Key>,
-    mouse: (i32, i32),
+    input: InputSnapshot,
     last_frame: Option<Frame>,
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
 }
@@ -334,13 +584,7 @@ fn service_debug_request(
                 viewport: RuntimeViewport::new(width, height),
                 views,
                 model: game.state_debug(),
-                input: RuntimeInput {
-                    held_keys: debug.held_keys.iter().copied().collect(),
-                    mouse: RuntimeMouse {
-                        x: debug.mouse.0,
-                        y: debug.mouse.1,
-                    },
-                },
+                input: debug.input.clone(),
             });
         }
         DebugRequest::Scene(response) => {
@@ -361,11 +605,20 @@ fn service_debug_request(
                 InputCommand::Key { key, down } => match Key::from_name(&key) {
                     Some(key) if down => {
                         game.key_event(key as i32, true);
-                        debug.held_keys.insert(key);
+                        if !debug.input.held_keys.contains(&key) {
+                            debug.input.held_keys.push(key);
+                            debug.input.held_keys.sort_unstable();
+                        }
                         Ok(())
                     }
                     Some(key) => {
-                        if debug.held_keys.remove(&key) {
+                        if let Some(index) = debug
+                            .input
+                            .held_keys
+                            .iter()
+                            .position(|candidate| *candidate == key)
+                        {
+                            debug.input.held_keys.remove(index);
                             game.key_event(key as i32, false);
                         }
                         Ok(())
@@ -373,7 +626,8 @@ fn service_debug_request(
                     None => Err(format!("unknown key: {key}")),
                 },
                 InputCommand::MouseMove { x, y } => {
-                    debug.mouse = (x, y);
+                    debug.input.mouse.x = x;
+                    debug.input.mouse.y = y;
                     game.mouse_move(x, y);
                     Ok(())
                 }
@@ -609,6 +863,7 @@ pub fn android_main(app: AndroidApp) {
                 )
             }
         };
+    let xr_actions = XrActions::create(&instance, &session);
 
     let view_config_views = instance
         .enumerate_view_configuration_views(system, xr::ViewConfigurationType::PRIMARY_STEREO)
@@ -659,6 +914,7 @@ pub fn android_main(app: AndroidApp) {
     let mut last_frame_at: Option<Instant> = None;
     let mut debug = DebugLoopState::default();
     let mut session_running = false;
+    let mut session_focused = false;
     // The first valid center-eye pose becomes the tracking origin for the
     // authored `Frame.camera`. It survives source reload and session doze so
     // model-driven locomotion and physical room-scale motion remain additive.
@@ -699,6 +955,7 @@ pub fn android_main(app: AndroidApp) {
             match event {
                 SessionStateChanged(e) => {
                     log::info!("session state: {:?}", e.state());
+                    session_focused = e.state() == xr::SessionState::FOCUSED;
                     match e.state() {
                         xr::SessionState::READY => {
                             session
@@ -716,6 +973,7 @@ pub fn android_main(app: AndroidApp) {
                             }
                             session.end().expect("session end");
                             session_running = false;
+                            session_focused = false;
                             last_frame_at = None;
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
@@ -736,6 +994,9 @@ pub fn android_main(app: AndroidApp) {
         // Service debug requests before the XR session gate. Source reload,
         // state, trace, input, and time control remain useful while the headset
         // dozes; capture reports an honest 503 until rendering resumes.
+        if !session_running || !session_focused {
+            debug.input.xr = None;
+        }
         if let Some(rx) = &debug_rx {
             while let Ok(request) = rx.try_recv() {
                 service_debug_request(
@@ -758,25 +1019,10 @@ pub fn android_main(app: AndroidApp) {
 
         let xr_frame_state = frame_wait.wait().expect("frame wait");
         frame_stream.begin().expect("frame begin");
-
-        if !xr_frame_state.should_render {
-            // READY can remain true while the compositor temporarily declines
-            // pixels. Do not strand a request until the HTTP timeout (or make
-            // every retry report "already pending"); answer honestly now.
-            if let Some(response) = debug.pending_capture.take() {
-                let _ = response.send(Err(CaptureError::Unavailable(
-                    "capture is unavailable because the XR compositor declined rendering"
-                        .to_string(),
-                )));
-            }
-            frame_stream
-                .end(
-                    xr_frame_state.predicted_display_time,
-                    xr::EnvironmentBlendMode::OPAQUE,
-                    &[],
-                )
-                .expect("frame end (no render)");
-            continue;
+        if session_focused {
+            session
+                .sync_actions(&[(&xr_actions.action_set).into()])
+                .expect("sync gameplay actions");
         }
 
         if tracking_reference_reset_at.is_some_and(|change_time| {
@@ -796,6 +1042,7 @@ pub fn android_main(app: AndroidApp) {
         let tracking_valid = view_state.contains(xr::ViewStateFlags::POSITION_VALID)
             && view_state.contains(xr::ViewStateFlags::ORIENTATION_VALID);
         if !tracking_valid {
+            debug.input.xr = None;
             // OpenXR leaves the view poses undefined when either validity bit
             // is absent. Do not read those poses or submit them for compositor
             // reprojection; a mono authored-camera fallback would be actively
@@ -815,17 +1062,53 @@ pub fn android_main(app: AndroidApp) {
             last_frame_at = None;
             continue;
         }
+        let center_pose = views.first().and_then(|left| {
+            let left = tracking_pose_from_view(left);
+            views
+                .get(1)
+                .and_then(|right| TrackingPose::midpoint(left, tracking_pose_from_view(right)))
+                .or_else(|| TrackingPose::midpoint(left, left))
+        });
         if tracking_reference.is_none() {
-            tracking_reference = views.first().and_then(|left| {
-                let left = tracking_pose_from_view(left);
-                views
-                    .get(1)
-                    .and_then(|right| TrackingPose::midpoint(left, tracking_pose_from_view(right)))
-                    .or_else(|| TrackingPose::midpoint(left, left))
-            });
+            tracking_reference = center_pose;
             if tracking_reference.is_some() {
                 log::info!("camera rig centered: Frame.camera is the reference center-eye pose");
             }
+        }
+        debug.input.xr = session_focused
+            .then(|| {
+                tracking_reference
+                    .zip(center_pose)
+                    .map(|(reference, head)| {
+                        xr_actions.sample(
+                            &session,
+                            &stage,
+                            xr_frame_state.predicted_display_time,
+                            reference,
+                            head,
+                        )
+                    })
+            })
+            .flatten();
+
+        if !xr_frame_state.should_render {
+            // `should_render` controls layer submission, not tracking
+            // validity. Keep the freshly sampled input visible to `/state`
+            // while honestly declining a framebuffer capture.
+            if let Some(response) = debug.pending_capture.take() {
+                let _ = response.send(Err(CaptureError::Unavailable(
+                    "capture is unavailable because the XR compositor declined rendering"
+                        .to_string(),
+                )));
+            }
+            frame_stream
+                .end(
+                    xr_frame_state.predicted_display_time,
+                    xr::EnvironmentBlendMode::OPAQUE,
+                    &[],
+                )
+                .expect("frame end (no render)");
+            continue;
         }
 
         let now = Instant::now();

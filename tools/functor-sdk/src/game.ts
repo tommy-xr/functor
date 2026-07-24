@@ -7,6 +7,7 @@ import type {
   RuntimeState,
   Scene,
   WaitForOptions,
+  XrInputSnapshot,
 } from "./types.js";
 
 /** Default per-step delta time (seconds), ~one frame at 60 Hz. */
@@ -55,6 +56,12 @@ export class FunctorClient {
   async isKeyDown(key: KeyName): Promise<boolean> {
     const want = canonicalKeyName(key);
     return (await this.heldKeys()).some((k) => k === want);
+  }
+
+  /** Latest rig-local XR head/controller snapshot, or undefined on non-XR
+   * targets and while XR tracking is unavailable. */
+  async xrInput(): Promise<XrInputSnapshot | undefined> {
+    return (await this.state()).input.xr;
   }
 
   /** Capture the next rendered frame as PNG bytes. */
