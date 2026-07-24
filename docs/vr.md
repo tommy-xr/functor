@@ -117,14 +117,29 @@ controller levels for deterministic captures without adding a desktop-only
 game API. This is one shell adapter over the canonical snapshot; future
 gamepad/mobile adapters should produce that same target-neutral record.
 
+`examples/xr-controllers` is the shared-path reference: it maps both grip
+poses through the authored camera, visualizes each aim direction, and pulls an
+orb toward the right controller while trigger is held. Run it unchanged on
+desktop or Quest:
+
+```sh
+functor -d examples/xr-controllers run native --emulate-xr
+functor -d examples/xr-controllers run vr
+
+# Reproducible held-trigger frame (the script path is project-relative):
+functor -d examples/xr-controllers run native --emulate-xr \
+  --input-script grab.script --capture-frame /tmp/xr-grab.png \
+  --capture-at-frame 60
+```
+
 ## After bring-up (in rough order)
 
 - The typed XR snapshot is exposed to Functor Lang through the per-tick
   `sampledInput` hook and maps through the authored rig with
   `Camera.mapTrackedPose`; desktop can synthesize the same record with
-  `--emulate-xr`. Next, add a controller-driven example. Keep gamepad and
-  mobile-touch input as typed sibling domains rather than XR-specific producer
-  APIs.
+  `--emulate-xr`, and `examples/xr-controllers` exercises both paths. Keep
+  gamepad and mobile-touch input as typed sibling domains rather than
+  XR-specific producer APIs.
 - Add the Android audio host; sound bytes already synchronize, but Quest
   currently drains playback commands.
 - Add a browser surface over the isomorphic debug API for edit/push/inspect/
