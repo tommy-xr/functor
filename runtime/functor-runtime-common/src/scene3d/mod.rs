@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 use glow::HasContext;
 
@@ -9,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     asset::{
         self,
-        pipelines::{ModelPipeline, RawImagePipeline, TexturePipeline},
+        pipelines::{
+            HeightmapData, HeightmapPipeline, ModelPipeline, RawImagePipeline, TexturePipeline,
+        },
         AssetCache, AssetHandle, AssetPollState, BuiltAssetPipeline,
     },
     composite::{
@@ -27,6 +32,7 @@ use crate::{
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
     skybox::{SkyboxDescription, SKYBOX_FRAGMENT_SHADER_SOURCE, SKYBOX_VERTEX_SHADER_SOURCE},
+    terrain_renderer::TerrainRenderer,
     texture::{RuntimeTexture, Texture2D, TextureData},
     DebugRenderMode, RenderContext, RenderPass,
 };
@@ -52,6 +58,9 @@ pub struct SceneContext {
     // GL mesh each frame; static terrain uploads exactly once. Keyed by
     // (rows, cols) — the stable identity of the mesh across frames.
     heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
+    heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
+    terrain_renderer: RefCell<TerrainRenderer>,
+    terrain_frame_serial: Cell<u64>,
     // Render targets persist across frames/hot reloads, keyed by the target's
     // string id (the cross-frame identity). Buffers for ids a game stops
     // declaring are kept until exit — TODO: evict.
@@ -128,6 +137,7 @@ impl SceneContext {
         self.model_pipeline.evict(path);
         self.texture_pipeline.evict(path);
         self.raw_image_pipeline.evict(path);
+        self.heightmap_pipeline.evict(path);
         self.skyboxes
             .borrow_mut()
             .retain(|faces, _| !faces.split('\n').any(|face| face == path));
@@ -141,6 +151,9 @@ impl SceneContext {
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
             heightmaps: RefCell::new(HashMap::new()),
+            heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
+            terrain_renderer: RefCell::new(TerrainRenderer::default()),
+            terrain_frame_serial: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
             render_targets: RefCell::new(HashMap::new()),
@@ -152,6 +165,15 @@ impl SceneContext {
             composite_program: RefCell::new(None),
             preloads: RefCell::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn begin_terrain_frame(&self, external_frame: Option<u64>) {
+        let frame = external_frame.unwrap_or_else(|| {
+            let next = self.terrain_frame_serial.get().wrapping_add(1);
+            self.terrain_frame_serial.set(next);
+            next
+        });
+        self.terrain_renderer.borrow_mut().begin_frame(frame);
     }
 
     /// The shell's per-frame preload step (B.5): turn this frame's
@@ -219,6 +241,34 @@ impl SceneContext {
             false
         });
         settled
+    }
+
+    fn draw_terrain(
+        &self,
+        render_context: &RenderContext,
+        terrain: &crate::terrain::TerrainDescription,
+        world: &Matrix4<f32>,
+        projection: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+    ) {
+        let handle = render_context
+            .asset_cache
+            .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &terrain.heightmap);
+        let source = crate::asset::resolve_while_pending(
+            &render_context.asset_cache,
+            &self.heightmap_pipeline,
+            &handle,
+            &terrain.while_pending,
+        );
+        crate::terrain::publish_heightmap(&terrain.heightmap, source.clone());
+        self.terrain_renderer.borrow_mut().draw(
+            render_context,
+            terrain,
+            source,
+            world,
+            projection,
+            view,
+        );
     }
 
     #[cfg(test)]
@@ -606,6 +656,7 @@ pub enum Shape {
 pub enum SceneObject {
     Geometry(Shape),
     Model(ModelDescription),
+    Terrain(Box<crate::terrain::TerrainDescription>),
     Material(MaterialDescription, Vec<Scene3D>),
     Group(Vec<Scene3D>),
 }
@@ -663,6 +714,13 @@ impl Scene3D {
         }
     }
 
+    pub fn terrain(terrain: crate::terrain::TerrainDescription) -> Self {
+        Scene3D {
+            obj: SceneObject::Terrain(Box::new(terrain)),
+            xform: Matrix4::identity(),
+        }
+    }
+
     /// Set the animation expression on every `Model` node in this subtree —
     /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
     /// that one model; applying over a group animates each model in it.
@@ -685,7 +743,7 @@ impl Scene3D {
                     .map(|item| item.with_animation(expr.clone()))
                     .collect(),
             ),
-            geometry @ SceneObject::Geometry(_) => geometry,
+            leaf @ (SceneObject::Geometry(_) | SceneObject::Terrain(_)) => leaf,
         };
         Scene3D { obj, ..self }
     }
@@ -959,6 +1017,23 @@ named \"{name}\" — {hint}"
                     }
                 }
             }
+
+            // The dedicated GPU terrain path is initialized and drawn here;
+            // keeping it as its own scene leaf (rather than a giant
+            // `Shape::Heightmap`) lets rendering choose LOD without changing
+            // the pure scene description. Terrain receives the forward
+            // pass's shadows but does not yet render into the shadow map.
+            SceneObject::Terrain(terrain) if !depth_pass => {
+                let xform = world_matrix * self.xform;
+                scene_context.draw_terrain(
+                    render_context,
+                    terrain,
+                    &xform,
+                    projection_matrix,
+                    view_matrix,
+                );
+            }
+            SceneObject::Terrain(_) => {}
 
             SceneObject::Material(material_description, items) => {
                 let material = material_description.get(render_context, scene_context);

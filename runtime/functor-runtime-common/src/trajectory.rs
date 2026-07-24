@@ -72,7 +72,7 @@ fn collect_transforms(
                 path.pop();
             }
         }
-        SceneObject::Geometry(_) | SceneObject::Model(_) => {
+        SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
             out.insert(path.clone(), w);
         }
     }
@@ -112,7 +112,7 @@ fn collect_anchor(
                 path.pop();
             }
         }
-        SceneObject::Geometry(_) | SceneObject::Model(_) => {
+        SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
             out.insert(
                 path.clone(),
                 AnchorLeaf {
@@ -257,7 +257,7 @@ fn collect_sample_leaves<'a>(
                 path.pop();
             }
         }
-        SceneObject::Geometry(_) | SceneObject::Model(_) => {
+        SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
             out.insert(
                 path.clone(),
                 SampleLeaf {
