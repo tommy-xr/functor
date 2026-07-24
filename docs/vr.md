@@ -24,7 +24,7 @@ games deploy over the network.
 | [#438](https://github.com/tommy-xr/functor/pull/438) | Shared desktop/Quest debug protocol, whole-project REPL, raw stereo capture, TypeScript SDK parity, device benchmark | merged; Quest 3 verified |
 | [#453](https://github.com/tommy-xr/functor/pull/453) | Compose live OpenXR head/eye tracking onto the authored `Frame.camera` rig | merged; Quest 3 verified |
 | [#460](https://github.com/tommy-xr/functor/pull/460) | Push project `.glb` models, textures, and sounds through the shared debug protocol; initialize the first pushed project from `init` | merged; Quest 3 verified with synthwave textures + animated Xbot |
-| current | Sample Quest Touch grip/aim poses, analog controls, and buttons into the shared typed input snapshot | in progress; Quest 3 + debug/SDK verified |
+| [#463](https://github.com/tommy-xr/functor/pull/463) | Sample Quest Touch grip/aim poses, analog controls, and buttons into the shared typed input snapshot | ready; Quest 3 + debug/SDK verified |
 
 ## Working today on the Xreal One
 
