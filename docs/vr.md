@@ -99,13 +99,32 @@ deadlines.
 With Touch action sampling enabled, a matched synthwave release rerun held 72
 FPS p5/min with 0.78 ms mean application time and zero stale/torn frames.
 
+## Desktop XR emulation
+
+Run a Functor Lang game with `--emulate-xr` to synthesize the same
+`Input.snapshot.xr` record that Quest supplies:
+
+```sh
+functor -d examples/my-xr-game run native --emulate-xr
+```
+
+The mouse moves the right controller over a rig-local plane; left-click or
+Space drives trigger, Enter drives squeeze, arrows drive the thumbstick, and
+1/2/3 drive primary, secondary, and thumbstick-click. Both controller poses and
+the identity head pose appear in `/state.input.xr`, including under
+`--headless`. An `--input-script` can therefore drive the same emulated
+controller levels for deterministic captures without adding a desktop-only
+game API. This is one shell adapter over the canonical snapshot; future
+gamepad/mobile adapters should produce that same target-neutral record.
+
 ## After bring-up (in rough order)
 
 - The typed XR snapshot is exposed to Functor Lang through the per-tick
   `sampledInput` hook and maps through the authored rig with
-  `Camera.mapTrackedPose`. Next, add desktop emulation and a controller-driven
-  example. Keep gamepad and mobile-touch input as typed sibling domains rather
-  than XR-specific producer APIs.
+  `Camera.mapTrackedPose`; desktop can synthesize the same record with
+  `--emulate-xr`. Next, add a controller-driven example. Keep gamepad and
+  mobile-touch input as typed sibling domains rather than XR-specific producer
+  APIs.
 - Add the Android audio host; sound bytes already synchronize, but Quest
   currently drains playback commands.
 - Add a browser surface over the isomorphic debug API for edit/push/inspect/

@@ -160,6 +160,9 @@ functor -d examples/primitives run wasm
 ```
 
 `native` is the default environment, so `... run` is equivalent to `... run native`.
+XR games can use the Quest-isomorphic desktop adapter with
+`... run native --emulate-xr`; see [the VR guide](docs/vr.md#desktop-xr-emulation)
+for its mouse/keyboard controls and deterministic `--input-script` path.
 (These commands assume `functor` is on your `PATH`; when running from a source build,
 use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).)
 
