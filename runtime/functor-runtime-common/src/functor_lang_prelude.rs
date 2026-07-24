@@ -1620,6 +1620,31 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
             FunctorLangCamera(Camera::first_person([ex, ey, ez], yaw.0, pitch.0, fov.0))
         },
     );
+    reg.fn2(
+        "Camera.mapTrackedPose",
+        "Camera.mapTrackedPose(camera, pose)",
+        |camera: FunctorLangCamera, pose: Value| {
+            let tracked = crate::tracking_pose_from_value(&pose)?;
+            let mapped = camera
+                .0
+                .map_tracking_pose(crate::TrackingPose::IDENTITY, tracked)
+                .ok_or_else(|| {
+                    "Camera.mapTrackedPose: invalid pose or degenerate authored camera".to_string()
+                })?;
+            let point = |xyz: [f32; 3]| {
+                Value::Record(Rc::new(vec![
+                    ("x".to_string(), Value::Number(xyz[0] as f64)),
+                    ("y".to_string(), Value::Number(xyz[1] as f64)),
+                    ("z".to_string(), Value::Number(xyz[2] as f64)),
+                ]))
+            };
+            Ok(Value::Record(Rc::new(vec![
+                ("position".to_string(), point(mapped.position)),
+                ("forward".to_string(), point(mapped.forward)),
+                ("up".to_string(), point(mapped.up)),
+            ])))
+        },
+    );
 }
 
 fn register_light(reg: &mut crate::host_registry::Registry) {
@@ -4583,6 +4608,22 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
         // And the whole thing round-trips through the protocol.
         let back: Frame = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn tracked_pose_maps_through_the_authored_camera_rig() {
+        let value = eval(
+            "let main = () =>\n\
+             Camera.mapTrackedPose(\n\
+               Camera.lookAt(Vec3.make(4.0, 2.0, -3.0), Vec3.make(4.0, 2.0, -2.0)),\n\
+               { position: { x: 0.0, y: 0.0, z: 0.0 }, \
+                 orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } })",
+        );
+        assert_eq!(
+            value.to_string(),
+            "{ position: { x: 4, y: 2, z: -3 }, \
+forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
+        );
     }
 
     #[test]

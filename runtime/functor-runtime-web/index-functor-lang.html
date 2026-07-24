@@ -161,6 +161,13 @@
           if (code === 0) return;
           if (gameHeld.delete(code)) functor_lang_key_event(code, false);
         });
+        // A key released while the tab/window lacks focus may never emit a
+        // keyup here. Synthesize releases for every press the game saw so both
+        // its edge hook and the next sampled held-key snapshot recover.
+        window.addEventListener("blur", () => {
+          for (const code of gameHeld) functor_lang_key_event(code, false);
+          gameHeld.clear();
+        });
 
         // Mouse free-look. Pointer Lock is the browser equivalent of the
         // desktop runtime's GLFW cursor capture, giving movementX/Y relative

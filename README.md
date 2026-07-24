@@ -121,6 +121,7 @@ let init = { … }                        // the initial model (a value)
 let tick = (model, dt, tts) => model'   // per-frame step
 let draw = (model, tts) => Frame.create(camera, scene)
 let input = (model, key, isDown) => model'         // OPTIONAL; key: Key.t (Key.W, Key.Up, …)
+let sampledInput = (model, snapshot: Input.snapshot) => model' // OPTIONAL held/device state
 let update = (model, msg) => model'                // OPTIONAL; msgs are ADT variants
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)  // OPTIONAL timers
 let physics = (model) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [body, …]) // OPTIONAL

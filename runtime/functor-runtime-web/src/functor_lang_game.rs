@@ -1,10 +1,10 @@
 //! The Functor Lang producer for the web shell (docs/functor-lang.md Track C5): the wasm
 //! sibling of the desktop runner's `functor_lang_game.rs`, behind the same
 //! `GameProducer` seam. Same load-time contract validation and per-frame
-//! semantics — the MVU pair (subscriptions fold through `update` before
-//! `tick`), the optional `physics` hook (tick → physics → draw), a bad frame
-//! keeps the last good model/frame, per-frame errors dedupe — but adapted to
-//! the browser:
+//! semantics — sampled input, then the MVU pair (subscriptions fold through
+//! `update` before `tick`), the optional `physics` hook (tick → physics →
+//! draw), a bad frame keeps the last good model/frame, per-frame errors
+//! dedupe — but adapted to the browser:
 //!
 //! - the `.fun` source arrives over HTTP (fetched by `run_async` from the dev
 //!   server, which serves the project directory) instead of the filesystem;
@@ -37,7 +37,9 @@ pub struct WebPlatform {
 
 impl WebPlatform {
     pub fn new() -> WebPlatform {
-        WebPlatform { overlay_error: None }
+        WebPlatform {
+            overlay_error: None,
+        }
     }
 }
 
@@ -335,26 +337,64 @@ pub fn set_ui_wants_keyboard(wants: bool) {
 /// the frame loop before `tick`. Empty (and free) on the F# path — its page
 /// never calls the `functor_lang_*` exports.
 ///
-/// When `deliver` is false (the clock is paused), the queue is still drained but
-/// its events are DISCARDED — never dispatched to the game. This mirrors the
-/// desktop pinned-clock gate: while paused, NO input may reach the model, so the
-/// frame-indexed input log has nothing unlogged to diverge forward-step replay.
-/// Draining (rather than leaving the queue) also stops it bursting on resume.
-pub fn drain_input(game: &mut dyn GameProducer, deliver: bool) {
+/// When `deliver` is false, the queue is drained without changing the sampled
+/// pointer or admitting new presses. Interactive pause may set
+/// `recover_releases`: releases then update physical held state so a key
+/// released while paused cannot stick on resume. Fixed-time capture leaves the
+/// entire snapshot frozen.
+pub fn drain_input(
+    game: &mut dyn GameProducer,
+    snapshot: &mut functor_runtime_common::InputSnapshot,
+    deliver: bool,
+    recover_releases: bool,
+) {
     let events = INPUT_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if !deliver {
-        return;
-    }
     for event in events {
         match event {
-            InputEvent::Key { code, is_down } => game.key_event(code, is_down),
-            InputEvent::MouseMove { x, y } => game.mouse_move(x, y),
-            InputEvent::MouseWheel { delta } => game.mouse_wheel(delta),
-            InputEvent::UiEvent(event) => game.ui_event(event),
+            InputEvent::Key { code, is_down } => {
+                if let Some(key) = functor_runtime_common::Key::from_i32(code)
+                    .filter(|key| *key != functor_runtime_common::Key::Unknown)
+                {
+                    if is_down && deliver {
+                        if !snapshot.held_keys.contains(&key) {
+                            snapshot.held_keys.push(key);
+                            snapshot.held_keys.sort_unstable();
+                        }
+                    } else if !is_down && (deliver || recover_releases) {
+                        snapshot.held_keys.retain(|held| *held != key);
+                    }
+                }
+                if deliver {
+                    game.key_event(code, is_down);
+                }
+            }
+            InputEvent::MouseMove { x, y } => {
+                if deliver {
+                    snapshot.mouse = functor_runtime_common::MouseSnapshot { x, y };
+                    game.mouse_move(x, y);
+                }
+            }
+            InputEvent::MouseWheel { delta } => {
+                if deliver {
+                    game.mouse_wheel(delta);
+                }
+            }
+            // Only the time-travel recorder creates snapshots; the page input
+            // bridge cannot enqueue one.
+            InputEvent::Snapshot(_) => {}
+            InputEvent::UiEvent(event) => {
+                if deliver {
+                    game.ui_event(event);
+                }
+            }
             // Webview interactions arrive through their own queue
             // (`take_webview_events`, drained by the frame loop), not the page
             // input queue — but the shared enum makes the arm total.
-            InputEvent::WebviewEvent(event) => game.webview_event(event),
+            InputEvent::WebviewEvent(event) => {
+                if deliver {
+                    game.webview_event(event);
+                }
+            }
         }
     }
 }
@@ -496,22 +536,23 @@ thread_local! {
     static TIMELINE_LOG: RefCell<TimelineLog> = RefCell::new(TimelineLog::default());
 }
 
-fn input_marker(input: &InputEvent) -> (&'static str, String) {
+fn input_marker(input: &InputEvent) -> Option<(&'static str, String)> {
     match input {
         InputEvent::Key { code, is_down } => {
             let name = functor_runtime_common::Key::from_i32(*code)
                 .map(|key| key.name())
                 .unwrap_or_else(|| format!("key {code}"));
             let edge = if *is_down { "down" } else { "up" };
-            (
+            Some((
                 if *is_down { "key-down" } else { "key-up" },
                 format!("{name} {edge}"),
-            )
+            ))
         }
-        InputEvent::MouseMove { x, y } => ("mouse-move", format!("mouse move ({x}, {y})")),
-        InputEvent::MouseWheel { delta } => ("mouse-wheel", format!("mouse wheel {delta:+}")),
-        InputEvent::UiEvent(event) => ("ui-input", format!("UI {event:?}")),
-        InputEvent::WebviewEvent(event) => ("webview-input", format!("webview {event:?}")),
+        InputEvent::MouseMove { x, y } => Some(("mouse-move", format!("mouse move ({x}, {y})"))),
+        InputEvent::MouseWheel { delta } => Some(("mouse-wheel", format!("mouse wheel {delta:+}"))),
+        InputEvent::Snapshot(_) => None,
+        InputEvent::UiEvent(event) => Some(("ui-input", format!("UI {event:?}"))),
+        InputEvent::WebviewEvent(event) => Some(("webview-input", format!("webview {event:?}"))),
     }
 }
 
@@ -553,12 +594,14 @@ pub fn publish_timeline_inputs(game: &dyn GameProducer) {
                         last_mouse_move = Some(input);
                         continue;
                     }
-                    let (kind, label) = input_marker(&input);
-                    log.push(frame, kind, label);
+                    if let Some((kind, label)) = input_marker(&input) {
+                        log.push(frame, kind, label);
+                    }
                 }
                 if let Some(input) = last_mouse_move {
-                    let (kind, label) = input_marker(&input);
-                    log.push(frame, kind, label);
+                    if let Some((kind, label)) = input_marker(&input) {
+                        log.push(frame, kind, label);
+                    }
                 }
             }
         }

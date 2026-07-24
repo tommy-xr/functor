@@ -32,9 +32,9 @@ use std::collections::{BTreeMap, VecDeque};
 
 use functor_lang::Value;
 
-use crate::FrameTime;
 use crate::input::RecordedInput;
 use crate::physics::SteppedPhysics;
+use crate::FrameTime;
 
 /// A fixed-step frame number — the same index space as
 /// [`crate::physics::timeline::Frame`].
@@ -189,13 +189,22 @@ impl<T: Clone> History<T> {
     }
 }
 
-/// Session-long input history with O(events) storage rather than one heap-sized
-/// `Vec` header per input-free frame. The contiguous frame range is tracked
-/// separately because fixed-step replay still advances through empty frames.
+/// Sparse input history with O(events) storage rather than one heap-sized
+/// `Vec` header per input-free frame. Edge-only games retain their whole
+/// session so a reload can replay from `init`. Once a continuously sampled
+/// snapshot appears, the log adopts the model ring's bounded horizon instead:
+/// one coeffect per rendered frame must not grow for the lifetime of a process.
+/// The contiguous frame range is tracked separately because fixed-step replay
+/// still advances through empty frames.
 struct InputHistory {
     base: Option<Frame>,
     next: Option<Frame>,
     events: BTreeMap<Frame, Vec<RecordedInput>>,
+    has_sampled_snapshots: bool,
+    /// Whether the currently loaded program's origin replay requirements are
+    /// satisfied. Recomputed before each reload: a destructive rewind may
+    /// legitimately discard a historical coeffect gap.
+    origin_replay_complete: bool,
 }
 
 impl InputHistory {
@@ -204,6 +213,8 @@ impl InputHistory {
             base: None,
             next: None,
             events: BTreeMap::new(),
+            has_sampled_snapshots: false,
+            origin_replay_complete: true,
         }
     }
 
@@ -212,20 +223,55 @@ impl InputHistory {
             None => self.base = Some(frame),
             Some(next) => assert_eq!(frame, next, "input frames must be recorded consecutively"),
         }
+        if inputs
+            .iter()
+            .any(|input| matches!(input, RecordedInput::Snapshot(_)))
+        {
+            self.has_sampled_snapshots = true;
+        }
         if !inputs.is_empty() {
             self.events.insert(frame, inputs);
         }
         self.next = Some(frame + 1);
+        if self.has_sampled_snapshots {
+            let retain_from = (frame + 1).saturating_sub(DEFAULT_HISTORY_FRAMES as u64);
+            if self.base.is_some_and(|base| retain_from > base) {
+                self.events = self.events.split_off(&retain_from);
+                self.base = Some(retain_from);
+            }
+        }
     }
 
     fn recorded_range(&self) -> Option<(Frame, Frame)> {
-        self.base.zip(self.next).and_then(|(base, next)| {
-            (next > base).then_some((base, next - 1))
-        })
+        self.base
+            .zip(self.next)
+            .and_then(|(base, next)| (next > base).then_some((base, next - 1)))
     }
 
     fn at(&self, frame: Frame) -> &[RecordedInput] {
         self.events.get(&frame).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn supports_origin_replay_through(&self, frame: Frame) -> bool {
+        self.origin_replay_complete
+            && (!self.has_sampled_snapshots
+                || self
+                    .recorded_range()
+                    .is_some_and(|(lo, hi)| lo == 0 && hi >= frame))
+    }
+
+    fn has_snapshot_at(&self, frame: Frame) -> bool {
+        self.at(frame)
+            .iter()
+            .any(|input| matches!(input, RecordedInput::Snapshot(_)))
+    }
+
+    fn sampled_history_is_complete_from_origin(&self) -> bool {
+        match self.recorded_range() {
+            None => true,
+            Some((0, hi)) => (0..=hi).all(|frame| self.has_snapshot_at(frame)),
+            Some(_) => false,
+        }
     }
 
     fn truncate_from(&mut self, frame: Frame) {
@@ -233,7 +279,9 @@ impl InputHistory {
         if frame >= next {
             return;
         }
-        let base = self.base.expect("input history with a next frame has a base");
+        let base = self
+            .base
+            .expect("input history with a next frame has a base");
         assert!(
             frame >= base,
             "truncate_from({frame}) predates input history (base {base})"
@@ -277,11 +325,9 @@ pub struct SceneRecorder {
     replay_prefix: Option<(FrameTime, Vec<RecordedInput>)>,
     /// The frame-indexed input log (docs/time-travel.md T6, "The event log"):
     /// each rendered frame's recorded input events, keyed in LOCKSTEP with
-    /// `model_history`. Unlike the other three rings this is PLAIN DATA
-    /// (`RecordedInput`) and is retained from frame zero for the whole current
-    /// branch. That lets a scrubbed hot reload replay from the edited program's
-    /// `init` even after the much larger model/world snapshots have pruned their
-    /// first ~15-second window.
+    /// `model_history`. Sparse edge input stays session-long for replay from
+    /// edited `init`; continuously sampled coeffects use the same bounded
+    /// horizon as model/world history.
     input_history: InputHistory,
     /// The rendered-frame index the next snapshot records at; monotonic.
     rendered_frame: u64,
@@ -362,7 +408,10 @@ impl SceneRecorder {
             self.counterfactual_replay = self
                 .scrub_pos
                 .zip(self.model_history.recorded_range())
-                .is_some_and(|(selected, (_, hi))| selected < hi);
+                .is_some_and(|(selected, (_, hi))| {
+                    selected < hi
+                        && self.input_history.supports_origin_replay_through(hi)
+                });
             return ReloadHistory::Preserved;
         }
 
@@ -433,13 +482,31 @@ impl SceneRecorder {
         self.program_revision
     }
 
-    /// Complete replay target after a safe reload. Model snapshots may have
-    /// pruned frame zero; the small plain-data input log deliberately does not.
-    /// Return a diagnostic instead of silently falling back to old-data
-    /// semantics if that session-origin invariant is ever broken.
-    pub fn counterfactual_replay_span(
-        &self,
-    ) -> Result<Option<(Frame, Frame, Frame)>, String> {
+    /// Configure origin replay for the program about to finish reloading.
+    ///
+    /// A program with `sampledInput` needs a sample for the zero-delta prefix
+    /// and every recorded frame. A program without it can replay the same
+    /// history without consuming those coeffects. Recompute from the current
+    /// branch rather than preserving a past failure: rewinding before a gap
+    /// makes the remaining origin-to-tail history complete again.
+    pub fn configure_origin_replay_for_sampled_input(&mut self, required: bool) {
+        let prefix_complete = self.replay_prefix.as_ref().is_none_or(|(_, inputs)| {
+            inputs
+                .iter()
+                .any(|input| matches!(input, RecordedInput::Snapshot(_)))
+        });
+        self.input_history.origin_replay_complete = !required
+            || (prefix_complete
+                && self
+                    .input_history
+                    .sampled_history_is_complete_from_origin());
+    }
+
+    /// Complete replay target after a safe reload. Sparse edge-input logs retain
+    /// frame zero; sampled coeffect logs only enable this path while their
+    /// bounded window still covers the session origin. Return a diagnostic
+    /// instead of silently falling back if the sparse-log invariant is broken.
+    pub fn counterfactual_replay_span(&self) -> Result<Option<(Frame, Frame, Frame)>, String> {
         if !self.counterfactual_replay {
             return Ok(None);
         }
@@ -455,9 +522,9 @@ impl SceneRecorder {
                  {input_lo}..={input_hi}, not the required 0..={hi}"
             ));
         }
-        let selected = self.current_scene_frame().ok_or_else(|| {
-            "counterfactual replay unavailable: no selected frame".to_string()
-        })?;
+        let selected = self
+            .current_scene_frame()
+            .ok_or_else(|| "counterfactual replay unavailable: no selected frame".to_string())?;
         let (clock_lo, clock_hi) = self.clock_history.recorded_range().ok_or_else(|| {
             "counterfactual replay unavailable: the session clock log is empty".to_string()
         })?;
@@ -493,7 +560,9 @@ impl SceneRecorder {
             "counterfactual replay cannot replace an empty model history".to_string()
         })?;
         if (retained_lo, retained_hi) != (lo, hi) {
-            return Err("counterfactual replay target changed while rebuilding history".to_string());
+            return Err(
+                "counterfactual replay target changed while rebuilding history".to_string(),
+            );
         }
         for (frame, rebuilt) in (lo..=hi).zip(models) {
             self.model_history.replace(
@@ -548,12 +617,7 @@ impl SceneRecorder {
     }
 
     /// Production recording path: retain the exact clock values the model saw.
-    pub fn record_timed(
-        &mut self,
-        model: &Value,
-        physics_fixed_frame: u64,
-        frame_time: FrameTime,
-    ) {
+    pub fn record_timed(&mut self, model: &Value, physics_fixed_frame: u64, frame_time: FrameTime) {
         self.model_history.record(self.rendered_frame, model);
         self.world_frame_history
             .record(self.rendered_frame, &physics_fixed_frame);
@@ -571,11 +635,7 @@ impl SceneRecorder {
 
     /// Capture the shell's initial zero-delta settling execution. Later paused
     /// renders are not simulation history and remain deliberately discarded.
-    pub fn record_replay_prefix(
-        &mut self,
-        frame_time: FrameTime,
-        inputs: Vec<RecordedInput>,
-    ) {
+    pub fn record_replay_prefix(&mut self, frame_time: FrameTime, inputs: Vec<RecordedInput>) {
         if self.rendered_frame == 0 && self.replay_prefix.is_none() {
             self.replay_prefix = Some((frame_time, inputs));
         }
@@ -631,6 +691,27 @@ impl SceneRecorder {
                 .collect(),
             None => Vec::new(),
         }
+    }
+
+    /// Most recent continuously sampled coeffect at or before `frame`, within
+    /// the retained input horizon. Forward projection carries this level state
+    /// through future ticks when there is no newer recorded sample.
+    pub fn sampled_input_at_or_before(&self, frame: u64) -> Option<crate::InputSnapshot> {
+        let (lo, hi) = self.input_history.recorded_range()?;
+        let end = frame.min(hi);
+        if end < lo {
+            return None;
+        }
+        self.input_history
+            .events
+            .range(lo..=end)
+            .rev()
+            .find_map(|(_, events)| {
+                events.iter().rev().find_map(|event| match event {
+                    RecordedInput::Snapshot(snapshot) => Some(snapshot.as_ref().clone()),
+                    _ => None,
+                })
+            })
     }
 
     /// The render clock `tts` to draw at WHILE SCRUBBING — the recorded `tts` of
@@ -833,6 +914,30 @@ mod tests {
         assert_eq!(h.recorded_range(), Some((5, 9)));
         assert_eq!(*h.seek(5), 5);
         assert_eq!(*h.seek(9), 9);
+    }
+
+    #[test]
+    fn sampled_input_history_uses_the_model_retention_horizon() {
+        let mut history = InputHistory::new();
+        for frame in 0..=(DEFAULT_HISTORY_FRAMES as u64 + 1) {
+            history.record(
+                frame,
+                vec![RecordedInput::Snapshot(Box::new(
+                    crate::InputSnapshot::default(),
+                ))],
+            );
+        }
+
+        assert_eq!(
+            history.recorded_range(),
+            Some((2, DEFAULT_HISTORY_FRAMES as u64 + 1))
+        );
+        assert!(history.at(0).is_empty());
+        assert!(matches!(
+            history.at(2),
+            [RecordedInput::Snapshot(snapshot)]
+                if snapshot.as_ref() == &crate::InputSnapshot::default()
+        ));
     }
 
     #[test]
@@ -1072,6 +1177,35 @@ mod tests {
             pruned.counterfactual_replay_span(),
             Ok(Some((lo, lo, DEFAULT_HISTORY_FRAMES as u64))),
             "the session input log keeps frame zero after model pruning"
+        );
+    }
+
+    #[test]
+    fn sampled_input_falls_back_to_selected_snapshot_after_origin_ages_out() {
+        let mut rec = SceneRecorder::new();
+        for frame in 0..=DEFAULT_HISTORY_FRAMES as u64 {
+            rec.record_inputs(vec![RecordedInput::Snapshot(Box::new(
+                crate::InputSnapshot::default(),
+            ))]);
+            rec.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let (lo, hi) = rec.scene_frame_range().expect("retained model history");
+        assert!(lo > 0);
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        rec.seek_scene_to(lo, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek retained floor");
+
+        assert_eq!(
+            rec.finish_reload(&model, physics_frame, true),
+            ReloadHistory::Preserved
+        );
+        assert_eq!(rec.scene_frame_range(), Some((lo, hi)));
+        assert_eq!(
+            rec.counterfactual_replay_span(),
+            Ok(None),
+            "a bounded coeffect prefix must not masquerade as origin replay"
         );
     }
 

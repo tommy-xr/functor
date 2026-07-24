@@ -12,6 +12,8 @@
 //! # Per-frame, runtime → logic
 //!
 //! - [`crate::FrameTime`] — `tts`/`dts` seconds.
+//! - [`crate::InputSnapshot`] — continuously sampled held/device state,
+//!   delivered once before each simulation tick.
 //! - Input events, as scalars: key code ([`crate::Key`] as `i32`) + down flag,
 //!   mouse position (`i32` pixels), wheel delta (`i32`). The `Key` enum's
 //!   **`i32` discriminants** are the wire representation on both sides
@@ -67,6 +69,8 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v5: sampled input — [`crate::InputSnapshot`] at the shell → producer seam.
+///
 /// v4: sprite atlas source rectangles and nearest/linear sampling — the
 /// `MaterialDescription::SpriteTexture` variant.
 ///
@@ -78,7 +82,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -225,6 +229,18 @@ pub trait GameProducer {
     }
 
     fn tick(&mut self, frame_time: crate::FrameTime);
+
+    /// Whether this game defines the optional per-tick `sampledInput` hook.
+    /// Shells use the capability check to avoid assembling snapshots for games
+    /// that only consume edge events.
+    fn samples_input(&self) -> bool {
+        false
+    }
+
+    /// Deliver continuously sampled input immediately before one
+    /// [`GameProducer::tick`]. The default drops it for replay/legacy
+    /// producers; Functor Lang producers call `sampledInput(model, snapshot)`.
+    fn sampled_input(&mut self, _snapshot: &crate::InputSnapshot) {}
 
     /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.
     fn key_event(&mut self, code: i32, is_down: bool);
@@ -397,7 +413,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),

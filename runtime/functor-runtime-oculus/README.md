@@ -13,8 +13,8 @@ authored-camera rig, exact asymmetric per-eye projection, project asset sync,
 and sampled Touch controller input are implemented for Quest 3. The shared
 debug/REPL protocol adds raw stereo framebuffer capture, rig-local
 head/controller inspection, and desktop-isomorphic control. Remaining input
-work is the Functor Lang surface, desktop emulation, and hand tracking;
-Android audio and multiview rendering are also still open.
+work is desktop emulation and hand tracking; Android audio and multiview
+rendering are also still open.
 
 ## Camera contract
 
@@ -85,8 +85,10 @@ thumbstick-click, and menu state. Poses are relative to the same center-eye
 tracking reference that anchors `Frame.camera` (+X right, +Y up, -Z forward),
 not absolute stage coordinates. An inactive or untracked controller is
 represented explicitly instead of retaining a stale pose. This is the first
-half of the input slice: runtime/debug tooling can inspect it; the portable
-Functor Lang input record follows separately.
+half of the input seam: runtime/debug tooling can inspect it. Functor Lang
+games consume the same portable record once per fixed step through the optional
+`sampledInput(model, snapshot: Input.snapshot)` hook; `Camera.mapTrackedPose`
+maps its rig-local poses through the game's authored `Frame.camera`.
 
 ## Benchmark on the actual headset
 

@@ -209,6 +209,12 @@ impl GameClock {
         self.paused
     }
 
+    /// Whether time is pinned by the deterministic `--fixed-time` mode rather
+    /// than by the interactive pause transport.
+    pub fn is_fixed_time(&self) -> bool {
+        self.fixed_time.is_some()
+    }
+
     /// Whether the clock is pinned this frame — paused OR fixed-time. The shells
     /// use this to freeze user input in deterministic/paused modes (matching the
     /// old `held_time.is_some()`).
@@ -346,6 +352,7 @@ mod tests {
     #[test]
     fn fixed_time_is_an_unconditional_pin() {
         let mut clock = GameClock::new(Some(2.0));
+        assert!(clock.is_fixed_time());
         // Every frame is the constant, regardless of delta, pause, or step.
         assert_eq!(clock.frame(0.1).tts, 2.0);
         assert_eq!(clock.frame(0.1).dts, 0.0);

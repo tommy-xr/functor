@@ -208,7 +208,7 @@ let grab = (s) =>
   builtin/prelude or bundled-core namespace (Net, Key, Random, Option, Result,
   List, Text, Math, Debug, Scene,
   Sprite, Anim, Asset, Camera, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
-  Angle, Texture, Time, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
+  Angle, Texture, Time, Input, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
   Style, AudioSource, AudioScene) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
   manifest — is fine; only the exact name collides.)
@@ -236,6 +236,15 @@ let grab = (s) =>
   (`key == Key.Enter`); a typo (`Key.Enterr`) is a load-time error — the
   reason keys stopped being strings. `Random` is likewise built-in (the
   abstract `Random.Seed` — see the Random builtins above).
+- **`Input` is the engine's continuously sampled input module.**
+  `Input.snapshot` contains `heldKeys: List<Key.t>`, a pixel-space `mouse`
+  record, and `xr: Option.t<Input.xr>`. XR head/grip/aim poses are rig-local
+  plain data: position `{x,y,z}` and quaternion `{x,y,z,w}`, with +X right,
+  +Y up, and -Z forward. Each controller also carries `active`, analog
+  trigger/squeeze/thumbstick state, and named button booleans. Missing XR,
+  inactive controllers, and temporarily invalid poses are explicit
+  `Option.None`/`active: false`, never stale values. Future gamepad and mobile
+  touch domains belong as typed siblings of `xr` on the snapshot.
 - **Bundled modules use the ordinary module semantics.** The language-owned
   `Net.fun` / `Key.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory
@@ -667,6 +676,9 @@ Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles f
                                                            //   orientation, near/far remain
                                                            //   game-owned; OpenXR owns IPD
                                                            //   and per-eye optical FOV
+Camera.mapTrackedPose(camera, pose)                        // map rig-local Input.pose through
+                                                           //   the authored camera; returns
+                                                           //   world-space {position,forward,up}
 Camera2D.create(width, height)                             // center-origin, +X right, +Y up;
                                                            //   width/height are visible world
                                                            //   units at zoom 1; the renderer
@@ -1016,6 +1028,9 @@ let draw = (model, tts) => Frame.create(camera, scene)
 let input = (model, key, isDown) => model'  // OPTIONAL; key: Key.t — match
                                             // | Key.W / Key.Up / Key.Space /
                                             // Key.Num0..Num9 (never strings)
+let sampledInput = (model, snapshot: Input.snapshot) => model'
+                                            // OPTIONAL; called once immediately
+                                            // before every simulation tick
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
 let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
@@ -1054,7 +1069,7 @@ lands in a structured log; under a fake/replay runner the same program is
 exactly deterministic (that's the test seam). Taggers must be functions —
 `Effect.now(3.0)` is a construction-time error.
 
-Frame order: subscriptions→`update` → `tick` → `physics` (reconcile +
+Frame order: `sampledInput` → subscriptions→`update` → `tick` → `physics` (reconcile +
 fixed-step, 60Hz accumulator) → `draw` — physics reads in `draw` see this
 frame's stepped world; reads in `tick` see the *previous* frame's (so on
 the very first frame, and inside the `physics` hook itself, declared bodies
@@ -1067,6 +1082,18 @@ scene for reproducibility) instead; capture timer-driven changes via the
 debug server's `/time` advance. To *see* colliders, run with
 `--debug-render physics`: normal shading plus the live world's wireframes
 (collider outlines, contacts, body frames).
+
+`sampledInput` is the level-state complement to the edge-oriented `input` /
+`mouseMove` hooks. Shells sample it once per fixed simulation step; a hook may
+return either a bare model or `(model, effect)` like other model-updating entry
+points. Samples are plain data recorded in the frame input log, so rewind,
+forward ghosting, and counterfactual history replay re-run the same snapshot
+before the same tick. Future projection carries the latest sampled level state
+through unrecorded ticks and applies scripted key/mouse edges to that carried
+snapshot. Dense samples share the bounded 900-frame model/world horizon; sparse
+edge events remain session-long. Adding the hook during hot reload keeps
+selected-snapshot semantics because the old timeline has no historical
+coeffects to replay. A game without the hook pays no snapshot-conversion cost.
 
 A project dir with `functor.json` `{"language": "functor-lang", "entry": "game.fun"}`
 (or a named `entries` map — see Modules; `--entry <name>` selects the role)
@@ -1101,10 +1128,12 @@ and the entire recorded future. Resume remains the explicit branch point: it
 discards that future, while the scrubber holds its prior visual span until the
 new branch fills it.
 Forward **extrapolation** adds one counterfactual step for input-only model games:
-after a safe reload at a scrubbed frame, it replays the session-long plain-data
-input and exact frame-clock logs from the NEW program's `init` through the newest
-retained frame once. Those logs retain frame zero even when the larger 900-frame
-model/world rings prune old snapshots. The rebuilt selected model becomes the visible anchor and
+after a safe reload at a scrubbed frame, it replays the plain-data input and
+exact frame-clock logs from the NEW program's `init` through the newest retained
+frame once. Sparse edge input remains session-long. Continuously sampled input
+is retained for the same 900-frame horizon as model/world snapshots; once its
+session origin ages out, reload keeps the selected snapshot instead of
+pretending a partial replay is complete. The rebuilt selected model becomes the visible anchor and
 Resume branch, later scrubs remain O(1) snapshot restores, and its future is
 projected from new-code history. This prevents old derived state (such as a
 jump's stored launch velocity) from dragging a constant-tweaked trajectory back

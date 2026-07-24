@@ -8,6 +8,7 @@
 //!
 //! ```text
 //! let init = { … }                       // the initial model (a value)
+//! let sampledInput = (model, snapshot) => model' // optional per-tick held/device input
 //! let tick = (model, dt, tts) => model'  // per-frame step
 //! let draw = (model, tts) => Frame.create(camera, scene)
 //! // optional MVU pair (C4b-2) — timer messages fold through update:
@@ -17,8 +18,9 @@
 //! let ui = (model) => Ui.column([…]) |> Ui.panel(Ui.topLeft())   // OPTIONAL HUD
 //! ```
 //!
-//! Frame order with physics: tick → physics (reconcile + fixed-step the
-//! singleton world) → draw, so `Physics.position`/`Physics.transformed` in
+//! Frame order with physics: sampledInput → subscriptions/update → tick →
+//! physics (reconcile + fixed-step the singleton world) → draw, so
+//! `Physics.position`/`Physics.transformed` in
 //! `draw` read the frame's stepped world. The world lives in this process's
 //! registry, so like the model it survives hot reload.
 //!
@@ -54,9 +56,7 @@ use crate::game::Game;
 
 fn replay_status(history_replay: Option<(usize, f64)>) -> String {
     history_replay.map_or_else(String::new, |(frames, elapsed_ms)| {
-        format!(
-            "; history recomputed from init ({frames} frames, {elapsed_ms:.2}ms)"
-        )
+        format!("; history recomputed from init ({frames} frames, {elapsed_ms:.2}ms)")
     })
 }
 
@@ -84,6 +84,11 @@ pub struct FunctorLangGame {
     session: Session,
     model: Value,
     has_input: bool,
+    has_sampled_input: bool,
+    /// The shell samples physical state before a fixed simulation step. Hold
+    /// that coeffect until the shared frame body has committed any pending
+    /// scrub branch, then deliver it against the restored authoritative model.
+    pending_sampled_input: Option<functor_runtime_common::InputSnapshot>,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
     has_subscriptions: bool,
@@ -230,6 +235,7 @@ struct Loaded {
     init: Value,
     /// The game defines the optional `input` entry point.
     has_input: bool,
+    has_sampled_input: bool,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
     has_subscriptions: bool,
@@ -338,6 +344,10 @@ return them beside the model as `(model, effect)`"
     if has_input {
         require_function(path, &session, "input", 3)?;
     }
+    let has_sampled_input = session.global("sampledInput").is_some();
+    if has_sampled_input {
+        require_function(path, &session, "sampledInput", 2)?;
+    }
     // Same deal for the mouse: `mouseMove(model, x, y)` in window pixels,
     // `mouseWheel(model, delta)`.
     let has_mouse_move = session.global("mouseMove").is_some();
@@ -396,6 +406,7 @@ return them beside the model as `(model, effect)`"
         session,
         init,
         has_input,
+        has_sampled_input,
         has_mouse_move,
         has_mouse_wheel,
         has_subscriptions,
@@ -463,6 +474,8 @@ impl FunctorLangGame {
             session: loaded.session,
             model: loaded.init,
             has_input: loaded.has_input,
+            has_sampled_input: loaded.has_sampled_input,
+            pending_sampled_input: None,
             has_mouse_move: loaded.has_mouse_move,
             has_mouse_wheel: loaded.has_mouse_wheel,
             has_subscriptions: loaded.has_subscriptions,
@@ -541,13 +554,7 @@ impl FunctorLangGame {
     /// is kept as well: `Sub.every` fires on the global time grid, so timers
     /// tick right through a reload. Returns the number of stored closures
     /// rebound, for the status line.
-    fn swap_in(
-        &mut self,
-        loaded: Loaded,
-    ) -> (
-        usize,
-        Option<(usize, f64)>,
-    ) {
+    fn swap_in(&mut self, loaded: Loaded) -> (usize, Option<(usize, f64)>) {
         let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
@@ -573,6 +580,8 @@ impl FunctorLangGame {
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
+        self.has_sampled_input = loaded.has_sampled_input;
+        self.pending_sampled_input = None;
         self.has_mouse_move = loaded.has_mouse_move;
         self.has_mouse_wheel = loaded.has_mouse_wheel;
         self.has_subscriptions = loaded.has_subscriptions;
@@ -618,6 +627,8 @@ impl FunctorLangGame {
         // history containing callable or opaque host values instead starts a new
         // generation anchored at this rebound live frame.
         self.recorder
+            .configure_origin_replay_for_sampled_input(self.has_sampled_input);
+        self.recorder
             .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
         let replay_started = Instant::now();
         let history_replay = match
@@ -660,6 +671,8 @@ impl FunctorLangGame {
         self.session = loaded.session;
         self.model = loaded.init;
         self.has_input = loaded.has_input;
+        self.has_sampled_input = loaded.has_sampled_input;
+        self.pending_sampled_input = None;
         self.has_mouse_move = loaded.has_mouse_move;
         self.has_mouse_wheel = loaded.has_mouse_wheel;
         self.has_subscriptions = loaded.has_subscriptions;
@@ -1024,7 +1037,9 @@ impl Game for FunctorLangGame {
         // T6a); native splits it at the physics boundary to keep the separate
         // `tick_ns` / `physics_ns` perf counters the C6 gate watches.
         let started = Instant::now();
-        self.ctx().before_physics(frame_time);
+        let sampled_input = self.pending_sampled_input.take();
+        self.ctx()
+            .before_physics(frame_time, sampled_input.as_ref());
         self.tick_ns += started.elapsed().as_nanos() as u64;
         let physics_started = Instant::now();
         self.ctx().physics_phase(frame_time);
@@ -1047,6 +1062,14 @@ impl Game for FunctorLangGame {
         self.cached_trace = None;
         self.frames += 1;
         self.report_stats();
+    }
+
+    fn samples_input(&self) -> bool {
+        self.has_sampled_input
+    }
+
+    fn sampled_input(&mut self, snapshot: &functor_runtime_common::InputSnapshot) {
+        self.pending_sampled_input = Some(snapshot.clone());
     }
 
     fn key_event(&mut self, code: i32, is_down: bool) {
@@ -2554,8 +2577,10 @@ mod tests {
     fn forward_step_replays_recorded_webview_click_against_the_webview_table() {
         use functor_runtime_common::ui::{UiEvent, UiEventKind};
 
-        let dir =
-            std::env::temp_dir().join(format!("functor-lang-webview-replay-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-webview-replay-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         std::fs::write(
@@ -2814,7 +2839,9 @@ mod tests {
         let selected = 40;
         let before = retained_models(&mut game);
         game.seek_scene_to(selected).expect("scrub into history");
-        let status = game.reload_source(&source).expect("reload identical source");
+        let status = game
+            .reload_source(&source)
+            .expect("reload identical source");
         assert!(
             status.contains("history recomputed from init (120 frames, "),
             "reload status must disclose deterministic reconstruction: {status}"

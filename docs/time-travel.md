@@ -61,10 +61,12 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   prior visual span as the new branch fills it.
   **Extrapolation is the deliberate exception for input-only model games:**
   after a safe reload at a scrubbed historical frame, it replays the
-  session-long plain-data input and exact frame-clock logs from the edited
-  program's `init` through the newest retained frame once. Inputs and `dts`/`tts`
-  stay available from frame zero even after
-  the larger 900-frame model/world rings prune their oldest snapshots. The selected counterfactual model
+  plain-data input and exact frame-clock logs from the edited program's `init`
+  through the newest retained frame once. Sparse edge input remains available
+  from frame zero. Continuously sampled coeffects share the 900-frame
+  model/world retention horizon; after their session origin ages out, reload
+  deliberately keeps selected-snapshot semantics instead of replaying an
+  incomplete prefix. The selected counterfactual model
   becomes the visible anchor and Resume branch; every later scrub is then an
   ordinary O(1) snapshot restore, and extrapolation projects from new-code
   history only. The reload status reports the rebuilt frame count and elapsed

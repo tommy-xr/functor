@@ -101,10 +101,11 @@ FPS p5/min with 0.78 ms mean application time and zero stale/torn frames.
 
 ## After bring-up (in rough order)
 
-- Finish the sampled-input split: expose the typed XR snapshot to Functor Lang,
-  then add desktop emulation and a controller-driven example. Keep gamepad and
-  mobile-touch input as typed sibling domains rather than XR-specific producer
-  APIs.
+- The typed XR snapshot is exposed to Functor Lang through the per-tick
+  `sampledInput` hook and maps through the authored rig with
+  `Camera.mapTrackedPose`. Next, add desktop emulation and a controller-driven
+  example. Keep gamepad and mobile-touch input as typed sibling domains rather
+  than XR-specific producer APIs.
 - Add the Android audio host; sound bytes already synchronize, but Quest
   currently drains playback commands.
 - Add a browser surface over the isomorphic debug API for edit/push/inspect/

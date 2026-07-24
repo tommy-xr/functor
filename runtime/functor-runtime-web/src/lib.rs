@@ -9,15 +9,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
+use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
-use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
 use functor_runtime_common::net::{ConnCommand, HttpMethod, NetCommand};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
-use functor_runtime_common::{Frame, FrameTime, GameClock, SceneContext};
+use functor_runtime_common::{Frame, FrameTime, GameClock, InputSnapshot, SceneContext};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
@@ -184,9 +184,7 @@ fn parse_project_files(value: &JsValue) -> Option<Vec<(String, String)>> {
 /// `game.fun` + `pieces.fun` links exactly as it does natively. Failures are
 /// rendered strings (fetch status, parse/load position, contract violation) for
 /// `run_async` to fail loud with.
-async fn create_functor_lang_game(
-    entry: &str,
-) -> Result<FunctorLangEmbeddedGame, String> {
+async fn create_functor_lang_game(entry: &str) -> Result<FunctorLangEmbeddedGame, String> {
     // A page that already holds every source in memory (the IDE's
     // `?project=inline` boot) injects them directly — nothing to fetch, and
     // module names come from the given paths exactly as in the fetch path.
@@ -1121,6 +1119,7 @@ async fn run_async() -> Result<(), JsValue> {
 
         let initial_time = performance.now() as f32;
         let mut last_time = initial_time;
+        let mut input_snapshot = InputSnapshot::default();
         // let texture_future = async {
         //     let bytes = load_bytes_async("crate.png").await;
         //     sleep(Duration::from_secs(1)).await;
@@ -1281,7 +1280,12 @@ async fn run_async() -> Result<(), JsValue> {
             // frame (a paused frame's input would diverge the replay log; a
             // fixed-time frame must stay deterministic for captures), and
             // draining stops the queue bursting on resume.
-            functor_lang_game::drain_input(&mut **game, !clock.is_pinned());
+            functor_lang_game::drain_input(
+                &mut **game,
+                &mut input_snapshot,
+                !clock.is_pinned(),
+                clock.is_paused() && !clock.is_fixed_time(),
+            );
 
             // Webview interactions drain HERE, before render replaces the
             // handler table — the queued slots were clicked against the DOM
@@ -1309,6 +1313,9 @@ async fn run_async() -> Result<(), JsValue> {
             }
 
             for sub in &sub_frames {
+                if game.samples_input() {
+                    game.sampled_input(&input_snapshot);
+                }
                 game.tick(sub.clone());
             }
 

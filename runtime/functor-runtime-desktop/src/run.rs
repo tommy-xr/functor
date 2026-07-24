@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::{Frame, FrameTime, GameClock, RecordedInput, SceneContext};
+use functor_runtime_common::{
+    Frame, FrameTime, GameClock, InputSnapshot, MouseSnapshot, RecordedInput, SceneContext,
+};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use functor_runtime_common::Key as InputKey;
@@ -76,6 +78,17 @@ fn map_key(key: Key) -> InputKey {
         Key::Num8 | Key::Kp8 => InputKey::Num8,
         Key::Num9 | Key::Kp9 => InputKey::Num9,
         _ => InputKey::Unknown,
+    }
+}
+
+fn sampled_input_snapshot(held_keys: &BTreeSet<InputKey>, mouse_pos: (i32, i32)) -> InputSnapshot {
+    InputSnapshot {
+        held_keys: held_keys.iter().copied().collect(),
+        mouse: MouseSnapshot {
+            x: mouse_pos.0,
+            y: mouse_pos.1,
+        },
+        xr: None,
     }
 }
 
@@ -711,6 +724,10 @@ fn run_headless(
         game.check_hot_reload(time.clone());
         deliver_net_ws(&mut *game, &net_rx, &ws_rx);
         for sub in &sub_frames {
+            if game.samples_input() {
+                let snapshot = sampled_input_snapshot(&held_keys, mouse_pos);
+                game.sampled_input(&snapshot);
+            }
             game.tick(sub.clone());
             frame_count += 1;
         }
@@ -1008,6 +1025,11 @@ pub fn run(args: Args) {
         // serializable, unlike the game model (which is Debug text only).
         let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
         let mut mouse_pos: (i32, i32) = (0, 0);
+        // `--fixed-time` is a deterministic capture pin: the one zero-delta
+        // bootstrap step must not observe cursor motion or release bookkeeping
+        // from the host window. An explicit input script remains authoritative
+        // and uses the live runtime-owned snapshot below.
+        let fixed_input_snapshot = InputSnapshot::default();
         // Whether the window owns the pointer (free-look). See the Escape /
         // MouseButton / Focus arms in the event loop. A hidden window never
         // captures (and never receives the events that would toggle this).
@@ -1173,9 +1195,7 @@ pub fn run(args: Args) {
                     glfw::WindowEvent::Close => window.set_should_close(true),
                     // Printable text for a focused webview field (the egui
                     // Char rule below, webview flavor).
-                    glfw::WindowEvent::Char(c)
-                        if webview_wants_keyboard && !ignore_user_input =>
-                    {
+                    glfw::WindowEvent::Char(c) if webview_wants_keyboard && !ignore_user_input => {
                         webview_keys.push(WebviewKey::Char(c));
                     }
                     // Printable text for a focused field. Only meaningful
@@ -1445,8 +1465,23 @@ Escape again to quit"
                         for ev in events {
                             if let RecordedInput::Key { code, is_down } = ev {
                                 game.key_event(*code, *is_down);
+                                if let Some(key) = InputKey::from_i32(*code) {
+                                    if *is_down {
+                                        held_keys.insert(key);
+                                    } else {
+                                        held_keys.remove(&key);
+                                    }
+                                }
                             }
                         }
+                    }
+                }
+                if game.samples_input() {
+                    if clock.is_fixed_time() && input_script.is_none() {
+                        game.sampled_input(&fixed_input_snapshot);
+                    } else {
+                        let snapshot = sampled_input_snapshot(&held_keys, mouse_pos);
+                        game.sampled_input(&snapshot);
                     }
                 }
                 game.tick(sub.clone());
