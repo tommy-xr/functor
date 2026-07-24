@@ -6,9 +6,10 @@
 use std::sync::mpsc::Receiver;
 
 pub use functor_runtime_common::debug_protocol::{
-    CaptureError, DebugRequest, InputCommand, RuntimeInput, RuntimeMouse, RuntimeState, RuntimeView,
-    RuntimeViewport, TimeCommand,
+    CaptureError, DebugRequest, InputCommand, RuntimeState, RuntimeView, RuntimeViewport,
+    TimeCommand,
 };
+pub use functor_runtime_common::{InputSnapshot, MouseSnapshot};
 
 /// Start the debug server and return the frame loop's request receiver.
 ///

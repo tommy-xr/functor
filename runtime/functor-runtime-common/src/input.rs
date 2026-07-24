@@ -1,5 +1,68 @@
 use serde::{Deserialize, Serialize};
 
+use crate::TrackingPose;
+
+/// Runtime-owned input sampled for one simulation frame.
+///
+/// Keyboard and mouse retain their event entry points, while this plain-data
+/// snapshot is the extensible shell → producer seam for continuously sampled
+/// devices. XR is the first typed domain; gamepads and mobile touches can add
+/// sibling fields without turning device capabilities into stringly-typed
+/// maps or adding target-specific producer methods.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InputSnapshot {
+    /// Keys currently held, in canonical discriminant order.
+    pub held_keys: Vec<Key>,
+    /// Last known mouse position in output pixels.
+    pub mouse: MouseSnapshot,
+    /// Live XR tracking/controller state when the target supplies it.
+    ///
+    /// Omitted rather than serialized as `null` on non-XR targets, preserving
+    /// the existing desktop `/state` wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xr: Option<XrInputSnapshot>,
+}
+
+/// Last known mouse position in output pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MouseSnapshot {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// One frame of XR input in the tracking rig's local coordinates.
+///
+/// Poses are relative to the center-eye reference captured when the authored
+/// camera rig is established: +X right, +Y up, -Z forward. Keeping them
+/// rig-local lets a pure game map them through its current authored camera
+/// without a one-frame mismatch when locomotion moves that camera.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct XrInputSnapshot {
+    /// Center-eye pose relative to the rig reference.
+    pub head: Option<TrackingPose>,
+    pub left: XrControllerSnapshot,
+    pub right: XrControllerSnapshot,
+}
+
+/// Target-neutral state for one tracked XR controller.
+///
+/// `active` reports whether the runtime currently has an input source for the
+/// hand. Each pose is independently optional because OpenXR may have buttons
+/// while positional tracking is temporarily invalid.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct XrControllerSnapshot {
+    pub active: bool,
+    pub grip: Option<TrackingPose>,
+    pub aim: Option<TrackingPose>,
+    pub trigger: f32,
+    pub squeeze: f32,
+    pub thumbstick: [f32; 2],
+    pub primary_pressed: bool,
+    pub secondary_pressed: bool,
+    pub thumbstick_pressed: bool,
+    pub menu_pressed: bool,
+}
+
 /// Canonical key identifier shared across the F# <-> Rust boundary and all
 /// runtimes (desktop GLFW, web). Producers (e.g. the desktop runtime's
 /// `glfw::Key` mapping in `functor-runtime-desktop`) translate their platform
@@ -176,7 +239,8 @@ pub fn key_input_value(code: i32) -> Option<functor_lang::Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::Key;
+    use super::{InputSnapshot, Key, MouseSnapshot, XrControllerSnapshot, XrInputSnapshot};
+    use crate::TrackingPose;
 
     #[test]
     fn names_are_canonical() {
@@ -250,5 +314,39 @@ mod tests {
         assert_eq!(Key::from_name("9"), Some(Key::Num9));
         assert_eq!(Key::from_name("unknown"), None);
         assert_eq!(Key::from_name(""), None);
+    }
+
+    #[test]
+    fn input_snapshot_omits_absent_xr_and_round_trips_present_xr() {
+        let desktop = InputSnapshot {
+            held_keys: vec![Key::W],
+            mouse: MouseSnapshot { x: 10, y: 20 },
+            xr: None,
+        };
+        let desktop_json = serde_json::to_value(&desktop).unwrap();
+        assert_eq!(
+            desktop_json,
+            serde_json::json!({
+                "held_keys": ["W"],
+                "mouse": { "x": 10, "y": 20 }
+            })
+        );
+
+        let xr = InputSnapshot {
+            xr: Some(XrInputSnapshot {
+                head: Some(TrackingPose::IDENTITY),
+                left: XrControllerSnapshot {
+                    active: true,
+                    trigger: 0.75,
+                    thumbstick: [-0.25, 1.0],
+                    primary_pressed: true,
+                    ..XrControllerSnapshot::default()
+                },
+                right: XrControllerSnapshot::default(),
+            }),
+            ..InputSnapshot::default()
+        };
+        let encoded = serde_json::to_string(&xr).unwrap();
+        assert_eq!(serde_json::from_str::<InputSnapshot>(&encoded).unwrap(), xr);
     }
 }

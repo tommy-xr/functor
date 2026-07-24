@@ -29,9 +29,15 @@ await game.pause();              // pin the clock
 await game.keyDown("up");        // inject input
 await game.step();               // advance exactly one frame
 const state = await game.state();// observe the result
+const xr = await game.xrInput();  // rig-local head/controllers on XR targets
 const png = await game.capture();// PNG bytes of the frame
 // `await using` shuts the runtime down at scope exit.
 ```
+
+`state.input` is one extensible sampled-input record. It always carries held
+keys and the last mouse position; XR targets add typed rig-local head and
+controller state (`game.xrInput()`). Future gamepad and mobile-touch domains
+can extend the same record without target-specific clients.
 
 `FunctorRunner.connect(url)` attaches to an already-running runtime instead of
 spawning one (and won't kill it on dispose).

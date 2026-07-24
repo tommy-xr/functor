@@ -9,11 +9,12 @@ over the shared debug-runtime protocol.
 ## Status
 
 The OpenXR shell, interpreted Functor Lang producer, USB remote-develop loop,
-authored-camera rig, exact asymmetric per-eye projection, and project asset
-sync are implemented for Quest 3. The shared debug/REPL protocol adds raw
-stereo framebuffer capture and desktop-isomorphic control. Remaining device
-work includes controller/hand input, an Android audio host, and multiview
-rendering.
+authored-camera rig, exact asymmetric per-eye projection, project asset sync,
+and sampled Touch controller input are implemented for Quest 3. The shared
+debug/REPL protocol adds raw stereo framebuffer capture, rig-local
+head/controller inspection, and desktop-isomorphic control. Remaining input
+work is the Functor Lang surface, desktop emulation, and hand tracking;
+Android audio and multiview rendering are also still open.
 
 ## Camera contract
 
@@ -77,6 +78,15 @@ side-by-side PNG, before compositor warping. The server is reachable while the
 headset dozes, but capture correctly returns 503 until XR is rendering. After
 any adb reconnect, recreate the port forward; poll `/state` until `frame`
 advances before capture so cached paused state is not mistaken for readiness.
+
+While valid tracking is available, `/state.input.xr` contains center-head plus
+per-hand grip/aim poses, trigger, squeeze, thumbstick, primary/secondary,
+thumbstick-click, and menu state. Poses are relative to the same center-eye
+tracking reference that anchors `Frame.camera` (+X right, +Y up, -Z forward),
+not absolute stage coordinates. An inactive or untracked controller is
+represented explicitly instead of retaining a stale pose. This is the first
+half of the input slice: runtime/debug tooling can inspect it; the portable
+Functor Lang input record follows separately.
 
 ## Benchmark on the actual headset
 

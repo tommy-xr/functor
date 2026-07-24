@@ -21,8 +21,11 @@ VR debug APIs isomorphic. Read `runtime/functor-runtime-oculus/README.md` and
 - Keep the canonical debug routes and wire types in
   `functor-runtime-common`; desktop reports `main`, Quest reports `left` and
   `right` through the same `views` field.
-- Treat source and assets separately. `/reload-project` transfers `.fun`/`.funi`
-  source; it does not currently transfer texture, model, or audio files.
+- Treat source and assets as separate coordinated operations.
+  `/load-project`/`/reload-project` transfer `.fun`/`.funi`; changed
+  texture/model/audio bytes use `/reload-asset`, and `/sync-assets` finalizes
+  the current manifest and removes deleted uploads. `functor run vr`
+  orchestrates both streams.
 - Use release APKs for performance claims. Verify Android does not report the
   installed package as `DEBUGGABLE`.
 
@@ -74,7 +77,7 @@ Prefer the integrated loop:
 ```
 
 It launches, forwards port 8123, pushes the whole project, watches `.fun`/`.funi`
-files, and streams logs. For individual operations:
+and asset files, and streams logs. For individual operations:
 
 ```sh
 adb -s SERIAL forward tcp:8123 tcp:8123
@@ -87,6 +90,12 @@ Use the TypeScript SDK for scripted `/input`, `/time`, reload, rewind, and
 multi-client assertions. Validate clock behavior by observing a stable frame
 after `set`, exactly one increment after `advance`, and progression after
 `resume`.
+
+For controller work, inspect `/state.input.xr` only after two advancing frame
+samples. Require a near-identity rig-local head pose after centering; wake each
+controller and verify `active`, independently valid grip/aim poses, analog
+range/motion, and button transitions. Never accept a retained pose after a
+controller becomes inactive or tracking validity is lost.
 
 ## Capture both raw eyes
 

@@ -505,12 +505,13 @@ fn service_debug_request(
                 viewport: debug_server::RuntimeViewport::new(width, height),
                 views: vec![debug_server::RuntimeView::new("main", width, height)],
                 model: game.state_debug(),
-                input: debug_server::RuntimeInput {
+                input: debug_server::InputSnapshot {
                     held_keys: held_keys.iter().copied().collect(),
-                    mouse: debug_server::RuntimeMouse {
+                    mouse: debug_server::MouseSnapshot {
                         x: mouse_pos.0,
                         y: mouse_pos.1,
                     },
+                    xr: None,
                 },
             });
         }

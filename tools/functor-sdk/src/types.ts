@@ -6,12 +6,48 @@ export type KeyName =
   | "Up" | "Down" | "Left" | "Right" | "Space" | "Enter" | "Escape" | "Unknown"
   | (string & {});
 
-/** Runtime-owned input snapshot (independent of the game model). */
+export type Vec3 = [number, number, number];
+export type Quaternion = [x: number, y: number, z: number, w: number];
+
+/** A rig-local tracked pose: +X right, +Y up, -Z forward. */
+export interface TrackingPose {
+  position: Vec3;
+  orientation: Quaternion;
+}
+
+/** One target-neutral tracked XR controller. */
+export interface XrControllerSnapshot {
+  active: boolean;
+  grip: TrackingPose | null;
+  aim: TrackingPose | null;
+  trigger: number;
+  squeeze: number;
+  thumbstick: [x: number, y: number];
+  primary_pressed: boolean;
+  secondary_pressed: boolean;
+  thumbstick_pressed: boolean;
+  menu_pressed: boolean;
+}
+
+/** XR tracking and controllers sampled for one simulation frame. */
+export interface XrInputSnapshot {
+  head: TrackingPose | null;
+  left: XrControllerSnapshot;
+  right: XrControllerSnapshot;
+}
+
+/** Runtime-owned input sampled independently of the game model.
+ *
+ * Typed device domains extend this record: XR is available today; gamepad and
+ * mobile-touch snapshots can be added without replacing keyboard/mouse or
+ * introducing target-specific clients. */
 export interface InputSnapshot {
   /** Keys currently held, by canonical name. */
   held_keys: KeyName[];
   /** Last known cursor position in window pixels. */
   mouse: { x: number; y: number };
+  /** Present while an XR target has valid head tracking. */
+  xr?: XrInputSnapshot;
 }
 
 export interface RuntimeViewport {
@@ -38,8 +74,6 @@ export interface RuntimeState {
   input: InputSnapshot;
   model: string;
 }
-
-export type Vec3 = [number, number, number];
 
 /** Camera block from `GET /scene`. */
 export interface Camera {

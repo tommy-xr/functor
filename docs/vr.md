@@ -23,7 +23,8 @@ games deploy over the network.
 | [#437](https://github.com/tommy-xr/functor/pull/437) | Exact asymmetric OpenXR projections, fixing binocular double vision | merged; Quest 3 verified |
 | [#438](https://github.com/tommy-xr/functor/pull/438) | Shared desktop/Quest debug protocol, whole-project REPL, raw stereo capture, TypeScript SDK parity, device benchmark | merged; Quest 3 verified |
 | [#453](https://github.com/tommy-xr/functor/pull/453) | Compose live OpenXR head/eye tracking onto the authored `Frame.camera` rig | merged; Quest 3 verified |
-| [#460](https://github.com/tommy-xr/functor/pull/460) | Push project `.glb` models, textures, and sounds through the shared debug protocol; initialize the first pushed project from `init` | draft; Quest 3 verified with synthwave textures + animated Xbot |
+| [#460](https://github.com/tommy-xr/functor/pull/460) | Push project `.glb` models, textures, and sounds through the shared debug protocol; initialize the first pushed project from `init` | merged; Quest 3 verified with synthwave textures + animated Xbot |
+| current | Sample Quest Touch grip/aim poses, analog controls, and buttons into the shared typed input snapshot | in progress; Quest 3 + debug/SDK verified |
 
 ## Working today on the Xreal One
 
@@ -87,14 +88,23 @@ torn frames and 3.09 ms mean application time.
 The authored-camera release verification sustained 72 FPS minimum in two
 30-second `primitives` runs (3.31–3.36 ms mean application time). A
 source/geometry-heavy `synthwave` run also held 72 FPS minimum with zero stale
-or torn frames. Project texture/model synchronization is now verified on Quest
-3 with the textured synthwave scene and the animated `Xbot.glb` example; a
-release performance pass over those asset-heavy scenes is still outstanding.
+or torn frames. Project texture/model synchronization is verified on Quest 3
+with the textured synthwave scene and the animated `Xbot.glb` example. Matched
+30-second release runs held 72 FPS minimum: synthwave used 1.66 ms mean
+application time and animation used 3.95 ms. The few VrApi `Stale` samples
+occurred despite ample application/GPU headroom and zero torn frames,
+consistent with occasional compositor reuse rather than missed application
+deadlines.
+
+With Touch action sampling enabled, a matched synthwave release rerun held 72
+FPS p5/min with 0.78 ms mean application time and zero stale/torn frames.
 
 ## After bring-up (in rough order)
 
-- Controllers + a VR `InputContext` (head/hands) with desktop mouse/keyboard
-  emulation, shock2quest-style, so VR games iterate without a headset.
+- Finish the sampled-input split: expose the typed XR snapshot to Functor Lang,
+  then add desktop emulation and a controller-driven example. Keep gamepad and
+  mobile-touch input as typed sibling domains rather than XR-specific producer
+  APIs.
 - Add the Android audio host; sound bytes already synchronize, but Quest
   currently drains playback commands.
 - Add a browser surface over the isomorphic debug API for edit/push/inspect/
