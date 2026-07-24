@@ -131,7 +131,7 @@ fn render_frame_inner(
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
 ) {
-    scene_context.begin_terrain_frame(terrain_frame_id);
+    scene_context.begin_terrain_frame(gl, terrain_frame_id);
 
     // Allocate buffers for EVERY declared target up front, so a target whose
     // scene samples a later-declared target reads last frame's image (initially
@@ -430,7 +430,7 @@ pub fn render_composited_frames(
         return;
     }
     let weights = normalize_weights(&weights[..n]);
-    scene_context.begin_terrain_frame(None);
+    scene_context.begin_terrain_frame(gl, None);
 
     // 1. Render each input frame into its own full-viewport offscreen target,
     //    at its own frame time.

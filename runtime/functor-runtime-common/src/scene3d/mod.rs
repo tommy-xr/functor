@@ -59,6 +59,7 @@ pub struct SceneContext {
     // (rows, cols) — the stable identity of the mesh across frames.
     heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
+    terrain_decode_residency: RefCell<TerrainDecodeResidency>,
     terrain_renderer: RefCell<TerrainRenderer>,
     terrain_frame_serial: Cell<u64>,
     // Render targets persist across frames/hot reloads, keyed by the target's
@@ -104,6 +105,42 @@ enum PreloadHandle {
 /// stalled asset): beyond it the OLDEST token drops — its registered message
 /// then expires unclaimed, exactly like a capped [`PENDING_AUDIO`] eviction.
 const PRELOAD_TOKENS_CAP: usize = 1024;
+
+/// Decoded terrain sources receive one unused shell frame of grace before
+/// eviction. This retains ordinary frame-to-frame reuse without keeping every
+/// level/hot-reload heightmap alive for the process lifetime.
+#[derive(Default)]
+struct TerrainDecodeResidency {
+    epoch: u64,
+    last_used: HashMap<String, u64>,
+}
+
+impl TerrainDecodeResidency {
+    fn begin_epoch(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    fn mark<'a>(&mut self, locators: impl IntoIterator<Item = &'a str>) {
+        for locator in locators {
+            if let Some(last_used) = self.last_used.get_mut(locator) {
+                *last_used = self.epoch;
+            } else {
+                self.last_used.insert(locator.to_string(), self.epoch);
+            }
+        }
+    }
+
+    fn evict_stale(&mut self, mut evict: impl FnMut(&str)) {
+        let epoch = self.epoch;
+        self.last_used.retain(|locator, last_used| {
+            let recent = epoch.wrapping_sub(*last_used) <= 1;
+            if !recent {
+                evict(locator);
+            }
+            recent
+        });
+    }
+}
 
 enum SkyboxEntry {
     /// Six pending face loads, in `SkyboxDescription::faces` order.
@@ -152,6 +189,7 @@ impl SceneContext {
             plane: RefCell::new(geometry::Plane::create()),
             heightmaps: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
+            terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
@@ -167,13 +205,13 @@ impl SceneContext {
         }
     }
 
-    pub(crate) fn begin_terrain_frame(&self, external_frame: Option<u64>) {
+    pub(crate) fn begin_terrain_frame(&self, gl: &glow::Context, external_frame: Option<u64>) {
         let frame = external_frame.unwrap_or_else(|| {
             let next = self.terrain_frame_serial.get().wrapping_add(1);
             self.terrain_frame_serial.set(next);
             next
         });
-        self.terrain_renderer.borrow_mut().begin_frame(frame);
+        self.terrain_renderer.borrow_mut().begin_frame(gl, frame);
     }
 
     /// The shell's per-frame preload step (B.5): turn this frame's
@@ -190,6 +228,11 @@ impl SceneContext {
         asset_cache: &Arc<AssetCache>,
         commands: Vec<crate::asset::preload::PreloadCommand>,
     ) -> Vec<u64> {
+        {
+            let mut residency = self.terrain_decode_residency.borrow_mut();
+            residency.begin_epoch();
+            residency.evict_stale(|locator| self.heightmap_pipeline.evict(locator));
+        }
         use crate::asset::preload::PreloadKind;
         let mut preloads = self.preloads.borrow_mut();
         for cmd in commands {
@@ -251,6 +294,10 @@ impl SceneContext {
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
     ) {
+        self.terrain_decode_residency.borrow_mut().mark(
+            std::iter::once(terrain.heightmap.as_str())
+                .chain(terrain.while_pending.iter().map(String::as_str)),
+        );
         let handle = render_context
             .asset_cache
             .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &terrain.heightmap);
@@ -1307,5 +1354,27 @@ mod preload_tests {
         assert_eq!(ctx.preloads_in_flight(), 0);
         // The path counted once in progress despite three commands.
         assert_eq!(cache.progress().total, 1);
+    }
+
+    #[test]
+    fn terrain_decode_residency_evicts_sources_after_one_unused_epoch() {
+        let mut residency = TerrainDecodeResidency::default();
+        let mut evicted = Vec::new();
+
+        residency.begin_epoch();
+        residency.mark(["world-a.png", "proxy-a.png"]);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert!(evicted.is_empty());
+
+        residency.begin_epoch();
+        residency.mark(["world-b.png"]);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert!(evicted.is_empty(), "one unused epoch is retained as grace");
+
+        residency.begin_epoch();
+        residency.mark(["world-b.png"]);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        evicted.sort();
+        assert_eq!(evicted, ["proxy-a.png", "world-a.png"]);
     }
 }

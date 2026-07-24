@@ -380,8 +380,9 @@ struct GrassGeometry {
 }
 
 struct HeightTexture {
-    source: Arc<HeightmapData>,
+    revision: u64,
     texture: glow::Texture,
+    last_used_frame: u64,
 }
 
 #[derive(Default)]
@@ -395,8 +396,22 @@ pub(crate) struct TerrainRenderer {
 }
 
 impl TerrainRenderer {
-    pub(crate) fn begin_frame(&mut self, frame: u64) {
+    pub(crate) fn begin_frame(&mut self, gl: &glow::Context, frame: u64) {
+        if self.current_frame == frame {
+            return;
+        }
         self.current_frame = frame;
+        let counters = crate::gpu_counters::gpu_counters();
+        self.height_textures.retain(|_, entry| {
+            let recent = frame.wrapping_sub(entry.last_used_frame) <= 1;
+            if !recent {
+                unsafe {
+                    gl.delete_texture(entry.texture);
+                }
+                counters.texture_deleted();
+            }
+            recent
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -905,12 +920,16 @@ impl TerrainRenderer {
         locator: &str,
         source: Arc<HeightmapData>,
     ) -> glow::Texture {
-        let unchanged = self
+        if self
             .height_textures
             .get(locator)
-            .is_some_and(|entry| Arc::ptr_eq(&entry.source, &source));
-        if unchanged {
+            .is_some_and(|entry| entry.revision == source.revision)
+        {
             crate::gpu_counters::gpu_counters().cache_hit();
+            self.height_textures
+                .get_mut(locator)
+                .expect("unchanged terrain texture exists")
+                .last_used_frame = self.current_frame;
             return self.height_textures[locator].texture;
         }
 
@@ -984,8 +1003,14 @@ rendering a {}x{} height copy",
             gl.bind_texture(glow::TEXTURE_2D, None);
             texture
         };
-        self.height_textures
-            .insert(locator.to_string(), HeightTexture { source, texture });
+        self.height_textures.insert(
+            locator.to_string(),
+            HeightTexture {
+                revision: source.revision,
+                texture,
+                last_used_frame: self.current_frame,
+            },
+        );
         texture
     }
 }
@@ -1108,10 +1133,20 @@ fn select_grass_instances_into(
         instances.reserve(desired_capacity);
     }
 
-    for dz in (-radius_cells..=radius_cells).step_by(stride as usize) {
-        for dx in (-radius_cells..=radius_cells).step_by(stride as usize) {
-            let cell_x = key.camera_cell_x.saturating_add(dx);
-            let cell_z = key.camera_cell_z.saturating_add(dz);
+    let min_cell_x = key.camera_cell_x.saturating_sub(radius_cells);
+    let max_cell_x = key.camera_cell_x.saturating_add(radius_cells);
+    let min_cell_z = key.camera_cell_z.saturating_sub(radius_cells);
+    let max_cell_z = key.camera_cell_z.saturating_add(radius_cells);
+    let stride_i64 = i64::from(stride);
+    let min_cell_x_i64 = i64::from(min_cell_x);
+    let min_cell_z_i64 = i64::from(min_cell_z);
+    let first_cell_x = min_cell_x_i64 + (-min_cell_x_i64).rem_euclid(stride_i64);
+    let first_cell_z = min_cell_z_i64 + (-min_cell_z_i64).rem_euclid(stride_i64);
+
+    for cell_z in (first_cell_z..=i64::from(max_cell_z)).step_by(stride as usize) {
+        for cell_x in (first_cell_x..=i64::from(max_cell_x)).step_by(stride as usize) {
+            let cell_x = cell_x as i32;
+            let cell_z = cell_z as i32;
             let hash = grass_hash(cell_x, cell_z);
             let jitter_x = hash_unit(hash) - 0.5;
             let jitter_z = hash_unit(hash.rotate_left(13)) - 0.5;
@@ -1476,6 +1511,8 @@ fn slice_bytes<T>(slice: &[T]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use cgmath::{perspective, vec3, Deg, EuclideanSpace, Matrix4, Point3};
 
     use super::*;
@@ -1557,6 +1594,48 @@ mod tests {
             Vector3::new(0.0, 20.0, 0.0),
         );
         assert!(instances.len() <= MAX_GRASS_INSTANCES);
+    }
+
+    #[test]
+    fn decimated_grass_uses_a_world_stable_sampling_lattice() {
+        let description = terrain();
+        let grass = TerrainGrass {
+            spacing: 0.5,
+            distance: 100.0,
+            blade_height: 1.0,
+            color: [0.1, 0.3, 0.08],
+        };
+        let radius_cells = (grass.distance / grass.spacing).ceil() as i32;
+        let estimated = std::f32::consts::PI * radius_cells as f32 * radius_cells as f32;
+        let stride = (estimated / MAX_GRASS_INSTANCES as f32).sqrt().ceil() as i32;
+        assert!(stride > 1, "test must exercise decimated selection");
+
+        let (_, first) = select_grass_instances(
+            &description,
+            &grass,
+            &Matrix4::identity(),
+            Vector3::new(0.0, 20.0, 0.0),
+        );
+        let (_, moved_one_cell) = select_grass_instances(
+            &description,
+            &grass,
+            &Matrix4::identity(),
+            Vector3::new(grass.spacing, 20.0, 0.0),
+        );
+        let moved: HashSet<[u32; 4]> = moved_one_cell
+            .iter()
+            .map(|instance| instance.map(f32::to_bits))
+            .collect();
+        let retained = first
+            .iter()
+            .filter(|instance| moved.contains(&instance.map(f32::to_bits)))
+            .count();
+
+        assert!(
+            retained * 10 > first.len() * 9,
+            "moving one cell replaced too much grass: retained {retained}/{}",
+            first.len()
+        );
     }
 
     #[test]
