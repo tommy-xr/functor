@@ -1,13 +1,11 @@
 # Mario example assets
 
-The five PNGs in this directory are selected from Kenney's
+The character atlas and ground texture in this directory are assembled from
+images selected from Kenney's
 [Simplified Platformer Pack](https://opengameart.org/content/simplified-platformer-pack):
 
 - `ground.png`
-- `hero-idle.png`
-- `hero-jump.png`
-- `hero-walk-1.png`
-- `hero-walk-2.png`
+- `hero-atlas.png` — idle, walk 1, walk 2, and jump in 96×96 columns
 
 The pack is released under
 [Creative Commons Zero 1.0](https://creativecommons.org/publicdomain/zero/1.0/).

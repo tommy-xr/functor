@@ -67,6 +67,9 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v4: sprite atlas source rectangles and nearest/linear sampling — the
+/// `MaterialDescription::SpriteTexture` variant.
+///
 /// v3: 2D sprite passes — `Frame.sprite_layers` (defaulted and omitted when
 /// empty, so pre-v3 frames stay byte-compatible) and clamp-to-edge file texture
 /// variants used by sprite images.
@@ -75,7 +78,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -359,6 +362,7 @@ pub trait GameProducer {
 
 #[cfg(test)]
 mod tests {
+    use super::PROTOCOL_VERSION;
     use crate::audio::{AudioCommand, AudioScene, AudioSource};
     use crate::net::{ConnCommand, HttpMethod, NetCommand, NetInbound};
     use crate::ui::{Anchor, View};
@@ -387,6 +391,30 @@ mod tests {
         let back: T = serde_json::from_str(&json).expect("deserialize");
         let json2 = serde_json::to_string(&back).expect("re-serialize");
         assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn sprite_atlas_material_wire_is_pinned() {
+        use crate::{MaterialDescription, SpriteSampling, TextureDescription};
+
+        assert_eq!(PROTOCOL_VERSION, 4);
+        let material = MaterialDescription::sprite_texture_tinted(
+            TextureDescription::FileClamped("hero-atlas.png".to_string()),
+            Some([96.0, 0.0, 96.0, 96.0]),
+            SpriteSampling::Nearest,
+            1.0,
+            1.0,
+            1.0,
+            0.5,
+        );
+        let json = serde_json::to_string(&material).expect("serialize sprite material");
+        assert_eq!(
+            json,
+            r#"{"SpriteTexture":{"color":[1.0,1.0,1.0,0.5],"texture":{"FileClamped":"hero-atlas.png"},"source_pixels":[96.0,0.0,96.0,96.0],"sampling":"Nearest"}}"#
+        );
+        let back: MaterialDescription =
+            serde_json::from_str(&json).expect("deserialize sprite material");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     // A representative draw3d output: every Shape variant, every SceneObject

@@ -704,6 +704,17 @@ Starts once A2 + B3 exist.
         protocol round-trip; Camera2D viewport tests cover letterbox and
         pillarbox fitting; Mario typechecks and captures through the native
         renderer.
+      - [x] **C4b-7. Pixel-art sampling + atlas regions** (done 2026-07-23):
+        `Sprite.region(x, y, width, height)` describes a whole-pixel,
+        top-left-origin section of an image and `Sprite.imageRegion` draws it
+        at an independent world size. `Sprite.nearest` and `Sprite.linear`
+        select filtering compositionally for every image in a subtree while
+        remaining plain, inspectable data. The shared renderer normalizes
+        source pixels from the bound texture dimensions, samples atlas edges
+        from texel centers to prevent neighbor bleed, and reasserts filtering
+        per bind so a shared texture cannot inherit another draw's choice.
+        Mario exercises the path with one character atlas and nearest-neighbor
+        sampling.
 - [x] **C5. Wasm** (done 2026-07-03). `FunctorLangWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,

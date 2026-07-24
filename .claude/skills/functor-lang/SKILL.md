@@ -677,11 +677,17 @@ Sprite.blank()
 Sprite.rectangle(color, width, height) / Sprite.square(color, size)
 Sprite.image(width, height, texture)                       // Asset.Texture only; the locator
                                                            //   becomes plain sprite data
+Sprite.region(x, y, width, height)                         // whole source pixels from the
+                                                           //   image's top-left
+Sprite.imageRegion(width, height, region, texture)         // atlas section; display size stays
+                                                           //   in world units
 Sprite.group([sprite, …])                                  // painter order: later is above
 sprite |> Sprite.move(x, y) / moveX(x) / moveY(y)
 sprite |> Sprite.rotate(angle)                             // +angle is counter-clockwise
 sprite |> Sprite.scale(k) / scaleXY(x, y)
 sprite |> Sprite.fade(alpha) / tint(color)                 // multiply through the subtree
+sprite |> Sprite.nearest() / Sprite.linear()               // crisp pixel-art or smooth filtering;
+                                                           //   applies to every image in subtree
                                                            // Sprite.t is deliberately PLAIN
                                                            // DATA at runtime (private variants,
                                                            // lists, numbers, strings), despite

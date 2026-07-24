@@ -19,7 +19,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 view;
         uniform mat4 projection;
 
-        out vec2 texCoord;
+        out highp vec2 texCoord;
         out vec3 worldPos;
 
         void main() {
@@ -34,17 +34,35 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
-        in vec2 texCoord;
+        in highp vec2 texCoord;
         in vec3 worldPos;
 
         uniform vec4 emissiveColor;
         uniform sampler2D texture1;
         uniform int useTexture;
+        // Top-left-origin source pixels: x, y, width, height. Sampling from
+        // texel centers keeps atlas neighbors out at both linear and nearest
+        // filtering.
+        uniform highp vec4 sourcePixels;
+        uniform int useSourcePixels;
 
         void main() {
             vec4 c;
             if (useTexture == 1) {
-                c = texture(texture1, texCoord) * emissiveColor;
+                vec2 uv = texCoord;
+                if (useSourcePixels == 1) {
+                    highp vec2 texturePixels = vec2(textureSize(texture1, 0));
+                    highp vec2 sourceMin = sourcePixels.xy + vec2(0.5);
+                    highp vec2 sourceMax =
+                        sourcePixels.xy + sourcePixels.zw - vec2(0.5);
+                    highp vec2 samplePixel = clamp(
+                        sourcePixels.xy + texCoord * sourcePixels.zw,
+                        sourceMin,
+                        sourceMax
+                    );
+                    uv = samplePixel / texturePixels;
+                }
+                c = texture(texture1, uv) * emissiveColor;
             } else {
                 c = emissiveColor;
             }
@@ -59,6 +77,8 @@ struct Uniforms {
     emissive_color_loc: UniformLocation,
     texture_loc: UniformLocation,
     use_texture_loc: UniformLocation,
+    source_pixels_loc: UniformLocation,
+    use_source_pixels_loc: UniformLocation,
     fog: FogUniforms,
 }
 
@@ -67,6 +87,7 @@ static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 pub struct EmissiveMaterial {
     color: Vector4<f32>,
     use_texture: bool,
+    source_pixels: Option<Vector4<f32>>,
 }
 
 use crate::shader::Shader;
@@ -105,6 +126,8 @@ impl Material for EmissiveMaterial {
                     emissive_color_loc: shader.get_uniform_location(ctx.gl, "emissiveColor"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     use_texture_loc: shader.get_uniform_location(ctx.gl, "useTexture"),
+                    source_pixels_loc: shader.get_uniform_location(ctx.gl, "sourcePixels"),
+                    use_source_pixels_loc: shader.get_uniform_location(ctx.gl, "useSourcePixels"),
                     fog: FogUniforms::get(&shader, ctx.gl),
                 };
 
@@ -133,6 +156,18 @@ impl Material for EmissiveMaterial {
                 p.set_uniform_vec4(ctx.gl, &uniforms.emissive_color_loc, &self.color);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
+                p.set_uniform_vec4(
+                    ctx.gl,
+                    &uniforms.source_pixels_loc,
+                    &self
+                        .source_pixels
+                        .unwrap_or_else(|| Vector4::new(0.0, 0.0, 0.0, 0.0)),
+                );
+                p.set_uniform_1i(
+                    ctx.gl,
+                    &uniforms.use_source_pixels_loc,
+                    self.source_pixels.is_some() as i32,
+                );
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
             }
         }
@@ -145,6 +180,23 @@ impl EmissiveMaterial {
     /// `use_texture` expects a texture already bound to unit 0 (the caller binds
     /// it); the sampled texel is multiplied by `color` as a tint.
     pub fn create(color: Vector4<f32>, use_texture: bool) -> Box<dyn Material> {
-        Box::new(EmissiveMaterial { color, use_texture })
+        Box::new(EmissiveMaterial {
+            color,
+            use_texture,
+            source_pixels: None,
+        })
+    }
+
+    /// A sprite texture optionally restricted to a top-left-origin source
+    /// rectangle in pixels.
+    pub fn create_sprite(
+        color: Vector4<f32>,
+        source_pixels: Option<Vector4<f32>>,
+    ) -> Box<dyn Material> {
+        Box::new(EmissiveMaterial {
+            color,
+            use_texture: true,
+            source_pixels,
+        })
     }
 }

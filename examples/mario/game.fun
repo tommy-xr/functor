@@ -151,17 +151,24 @@ let platform = (cx, width) =>
     tiles,
   ])
 
-let characterAsset = (model, tts) =>
-  if not model.grounded then Assets.hero_jump
-  else if model.vx == 0.0 then Assets.hero_idle
-  else if Math.mod(Math.floor(tts * 8.0), 2.0) == 0.0 then Assets.hero_walk_1
-  else Assets.hero_walk_2
+// Character frames share one atlas. Regions use whole source pixels from the
+// image's top-left; animation remains ordinary pure game logic.
+let heroIdle = Sprite.region(0.0, 0.0, 96.0, 96.0)
+let heroWalk1 = Sprite.region(96.0, 0.0, 96.0, 96.0)
+let heroWalk2 = Sprite.region(192.0, 0.0, 96.0, 96.0)
+let heroJump = Sprite.region(288.0, 0.0, 96.0, 96.0)
+
+let characterRegion = (model, tts) =>
+  if not model.grounded then heroJump
+  else if model.vx == 0.0 then heroIdle
+  else if Math.mod(Math.floor(tts * 8.0), 2.0) == 0.0 then heroWalk1
+  else heroWalk2
 
 let faceCharacter = (model, sprite) =>
   if model.vx < 0.0 then sprite |> Sprite.scaleXY(-1.0, 1.0) else sprite
 
 let character = (model, tts) =>
-  Sprite.image(1.6, 1.6, characterAsset(model, tts))
+  Sprite.imageRegion(1.6, 1.6, characterRegion(model, tts), Assets.hero_atlas)
     |> faceCharacter(model)
     |> Sprite.move(model.x, model.y + 0.8)
 
@@ -173,6 +180,7 @@ let world = (model, tts) =>
     platform((rightEdge + chasmHalf) / 2.0, rightEdge - chasmHalf),
     character(model, tts),
   ])
+  |> Sprite.nearest()
 
 let draw = (model, tts) =>
   Frame.create2D(Camera2D.create(24.0, 13.5), world(model, tts))
