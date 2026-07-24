@@ -36,10 +36,7 @@ export const EXAMPLES = [
     ],
     assets: [
       { source: "examples/mario/ground.png", output: "ground.png" },
-      { source: "examples/mario/hero-idle.png", output: "hero-idle.png" },
-      { source: "examples/mario/hero-jump.png", output: "hero-jump.png" },
-      { source: "examples/mario/hero-walk-1.png", output: "hero-walk-1.png" },
-      { source: "examples/mario/hero-walk-2.png", output: "hero-walk-2.png" },
+      { source: "examples/mario/hero-atlas.png", output: "hero-atlas.png" },
     ],
   },
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm
