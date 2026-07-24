@@ -16,3 +16,9 @@ type mappedPose = { position: Input.point3, forward: Input.point3, up: Input.poi
 /// The returned position, forward, and up vectors are suitable for placing a
 /// controller representation or aiming a ray in the authored world.
 let mapTrackedPose : (t, Input.pose) => mappedPose
+
+/// Set near and far clipping distances; the camera is last for piping.
+///
+/// Large outdoor worlds should set the far plane explicitly. Keep the near
+/// plane as large as gameplay permits to preserve depth-buffer precision.
+let clip : (float, float, t) => t

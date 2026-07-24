@@ -40,6 +40,7 @@ pub fn bundled_modules() -> Vec<BundledModule> {
 pub fn modules() -> Vec<(String, String)> {
     vec![
         module("Scene", include_str!("../prelude/scene.funi")),
+        module("Terrain", include_str!("../prelude/terrain.funi")),
         module("Anim", include_str!("../prelude/anim.funi")),
         module("Asset", include_str!("../prelude/asset.funi")),
         module("Angle", include_str!("../prelude/angle.funi")),
