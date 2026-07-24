@@ -1,8 +1,9 @@
 //! The EMBEDDED Functor Lang producer: the portable, in-memory sibling of the desktop
 //! runner's `functor_lang_game.rs` and the web shell's `functor_lang_game.rs`, behind the
 //! same `GameProducer` seam. Same load-time contract validation and per-frame
-//! semantics — the MVU pair (subscriptions fold through `update` before
-//! `tick`), the optional `physics` hook (tick → physics → draw), a bad frame
+//! semantics — sampled input, then the MVU pair (subscriptions fold through
+//! `update` before `tick`), the optional `physics` hook (tick → physics →
+//! draw), a bad frame
 //! keeps the last good model/frame, per-frame errors dedupe — but with **no
 //! shell assumptions at all**:
 //!
@@ -95,6 +96,11 @@ pub struct FunctorLangEmbeddedGame {
     session: Session,
     model: Value,
     has_input: bool,
+    has_sampled_input: bool,
+    /// The shell samples physical state before a fixed simulation step. Hold
+    /// that coeffect until the shared frame body has committed any pending
+    /// scrub branch, then deliver it against the restored authoritative model.
+    pending_sampled_input: Option<crate::InputSnapshot>,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
     has_subscriptions: bool,
@@ -201,6 +207,7 @@ struct Loaded {
     session: Session,
     init: Value,
     has_input: bool,
+    has_sampled_input: bool,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
     has_subscriptions: bool,
@@ -276,6 +283,10 @@ return them beside the model as `(model, effect)`"
     if has_input {
         require_function(&path, &session, "input", 3)?;
     }
+    let has_sampled_input = session.global("sampledInput").is_some();
+    if has_sampled_input {
+        require_function(&path, &session, "sampledInput", 2)?;
+    }
     // Same deal for the mouse: `mouseMove(model, x, y)` in window pixels,
     // `mouseWheel(model, delta)`.
     let has_mouse_move = session.global("mouseMove").is_some();
@@ -334,6 +345,7 @@ return them beside the model as `(model, effect)`"
         session,
         init,
         has_input,
+        has_sampled_input,
         has_mouse_move,
         has_mouse_wheel,
         has_subscriptions,
@@ -379,6 +391,8 @@ impl FunctorLangEmbeddedGame {
             session: loaded.session,
             model: loaded.init,
             has_input: loaded.has_input,
+            has_sampled_input: loaded.has_sampled_input,
+            pending_sampled_input: None,
             has_mouse_move: loaded.has_mouse_move,
             has_mouse_wheel: loaded.has_mouse_wheel,
             has_subscriptions: loaded.has_subscriptions,
@@ -444,6 +458,8 @@ impl FunctorLangEmbeddedGame {
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
+        self.has_sampled_input = loaded.has_sampled_input;
+        self.pending_sampled_input = None;
         self.has_mouse_move = loaded.has_mouse_move;
         self.has_mouse_wheel = loaded.has_mouse_wheel;
         self.has_subscriptions = loaded.has_subscriptions;
@@ -472,6 +488,8 @@ impl FunctorLangEmbeddedGame {
         // Plain-data snapshots remain seekable under the new program. A model
         // history containing callable or opaque host values instead starts a
         // new generation anchored at this rebound live frame.
+        self.recorder
+            .configure_origin_replay_for_sampled_input(self.has_sampled_input);
         self.recorder
             .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
         let replay_started = now_ms();
@@ -530,6 +548,8 @@ impl FunctorLangEmbeddedGame {
         self.session = loaded.session;
         self.model = loaded.init;
         self.has_input = loaded.has_input;
+        self.has_sampled_input = loaded.has_sampled_input;
+        self.pending_sampled_input = None;
         self.has_mouse_move = loaded.has_mouse_move;
         self.has_mouse_wheel = loaded.has_mouse_wheel;
         self.has_subscriptions = loaded.has_subscriptions;
@@ -779,7 +799,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
         // (docs/time-travel.md T6a), run as one call — like the web producer,
         // there is no per-frame perf timing to split it at the physics
         // boundary (the C6 perf gate measures on desktop).
-        self.ctx().run_frame(frame_time);
+        let sampled_input = self.pending_sampled_input.take();
+        self.ctx().run_frame(frame_time, sampled_input.as_ref());
         // A real frame ran: swap its journal into `last_frame_journal`
         // (leaving a fresh armed journal) and drop the cached trace (the frame
         // advanced). A paused frame never reaches here, so its last real frame
@@ -795,6 +816,14 @@ impl GameProducer for FunctorLangEmbeddedGame {
             self.last_frame_journal = journal;
         }
         self.cached_trace = None;
+    }
+
+    fn samples_input(&self) -> bool {
+        self.has_sampled_input
+    }
+
+    fn sampled_input(&mut self, snapshot: &crate::InputSnapshot) {
+        self.pending_sampled_input = Some(snapshot.clone());
     }
 
     fn key_event(&mut self, code: i32, is_down: bool) {
@@ -831,7 +860,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseMove", &err),
         }
-        self.input_buf.push(crate::RecordedInput::MouseMove { x, y });
+        self.input_buf
+            .push(crate::RecordedInput::MouseMove { x, y });
     }
 
     fn mouse_wheel(&mut self, delta: i32) {
@@ -843,7 +873,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error("mouseWheel", &err),
         }
-        self.input_buf.push(crate::RecordedInput::MouseWheel { delta });
+        self.input_buf
+            .push(crate::RecordedInput::MouseWheel { delta });
     }
 
     fn ui_event(&mut self, event: crate::ui::UiEvent) {
@@ -973,9 +1004,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
                 .call("soundScape", vec![self.model.clone()], &mut FunctorHost)
             {
                 Ok(value) => match audio_scene_of(&value) {
-                    Some(scene) => {
-                        self.last_soundscape_json = crate::audio::scene_to_json(scene)
-                    }
+                    Some(scene) => self.last_soundscape_json = crate::audio::scene_to_json(scene),
                     None => self.reporter.report_once(format!(
                         "[functor-lang] soundScape must return an AudioScene (AudioScene.create / \
 AudioScene.empty), got {}",
@@ -1178,10 +1207,7 @@ let draw = (model, tts) =>
             );
         }
         let spun = game.state_debug();
-        assert!(
-            spun.contains("spin"),
-            "model is the game's record: {spun}"
-        );
+        assert!(spun.contains("spin"), "model is the game's record: {spun}");
 
         // Push an edited program: the model must survive (spin keeps its
         // accumulated value; only the code changed).
@@ -1234,5 +1260,299 @@ let draw = (model, tts) =>
             !matches!(&frame.scene.obj, crate::SceneObject::Group(children) if children.is_empty()),
             "new project renders with its initialized model"
         );
+    }
+
+    #[test]
+    fn sampled_input_is_typed_delivered_and_recorded_per_tick() {
+        let source = r#"
+let init = { trigger: 0.0, held: 0.0, mouseX: 0.0 }
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  match snapshot.xr with
+  | Option.Some(xr) => {
+      trigger: xr.right.trigger,
+      held: List.length(snapshot.heldKeys),
+      mouseX: snapshot.mouse.x
+    }
+  | Option.None => model
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), source.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("sampled-input game loads");
+        assert!(game.samples_input());
+
+        let snapshot = crate::InputSnapshot {
+            held_keys: vec![crate::Key::W, crate::Key::Space],
+            mouse: crate::MouseSnapshot { x: 42, y: 9 },
+            xr: Some(crate::XrInputSnapshot {
+                right: crate::XrControllerSnapshot {
+                    active: true,
+                    trigger: 0.625,
+                    ..crate::XrControllerSnapshot::default()
+                },
+                ..crate::XrInputSnapshot::default()
+            }),
+        };
+        game.sampled_input(&snapshot);
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+
+        let model = game.state_debug();
+        assert!(model.contains("trigger: 0.625"), "{model}");
+        assert!(model.contains("held: 2"), "{model}");
+        assert!(model.contains("mouseX: 42"), "{model}");
+        assert!(matches!(
+            game.recorded_inputs_at(0).as_slice(),
+            [crate::RecordedInput::Snapshot(recorded)] if recorded.as_ref() == &snapshot
+        ));
+    }
+
+    #[test]
+    fn sampled_input_is_applied_after_a_resuming_scrub_restores_the_model() {
+        let source = r#"
+let init = { sample: 0, ticks: 0.0 }
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  { sample: snapshot.mouse.x, ticks: model.ticks }
+let tick = (model, dt, tts) =>
+  { sample: model.sample, ticks: model.ticks + 1.0 }
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), source.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("sampled-input game loads");
+        let snapshot = |x| crate::InputSnapshot {
+            mouse: crate::MouseSnapshot { x, y: 0 },
+            ..crate::InputSnapshot::default()
+        };
+
+        game.sampled_input(&snapshot(1));
+        game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
+        game.sampled_input(&snapshot(2));
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+        game.seek_scene_to(0).expect("frame zero remains seekable");
+
+        // The queued live sample belongs to the new branch. It must land after
+        // Resume restores frame zero, or that restoration silently erases it.
+        game.sampled_input(&snapshot(10));
+        game.tick(frame_time(2.0 / 60.0, 1.0 / 60.0));
+
+        let model = game.state_debug();
+        assert!(model.contains("sample: 10"), "{model}");
+        assert!(model.contains("ticks: 2"), "{model}");
+        assert!(matches!(
+            game.recorded_inputs_at(1).as_slice(),
+            [crate::RecordedInput::Snapshot(recorded)] if recorded.mouse.x == 10
+        ));
+    }
+
+    #[test]
+    fn reload_that_adds_sampled_input_keeps_selected_snapshot_semantics() {
+        let old = r#"
+let init = { n: 0.0, gate: 0.0 }
+let tick = (model, dt, tts) =>
+  { n: model.n + 1.0, gate: model.gate }
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let new = r#"
+let init = { n: 0.0, gate: 0.0 }
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  { n: model.n, gate: 1.0 }
+let tick = (model, dt, tts) =>
+  { n: model.n + model.gate, gate: model.gate }
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), old.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("edge-only game loads");
+        for frame in 1..=3 {
+            game.tick(frame_time(frame as f32 / 60.0, 1.0 / 60.0));
+        }
+        game.seek_scene_to(0).expect("frame zero is seekable");
+
+        let status = game.reload_source(new).expect("sampled hook reloads");
+        let model = game.state_debug();
+        assert!(model.contains("n: 1"), "{model}");
+        assert!(model.contains("gate: 0"), "{model}");
+        assert!(!status.contains("history recomputed"), "{status}");
+
+        // The missing historical coeffects are a property of the retained
+        // timeline, not just this code swap. A second edit while still
+        // scrubbed must not re-enable origin replay.
+        let status = game.reload_source(new).expect("second reload succeeds");
+        let model = game.state_debug();
+        assert!(model.contains("n: 1"), "{model}");
+        assert!(model.contains("gate: 0"), "{model}");
+        assert!(!status.contains("history recomputed"), "{status}");
+
+        // Recording a sampled frame does not fill the older gap. Seeking back
+        // across that gap and reloading must keep selected-snapshot semantics.
+        game.sampled_input(&crate::InputSnapshot::default());
+        game.tick(frame_time(4.0 / 60.0, 1.0 / 60.0));
+        game.seek_scene_to(0).expect("frame zero remains seekable");
+        let status = game.reload_source(new).expect("later reload succeeds");
+        let model = game.state_debug();
+        assert!(model.contains("n: 1"), "{model}");
+        assert!(model.contains("gate: 0"), "{model}");
+        assert!(!status.contains("history recomputed"), "{status}");
+    }
+
+    #[test]
+    fn removing_and_readding_sampled_input_reuses_complete_coeffects() {
+        let sampled = r#"
+let init = { sum: 0.0 }
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  { sum: model.sum + snapshot.mouse.x }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let without_sampled = r#"
+let init = { sum: 0.0 }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), sampled.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("sampled-input game loads");
+        for (frame, x) in [1, 2, 3].into_iter().enumerate() {
+            game.sampled_input(&crate::InputSnapshot {
+                mouse: crate::MouseSnapshot { x, y: 0 },
+                ..crate::InputSnapshot::default()
+            });
+            game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
+        }
+        game.seek_scene_to(0).expect("frame zero is seekable");
+
+        let removed = game
+            .reload_source(without_sampled)
+            .expect("removing the hook reloads");
+        assert!(removed.contains("history recomputed"), "{removed}");
+        let readded = game
+            .reload_source(sampled)
+            .expect("re-adding the hook reloads");
+        assert!(readded.contains("history recomputed"), "{readded}");
+
+        game.seek_scene_to(2).expect("rebuilt future remains seekable");
+        let model = game.state_debug();
+        assert!(model.contains("sum: 6"), "{model}");
+    }
+
+    #[test]
+    fn adding_sampled_input_before_the_first_step_keeps_origin_complete() {
+        let old = r#"
+let init = { sum: 0.0 }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let sampled = r#"
+let init = { sum: 0.0 }
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  { sum: model.sum + snapshot.mouse.x }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), old.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("edge-only game loads");
+        game.reload_source(sampled)
+            .expect("hook added before the first step");
+
+        for (frame, x) in [1, 2].into_iter().enumerate() {
+            game.sampled_input(&crate::InputSnapshot {
+                mouse: crate::MouseSnapshot { x, y: 0 },
+                ..crate::InputSnapshot::default()
+            });
+            game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
+        }
+        game.seek_scene_to(0).expect("frame zero is seekable");
+        let status = game.reload_source(sampled).expect("later reload succeeds");
+        assert!(status.contains("history recomputed"), "{status}");
+        game.seek_scene_to(1).expect("rebuilt future remains seekable");
+        let model = game.state_debug();
+        assert!(model.contains("sum: 3"), "{model}");
+    }
+
+    #[test]
+    fn rewinding_before_a_sample_gap_restores_origin_replay() {
+        let sampled = r#"
+let init = { sum: 0.0 }
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  { sum: model.sum + snapshot.mouse.x }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let without_sampled = r#"
+let init = { sum: 0.0 }
+let tick = (model, dt, tts) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube())
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), sampled.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("sampled-input game loads");
+        for (frame, x) in [1, 2, 3].into_iter().enumerate() {
+            game.sampled_input(&crate::InputSnapshot {
+                mouse: crate::MouseSnapshot { x, y: 0 },
+                ..crate::InputSnapshot::default()
+            });
+            game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
+        }
+
+        game.reload_source(without_sampled)
+            .expect("removing the hook reloads");
+        game.tick(frame_time(4.0 / 60.0, 1.0 / 60.0));
+        game.reload_source(sampled)
+            .expect("re-adding after the gap reloads");
+
+        game.rewind_scene_to(2)
+            .expect("rewind discards the unsampled frame");
+        game.seek_scene_to(0).expect("frame zero is seekable");
+        let status = game
+            .reload_source(sampled)
+            .expect("same-hook reload revalidates the current branch");
+        assert!(status.contains("history recomputed"), "{status}");
+        game.seek_scene_to(2).expect("rebuilt future remains seekable");
+        let model = game.state_debug();
+        assert!(model.contains("sum: 6"), "{model}");
     }
 }

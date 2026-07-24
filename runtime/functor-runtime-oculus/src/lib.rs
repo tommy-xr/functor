@@ -1121,13 +1121,17 @@ pub fn android_main(app: AndroidApp) {
             tts: clock.current_tts(),
         };
 
-        // The game produces this frame (subscriptions → update → tick →
-        // physics inside `tick`; `render` = the pure `draw`). Frame.camera is
-        // the authored center-eye rig; live OpenXR eye deltas compose onto it
-        // below, so the same camera positions the world on every target.
+        // The game produces this frame (sampledInput → subscriptions → update
+        // → tick → physics inside `tick`; `render` = the pure `draw`).
+        // Frame.camera is the authored center-eye rig; live OpenXR eye deltas
+        // compose onto it below, so the same camera positions the world on
+        // every target.
         game.check_hot_reload(frame_time.clone());
         game.push_asset_progress(asset_cache.progress());
         for sub_frame in &sub_frames {
+            if game.samples_input() {
+                game.sampled_input(&debug.input);
+            }
             game.tick(sub_frame.clone());
             debug.frame_count += 1;
         }

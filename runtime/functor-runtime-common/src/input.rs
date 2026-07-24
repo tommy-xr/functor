@@ -140,6 +140,15 @@ pub enum RecordedInput {
     MouseMove { x: i32, y: i32 },
     /// A wheel notch (±1 per notch).
     MouseWheel { delta: i32 },
+    /// The continuously sampled input delivered before one simulation tick.
+    ///
+    /// Unlike edge events above, this is recorded every tick whose game
+    /// defines `sampledInput`: held controls and tracked poses can drive pure
+    /// game logic continuously, and forward replay re-runs the same hook with
+    /// the same sample.
+    // Box the dense payload so adding sampled input does not inflate every
+    // legacy key/mouse/UI event stored in the sparse session log.
+    Snapshot(Box<InputSnapshot>),
     /// An interaction on an interactive UI widget (slot-addressed — see
     /// [`crate::ui::UiEvent`]). Replay rebuilds the frame's handler table from
     /// `ui(model)` and re-delivers, so UI-driven model changes replay too.
@@ -156,13 +165,49 @@ impl Key {
     /// (guarded by `from_i32_round_trips`).
     pub const ALL: [Key; 44] = [
         Key::Unknown,
-        Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I,
-        Key::J, Key::K, Key::L, Key::M, Key::N, Key::O, Key::P, Key::Q, Key::R,
-        Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z,
-        Key::Up, Key::Down, Key::Left, Key::Right, Key::Space, Key::Enter,
+        Key::A,
+        Key::B,
+        Key::C,
+        Key::D,
+        Key::E,
+        Key::F,
+        Key::G,
+        Key::H,
+        Key::I,
+        Key::J,
+        Key::K,
+        Key::L,
+        Key::M,
+        Key::N,
+        Key::O,
+        Key::P,
+        Key::Q,
+        Key::R,
+        Key::S,
+        Key::T,
+        Key::U,
+        Key::V,
+        Key::W,
+        Key::X,
+        Key::Y,
+        Key::Z,
+        Key::Up,
+        Key::Down,
+        Key::Left,
+        Key::Right,
+        Key::Space,
+        Key::Enter,
         Key::Escape,
-        Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5,
-        Key::Num6, Key::Num7, Key::Num8, Key::Num9,
+        Key::Num0,
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
     ];
 
     /// The key whose `as i32` discriminant equals `value`, if any. The inverse
@@ -237,9 +282,184 @@ pub fn key_input_value(code: i32) -> Option<functor_lang::Value> {
     })
 }
 
+fn record(
+    fields: impl IntoIterator<Item = (&'static str, functor_lang::Value)>,
+) -> functor_lang::Value {
+    functor_lang::Value::Record(std::rc::Rc::new(
+        fields
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect(),
+    ))
+}
+
+fn option_value(value: Option<functor_lang::Value>) -> functor_lang::Value {
+    match value {
+        Some(value) => functor_lang::Value::Variant {
+            ctor: std::rc::Rc::from("Option.Some"),
+            args: std::rc::Rc::new(vec![value]),
+        },
+        None => functor_lang::Value::Variant {
+            ctor: std::rc::Rc::from("Option.None"),
+            args: std::rc::Rc::new(Vec::new()),
+        },
+    }
+}
+
+/// Convert one rig-local tracking pose into the plain-data `Input.pose`
+/// record a Functor Lang game receives.
+pub fn tracking_pose_value(pose: TrackingPose) -> functor_lang::Value {
+    record([
+        (
+            "position",
+            record([
+                ("x", functor_lang::Value::Number(pose.position[0] as f64)),
+                ("y", functor_lang::Value::Number(pose.position[1] as f64)),
+                ("z", functor_lang::Value::Number(pose.position[2] as f64)),
+            ]),
+        ),
+        (
+            "orientation",
+            record([
+                ("x", functor_lang::Value::Number(pose.orientation[0] as f64)),
+                ("y", functor_lang::Value::Number(pose.orientation[1] as f64)),
+                ("z", functor_lang::Value::Number(pose.orientation[2] as f64)),
+                ("w", functor_lang::Value::Number(pose.orientation[3] as f64)),
+            ]),
+        ),
+    ])
+}
+
+/// Decode the plain-data `Input.pose` record accepted by camera-rig helpers.
+pub fn tracking_pose_from_value(value: &functor_lang::Value) -> Result<TrackingPose, String> {
+    fn field<'a>(
+        value: &'a functor_lang::Value,
+        name: &str,
+    ) -> Result<&'a functor_lang::Value, String> {
+        let functor_lang::Value::Record(fields) = value else {
+            return Err(format!(
+                "expected an Input.pose record, got {}",
+                value.kind_name()
+            ));
+        };
+        fields
+            .iter()
+            .find_map(|(field, value)| (field == name).then_some(value))
+            .ok_or_else(|| format!("Input.pose is missing `{name}`"))
+    }
+    let number = |value: &functor_lang::Value, name: &str| match value {
+        functor_lang::Value::Number(value) if (*value as f32).is_finite() => Ok(*value as f32),
+        functor_lang::Value::Number(value) => {
+            Err(format!("Input.pose `{name}` must be finite, got {value}"))
+        }
+        other => Err(format!(
+            "Input.pose `{name}` must be a number, got {}",
+            other.kind_name()
+        )),
+    };
+    let position = field(value, "position")?;
+    let orientation = field(value, "orientation")?;
+    Ok(TrackingPose::new(
+        [
+            number(field(position, "x")?, "position.x")?,
+            number(field(position, "y")?, "position.y")?,
+            number(field(position, "z")?, "position.z")?,
+        ],
+        [
+            number(field(orientation, "x")?, "orientation.x")?,
+            number(field(orientation, "y")?, "orientation.y")?,
+            number(field(orientation, "z")?, "orientation.z")?,
+            number(field(orientation, "w")?, "orientation.w")?,
+        ],
+    ))
+}
+
+fn controller_value(controller: &XrControllerSnapshot) -> functor_lang::Value {
+    record([
+        ("active", functor_lang::Value::Bool(controller.active)),
+        (
+            "grip",
+            option_value(controller.grip.map(tracking_pose_value)),
+        ),
+        ("aim", option_value(controller.aim.map(tracking_pose_value))),
+        (
+            "trigger",
+            functor_lang::Value::Number(controller.trigger as f64),
+        ),
+        (
+            "squeeze",
+            functor_lang::Value::Number(controller.squeeze as f64),
+        ),
+        (
+            "thumbstick",
+            record([
+                (
+                    "x",
+                    functor_lang::Value::Number(controller.thumbstick[0] as f64),
+                ),
+                (
+                    "y",
+                    functor_lang::Value::Number(controller.thumbstick[1] as f64),
+                ),
+            ]),
+        ),
+        (
+            "primaryPressed",
+            functor_lang::Value::Bool(controller.primary_pressed),
+        ),
+        (
+            "secondaryPressed",
+            functor_lang::Value::Bool(controller.secondary_pressed),
+        ),
+        (
+            "thumbstickPressed",
+            functor_lang::Value::Bool(controller.thumbstick_pressed),
+        ),
+        (
+            "menuPressed",
+            functor_lang::Value::Bool(controller.menu_pressed),
+        ),
+    ])
+}
+
+/// Convert the shared shell snapshot into the typed, plain-data
+/// `Input.snapshot` record delivered to a Functor Lang game's optional
+/// `sampledInput` hook.
+pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
+    let held_keys = snapshot
+        .held_keys
+        .iter()
+        .filter_map(|key| key_input_value(*key as i32))
+        .collect();
+    let xr = snapshot.xr.as_ref().map(|xr| {
+        record([
+            ("head", option_value(xr.head.map(tracking_pose_value))),
+            ("left", controller_value(&xr.left)),
+            ("right", controller_value(&xr.right)),
+        ])
+    });
+    record([
+        (
+            "heldKeys",
+            functor_lang::Value::List(std::rc::Rc::new(held_keys)),
+        ),
+        (
+            "mouse",
+            record([
+                ("x", functor_lang::Value::Number(snapshot.mouse.x as f64)),
+                ("y", functor_lang::Value::Number(snapshot.mouse.y as f64)),
+            ]),
+        ),
+        ("xr", option_value(xr)),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{InputSnapshot, Key, MouseSnapshot, XrControllerSnapshot, XrInputSnapshot};
+    use super::{
+        input_snapshot_value, tracking_pose_from_value, tracking_pose_value, InputSnapshot, Key,
+        MouseSnapshot, RecordedInput, XrControllerSnapshot, XrInputSnapshot,
+    };
     use crate::TrackingPose;
 
     #[test]
@@ -317,6 +537,15 @@ mod tests {
     }
 
     #[test]
+    fn dense_snapshot_payload_does_not_inflate_sparse_recorded_events() {
+        assert!(
+            std::mem::size_of::<RecordedInput>() <= 64,
+            "RecordedInput is {} bytes; keep the snapshot payload indirect",
+            std::mem::size_of::<RecordedInput>()
+        );
+    }
+
+    #[test]
     fn input_snapshot_omits_absent_xr_and_round_trips_present_xr() {
         let desktop = InputSnapshot {
             held_keys: vec![Key::W],
@@ -348,5 +577,42 @@ mod tests {
         };
         let encoded = serde_json::to_string(&xr).unwrap();
         assert_eq!(serde_json::from_str::<InputSnapshot>(&encoded).unwrap(), xr);
+    }
+
+    #[test]
+    fn functor_value_preserves_the_typed_snapshot_shape() {
+        let snapshot = InputSnapshot {
+            held_keys: vec![Key::W, Key::Space],
+            mouse: MouseSnapshot { x: 12, y: -4 },
+            xr: Some(XrInputSnapshot {
+                head: Some(TrackingPose::IDENTITY),
+                left: XrControllerSnapshot::default(),
+                right: XrControllerSnapshot {
+                    active: true,
+                    aim: Some(TrackingPose::new([0.25, -0.5, -1.0], [0.0, 0.0, 0.0, 1.0])),
+                    trigger: 0.75,
+                    primary_pressed: true,
+                    ..XrControllerSnapshot::default()
+                },
+            }),
+        };
+        let rendered = input_snapshot_value(&snapshot).to_string();
+        assert!(
+            rendered.contains("heldKeys: [Key.W, Key.Space]"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("mouse: { x: 12, y: -4 }"), "{rendered}");
+        assert!(rendered.contains("xr: Option.Some("), "{rendered}");
+        assert!(rendered.contains("trigger: 0.75"), "{rendered}");
+        assert!(rendered.contains("primaryPressed: true"), "{rendered}");
+    }
+
+    #[test]
+    fn tracking_pose_functor_value_round_trips() {
+        let pose = TrackingPose::new([1.0, -2.0, 3.5], [0.1, 0.2, 0.3, 0.9]);
+        assert_eq!(
+            tracking_pose_from_value(&tracking_pose_value(pose)).unwrap(),
+            pose
+        );
     }
 }

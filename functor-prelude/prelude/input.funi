@@ -1,0 +1,46 @@
+//! Target-neutral continuously sampled input.
+//!
+//! The optional `sampledInput(model, snapshot)` game hook receives one
+//! `Input.snapshot` immediately before every simulation tick. XR is the first
+//! typed device domain; future gamepad and mobile-touch records belong beside
+//! `xr` on the snapshot.
+
+/// A plain two-dimensional point or axis pair.
+type point2 = { x: float, y: float }
+/// A plain three-dimensional point or direction.
+type point3 = { x: float, y: float, z: float }
+/// A quaternion in `[x, y, z, w]` component order, matching OpenXR and glTF.
+type quaternion = { x: float, y: float, z: float, w: float }
+/// A rig-local pose where `+X` is right, `+Y` is up, and `-Z` is forward.
+type pose = { position: point3, orientation: quaternion }
+
+/// One XR controller's availability, poses, analog controls, and buttons.
+type controller = {
+  active: bool,
+  grip: Option.t<pose>,
+  aim: Option.t<pose>,
+  trigger: float,
+  squeeze: float,
+  thumbstick: point2,
+  primaryPressed: bool,
+  secondaryPressed: bool,
+  thumbstickPressed: bool,
+  menuPressed: bool
+}
+
+/// Head and left/right controller state sampled from an XR runtime.
+type xr = {
+  head: Option.t<pose>,
+  left: controller,
+  right: controller
+}
+
+/// Mouse position in shell-provided surface coordinates.
+type mouse = { x: float, y: float }
+
+/// Held and continuously sampled input for one simulation tick.
+type snapshot = {
+  heldKeys: List<Key.t>,
+  mouse: mouse,
+  xr: Option.t<xr>
+}

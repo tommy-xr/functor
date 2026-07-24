@@ -64,6 +64,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Angle",
     "Texture",
     "Time",
+    "Input",
     "Sub",
     "Effect",
     "Physics",
@@ -395,8 +396,9 @@ fn scan_project_dir(entry_path: &Path) -> std::io::Result<(Vec<PathBuf>, Vec<Pat
         .collect();
     siblings.sort();
 
-    let (kept_siblings, skipped): (Vec<PathBuf>, Vec<PathBuf>) =
-        siblings.into_iter().partition(|path| is_loadable_stem(path));
+    let (kept_siblings, skipped): (Vec<PathBuf>, Vec<PathBuf>) = siblings
+        .into_iter()
+        .partition(|path| is_loadable_stem(path));
 
     let mut kept = vec![entry_path.to_path_buf()];
     kept.extend(kept_siblings);
@@ -675,8 +677,8 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         } else {
             parse_with_base
         };
-        let program =
-            parse(&file.src, file.base).map_err(|e| render_span(&files, index, e.span, &e.message))?;
+        let program = parse(&file.src, file.base)
+            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
         programs.push(program);
     }
 

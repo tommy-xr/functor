@@ -9,3 +9,10 @@ let lookAt : (Vec3.t, Vec3.t) => t
 ///
 /// Zero yaw and pitch look down `+Z`.
 let firstPerson : (Vec3.t, Angle.t, Angle.t, Angle.t) => t
+/// A tracked pose mapped into world space through an authored camera.
+type mappedPose = { position: Input.point3, forward: Input.point3, up: Input.point3 }
+/// Map a rig-local tracked pose through the authored camera.
+///
+/// The returned position, forward, and up vectors are suitable for placing a
+/// controller representation or aiming a ray in the authored world.
+let mapTrackedPose : (t, Input.pose) => mappedPose

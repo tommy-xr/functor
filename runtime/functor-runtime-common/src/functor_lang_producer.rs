@@ -83,6 +83,7 @@ pub struct JournalEntry {
 pub enum Provenance {
     Tick,
     Input,
+    SampledInput,
     MouseMove,
     MouseWheel,
     Subscription,
@@ -131,6 +132,7 @@ impl Provenance {
                 };
                 format!("input: {key} {dir}")
             }
+            Provenance::SampledInput => "sampled input".to_string(),
             Provenance::MouseMove => "mouseMove".to_string(),
             Provenance::MouseWheel => "mouseWheel".to_string(),
             Provenance::Subscription => format!("subscription: {}", msg()),
@@ -346,19 +348,29 @@ pub struct FrameCtx<'a> {
 }
 
 impl FrameCtx<'_> {
-    /// One full MVU frame: scrub-commit → subscriptions → tick+absorb → physics
-    /// (step + query drain + events) → record. Used by shells that don't split
-    /// the frame for perf timing (web). Desktop calls the three phases directly
-    /// so it can time `tick` and `physics` separately.
-    pub fn run_frame(&mut self, frame_time: FrameTime) {
-        self.before_physics(frame_time);
+    /// One full MVU frame: scrub-commit → sampled input → subscriptions →
+    /// tick+absorb → physics (step + query drain + events) → record. Used by
+    /// shells that don't split the frame for perf timing (web). Desktop calls
+    /// the three phases directly so it can time `tick` and `physics`
+    /// separately.
+    pub fn run_frame(
+        &mut self,
+        frame_time: FrameTime,
+        sampled_input: Option<&crate::InputSnapshot>,
+    ) {
+        self.before_physics(frame_time, sampled_input);
         self.physics_phase(frame_time);
         self.record_frame(frame_time);
     }
 
-    /// The pre-physics phase: commit a resuming scrub, pump subscriptions, then
-    /// run `tick` and absorb its result. (Desktop times this as `tick_ns`.)
-    pub fn before_physics(&mut self, frame_time: FrameTime) {
+    /// The pre-physics phase: commit a resuming scrub, apply the shell's queued
+    /// sample, pump subscriptions, then run `tick` and absorb its result.
+    /// (Desktop times this as `tick_ns`.)
+    pub fn before_physics(
+        &mut self,
+        frame_time: FrameTime,
+        sampled_input: Option<&crate::InputSnapshot>,
+    ) {
         // Committing a scrub (docs/time-travel.md T3): if play resumes (dts > 0)
         // while the draggable bar is parked on an earlier frame, branch the
         // timeline from there BEFORE this frame advances — and drop any in-flight
@@ -379,6 +391,9 @@ impl FrameCtx<'_> {
             // (a rewound loading screen must learn its assets already
             // settled).
             *self.delivered_asset_progress = None;
+        }
+        if let Some(snapshot) = sampled_input {
+            self.deliver_sampled_input(snapshot, true);
         }
         self.subscriptions_and_tick(frame_time);
     }
@@ -496,10 +511,8 @@ impl FrameCtx<'_> {
             // timeline frame, but it can mutate a valid model and must therefore
             // prefix an exact reconstruction. Later paused zero-delta renders
             // are not simulation history and are discarded by the recorder.
-            self.recorder.record_replay_prefix(
-                frame_time,
-                std::mem::take(self.input_buf),
-            );
+            self.recorder
+                .record_replay_prefix(frame_time, std::mem::take(self.input_buf));
         }
     }
 
@@ -555,14 +568,17 @@ impl FrameCtx<'_> {
         input_at: impl Fn(usize) -> Option<&'a [RecordedInput]>,
         mut frame_time_at: impl FnMut(usize) -> FrameTime,
         capture_from_division: usize,
+        mut sampled_input: Option<crate::InputSnapshot>,
     ) -> Vec<(Value, Option<Vec<u8>>)> {
         let mut out = Vec::with_capacity(divisions.saturating_sub(capture_from_division));
         let mut step = 0usize;
         for div in 0..divisions {
             for _ in 0..steps_per_division {
                 // Replay this fine step's recorded inputs before the frame body,
-                // so the model absorbs them exactly as the live frame did (coast
-                // when the log has no entry for this step).
+                // so the model absorbs them exactly as the live frame did.
+                // Sampled input is level state: after the recorded window ends,
+                // carry the latest sample through every projected tick.
+                let mut delivered_sample = false;
                 if let Some(events) = input_at(step) {
                     // A recorded UiEvent resolved against the LAST RENDER's
                     // handler table live — the tree the user saw, built from
@@ -583,7 +599,38 @@ impl FrameCtx<'_> {
                         .then(|| self.eval_handler_table("webview"))
                         .unwrap_or_default();
                     for event in events {
+                        match event {
+                            RecordedInput::Snapshot(snapshot) => {
+                                sampled_input = Some(snapshot.as_ref().clone());
+                                delivered_sample = true;
+                            }
+                            RecordedInput::Key { code, is_down } => {
+                                if let Some(key) = crate::Key::from_i32(*code)
+                                    .filter(|key| *key != crate::Key::Unknown)
+                                {
+                                    let sample = sampled_input.get_or_insert_with(Default::default);
+                                    if *is_down {
+                                        if !sample.held_keys.contains(&key) {
+                                            sample.held_keys.push(key);
+                                            sample.held_keys.sort_unstable();
+                                        }
+                                    } else {
+                                        sample.held_keys.retain(|held| *held != key);
+                                    }
+                                }
+                            }
+                            RecordedInput::MouseMove { x, y } => {
+                                sampled_input.get_or_insert_with(Default::default).mouse =
+                                    crate::MouseSnapshot { x: *x, y: *y };
+                            }
+                            _ => {}
+                        }
                         self.replay_input(event.clone(), &ui_handlers, &webview_handlers);
+                    }
+                }
+                if !delivered_sample {
+                    if let Some(sample) = sampled_input.as_ref() {
+                        self.deliver_sampled_input(sample, false);
                     }
                 }
                 let frame_time = frame_time_at(step);
@@ -665,6 +712,10 @@ impl FrameCtx<'_> {
                 "mouseWheel",
                 vec![self.model.clone(), Value::Number(delta as f64)],
             ),
+            RecordedInput::Snapshot(snapshot) => {
+                self.deliver_sampled_input(&snapshot, false);
+                return;
+            }
             RecordedInput::UiEvent(event) => {
                 self.deliver_ui_event(ui_handlers, &event);
                 return;
@@ -680,6 +731,26 @@ impl FrameCtx<'_> {
         match self.session.call(entry, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
             Err(err) => self.reporter.frame_error(entry, &err),
+        }
+    }
+
+    /// Deliver one continuously sampled shell snapshot through the optional
+    /// `sampledInput(model, snapshot)` hook. The live path records the
+    /// snapshot beside edge events; dry-run replay calls the same body with
+    /// `record = false`.
+    pub fn deliver_sampled_input(&mut self, snapshot: &crate::InputSnapshot, record: bool) {
+        if self.session.global("sampledInput").is_none() {
+            return;
+        }
+        let args = vec![self.model.clone(), crate::input_snapshot_value(snapshot)];
+        journal_push("sampledInput", &args, Provenance::SampledInput);
+        match self.session.call("sampledInput", args, &mut FunctorHost) {
+            Ok(returned) => self.absorb(returned),
+            Err(err) => self.reporter.frame_error("sampledInput", &err),
+        }
+        if record {
+            self.input_buf
+                .push(RecordedInput::Snapshot(Box::new(snapshot.clone())));
         }
     }
 
@@ -1128,7 +1199,10 @@ impl ForwardClock<'_> {
         match self {
             ForwardClock::Fixed { tts, dts } => {
                 *tts += *dts;
-                FrameTime { tts: *tts, dts: *dts }
+                FrameTime {
+                    tts: *tts,
+                    dts: *dts,
+                }
             }
             ForwardClock::Recorder(recorder) => recorder
                 .replay_frame_time_at_step(step)
@@ -1180,6 +1254,7 @@ fn forward_step_scene_with_error(
     steps_per_division: usize,
     inputs: ForwardInputs<'_>,
     capture_from_division: usize,
+    initial_sampled_input: Option<crate::InputSnapshot>,
 ) -> (Vec<(Value, Option<Vec<u8>>)>, Option<String>) {
     // Pause the paused-inspector journal for the whole dry run: `--ghost`
     // forward-projection replays `tick`/`update` over throwaway state, and those
@@ -1268,6 +1343,7 @@ fn forward_step_scene_with_error(
             |step| inputs.at(step),
             |step| clock.next(step),
             capture_from_division,
+            initial_sampled_input,
         )
     };
 
@@ -1308,6 +1384,7 @@ pub fn forward_step_scene(
         steps_per_division,
         ForwardInputs::Dense(inputs),
         0,
+        None,
     )
     .0
 }
@@ -1354,6 +1431,7 @@ pub fn materialize_counterfactual_history(
         1,
         ForwardInputs::Recorder(recorder),
         prefix_len + lo as usize,
+        None,
     );
     if let Some(error) = replay_error {
         return Err(format!(
@@ -1362,10 +1440,9 @@ pub fn materialize_counterfactual_history(
     }
     let rebuilt: Vec<Value> = stepped.into_iter().map(|(model, _)| model).collect();
     let selected_override = preserve_selected_model.then(|| model.clone());
-    let Some(selected) = recorder.materialize_counterfactual_history(
-        &rebuilt,
-        selected_override.as_ref(),
-    )? else {
+    let Some(selected) =
+        recorder.materialize_counterfactual_history(&rebuilt, selected_override.as_ref())?
+    else {
         return Err(
             "counterfactual history replay produced an incomplete timeline; retained old snapshots"
                 .to_string(),
@@ -1437,7 +1514,10 @@ pub fn ghost_frames(
     // dt = 0.25 → ~15 fine steps per division.
     let sub_dt = 1.0f32 / 60.0;
     let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
-    let stepped = forward_step_scene(
+    let sampled_input = recorder
+        .current_scene_frame()
+        .and_then(|frame| recorder.sampled_input_at_or_before(frame));
+    let stepped = forward_step_scene_with_error(
         session,
         model,
         has_physics,
@@ -1446,12 +1526,17 @@ pub fn ghost_frames(
         // a scrubbed preview must not seed subscription windows from the old
         // live tail's `prev_tts`.
         recorder.current_scene_frame_tts().or(prev_tts),
-        start_tts as f32,
-        sub_dt,
+        ForwardClock::Fixed {
+            tts: start_tts as f32,
+            dts: sub_dt,
+        },
         divisions,
         steps_per_division,
-        inputs,
-    );
+        ForwardInputs::Dense(inputs),
+        0,
+        sampled_input,
+    )
+    .0;
     // Ghost draws must read the PROJECTED world: `Physics.transformed` /
     // `Physics.position` in `draw` resolve against the active world, so each
     // division's stepped world snapshot is restored into a throwaway world
@@ -1632,10 +1717,7 @@ mod tests {
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
 
         let mut recorder = SceneRecorder::new();
-        recorder.record_replay_prefix(
-            FrameTime { dts: 0.0, tts: 0.0 },
-            Vec::new(),
-        );
+        recorder.record_replay_prefix(FrameTime { dts: 0.0, tts: 0.0 }, Vec::new());
         for frame in 0..3 {
             let inputs = (frame == 1)
                 .then(|| {
@@ -1687,6 +1769,66 @@ mod tests {
             .seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek rebuilt recorded future");
         assert_eq!(model.to_string(), "4", "other snapshots are reconstructed");
+    }
+
+    #[test]
+    fn forward_step_replays_sampled_input_before_tick() {
+        let src = "let init = 0.0\n\
+                   let sampledInput = (m, snapshot) => snapshot.mouse.x\n\
+                   let tick = (m, dt, tts) => m + 0.5\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let sample = |x| {
+            vec![RecordedInput::Snapshot(Box::new(crate::InputSnapshot {
+                mouse: crate::MouseSnapshot { x, y: 0 },
+                ..crate::InputSnapshot::default()
+            }))]
+        };
+        let stepped = forward_step_scene(
+            &session,
+            &Value::Number(0.0),
+            false,
+            false,
+            None,
+            0.0,
+            1.0 / 60.0,
+            3,
+            1,
+            &[sample(10), Vec::new(), sample(20)],
+        );
+        assert_eq!(stepped[0].0.to_string(), "10.5");
+        assert_eq!(
+            stepped[1].0.to_string(),
+            "10.5",
+            "level state carries through an unsampled projected tick"
+        );
+        assert_eq!(stepped[2].0.to_string(), "20.5");
+
+        let carried = crate::InputSnapshot {
+            mouse: crate::MouseSnapshot { x: 30, y: 0 },
+            ..crate::InputSnapshot::default()
+        };
+        let (from_live_tail, error) = forward_step_scene_with_error(
+            &session,
+            &Value::Number(0.0),
+            false,
+            false,
+            None,
+            ForwardClock::Fixed {
+                tts: 0.0,
+                dts: 1.0 / 60.0,
+            },
+            2,
+            1,
+            ForwardInputs::Dense(&[]),
+            0,
+            Some(carried),
+        );
+        assert_eq!(error, None);
+        assert_eq!(from_live_tail[0].0.to_string(), "30.5");
+        assert_eq!(from_live_tail[1].0.to_string(), "30.5");
     }
 
     /// Drive one `deliver_ui_event` through a throwaway [`FrameCtx`] (the
@@ -1895,7 +2037,7 @@ mod tests {
             suppress_outbound: false,
             reporter: &mut reporter,
         };
-        ctx.before_physics(FrameTime { dts: 0.2, tts: 1.1 });
+        ctx.before_physics(FrameTime { dts: 0.2, tts: 1.1 }, None);
     }
 
     const ASSETS_SRC: &str = "\
@@ -1955,10 +2097,13 @@ mod tests {
             suppress_outbound: false,
             reporter: &mut reporter,
         };
-        ctx.before_physics(FrameTime {
-            dts: 0.1,
-            tts: tts as f32,
-        });
+        ctx.before_physics(
+            FrameTime {
+                dts: 0.1,
+                tts: tts as f32,
+            },
+            None,
+        );
     }
 
     /// `Sub.assets` delivers the snapshot through `update` exactly when it
