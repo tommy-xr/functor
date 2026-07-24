@@ -121,24 +121,33 @@ pub fn evaluate_rows(
     budget: u64,
     path_to_uri: impl Fn(&std::path::Path) -> String,
 ) -> Option<(Vec<Row>, Vec<String>)> {
-    let prelude = functor_prelude::modules();
+    let bundled = functor_prelude::bundled_modules();
     let project = match entry {
-        Some(entry) => functor_lang::project::load_with_prelude(&entry, &overrides, &prelude)
-            .ok()
-            // Mirror `load_project`'s membership rule: a nearest functor.json
-            // whose entry project does NOT contain the requesting file must
-            // fall back to the single-file view, or the worker would paint
-            // (and authoritatively clear!) files of an unrelated project.
-            .filter(|project| {
-                single
-                    .as_ref()
-                    .is_none_or(|(path, _)| project.sources.file_by_path(path).is_some())
-            }),
+        Some(entry) => functor_lang::project::load_with_bundled_modules(
+            &entry,
+            &overrides,
+            &bundled,
+        )
+        .ok()
+        // Mirror `load_project`'s membership rule: a nearest functor.json
+        // whose entry project does NOT contain the requesting file must
+        // fall back to the single-file view, or the worker would paint
+        // (and authoritatively clear!) files of an unrelated project.
+        .filter(|project| {
+            single
+                .as_ref()
+                .is_none_or(|(path, _)| project.sources.file_by_path(path).is_some())
+        }),
         None => None,
     }
     .or_else(|| {
         let (path, text) = single?;
-        functor_lang::project::load_single_file(&path, &text, &prelude).ok()
+        functor_lang::project::load_single_file_with_bundled_modules(
+            &path,
+            &text,
+            &bundled,
+        )
+        .ok()
     })?;
     let row = |span: functor_lang::Span, state: &'static str, detail: Option<String>| {
         let file = project.sources.file_at(span.start);

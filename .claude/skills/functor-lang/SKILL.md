@@ -236,14 +236,15 @@ let grab = (s) =>
 - **Bundled modules use the ordinary module semantics.** The language-owned
   `Net.fun` / `Key.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory
-  sources distributed with every embedding. Hosts may inject
-  additional bundled `.fun` implementations and `.funi` interfaces through
-  the same project linker: they parse, lower, check, evaluate, participate in
-  dependency ordering, appear in source maps (`<stdlib>/…` / `<prelude>/…`),
-  and rebind stored closures like project modules. Their namespaces are
-  reserved automatically. They are fixed for the lifetime of the host binary
-  and therefore are re-linked on a project hot reload but are not themselves
-  file-watched.
+  sources distributed with every embedding. Engine hosts additionally bundle
+  `Animator.fun`, a pure Functor Lang crossfade helper built on the host's
+  `Anim` interface. Hosts may inject additional bundled `.fun`
+  implementations and `.funi` interfaces through the same project linker:
+  they parse, lower, check, evaluate, participate in dependency ordering,
+  appear in source maps (`<stdlib>/…` / `<prelude>/…`), and rebind stored
+  closures like project modules. Their namespaces are reserved automatically.
+  They are fixed for the lifetime of the host binary and therefore are
+  re-linked on a project hot reload but are not themselves file-watched.
 - Constructor names must be unique per MODULE (not per project); values
   from a non-entry module display with their canonical tag
   (`Utils.Circle(2)` in run/trace/`/state` output). The entry's own names
@@ -424,6 +425,32 @@ let message = (result: Result.t<float, string>) =>
 and runs only for `Error`) · `Result.isOk(result)` ·
 `Result.isError(result)` · `Result.toOption(result)`.
 
+Engine-hosted projects also receive `Animator`, an ordinary bundled `.fun`
+module built on `Anim`. Its state is plain record data suitable for model
+storage, hot reload, and time travel:
+
+```functor
+let init = { anim: Animator.start("idle", 0.0) }
+
+let run = (model, tts) =>
+  { model with anim: Animator.play("run", tts, model.anim) }
+
+let draw = (model, tts) =>
+  Scene.model(Assets.character)
+    |> Scene.animate(Animator.pose(model.anim, 0.5, tts))
+```
+
+`Animator.start(clip, tts)` starts a clip with no initial fade ·
+`Animator.play(clip, tts, state)` records a transition (replaying the current
+clip is a no-op) · `Animator.pose(state, fadeSeconds, tts)` derives an `Anim.t`
+using a smoothstep crossfade and clip-local playheads. A play during an
+in-flight transition uses the current clip as the new outgoing clip and
+restarts the fade; it does not snapshot the mid-blend pose.
+
+`Animator` is a reserved bundled namespace. A project that copied the earlier
+`examples/crossfade/animator.fun` should delete that sibling to use the bundled
+module, or rename it if it carries a customized implementation.
+
 ## Builtins (the whole registry)
 
 All are **subject-LAST** (the collection/subject is the final arg), so they
@@ -602,6 +629,10 @@ Anim.blend([(anim, weight), …])                            // weighted pose mi
 Anim.rest()                                                // the bind pose — the base for
                                                            //   purely programmatic posing
                                                            //   (a model with no clips)
+Animator.start("idle", tts)                               // plain-data crossfade state;
+Animator.play("run", tts, state)                          //   records a transition
+Animator.pose(state, 0.5, tts)                            // smoothstep-derived Anim.t;
+                                                           //   bundled by engine hosts
 anim |> Anim.add(layerAnim, weight)                        // additive layer: the layer's
                                                            //   delta-from-bind on top of
                                                            //   anim (headShake over walk).

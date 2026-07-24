@@ -518,7 +518,19 @@ snapshots — no GPU, fully agent-verifiable.
       or error mapping, and `Option.toList` / `Result.toOption`; their
       `<stdlib>/…` sources participate in the normal parser, checker,
       dependency graph, evaluator, source maps, and hot-reload rebind path.
-      Engine-bundled Animator remains a separate follow-up.
+      **Part 5 — engine-bundled Animator — done (2026-07-23):** the pure
+      Functor Lang crossfade module that began in `examples/crossfade` now
+      ships once in the engine bundle. Native, wasm, CLI checking, the LSP,
+      and browser analysis all consume the same bundle descriptor, so games
+      can call `Animator.start` / `play` / `pose` without copying a sibling
+      file. Its `<stdlib>/Animator.fun` implementation links against the
+      host-backed `Anim` interface through the ordinary module graph, remains
+      navigable/completable in editors, and re-links on project hot reload.
+      This completes the first engine-library customer of the bundled-module
+      substrate and closes #307. Existing projects that copied the earlier
+      `animator.fun` example module should remove that file to use the bundled
+      API, or rename it if they maintain a customized implementation; bundled
+      namespaces cannot be shadowed.
 - [x] **Language: inline `expect` tests** (done 2026-07-19; design note in
       `~/notes` `inline-expect-tests.md` — the live red/green editor arc
       builds on this). `expect <bool-expr>` is a top-level item (contextual

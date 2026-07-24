@@ -1461,7 +1461,8 @@ fn project_file_cannot_shadow_a_bundled_module() {
     assert_eq!(
         err,
         "animator.fun:1:1: module name `Animator` (from animator.fun) collides with the bundled \
-module namespace `Animator` — rename the file"
+         module namespace `Animator` — remove the file to use the bundled module, or rename it \
+         if it is a customized module"
     );
 }
 

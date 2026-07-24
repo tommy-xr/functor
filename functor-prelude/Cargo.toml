@@ -3,8 +3,8 @@ name = "functor-prelude"
 version = "0.1.0"
 edition = "2021"
 
-# Zero dependencies by design: this crate is a thin holder of the host prelude
-# `.funi` interface text so it can be depended on by BOTH the runtime
-# (functor_runtime_common) and the editor tooling (tools/functor-lang-lsp) without
-# dragging in either's dependency graph.
+# This crate owns the engine's complete Functor Lang bundle: host `.funi`
+# interfaces plus reusable `.fun` implementations. It depends only on the
+# dependency-free language crate for the shared bundled-module descriptor.
 [dependencies]
+functor-lang = { path = "../functor-lang" }

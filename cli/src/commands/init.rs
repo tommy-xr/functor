@@ -154,10 +154,10 @@ mod tests {
     }
 
     fn assert_project_typechecks(directory: &Path) {
-        let project = functor_lang::project::load_with_prelude(
+        let project = functor_lang::project::load_with_bundled_modules(
             &directory.join("game.fun"),
             &HashMap::new(),
-            &functor_prelude::modules(),
+            &functor_prelude::bundled_modules(),
         )
         .unwrap_or_else(|error| panic!("template should load: {}", error.render()));
         let diagnostics = project.check();

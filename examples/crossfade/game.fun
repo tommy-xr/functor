@@ -8,10 +8,9 @@
 //   - RIGHT figure: `Animator.pose` — the same state, derived as a
 //     smoothstep crossfade. Transitions glide.
 //
-// The Animator is ~20 lines of pure Functor Lang in the sibling
-// `animator.fun` (file = module): crossfade state is plain data in the
-// model, the blend weights derive from `tts`, and time-travel replays a
-// mid-fade frame exactly.
+// Animator is an engine-bundled module implemented in pure Functor Lang:
+// crossfade state is plain data in the model, the blend weights derive from
+// `tts`, and time-travel replays a mid-fade frame exactly.
 //
 // Keys: 1-5 trigger states, 0 = auto-cycle (default, every 2.5s). Mashing
 // keys mid-fade shows the truncation policy on the right figure.

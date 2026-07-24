@@ -19,8 +19,8 @@ web = []
 [dependencies]
 # The Functor Lang language, for `language: "functor-lang"` projects (docs/functor-lang.md Track C4).
 functor-lang = { path = "../functor-lang" }
-# The host prelude `.funi` interfaces — injected at load time so a game's
-# `Scene.*` calls typecheck against real types (docs/functor-lang-interfaces.md).
+# Engine-bundled `.fun` modules and host `.funi` interfaces, shared with the
+# runtimes and editor tooling.
 functor-prelude = { path = "../functor-prelude" }
 functor-docgen = { path = "../tools/functor-docgen" }
 clap = { version = "4.5.6", features = ["derive"] }
