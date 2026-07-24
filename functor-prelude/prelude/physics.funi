@@ -39,6 +39,15 @@ let sphere : (float) => shape
 /// Create a capsule shape from half-height and radius.
 let capsule : (float, float) => shape
 
+/// Create a fixed heightfield body from a shared terrain descriptor.
+///
+/// The renderer and collider share dimensions, elevation range, asset
+/// resolution, and pending-asset chain. Collision uses at most 1025 samples
+/// per axis to bound frame-thread work; larger render sources are decimated.
+/// The body supports translation via `Physics.at`; pair it only with an
+/// unrotated, unscaled `Scene.terrain`, using the same translation.
+let heightfield : (tag, Terrain.t) => body
+
 /// Create a dynamic body affected by forces and collisions.
 let dynamic : (tag, shape) => body
 /// Create a kinematic body driven explicitly by the game.

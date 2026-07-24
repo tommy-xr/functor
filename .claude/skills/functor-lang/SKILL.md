@@ -941,6 +941,11 @@ Physics.tag("name")                                        // BRANDED body ident
                                                            //   where a tag goes is a check
                                                            //   error
 Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents)
+Physics.heightfield(terrainTag, world)                     // fixed body from the SAME Terrain.t;
+                                                           //   one collider capped at 1025²
+                                                           //   collision samples; supports translation
+                                                           //   via Physics.at only — pair with an
+                                                           //   unrotated, unscaled Scene.terrain
 Physics.dynamic(tag, shape)                                // simulated body
 Physics.kinematic(tag, shape) / Physics.fixed(tag, shape)
 body |> Physics.at(v)                                      // body-last: pipes

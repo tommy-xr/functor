@@ -6,7 +6,11 @@
 //! per-frame declared-scene history is exactly what a replay re-executes, so
 //! these types carry no handles or live state.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+
+use crate::{asset::pipelines::HeightmapData, terrain::TerrainGeometry};
 
 /// Standard gravity, Y-up (the coordinate convention — see CLAUDE.md).
 pub const DEFAULT_GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
@@ -20,7 +24,19 @@ pub enum Shape {
     Sphere { radius: f32 },
     /// Capsule along the local Y axis: a segment of `2 * half_height` with
     /// spherical caps of `radius`.
-    Capsule { half_height: f32, radius: f32 },
+    Capsule {
+        half_height: f32,
+        radius: f32,
+    },
+    /// A fixed terrain surface hydrated from the same descriptor and decoded
+    /// samples as `Scene.terrain`. The live adapter decimates oversized
+    /// sources into one bounded heightfield collider.
+    Heightfield {
+        geometry: TerrainGeometry,
+        /// `None` while the shell is loading the requested source. Reconcile
+        /// keeps any prior live collider, or defers the initial spawn.
+        data: Option<Arc<HeightmapData>>,
+    },
 }
 
 /// How the body participates in simulation.
@@ -164,5 +180,25 @@ impl PhysicsScene {
             gravity: DEFAULT_GRAVITY,
             bodies: Vec::new(),
         }
+    }
+
+    /// Resolve shell-owned heightmap samples into the immutable scene that
+    /// will be recorded and simulated this fixed frame.
+    ///
+    /// This happens before timeline recording rather than in
+    /// `World::reconcile`: replay must consume the exact asset revision that
+    /// live simulation saw, independent of later loads or hot reloads.
+    pub(crate) fn hydrated_heightfields(&self) -> PhysicsScene {
+        let mut scene = self.clone();
+        for body in &mut scene.bodies {
+            let Shape::Heightfield { geometry, data } = &mut body.shape else {
+                continue;
+            };
+            crate::terrain::request_heightmap(geometry.source.clone());
+            if let Some(latest) = crate::terrain::hydrated_heightmap(&geometry.source) {
+                *data = Some(latest);
+            }
+        }
+        scene
     }
 }

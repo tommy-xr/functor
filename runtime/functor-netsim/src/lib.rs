@@ -16,13 +16,14 @@
 //! `VirtualNet` connection id is used as the shared `ConnectionId` both ends see,
 //! so a send from either side routes to the other.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
+use functor_runtime_common::asset::{preload::PreloadCommand, AssetCache};
 use functor_runtime_common::net::{
     ConnCommand, ConnectionId, LinkProfile, NetEvent, NodeId, VirtualNet,
 };
 use functor_runtime_common::protocol::GameProducer;
-use functor_runtime_common::FrameTime;
+use functor_runtime_common::{FrameTime, SceneContext};
 
 pub use functor_runtime_common::net::LinkProfile as Link;
 
@@ -69,6 +70,8 @@ fn authority(endpoint: &str) -> &str {
 /// [`NetSim::step`]).
 struct Instance {
     producer: Box<dyn GameProducer>,
+    asset_cache: Arc<AssetCache>,
+    scene_context: SceneContext,
     node: NodeId,
     /// This instance's routing key (the url/bind its game used) per connection.
     keys: HashMap<ConnectionId, String>,
@@ -85,6 +88,8 @@ impl Instance {
         // evaluated `init`).
         Instance {
             producer,
+            asset_cache: Arc::new(AssetCache::new()),
+            scene_context: SceneContext::new(),
             node,
             keys: HashMap::new(),
             outbox: Vec::new(),
@@ -92,7 +97,20 @@ impl Instance {
     }
 
     fn tick(&mut self, time: FrameTime) {
+        self.producer
+            .push_asset_progress(self.asset_cache.progress());
         self.producer.tick(time);
+        // Functor's preload and terrain request queues are process-global,
+        // like the connection queue. Drain immediately after this producer's
+        // game code so requests cannot be claimed by the next instance.
+        let commands: Vec<PreloadCommand> =
+            serde_json::from_str(&self.producer.preload_drain_commands()).unwrap_or_default();
+        for token in self
+            .scene_context
+            .drive_preloads(&self.asset_cache, commands)
+        {
+            self.producer.preload_push_settled(token);
+        }
     }
 
     fn drain_conn_commands(&self) -> Vec<ConnCommand> {
