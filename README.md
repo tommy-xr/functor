@@ -155,6 +155,9 @@ functor -d examples/hello run native
 # A primitives-only sample (no assets needed)
 functor -d examples/primitives run native
 
+# A 4×4 km, 16-bit heightmap terrain with LOD, collision, and instanced grass
+functor -d examples/terrain run native
+
 # Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
 functor -d examples/primitives run wasm
 ```
