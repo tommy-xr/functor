@@ -1,9 +1,9 @@
-// fog.funi — the `Fog` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//! Distance fog attached to a frame with `Frame.withFog`.
 
-// The opaque fog handle (`Fog.t` from game code).
+/// An opaque fog description.
 type t
 
-// near, far, color / density, color.
+/// Create linear fog between near and far distances.
 let linear : (float, float, Color.t) => t
+/// Create exponential fog with the given density.
 let exp : (float, Color.t) => t

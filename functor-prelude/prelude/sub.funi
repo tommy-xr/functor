@@ -1,30 +1,27 @@
-// sub.funi — the `Sub` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// Subscriptions: what the optional `subscriptions = (model) => …` hook returns.
-// The `'msg` type variable is the game's message type (typically an ADT variant).
+//! Declarative event sources returned by the optional `subscriptions` hook.
+//!
+//! Events become game messages and are folded through `update` before `tick`.
 
-// The opaque subscription handle (`Sub.t` from game code).
+/// An opaque subscription description.
 type t
 
+/// Subscribe to no events.
 let none : () => t
-// The `'msg` is a message VALUE, held by the host and handed back verbatim when
-// the timer fires.
+/// Deliver a message at the requested interval.
 let every : (Time.t, 'msg) => t
+/// Combine subscriptions.
 let batch : (List<t>) => t
-// A persistent connection (client) / listener (server): the tagger receives
-// `Net.NetEvent` values.
+/// Maintain a client connection and tag its `Net.NetEvent` values as messages.
 let connect : (string, (Net.NetEvent) => 'msg) => t
+/// Maintain a server listener and tag its `Net.NetEvent` values as messages.
 let listen : (string, (Net.NetEvent) => 'msg) => t
 
-// One failed asset byte-load (missing file, HTTP error, bad remote body).
+/// One asset byte-load failure.
 type AssetFailure = { path: string, error: string }
-// The loading snapshot. The "all settled" gate — a loading screen's dismiss
-// condition — is `total > 0.0 && loaded + List.length(failed) == total`:
-// failures never join `loaded`, and frame one can deliver 0/0 before any
-// asset is referenced. Decode fallbacks count as loaded; only byte-load
-// failures land in `failed`.
+/// A snapshot of loaded, total, and failed assets.
+///
+/// All assets are settled when `total > 0` and
+/// `loaded + List.length(failed) == total`.
 type AssetProgress = { loaded: float, total: float, failed: List<AssetFailure> }
-// Asset-loading progress: the tagger receives the snapshot whenever it
-// changes (including the initial state on the first frame).
+/// Subscribe to asset-loading snapshots, including the initial state.
 let assets : ((AssetProgress) => 'msg) => t

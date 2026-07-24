@@ -17,7 +17,17 @@ for (const [format, path] of outputs) {
   const mode = check ? [] : ["--output", path];
   const result = spawnSync(
     "cargo",
-    ["run", "-q", "-p", "functor-docgen", "--", "--format", format, ...mode],
+    [
+      "run",
+      "-q",
+      "-p",
+      "functor-docgen",
+      "--",
+      "--deny-undocumented",
+      "--format",
+      format,
+      ...mode,
+    ],
     { stdio: check ? ["ignore", "ignore", "inherit"] : "inherit" },
   );
   if (result.status !== 0) process.exit(result.status ?? 1);

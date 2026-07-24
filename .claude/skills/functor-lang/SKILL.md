@@ -299,6 +299,8 @@ open Widget                                              // …or open, bringing
   compatibility. `functor docs` renders the embedded prelude as Markdown or
   JSON; in the repository, `npm run generate:docs` recreates the gitignored
   local reference artifacts and `npm run check:docs` validates both renderers.
+  Both repository scripts reject a prelude module, type, or signature without
+  explicit public documentation.
 
 ## Inline tests (`expect`)
 

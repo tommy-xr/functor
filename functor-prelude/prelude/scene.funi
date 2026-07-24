@@ -1,57 +1,59 @@
-// scene.funi — the `Scene` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// It is authored in FULL — every `Scene.*` the host provides — because an
-// interface-only module is a CLOSED module: a reference to a member it does not
-// declare is a load error, so a partial Scene would break real games.
-//
-// Branded argument types (`Angle.t`, `Color.t`, `Texture.t`, `RenderTarget.t`) name types
-// owned by the sibling host modules authored in 2e-ii, so they resolve to those
-// real opaque types.
+//! Declarative 3D scene nodes, materials, models, animation, and transforms.
+//!
+//! Constructors produce immutable scene values. Most modifiers take the scene
+//! last so a node can be built as a readable pipeline.
 
-// The opaque scene-node handle. Because the module is itself `Scene`, this is
-// referred to as `Scene.t` from game code.
+/// An opaque scene node.
 type t
 
-// Primitive geometry.
+/// Create a unit cube centered at the origin.
 let cube : () => t
+/// Create a unit sphere centered at the origin.
 let sphere : () => t
+/// Create a unit cylinder aligned to the Y axis.
 let cylinder : () => t
+/// Create a unit quad in the XY plane.
 let quad : () => t
+/// Create a unit plane in the XZ ground plane.
 let plane : () => t
 
-// Assets and generated surfaces. Since the flag day (B.6), `model` takes the
-// branded `Asset.Model` — the generated manifest's constants, or
-// `Asset.model(…)` at a data boundary; a bare string is a check-time error
-// here and a teaching error at runtime.
+/// Create a scene node from a model asset.
 let model : (Asset.Model) => t
+/// Create terrain from a rectangular grid of height values.
 let heightmap : (List<List<float>>) => t
 
-// Composition.
+/// Group scene nodes under one transform.
 let group : (List<t>) => t
 
-// Materials (subject-last, so they pipe:
-// `Scene.cube() |> Scene.color(Color.rgb(r, g, b))`).
+/// Apply an unlit solid color; the scene is last for piping.
 let color : (Color.t, t) => t
+/// Apply a lit solid-color material; the scene is last for piping.
 let lit : (Color.t, t) => t
+/// Apply an emissive solid-color material; the scene is last for piping.
 let emissive : (Color.t, t) => t
-// Texture parameters accept a `Texture.t` OR an `Asset.Texture` — two brands,
-// no union type, so they stay gradually typed (bare strings never coerced
-// here; the host teaches them and wrong kinds at runtime). Unifying the two
-// texture brands is a future design question (the Texture.raw era).
+/// Apply a lit texture from `Texture.t` or `Asset.Texture`.
 let litTexture : ('texture, t) => t
+/// Apply an emissive texture from `Texture.t` or `Asset.Texture`.
 let emissiveTexture : ('texture, t) => t
+/// Apply a lit color and normal-map texture.
 let litNormalMapped : (Color.t, 'texture, t) => t
+/// Display a render target on this surface.
 let screen : (RenderTarget.t, t) => t
 
-// Animation (subject-last): attach an Anim expression to the Model node(s)
-// in the scene. Without it a skinned model auto-plays its first clip.
+/// Attach an animation pose to model nodes; the scene is last for piping.
+///
+/// Without an attached pose, a skinned model plays its first clip.
 let animate : (Anim.t, t) => t
 
-// Transforms.
+/// Translate a scene node; the scene is last for piping.
 let translate : (Vec3.t, t) => t
+/// Scale a scene node uniformly; the scene is last for piping.
 let scale : (float, t) => t
+/// Scale a scene node independently on each axis.
 let scaleXYZ : (float, float, float, t) => t
+/// Rotate a scene node around X.
 let rotateX : (Angle.t, t) => t
+/// Rotate a scene node around Y.
 let rotateY : (Angle.t, t) => t
+/// Rotate a scene node around Z.
 let rotateZ : (Angle.t, t) => t

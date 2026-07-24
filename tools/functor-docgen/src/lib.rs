@@ -65,6 +65,34 @@ impl fmt::Display for GenerateError {
 
 impl std::error::Error for GenerateError {}
 
+impl ApiReference {
+    /// Qualified names for every module or declaration missing public prose.
+    pub fn undocumented(&self) -> Vec<String> {
+        let mut missing = Vec::new();
+        for module in &self.modules {
+            if module
+                .docs
+                .as_deref()
+                .is_none_or(|docs| docs.trim().is_empty())
+            {
+                missing.push(module.name.clone());
+            }
+            missing.extend(
+                module
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        item.docs
+                            .as_deref()
+                            .is_none_or(|docs| docs.trim().is_empty())
+                    })
+                    .map(|item| item.qualified_name.clone()),
+            );
+        }
+        missing
+    }
+}
+
 /// Generate the engine API from the exact prelude sources embedded in every
 /// Functor runtime and editor.
 pub fn generate() -> Result<ApiReference, GenerateError> {
@@ -87,15 +115,19 @@ pub fn generate_from_modules(
 
 pub fn render(format: OutputFormat) -> Result<String, GenerateError> {
     let reference = generate()?;
-    Ok(match format {
-        OutputFormat::Markdown => render_markdown(&reference),
+    Ok(render_reference(&reference, format))
+}
+
+pub fn render_reference(reference: &ApiReference, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::Markdown => render_markdown(reference),
         OutputFormat::Json => {
             let mut json =
-                serde_json::to_string_pretty(&reference).expect("API reference is serializable");
+                serde_json::to_string_pretty(reference).expect("API reference is serializable");
             json.push('\n');
             json
         }
-    })
+    }
 }
 
 /// Write generated output, creating a non-empty parent directory when needed.
@@ -246,19 +278,54 @@ mod tests {
     #[test]
     fn embedded_prelude_is_a_complete_parseable_surface() {
         let reference = generate().unwrap();
-        assert_eq!(reference.modules.len(), 23);
+        assert_eq!(reference.modules.len(), 25);
         assert_eq!(
             reference
                 .modules
                 .iter()
                 .flat_map(|module| &module.items)
                 .count(),
-            194
+            214
         );
         assert!(reference
             .modules
             .iter()
             .any(|module| module.name == "Scene"));
+        assert_eq!(
+            reference.undocumented(),
+            Vec::<String>::new(),
+            "the embedded public API must stay fully documented"
+        );
+    }
+
+    #[test]
+    fn reports_undocumented_modules_and_items() {
+        let reference = generate_from_modules([(
+            "Widget".to_string(),
+            "type t\n/// Make one.\nlet make : () => t\n".to_string(),
+        )])
+        .unwrap();
+        assert_eq!(
+            reference.undocumented(),
+            vec!["Widget".to_string(), "Widget.t".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_public_comment_markers_do_not_count_as_documentation() {
+        let reference = generate_from_modules([(
+            "Widget".to_string(),
+            "//!   \n///\ntype t\n///    \nlet make : () => t\n".to_string(),
+        )])
+        .unwrap();
+        assert_eq!(
+            reference.undocumented(),
+            vec![
+                "Widget".to_string(),
+                "Widget.t".to_string(),
+                "Widget.make".to_string()
+            ]
+        );
     }
 
     #[test]

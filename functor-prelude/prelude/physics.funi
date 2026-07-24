@@ -1,28 +1,22 @@
-// physics.funi — the `Physics` host module (interface only; implemented in Rust
-// by FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md and
-// docs/physics.md (the declarative surface).
-//
-// Shapes are values, bodies are tag + shape + piped attributes, and the optional
-// `physics = (model) => Physics.scene(…)` hook declares the world each frame.
-// This module owns three opaque handles (shape, body, world) plus the plain-data
-// records the query/event APIs hand back.
+//! Declarative rigid-body physics for the optional `physics` hook.
+//!
+//! Shapes and bodies are values, body attributes pipe naturally, and stable
+//! branded tags connect declarations, reads, commands, and collision events.
 
-// Opaque handles.
+/// An opaque collision shape.
 type shape
+/// An opaque rigid body description.
 type body
+/// An opaque physics world description.
 type world
-// The branded body identity — the RenderTarget rule applied to physics
-// identity. Made ONCE by `Physics.tag("name")` and used as the VALUE at
-// every site: declaration, reads, commands, and the tags inside `rayHit` /
-// `collisionEvent`. At runtime a tag is still the plain string (plain data:
-// journal, /state, and structural equality with event tags all unchanged) —
-// the brand is check-time only, like `Random.Seed`.
+/// A stable, branded body identity used throughout the physics API.
 type tag
 
-// The record `Physics.position` returns — the live pose of a body.
+/// The live world-space position of a body.
 type position = { x: float, y: float, z: float }
-// The record a `Physics.raycast` tagger receives (hit: false with zeroed fields
-// for a miss).
+/// A raycast result with hit position, normal, distance, and body tag.
+///
+/// For a miss, `hit` is false and the remaining fields are zeroed.
 type rayHit = {
   hit: bool,
   x: float, y: float, z: float,
@@ -30,50 +24,63 @@ type rayHit = {
   distance: float,
   tag: tag
 }
-// The record a `Physics.events` tagger receives, one per contact begin/end.
+/// A contact-begin or contact-end event between two bodies.
 type collisionEvent = { started: bool, a: tag, b: tag, sensor: bool }
 
-// The tag constructor (identity at runtime; the empty tag is the zeroed
-// rayHit-miss / "no body" sentinel).
+/// Construct a stable body tag from a string.
+///
+/// The empty tag is reserved as the no-body sentinel in a raycast miss.
 let tag : (string) => tag
 
-// Shapes.
+/// Create a box shape from its width, height, and depth.
 let box : (float, float, float) => shape
+/// Create a sphere shape from its radius.
 let sphere : (float) => shape
+/// Create a capsule shape from half-height and radius.
 let capsule : (float, float) => shape
 
-// Bodies (tag, shape).
+/// Create a dynamic body affected by forces and collisions.
 let dynamic : (tag, shape) => body
+/// Create a kinematic body driven explicitly by the game.
 let kinematic : (tag, shape) => body
+/// Create a fixed body that does not move.
 let fixed : (tag, shape) => body
 
-// body LAST (subject-last), so they pipe:
-// `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0))`.
+/// Set a body's initial world position; the body is last for piping.
 let at : (Vec3.t, body) => body
+/// Set a body's initial linear velocity; the body is last for piping.
 let velocity : (Vec3.t, body) => body
+/// Set a body's mass; the body is last for piping.
 let mass : (float, body) => body
+/// Set a body's friction coefficient; the body is last for piping.
 let friction : (float, body) => body
+/// Set a body's restitution; the body is last for piping.
 let restitution : (float, body) => body
+/// Make a body a non-solid sensor; the body is last for piping.
 let sensor : (body) => body
 
-// The world (gravity, bodies).
+/// Declare a physics world from gravity and bodies.
 let scene : (Vec3.t, List<body>) => world
 
-// Reads of the LIVE stepped world (in-process, no boundary).
+/// Read a body's live, stepped world position.
 let position : (tag) => position
 
-// world LAST (subject-last), so it pipes: place a visual at a body's live pose —
-// `Scene.cube() |> Physics.transformed(crateTag)`.
+/// Apply a body's live transform to a scene node.
+///
+/// The scene is last for piping.
 let transformed : (tag, Scene.t) => Scene.t
 
-// Command EFFECTS (tag, v).
+/// Apply an instantaneous impulse to a body.
 let applyImpulse : (tag, Vec3.t) => Effect.t
+/// Apply a continuous force to a body for the next step.
 let applyForce : (tag, Vec3.t) => Effect.t
+/// Replace a body's linear velocity.
 let setVelocity : (tag, Vec3.t) => Effect.t
+/// Move a body immediately to a world position.
 let teleport : (tag, Vec3.t) => Effect.t
 
-// Query EFFECT: origin, dir, maxDist, tagger.
+/// Cast a ray and tag its `Physics.rayHit` result as a message.
 let raycast : (Vec3.t, Vec3.t, float, (rayHit) => 'msg) => Effect.t
 
-// Collision-event SUB (what `subscriptions` returns).
+/// Subscribe to contact begin/end events and tag them as messages.
 let events : ((collisionEvent) => 'msg) => Sub.t

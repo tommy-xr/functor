@@ -1,28 +1,33 @@
-// html.funi — the `Html` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// The optional `webview = (model) => …` hook's vocabulary: an Elm-style tree
-// of HTML elements styled with CSS. Native renders it via blitz (Stylo +
-// Taffy + Parley) composited over the 3D frame; wasm shows it as a real DOM
-// overlay above the canvas.
+//! Elm-style HTML trees returned by the optional `webview` hook.
+//!
+//! Native renders the tree over the 3D frame; wasm renders it as a DOM overlay
+//! above the canvas.
 
-// The opaque node handle (`Html.node` from game code).
+/// An opaque HTML node.
 type node
 
-// A text node. Escaped — write markup with elements, not strings.
+/// Create an escaped text node.
 let text : (string) => node
-// A generic element: `Html.element("section", [attrs], [children])`.
+/// Create an element from a safe tag name, attributes, and children.
+///
+/// Names must start with a letter and then contain only letters, digits, or
+/// dashes. Script-capable tags such as `script` and `iframe` are refused.
 let element : (string, List<Attr.t>, List<node>) => node
-// Common elements, all `(attrs, children)`.
+/// Create a `div` element.
 let div : (List<Attr.t>, List<node>) => node
+/// Create a `span` element.
 let span : (List<Attr.t>, List<node>) => node
+/// Create a `button` element.
 let button : (List<Attr.t>, List<node>) => node
+/// Create an `h1` heading element.
 let h1 : (List<Attr.t>, List<node>) => node
+/// Create an `h2` heading element.
 let h2 : (List<Attr.t>, List<node>) => node
+/// Create a paragraph element.
 let p : (List<Attr.t>, List<node>) => node
-// A single-line text input (a void element — no children). Pair with
-// `Attr.value` (controlled) and `Attr.onInput`.
+/// Create a controlled, single-line text input.
+///
+/// Pair it with `Attr.value` and `Attr.onInput`.
 let input : (List<Attr.t>) => node
-// A stylesheet: `Html.style(".hud { color: red; }")`. The CSS string is
-// emitted verbatim inside a <style> element.
+/// Create a `style` element containing a raw CSS stylesheet.
 let style : (string) => node

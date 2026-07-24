@@ -1,4 +1,4 @@
-use functor_docgen::{render, OutputFormat};
+use functor_docgen::{generate, render_reference, OutputFormat};
 use std::path::PathBuf;
 use std::{env, process};
 
@@ -13,6 +13,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let mut format = OutputFormat::Markdown;
     let mut output = None;
     let mut check = None;
+    let mut deny_undocumented = false;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -28,9 +29,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--check" => {
                 check = Some(PathBuf::from(iter.next().ok_or("--check requires a path")?));
             }
+            "--deny-undocumented" => deny_undocumented = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: functor-docgen [--format markdown|json] [--output PATH | --check PATH]"
+                    "usage: functor-docgen [--format markdown|json] \
+                     [--deny-undocumented] [--output PATH | --check PATH]"
                 );
                 return Ok(());
             }
@@ -41,7 +44,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         return Err("--output and --check cannot be used together".to_string());
     }
 
-    let generated = render(format).map_err(|error| error.to_string())?;
+    let reference = generate().map_err(|error| error.to_string())?;
+    if deny_undocumented {
+        let missing = reference.undocumented();
+        if !missing.is_empty() {
+            return Err(format!(
+                "public API documentation is missing for:\n  {}",
+                missing.join("\n  ")
+            ));
+        }
+    }
+    let generated = render_reference(&reference, format);
     if let Some(path) = check {
         let current = functor_docgen::file_is_current(&path, &generated)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;

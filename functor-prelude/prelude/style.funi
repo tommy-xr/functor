@@ -1,56 +1,68 @@
-// style.funi — the `Style` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// Typed INLINE styles for `Attr.styles` — the declaration half of CSS as
-// branded values (the Angle rule: a bare string/number where a Style goes is
-// an error). Values are formatted at construction (`Style.widthPx(300.0)` IS
-// `width: 300px`); colors take `Color.t` — the one color type across 3D and
-// UI. Stylesheet CSS (selectors, :hover, keyframes) deliberately stays a
-// string in `Html.style`.
+//! Typed inline CSS declarations combined with `Attr.styles`.
+//!
+//! Constructors format their values immediately and share `Color.t` with the
+//! 3D APIs. Use `Html.style` for selectors, pseudo-classes, and keyframes.
 
-// The opaque style-declaration handle.
+/// An opaque inline CSS declaration.
 type t
 
-// Layout: flexbox. flexRow/flexColumn set display AND direction.
+/// Use horizontal flexbox layout.
 let flexRow : () => t
+/// Use vertical flexbox layout.
 let flexColumn : () => t
+/// Set the flex/grid gap in pixels.
 let gapPx : (float) => t
+/// Align content to the start of the main axis.
 let justifyStart : () => t
+/// Center content on the main axis.
 let justifyCenter : () => t
+/// Align content to the end of the main axis.
 let justifyEnd : () => t
+/// Distribute content with space between items.
 let justifyBetween : () => t
+/// Align items to the start of the cross axis.
 let alignStart : () => t
+/// Center items on the cross axis.
 let alignCenter : () => t
+/// Align items to the end of the cross axis.
 let alignEnd : () => t
 
-// Sizing — pixels or percent of the parent.
+/// Set width in pixels.
 let widthPx : (float) => t
+/// Set width as a percentage of the parent.
 let widthPct : (float) => t
+/// Set height in pixels.
 let heightPx : (float) => t
+/// Set height as a percentage of the parent.
 let heightPct : (float) => t
 
-// Spacing — all sides.
+/// Set padding on all sides in pixels.
 let paddingPx : (float) => t
+/// Set margin on all sides in pixels.
 let marginPx : (float) => t
 
-// Color — text and background.
+/// Set the text color.
 let color : (Color.t) => t
+/// Set the background color.
 let background : (Color.t) => t
 
-// Text.
+/// Set font size in pixels.
 let fontSizePx : (float) => t
+/// Use a bold font weight.
 let bold : () => t
+/// Center-align text.
 let textCenter : () => t
 
-// Border: `borderPx(n, color)` is a solid border; `roundedPx` is
-// border-radius.
+/// Add a solid border with pixel width and color.
 let borderPx : (float, Color.t) => t
+/// Set border radius in pixels.
 let roundedPx : (float) => t
 
-// 0..1 (out of range is a construction-time error).
+/// Set opacity in `0..1`.
 let opacity : (float) => t
 
-// The escape hatch for the long tail of CSS:
-// `Style.raw("letter-spacing", "0.1em")`. The property name is validated
-// (letters/digits/dashes) like `Attr.attr`.
+/// Create an inline declaration for an arbitrary CSS property and value.
+///
+/// Property names must start with a letter and then contain only letters,
+/// digits, or dashes.
 let raw : (string, string) => t

@@ -1,17 +1,14 @@
-// audio_source.funi — the `AudioSource` host module (interface only; implemented
-// in Rust by FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
-//
-// Soundscape voices (the continuous, reconciled half of audio). Keyed for
-// cross-frame identity so the shell keeps a live voice playing.
+//! Continuous, declarative voices used in an `AudioScene`.
+//!
+//! Sources are keyed for cross-frame identity so the runtime can reconcile a
+//! live voice instead of restarting it every frame.
 
-// The opaque audio-source handle (`AudioSource.t` from game code).
+/// An opaque continuous audio source.
 type t
 
-// key, sound. Since the flag day (B.6) the sound is the branded
-// `Asset.Sound`. The KEY stays a string (cross-frame identity, not an
-// asset).
+/// Create a non-spatial source identified by a stable key.
 let ambient : (string, Asset.Sound) => t
-// key, sound, pos.
+/// Create a spatial source at a world position, identified by a stable key.
 let at : (string, Asset.Sound, Vec3.t) => t
-// Source LAST (subject-last), so it pipes: `AudioSource.ambient(…) |> AudioSource.gain(0.35)`.
+/// Set source gain; the source is last for piping.
 let gain : (float, t) => t

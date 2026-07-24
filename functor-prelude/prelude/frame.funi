@@ -1,22 +1,25 @@
-// frame.funi — the `Frame` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//! Complete frame descriptions returned by a game's `draw` function.
 
-// The opaque frame handle (`Frame.t` from game code) — what `draw` returns.
+/// An opaque frame description.
 type t
 
+/// Create an unlit frame from a camera and scene.
 let create : (Camera.t, Scene.t) => t
+/// Create a lit frame from a camera, scene, and lights.
 let createLit : (Camera.t, Scene.t, List<Light.t>) => t
-// A standalone 2D frame. Sprite.t stays pure data until this boundary.
+/// Create a standalone 2D frame from a camera and sprite tree.
 let create2D : (Camera2D.t, Sprite.t) => t
-// Frame LAST (subject-last), so they pipe: `Frame.createLit(…) |> Frame.withFog(fog)`.
-// `withRenderTarget(target, targetFrame, frame)` renders `targetFrame` into
-// `target` each frame, before `frame`'s main pass.
+/// Render another frame into a target before rendering the main frame.
+///
+/// The main frame is last for piping.
 let withRenderTarget : (RenderTarget.t, t, t) => t
+/// Attach fog to a frame; the frame is last for piping.
 let withFog : (Fog.t, t) => t
+/// Attach a cubemap skybox to a frame; the frame is last for piping.
 let withSkybox : (Skybox.t, t) => t
-// Explicit background clear color (r, g, b in 0..1), overriding the fog-color
-// default. Frame LAST, so it pipes:
-// `frame |> Frame.withClearColor(Color.rgb(0.1, 0.0, 0.2))`.
+/// Override a frame's background clear color.
 let withClearColor : (Color.t, t) => t
-// Add an ordered sprite pass above the frame's 3D scene. Frame LAST.
+/// Add an ordered sprite pass above the frame's 3D scene.
+///
+/// The main frame is last for piping.
 let with2D : (Camera2D.t, Sprite.t, t) => t

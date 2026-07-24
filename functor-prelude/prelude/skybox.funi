@@ -1,8 +1,7 @@
-// skybox.funi — the `Skybox` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//! Cubemap skyboxes attached to frames with `Frame.withSkybox`.
 
-// The opaque skybox handle (`Skybox.t` from game code).
+/// An opaque cubemap skybox.
 type t
 
-// Six non-empty cubemap face paths (+X, -X, +Y, -Y, +Z, -Z).
+/// Load six cubemap faces in `+X, -X, +Y, -Y, +Z, -Z` order.
 let files : (string, string, string, string, string, string) => t

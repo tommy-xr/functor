@@ -1,15 +1,15 @@
-// light.funi — the `Light` host module (interface only; implemented in Rust by
-// FunctorHost in functor_runtime_common::functor_lang_prelude). See docs/functor-lang-interfaces.md.
+//! Lights used by `Frame.createLit`.
 
-// The opaque light handle (`Light.t` from game code).
+/// An opaque light description.
 type t
 
+/// Create uniform ambient light.
 let ambient : (Color.t) => t
-// dir, color, intensity.
+/// Create directional light from direction, color, and intensity.
 let directional : (Vec3.t, Color.t, float) => t
-// pos, color, intensity, range.
+/// Create point light from position, color, intensity, and range.
 let point : (Vec3.t, Color.t, float, float) => t
-// pos, dir, color, intensity, range, coneAngle.
+/// Create a spot light from position, direction, color, intensity, range, and cone angle.
 let spot : (Vec3.t, Vec3.t, Color.t, float, float, Angle.t) => t
-// Light first, so it pipes: `Light.directional(…) |> Light.castShadows`.
+/// Enable shadow casting; the light is first for piping.
 let castShadows : (t) => t
