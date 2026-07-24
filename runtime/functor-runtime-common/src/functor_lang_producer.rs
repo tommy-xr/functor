@@ -569,7 +569,7 @@ impl FrameCtx<'_> {
         mut frame_time_at: impl FnMut(usize) -> FrameTime,
         capture_from_division: usize,
         mut sampled_input: Option<crate::InputSnapshot>,
-    ) -> Vec<(Value, Option<Vec<u8>>)> {
+    ) -> Vec<(Value, Option<physics::PhysicsSnapshot>)> {
         let mut out = Vec::with_capacity(divisions.saturating_sub(capture_from_division));
         let mut step = 0usize;
         for div in 0..divisions {
@@ -1255,7 +1255,10 @@ fn forward_step_scene_with_error(
     inputs: ForwardInputs<'_>,
     capture_from_division: usize,
     initial_sampled_input: Option<crate::InputSnapshot>,
-) -> (Vec<(Value, Option<Vec<u8>>)>, Option<String>) {
+) -> (
+    Vec<(Value, Option<physics::PhysicsSnapshot>)>,
+    Option<String>,
+) {
     // Pause the paused-inspector journal for the whole dry run: `--ghost`
     // forward-projection replays `tick`/`update` over throwaway state, and those
     // calls must NOT land in the live frame's journal (they are not real frame
@@ -1271,10 +1274,10 @@ fn forward_step_scene_with_error(
     // snapshot read lazily inserts an empty `DEFAULT_WORLD` — benign, and
     // ghosting only runs during live play when the world already exists.)
     let dry_world = if has_physics {
-        physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).map(|bytes| {
+        physics::with_world(physics::DEFAULT_WORLD, |w| w.checkpoint()).map(|snapshot| {
             let id = physics::create_world([0.0, -9.81, 0.0]);
             physics::with_world(id, |w| {
-                let _ = w.restore(&bytes);
+                w.restore_checkpoint(&snapshot);
             });
             DryWorld(id)
         })
@@ -1369,7 +1372,7 @@ pub fn forward_step_scene(
     divisions: usize,
     steps_per_division: usize,
     inputs: &[Vec<RecordedInput>],
-) -> Vec<(Value, Option<Vec<u8>>)> {
+) -> Vec<(Value, Option<physics::PhysicsSnapshot>)> {
     forward_step_scene_with_error(
         session,
         model,
@@ -1551,9 +1554,9 @@ pub fn ghost_frames(
     let mut frames = Vec::with_capacity(stepped.len());
     for (i, (model_i, world_i)) in stepped.iter().enumerate() {
         let _world_scope = match (&draw_world, world_i) {
-            (Some(dry), Some(bytes)) => {
+            (Some(dry), Some(snapshot)) => {
                 physics::with_world(dry.0, |w| {
-                    let _ = w.restore(bytes);
+                    w.restore_checkpoint(snapshot);
                 });
                 Some(physics::ActiveWorldScope::enter(dry.0))
             }

@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{PhysicsCommand, PhysicsEvent, PhysicsScene, World};
+use super::{PhysicsCommand, PhysicsEvent, PhysicsScene, PhysicsSnapshot, World};
 
 /// A fixed-step frame number.
 pub type Frame = u64;
@@ -62,18 +62,16 @@ pub trait Simulatable {
 }
 
 impl Simulatable for World {
-    type Snapshot = Vec<u8>;
+    type Snapshot = PhysicsSnapshot;
     type Command = Command;
     type Event = Event;
 
-    fn snapshot(&self) -> Vec<u8> {
-        World::snapshot(self)
+    fn snapshot(&self) -> PhysicsSnapshot {
+        self.checkpoint()
     }
 
-    fn restore(&mut self, s: &Vec<u8>) {
-        // A Timeline only restores snapshots it recorded itself, so a parse
-        // failure is a corrupted history — unrecoverable, and loud is right.
-        World::restore(self, s).expect("timeline snapshot failed to restore");
+    fn restore(&mut self, snapshot: &PhysicsSnapshot) {
+        self.restore_checkpoint(snapshot);
     }
 
     fn step(&mut self, cmds: &[Command]) -> Vec<PhysicsEvent> {
@@ -305,10 +303,10 @@ mod tests {
     fn seek_restores_a_recorded_frame_bit_exact() {
         let mut tl = TimelineLog::keyframes(4);
         let mut sim = World::new(DEFAULT_GRAVITY);
-        let mut at_7 = Vec::new();
+        let mut at_7 = None;
         for f in 0..20 {
             if f == 7 {
-                at_7 = Simulatable::snapshot(&sim);
+                at_7 = Some(Simulatable::snapshot(&sim));
             }
             let cmds = cmds_at(f);
             tl.record(f, &sim, &cmds);
@@ -318,7 +316,10 @@ mod tests {
         // 7 is not a keyframe (cadence 4): seek restores keyframe 4 and
         // re-steps 4..7.
         tl.seek(7, &mut sim);
-        assert!(Simulatable::snapshot(&sim) == at_7, "seek(7) diverged");
+        assert!(
+            Simulatable::snapshot(&sim) == at_7.expect("captured frame 7"),
+            "seek(7) diverged"
+        );
     }
 
     #[test]

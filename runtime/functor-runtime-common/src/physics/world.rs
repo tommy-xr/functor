@@ -174,6 +174,56 @@ pub struct World {
     command_warnings: Vec<String>,
 }
 
+impl Clone for World {
+    fn clone(&self) -> Self {
+        Self {
+            gravity: self.gravity,
+            integration_parameters: self.integration_parameters,
+            pipeline: PhysicsPipeline::new(),
+            islands: self.islands.clone(),
+            broad_phase: self.broad_phase.clone(),
+            narrow_phase: self.narrow_phase.clone(),
+            bodies: self.bodies.clone(),
+            colliders: self.colliders.clone(),
+            impulse_joints: self.impulse_joints.clone(),
+            multibody_joints: self.multibody_joints.clone(),
+            ccd_solver: self.ccd_solver.clone(),
+            tags: self.tags.clone(),
+            declared: self.declared.clone(),
+            accumulator: self.accumulator,
+            frame: self.frame,
+            pending: self.pending.clone(),
+            forced: self.forced.clone(),
+            events: self.events.clone(),
+            command_warnings: self.command_warnings.clone(),
+        }
+    }
+}
+
+/// Cheap in-process physics checkpoint. Rapier's `SharedShape` and terrain
+/// samples remain Arc-shared across timeline keyframes and ghost previews,
+/// avoiding repeated multi-megabyte JSON snapshots on the frame thread.
+#[derive(Clone)]
+pub struct PhysicsSnapshot {
+    world: Box<World>,
+}
+
+impl std::fmt::Debug for PhysicsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhysicsSnapshot")
+            .field("frame", &self.world.frame)
+            .field("bodies", &self.world.bodies.len())
+            .field("colliders", &self.world.colliders.len())
+            .finish()
+    }
+}
+
+impl PartialEq for PhysicsSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.world.snapshot() == other.world.snapshot()
+    }
+}
+
 impl World {
     pub fn new(gravity: [f32; 3]) -> World {
         let mut integration_parameters = IntegrationParameters::default();
@@ -199,6 +249,16 @@ impl World {
             events: Vec::new(),
             command_warnings: Vec::new(),
         }
+    }
+
+    pub fn checkpoint(&self) -> PhysicsSnapshot {
+        PhysicsSnapshot {
+            world: Box::new(self.clone()),
+        }
+    }
+
+    pub fn restore_checkpoint(&mut self, snapshot: &PhysicsSnapshot) {
+        *self = snapshot.world.as_ref().clone();
     }
 
     /// Queue a command for the next stepped frame (applied after that frame's
@@ -278,15 +338,17 @@ impl World {
 
         // Spawns / updates, in tag order.
         for (tag, body) in wanted {
-            match self.declared.get(tag) {
+            let accepted = match self.declared.get(tag) {
                 None => self.spawn(body),
                 Some(prev) if prev != body => {
                     let prev = prev.clone();
-                    self.apply_divergence(&prev, body);
+                    self.apply_divergence(&prev, body)
                 }
-                Some(_) => {} // unchanged: the simulation owns this body
+                Some(_) => true, // unchanged: the simulation owns this body
+            };
+            if accepted {
+                self.declared.insert(tag.clone(), body.clone());
             }
-            self.declared.insert(tag.clone(), body.clone());
         }
     }
 
@@ -623,7 +685,10 @@ impl World {
 
     // ── reconcile internals ─────────────────────────────────────────────
 
-    fn spawn(&mut self, body: &Body) {
+    fn spawn(&mut self, body: &Body) -> bool {
+        let Some(mut collider) = collider_of(&body.shape) else {
+            return false;
+        };
         let builder = match body.kind {
             BodyKind::Dynamic => RigidBodyBuilder::dynamic(),
             BodyKind::Kinematic => RigidBodyBuilder::kinematic_position_based(),
@@ -634,7 +699,7 @@ impl World {
             .linvel(vec3(body.velocity))
             .build();
 
-        let mut collider = collider_of(&body.shape)
+        collider = collider
             .friction(body.friction)
             .restitution(body.restitution)
             .sensor(body.sensor)
@@ -650,6 +715,7 @@ impl World {
             self.colliders
                 .insert_with_parent(collider.build(), rb_handle, &mut self.bodies);
         self.tags.insert(body.tag.clone(), (rb_handle, col_handle));
+        true
     }
 
     fn despawn(&mut self, tag: &str) {
@@ -674,14 +740,18 @@ impl World {
     /// *live* pose/velocities for every field whose declaration didn't change:
     /// a mass change on a falling crate must not teleport it back to its
     /// declared spawn pose.
-    fn apply_divergence(&mut self, prev: &Body, next: &Body) {
+    fn apply_divergence(&mut self, prev: &Body, next: &Body) -> bool {
         if prev.kind != next.kind || prev.shape != next.shape || prev.mass != next.mass {
+            if !shape_is_ready(&next.shape) {
+                return false;
+            }
             let live = self.tags.get(&next.tag).and_then(|(rb, _)| {
                 let rb = self.bodies.get(*rb)?;
                 Some((*rb.position(), rb.linvel(), rb.angvel()))
             });
             self.despawn(&next.tag);
-            self.spawn(next);
+            let spawned = self.spawn(next);
+            debug_assert!(spawned);
             if let (Some((pose, linvel, angvel)), Some((rb_handle, _))) =
                 (live, self.tags.get(&next.tag).copied())
             {
@@ -695,7 +765,7 @@ impl World {
                 // Angular velocity is never declarable — always physics-owned.
                 rb.set_angvel(angvel, true);
             }
-            return;
+            return true;
         }
 
         let (rb_handle, col_handle) = self.tags[&next.tag];
@@ -736,6 +806,7 @@ impl World {
         }
         // `authority` is inert in Phase 1: cached (by reconcile) but never
         // written to the live world.
+        true
     }
 }
 
@@ -763,22 +834,117 @@ fn pose_of(body: &Body) -> Pose {
     Pose::from_parts(vec3(body.position), rotation)
 }
 
-fn collider_of(shape: &Shape) -> ColliderBuilder {
-    match *shape {
-        Shape::Cuboid { extents } => {
-            ColliderBuilder::cuboid(extents[0] / 2.0, extents[1] / 2.0, extents[2] / 2.0)
-        }
-        Shape::Sphere { radius } => ColliderBuilder::ball(radius),
+/// Bound the first terrain collision implementation to a 1025² grid. A 4096²
+/// render source therefore keeps metre-scale visual detail without retaining
+/// >100 MiB of collision data on Quest.
+/// Streaming higher-resolution collision tiles is a follow-up.
+const MAX_HEIGHTFIELD_CELLS_PER_AXIS: usize = 1024;
+
+fn shape_is_ready(shape: &Shape) -> bool {
+    !matches!(shape, Shape::Heightfield { data: None, .. })
+}
+
+fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
+    match shape {
+        Shape::Cuboid { extents } => Some(ColliderBuilder::cuboid(
+            extents[0] / 2.0,
+            extents[1] / 2.0,
+            extents[2] / 2.0,
+        )),
+        Shape::Sphere { radius } => Some(ColliderBuilder::ball(*radius)),
         Shape::Capsule {
             half_height,
             radius,
-        } => ColliderBuilder::capsule_y(half_height, radius),
+        } => Some(ColliderBuilder::capsule_y(*half_height, *radius)),
+        Shape::Heightfield { geometry, data } => data
+            .as_deref()
+            .map(|data| heightfield_collider(geometry, data)),
     }
+}
+
+fn heightfield_collider(
+    terrain: &crate::terrain::TerrainGeometry,
+    data: &crate::asset::pipelines::HeightmapData,
+) -> ColliderBuilder {
+    debug_assert!(data.is_valid());
+    let (cells_x, cells_z) = collision_cell_counts(data);
+    let height_range = terrain.max_height - terrain.min_height;
+    let matrix = Array2::from_fn(cells_z + 1, cells_x + 1, |row, col| {
+        sample_height_for_collision(data, col, cells_x, row, cells_z)
+    });
+    let shape = SharedShape::heightfield_with_flags(
+        matrix,
+        Vector::new(terrain.width, height_range, terrain.depth),
+        HeightFieldFlags::FIX_INTERNAL_EDGES,
+    );
+    ColliderBuilder::new(shape).translation(Vector::new(0.0, terrain.min_height, 0.0))
+}
+
+fn sample_height_for_collision(
+    data: &crate::asset::pipelines::HeightmapData,
+    target_x: usize,
+    target_cells_x: usize,
+    target_z: usize,
+    target_cells_z: usize,
+) -> f32 {
+    let source_cells_x = data.width.saturating_sub(1) as usize;
+    let source_cells_z = data.height.saturating_sub(1) as usize;
+    let source_x = target_x as f64 * source_cells_x as f64 / target_cells_x as f64;
+    let source_z = target_z as f64 * source_cells_z as f64 / target_cells_z as f64;
+    let x0 = source_x.floor() as usize;
+    let z0 = source_z.floor() as usize;
+    let x1 = (x0 + 1).min(source_cells_x);
+    let z1 = (z0 + 1).min(source_cells_z);
+    let fx = (source_x - x0 as f64) as f32;
+    let fz = (source_z - z0 as f64) as f32;
+    let width = data.width as usize;
+    let height = |x, z| data.samples[z * width + x] as f32 / 65535.0;
+    let (h00, h10, h01, h11) = (
+        height(x0, z0),
+        height(x1, z0),
+        height(x0, z1),
+        height(x1, z1),
+    );
+    if fx + fz <= 1.0 {
+        h00 + fx * (h10 - h00) + fz * (h01 - h00)
+    } else {
+        h11 + (1.0 - fx) * (h01 - h11) + (1.0 - fz) * (h10 - h11)
+    }
+}
+
+fn collision_cell_counts(data: &crate::asset::pipelines::HeightmapData) -> (usize, usize) {
+    (
+        (data.width.saturating_sub(1) as usize).min(MAX_HEIGHTFIELD_CELLS_PER_AXIS),
+        (data.height.saturating_sub(1) as usize).min(MAX_HEIGHTFIELD_CELLS_PER_AXIS),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+
+    fn flat_heightfield(width: u32, height: u32, sample: u16) -> Shape {
+        Shape::Heightfield {
+            geometry: crate::terrain::TerrainGeometry {
+                source: crate::terrain::TerrainSource {
+                    locator: "test.png".to_string(),
+                    while_pending: Vec::new(),
+                },
+                width: 20.0,
+                depth: 20.0,
+                min_height: 0.0,
+                max_height: 10.0,
+            },
+            data: Some(Arc::new(crate::asset::pipelines::HeightmapData {
+                samples: vec![sample; (width * height) as usize],
+                width,
+                height,
+                revision: 1,
+            })),
+        }
+    }
 
     fn ground() -> Body {
         Body::fixed(
@@ -801,6 +967,129 @@ mod tests {
 
     fn scene(bodies: Vec<Body>) -> PhysicsScene {
         PhysicsScene::create([0.0, -9.81, 0.0], bodies)
+    }
+
+    #[test]
+    fn heightfield_raycast_matches_declared_elevation() {
+        let terrain = flat_heightfield(260, 260, 32768);
+        let Shape::Heightfield {
+            data: Some(data), ..
+        } = &terrain
+        else {
+            unreachable!()
+        };
+        assert_eq!(collision_cell_counts(data), (259, 259));
+
+        let mut world = World::new([0.0, -9.81, 0.0]);
+        world.reconcile(&scene(vec![Body::fixed("terrain".to_string(), terrain)]));
+        world.step_frame(FIXED_DT);
+        let hit = world
+            .raycast([0.0, 20.0, 0.0], [0.0, -1.0, 0.0], 30.0)
+            .expect("ray should hit the heightfield");
+        assert_eq!(hit.tag, "terrain");
+        assert!((hit.position[1] - 5.0).abs() < 0.01, "{hit:?}");
+        assert!(hit.normal[1] > 0.99, "{hit:?}");
+    }
+
+    #[test]
+    fn heightfield_uses_rapier_triangles_not_bilinear_interpolation() {
+        let shape = Shape::Heightfield {
+            geometry: crate::terrain::TerrainGeometry {
+                source: crate::terrain::TerrainSource {
+                    locator: "triangle-test.png".to_string(),
+                    while_pending: Vec::new(),
+                },
+                width: 20.0,
+                depth: 20.0,
+                min_height: 0.0,
+                max_height: 10.0,
+            },
+            data: Some(Arc::new(crate::asset::pipelines::HeightmapData {
+                // Only the far (+X,+Z) corner is raised.
+                samples: vec![0, 0, 0, 65535],
+                width: 2,
+                height: 2,
+                revision: 1,
+            })),
+        };
+        let mut world = World::new([0.0, 0.0, 0.0]);
+        world.reconcile(&scene(vec![Body::fixed("terrain".to_string(), shape)]));
+        world.step_frame(FIXED_DT);
+
+        let lower = world
+            .raycast([-5.0, 20.0, -5.0], [0.0, -1.0, 0.0], 30.0)
+            .expect("lower triangle");
+        let upper = world
+            .raycast([5.0, 20.0, 5.0], [0.0, -1.0, 0.0], 30.0)
+            .expect("upper triangle");
+        assert!(lower.position[1].abs() < 0.001, "{lower:?}");
+        assert!((upper.position[1] - 5.0).abs() < 0.001, "{upper:?}");
+    }
+
+    #[test]
+    fn capped_heightfield_samples_exact_fractional_source_positions() {
+        let data = crate::asset::pipelines::HeightmapData {
+            // Along X: 0, 0, 1, 1. The middle of this three-cell source is
+            // halfway up the discontinuity; flooring would incorrectly pick 0.
+            samples: vec![0, 0, 65535, 65535, 0, 0, 65535, 65535],
+            width: 4,
+            height: 2,
+            revision: 1,
+        };
+        let middle = sample_height_for_collision(&data, 1, 2, 0, 1);
+        assert!((middle - 0.5).abs() < 0.0001, "{middle}");
+    }
+
+    #[test]
+    fn pending_heightfield_defers_spawn_and_preserves_the_last_settled_surface() {
+        let ready = flat_heightfield(3, 3, 32768);
+        let mut pending = ready.clone();
+        let Shape::Heightfield { data, .. } = &mut pending else {
+            unreachable!()
+        };
+        *data = None;
+
+        let mut world = World::new([0.0, -9.81, 0.0]);
+        world.reconcile(&scene(vec![Body::fixed(
+            "terrain".to_string(),
+            pending.clone(),
+        )]));
+        assert!(world.body_transform("terrain").is_none());
+
+        world.reconcile(&scene(vec![Body::fixed("terrain".to_string(), ready)]));
+        assert!(world.body_transform("terrain").is_some());
+
+        world.reconcile(&scene(vec![Body::fixed("terrain".to_string(), pending)]));
+        assert!(world.body_transform("terrain").is_some());
+    }
+
+    #[test]
+    fn collision_resolution_and_timeline_heightfield_memory_are_bounded() {
+        let oversized = crate::asset::pipelines::HeightmapData {
+            samples: Vec::new(),
+            width: 4097,
+            height: 4097,
+            revision: 1,
+        };
+        assert_eq!(collision_cell_counts(&oversized), (1024, 1024));
+
+        // Exercise the actual cap, not just its arithmetic: the full retained
+        // collider is one shared shape and remains shared by checkpoints.
+        let terrain = flat_heightfield(1025, 1025, 32768);
+        let mut world = World::new([0.0, -9.81, 0.0]);
+        world.reconcile(&scene(vec![Body::fixed("terrain".to_string(), terrain)]));
+        assert_eq!(world.colliders.len(), 1);
+        let checkpoint = world.checkpoint();
+        let live_shape = world.colliders.iter().next().unwrap().1.shared_shape();
+        let saved_shape = checkpoint
+            .world
+            .colliders
+            .iter()
+            .next()
+            .unwrap()
+            .1
+            .shared_shape();
+        assert!(Arc::ptr_eq(&live_shape.0, &saved_shape.0));
     }
 
     #[test]

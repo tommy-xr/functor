@@ -14,3 +14,4 @@ serde_json = "1.0"
 # `functor-netsim-viz` bin — is an allowed dev-dependency cycle, not a real one.
 [dev-dependencies]
 functor-runtime-desktop = { path = "./../functor-runtime-desktop" }
+image = "0.25"

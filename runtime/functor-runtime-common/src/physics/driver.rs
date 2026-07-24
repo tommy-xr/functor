@@ -102,8 +102,8 @@ impl SteppedPhysics {
     /// Byte-exact snapshot of this recorder's world (the determinism oracle
     /// the goldens assert) — the forward-step samples it after each stepped
     /// division. `None` when the world does not exist.
-    pub fn snapshot_world(&self) -> Option<Vec<u8>> {
-        with_world(self.world, |w| w.snapshot())
+    pub fn snapshot_world(&self) -> Option<super::PhysicsSnapshot> {
+        with_world(self.world, |w| w.checkpoint())
     }
 
     /// One rendered frame's worth of recorded physics: simulate whole fixed
@@ -140,6 +140,10 @@ impl SteppedPhysics {
                 // (the same discipline as World::step_frame).
                 self.accumulator %= FIXED_DT;
             }
+            // Resolve terrain once at the live shell boundary, then move that
+            // exact immutable scene into the command log. Replays must never
+            // consult whatever asset revision happens to be loaded later.
+            let mut scene = Some(scene.hydrated_heightfields());
             let (events, warnings) = with_world(self.world, |w| {
                 let mut events = Vec::new();
                 for i in 0..steps {
@@ -149,7 +153,9 @@ impl SteppedPhysics {
                     // one DeclareScene per rendered frame keeps the log lean.
                     let mut cmds: Vec<Command> = Vec::new();
                     if i == 0 {
-                        cmds.push(Command::DeclareScene(scene.clone()));
+                        cmds.push(Command::DeclareScene(
+                            scene.take().expect("first fixed substep owns the scene"),
+                        ));
                         for command in w.take_pending_commands() {
                             cmds.push(Command::Apply(command));
                         }
@@ -282,8 +288,12 @@ impl SteppedPhysics {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::asset::pipelines::HeightmapData;
     use crate::physics::{remove_world, Body, Shape};
+    use crate::terrain::{TerrainGeometry, TerrainSource};
 
     fn scene_at(t: u64) -> PhysicsScene {
         PhysicsScene::create(
@@ -424,6 +434,70 @@ mod tests {
         assert!(
             snapshot() == snap_20,
             "seek must re-apply recorded commands to land byte-exact"
+        );
+        remove_world(DEFAULT_WORLD);
+    }
+
+    #[test]
+    fn replay_uses_the_heightmap_revision_recorded_live() {
+        let mut sp = fresh();
+        let source = TerrainSource {
+            locator: "timeline-heightfield.png".to_string(),
+            while_pending: Vec::new(),
+        };
+        let scene = PhysicsScene::create(
+            [0.0, -9.81, 0.0],
+            vec![Body::fixed(
+                "terrain".to_string(),
+                Shape::Heightfield {
+                    geometry: TerrainGeometry {
+                        source: source.clone(),
+                        width: 20.0,
+                        depth: 20.0,
+                        min_height: 0.0,
+                        max_height: 10.0,
+                    },
+                    data: None,
+                },
+            )],
+        );
+        let samples = |sample, revision| {
+            Arc::new(HeightmapData {
+                samples: vec![sample; 4],
+                width: 2,
+                height: 2,
+                revision,
+            })
+        };
+        let hit_y = || {
+            with_world(DEFAULT_WORLD, |world| {
+                world
+                    .raycast([0.0, 20.0, 0.0], [0.0, -1.0, 0.0], 30.0)
+                    .expect("terrain ray hit")
+                    .position[1]
+            })
+            .unwrap()
+        };
+
+        let first_samples = samples(16384, 1);
+        crate::terrain::publish_heightmap(&source, first_samples.clone());
+        sp.advance(&scene, FIXED_DT);
+        let first_height = hit_y();
+
+        let reloaded_samples = samples(49152, 2);
+        crate::terrain::publish_heightmap(&source, reloaded_samples.clone());
+        sp.advance(&scene, FIXED_DT);
+        let reloaded_height = hit_y();
+        assert!(
+            reloaded_height > first_height + 4.0,
+            "{first_height} -> {reloaded_height}"
+        );
+
+        let warnings = sp.seek_to_frame(1);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            (hit_y() - first_height).abs() < 0.001,
+            "replay consulted the newer global heightmap revision"
         );
         remove_world(DEFAULT_WORLD);
     }

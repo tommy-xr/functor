@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::{
     cell::{Cell, RefCell},
     sync::Arc,
@@ -59,6 +59,7 @@ pub struct SceneContext {
     // (rows, cols) — the stable identity of the mesh across frames.
     heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
+    terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
     terrain_renderer: RefCell<TerrainRenderer>,
     terrain_frame_serial: Cell<u64>,
     // Render targets persist across frames/hot reloads, keyed by the target's
@@ -152,6 +153,7 @@ impl SceneContext {
             plane: RefCell::new(geometry::Plane::create()),
             heightmaps: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
+            terrain_requests: RefCell::new(BTreeSet::new()),
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
@@ -190,6 +192,7 @@ impl SceneContext {
         asset_cache: &Arc<AssetCache>,
         commands: Vec<crate::asset::preload::PreloadCommand>,
     ) -> Vec<u64> {
+        self.drive_terrain_requests(asset_cache);
         use crate::asset::preload::PreloadKind;
         let mut preloads = self.preloads.borrow_mut();
         for cmd in commands {
@@ -243,6 +246,45 @@ impl SceneContext {
         settled
     }
 
+    fn drive_terrain_requests(&self, asset_cache: &Arc<AssetCache>) {
+        self.terrain_requests
+            .borrow_mut()
+            .extend(crate::terrain::take_heightmap_requests());
+        self.terrain_requests.borrow_mut().retain(|source| {
+            let handle = asset_cache
+                .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &source.locator);
+            match crate::asset::resolve_while_pending_state(
+                asset_cache,
+                &self.heightmap_pipeline,
+                &handle,
+                &source.while_pending,
+            ) {
+                crate::asset::WhilePendingState::Loading(stand_in) => {
+                    if let Some(data) = stand_in {
+                        crate::terrain::publish_heightmap(source, data);
+                    }
+                    true
+                }
+                crate::asset::WhilePendingState::Loaded(data) => {
+                    crate::terrain::publish_heightmap(source, data);
+                    crate::asset::while_pending_chain_is_unsettled(
+                        asset_cache,
+                        &source.while_pending,
+                    )
+                }
+                crate::asset::WhilePendingState::Failed => {
+                    // Rendering uses the pipeline fallback after terminal
+                    // failure; publish that same flat surface for collision.
+                    crate::terrain::publish_heightmap(source, handle.fallback());
+                    crate::asset::while_pending_chain_is_unsettled(
+                        asset_cache,
+                        &source.while_pending,
+                    )
+                }
+            }
+        });
+    }
+
     fn draw_terrain(
         &self,
         render_context: &RenderContext,
@@ -254,13 +296,42 @@ impl SceneContext {
         let handle = render_context
             .asset_cache
             .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &terrain.heightmap);
-        let source = crate::asset::resolve_while_pending(
+        let resolved = crate::asset::resolve_while_pending_state(
             &render_context.asset_cache,
             &self.heightmap_pipeline,
             &handle,
             &terrain.while_pending,
         );
-        crate::terrain::publish_heightmap(&terrain.heightmap, source.clone());
+        let source_descriptor = terrain.source();
+        let primary_is_loading =
+            matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
+        let source = match resolved {
+            crate::asset::WhilePendingState::Loaded(data) => {
+                crate::terrain::publish_heightmap(&source_descriptor, data.clone());
+                data
+            }
+            crate::asset::WhilePendingState::Loading(Some(data)) => {
+                crate::terrain::publish_heightmap(&source_descriptor, data.clone());
+                data
+            }
+            crate::asset::WhilePendingState::Loading(None) => handle.fallback(),
+            crate::asset::WhilePendingState::Failed => {
+                let fallback = handle.fallback();
+                crate::terrain::publish_heightmap(&source_descriptor, fallback.clone());
+                fallback
+            }
+        };
+        // Drawing ordinarily polls again next frame. If the node disappears,
+        // retain any source or placeholder already in flight so the shared
+        // asset-progress gate cannot be stranded indefinitely.
+        if primary_is_loading
+            || crate::asset::while_pending_chain_is_unsettled(
+                &render_context.asset_cache,
+                &terrain.while_pending,
+            )
+        {
+            crate::terrain::request_heightmap(source_descriptor);
+        }
         self.terrain_renderer.borrow_mut().draw(
             render_context,
             terrain,
