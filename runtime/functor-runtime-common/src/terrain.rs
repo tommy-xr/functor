@@ -1,4 +1,37 @@
 use serde::{Deserialize, Serialize};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    sync::{Arc, Weak},
+};
+
+use crate::asset::pipelines::HeightmapData;
+
+thread_local! {
+    /// Decoded terrain sources shared by the render and physics adapters on
+    /// the runtime thread. The descriptor remains plain immutable data; this
+    /// is only the shell-side hydration cache, analogous to GPU resources.
+    static HEIGHTMAPS: RefCell<HashMap<String, Weak<HeightmapData>>> =
+        RefCell::new(HashMap::new());
+}
+
+pub(crate) fn publish_heightmap(locator: &str, data: Arc<HeightmapData>) {
+    HEIGHTMAPS.with(|heightmaps| {
+        let mut heightmaps = heightmaps.borrow_mut();
+        let unchanged = heightmaps
+            .get(locator)
+            .and_then(Weak::upgrade)
+            // HeightmapData is Eq, so Arc equality first takes the pointer
+            // fast path and only compares samples after a real reload.
+            .is_some_and(|current| current == data);
+        if !unchanged {
+            // The asset pipeline and current physics declaration own the
+            // samples. This lookup bridge must not pin a 32 MiB 4096² map
+            // after its runtime/project has gone away.
+            heightmaps.insert(locator.to_string(), Arc::downgrade(&data));
+        }
+    });
+}
 
 /// The collision-relevant subset of a terrain descriptor.
 ///
@@ -148,5 +181,18 @@ mod tests {
             serde_json::from_str::<TerrainDescription>(&json).unwrap(),
             terrain
         );
+    }
+
+    #[test]
+    fn hydration_registry_does_not_retain_heightmap_samples() {
+        let locator = "weak-registry-test.png";
+        let data = Arc::new(HeightmapData::flat());
+        let weak = Arc::downgrade(&data);
+        publish_heightmap(locator, data.clone());
+        assert_eq!(Arc::strong_count(&data), 1);
+
+        drop(data);
+        assert!(weak.upgrade().is_none());
+        HEIGHTMAPS.with(|heightmaps| heightmaps.borrow_mut().remove(locator));
     }
 }

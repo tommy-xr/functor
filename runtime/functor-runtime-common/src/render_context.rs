@@ -126,4 +126,19 @@ pub struct RenderContext<'a> {
     /// The pass camera's world position — frame-constant, computed once per
     /// pass rather than per draw (the fog shader blends by distance from it).
     pub camera_pos: Vector3<f32>,
+    /// Stable center-camera data used only for terrain LOD selection.
+    ///
+    /// Stereo shells render the same [`Frame`](crate::Frame) twice with
+    /// per-eye view cameras. Keeping terrain selection tied to one live
+    /// tracked center pose makes both eyes draw the exact same patch set,
+    /// avoiding binocular shimmer while preserving per-eye rasterization.
+    pub lod_camera_pos: Vector3<f32>,
+    /// World-to-clip matrices whose frusta are unioned for culling. Stereo
+    /// shells provide both tracked eyes; mono passes use only element zero.
+    pub lod_view_projections: [Matrix4<f32>; 2],
+    pub lod_frustum_count: usize,
+    /// Vertical projection scale (`cot(fov_y / 2)`), used to turn terrain
+    /// world-space vertex spacing into projected pixels.
+    pub lod_projection_scale: f32,
+    pub viewport_height: f32,
 }
