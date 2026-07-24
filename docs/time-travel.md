@@ -318,6 +318,17 @@ It needs **no new scene-description API** — you call the existing `draw` on ea
 stepped state — and it captures *all* motion, not one hand-picked entity, so it
 works for any scene under a fixed camera.
 
+The scene-diff trail/strobe modes follow the same rule for both render families:
+they traverse `Frame.scene` and every anchor `Frame.sprite_layers` scene, then
+draw dots or faded copies back into the matching tree. Sprite layers match by
+declaration index and nodes by structural path. A future layer-count change
+truncates every 2D track rather than cross-wiring it; same-count layer reordering
+remains a positional-identity limitation until layers have stable ids. Sprite
+copies use each future frame's art/material and fade by alpha, while marker size
+scales with the anchor camera's visible world height. These overlays stay in the
+anchor `Camera2D`'s world coordinates. Use the full-frame ghost compositor when
+future camera movement itself should be visible.
+
 Two implementation points decide whether it looks right:
 
 - **Composite in screen space, not the depth buffer.** Render each division to its

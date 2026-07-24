@@ -1,25 +1,26 @@
-//! Scene-diff preview (docs/time-travel.md T6): given a game's live frame plus
-//! its forward-simulated future frames, find the scene nodes whose WORLD
-//! transform changes across the sequence ("movers") and render their future two
-//! ways:
+//! Frame-diff preview (docs/time-travel.md T6): given a game's live frame plus
+//! its forward-simulated future frames, find the 3D or 2D scene nodes whose
+//! WORLD transform changes across the sequence ("movers") and render their
+//! future two ways:
 //!
 //! - a **trail** of dots tracing each mover's path (the clean-lines view), and
 //! - a **scene-space strobe**: real-geometry copies of each mover at its future
-//!   poses, color-faded by age (the chronophotography view). Unlike the
+//!   poses, color- or alpha-faded by age (the chronophotography view). Unlike the
 //!   screen-space `--ghost` compositor — which averages N whole frames, pinning
-//!   every ghost copy at 1/N opacity — copies here are ordinary geometry on the
-//!   normal render path: full intensity, no division cap, and the camera stays
-//!   live. (The compositor remains the right tool for non-geometry motion such
-//!   as animated lighting, which no geometry copy can represent.)
+//!   every ghost copy at 1/N opacity — copies here use the normal render path:
+//!   independently faded, with no division cap, while the camera stays live.
+//!   (The compositor remains the right tool for non-geometry motion such as
+//!   animated lighting, which no geometry copy can represent.)
 //!
 //! The point is that this needs NO game cooperation: the runtime derives
 //! everything purely from what `draw` already renders. It diffs the rendered
-//! *scene* (which carries concrete world transforms), not the opaque model — so
-//! "which numbers are positions" is unambiguous and "what moved" falls out of
-//! comparing world transforms across the forward-sim.
+//! 3D scene and each anchor sprite layer (all of which carry concrete world
+//! transforms), not the opaque model — so "which numbers are positions" is
+//! unambiguous and "what moved" falls out of comparing world transforms across
+//! the forward-sim.
 //!
 //! Pure and testable — no GPU, no interpreter needed (see the unit tests). The
-//! one host-facing entry point is [`scene_preview`]: one forward-sim, both
+//! one host-facing entry point is [`frame_preview`]: one forward-sim, both
 //! consumers.
 
 use std::collections::BTreeMap;
@@ -27,7 +28,12 @@ use std::collections::BTreeMap;
 use cgmath::{vec4, InnerSpace, Matrix4, SquareMatrix, Vector3, Vector4};
 
 use crate::protocol::GameProducer;
-use crate::{MaterialDescription, RecordedInput, Scene3D, SceneObject};
+use crate::{
+    Camera2D, Frame, MaterialDescription, RecordedInput, Scene3D, SceneObject, SpriteLayer,
+};
+
+const TRAIL_RADIUS_3D: f32 = 0.07;
+const TRAIL_REFERENCE_HEIGHT_2D: f32 = 13.5;
 
 /// One step of a node path: (child index, sibling count). Node identity across
 /// frames = the path of these segments from the root. Including the sibling
@@ -41,18 +47,15 @@ use crate::{MaterialDescription, RecordedInput, Scene3D, SceneObject};
 /// the real fix is stable node ids, a known limit.
 type PathSeg = (usize, usize);
 
-/// A LEAF node of the anchor scene: its world transform, the innermost
-/// enclosing material (what the renderer would shade it with), and the leaf
-/// object itself.
+/// A leaf node of the anchor scene: its world transform, the innermost
+/// enclosing material, and the leaf object itself.
 struct AnchorLeaf {
     world: Matrix4<f32>,
     material: Option<MaterialDescription>,
     leaf: SceneObject,
 }
 
-/// Walk `scene`, accumulating world transforms, and record each leaf's world
-/// matrix keyed by its path. A `BTreeMap` so iteration (and thus the emitted
-/// scene order) is deterministic.
+/// Walk a scene, accumulating world transforms, and record each leaf's matrix.
 fn collect_transforms(
     scene: &Scene3D,
     world: Matrix4<f32>,
@@ -82,9 +85,8 @@ fn transforms_by_path(scene: &Scene3D) -> BTreeMap<Vec<PathSeg>, Matrix4<f32>> {
     out
 }
 
-/// The anchor-scene walk: like [`collect_transforms`] but also records each
-/// leaf's object and innermost enclosing material, which the strobe needs to
-/// build faithful copies. Run once per preview (on the anchor only).
+/// Walk the anchor scene and retain owned leaf/material data for public
+/// [`MoverTrack`] values and the legacy 3D strobe.
 fn collect_anchor(
     scene: &Scene3D,
     world: Matrix4<f32>,
@@ -144,6 +146,17 @@ pub struct MoverTrack {
     pub translated: bool,
 }
 
+#[derive(Clone, Copy)]
+struct SampleLeaf<'a> {
+    world: Matrix4<f32>,
+    material: Option<&'a MaterialDescription>,
+    leaf: &'a SceneObject,
+}
+
+struct SampledMoverTrack<'a> {
+    samples: Vec<SampleLeaf<'a>>,
+}
+
 fn world_pos(w: &Matrix4<f32>) -> Vector3<f32> {
     // The 4th column of the accumulated matrix is the node origin's world
     // position.
@@ -179,14 +192,14 @@ pub fn mover_tracks(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Vec<MoverTr
         return Vec::new();
     }
     let anchor = anchor_leaves(scenes[0]);
-    let futures: Vec<_> = scenes[1..].iter().map(|s| transforms_by_path(s)).collect();
+    let futures: Vec<_> = scenes[1..].iter().map(|scene| transforms_by_path(scene)).collect();
     let eps2 = eps * eps;
     let mut tracks = Vec::new();
-    for (path, a) in &anchor {
-        let mut worlds = vec![a.world];
-        for m in &futures {
-            match m.get(path) {
-                Some(w) => worlds.push(*w),
+    for (path, anchor_leaf) in &anchor {
+        let mut worlds = vec![anchor_leaf.world];
+        for future in &futures {
+            match future.get(path) {
+                Some(world) => worlds.push(*world),
                 None => break,
             }
         }
@@ -210,11 +223,94 @@ pub fn mover_tracks(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Vec<MoverTr
             continue;
         }
         tracks.push(MoverTrack {
-            leaf: a.leaf.clone(),
-            material: a.material.clone(),
+            leaf: anchor_leaf.leaf.clone(),
+            material: anchor_leaf.material.clone(),
             worlds,
             translated,
         });
+    }
+    tracks
+}
+
+fn collect_sample_leaves<'a>(
+    scene: &'a Scene3D,
+    world: Matrix4<f32>,
+    material: Option<&'a MaterialDescription>,
+    path: &mut Vec<PathSeg>,
+    out: &mut BTreeMap<Vec<PathSeg>, SampleLeaf<'a>>,
+) {
+    let w = world * scene.xform;
+    match &scene.obj {
+        SceneObject::Group(children) => {
+            let count = children.len();
+            for (i, child) in children.iter().enumerate() {
+                path.push((i, count));
+                collect_sample_leaves(child, w, material, path, out);
+                path.pop();
+            }
+        }
+        SceneObject::Material(next_material, children) => {
+            let count = children.len();
+            for (i, child) in children.iter().enumerate() {
+                path.push((i, count));
+                collect_sample_leaves(child, w, Some(next_material), path, out);
+                path.pop();
+            }
+        }
+        SceneObject::Geometry(_) | SceneObject::Model(_) => {
+            out.insert(
+                path.clone(),
+                SampleLeaf {
+                    world: w,
+                    material,
+                    leaf: &scene.obj,
+                },
+            );
+        }
+    }
+}
+
+fn sample_leaves_by_path(scene: &Scene3D) -> BTreeMap<Vec<PathSeg>, SampleLeaf<'_>> {
+    let mut out = BTreeMap::new();
+    let mut path = Vec::new();
+    collect_sample_leaves(scene, Matrix4::identity(), None, &mut path, &mut out);
+    out
+}
+
+fn sampled_mover_tracks<'a>(
+    scenes: &[&'a Scene3D],
+    eps: f32,
+    max_step: f32,
+) -> Vec<SampledMoverTrack<'a>> {
+    if scenes.len() < 2 {
+        return Vec::new();
+    }
+    let samples_by_path: Vec<_> = scenes
+        .iter()
+        .map(|scene| sample_leaves_by_path(scene))
+        .collect();
+    let anchor = &samples_by_path[0];
+    let eps2 = eps * eps;
+    let mut tracks = Vec::new();
+    for (path, anchor_leaf) in anchor {
+        let mut samples = vec![*anchor_leaf];
+        for future in &samples_by_path[1..] {
+            match future.get(path) {
+                Some(leaf) => samples.push(*leaf),
+                None => break,
+            }
+        }
+        if let Some(cut) = (1..samples.len()).find(|&i| {
+            (world_pos(&samples[i].world) - world_pos(&samples[i - 1].world)).magnitude() > max_step
+        }) {
+            samples.truncate(cut);
+        }
+        let moved = samples.iter().any(|sample| {
+            columns_delta2(&sample.world, &samples[0].world) > eps2
+        });
+        if moved {
+            tracks.push(SampledMoverTrack { samples });
+        }
     }
     tracks
 }
@@ -223,8 +319,8 @@ pub fn mover_tracks(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Vec<MoverTr
 /// node's `xform` on `Group`/`Geometry` but NOT on `Material` (the prelude only
 /// ever puts transforms on Groups), so the world translation goes on an
 /// enclosing Group — the size lives on the geometry leaf.
-fn trail_dot(p: Vector3<f32>) -> Scene3D {
-    let sphere = Scene3D::sphere().transform(Matrix4::from_scale(0.07));
+fn trail_dot(p: Vector3<f32>, radius: f32) -> Scene3D {
+    let sphere = Scene3D::sphere().transform(Matrix4::from_scale(radius));
     let material = Scene3D {
         obj: SceneObject::Material(
             MaterialDescription::emissive(0.25, 0.85, 1.0, 1.0),
@@ -246,7 +342,11 @@ fn strobe_idx(c: usize, count: usize, n_future: usize) -> usize {
     (((c + 1) as f32 * n_future as f32 / count as f32).round() as usize).clamp(1, n_future)
 }
 
-fn trail_from_tracks(tracks: &[MoverTrack], strobe: Option<&StrobeOptions>) -> Option<Scene3D> {
+fn trail_from_tracks(
+    tracks: &[MoverTrack],
+    strobe: Option<&StrobeOptions>,
+    radius: f32,
+) -> Option<Scene3D> {
     let mut dots = Vec::new();
     for track in tracks {
         // A pure in-place spinner has a track (for the strobe) but no path to
@@ -268,7 +368,7 @@ fn trail_from_tracks(tracks: &[MoverTrack], strobe: Option<&StrobeOptions>) -> O
             if skip.contains(&i) {
                 continue;
             }
-            dots.push(trail_dot(world_pos(w)));
+            dots.push(trail_dot(world_pos(w), radius));
         }
     }
     if dots.is_empty() {
@@ -284,7 +384,7 @@ fn trail_from_tracks(tracks: &[MoverTrack], strobe: Option<&StrobeOptions>) -> O
 /// Build a dotted-trail scene from a scene sequence. Returns `None` when
 /// nothing moved. (The trail consumer of [`mover_tracks`].)
 pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<Scene3D> {
-    trail_from_tracks(&mover_tracks(scenes, eps, max_step), None)
+    trail_from_tracks(&mover_tracks(scenes, eps, max_step), None, TRAIL_RADIUS_3D)
 }
 
 /// Scene-space strobe options.
@@ -357,15 +457,67 @@ fn faded_material(
     }
 }
 
+/// Sprite layers already blend with straight alpha, so their onion skins fade
+/// by opacity instead of tinting toward the 3D pass's clear color.
+fn alpha_faded_material(
+    material: Option<&MaterialDescription>,
+    k: f32,
+) -> Option<MaterialDescription> {
+    let fade = |mut color: Vector4<f32>| {
+        color.w *= k;
+        color
+    };
+    match material {
+        Some(MaterialDescription::Color(color)) => Some(MaterialDescription::Color(fade(*color))),
+        Some(MaterialDescription::Emissive { color, texture }) => {
+            Some(MaterialDescription::Emissive {
+                color: fade(*color),
+                texture: texture.clone(),
+            })
+        }
+        Some(MaterialDescription::Lit {
+            color,
+            texture,
+            normal_map,
+        }) => Some(MaterialDescription::Lit {
+            color: fade(*color),
+            texture: texture.clone(),
+            normal_map: normal_map.clone(),
+        }),
+        Some(MaterialDescription::Texture(texture)) => Some(MaterialDescription::Emissive {
+            color: vec4(1.0, 1.0, 1.0, k),
+            texture: Some(texture.clone()),
+        }),
+        None => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StrobeFade {
+    Color,
+    Alpha,
+}
+
 /// One strobe copy: the mover's leaf at a future world pose, shaded by its
 /// (age-faded) material. Transforms go on a Group / the leaf itself — never on
 /// a Material node, which the renderer ignores (see [`trail_dot`]).
-fn strobe_copy(track: &MoverTrack, world: Matrix4<f32>, fade_to: [f32; 3], k: f32) -> Scene3D {
+fn strobe_copy(
+    leaf: &SceneObject,
+    material: Option<&MaterialDescription>,
+    world: Matrix4<f32>,
+    fade_to: [f32; 3],
+    k: f32,
+    fade: StrobeFade,
+) -> Scene3D {
     let leaf = Scene3D {
-        obj: track.leaf.clone(),
+        obj: leaf.clone(),
         xform: Matrix4::identity(),
     };
-    match faded_material(track.material.as_ref(), fade_to, k) {
+    let material = match fade {
+        StrobeFade::Color => faded_material(material, fade_to, k),
+        StrobeFade::Alpha => alpha_faded_material(material, k),
+    };
+    match material {
         Some(mat) => Scene3D {
             obj: SceneObject::Group(vec![Scene3D {
                 obj: SceneObject::Material(mat, vec![leaf]),
@@ -378,6 +530,15 @@ fn strobe_copy(track: &MoverTrack, world: Matrix4<f32>, fade_to: [f32; 3], k: f3
             xform: world,
         },
     }
+}
+
+fn strobe_age(idx: usize, n_future: usize, fade: (f32, f32)) -> f32 {
+    let age = if n_future <= 1 {
+        0.0
+    } else {
+        (idx - 1) as f32 / (n_future - 1) as f32
+    };
+    fade.0 + (fade.1 - fade.0) * age
 }
 
 /// Scene-space strobe: real-geometry copies of each mover at its future poses,
@@ -399,13 +560,50 @@ pub fn strobe_overlay(tracks: &[MoverTrack], opts: &StrobeOptions) -> Option<Sce
             // fade the same way dense ones do. Normalized over the inclusive
             // endpoints so the nearest possible future really gets `fade.0`; a
             // single-sample track counts as near.
-            let age = if n_future <= 1 {
-                0.0
-            } else {
-                (idx - 1) as f32 / (n_future - 1) as f32
-            };
-            let k = opts.fade.0 + (opts.fade.1 - opts.fade.0) * age;
-            copies.push(strobe_copy(track, track.worlds[idx], opts.fade_to, k));
+            let k = strobe_age(idx, n_future, opts.fade);
+            copies.push(strobe_copy(
+                &track.leaf,
+                track.material.as_ref(),
+                track.worlds[idx],
+                opts.fade_to,
+                k,
+                StrobeFade::Color,
+            ));
+        }
+    }
+    if copies.is_empty() {
+        None
+    } else {
+        Some(Scene3D {
+            obj: SceneObject::Group(copies),
+            xform: Matrix4::identity(),
+        })
+    }
+}
+
+fn sampled_strobe_overlay(
+    tracks: &[SampledMoverTrack<'_>],
+    opts: &StrobeOptions,
+    fade: StrobeFade,
+) -> Option<Scene3D> {
+    let mut copies = Vec::new();
+    for sampled in tracks {
+        let n_future = sampled.samples.len() - 1;
+        if n_future == 0 || opts.copies == 0 {
+            continue;
+        }
+        let count = opts.copies.min(n_future);
+        for c in 0..count {
+            let idx = strobe_idx(c, count, n_future);
+            let sample = &sampled.samples[idx];
+            copies.push(strobe_copy(
+                sample.leaf,
+                sample.material,
+                sample.world,
+                opts.fade_to,
+                strobe_age(idx, n_future, opts.fade),
+                fade,
+            ));
         }
     }
     if copies.is_empty() {
@@ -515,7 +713,7 @@ pub fn interactive_preview(
     }
 }
 
-/// What [`scene_preview`] should compute.
+/// What [`frame_preview`] should compute.
 pub struct PreviewOptions {
     /// Forward-sim divisions (samples). Not bound by the screen-space
     /// compositor's 8-target cap — this only reads scenes — so sample finely.
@@ -532,20 +730,140 @@ pub struct PreviewOptions {
     pub strobe: Option<StrobeOptions>,
 }
 
-/// A computed preview: overlays for the normal render path. Cheap to clone
-/// relative to recomputing (hosts cache it on the anchor).
-#[derive(Clone)]
-pub struct ScenePreview {
+/// The overlays derived for one scene tree: either the frame's 3D scene or one
+/// ordered 2D sprite layer.
+#[derive(Clone, Default)]
+pub struct SceneOverlays {
     pub trail: Option<crate::Scene3D>,
     pub strobe: Option<crate::Scene3D>,
 }
 
-/// The SHARED composition step both shells call (desktop `run.rs`; web
-/// `lib.rs`): run ONE forward-sim via the producer's `ghost_frames`, diff the
-/// scenes into mover tracks, and build whichever overlays `opts` asks for.
-/// `script_inputs` follows `ghost_frames`' contract (docs/time-travel.md F2) —
-/// the caller builds the slice, since only the shell knows its script and
-/// anchor convention.
+/// Backward-compatible name for the 3D-only preview returned by
+/// [`scene_preview`].
+pub type ScenePreview = SceneOverlays;
+
+impl SceneOverlays {
+    fn is_empty(&self) -> bool {
+        self.trail.is_none() && self.strobe.is_none()
+    }
+
+    fn apply(&self, scene: &mut Scene3D, include_strobe: bool) {
+        if let Some(trail) = &self.trail {
+            overlay(scene, trail.clone());
+        }
+        if include_strobe {
+            if let Some(strobe) = &self.strobe {
+                overlay(scene, strobe.clone());
+            }
+        }
+    }
+}
+
+/// A computed preview for the complete render frame. Sprite overlays use the
+/// anchor frame's layer order and camera. A future layer-count change truncates
+/// every layer conservatively; same-count reordering remains a positional-
+/// identity limitation until sprite layers have stable ids. Full-frame ghosting
+/// is still the mode that depicts future camera changes.
+#[derive(Clone, Default)]
+pub struct FramePreview {
+    pub scene: SceneOverlays,
+    pub sprite_layers: Vec<SceneOverlays>,
+    sprite_cameras: Vec<Camera2D>,
+}
+
+impl FramePreview {
+    pub fn is_empty(&self) -> bool {
+        self.scene.is_empty() && self.sprite_layers.iter().all(SceneOverlays::is_empty)
+    }
+
+    /// Add only dotted trails to `frame`. The screen-space ghost compositor
+    /// uses this so trails remain solid across every averaged future frame.
+    /// Sprite trails get their own layer with the anchor camera, preventing a
+    /// panning future camera from smearing the marker path.
+    pub fn apply_trails(&self, frame: &mut Frame) {
+        self.scene.apply(&mut frame.scene, false);
+        if frame.sprite_layers.len() != self.sprite_layers.len() {
+            return;
+        }
+        for index in (0..self.sprite_layers.len()).rev() {
+            if let Some(trail) = &self.sprite_layers[index].trail {
+                frame.sprite_layers.insert(
+                    index + 1,
+                    SpriteLayer {
+                        camera: self.sprite_cameras[index].clone(),
+                        scene: trail.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Add every requested scene-space overlay to a normal display frame.
+    pub fn apply_all(&self, frame: &mut Frame) {
+        self.scene.apply(&mut frame.scene, true);
+        if frame.sprite_layers.len() != self.sprite_layers.len() {
+            return;
+        }
+        for (layer, overlays) in frame.sprite_layers.iter_mut().zip(&self.sprite_layers) {
+            overlays.apply(&mut layer.scene, true);
+        }
+    }
+}
+
+fn scene_overlays(
+    scenes: &[&Scene3D],
+    opts: &PreviewOptions,
+    trail_radius: f32,
+) -> SceneOverlays {
+    let tracks = mover_tracks(scenes, opts.eps, opts.max_step);
+    SceneOverlays {
+        trail: if opts.trail {
+            // When the strobe draws too, the trail stays off its cadence.
+            trail_from_tracks(&tracks, opts.strobe.as_ref(), trail_radius)
+        } else {
+            None
+        },
+        strobe: opts
+            .strobe
+            .as_ref()
+            .and_then(|strobe| strobe_overlay(&tracks, strobe)),
+    }
+}
+
+fn sprite_scene_overlays(
+    scenes: &[&Scene3D],
+    opts: &PreviewOptions,
+    trail_radius: f32,
+) -> SceneOverlays {
+    let trail = if opts.trail {
+        let tracks = mover_tracks(scenes, opts.eps, opts.max_step);
+        trail_from_tracks(&tracks, opts.strobe.as_ref(), trail_radius)
+    } else {
+        None
+    };
+    let strobe = opts.strobe.as_ref().and_then(|strobe| {
+        let sampled = sampled_mover_tracks(scenes, opts.eps, opts.max_step);
+        sampled_strobe_overlay(&sampled, strobe, StrobeFade::Alpha)
+    });
+    SceneOverlays {
+        trail,
+        strobe,
+    }
+}
+
+fn sprite_trail_radius(camera: &Camera2D) -> f32 {
+    let visible_height = (camera.height / camera.zoom).abs();
+    if visible_height.is_finite() && visible_height > 0.0 {
+        TRAIL_RADIUS_3D * visible_height / TRAIL_REFERENCE_HEIGHT_2D
+    } else {
+        TRAIL_RADIUS_3D
+    }
+}
+
+/// Compute the original 3D-only scene preview.
+///
+/// New render shells should prefer [`frame_preview`], which applies the same
+/// analysis to the frame's sprite layers without changing this API.
 pub fn scene_preview(
     game: &dyn GameProducer,
     anchor_scene: &Scene3D,
@@ -557,25 +875,74 @@ pub fn scene_preview(
     let dt = opts.window / divisions as f32;
     let futures = game.ghost_frames(divisions, dt, start_tts, script_inputs);
     let mut scenes: Vec<&Scene3D> = vec![anchor_scene];
-    scenes.extend(futures.iter().map(|(f, _)| &f.scene));
-    let tracks = mover_tracks(&scenes, opts.eps, opts.max_step);
-    ScenePreview {
-        trail: if opts.trail {
-            // When the strobe draws too, the trail stays off its cadence.
-            trail_from_tracks(&tracks, opts.strobe.as_ref())
-        } else {
-            None
-        },
-        strobe: opts
-            .strobe
-            .as_ref()
-            .and_then(|s| strobe_overlay(&tracks, s)),
+    scenes.extend(futures.iter().map(|(frame, _)| &frame.scene));
+    scene_overlays(&scenes, opts, TRAIL_RADIUS_3D)
+}
+
+fn preview_from_frames(anchor: &Frame, futures: &[&Frame], opts: &PreviewOptions) -> FramePreview {
+    let mut scenes = Vec::with_capacity(futures.len() + 1);
+    scenes.push(&anchor.scene);
+    scenes.extend(futures.iter().map(|frame| &frame.scene));
+
+    let matching_futures: Vec<_> = futures
+        .iter()
+        .take_while(|frame| frame.sprite_layers.len() == anchor.sprite_layers.len())
+        .copied()
+        .collect();
+    let sprite_layers = anchor
+        .sprite_layers
+        .iter()
+        .enumerate()
+        .map(|(index, anchor_layer)| {
+            let mut scenes = Vec::with_capacity(futures.len() + 1);
+            scenes.push(&anchor_layer.scene);
+            for future in &matching_futures {
+                scenes.push(&future.sprite_layers[index].scene);
+            }
+            sprite_scene_overlays(
+                &scenes,
+                opts,
+                sprite_trail_radius(&anchor_layer.camera),
+            )
+        })
+        .collect();
+
+    FramePreview {
+        scene: scene_overlays(&scenes, opts, TRAIL_RADIUS_3D),
+        sprite_layers,
+        sprite_cameras: anchor
+            .sprite_layers
+            .iter()
+            .map(|layer| layer.camera.clone())
+            .collect(),
     }
+}
+
+/// The SHARED composition step both shells call (desktop `run.rs`; web
+/// `lib.rs`): run ONE forward-sim via the producer's `ghost_frames`, diff the
+/// frame's 3D scene and sprite-layer scenes into mover tracks, and build
+/// whichever overlays `opts` asks for.
+/// `script_inputs` follows `ghost_frames`' contract (docs/time-travel.md F2) —
+/// the caller builds the slice, since only the shell knows its script and
+/// anchor convention.
+pub fn frame_preview(
+    game: &dyn GameProducer,
+    anchor: &Frame,
+    start_tts: f64,
+    script_inputs: Option<&[Vec<RecordedInput>]>,
+    opts: &PreviewOptions,
+) -> FramePreview {
+    let divisions = opts.divisions.max(1);
+    let dt = opts.window / divisions as f32;
+    let futures = game.ghost_frames(divisions, dt, start_tts, script_inputs);
+    let future_frames: Vec<&Frame> = futures.iter().map(|(frame, _)| frame).collect();
+    preview_from_frames(anchor, &future_frames, opts)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Camera, Camera2D, SpriteLayer};
     use cgmath::vec3;
 
     fn ball_at(x: f32, y: f32) -> Scene3D {
@@ -616,6 +983,204 @@ mod tests {
             obj: SceneObject::Group(vec![ball_at(x, y), ball_at(5.0, 0.0)]),
             xform: Matrix4::identity(),
         }
+    }
+
+    fn rendered_frame_with_sprite(x: f32, camera_x: f32) -> Frame {
+        let mut rendered = Frame::new(Camera::default(), Scene3D::cube());
+        rendered.sprite_layers.push(SpriteLayer {
+            camera: Camera2D::new(24.0, 13.5).with_center(camera_x, 0.0),
+            scene: frame(x, 0.0),
+        });
+        rendered
+    }
+
+    fn rendered_frame_with_colored_sprite(x: f32, color: [f32; 3]) -> Frame {
+        let sprite = Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::emissive(color[0], color[1], color[2], 1.0),
+                vec![ball_at(x, 0.0)],
+            ),
+            xform: Matrix4::identity(),
+        };
+        let mut rendered = Frame::new(Camera::default(), Scene3D::cube());
+        rendered.sprite_layers.push(SpriteLayer {
+            camera: Camera2D::new(24.0, 13.5),
+            scene: sprite,
+        });
+        rendered
+    }
+
+    fn preview_options(trail: bool, strobe: bool) -> PreviewOptions {
+        PreviewOptions {
+            divisions: 4,
+            window: 1.0,
+            eps: 0.05,
+            max_step: 3.0,
+            trail,
+            strobe: strobe.then(|| StrobeOptions {
+                copies: 2,
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn frame_preview_builds_trails_and_strobes_for_sprite_layers() {
+        let frames: Vec<Frame> = (0..=4)
+            .map(|i| rendered_frame_with_sprite(i as f32 * 0.5, 0.0))
+            .collect();
+        let futures: Vec<&Frame> = frames.iter().skip(1).collect();
+        let preview = preview_from_frames(&frames[0], &futures, &preview_options(true, true));
+
+        assert!(
+            preview.scene.is_empty(),
+            "the static 3D scene stays untouched"
+        );
+        assert_eq!(preview.sprite_layers.len(), 1);
+        let layer = &preview.sprite_layers[0];
+        let trail = layer.trail.as_ref().expect("the 2D mover gets a trail");
+        let strobe = layer
+            .strobe
+            .as_ref()
+            .expect("the 2D mover gets strobe copies");
+        match &trail.obj {
+            // Five samples, with strobe copies on future samples 2 and 4:
+            // anchor + samples 1 and 3 remain as dots.
+            SceneObject::Group(dots) => assert_eq!(dots.len(), 3),
+            _ => panic!("expected a group of trail dots"),
+        }
+        match &strobe.obj {
+            SceneObject::Group(copies) => assert_eq!(copies.len(), 2),
+            _ => panic!("expected a group of strobe copies"),
+        }
+
+        let mut displayed = frames[0].clone();
+        preview.apply_all(&mut displayed);
+        match &displayed.sprite_layers[0].scene.obj {
+            SceneObject::Group(children) => assert!(
+                matches!(children[0].obj, SceneObject::Group(_)),
+                "trail and strobe overlays wrap the original sprite-layer group"
+            ),
+            _ => panic!("expected the composed sprite layer to remain a group"),
+        }
+    }
+
+    #[test]
+    fn camera_motion_alone_does_not_make_a_sprite_trajectory() {
+        let anchor = rendered_frame_with_sprite(0.0, 0.0);
+        let future = rendered_frame_with_sprite(0.0, 5.0);
+        let preview = preview_from_frames(&anchor, &[&future], &preview_options(true, true));
+
+        assert!(
+            preview.is_empty(),
+            "scene-space overlays use the anchor Camera2D; full-frame ghosting depicts camera motion"
+        );
+    }
+
+    #[test]
+    fn ghosted_sprite_trails_keep_the_anchor_camera() {
+        let mut anchor = rendered_frame_with_sprite(0.0, 0.0);
+        anchor.sprite_layers.push(SpriteLayer {
+            camera: Camera2D::new(24.0, 13.5).with_center(20.0, 0.0),
+            scene: frame(8.0, 0.0),
+        });
+        let mut future = rendered_frame_with_sprite(0.5, 5.0);
+        future.sprite_layers.push(anchor.sprite_layers[1].clone());
+        let preview = preview_from_frames(&anchor, &[&future], &preview_options(true, false));
+        let mut ghost = future.clone();
+
+        preview.apply_trails(&mut ghost);
+
+        assert_eq!(ghost.sprite_layers.len(), 3);
+        assert_eq!(
+            ghost.sprite_layers[1].camera, anchor.sprite_layers[0].camera,
+            "the added trail layer must not inherit the future camera"
+        );
+        assert_eq!(
+            ghost.sprite_layers[2].camera, future.sprite_layers[1].camera,
+            "the trail stays below the later HUD/foreground layer"
+        );
+    }
+
+    #[test]
+    fn a_missing_future_sprite_layer_truncates_its_tracks() {
+        let anchor = rendered_frame_with_sprite(0.0, 0.0);
+        let next = rendered_frame_with_sprite(0.5, 0.0);
+        let without_layer = Frame::new(Camera::default(), Scene3D::cube());
+        let preview = preview_from_frames(
+            &anchor,
+            &[&next, &without_layer],
+            &preview_options(true, false),
+        );
+        let trail = preview.sprite_layers[0]
+            .trail
+            .as_ref()
+            .expect("the matching prefix still draws");
+        match &trail.obj {
+            SceneObject::Group(dots) => assert_eq!(dots.len(), 2),
+            _ => panic!("expected a group of prefix dots"),
+        }
+    }
+
+    #[test]
+    fn a_non_tail_sprite_layer_removal_never_cross_wires() {
+        let mut anchor = rendered_frame_with_sprite(0.0, 0.0);
+        anchor
+            .sprite_layers
+            .push(rendered_frame_with_sprite(8.0, 0.0).sprite_layers.remove(0));
+        let next = rendered_frame_with_sprite(8.5, 0.0);
+        let preview = preview_from_frames(&anchor, &[&next], &preview_options(true, true));
+
+        assert!(
+            preview.is_empty(),
+            "a layer-count change must not match anchor world layer 0 to future HUD layer 0"
+        );
+    }
+
+    #[test]
+    fn sprite_strobes_use_future_materials_and_alpha_fade() {
+        let frames = [
+            rendered_frame_with_colored_sprite(0.0, [1.0, 0.0, 0.0]),
+            rendered_frame_with_colored_sprite(0.5, [0.0, 1.0, 0.0]),
+            rendered_frame_with_colored_sprite(1.0, [0.0, 0.0, 1.0]),
+        ];
+        let preview = preview_from_frames(
+            &frames[0],
+            &[&frames[1], &frames[2]],
+            &preview_options(false, true),
+        );
+        let copies = match &preview.sprite_layers[0]
+            .strobe
+            .as_ref()
+            .expect("sprite strobe")
+            .obj
+        {
+            SceneObject::Group(copies) => copies,
+            _ => panic!("expected strobe-copy group"),
+        };
+        let colors: Vec<_> = copies
+            .iter()
+            .map(|copy| match &copy.obj {
+                SceneObject::Group(children) => match &children[0].obj {
+                    SceneObject::Material(MaterialDescription::Emissive { color, .. }, _) => *color,
+                    _ => panic!("expected emissive future material"),
+                },
+                _ => panic!("expected wrapped strobe copy"),
+            })
+            .collect();
+        assert_eq!(colors.len(), 2);
+        assert_eq!(colors[0].truncate(), vec3(0.0, 1.0, 0.0));
+        assert_eq!(colors[1].truncate(), vec3(0.0, 0.0, 1.0));
+        assert!((colors[0].w - 0.8).abs() < 1e-4);
+        assert!((colors[1].w - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sprite_trail_radius_tracks_camera_world_scale() {
+        let mario_scale = sprite_trail_radius(&Camera2D::new(24.0, 13.5));
+        let pixel_scale = sprite_trail_radius(&Camera2D::new(320.0, 180.0));
+        assert!((mario_scale - TRAIL_RADIUS_3D).abs() < 1e-6);
+        assert!((pixel_scale / mario_scale - 180.0 / 13.5).abs() < 1e-4);
     }
 
     #[test]
@@ -773,7 +1338,7 @@ mod tests {
             copies: 2,
             ..Default::default()
         };
-        let trail = trail_from_tracks(&tracks, Some(&opts)).expect("a trail");
+        let trail = trail_from_tracks(&tracks, Some(&opts), TRAIL_RADIUS_3D).expect("a trail");
         match trail.obj {
             SceneObject::Group(dots) => {
                 assert_eq!(dots.len(), 3, "anchor + the two non-copy samples")
@@ -800,7 +1365,7 @@ mod tests {
         assert!(!tracks[0].translated);
         assert!(strobe_overlay(&tracks, &StrobeOptions::default()).is_some());
         assert!(
-            trail_from_tracks(&tracks, None).is_none(),
+            trail_from_tracks(&tracks, None, TRAIL_RADIUS_3D).is_none(),
             "no dots for pure rotation"
         );
     }

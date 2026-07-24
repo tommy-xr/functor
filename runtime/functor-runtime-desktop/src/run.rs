@@ -979,7 +979,7 @@ pub fn run(args: Args) {
         const LIVE_PREVIEW_INTERVAL_SECONDS: f32 = 0.1;
         let mut trail_cache: Option<(
             (Option<u64>, u32, bool, u64, bool, bool, usize, u32),
-            functor_runtime_common::ScenePreview,
+            functor_runtime_common::FramePreview,
         )> = None;
         let mut trail_refresh: u32 = 0;
         let mut next_live_trail_refresh: f32 = 0.0;
@@ -1521,7 +1521,7 @@ Escape again to quit"
             let preview_active = (trail_wanted || strobe_wanted)
                 && args.composite_demo == CompositeDemoArg::Off
                 && clock.pending_frames() == 0;
-            let preview: Option<functor_runtime_common::ScenePreview> = if preview_active {
+            let preview: Option<functor_runtime_common::FramePreview> = if preview_active {
                 // Not bound by the 8-target compositor cap — this only reads node
                 // transforms — so sample finely for a smooth arc.
                 let divisions = preview_divisions;
@@ -1593,9 +1593,9 @@ Escape again to quit"
                                 .map(|j| script.get(&(base + j)).cloned().unwrap_or_default())
                                 .collect()
                         });
-                    let p = functor_runtime_common::scene_preview(
+                    let p = functor_runtime_common::frame_preview(
                         &*game,
-                        &frame.scene,
+                        &frame,
                         time.tts as f64,
                         script_slice.as_deref(),
                         &functor_runtime_common::PreviewOptions {
@@ -1733,17 +1733,18 @@ Escape again to quit"
                 Vec::new()
             };
             // The trail composes with --ghost's screen-space strobe by riding IN
-            // each composited frame: the dots are identical opaque geometry at
-            // identical world positions in every input, so the equal-weight
-            // average reconstructs them at full intensity (unlike movers, which
-            // appear in only one frame each). Without this the ghost render arm
-            // draws only `ghost_frames` and the trail would silently vanish.
+            // each composited frame: 3D dots repeat at identical world positions,
+            // while 2D dots repeat in an extra layer using the anchor Camera2D.
+            // The equal-weight average therefore reconstructs both at full
+            // intensity (unlike movers, which appear in only one frame each).
+            // Without this the ghost render arm draws only `ghost_frames` and
+            // the trail would silently vanish.
             // The scene-space strobe is deliberately NOT folded in — layering
             // geometry copies under the compositor's strobe would double-ghost.
             let mut ghost_frames = ghost_frames;
-            if let Some(trail) = preview.as_ref().and_then(|p| p.trail.as_ref()) {
+            if let Some(preview) = &preview {
                 for (f, _) in ghost_frames.iter_mut() {
-                    functor_runtime_common::overlay(&mut f.scene, trail.clone());
+                    preview.apply_trails(f);
                 }
             }
 
@@ -1805,14 +1806,9 @@ Escape again to quit"
             // Skipped when the ghost arm will draw instead — the trail already
             // rides inside `ghost_frames`.
             let display_frame = match (&preview, ghost_frames.is_empty()) {
-                (Some(p), true) if p.trail.is_some() || p.strobe.is_some() => {
+                (Some(p), true) if !p.is_empty() => {
                     let mut f = frame.clone();
-                    if let Some(t) = &p.trail {
-                        functor_runtime_common::overlay(&mut f.scene, t.clone());
-                    }
-                    if let Some(s) = &p.strobe {
-                        functor_runtime_common::overlay(&mut f.scene, s.clone());
-                    }
+                    p.apply_all(&mut f);
                     Some(f)
                 }
                 _ => None,
