@@ -7,7 +7,18 @@ import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/
 import { EditorView } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
-const KEYWORDS = new Set(["let", "type", "match", "with", "mut", "in"]);
+const KEYWORDS = new Set([
+  "let",
+  "type",
+  "match",
+  "with",
+  "mut",
+  "in",
+  "if",
+  "then",
+  "else",
+  "not",
+]);
 const ATOMS = new Set(["true", "false"]);
 
 export const functorLangLanguage = StreamLanguage.define({
@@ -28,7 +39,14 @@ export const functorLangLanguage = StreamLanguage.define({
       if (ATOMS.has(word)) return "atom";
       return "variableName";
     }
-    if (stream.match("|>") || stream.match("=>") || stream.match(":=")) return "operator";
+    if (
+      stream.match("|>") ||
+      stream.match("=>") ||
+      stream.match(":=") ||
+      stream.match("&&") ||
+      stream.match("||")
+    )
+      return "operator";
     if (stream.match(/^[+\-*/<>=|]/)) return "operator";
     stream.next();
     return null;

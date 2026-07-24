@@ -25,11 +25,11 @@
 //   wasm-pack build runtime/functor-runtime-web --target=web   # once
 //   node e2e/site-sandbox.mjs
 import { spawn, spawnSync } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
-const PORT = 8123;
+const PORT = Number(process.env.FUNCTOR_SITE_PORT ?? 8123);
 const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -91,6 +91,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Build, then serve.
 const build = spawnSync("node", ["site/build.mjs"], { cwd: ROOT, stdio: "inherit" });
 if (build.status !== 0) process.exit(build.status ?? 1);
+
+// site:build creates this gitignored artifact from the embedded prelude. Read
+// expected totals only after that clean-checkout generation step.
+const API_REFERENCE = JSON.parse(
+  await readFile(`${ROOT}/site/generated/api-reference.json`, "utf8")
+);
+const API_MODULE_COUNT = API_REFERENCE.modules.length;
+const API_ITEM_COUNT = API_REFERENCE.modules.reduce(
+  (total, module) => total + module.items.length,
+  0
+);
 
 // The language-intel pkg is REQUIRED by this suite. build.mjs treats it as
 // optional (a site can ship without analysis), but the checks below must not
@@ -379,14 +390,14 @@ for (const example of examples) {
   await page.close();
 }
 
-// --- 7. Docs page + "try it" into the sandbox. --------------------------------
+// --- 7. Manual + generated API reference. -------------------------------------
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-  await page.goto(`${BASE}/docs.html`);
+  await page.goto(`${BASE}/manual/`);
   const highlighted = await page.locator("pre.functor-lang span.tok-k").count();
   const tryButtons = await page.locator("a.try-button").count();
-  check("docs page highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
-  check("docs page offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
+  check("manual highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
+  check("manual offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
 
   // Follow the first try-it link in THIS page (target=_blank would detach).
   const href = await page.locator("a.try-button").first().getAttribute("href");
@@ -401,10 +412,38 @@ for (const example of examples) {
     // The first runnable is the magenta spinning cube on the GL clear color —
     // just assert something got drawn (not solid clear color everywhere is
     // hard to probe; the live status is the main assertion).
-    check("docs try-it program loads live in the sandbox", true, `center = rgb(${pixel})`);
+    check("manual try-it program loads live in the sandbox", true, `center = rgb(${pixel})`);
   } catch {
-    check("docs try-it program loads live in the sandbox", false, href);
+    check("manual try-it program loads live in the sandbox", false, href);
   }
+
+  await page.goto(`${BASE}/docs/`);
+  await page.waitForSelector(".api-item");
+  const modules = await page.locator(".api-module").count();
+  const declarations = await page.locator(".api-item").count();
+  check(
+    "API reference renders every generated module",
+    modules === API_MODULE_COUNT,
+    `${modules}/${API_MODULE_COUNT} modules`
+  );
+  check(
+    "API reference renders every generated declaration",
+    declarations === API_ITEM_COUNT,
+    `${declarations}/${API_ITEM_COUNT} declarations`
+  );
+  const inlineCode = await page.locator("#api-scene-littexture p code").allTextContents();
+  check(
+    "API reference renders Markdown backticks as inline code",
+    inlineCode.includes("Texture.t") && inlineCode.includes("Asset.Texture"),
+    inlineCode.join(", ")
+  );
+  await page.locator("#api-search").fill("Scene.rotateY");
+  const visibleDeclarations = await page.locator(".api-item:visible").count();
+  check("API reference search narrows declarations", visibleDeclarations === 1, `${visibleDeclarations} visible`);
+
+  await page.goto(`${BASE}/docs.html#get-started`);
+  await page.waitForURL(/\/manual\/#get-started$/);
+  check("legacy docs.html preserves manual anchors", true, page.url());
   await page.close();
 }
 
