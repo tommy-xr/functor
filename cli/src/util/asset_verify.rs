@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use functor_lang::ir::{Expr, ExprKind, Module};
+use functor_lang::ir::{Expr, ExprKind, Module, StringPart};
 use functor_lang::Span;
 
 /// One finding, anchored to the offending argument's span.
@@ -172,6 +172,13 @@ fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
         | ExprKind::External(_)
         | ExprKind::LocalMut { .. }
         | ExprKind::Ctor { .. } => {}
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Expr(expr) = part {
+                    walk(expr, f);
+                }
+            }
+        }
         ExprKind::Record(fields) => {
             for field in fields {
                 walk(&field.value, f);
@@ -369,4 +376,14 @@ mod tests {
         assert!(f.warnings.is_empty());
     }
 
+    #[test]
+    fn asset_constructors_inside_interpolation_holes_are_checked() {
+        let f = run(
+            r#"let label = $"asset: {Asset.model("gone.glb")}""#,
+            &std::env::temp_dir(),
+            &mut no_probe,
+        );
+        assert_eq!(f.errors.len(), 1);
+        assert!(f.errors[0].message.contains("\"gone.glb\""));
+    }
 }

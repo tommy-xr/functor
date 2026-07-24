@@ -31,6 +31,16 @@ fn assert_clean(src: &str) {
     assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
 }
 
+#[test]
+fn interpolation_is_string_and_checks_every_hole() {
+    assert_clean(
+        r#"let label: string = $"value: {if true then 1.0 else 2.0}; data: {[true, false]}""#,
+    );
+    let (message, line, col) = single_diag(r#"let label = $"bad: {1.0 + "x"}""#);
+    assert_eq!(message, "`+` needs float operands, got string");
+    assert_eq!((line, col), (1, 27));
+}
+
 /// The `functor-lang check` diagnostics for `examples/checks/broken.fun`, compared
 /// against the committed `broken.check` golden (rendered exactly as the CLI
 /// prints them). Regenerate with `UPDATE_GOLDENS=1 cargo test -p functor-lang`.

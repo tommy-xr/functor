@@ -44,6 +44,49 @@ fn main_result(src: &str) -> String {
     }
 }
 
+#[test]
+fn string_interpolation_renders_values_and_literal_braces() {
+    assert_eq!(
+        main_result(
+            r#"
+type Status = | Ready
+let main = () =>
+  let point = { x: 2.0, y: 3.0 } in
+  $"name: {"Ada"}; score: {1.0 + 2.0}; active: {true}; point: {point}; status: {Ready}; {{ok}}"
+"#
+        ),
+        r#""name: Ada; score: 3; active: true; point: { x: 2, y: 3 }; status: Ready; {ok}""#
+    );
+}
+
+#[test]
+fn string_interpolation_supports_nested_strings_and_structural_braces() {
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  let n = 4.0 in
+  $"outer {$"inner {n}"} / {{ {({ value: n }).value} }}"
+"#
+        ),
+        r#""outer inner 4 / { 4 }""#
+    );
+}
+
+#[test]
+fn string_interpolation_evaluates_holes_left_to_right() {
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  let mut n = 0.0 in
+  $"{n := n + 1.0; n}{n := n + 1.0; n}"
+"#
+        ),
+        r#""12""#
+    );
+}
+
 /// The `functor-lang run` / `functor-lang trace` output for `examples/{name}.fun`, compared
 /// against the committed `{name}.run` / `{name}.trace` golden.
 /// Regenerate with `UPDATE_GOLDENS=1 cargo test -p functor-lang`.

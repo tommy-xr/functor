@@ -30,11 +30,14 @@
 //! marker event) after [`MAX_TRACE_EVENTS`] so a hot loop can't produce an
 //! unbounded transcript; evaluation itself continues.
 
-use crate::ir::{BindingId, Def, ExpectDef, Expr, ExprKind, Module, Pattern, PatternKind};
+use crate::ir::{
+    BindingId, Def, ExpectDef, Expr, ExprKind, Module, Pattern, PatternKind, StringPart,
+};
 use crate::span::Span;
 use crate::value::{Closure, Env, Value};
 use crate::RunError;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::rc::Rc;
 
 /// Evaluation depth cap: pathological or unboundedly recursive Functor Lang code must
@@ -708,6 +711,35 @@ impl Fuel {
     }
 }
 
+fn step_budget_error(limit: u64, span: Span) -> RunError {
+    RunError {
+        message: format!(
+            "evaluation exceeded its step budget ({limit} steps) — the embedding \
+tool bounds test evaluation (a live editor re-runs on every edit); look for runaway recursion \
+or an oversized computation"
+        ),
+        span,
+    }
+}
+
+/// A formatter sink that refuses to materialize more bytes than the current
+/// tooling budget permits. `Value::Display` is iterative, so this also keeps
+/// rendering a shared, structurally large value bounded by the same fuel that
+/// bounds its construction.
+struct FuelWriter<'a> {
+    out: &'a mut String,
+    remaining: u64,
+}
+
+impl std::fmt::Write for FuelWriter<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let bytes = u64::try_from(text.len()).map_err(|_| std::fmt::Error)?;
+        self.remaining = self.remaining.checked_sub(bytes).ok_or(std::fmt::Error)?;
+        self.out.push_str(text);
+        Ok(())
+    }
+}
+
 struct Interp<'h> {
     globals: HashMap<String, Value>,
     /// Live `let mut` slots, keyed by binding, as a stack per binding (the
@@ -829,17 +861,7 @@ impl Interp<'_> {
         if let Some(fuel) = &mut self.fuel {
             match fuel.remaining.checked_sub(units) {
                 Some(rest) => fuel.remaining = rest,
-                None => {
-                    return Err(RunError {
-                        message: format!(
-                            "evaluation exceeded its step budget ({} steps) — the embedding \
-tool bounds test evaluation (a live editor re-runs on every edit); look for runaway recursion \
-or an oversized computation",
-                            fuel.limit
-                        ),
-                        span,
-                    });
-                }
+                None => return Err(step_budget_error(fuel.limit, span)),
             }
         }
         Ok(())
@@ -899,10 +921,61 @@ evaluation depth."
         }
     }
 
+    fn eval_interpolated(
+        &mut self,
+        parts: &[StringPart],
+        env: &Env,
+        span: Span,
+    ) -> Result<Value, RunError> {
+        let mut out = String::new();
+        for part in parts {
+            match part {
+                StringPart::Text(text) => {
+                    self.charge(text.len() as u64, span)?;
+                    out.push_str(text);
+                }
+                StringPart::Expr(part) => match self.eval(part, env)? {
+                    Value::String(text) => {
+                        self.charge(text.len() as u64, span)?;
+                        out.push_str(&text);
+                    }
+                    value => {
+                        self.append_interpolated_value(&mut out, &value, span)?;
+                    }
+                },
+            }
+        }
+        Ok(Value::String(Rc::from(out)))
+    }
+
+    fn append_interpolated_value(
+        &mut self,
+        out: &mut String,
+        value: &Value,
+        span: Span,
+    ) -> Result<(), RunError> {
+        let Some(fuel) = self.fuel else {
+            // Writing directly avoids the extra allocation that `to_string`
+            // would impose on every unbudgeted game-loop interpolation.
+            write!(out, "{value}").expect("writing to a String cannot fail");
+            return Ok(());
+        };
+        let mut writer = FuelWriter {
+            out,
+            remaining: fuel.remaining,
+        };
+        if write!(&mut writer, "{value}").is_err() {
+            return Err(step_budget_error(fuel.limit, span));
+        }
+        self.fuel.as_mut().expect("fuel was present").remaining = writer.remaining;
+        Ok(())
+    }
+
     fn eval_inner(&mut self, expr: &Expr, env: &Env) -> Result<Value, RunError> {
         match &expr.kind {
             ExprKind::Number(n) => Ok(Value::Number(*n)),
             ExprKind::String(s) => Ok(Value::String(Rc::from(s.as_str()))),
+            ExprKind::InterpolatedString(parts) => self.eval_interpolated(parts, env, expr.span),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::Local { binding, name } => {
                 let value = env.lookup(*binding).ok_or_else(|| RunError {
@@ -2594,7 +2667,8 @@ pub fn render_trace(events: &[TraceEvent]) -> String {
 
 #[cfg(test)]
 mod deep_value_tests {
-    use super::{value_eq, Span, Value};
+    use super::{value_eq, FuelWriter, Span, Value};
+    use std::fmt::Write;
     use std::rc::Rc;
 
     /// A list nested `depth` levels: `[[…[0]…]]`.
@@ -2631,6 +2705,19 @@ mod deep_value_tests {
             .expect("spawn small-stack worker")
             .join()
             .expect("deep display/eq must complete on a small stack");
+    }
+
+    #[test]
+    fn fuel_writer_stops_structural_rendering_at_its_byte_limit() {
+        let shared = Value::String(Rc::from("x".repeat(1024)));
+        let value = Value::List(Rc::new(vec![shared; 100]));
+        let mut out = String::new();
+        let mut writer = FuelWriter {
+            out: &mut out,
+            remaining: 32,
+        };
+        assert!(write!(&mut writer, "{value}").is_err());
+        assert!(out.len() <= 32, "rendered {} bytes past the cap", out.len());
     }
 }
 

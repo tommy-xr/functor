@@ -73,7 +73,9 @@
 
 use crate::ast::{BinOp, TypeBody, TypeName};
 use crate::eval::{builtin, callee_label, Builtin};
-use crate::ir::{BindingId, Expr, ExprId, ExprKind, Field, MatchArm, Module, Pattern, PatternKind};
+use crate::ir::{
+    BindingId, Expr, ExprId, ExprKind, Field, MatchArm, Module, Pattern, PatternKind, StringPart,
+};
 use crate::span::Span;
 use crate::CheckError;
 use std::collections::HashMap;
@@ -664,6 +666,7 @@ fn check_impl(
                 }
                 ExprKind::Number(_) => Type::Float,
                 ExprKind::String(_) => Type::String,
+                ExprKind::InterpolatedString(_) => Type::String,
                 ExprKind::Bool(_) => Type::Bool,
                 _ => checker.fresh(),
             },
@@ -1500,6 +1503,14 @@ missing {missing}. Did you forget an argument?"
                 Type::Tuple(items.iter().map(|item| self.infer(item)).collect())
             }
             ExprKind::String(_) => Type::String,
+            ExprKind::InterpolatedString(parts) => {
+                for part in parts {
+                    if let StringPart::Expr(part) = part {
+                        self.infer(part);
+                    }
+                }
+                Type::String
+            }
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Local { binding, .. } => self
                 .locals

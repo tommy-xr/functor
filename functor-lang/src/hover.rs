@@ -154,6 +154,13 @@ pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
             items.iter().chain(std::iter::once(tail.as_ref())).collect()
         }
         ExprKind::Tuple(items) => items.iter().collect(),
+        ExprKind::InterpolatedString(parts) => parts
+            .iter()
+            .filter_map(|part| match part {
+                crate::ir::StringPart::Text(_) => None,
+                crate::ir::StringPart::Expr(expr) => Some(expr),
+            })
+            .collect(),
         ExprKind::FieldAccess { object, .. } => vec![object],
         ExprKind::Call { callee, args } => std::iter::once(callee.as_ref())
             .chain(args.iter())
@@ -232,6 +239,16 @@ mod tests {
     #[test]
     fn hover_on_a_local_reference_shows_the_inferred_type() {
         let text = hover_at("let f = (score: float): bool => score > 1.0", "score >").unwrap();
+        assert_eq!(text, "score : float");
+    }
+
+    #[test]
+    fn hover_walks_interpolation_holes() {
+        let text = hover_at(
+            r#"let f = (score: float): string => $"score: {score}""#,
+            "score}\"",
+        )
+        .unwrap();
         assert_eq!(text, "score : float");
     }
 

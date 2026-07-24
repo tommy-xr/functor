@@ -256,6 +256,19 @@ fn text_join_doubling_cannot_amplify_past_the_budget() {
 }
 
 #[test]
+fn string_interpolation_doubling_cannot_amplify_past_the_budget() {
+    let src = r#"
+let grow = (s, _) => $"{s}{s}"
+expect List.fold(grow, "x", List.range(26.0)) == ""
+"#;
+    let out = budgeted(src, 10_000);
+    let ExpectOutcome::Error(err) = &out[0].outcome else {
+        panic!("expected interpolation growth to exceed the budget");
+    };
+    assert!(err.message.contains("step budget"), "unexpected: {err:?}");
+}
+
+#[test]
 fn container_construction_is_charged() {
     // The depth-amplifier probe: a fold whose body is a NESTED LITERAL adds
     // ~5 levels of value depth per single call charge — under per-call-only

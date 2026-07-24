@@ -3,17 +3,7 @@
   "name": "Functor Lang",
   "scopeName": "source.functor",
   "patterns": [
-    { "include": "#comment" },
-    { "include": "#string" },
-    { "include": "#keyword" },
-    { "include": "#boolean" },
-    { "include": "#number" },
-    { "include": "#type-variable" },
-    { "include": "#primitive-type" },
-    { "include": "#qualified-name" },
-    { "include": "#type-name" },
-    { "include": "#operator" },
-    { "include": "#punctuation" }
+    { "include": "#expression" }
   ],
   "repository": {
     "comment": {
@@ -39,6 +29,73 @@
           "name": "invalid.illegal.unknown-escape.functor",
           "match": "\\\\."
         }
+      ]
+    },
+    "interpolated-string": {
+      "name": "string.quoted.double.interpolated.functor",
+      "begin": "\\$\"",
+      "end": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.functor" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.functor" }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.functor",
+          "match": "\\\\[\\\\\"nt]|\\{\\{|\\}\\}"
+        },
+        { "include": "#interpolation-hole" },
+        {
+          "name": "invalid.illegal.unknown-escape.functor",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "interpolation-hole": {
+      "begin": "(?<!\\{)\\{(?!\\{)",
+      "end": "\\}",
+      "contentName": "meta.embedded.expression.functor",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.interpolation.begin.functor" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.functor" }
+      },
+      "patterns": [
+        { "include": "#nested-braces" },
+        { "include": "#expression" }
+      ]
+    },
+    "nested-braces": {
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.braces.begin.functor" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.braces.end.functor" }
+      },
+      "patterns": [
+        { "include": "#nested-braces" },
+        { "include": "#expression" }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#interpolated-string" },
+        { "include": "#string" },
+        { "include": "#keyword" },
+        { "include": "#boolean" },
+        { "include": "#number" },
+        { "include": "#type-variable" },
+        { "include": "#primitive-type" },
+        { "include": "#qualified-name" },
+        { "include": "#type-name" },
+        { "include": "#operator" },
+        { "include": "#punctuation" }
       ]
     },
     "keyword": {
