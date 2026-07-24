@@ -1,0 +1,31 @@
+//! Finite, asset-backed heightfield terrain shared by rendering and physics.
+//!
+//! Heightmaps should be 16-bit grayscale PNGs. Black maps to the declared
+//! minimum height and white maps to the maximum height.
+
+/// An immutable terrain descriptor.
+type t
+
+/// Create a terrain centered on the origin and spanning `width` by `depth` in XZ.
+let heightmap : (Asset.Texture, float, float, float, float) => t
+
+/// Set the maximum projected vertex spacing in pixels; lower is more detailed.
+///
+/// The default is 2 pixels. The terrain is last for piping.
+let maxPixelError : (float, t) => t
+
+/// Set the basic lit terrain color; the terrain is last for piping.
+let color : (Color.t, t) => t
+
+/// Blend lowland, highland, rock, and snow colors by height and slope.
+///
+/// `snowHeight` is in terrain-local world units. The terrain is last for
+/// piping.
+let layered : (Color.t, Color.t, Color.t, Color.t, float, t) => t
+
+/// Add camera-local GPU-instanced grass clusters.
+///
+/// `spacing`, `distance`, and `bladeHeight` are terrain-local world units.
+/// Grass is suppressed on steep, flooded, and snowy samples. The terrain is
+/// last for piping.
+let grass : (float, float, float, Color.t, t) => t
