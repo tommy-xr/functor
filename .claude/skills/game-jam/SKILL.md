@@ -76,6 +76,27 @@ parallel batch, running in the background. Each prompt must include:
   game summary, capture paths, xreview outcome, the full friction log inline,
   and a 1–5 self-assessment on the two judging criteria below.
 
+## Phase 1.5 — rolling gap fixers (don't wait for synthesis)
+
+As friction reports land, triage blockers immediately instead of batching them
+to the end — spawn a fixer/assessor agent (Opus, worktree) per cluster:
+
+- **Doc gaps** are usually same-day: fix in the `.funi` doc comments and/or the
+  `site/` manual, verify with `npm run check:docs` + a site build, open a
+  draft PR right away. Accuracy over coverage — every documented signature must
+  be verified against source, and stale `functor-lang`-skill content updates in
+  the same PR.
+- **Engine gaps** get a feasibility pass first: verify the jam agent's claims
+  against the actual architecture (they may have missed an existing surface),
+  design the smallest principled change, and implement + draft-PR **only if
+  genuinely low-lift** (registry-registered prelude surface, both producers
+  wired, `.funi` docs, determinism under fake/replay runners, frame_bench
+  before/after, skill sync). Otherwise return a design sketch with a
+  stacked-PR breakdown for the synthesis phase.
+
+Point fixers at the jam entry's `JAM_NOTES.md` (read-only) as evidence, and
+keep them off the jam worktrees.
+
 ## Phase 2 — judging (orchestrator)
 
 Score each entry yourself — don't take self-assessments at face value; look at
