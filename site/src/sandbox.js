@@ -23,6 +23,7 @@ import {
 } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 import { createStatusBar } from "./status-bar.js";
+import { createRuntimeTarget } from "./runtime-target.js";
 import { EXAMPLES } from "./examples.js";
 
 const frame = document.getElementById("player");
@@ -40,6 +41,13 @@ const setStatus = (state, text, detail = "") => {
 };
 
 const statusBar = createStatusBar({ host: document.getElementById("statusbar") });
+let runtimeTarget = null;
+// The sandbox edits only the entry buffer, but some examples also load sibling
+// modules (for example Mario's generated assets.fun manifest). Keep those
+// fetched sources so an external runtime receives the same complete project as
+// the in-page wasm preview.
+let siblingSources = [];
+let assetSources = [];
 
 const bridge = new PlayerBridge(frame, {
   onReloading: () => setStatus("busy", "◌ reloading…"),
@@ -82,9 +90,19 @@ const view = new EditorView({
     functorLangLanguage,
     synthwaveEditorTheme,
     EditorView.updateListener.of((update) => {
-      if (update.docChanged && !programmaticEdit) bridge.push(view.state.doc.toString());
+      if (update.docChanged && !programmaticEdit) {
+        bridge.push(view.state.doc.toString());
+        runtimeTarget?.projectChanged();
+      }
     }),
   ],
+});
+
+runtimeTarget = createRuntimeTarget({
+  host: document.getElementById("runtime-target"),
+  getProject: () => [["game.fun", view.state.doc.toString()], ...siblingSources],
+  getAssets: () => assetSources,
+  onOutput: (level, message) => statusBar.appendOutput(level, message),
 });
 
 // Live type diagnostics: load the analysis wasm lazily and, once ready, append
@@ -134,14 +152,17 @@ window.__lang = {
   expects: () => currentExpects(view),
 };
 
-const setDoc = (source) => {
+const setDoc = (source, siblings = [], assets = []) => {
   bridge.reset();
   // Wholesale document replacement (example switch, inline load, reset): drop
   // the wasm completion cache so the previous program's candidates can't leak.
   resetIntel();
+  siblingSources = siblings;
+  assetSources = assets;
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
+  runtimeTarget?.projectChanged({ fresh: true });
 };
 
 // An inline program from the URL fragment (the docs' "try it" buttons):
@@ -194,18 +215,38 @@ const loadExample = async (id) => {
     `examples/${encodeURIComponent(id)}.fun`,
     ...(example?.siblings?.map(({ output }) => output) ?? []),
   ];
-  const url = files[0];
-  const response = await fetch(url);
+  const assetFiles = example?.assets ?? [];
+  const resourcePaths = [...files, ...assetFiles.map(({ output }) => output)];
+  const responses = await Promise.all(resourcePaths.map((file) => fetch(file)));
   if (token !== loadToken) return; // a newer load superseded this one
-  if (!response.ok) {
-    setStatus("error", "✖ error", `cannot fetch ${url}: HTTP ${response.status}`);
+  const failed = responses.findIndex((response) => !response.ok);
+  if (failed !== -1) {
+    setStatus(
+      "error",
+      "✖ error",
+      `cannot fetch ${resourcePaths[failed]}: HTTP ${responses[failed].status}`
+    );
     return;
   }
-  const source = await response.text();
+  const sources = await Promise.all(
+    responses.slice(0, files.length).map((response) => response.text())
+  );
+  const assets = await Promise.all(
+    responses.slice(files.length).map(async (response, index) => [
+      assetFiles[index].output,
+      new Uint8Array(await response.arrayBuffer()),
+    ])
+  );
   if (token !== loadToken) return;
+  const url = files[0];
+  const source = sources[0];
+  const siblings = files.slice(1).map((path, index) => [
+    path.split("/").pop(),
+    sources[index + 1],
+  ]);
   // A fresh iframe (fresh model: init runs) rather than a source push, so
   // switching examples resets state; the ready announcement re-arms pushes.
-  setDoc(source);
+  setDoc(source, siblings, assets);
   setStatus("busy", "◌ loading…");
   const params = new URLSearchParams({ game: url });
   for (const file of files) params.append("file", file);
@@ -253,6 +294,7 @@ window.__sandbox = {
     text: statusPill.textContent,
     message: statusPill.title,
   }),
+  runtimeTarget: () => runtimeTarget.state(),
   getSource: () => view.state.doc.toString(),
   // Replace the buffer, place the cursor, and open the completion popup
   // (explicit trigger). Guarded so it does NOT push to the runtime — completion

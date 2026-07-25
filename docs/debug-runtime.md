@@ -36,6 +36,16 @@ web IDE. Browser origins are accepted only when their host is exactly `localhost
 unauthenticated developer control port. Close the adb forward and desktop runner
 when they are not in use.
 
+The browser IDE and sandbox expose this as their shared **device** panel: enter
+the runtime URL, choose **push + go live**, and subsequent source edits preserve
+the remote model. The sandbox uploads the selected example's declared local
+assets before source and finalizes asset deletion only after source is accepted
+(the IDE does not yet author binary assets). The panel polls `/state` and
+displays `/capture`. When
+linking Quest on its forwarded `8123`, serve the site on a different loopback
+port (for example `npm run site:serve -- --port 8124`). Chromium may show its
+one-time local-network-access prompt on the first connection.
+
 ## Headless mode
 
 Add `--headless` to run with **no GL window** — the game loop and debug server run

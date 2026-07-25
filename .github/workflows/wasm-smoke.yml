@@ -98,3 +98,6 @@ jobs:
 
       - name: Run IDE page browser tests
         run: npm run test:ide-page
+
+      - name: Run browser runtime-target tests
+        run: npm run test:runtime-target
