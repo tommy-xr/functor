@@ -5,7 +5,6 @@ use functor_runtime_common::physics::{remove_world, with_world, DEFAULT_WORLD};
 use functor_runtime_desktop::functor_lang_game::FunctorLangGame;
 
 #[test]
-#[ignore = "pulls the desktop runtime dev-dependency; run with --ignored"]
 fn physics_only_terrain_hydrates_without_a_renderer() {
     remove_world(DEFAULT_WORLD);
     let dir = std::env::temp_dir().join(format!(

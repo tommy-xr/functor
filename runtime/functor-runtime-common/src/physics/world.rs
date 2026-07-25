@@ -1027,6 +1027,42 @@ mod tests {
     }
 
     #[test]
+    fn rectangular_heightfield_keeps_source_x_on_world_x() {
+        let shape = Shape::Heightfield {
+            geometry: crate::terrain::TerrainGeometry {
+                source: crate::terrain::TerrainSource {
+                    locator: "axis-test.png".to_string(),
+                    while_pending: Vec::new(),
+                },
+                width: 30.0,
+                depth: 10.0,
+                min_height: 0.0,
+                max_height: 10.0,
+            },
+            data: Some(Arc::new(crate::asset::pipelines::HeightmapData {
+                // A left-to-right ramp repeated along Z. Rectangular source
+                // dimensions make an accidental row/X transposition visible.
+                samples: vec![0, 32768, 65535, 0, 32768, 65535],
+                width: 3,
+                height: 2,
+                revision: 1,
+            })),
+        };
+        let mut world = World::new([0.0, 0.0, 0.0]);
+        world.reconcile(&scene(vec![Body::fixed("terrain".to_string(), shape)]));
+        world.step_frame(FIXED_DT);
+
+        let left = world
+            .raycast([-7.5, 20.0, 0.0], [0.0, -1.0, 0.0], 30.0)
+            .expect("left side of the X ramp");
+        let right = world
+            .raycast([7.5, 20.0, 0.0], [0.0, -1.0, 0.0], 30.0)
+            .expect("right side of the X ramp");
+        assert!((left.position[1] - 2.5).abs() < 0.001, "{left:?}");
+        assert!((right.position[1] - 7.5).abs() < 0.001, "{right:?}");
+    }
+
+    #[test]
     fn capped_heightfield_samples_exact_fractional_source_positions() {
         let data = crate::asset::pipelines::HeightmapData {
             // Along X: 0, 0, 1, 1. The middle of this three-cell source is
