@@ -26,7 +26,7 @@ log = "0.4"
 
 [dependencies.web-sys]
 version = "0.3.4"
-features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'WebGlContextAttributes', 'WebGlPowerPreference', 'console', 'Window', 'Location', 'Performance', 'PerformanceTiming', 'Document', 'Element', 'Node', 'HtmlElement', 'Request', 'RequestInit', 'RequestCache', 'Response', 'Headers', 'AudioContext', 'BaseAudioContext', 'AudioBuffer', 'AudioBufferSourceNode', 'AudioDestinationNode', 'AudioNode', 'AudioParam', 'GainNode', 'StereoPannerNode', 'WebSocket', 'MessageEvent', 'CloseEvent', 'ErrorEvent']
+features = ['Blob', 'HtmlCanvasElement', 'WebGl2RenderingContext', 'WebGlContextAttributes', 'WebGlPowerPreference', 'console', 'Window', 'Location', 'Performance', 'PerformanceTiming', 'Document', 'Element', 'Node', 'HtmlElement', 'Request', 'RequestInit', 'RequestCache', 'Response', 'Headers', 'AudioContext', 'BaseAudioContext', 'AudioBuffer', 'AudioBufferSourceNode', 'AudioDestinationNode', 'AudioNode', 'AudioParam', 'GainNode', 'StereoPannerNode', 'WebSocket', 'MessageEvent', 'CloseEvent', 'Event']
 
 [profile.release]
 codegen-units = 1
