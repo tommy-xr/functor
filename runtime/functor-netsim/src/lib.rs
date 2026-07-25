@@ -174,6 +174,38 @@ pub struct NetSim {
     /// See [`reapply_link_config`](NetSim::reapply_link_config).
     links: HashMap<(InstanceId, InstanceId), LinkProfile>,
     partitioned: std::collections::HashSet<(InstanceId, InstanceId)>,
+    /// The last error [`step`](NetSim::step) swallowed, for drivers that cannot
+    /// see stderr. See [`take_last_error`](NetSim::take_last_error).
+    last_error: Option<String>,
+}
+
+/// The source list for one instance of a multi-entry project: `entry` first —
+/// that is how a producer picks its entry — then every other project file in its
+/// original order.
+///
+/// Every role therefore loads an IDENTICAL module set and differs only in which
+/// file leads, which is exactly what a multi-entry project needs: `file = module`
+/// means the shared `protocol.fun` loads with both ends, and wire constructors
+/// match by canonical module-qualified name, so a per-role copy of the protocol
+/// would silently fail to match.
+///
+/// Errors naming the available files when `entry` isn't one of them — a typo'd
+/// role is otherwise a confusing "no listener" much later.
+pub fn entry_sources(
+    entry: &str,
+    project: &[(String, String)],
+) -> Result<Vec<(String, String)>, String> {
+    if !project.iter().any(|(path, _)| path == entry) {
+        let available: Vec<&str> = project.iter().map(|(p, _)| p.as_str()).collect();
+        return Err(format!(
+            "no project file named '{entry}' — the project has: {}",
+            available.join(", ")
+        ));
+    }
+    let mut sources = Vec::with_capacity(project.len());
+    sources.extend(project.iter().filter(|(p, _)| p == entry).cloned());
+    sources.extend(project.iter().filter(|(p, _)| p != entry).cloned());
+    Ok(sources)
 }
 
 /// An unordered instance pair, so link config is keyed the same either way round.
@@ -197,7 +229,17 @@ impl NetSim {
             scrub_pos: None,
             links: HashMap::new(),
             partitioned: std::collections::HashSet::new(),
+            last_error: None,
         }
+    }
+
+    /// Take the last error a [`step`](Self::step) reported without failing —
+    /// today, a branch commit that could not be honored, which leaves the sim
+    /// parked. `step` cannot return a `Result` without churning every caller,
+    /// and a driver that cannot see stderr (the browser) must not read a step
+    /// that did nothing as a step that worked.
+    pub fn take_last_error(&mut self) -> Option<String> {
+        self.last_error.take()
     }
 
     /// Add an already-constructed in-process [`GameProducer`] (e.g. an
@@ -345,7 +387,12 @@ impl NetSim {
             match self.commit_branch(frame) {
                 Ok(()) => self.scrub_pos = None,
                 Err(e) => {
-                    eprintln!("[netsim] {e} — staying parked on frame {frame}");
+                    // Recorded as well as printed: a driver that cannot see
+                    // stderr (the browser) would otherwise read a step that did
+                    // nothing as a step that succeeded.
+                    let message = format!("{e} — staying parked on frame {frame}");
+                    eprintln!("[netsim] {message}");
+                    self.last_error = Some(message);
                     return;
                 }
             }
@@ -622,5 +669,54 @@ impl NetSim {
             .get(&conn)
             .cloned()
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::entry_sources;
+
+    fn project() -> Vec<(String, String)> {
+        vec![
+            ("client.fun".to_string(), "c".to_string()),
+            ("protocol.fun".to_string(), "p".to_string()),
+            ("server.fun".to_string(), "s".to_string()),
+        ]
+    }
+
+    #[test]
+    fn the_chosen_entry_leads_and_every_sibling_follows() {
+        let server = entry_sources("server.fun", &project()).expect("server is a project file");
+        assert_eq!(server[0].0, "server.fun", "the entry must lead the list");
+        assert_eq!(server.len(), 3, "all siblings load with it (file = module)");
+    }
+
+    #[test]
+    fn every_role_loads_an_identical_module_set() {
+        // Only the ORDER differs — which is what lets both ends match the same
+        // `protocol.fun` constructors (they are module-qualified).
+        let mut client: Vec<String> = entry_sources("client.fun", &project())
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        let mut server: Vec<String> = entry_sources("server.fun", &project())
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        client.sort();
+        server.sort();
+        assert_eq!(client, server);
+    }
+
+    #[test]
+    fn an_unknown_entry_names_what_the_project_actually_has() {
+        let err = entry_sources("sever.fun", &project()).unwrap_err();
+        assert!(err.contains("no project file named 'sever.fun'"), "{err}");
+        assert!(
+            err.contains("server.fun"),
+            "the typo's intended target is listed: {err}"
+        );
     }
 }
