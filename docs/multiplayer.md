@@ -184,6 +184,57 @@ over an extended debug-server API (add `/net` inject + `/tick` step to the
 existing `/input`, `/time`, `/state`, `/scene`). Slower, less deterministic;
 validates the real I/O + serialization path. Smoke/integration only.
 
+## Whole-environment time travel
+
+`NetSim::seek(frame)` rewinds **every instance's model AND the virtual network**
+to the state they settled in at that frame — so a rewound frame shows each
+client's own lagging view, the server's authoritative one, and the packets that
+were genuinely mid-flight between them.
+
+It splits along a line the code already draws: each producer records and
+restores its own model (`SceneRecorder` runs inside the frame body `tick`
+executes, and `seek_scene_to` restores it), so the sim only snapshots what lives
+*outside* the producers — the network and its routing tables.
+
+The **snapshot cut** is load-bearing. Only delivery touches a model outside
+`tick` (`deliver_net_event` folds an inbound message through `update` on the
+spot), so the snapshot is taken after a frame's sends are routed and the network
+has advanced but *before* delivery — the one instant where every model still
+equals its recorded frame. `seek` then replays that frame's pending deliveries,
+so a parked frame shows exactly what a viewer saw live and seeking is idempotent.
+
+Semantics match the single-game scrubber: a seek is non-destructive **while
+parked**, and stepping on **commits the branch**. The commit is rebuilt from the
+recorded frame, so stepping on from an untouched scrub reproduces the original
+timeline byte-for-byte. Because a scrub-back is a plain restore and never a
+re-step, none of this needs determinism — the property `History` relies on for
+one game holds for N games plus the network.
+
+Two rules the harness enforces loudly rather than silently skewing: every
+instance must join before the sim's first step (frame alignment), and a seek
+preflights every instance's recorded range before mutating anything (a producer's
+own `seek_scene_to` *clamps* rather than refusing). Link impairment is treated as
+configuration, not recorded state, so it survives a restore — "rewind, worsen the
+link, watch it again" works.
+
+### In the browser
+
+The netsim is platform-free, so it also runs in the **web runtime**, hosting the
+same shared `FunctorLangEmbeddedGame` producers behind the `WebPlatform` seam:
+a whole session — a server and N clients from one multi-entry project — simulated
+inside a single page, with no sockets opened (the sim routes the games' own
+connect/send commands through the virtual network itself). This is the foundation
+for simulating multiplayer inside the VSCode and browser IDEs.
+
+The page exposes it as `window.__sim` (`start` / `step` / `state` / `timeline` /
+`seek` / `len` / `stop`), mirroring the `window.__scrub` seam. While a sim is
+running the single game is **suspended**: producers share the thread's command
+queues and each drain empties them for everyone, so a live single game would
+steal the instances' commands and dispatch them to real sockets. `e2e/wasm-sim.mjs`
+(`npm run test:wasm-sim`) drives `examples/mp` as a server plus two clients in
+headless Chromium and asserts the convergence, the whole-environment rewind, and
+the exact replay.
+
 ## Roadmap (small, stacked PRs; each protocol ships with a netsim test)
 
 | Phase | Scope | Targets |

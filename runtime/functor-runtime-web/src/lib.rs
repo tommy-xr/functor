@@ -26,6 +26,7 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 use wasm_bindgen::prelude::*;
 
 mod functor_lang_game;
+mod sim;
 use functor_lang_game::WebPlatform;
 
 fn window() -> web_sys::Window {
@@ -185,11 +186,20 @@ fn parse_project_files(value: &JsValue) -> Option<Vec<(String, String)>> {
 /// rendered strings (fetch status, parse/load position, contract violation) for
 /// `run_async` to fail loud with.
 async fn create_functor_lang_game(entry: &str) -> Result<FunctorLangEmbeddedGame, String> {
+    let sources = load_project_sources(entry).await?;
+    FunctorLangEmbeddedGame::create(sources, Box::new(WebPlatform::new()))
+}
+
+/// The project's `(path, source)` pairs, however this page supplies them —
+/// in-memory or fetched. Split out from [`create_functor_lang_game`] because the
+/// netsim (`sim.rs`) needs the same sources to build SEVERAL producers from,
+/// one per role, without fetching the project once per instance.
+pub(crate) async fn load_project_sources(entry: &str) -> Result<Vec<(String, String)>, String> {
     // A page that already holds every source in memory (the IDE's
     // `?project=inline` boot) injects them directly — nothing to fetch, and
     // module names come from the given paths exactly as in the fetch path.
     if let Some(sources) = functor_lang_project_sources() {
-        return FunctorLangEmbeddedGame::create(sources, Box::new(WebPlatform::new()));
+        return Ok(sources);
     }
     // The CLI injects the whole project file list; a page that set only the
     // entry (or none) falls back to loading the entry alone.
@@ -207,7 +217,7 @@ async fn create_functor_lang_game(entry: &str) -> Result<FunctorLangEmbeddedGame
         }
         sources.push((path.clone(), src));
     }
-    FunctorLangEmbeddedGame::create(sources, Box::new(WebPlatform::new()))
+    Ok(sources)
 }
 
 thread_local! {
@@ -359,6 +369,15 @@ pub fn functor_lang_set_project(files: JsValue, id: Option<f64>) {
 /// in a socket-event microtask, never mid-frame, so the borrow can't collide
 /// with the frame loop.
 fn with_live_game(f: impl FnOnce(&mut dyn GameProducer)) {
+    // A running netsim suspends the single game, and that has to include its
+    // ASYNC arrivals: sockets opened before the sim started stay open, and an
+    // inbound message here would fold through `update` and queue effects onto
+    // the queues the sim instances share (the sim would then attribute them to
+    // instance 0). Drop them — the single game is not simulating, so it has no
+    // frame to receive them into.
+    if sim::is_running() {
+        return;
+    }
     let Some(game) = GAME.with(|g| g.borrow().clone()) else {
         return;
     };
@@ -1280,10 +1299,17 @@ async fn run_async() -> Result<(), JsValue> {
             // frame (a paused frame's input would diverge the replay log; a
             // fixed-time frame must stay deterministic for captures), and
             // draining stops the queue bursting on resume.
+            // A running netsim suspends the single game the same way a pinned
+            // clock does — drain-and-DISCARD. Delivering input here would fold
+            // it through the single game's `update`, whose effects land on the
+            // queues the sim instances share, and the sim's next step would
+            // attribute that stray `Effect.send` to instance 0. Typing in a
+            // suspended game must not inject packets into the simulation.
+            let suspended = clock.is_pinned() || sim::is_running();
             functor_lang_game::drain_input(
                 &mut **game,
                 &mut input_snapshot,
-                !clock.is_pinned(),
+                !suspended,
                 clock.is_paused() && !clock.is_fixed_time(),
             );
 
@@ -1293,40 +1319,55 @@ async fn run_async() -> Result<(), JsValue> {
             // render's table, not this frame's. Pinned frames drain-and-drop
             // like all input. [xreview]
             for event in functor_lang_game::take_webview_events() {
-                if !clock.is_pinned() {
+                if !suspended {
                     game.webview_event(event);
                 }
             }
 
-            // The loading snapshot for `Sub.assets`: pushed every frame, the
-            // producer only acts when it changed since the game last saw it.
-            game.push_asset_progress(asset_cache.progress());
+            // While a netsim owns the page (`sim.rs`), the single game is
+            // SUSPENDED: it neither ticks nor dispatches. Producers share this
+            // thread's command queues (net/conn/audio/preload), and each drain
+            // empties the queue for everyone — so a live single game would steal
+            // the sim instances' commands and dispatch them to REAL sockets,
+            // while the sim would swallow the single game's.
+            //
+            // Its MODEL is frozen (no tick, no input, no delivered socket
+            // events — see `with_live_game`); it does keep rendering that frozen
+            // model, so a `tts`-driven animation in `draw` still moves. Freezing
+            // the clock too belongs with the multi-pane view, where the sim owns
+            // the viewport and the single game stops rendering entirely.
+            if !sim::is_running() {
+                // The loading snapshot for `Sub.assets`: pushed every frame, the
+                // producer only acts when it changed since the game last saw it.
+                // Inside the gate — it reaches `update`, so it queues effects.
+                game.push_asset_progress(asset_cache.progress());
 
-            // Effect.preload (B.5): warm the cache with this frame's queued
-            // preloads and drive in-flight ones to settlement. Unlike audio
-            // finishes (undetectable on Web Audio today), preload settlement
-            // comes from the driver's own polling — preloadThen works on wasm.
-            let preload_commands =
-                serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
-            for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
-                game.preload_push_settled(token);
-            }
-
-            for sub in &sub_frames {
-                if game.samples_input() {
-                    game.sampled_input(&input_snapshot);
+                // Effect.preload (B.5): warm the cache with this frame's queued
+                // preloads and drive in-flight ones to settlement. Unlike audio
+                // finishes (undetectable on Web Audio today), preload settlement
+                // comes from the driver's own polling — preloadThen works on wasm.
+                let preload_commands =
+                    serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
+                for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
+                    game.preload_push_settled(token);
                 }
-                game.tick(sub.clone());
-            }
 
-            // Perform any networking commands this frame's tick queued; results
-            // are pushed back into the inbox asynchronously and decoded by a later
-            // tick (see dispatch_net_commands).
-            dispatch_net_commands(&**game);
-            // Play any one-shot sounds this frame's tick queued (fetch + decode
-            // the first time, then from the cache).
-            dispatch_audio_commands(&**game);
-            dispatch_conn_commands(&**game, &ws_state);
+                for sub in &sub_frames {
+                    if game.samples_input() {
+                        game.sampled_input(&input_snapshot);
+                    }
+                    game.tick(sub.clone());
+                }
+
+                // Perform any networking commands this frame's tick queued; results
+                // are pushed back into the inbox asynchronously and decoded by a later
+                // tick (see dispatch_net_commands).
+                dispatch_net_commands(&**game);
+                // Play any one-shot sounds this frame's tick queued (fetch + decode
+                // the first time, then from the cache).
+                dispatch_audio_commands(&**game);
+                dispatch_conn_commands(&**game, &ws_state);
+            }
 
             let mut frame: Frame = game.render(frame_time.clone());
 
@@ -1578,7 +1619,9 @@ async fn run_async() -> Result<(), JsValue> {
                 &view,
             );
             functor_lang_game::set_ui_wants_keyboard(ui_out.wants_keyboard);
-            if !clock.is_pinned() {
+            // `suspended`, not just pinned: a UI event reaches `update` too, so a
+            // running sim must swallow it like every other input path.
+            if !suspended {
                 for event in ui_out.events {
                     game.ui_event(event);
                 }
