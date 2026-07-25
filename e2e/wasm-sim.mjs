@@ -85,6 +85,9 @@ function cliPath() {
 }
 
 const failures = [];
+// Module-scoped so a harness throw inside main() can still dump what the page
+// said before it failed.
+const pageLog = [];
 function check(ok, label, detail = "") {
   if (ok) {
     console.log(`  PASS  ${label}`);
@@ -98,17 +101,31 @@ async function main() {
   if (!(await waitPortFree(10000))) {
     throw new Error(`:${PORT} is busy — a stale dev server would serve the wrong project`);
   }
-  const server = spawn(cliPath(), ["-d", PROJECT, "run", "wasm"], {
+  // `--no-open`: on a headless runner there is no browser to launch, and
+  // without this the dev server never becomes reachable. Its output is piped
+  // (not ignored) so a failure to start is diagnosable instead of silent.
+  const server = spawn(cliPath(), ["-d", PROJECT, "run", "wasm", "--no-open"], {
     cwd: ROOT,
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let serverOutput = "";
+  server.stdout.on("data", (d) => (serverOutput += d));
+  server.stderr.on("data", (d) => (serverOutput += d));
+
+  // The same GL flags the wasm-smoke job uses: software rendering that comes up
+  // on any runner, CI included, with no real GPU.
   const browser = await chromium.launch({
-    args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader"],
+    args: [
+      "--use-gl=angle",
+      "--use-angle=swiftshader",
+      "--enable-unsafe-swiftshader",
+      "--ignore-gpu-blocklist",
+    ],
   });
 
   try {
     const page = await browser.newPage();
-    const log = [];
+    const log = pageLog;
     page.on("console", (m) => log.push(m.text()));
     page.on("pageerror", (e) => log.push(`pageerror: ${e}`));
 
@@ -129,7 +146,20 @@ async function main() {
       Object.assign(window.WebSocket, Real);
     });
 
-    for (let i = 0; i < 120; i++) {
+    // Wait for the dev server to actually be listening, and say so plainly if
+    // it never starts — retrying `goto` blindly turns "the server died" into an
+    // opaque timeout 60s later, which is exactly how this first failed in CI.
+    let up = false;
+    for (let i = 0; i < 60 && !up; i++) {
+      up = await portInUse();
+      if (!up) await sleep(500);
+    }
+    if (!up) {
+      throw new Error(
+        `the dev server never listened on :${PORT}. Its output was:\n${serverOutput || "(none)"}`,
+      );
+    }
+    for (let i = 0; i < 60; i++) {
       try {
         await page.goto(BASE);
         break;
@@ -144,8 +174,15 @@ async function main() {
 
     // Let the single game finish booting FIRST — it opens its own real socket
     // within the first frames, and snapshotting the counter before that would
-    // blame the sim for the single game's connect.
-    await sleep(3000);
+    // blame the sim for the single game's connect. Wait for that socket rather
+    // than a fixed sleep: a slow runner would otherwise push the boot past the
+    // deadline and make the no-real-sockets check flaky in exactly that way.
+    for (let i = 0; i < 40; i++) {
+      if (await page.evaluate(() => window.__socketsOpened > 0)) break;
+      await sleep(250);
+    }
+    // Plus a moment for any follow-on connect to land before the snapshot.
+    await sleep(1000);
 
     // 1. Start the sim: three producers built from this project's own sources.
     const socketsBefore = await page.evaluate(() => window.__socketsOpened);
@@ -294,6 +331,14 @@ try {
 } catch (e) {
   failures.push(`harness error: ${e}`);
   console.log(`  FAIL  harness — ${e}`);
+  // A harness failure with no context is unactionable in CI — dump whatever the
+  // page managed to say before it went wrong.
+  if (pageLog.length) {
+    console.log("\n--- page log ---");
+    for (const line of pageLog.slice(-30)) {
+      console.log(`  ${line.replace(/\s+/g, " ").slice(0, 200)}`);
+    }
+  }
 }
 console.log(
   failures.length === 0 ? "\nALL CHECKS PASSED" : `\n${failures.length} CHECK(S) FAILED`,
