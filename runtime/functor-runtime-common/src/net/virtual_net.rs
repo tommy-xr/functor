@@ -19,6 +19,7 @@ use super::{ConnectionId, LinkProfile, NetEvent, Rng};
 pub type NodeId = u64;
 
 /// A packet in flight: scheduled to land on `dest` at `deliver_tick`.
+#[derive(Clone)]
 struct Packet {
     deliver_tick: u64,
     seq: u64,
@@ -26,6 +27,7 @@ struct Packet {
     event: NetEvent,
 }
 
+#[derive(Clone)]
 struct Connection {
     a: NodeId,
     b: NodeId,
@@ -57,6 +59,13 @@ impl Connection {
 }
 
 /// Deterministic in-memory network. See module docs.
+///
+/// `Clone` is the network half of a whole-environment time-travel snapshot: the
+/// state here (logical clock, RNG position, in-flight packets, per-node undrained
+/// events, connections, link profiles) is exactly what a scrub must restore
+/// alongside each instance's model, so a rewound frame shows the packets that
+/// were genuinely mid-flight at that frame rather than today's.
+#[derive(Clone)]
 pub struct VirtualNet {
     now: u64,
     rng: Rng,
