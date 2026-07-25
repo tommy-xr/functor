@@ -163,6 +163,7 @@ use crate::scene3d::{
     MaterialDescription, ModelDescription, ModelHandle, SpriteSampling, TextureDescription,
 };
 use crate::skybox::SkyboxDescription;
+use crate::terrain::TerrainDescription;
 use crate::ui::{self, View};
 use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
@@ -171,6 +172,9 @@ mod sprite;
 
 /// A [`Scene3D`] as an opaque Functor Lang value.
 pub struct FunctorLangScene(pub Scene3D);
+
+/// A [`TerrainDescription`] as an opaque, immutable Functor Lang value.
+pub struct FunctorLangTerrain(pub TerrainDescription);
 
 /// A [`Camera`] as an opaque Functor Lang value.
 pub struct FunctorLangCamera(pub Camera);
@@ -1110,6 +1114,18 @@ impl HostData for FunctorLangScene {
     }
 }
 
+impl HostData for FunctorLangTerrain {
+    fn type_name(&self) -> &'static str {
+        "Terrain"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
 impl HostData for FunctorLangCamera {
     fn type_name(&self) -> &'static str {
         "Camera"
@@ -1198,6 +1214,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         let mut reg = crate::host_registry::Registry::default();
         register_branded_constructors(&mut reg);
         register_ui_anchors(&mut reg);
+        register_terrain(&mut reg);
         register_scene(&mut reg);
         sprite::register(&mut reg);
         register_camera(&mut reg);
@@ -1291,6 +1308,7 @@ crate::host_returnable!(
     FunctorLangRenderTarget,
     FunctorLangFog,
     FunctorLangUiAnchor,
+    FunctorLangTerrain,
     FunctorLangScene,
     FunctorLangCamera,
     FunctorLangFrame,
@@ -1342,6 +1360,126 @@ fn material_scene(material: MaterialDescription, scene: FunctorLangScene) -> Fun
 /// moves — the order the source reads).
 fn transformed(scene: FunctorLangScene, xform: Matrix4<f32>) -> FunctorLangScene {
     FunctorLangScene(group(vec![scene.0], xform))
+}
+
+/// Immutable terrain descriptions are shared by rendering and heightfield
+/// physics. Dimensions and elevation stay attached to the heightmap locator,
+/// so the two consumers cannot silently drift.
+fn register_terrain(reg: &mut crate::host_registry::Registry) {
+    const HEIGHTMAP: &str = "Terrain.heightmap(asset, width, depth, minHeight, maxHeight) — \
+a texture Asset, positive dimensions, and maxHeight greater than minHeight";
+    reg.fn5(
+        "Terrain.heightmap",
+        HEIGHTMAP,
+        |asset: TextureAssetPath, width: f64, depth: f64, min_height: f64, max_height: f64| {
+            let (width, depth, min_height, max_height) = (
+                width as f32,
+                depth as f32,
+                min_height as f32,
+                max_height as f32,
+            );
+            if !width.is_finite()
+                || !depth.is_finite()
+                || !min_height.is_finite()
+                || !max_height.is_finite()
+                || width <= 0.0
+                || depth <= 0.0
+                || max_height <= min_height
+            {
+                return Err(format!("usage: {HEIGHTMAP}"));
+            }
+            Ok(FunctorLangTerrain(TerrainDescription::heightmap(
+                asset.path,
+                asset.while_pending,
+                width,
+                depth,
+                min_height,
+                max_height,
+            )))
+        },
+    );
+    reg.fn2(
+        "Terrain.maxPixelError",
+        "Terrain.maxPixelError(pixels, terrain) — a positive finite pixel error",
+        |pixels: f64, terrain: FunctorLangTerrain| {
+            let pixels = pixels as f32;
+            if !pixels.is_finite() || pixels <= 0.0 {
+                return Err(
+                    "Terrain.maxPixelError pixels must be a positive finite number".to_string(),
+                );
+            }
+            Ok(FunctorLangTerrain(terrain.0.with_max_pixel_error(pixels)))
+        },
+    );
+    reg.fn2(
+        "Terrain.color",
+        "Terrain.color(color, terrain)",
+        |color: FunctorLangColor, terrain: FunctorLangTerrain| {
+            let (r, g, b) = color.0;
+            FunctorLangTerrain(terrain.0.with_color([r, g, b]))
+        },
+    );
+    reg.fn6(
+        "Terrain.layered",
+        "Terrain.layered(low, high, rock, snow, snowHeight, terrain)",
+        |low: FunctorLangColor,
+         high: FunctorLangColor,
+         rock: FunctorLangColor,
+         snow: FunctorLangColor,
+         snow_height: f64,
+         terrain: FunctorLangTerrain| {
+            let snow_height = snow_height as f32;
+            if !snow_height.is_finite() {
+                return Err("Terrain.layered snowHeight must be finite".to_string());
+            }
+            let color = |FunctorLangColor((r, g, b))| [r, g, b];
+            Ok(FunctorLangTerrain(terrain.0.with_layers(
+                crate::terrain::TerrainLayers {
+                    low: color(low),
+                    high: color(high),
+                    rock: color(rock),
+                    snow: color(snow),
+                    snow_height,
+                },
+            )))
+        },
+    );
+    reg.fn5(
+        "Terrain.grass",
+        "Terrain.grass(spacing, distance, bladeHeight, color, terrain)",
+        |spacing: f64,
+         distance: f64,
+         blade_height: f64,
+         color: FunctorLangColor,
+         terrain: FunctorLangTerrain| {
+            let (spacing, distance, blade_height) = (
+                spacing as f32,
+                distance as f32,
+                blade_height as f32,
+            );
+            if !spacing.is_finite()
+                || !distance.is_finite()
+                || !blade_height.is_finite()
+                || spacing <= 0.0
+                || distance <= 0.0
+                || blade_height <= 0.0
+            {
+                return Err(
+                    "Terrain.grass spacing, distance, and bladeHeight must be positive finite numbers"
+                        .to_string(),
+                );
+            }
+            let (r, g, b) = color.0;
+            Ok(FunctorLangTerrain(
+                terrain.0.with_grass(crate::terrain::TerrainGrass {
+                    spacing,
+                    distance,
+                    blade_height,
+                    color: [r, g, b],
+                }),
+            ))
+        },
+    );
 }
 
 /// The Scene vocabulary — geometry constructors, assets, composition,
@@ -1643,6 +1781,22 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
                 ("forward".to_string(), point(mapped.forward)),
                 ("up".to_string(), point(mapped.up)),
             ])))
+        },
+    );
+    reg.fn3(
+        "Camera.clip",
+        "Camera.clip(near, far, camera) — finite distances with 0 < near < far",
+        |near: f64, far: f64, mut camera: FunctorLangCamera| {
+            let (near, far) = (near as f32, far as f32);
+            if !near.is_finite() || !far.is_finite() || near <= 0.0 || far <= near {
+                return Err(
+                    "usage: Camera.clip(near, far, camera) — finite distances with 0 < near < far"
+                        .to_string(),
+                );
+            }
+            camera.0.near = near;
+            camera.0.far = far;
+            Ok(camera)
         },
     );
 }
@@ -2943,6 +3097,53 @@ struct ModelPath {
     while_pending: Vec<String>,
 }
 
+/// A texture-asset locator for data-oriented consumers that need the original
+/// image samples, rather than a material [`TextureDescription`]. Terrain must
+/// retain the locator and placeholder chain so render and physics hydrate the
+/// same source.
+struct TextureAssetPath {
+    path: String,
+    while_pending: Vec<String>,
+}
+
+impl crate::host_registry::FromArg for TextureAssetPath {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        match value {
+            v if asset_of(v).is_some() => {
+                let locator = asset_path(v, AssetKind::Texture, path, span)?;
+                let chain = asset_of(v)
+                    .map(|asset| asset.while_pending.clone())
+                    .unwrap_or_default();
+                Ok(Self {
+                    path: locator,
+                    while_pending: chain,
+                })
+            }
+            Value::String(p) => Err(RunError {
+                message: format!(
+                    "{path}: bare asset paths are no longer accepted — reference the \
+generated manifest (run `functor import`, then Assets.<name>), or construct \
+Asset.texture({}) at the data boundary",
+                    if p.is_empty() {
+                        "\"file.png\"".to_string()
+                    } else {
+                        format!("\"{p}\"")
+                    }
+                ),
+                span,
+            }),
+            other => Err(RunError {
+                message: format!(
+                    "{path}: expected a texture Asset value (the generated manifest's \
+Assets.<name>, or Asset.texture(…)), got {}",
+                    other.kind_name()
+                ),
+                span,
+            }),
+        }
+    }
+}
+
 impl crate::host_registry::FromArg for ModelPath {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         match value {
@@ -3068,6 +3269,7 @@ macro_rules! handle_arg {
 }
 
 handle_arg!(
+    FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
     FunctorLangLight => "a Light",
     FunctorLangCamera => "a Camera",
@@ -5221,6 +5423,35 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
     }
 
     #[test]
+    fn camera_clip_supports_large_worlds_and_validates_depth_precision() {
+        let value = eval(
+            "let main = () =>\n\
+               Camera.lookAt(Vec3.make(0.0, 100.0, -500.0), Vec3.make(0.0, 0.0, 0.0))\n\
+               |> Camera.clip(0.5, 6000.0)",
+        );
+        let Value::HostData(data) = value else {
+            panic!("expected Camera host data");
+        };
+        let camera = data
+            .as_any()
+            .downcast_ref::<FunctorLangCamera>()
+            .expect("Camera");
+        assert_eq!((camera.0.near, camera.0.far), (0.5, 6000.0));
+        assert_eq!(
+            fail_message(
+                "let main = () => Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera.clip(1.0, 0.5)"
+            ),
+            "usage: Camera.clip(near, far, camera) — finite distances with 0 < near < far"
+        );
+        assert_eq!(
+            fail_message(
+                "let main = () => Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera.clip(1.0, 1.00000001)"
+            ),
+            "usage: Camera.clip(near, far, camera) — finite distances with 0 < near < far"
+        );
+    }
+
+    #[test]
     fn spot_light_and_normal_mapped_material() {
         let frame = frame_of(
             "let bumps = Texture.file(\"bumps-normal.png\")\n\
@@ -6875,6 +7106,44 @@ row 1 has 3"
         assert_eq!(
             run_fail("let main = () => Scene.heightmap([[0.0, 1.0], [2.0, \"x\"]])"),
             "expected a number, got a string"
+        );
+    }
+
+    #[test]
+    fn terrain_descriptor_validates_assets_and_dimensions() {
+        let usage = "usage: Terrain.heightmap(asset, width, depth, minHeight, maxHeight) — \
+a texture Asset, positive dimensions, and maxHeight greater than minHeight";
+        assert_eq!(
+            run_fail(
+                "let main = () => Terrain.heightmap(Asset.texture(\"world.png\"), 0.0, 4000.0, -80.0, 520.0)"
+            ),
+            usage
+        );
+        assert_eq!(
+            run_fail(
+                "let main = () => Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, 10.0, 10.0)"
+            ),
+            usage
+        );
+        assert!(run_fail(
+            "let main = () => Terrain.heightmap(\"world.png\", 4000.0, 4000.0, -80.0, 520.0)"
+        )
+        .contains("construct Asset.texture(\"world.png\") at the data boundary"));
+        assert!(run_fail(
+            "let main = () => Terrain.heightmap(Asset.model(\"world.glb\"), 4000.0, 4000.0, -80.0, 520.0)"
+        )
+        .contains("expected a texture asset, got a model asset"));
+        assert_eq!(
+            run_fail(
+                "let main = () => Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0) |> Terrain.maxPixelError(0.0)"
+            ),
+            "Terrain.maxPixelError pixels must be a positive finite number"
+        );
+        assert_eq!(
+            run_fail(
+                "let main = () => Terrain.heightmap(Asset.texture(\"world.png\"), 0.00000000000000000000000000000000000000000000001, 4000.0, -80.0, 520.0)"
+            ),
+            usage
         );
     }
 
