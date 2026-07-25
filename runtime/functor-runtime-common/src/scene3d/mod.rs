@@ -130,6 +130,22 @@ impl TerrainDecodeResidency {
         }
     }
 
+    fn mark_source(
+        &mut self,
+        primary: &str,
+        while_pending: &[String],
+        primary_is_loading: bool,
+        mut is_unsettled: impl FnMut(&str) -> bool,
+    ) {
+        self.mark(std::iter::once(primary));
+        self.mark(
+            while_pending
+                .iter()
+                .filter(|locator| primary_is_loading || is_unsettled(locator))
+                .map(String::as_str),
+        );
+    }
+
     fn evict_stale(&mut self, mut evict: impl FnMut(&str)) {
         let epoch = self.epoch;
         self.last_used.retain(|locator, last_used| {
@@ -294,19 +310,29 @@ impl SceneContext {
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
     ) {
-        self.terrain_decode_residency.borrow_mut().mark(
-            std::iter::once(terrain.heightmap.as_str())
-                .chain(terrain.while_pending.iter().map(String::as_str)),
-        );
         let handle = render_context
             .asset_cache
             .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &terrain.heightmap);
-        let source = crate::asset::resolve_while_pending(
+        let resolved = crate::asset::resolve_while_pending_state(
             &render_context.asset_cache,
             &self.heightmap_pipeline,
             &handle,
             &terrain.while_pending,
         );
+        let primary_is_loading =
+            matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
+        self.terrain_decode_residency.borrow_mut().mark_source(
+            &terrain.heightmap,
+            &terrain.while_pending,
+            primary_is_loading,
+            |locator| render_context.asset_cache.is_unsettled(locator),
+        );
+        let source = match resolved {
+            crate::asset::WhilePendingState::Loaded(data)
+            | crate::asset::WhilePendingState::Loading(Some(data)) => data,
+            crate::asset::WhilePendingState::Loading(None)
+            | crate::asset::WhilePendingState::Failed => handle.fallback(),
+        };
         crate::terrain::publish_heightmap(&terrain.heightmap, source.clone());
         self.terrain_renderer.borrow_mut().draw(
             render_context,
@@ -1376,5 +1402,27 @@ mod preload_tests {
         residency.evict_stale(|locator| evicted.push(locator.to_string()));
         evicted.sort();
         assert_eq!(evicted, ["proxy-a.png", "world-a.png"]);
+    }
+
+    #[test]
+    fn settled_terrain_stand_ins_expire_while_the_primary_stays_resident() {
+        let mut residency = TerrainDecodeResidency::default();
+        let pending = vec!["world-low.png".to_string()];
+        let mut evicted = Vec::new();
+
+        residency.begin_epoch();
+        residency.mark_source("world.png", &pending, true, |_| false);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+
+        residency.begin_epoch();
+        residency.mark_source("world.png", &pending, false, |_| false);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert!(evicted.is_empty(), "stand-in keeps one epoch of grace");
+
+        residency.begin_epoch();
+        residency.mark_source("world.png", &pending, false, |_| false);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert_eq!(evicted, ["world-low.png"]);
+        assert!(residency.last_used.contains_key("world.png"));
     }
 }

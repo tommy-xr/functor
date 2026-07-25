@@ -1117,8 +1117,9 @@ fn select_grass_instances_into(
 ) {
     instances.clear();
     let radius_cells = (grass.distance / grass.spacing).ceil().max(0.0) as i32;
-    let estimated = std::f32::consts::PI * radius_cells as f32 * radius_cells as f32;
-    let stride = (estimated / MAX_GRASS_INSTANCES as f32)
+    let radius_cells_f64 = f64::from(radius_cells);
+    let estimated = std::f64::consts::PI * radius_cells_f64 * radius_cells_f64;
+    let stride = (estimated / MAX_GRASS_INSTANCES as f64)
         .sqrt()
         .ceil()
         .max(1.0) as i32;
@@ -1127,8 +1128,9 @@ fn select_grass_instances_into(
     let half_width = description.width * 0.5;
     let half_depth = description.depth * 0.5;
     let radius_squared = grass.distance * grass.distance;
-    let desired_capacity =
-        ((estimated / (stride * stride) as f32).ceil() as usize).min(MAX_GRASS_INSTANCES);
+    let stride_f64 = f64::from(stride);
+    let desired_capacity = ((estimated / (stride_f64 * stride_f64)).ceil() as usize)
+        .min(MAX_GRASS_INSTANCES);
     if instances.capacity() < desired_capacity {
         instances.reserve(desired_capacity);
     }
@@ -1597,6 +1599,24 @@ mod tests {
     }
 
     #[test]
+    fn extreme_valid_grass_range_does_not_overflow_decimation_math() {
+        let description = terrain();
+        let grass = TerrainGrass {
+            spacing: 1.0,
+            distance: f32::MAX,
+            blade_height: 1.0,
+            color: [0.1, 0.3, 0.08],
+        };
+        let (_, instances) = select_grass_instances(
+            &description,
+            &grass,
+            &Matrix4::identity(),
+            Vector3::new(0.0, 20.0, 0.0),
+        );
+        assert!(instances.len() <= MAX_GRASS_INSTANCES);
+    }
+
+    #[test]
     fn decimated_grass_uses_a_world_stable_sampling_lattice() {
         let description = terrain();
         let grass = TerrainGrass {
@@ -1606,8 +1626,9 @@ mod tests {
             color: [0.1, 0.3, 0.08],
         };
         let radius_cells = (grass.distance / grass.spacing).ceil() as i32;
-        let estimated = std::f32::consts::PI * radius_cells as f32 * radius_cells as f32;
-        let stride = (estimated / MAX_GRASS_INSTANCES as f32).sqrt().ceil() as i32;
+        let estimated =
+            std::f64::consts::PI * f64::from(radius_cells) * f64::from(radius_cells);
+        let stride = (estimated / MAX_GRASS_INSTANCES as f64).sqrt().ceil() as i32;
         assert!(stride > 1, "test must exercise decimated selection");
 
         let (_, first) = select_grass_instances(

@@ -1117,6 +1117,7 @@ pub fn run(args: Args) {
         let start_time = Instant::now();
         let mut last_time: f32 = 0.0;
         let mut frame_count: u64 = 0;
+        let mut terrain_frame_id: u64 = 0;
         // The shared game clock (docs/time-travel.md): `tts` accumulates the real
         // frame delta while live, freezes on pause (scrubber / debug POST /time),
         // and rebases on a time-travel branch. `--fixed-time` seeds an
@@ -2021,9 +2022,25 @@ Escape again to quit"
                         ),
                     ),
                 ];
-                for (camera, eye_viewport) in &eyes {
+                let eye_projections = [
+                    eyes[0].0.projection_matrix(eyes[0].1.aspect()),
+                    eyes[1].0.projection_matrix(eyes[1].1.aspect()),
+                ];
+                let lod_view_projections = [
+                    eye_projections[0] * eyes[0].0.view_matrix(),
+                    eye_projections[1] * eyes[1].0.view_matrix(),
+                ];
+                let lod_projection_scale = eye_projections[0]
+                    .y
+                    .y
+                    .abs()
+                    .max(eye_projections[1].y.y.abs());
+                terrain_frame_id = terrain_frame_id.wrapping_add(1);
+                for ((camera, eye_viewport), projection) in
+                    eyes.iter().zip(eye_projections.iter())
+                {
                     gl.disable(glow::SCISSOR_TEST);
-                    functor_runtime_common::render_frame(
+                    functor_runtime_common::render_frame_with_projection(
                         &gl,
                         shader_version,
                         asset_cache.clone(),
@@ -2031,6 +2048,12 @@ Escape again to quit"
                         &shadow_map,
                         drawn_frame,
                         camera,
+                        projection,
+                        &view_camera,
+                        &lod_view_projections,
+                        lod_projection_scale,
+                        fb_height as f32,
+                        terrain_frame_id,
                         time.clone(),
                         *eye_viewport,
                         args.debug_render.into(),
