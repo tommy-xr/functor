@@ -14,6 +14,8 @@ type tag
 
 /// The live world-space position of a body.
 type position = { x: float, y: float, z: float }
+/// The live linear velocity of a body, in world units per second.
+type velocity = { x: float, y: float, z: float }
 /// A raycast result with hit position, normal, distance, and body tag.
 ///
 /// For a miss, `hit` is false and the remaining fields are zeroed.
@@ -73,6 +75,29 @@ let scene : (Vec3.t, List<body>) => world
 
 /// Read a body's live, stepped world position.
 let position : (tag) => position
+
+/// Read a body's live, stepped linear velocity.
+///
+/// The read counterpart of `Physics.setVelocity`. (`Physics.velocity` is the
+/// body-builder attribute that sets an *initial* velocity.)
+let linearVelocity : (tag) => velocity
+
+/// Cast a ray against the world and get the nearest hit immediately.
+///
+/// Unlike `Physics.raycast` — an effect whose answer arrives through `update`
+/// after the step — this answers in place, so `tick` can branch on it while
+/// deciding. It reads the world as of the last step, like `Physics.position`:
+/// in `tick` that is the previous step, in `draw` this frame's. A miss is
+/// `hit: false` with zeroed fields, not an error. `dir` need not be
+/// normalized, so `maxDist` is in world units.
+let cast : (Vec3.t, Vec3.t, float) => rayHit
+
+/// `Physics.cast`, ignoring one body — the grounding probe.
+///
+/// A ray cast from inside a character's own capsule would otherwise hit that
+/// capsule at distance 0 and report the character standing on itself. Excluding
+/// a tag that isn't in the world excludes nothing.
+let castExcluding : (tag, Vec3.t, Vec3.t, float) => rayHit
 
 /// Apply a body's live transform to a scene node.
 ///
