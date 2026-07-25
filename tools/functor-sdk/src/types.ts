@@ -99,7 +99,28 @@ export type InputCommand =
   | { type: "mouse_move"; x: number; y: number }
   | { type: "mouse_wheel"; delta: number }
   | { type: "ui_event"; slot: number; kind: UiEventKind }
-  | { type: "webview_event"; slot: number; kind: UiEventKind };
+  | { type: "webview_event"; slot: number; kind: UiEventKind }
+  | ({ type: "xr" } & XrInputSample);
+
+/** An injected XR sample for `POST /input` (desktop only).
+ *
+ * Level state, not an edge event: it stays in force until replaced, and every
+ * following fixed step feeds it to `sampledInput`. A WHOLE-sample replacement —
+ * an omitted field takes its default (hand inactive, no pose, `0.0`, an identity
+ * orientation) — so send both hands each step rather than relying on a merge. */
+export interface XrInputSample {
+  head?: Partial<TrackingPose> | null;
+  left?: XrControllerSample;
+  right?: XrControllerSample;
+}
+
+/** One injected controller. See {@link XrInputSample} for the defaulting rule. */
+export type XrControllerSample = Partial<
+  Omit<XrControllerSnapshot, "grip" | "aim">
+> & {
+  grip?: Partial<TrackingPose> | null;
+  aim?: Partial<TrackingPose> | null;
+};
 
 export type UiEventKind =
   | "Clicked"

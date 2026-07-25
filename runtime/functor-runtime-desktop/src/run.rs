@@ -97,16 +97,27 @@ fn sampled_input_snapshot(
     }
 }
 
+/// Build this step's sampled input.
+///
+/// `xr_override` is a debug-injected XR sample (`POST /input` `{"type":"xr"}`).
+/// It WINS over the mouse/keyboard emulator, and supplies the `xr` domain even
+/// without `--emulate-xr` — the point is scripting tracked poses that no desktop
+/// device can express. It is level state, so it applies to every step until
+/// replaced, exactly like `held_keys`.
 fn desktop_input_snapshot(
     held_keys: &BTreeSet<InputKey>,
     mouse_pos: (i32, i32),
     emulate_xr: bool,
     xr_primary_down: bool,
     xr_surface: (i32, i32),
+    xr_override: Option<&XrInputSnapshot>,
 ) -> InputSnapshot {
-    let xr = emulate_xr.then(|| {
-        crate::desktop_xr_emulator::sample(held_keys, mouse_pos, xr_primary_down, xr_surface)
-    });
+    let xr = match xr_override {
+        Some(injected) => Some(injected.clone()),
+        None => emulate_xr.then(|| {
+            crate::desktop_xr_emulator::sample(held_keys, mouse_pos, xr_primary_down, xr_surface)
+        }),
+    };
     sampled_input_snapshot(held_keys, mouse_pos, xr)
 }
 
@@ -114,14 +125,22 @@ fn refresh_fixed_input_levels(
     snapshot: &mut InputSnapshot,
     held_keys: &BTreeSet<InputKey>,
     xr_primary_down: bool,
+    xr_override: Option<&XrInputSnapshot>,
 ) {
     snapshot.held_keys = held_keys.iter().copied().collect();
-    if let Some(xr) = snapshot.xr.as_mut() {
-        crate::desktop_xr_emulator::update_right_controls(
-            &mut xr.right,
-            held_keys,
-            xr_primary_down,
-        );
+    // An injected sample owns the whole XR domain — window keys must not
+    // re-derive its trigger/thumbstick out from under the driver.
+    match xr_override {
+        Some(injected) => snapshot.xr = Some(injected.clone()),
+        None => {
+            if let Some(xr) = snapshot.xr.as_mut() {
+                crate::desktop_xr_emulator::update_right_controls(
+                    &mut xr.right,
+                    held_keys,
+                    xr_primary_down,
+                );
+            }
+        }
     }
 }
 
@@ -555,6 +574,9 @@ fn service_debug_request(
     height: u32,
     held_keys: &mut BTreeSet<InputKey>,
     mouse_pos: &mut (i32, i32),
+    // The debug-injected XR sample, if any: `{"type":"xr"}` sets it and every
+    // later step samples it (see `desktop_input_snapshot`).
+    xr_override: &mut Option<XrInputSnapshot>,
     state_input: InputSnapshot,
     emulate_xr: bool,
     clock: &mut GameClock,
@@ -653,6 +675,7 @@ fn service_debug_request(
                 &cmd,
                 debug_server::InputCommand::Key { .. }
                     | debug_server::InputCommand::MouseMove { .. }
+                    | debug_server::InputCommand::Xr(_)
             );
             let result = match cmd {
                 debug_server::InputCommand::Key { key, down } => {
@@ -713,6 +736,14 @@ fn service_debug_request(
                     game.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
+                debug_server::InputCommand::Xr(snapshot) => {
+                    // No entry-point call here: XR is SAMPLED, not evented, so
+                    // the sample must reach the game through the same
+                    // `sampled_input` path a headset takes — which is what makes
+                    // it land in the recorded input log and replay identically.
+                    *xr_override = Some(*snapshot);
+                    Ok(())
+                }
             };
             // Input injected while PAUSED journals entry-point calls no `tick`
             // will sweep — fold them into the inspector's last-frame journal so
@@ -762,6 +793,7 @@ fn run_headless(
     } else {
         (0, 0)
     };
+    let mut xr_override: Option<XrInputSnapshot> = None;
     // Keep the debug protocol target-isomorphic even without pixels: uploaded
     // assets can be accepted now and are ready if headless rendering gains an
     // asset path later.
@@ -817,6 +849,7 @@ fn run_headless(
                     emulate_xr,
                     false,
                     crate::desktop_xr_emulator::reference_surface(),
+                    xr_override.as_ref(),
                 );
                 game.sampled_input(&snapshot);
             }
@@ -839,6 +872,7 @@ fn run_headless(
                     emulate_xr,
                     false,
                     crate::desktop_xr_emulator::reference_surface(),
+                    xr_override.as_ref(),
                 );
                 service_debug_request(
                     req,
@@ -850,6 +884,7 @@ fn run_headless(
                     0,
                     &mut held_keys,
                     &mut mouse_pos,
+                    &mut xr_override,
                     state_input,
                     emulate_xr,
                     &mut clock,
@@ -1138,6 +1173,7 @@ pub fn run(args: Args) {
         };
         let mut xr_primary_down = false;
         let mut xr_primary_clicked = false;
+        let mut xr_override: Option<XrInputSnapshot> = None;
         // `--fixed-time` is a deterministic capture pin: the one zero-delta
         // bootstrap step must not observe cursor motion from the host window.
         // Explicit debug input remains authoritative; key release/focus-loss
@@ -1149,6 +1185,7 @@ pub fn run(args: Args) {
             args.emulate_xr,
             false,
             window.get_size(),
+            xr_override.as_ref(),
         );
         // Whether the window owns the pointer (free-look). See the Escape /
         // MouseButton / Focus arms in the event loop. A hidden window never
@@ -1484,6 +1521,7 @@ Escape again to quit"
                                 &mut fixed_input_snapshot,
                                 &held_keys,
                                 xr_primary_down || xr_primary_clicked,
+                                xr_override.as_ref(),
                             );
                         }
                     }
@@ -1509,6 +1547,7 @@ Escape again to quit"
                                 &mut fixed_input_snapshot,
                                 &held_keys,
                                 false,
+                                xr_override.as_ref(),
                             );
                         }
                     }
@@ -1620,6 +1659,7 @@ Escape again to quit"
                             args.emulate_xr,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
+                            xr_override.as_ref(),
                         );
                         game.sampled_input(&snapshot);
                     }
@@ -2405,6 +2445,7 @@ Escape again to quit"
                             args.emulate_xr,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
+                            xr_override.as_ref(),
                         )
                     };
                     let sampled_input_changed = service_debug_request(
@@ -2417,6 +2458,7 @@ Escape again to quit"
                         fb_height as u32,
                         &mut held_keys,
                         &mut mouse_pos,
+                        &mut xr_override,
                         state_input,
                         args.emulate_xr,
                         &mut clock,
@@ -2448,6 +2490,7 @@ Escape again to quit"
                             args.emulate_xr,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
+                            xr_override.as_ref(),
                         );
                     }
                 }
@@ -2471,6 +2514,7 @@ Escape again to quit"
 #[cfg(test)]
 mod tests {
     use super::*;
+    use functor_runtime_common::{TrackingPose, XrControllerSnapshot};
     use std::io::Write;
 
     fn write_tmp(name: &str, contents: &str) -> std::path::PathBuf {
@@ -2519,7 +2563,7 @@ mod tests {
     #[test]
     fn fixed_level_refresh_preserves_mouse_and_tracked_poses() {
         let mut snapshot =
-            desktop_input_snapshot(&BTreeSet::new(), (100, 200), true, false, (800, 600));
+            desktop_input_snapshot(&BTreeSet::new(), (100, 200), true, false, (800, 600), None);
         let pose = snapshot
             .xr
             .as_ref()
@@ -2527,7 +2571,7 @@ mod tests {
             .expect("emulated grip");
         let held = BTreeSet::from([InputKey::Space]);
 
-        refresh_fixed_input_levels(&mut snapshot, &held, false);
+        refresh_fixed_input_levels(&mut snapshot, &held, false, None);
 
         assert_eq!(snapshot.mouse, MouseSnapshot { x: 100, y: 200 });
         assert_eq!(
@@ -2536,5 +2580,88 @@ mod tests {
         );
         assert_eq!(snapshot.xr.as_ref().unwrap().right.trigger, 1.0);
         assert_eq!(snapshot.held_keys, vec![InputKey::Space]);
+    }
+
+    /// A pose an emulated desktop rig CANNOT produce: the emulator pins both
+    /// hands to z = -0.55 with identity orientation, so a hand pulled BACK
+    /// toward the face with a rotated grip is exactly the gesture that was
+    /// previously untestable without a headset.
+    fn injected_sample() -> XrInputSnapshot {
+        XrInputSnapshot {
+            head: Some(TrackingPose::new([0.0, 0.05, 0.0], [0.0, 0.0, 0.0, 1.0])),
+            left: XrControllerSnapshot {
+                active: true,
+                grip: Some(TrackingPose::new([-0.3, -0.1, -0.6], [0.0, 0.38, 0.0, 0.92])),
+                aim: Some(TrackingPose::new([-0.3, -0.1, -0.6], [0.0, 0.38, 0.0, 0.92])),
+                ..XrControllerSnapshot::default()
+            },
+            right: XrControllerSnapshot {
+                active: true,
+                grip: Some(TrackingPose::new([-0.05, -0.05, 0.12], [0.0, 0.0, 0.0, 1.0])),
+                aim: Some(TrackingPose::new([-0.05, -0.05, 0.12], [0.0, 0.0, 0.0, 1.0])),
+                trigger: 1.0,
+                ..XrControllerSnapshot::default()
+            },
+        }
+    }
+
+    #[test]
+    fn an_injected_xr_sample_wins_over_the_desktop_emulator() {
+        let injected = injected_sample();
+        let held = BTreeSet::from([InputKey::Space]);
+
+        // ... even with --emulate-xr on and a mouse position that would
+        // otherwise synthesize a different right hand.
+        let snapshot = desktop_input_snapshot(
+            &held,
+            (700, 100),
+            true,
+            true,
+            (800, 600),
+            Some(&injected),
+        );
+        assert_eq!(snapshot.xr.as_ref(), Some(&injected));
+        // Keyboard/mouse domains stay live alongside it.
+        assert_eq!(snapshot.held_keys, vec![InputKey::Space]);
+        assert_eq!(snapshot.mouse, MouseSnapshot { x: 700, y: 100 });
+    }
+
+    #[test]
+    fn an_injected_xr_sample_supplies_the_domain_without_emulate_xr() {
+        let injected = injected_sample();
+        let plain = desktop_input_snapshot(&BTreeSet::new(), (0, 0), false, false, (800, 600), None);
+        assert_eq!(plain.xr, None, "no XR domain without a device or injection");
+
+        let snapshot = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (0, 0),
+            false,
+            false,
+            (800, 600),
+            Some(&injected),
+        );
+        assert_eq!(snapshot.xr.as_ref(), Some(&injected));
+    }
+
+    #[test]
+    fn fixed_level_refresh_does_not_clobber_an_injected_sample() {
+        let injected = injected_sample();
+        let mut snapshot = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (100, 200),
+            true,
+            false,
+            (800, 600),
+            Some(&injected),
+        );
+        // Space would drive the EMULATOR's trigger to 1.0; the injected sample
+        // owns the XR domain, so window keys must leave it alone.
+        let held = BTreeSet::from([InputKey::Enter]);
+
+        refresh_fixed_input_levels(&mut snapshot, &held, true, Some(&injected));
+
+        assert_eq!(snapshot.xr.as_ref(), Some(&injected));
+        assert_eq!(snapshot.xr.as_ref().unwrap().right.squeeze, 0.0);
+        assert_eq!(snapshot.held_keys, vec![InputKey::Enter]);
     }
 }

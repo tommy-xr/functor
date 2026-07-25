@@ -109,6 +109,7 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"ui_event","slot":0,"kind":"Clicked"}                  // click widget slot 0
 {"type":"ui_event","slot":1,"kind":{"SliderChanged":0.5}}      // drag slider slot 1
 {"type":"ui_event","slot":2,"kind":{"TextChanged":"hi"}}       // edit text input slot 2
+{"type":"xr","left":{...},"right":{...},"head":{...}}          // set the XR device sample
 ```
 
 `ui_event` drives the game's interactive UI widgets without pixels or
@@ -117,6 +118,53 @@ frame's `ui(model)` tree, in construction order over the interactive widgets.
 An event for a slot the current view doesn't have is dropped (with a one-line
 runtime report), and the endpoint still returns 200 — delivery, not handling,
 is what's acknowledged.
+
+#### `{"type":"xr"}` — inject tracked poses (desktop)
+
+XR is **sampled**, not evented, so this command does not call an entry point: it
+sets the XR sample that every following fixed step feeds to `sampledInput`,
+through the exact path a headset takes. That means it also lands in the recorded
+input log, so a scripted pose sequence replays identically.
+
+The body is a whole [`xr` sample](#sampled-input-in-get-state) — the same shape
+`GET /state` reports — and it is **level state**, like a held key: it stays in
+force until the next `xr` command replaces it. Every field is optional and takes
+its default when omitted (hand inactive, no pose, `0.0`, an **identity**
+orientation), so name both hands each step rather than relying on a partial body
+to merge:
+
+```sh
+curl -s -X POST $H/input -d '{
+  "type": "xr",
+  "head":  { "position": [0.0, 0.0, 0.0] },
+  "left":  { "active": true,
+             "grip": { "position": [-0.3, -0.1, -0.6],
+                       "orientation": [0.0, 0.38, 0.0, 0.92] } },
+  "right": { "active": true,
+             "grip": { "position": [-0.05, -0.05, 0.12] },
+             "trigger": 1.0 }
+}'
+```
+
+An injected sample **overrides `--emulate-xr`** and supplies the `xr` domain even
+without it. That is the point: the mouse/keyboard emulator pins both hands to
+`z = -0.55` with identity orientations, so gestures like pulling a hand back
+toward your face, or aiming with a rotated grip, are inexpressible there and can
+only be driven this way. `held_keys` and `mouse` stay live alongside it.
+
+Pair it with `POST /time` `{"type":"advance","dts":0.016}` to step exactly one
+frame per pose, and the whole two-handed sequence is deterministic:
+
+```sh
+for i in $(seq 0 20); do
+  curl -s -X POST $H/input -d "$(pose_at $i)" >/dev/null   # your pose generator
+  curl -s -X POST $H/time  -d '{"type":"advance","dts":0.016}' >/dev/null
+done
+curl -s $H/state | jq -r .model
+```
+
+The device runtime rejects this command with **400**: Quest resamples the domain
+from live OpenXR tracking every frame, so an injected sample could never be seen.
 
 ### Sampled input in `GET /state`
 

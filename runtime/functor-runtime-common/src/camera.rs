@@ -7,10 +7,23 @@ use crate::math::Angle;
 ///
 /// The orientation is a unit quaternion in `[x, y, z, w]` order. Tracking
 /// local `+X` is right, `+Y` is up, and `-Z` is forward, matching OpenXR.
+///
+/// Deserialization fills missing fields from [`TrackingPose::IDENTITY`], so a
+/// scripted/injected pose can name only the part it cares about.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TrackingPose {
     pub position: [f32; 3],
     pub orientation: [f32; 4],
+}
+
+/// The identity pose — NOT a field-wise zero: an all-zero quaternion is not a
+/// rotation. Hand-written for that reason, and so partial debug-injected poses
+/// (`{"position":[…]}`) default to an upright, forward-facing orientation.
+impl Default for TrackingPose {
+    fn default() -> Self {
+        TrackingPose::IDENTITY
+    }
 }
 
 impl TrackingPose {
