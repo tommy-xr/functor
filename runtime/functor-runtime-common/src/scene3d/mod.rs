@@ -146,6 +146,19 @@ impl TerrainDecodeResidency {
         );
     }
 
+    fn mark_unsettled(
+        &mut self,
+        locators: &[String],
+        mut is_unsettled: impl FnMut(&str) -> bool,
+    ) {
+        self.mark(
+            locators
+                .iter()
+                .filter(|locator| is_unsettled(locator))
+                .map(String::as_str),
+        );
+    }
+
     fn evict_stale(&mut self, mut evict: impl FnMut(&str)) {
         let epoch = self.epoch;
         self.last_used.retain(|locator, last_used| {
@@ -313,6 +326,15 @@ impl SceneContext {
         let handle = render_context
             .asset_cache
             .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &terrain.heightmap);
+        // Snapshot residency before polling. A hot-reloaded stand-in can
+        // decode and settle synchronously inside resolve_while_pending_state;
+        // after that poll is_unsettled() is already false, so a post-poll
+        // mark alone would let the new decoded handle escape eviction.
+        self.terrain_decode_residency
+            .borrow_mut()
+            .mark_unsettled(&terrain.while_pending, |locator| {
+                render_context.asset_cache.is_unsettled(locator)
+            });
         let resolved = crate::asset::resolve_while_pending_state(
             &render_context.asset_cache,
             &self.heightmap_pipeline,
@@ -1424,5 +1446,92 @@ mod preload_tests {
         residency.evict_stale(|locator| evicted.push(locator.to_string()));
         assert_eq!(evicted, ["world-low.png"]);
         assert!(residency.last_used.contains_key("world.png"));
+    }
+
+    #[test]
+    fn synchronously_reloaded_terrain_stand_in_remains_evictable() {
+        let ctx = SceneContext::new();
+        let cache = Arc::new(AssetCache::new());
+        let primary = temp_glb("terrain-residency-primary.png");
+        let stand_in = temp_glb("terrain-residency-stand-in.png");
+        let pending = vec![stand_in.clone()];
+        let primary_handle =
+            cache.load_asset_with_pipeline(ctx.heightmap_pipeline.clone(), &primary);
+        assert!(matches!(
+            primary_handle.poll_state(),
+            AssetPollState::Loaded(_)
+        ));
+        let stand_in_handle =
+            cache.load_asset_with_pipeline(ctx.heightmap_pipeline.clone(), &stand_in);
+        assert!(matches!(
+            stand_in_handle.poll_state(),
+            AssetPollState::Loaded(_)
+        ));
+
+        // Let the original settled stand-in age out of decoded residency.
+        {
+            let mut residency = ctx.terrain_decode_residency.borrow_mut();
+            residency.begin_epoch();
+            residency.mark([primary.as_str(), stand_in.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+        }
+        assert!(ctx.heightmap_pipeline.get_opt(&stand_in).is_none());
+
+        // Hot reload makes the already-started stand-in unsettled. Its local
+        // read then settles synchronously during resolution while the primary
+        // remains loaded.
+        cache.evict(&stand_in);
+        ctx.heightmap_pipeline.evict(&stand_in);
+        assert!(cache.is_unsettled(&stand_in));
+        {
+            let mut residency = ctx.terrain_decode_residency.borrow_mut();
+            residency.mark_unsettled(&pending, |locator| cache.is_unsettled(locator));
+        }
+        assert!(matches!(
+            crate::asset::resolve_while_pending_state(
+                &cache,
+                &ctx.heightmap_pipeline,
+                &primary_handle,
+                &pending,
+            ),
+            crate::asset::WhilePendingState::Loaded(_)
+        ));
+        assert!(!cache.is_unsettled(&stand_in));
+        ctx.terrain_decode_residency.borrow_mut().mark_source(
+            &primary,
+            &pending,
+            false,
+            |locator| cache.is_unsettled(locator),
+        );
+        assert!(
+            ctx.terrain_decode_residency
+                .borrow()
+                .last_used
+                .contains_key(&stand_in),
+            "the pre-poll mark retains a synchronously settled decode"
+        );
+
+        // The refreshed decode still receives one grace epoch, then expires.
+        {
+            let mut residency = ctx.terrain_decode_residency.borrow_mut();
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+            assert!(ctx.heightmap_pipeline.get_opt(&stand_in).is_some());
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+        }
+        assert!(ctx.heightmap_pipeline.get_opt(&stand_in).is_none());
+
+        for path in [primary, stand_in] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
