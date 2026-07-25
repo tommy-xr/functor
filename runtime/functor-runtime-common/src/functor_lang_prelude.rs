@@ -3764,6 +3764,15 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// An opaque copy of one pending `preloadThen` completion message for a
+/// whole-shell time-travel snapshot. The message stays private so shells can
+/// retain and restore it without depending on Functor Lang's runtime values.
+#[derive(Clone)]
+pub struct PreloadCompletionSnapshot {
+    token: u64,
+    message: Value,
+}
+
 /// Register a `preloadThen` completion message for `token` (see
 /// [`PENDING_PRELOAD`]; the cap and eviction mirror
 /// [`register_audio_completion`]).
@@ -3784,6 +3793,35 @@ pub fn register_preload_completion(token: u64, message: Value) {
 /// Take the completion message for a settled preload's `token`, if any.
 pub fn take_preload_completion(token: u64) -> Option<Value> {
     PENDING_PRELOAD.with(|m| m.borrow_mut().remove(&token))
+}
+
+/// Clone the still-pending messages for `tokens` into a whole-shell snapshot.
+/// Missing tokens are hot-reload orphans and are deliberately omitted.
+pub fn snapshot_preload_completions(tokens: &[u64]) -> Vec<PreloadCompletionSnapshot> {
+    PENDING_PRELOAD.with(|m| {
+        let map = m.borrow();
+        tokens
+            .iter()
+            .filter_map(|token| {
+                map.get(token).cloned().map(|message| PreloadCompletionSnapshot {
+                    token: *token,
+                    message,
+                })
+            })
+            .collect()
+    })
+}
+
+/// Restore completion messages captured by [`snapshot_preload_completions`].
+/// The caller must reject snapshots from a previous program revision: a
+/// message may close over the session that created it.
+pub fn restore_preload_completions(snapshots: Vec<PreloadCompletionSnapshot>) {
+    PENDING_PRELOAD.with(|m| {
+        let mut map = m.borrow_mut();
+        for snapshot in snapshots {
+            map.insert(snapshot.token, snapshot.message);
+        }
+    });
 }
 
 /// Drop all in-flight `preloadThen` completion messages (hot reload).
@@ -8108,6 +8146,11 @@ the game dir"
             other => panic!("expected texture+tokened model commands, got: {other:?}"),
         };
 
+        // Whole-shell history snapshots the still-pending completion without
+        // exposing the Functor Lang message value to the shell.
+        let completion_snapshot = snapshot_preload_completions(&[token]);
+        assert_eq!(completion_snapshot.len(), 1);
+
         // The load settles: take the registered message and fold it through
         // `update` (delivered verbatim — no tagger).
         let message = take_preload_completion(token).expect("a message for the token");
@@ -8119,6 +8162,16 @@ the game dir"
         assert_eq!(model.to_string(), "Warm");
 
         // Consumed: a duplicate/late settle finds no message.
+        assert!(take_preload_completion(token).is_none());
+
+        // Restoring the shell snapshot re-arms exactly that historical token.
+        restore_preload_completions(completion_snapshot);
+        assert_eq!(
+            take_preload_completion(token)
+                .expect("restored message")
+                .to_string(),
+            "Warm"
+        );
         assert!(take_preload_completion(token).is_none());
     }
 
