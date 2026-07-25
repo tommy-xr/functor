@@ -1,5 +1,5 @@
 // The multi-file editor ↔ player bridge — the whole-project sibling of
-// player-bridge.js (which pushes a single source buffer). The IDE owns every
+// player-bridge.ts (which pushes a single source buffer). The IDE owns every
 // .fun in memory, so it pushes the full file set over `functor-lang-set-project`
 // to a `player.html?project=inline` iframe: the player boots from memory (no
 // fetch) on the first push, then hot-swaps (model preserved) on each edit.
@@ -9,6 +9,9 @@
 // `functor-lang-preview-ready` once the producer is live, and
 // `functor-lang-set-source-result` (with our echoed id) for every hot-swap.
 
+import { asPlayerMessage } from "./protocol.js";
+import type { BridgeOptions, ProjectFile, SetProject } from "./protocol.js";
+
 const PUSH_DEBOUNCE_MS = 300;
 
 // A rejected edit keeps the last good program running, so an error isn't urgent.
@@ -17,19 +20,30 @@ const PUSH_DEBOUNCE_MS = 300;
 const ERROR_GRACE_MS = 4000;
 
 export class ProjectBridge {
-  // iframe: the player element. Callbacks map protocol events to UI:
-  //   onReloading()          — a push was sent (busy)
-  //   onLive()               — the player booted / is ready
-  //   onResult(ok, message)  — a hot-swap reply came back
+  readonly iframe: HTMLIFrameElement;
+  private readonly onReloading: () => void;
+  private readonly onLive: () => void;
+  private readonly onResult: (ok: boolean, message: string) => void;
+  private readonly debounceMs: number;
+  private readonly errorGraceMs: number;
+
+  private waiting = false; // player announced project-waiting (safe to push)
+  private files: ProjectFile[] | null = null; // latest full file set
+  private pushTimer: ReturnType<typeof setTimeout> | undefined;
+  private errorTimer: ReturnType<typeof setTimeout> | undefined;
+  // Correlates results with pushes: each push gets a fresh id, the runtime
+  // echoes it, and a result for anything but the LATEST push is stale.
+  private pushId = 0;
+
   constructor(
-    iframe,
+    iframe: HTMLIFrameElement,
     {
       onReloading,
       onLive,
       onResult,
       debounceMs = PUSH_DEBOUNCE_MS,
       errorGraceMs = ERROR_GRACE_MS,
-    }
+    }: BridgeOptions
   ) {
     this.iframe = iframe;
     this.onReloading = onReloading;
@@ -38,19 +52,11 @@ export class ProjectBridge {
     this.debounceMs = debounceMs;
     this.errorGraceMs = errorGraceMs;
 
-    this.waiting = false; // player announced project-waiting (safe to push)
-    this.files = null; // latest full file set
-    this.pushTimer = null;
-    this.errorTimer = null;
-    // Correlates results with pushes: each push gets a fresh id, the runtime
-    // echoes it, and a result for anything but the LATEST push is stale.
-    this.pushId = 0;
-
     window.addEventListener("message", (event) => this.#onMessage(event));
   }
 
   // Debounced whole-project push: swap in the file set once edits settle.
-  setProject(files) {
+  setProject(files: ProjectFile[]): void {
     this.files = files;
     clearTimeout(this.pushTimer);
     this.pushTimer = setTimeout(() => this.#send(), this.debounceMs);
@@ -58,7 +64,7 @@ export class ProjectBridge {
 
   // Reset for a fresh iframe (a new project=inline load): drop the handshake
   // state until the next `functor-lang-project-waiting`.
-  reset() {
+  reset(): void {
     clearTimeout(this.pushTimer);
     clearTimeout(this.errorTimer);
     this.waiting = false;
@@ -68,7 +74,7 @@ export class ProjectBridge {
   // last good program running, so the preview IS still live; show that now and
   // only surface the error if the program stays broken past the grace window.
   // Any success (the usual next keystroke that re-parses) clears it instantly.
-  #deliverResult(ok, message) {
+  #deliverResult(ok: boolean, message: string): void {
     clearTimeout(this.errorTimer);
     if (ok) {
       this.onResult(true, message);
@@ -78,7 +84,7 @@ export class ProjectBridge {
     }
   }
 
-  #send() {
+  #send(): void {
     clearTimeout(this.pushTimer); // an early flush cancels the pending timer
     if (!this.iframe.contentWindow || !this.files) return;
     // The player drops anything sent before it announces `project-waiting`;
@@ -86,15 +92,20 @@ export class ProjectBridge {
     if (!this.waiting) return;
     this.onReloading();
     this.pushId += 1;
-    this.iframe.contentWindow.postMessage(
-      { type: "functor-lang-set-project", files: this.files, id: this.pushId },
-      "*"
-    );
+    const message: SetProject = {
+      type: "functor-lang-set-project",
+      files: this.files,
+      id: this.pushId,
+    };
+    // Re-read `contentWindow` after `onReloading()`, matching PlayerBridge:
+    // a callback that swapped the iframe must not have its push sent to the
+    // outgoing window, and a detached one must throw rather than be dropped.
+    this.iframe.contentWindow!.postMessage(message, "*");
   }
 
-  #onMessage(event) {
+  #onMessage(event: MessageEvent): void {
     if (event.source !== this.iframe.contentWindow) return;
-    const data = event.data;
+    const data = asPlayerMessage(event.data);
     if (!data) return;
     if (data.type === "functor-lang-project-waiting") {
       // The player is armed: flush the initial (or any held) project to boot it.

@@ -1,0 +1,41 @@
+{
+  // Typecheck-only: esbuild does the transpiling (site/build.mjs), so this
+  // never emits. `npm run check:site` runs it.
+  //
+  // The site is migrating to TypeScript file by file. `include` picks up only
+  // .ts files, so a module joins the checked set the moment it is renamed —
+  // no per-file bookkeeping here. esbuild and tsc both resolve a `./x.js`
+  // import to `x.ts`, so a migration needs no import-specifier churn and the
+  // still-JS importers keep working untouched.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+
+    // esbuild transpiles each file in isolation, so the source must never
+    // depend on cross-file type elision: `verbatimModuleSyntax` forces
+    // type-only imports to say `import type`.
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    // A migrated .ts importing a still-.js sibling (say hero.ts importing
+    // mini-editor.js) is otherwise TS7016 "could not find a declaration file".
+    // `checkJs` stays off, so the .js files are resolved but never checked.
+    "allowJs": true,
+
+    // NEVER set `useDefineForClassFields: false` here. esbuild honours this
+    // file for the plain .js under site/ too, so that key would silently
+    // change class-field semantics in every unmigrated module. Leaving it
+    // implied by `target` keeps esbuild's behaviour identical to today's.
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"]
+}
