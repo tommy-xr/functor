@@ -318,6 +318,35 @@ try {
       () => document.querySelector("[data-runtime-status]")?.dataset.state === "live",
       { timeout: 10_000 }
     );
+
+    // A capture requested behind a push belongs to that endpoint. Changing the
+    // target while the push is in flight must discard it rather than capturing
+    // from the replacement runtime when the stale request completes.
+    delayNextReloadMs = 2_000;
+    cursor = requests.length;
+    await page.evaluate(() =>
+      window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// edit before endpoint change`)
+    );
+    await nextRequest("/reload-project", cursor);
+    await page.click("[data-runtime-capture]");
+    await page.locator("[data-runtime-endpoint]").evaluate((input, value) => {
+      input.value = value;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }, `${RUNTIME}/`);
+    await sleep(2_150);
+    check(
+      "sandbox clears a queued capture when the endpoint changes",
+      !requests.slice(cursor).some((request) => request.path === "/capture"),
+      requests.slice(cursor).map((request) => request.path).join(",")
+    );
+    cursor = requests.length;
+    await page.click("[data-runtime-push]");
+    await nextRequest("/load-project", cursor);
+    await page.waitForFunction(
+      () => document.querySelector("[data-runtime-status]")?.dataset.state === "live",
+      { timeout: 10_000 }
+    );
+
     await sleep(200);
     const statePollsBefore = requests.filter((request) => request.path === "/state").length;
     await sleep(2_250);
@@ -352,6 +381,74 @@ try {
         marioAssetUploads.every((request) => requests.indexOf(request) < requests.indexOf(marioLoad)) &&
         requests.indexOf(marioLoad) < requests.indexOf(marioManifest),
       marioAssetUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",")
+    );
+
+    await page.waitForFunction(
+      () => document.querySelector("[data-runtime-status]")?.dataset.state === "live",
+      undefined,
+      { timeout: 10_000 }
+    );
+    rejectNextProjectStatus = 413;
+    cursor = requests.length;
+    await page.click("#reset");
+    const rejectedMarioLoad = await nextRequest("/load-project", cursor);
+    const rollbackUploads = await nextRequests("/reload-asset", cursor, 4);
+    const rollbackManifest = await nextRequest("/sync-assets", cursor);
+    await page.waitForFunction(
+      () =>
+        document.querySelector("[data-runtime-summary-state]")?.textContent === "sync error" &&
+        document
+          .querySelector("[data-runtime-status]")
+          ?.textContent.includes("Last-good assets were restored."),
+      undefined,
+      { timeout: 10_000 }
+    );
+    check(
+      "sandbox restores overwritten assets when replacement source is rejected",
+      rollbackUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",") ===
+        "ground.png,hero-atlas.png,ground.png,hero-atlas.png" &&
+        requests.indexOf(rejectedMarioLoad) < requests.indexOf(rollbackUploads[2]) &&
+        JSON.parse(rollbackManifest.body).join(",") === "ground.png,hero-atlas.png",
+      rollbackUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",")
+    );
+
+    cursor = requests.length;
+    await page.click("#reset");
+    await nextRequest("/load-project", cursor);
+    await page.waitForFunction(
+      () => document.querySelector("[data-runtime-status]")?.dataset.state === "live",
+      undefined,
+      { timeout: 10_000 }
+    );
+
+    // A 503 can mean the runtime's reply wait expired even though the queued
+    // source may still apply later. Do not race that uncertain outcome by
+    // restoring old asset bytes.
+    rejectNextProjectStatus = 503;
+    cursor = requests.length;
+    await page.click("#reset");
+    await nextRequest("/load-project", cursor);
+    const ambiguousUploads = await nextRequests("/reload-asset", cursor, 2);
+    await page.waitForFunction(
+      () => document.querySelector("[data-runtime-summary-state]")?.textContent === "sync error",
+      undefined,
+      { timeout: 10_000 }
+    );
+    await sleep(100);
+    check(
+      "sandbox does not roll assets back after an ambiguous runtime timeout",
+      ambiguousUploads.length === 2 &&
+        requests.slice(cursor).filter((request) => request.path === "/reload-asset").length === 2 &&
+        !requests.slice(cursor).some((request) => request.path === "/sync-assets")
+    );
+
+    cursor = requests.length;
+    await page.click("#reset");
+    await nextRequest("/load-project", cursor);
+    await page.waitForFunction(
+      () => document.querySelector("[data-runtime-status]")?.dataset.state === "live",
+      undefined,
+      { timeout: 10_000 }
     );
 
     rejectNextProjectStatus = 413;

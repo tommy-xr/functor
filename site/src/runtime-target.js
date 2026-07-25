@@ -314,6 +314,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
   let syncError = null;
   let transportError = null;
   let lastSyncedAssetSource = null;
+  let lastSyncedAssets = [];
   let assetSyncPending = false;
 
   const renderStatus = (state, summaryText, message) => {
@@ -353,9 +354,11 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     freshRequiredRevision = projectRevision;
     freshSatisfiedRevision = -1;
     pushQueued = false;
+    captureQueued = false;
     syncError = null;
     transportError = null;
     lastSyncedAssetSource = null;
+    lastSyncedAssets = [];
     assetSyncPending = false;
     pushButton.disabled = !localEditorOrigin;
     captureButton.disabled = true;
@@ -447,11 +450,16 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     let resolvedAssetsSource = null;
     let assets = [];
     let sourceResult = null;
+    let runtime = null;
+    let assetsMutated = false;
+    let sourceAccepted = false;
+    const priorAssetsKnown = lastSyncedAssetSource !== null;
+    const priorAssets = lastSyncedAssets;
     syncError = null;
     renderStatus("busy", "syncing", connected ? "Sending the latest project…" : "Finding the runtime…");
     pushButton.disabled = true;
     try {
-      const runtime = await ensureConnection();
+      runtime = await ensureConnection();
       if (ownGeneration !== generation || !runtime) return;
       endpoint = runtime.endpoint;
       if (getAssets) {
@@ -460,7 +468,10 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
         assetCount = assets.length;
         if (resolvedAssetsSource !== lastSyncedAssetSource) {
           assetSyncPending = true;
-          for (const [path, bytes] of assets) await runtime.reloadAsset(path, bytes);
+          for (const [path, bytes] of assets) {
+            await runtime.reloadAsset(path, bytes);
+            assetsMutated = true;
+          }
           if (ownGeneration !== generation) return;
         }
       }
@@ -474,6 +485,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
         if (fresh) {
           freshSatisfiedRevision = Math.max(freshSatisfiedRevision, requestRevision);
         }
+        sourceAccepted = true;
       }
       // Finalize deletions only after the new source is accepted. If source
       // loading fails, the last-good program keeps every asset it still needs.
@@ -481,6 +493,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
         await runtime.syncAssets(assets.map(([path]) => path));
         if (ownGeneration !== generation) return;
         lastSyncedAssetSource = resolvedAssetsSource;
+        lastSyncedAssets = assets;
         assetSyncPending = false;
       }
       if (ownGeneration !== generation) return;
@@ -497,7 +510,31 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
       );
     } catch (error) {
       if (ownGeneration !== generation) return;
-      const message = errorMessage(error, endpoint, "push");
+      let message = errorMessage(error, endpoint, "push");
+      // Asset reloads are eager. If the runtime definitively rejects the new
+      // source, restore the last browser-synchronized bytes + manifest so the
+      // last-good program cannot keep an overwritten or partially uploaded set.
+      if (
+        error instanceof RuntimeHttpError &&
+        (error.status === 400 || error.status === 413) &&
+        runtime &&
+        assetsMutated &&
+        !sourceAccepted &&
+        priorAssetsKnown
+      ) {
+        try {
+          for (const [path, bytes] of priorAssets) await runtime.reloadAsset(path, bytes);
+          await runtime.syncAssets(priorAssets.map(([path]) => path));
+          message = `${message} Last-good assets were restored.`;
+        } catch (rollbackError) {
+          message = `${message} Asset rollback also failed: ${errorMessage(
+            rollbackError,
+            endpoint,
+            "asset rollback"
+          )}`;
+        }
+      }
+      if (ownGeneration !== generation) return;
       if (error instanceof RuntimeHttpError) {
         syncError = message;
         transportError = null;
