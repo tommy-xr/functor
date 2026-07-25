@@ -827,10 +827,10 @@ impl SceneRecorder {
         // breaks across the branch. Timers fire over `(prev_tts, tts]`; leaving
         // `prev_tts` at the live tail while the clock rebases to this frame
         // makes that window empty or negative, so every timer stays silent
-        // until the clock climbs back past where it used to be — and if the
-        // branch instead moves time FORWARD, the window spans the whole gap and
-        // the timers fire as a burst. Taken from `tts_history` BEFORE the
-        // truncate below, which is why this line sits here rather than after.
+        // until the clock climbs back past where it used to be. (A branch that
+        // moved time FORWARD would fire them as a burst instead, but that is
+        // unreachable here: `frame` is clamped to the newest recorded frame,
+        // which is where `prev_tts` already sits.)
         //
         // The forward-step/ghost path already guards this hazard explicitly
         // (`functor_lang_producer.rs`, "a scrubbed preview must not seed
@@ -1160,17 +1160,13 @@ mod tests {
         rec.rewind_scene_to(3, &mut model, &mut physics, &mut physics_frame, false, &mut prev_tts)
             .expect("rewind");
 
+        // The next frame's window is then (3.0, 3.0+dt] — forward and non-empty.
+        // With the bug it was (9.0, 3.0+dt]: negative, so every timer was mute
+        // for six seconds of game time.
         assert_eq!(
             prev_tts,
             Some(3.0),
             "prev_tts must follow the model back to the branch frame's recorded tts"
-        );
-        // The next frame's window is (3.0, 3.0+dt] — forward and non-empty.
-        // With the bug it was (9.0, 3.0+dt]: negative, so every timer was mute
-        // for six seconds of game time.
-        assert!(
-            prev_tts.unwrap() < 3.0 + 1.0,
-            "the next frame's timer window must open forward from the branch"
         );
     }
 
@@ -1346,7 +1342,22 @@ mod tests {
         rec.seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek");
         assert!(!rec.reload_history_is_safe());
-        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false, &mut None);
+        // The reload-while-scrubbed branch restores the timer window too — the
+        // third path into `rewind_scene_to`, which the dedicated tests above
+        // don't reach. [xreview]
+        let mut prev_tts = Some(4.0);
+        rec.commit_scrub_before_reload(
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+            &mut prev_tts,
+        );
+        assert_eq!(
+            prev_tts,
+            Some(2.0),
+            "an unsafe reload while scrubbed branches, so its timer window rewinds too"
+        );
         let generation = rec.generation();
 
         assert_eq!(
