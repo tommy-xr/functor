@@ -285,11 +285,20 @@ pub fn sim_seek(frame: u32) -> Result<String, JsValue> {
 /// Returns descriptions, not pixels: GL stays in the frame loop, so this module
 /// never touches a context. Takes `&mut` internally because a producer evaluates
 /// its `draw` here.
-pub(crate) fn render_frames(time: &functor_runtime_common::FrameTime) -> Option<Vec<Frame>> {
+/// Returns the frames AND the clock they were drawn at: the sim's own
+/// [`display_time`](NetSim::display_time), never the page's wall clock. The sim
+/// advances only when stepped, so drawing at wall-clock time would keep
+/// `draw(model, tts)` animations moving while the simulation stands still, and
+/// would not rewind when a seek does. [xreview]
+pub(crate) fn render_frames() -> Option<(Vec<Frame>, functor_runtime_common::FrameTime)> {
     SIM.with(|sim| {
         let mut slot = sim.try_borrow_mut().ok()?;
         let sim = slot.as_mut()?;
-        Some((0..sim.len()).map(|i| sim.render(i, time.clone())).collect())
+        let time = sim.display_time();
+        let frames = (0..sim.len())
+            .map(|i| sim.render(i, time.clone()))
+            .collect();
+        Some((frames, time))
     })
 }
 

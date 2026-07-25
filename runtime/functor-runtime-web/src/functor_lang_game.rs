@@ -33,12 +33,33 @@ pub struct WebPlatform {
     /// The overlay's shadow state — the last message shown (or `None` if hidden)
     /// — so a persistent error doesn't rewrite the DOM every frame.
     overlay_error: Option<String>,
+    /// May this producer drive the page's error overlay? True for the page's one
+    /// live game; FALSE for a netsim instance. See [`WebPlatform::for_sim`].
+    owns_overlay: bool,
 }
 
 impl WebPlatform {
     pub fn new() -> WebPlatform {
         WebPlatform {
             overlay_error: None,
+            owns_overlay: true,
+        }
+    }
+
+    /// A platform for a **netsim instance**, which must not touch the page's
+    /// draw-error overlay.
+    ///
+    /// `#functor-lang-error` is a single page-global div. With several instances
+    /// rendering per frame, each holding its OWN dedupe state, two panes failing
+    /// with different messages would show and hide it every frame — a 60 Hz
+    /// flash — and a pane's error would be reported page-wide with nothing
+    /// saying which pane it came from. Draw errors still reach the console
+    /// through the producer's reporter; surfacing them per pane belongs with the
+    /// pane HUD. [xreview]
+    pub fn for_sim() -> WebPlatform {
+        WebPlatform {
+            overlay_error: None,
+            owns_overlay: false,
         }
     }
 }
