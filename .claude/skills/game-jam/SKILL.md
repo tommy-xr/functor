@@ -40,8 +40,9 @@ roadmap items, and promotes the best sample(s).
 
 ## Phase 1 — one agent per game
 
-Spawn one **Opus** subagent per brief, `isolation: worktree`, in a single
-parallel batch, running in the background. Each prompt must include:
+Spawn one **Opus** subagent per brief, `isolation: worktree`, running in the
+background — but **pace the fleet; do not run everything at once** (see
+"Concurrency limits" below). Each prompt must include:
 
 - **The brief**: game, slug, and the specific engine surfaces it exists to
   stress (physics, XR input, 2D ergonomics, chase camera, UI/dialog, …).
@@ -75,6 +76,31 @@ parallel batch, running in the background. Each prompt must include:
 - **Final report** (returned text, machine-consumable): worktree/branch/SHA,
   game summary, capture paths, xreview outcome, the full friction log inline,
   and a 1–5 self-assessment on the two judging criteria below.
+
+## Concurrency limits (learned the hard way — 2026-07 jam)
+
+Running the whole fleet at once oversubscribed the machine badly: 7 jam agents
++ 6 fixers + their xreview reviewer subagents peaked at **61 cargo / 51 rustc
+processes**, producing 90-minute compiles that normally take minutes, capture
+runs so slow the UI overlay hadn't rastered by capture time (agents chased
+phantom rendering bugs), Codex CLI hangs, and meaningless wall-clock bench
+numbers. Rules:
+
+- **Default to sequential, or at most 2–3 concurrent agents**, on a developer
+  laptop. The user experiences the whole fleet's load; ask before scaling wider.
+- Jam agents are cheap only while writing/interpreting `.fun` (the shared
+  prebuilt binary) — but each one's **xreview spawns reviewers**, and finisher
+  phases run captures; count those toward the cap.
+- **Never let two fixers cold-build Rust worktrees concurrently.** A fresh
+  worktree compiles the whole dependency graph; two at once thrash, and the
+  global `~/.cargo` package-cache lock serializes them anyway. Run
+  cargo-building fixers strictly one at a time.
+- **Benchmarks need a quiet machine.** frame_bench wall-clock is worthless
+  under load; schedule bench-requiring fixers last, alone, and lean on
+  allocs/bytes-per-frame (load-immune) as the acceptance numbers.
+- Sequencing mechanic: resume/spawn one agent, wait for its completion
+  notification, then start the next — nearest-to-completion first so results
+  land early.
 
 ## Phase 1.5 — rolling gap fixers (don't wait for synthesis)
 
