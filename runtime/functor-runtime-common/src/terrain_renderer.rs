@@ -56,8 +56,14 @@ const VERTEX_SHADER_SOURCE: &str = r#"
             float h10 = float(texelFetch(heightmapTex, ivec2(b.x, a.y), 0).r);
             float h01 = float(texelFetch(heightmapTex, ivec2(a.x, b.y), 0).r);
             float h11 = float(texelFetch(heightmapTex, b, 0).r);
-            float normalized = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y)
-                / 65535.0;
+            // Match Rapier's default heightfield diagonal exactly. Bilinear
+            // interpolation would produce a different surface inside every
+            // non-coplanar source cell.
+            float sampleHeight = f.x + f.y <= 1.0
+                ? h00 + f.x * (h10 - h00) + f.y * (h01 - h00)
+                : h11 + (1.0 - f.x) * (h01 - h11)
+                      + (1.0 - f.y) * (h10 - h11);
+            float normalized = sampleHeight / 65535.0;
             return minHeight + normalized * terrainSize.z;
         }
 
@@ -175,9 +181,11 @@ const GRASS_VERTEX_SHADER_SOURCE: &str = r#"
             float h10 = float(texelFetch(heightmapTex, ivec2(b.x, a.y), 0).r);
             float h01 = float(texelFetch(heightmapTex, ivec2(a.x, b.y), 0).r);
             float h11 = float(texelFetch(heightmapTex, b, 0).r);
-            return minHeight
-                + mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y)
-                    / 65535.0 * terrainSize.z;
+            float sampleHeight = f.x + f.y <= 1.0
+                ? h00 + f.x * (h10 - h00) + f.y * (h01 - h00)
+                : h11 + (1.0 - f.x) * (h01 - h11)
+                      + (1.0 - f.y) * (h10 - h11);
+            return minHeight + sampleHeight / 65535.0 * terrainSize.z;
         }
 
         void main() {

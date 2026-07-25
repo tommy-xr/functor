@@ -43,6 +43,10 @@ pub struct PreloadCommand {
     pub token: Option<u64>,
 }
 
+/// Waiting-token bound per in-flight target. Beyond it the oldest token drops
+/// unclaimed, matching the bounded completion-message registry.
+pub const TOKENS_PER_TARGET_CAP: usize = 1024;
+
 static OUTBOUND: Lazy<Mutex<VecDeque<PreloadCommand>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
 
@@ -74,6 +78,18 @@ pub fn next_token() -> u64 {
         c.set(token + 1);
         token
     })
+}
+
+/// Snapshot the next correlation token for a whole-shell time-travel driver.
+/// Restoring it makes effects replayed after the snapshot mint the same tokens,
+/// so shell-owned completion timing can be correlated exactly.
+pub fn next_token_state() -> u64 {
+    NEXT_TOKEN.with(Cell::get)
+}
+
+/// Restore a value captured by [`next_token_state`].
+pub fn restore_next_token_state(next: u64) {
+    NEXT_TOKEN.with(|c| c.set(next));
 }
 
 #[cfg(test)]
@@ -108,5 +124,14 @@ mod tests {
         assert_eq!(back[1].token, Some(7));
         // Drained means drained.
         assert_eq!(drain_commands_json(), "[]");
+
+        let next = next_token_state();
+        let token = next_token();
+        restore_next_token_state(next);
+        assert_eq!(
+            next_token(),
+            token,
+            "restoring the generator reproduces correlation tokens"
+        );
     }
 }

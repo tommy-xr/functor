@@ -796,6 +796,12 @@ fn run_headless(
         // Same per-frame ordering as the windowed loop (the source of truth),
         // minus everything that needs GL.
         game.check_hot_reload(time.clone());
+        game.push_asset_progress(asset_cache.progress());
+        let preload_commands =
+            serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
+        for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
+            game.preload_push_settled(token);
+        }
         deliver_net_ws(&mut *game, &net_rx, &ws_rx);
         for sub in &sub_frames {
             if let Some(events) = input_script
@@ -820,12 +826,10 @@ fn run_headless(
         dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
 
         // The frame is pure data (no GL); it powers GET /scene. Drain and drop
-        // audio and preload commands (no device / no asset cache in headless)
-        // so they don't pile up. Like playThen, a preloadThen's message never
-        // delivers headless — the known Sub.assets-under---headless gap.
+        // audio commands so they do not pile up. Preloads and physics terrain
+        // requests are driven above through the CPU-only asset cache.
         let frame = game.render(time.clone());
         let _ = game.audio_drain_commands();
-        let _ = game.preload_drain_commands();
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {

@@ -2269,11 +2269,14 @@ mod tests {
 
         // The live continuation at 1/60: the ground truth the sub-stepped
         // forward-step must match at its division boundaries.
-        let mut live: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(N);
+        let mut live: Vec<(
+            String,
+            Option<functor_runtime_common::physics::PhysicsSnapshot>,
+        )> = Vec::with_capacity(N);
         for _ in 0..N {
             tts += SUB_DT;
             game.tick(FrameTime { tts, dts: SUB_DT });
-            let world = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
+            let world = physics::with_world(physics::DEFAULT_WORLD, |w| w.checkpoint());
             live.push((game.model.to_string(), world));
         }
 

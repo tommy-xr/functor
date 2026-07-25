@@ -16,14 +16,26 @@
 //! `VirtualNet` connection id is used as the shared `ConnectionId` both ends see,
 //! so a send from either side routes to the other.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
+use functor_runtime_common::asset::{
+    preload::{
+        next_token_state, restore_next_token_state, PreloadCommand, PreloadKind,
+        TOKENS_PER_TARGET_CAP,
+    },
+    AssetCache,
+};
+use functor_runtime_common::functor_lang_prelude::{
+    clear_preload_completions, restore_preload_completions, snapshot_preload_completions,
+    PreloadCompletionSnapshot,
+};
 use functor_runtime_common::net::{
     ConnCommand, ConnectionId, LinkProfile, NetEvent, NodeId, VirtualNet,
 };
 use functor_runtime_common::protocol::GameProducer;
+use functor_runtime_common::terrain::{TerrainHydrationPublication, TerrainSource};
 use functor_runtime_common::timetravel::{History, DEFAULT_HISTORY_FRAMES};
-use functor_runtime_common::FrameTime;
+use functor_runtime_common::{FrameTime, SceneContext};
 
 pub use functor_runtime_common::net::LinkProfile as Link;
 
@@ -70,6 +82,8 @@ fn authority(endpoint: &str) -> &str {
 /// [`NetSim::step`]).
 struct Instance {
     producer: Box<dyn GameProducer>,
+    asset_cache: Arc<AssetCache>,
+    scene_context: SceneContext,
     node: NodeId,
     /// This instance's routing key (the url/bind its game used) per connection.
     keys: HashMap<ConnectionId, String>,
@@ -78,6 +92,116 @@ struct Instance {
     /// delivery) so the shared producer queue stays attributed to the right
     /// instance; routed on the NEXT frame.
     outbox: Vec<ConnCommand>,
+    /// Preload commands captured atomically after this instance's game code,
+    /// waiting to be submitted at the start of its next recorded frame.
+    preload_outbox: Vec<PreloadCommand>,
+    /// Commands already submitted to `SceneContext` but not settled. Keeping
+    /// the logical requests beside the shell snapshot lets a branch reconstruct
+    /// an asynchronous load without snapshotting cache internals.
+    preload_pending: Vec<PreloadCommand>,
+    /// Replayed tokened commands whose assets are warm now but whose original
+    /// timeline did not settle until a later frame.
+    preload_deferred: Vec<PreloadCommand>,
+}
+
+#[derive(Clone)]
+struct PreloadSettlement {
+    owner: InstanceId,
+    program_revision: u64,
+    kind: PreloadKind,
+    locator: String,
+    frame: u64,
+    outcome: PreloadOutcome,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreloadOutcome {
+    Settled,
+    Dropped,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TerrainHydrationKey {
+    owner: InstanceId,
+    program_revision: u64,
+    source: TerrainSource,
+}
+
+#[derive(Clone)]
+struct TerrainPublicationEvent {
+    frame: u64,
+    publication: TerrainHydrationPublication,
+}
+
+#[derive(Default)]
+struct TerrainHydrationTimeline {
+    publications: Vec<TerrainPublicationEvent>,
+    terminal_frame: Option<u64>,
+    observed_through: Option<u64>,
+}
+
+fn prune_replay_publications<T>(
+    items: &mut Vec<T>,
+    oldest: u64,
+    pending_interval_in_window: bool,
+    frame: impl Fn(&T) -> u64,
+) -> bool {
+    let first_in_window = items.partition_point(|item| frame(item) < oldest);
+    if first_in_window == items.len() && !pending_interval_in_window {
+        items.clear();
+        return false;
+    }
+    items.drain(..first_in_window.saturating_sub(1));
+    true
+}
+
+impl TerrainHydrationTimeline {
+    fn should_defer(&self, frame: u64) -> bool {
+        self.publications.iter().any(|event| event.frame > frame)
+            || self.terminal_frame.is_some_and(|terminal| terminal > frame)
+            || self
+                .observed_through
+                .is_some_and(|observed| observed >= frame)
+    }
+
+    fn prune_before(&mut self, oldest: u64) -> bool {
+        // A publication immediately before the history window is the baseline
+        // surface for every retained pending frame until a newer publication
+        // supersedes it. Keep that one event alongside all in-window events
+        // while the source is still relevant; otherwise a seek whose physics
+        // snapshot has no terrain body cannot recreate the current stand-in
+        // when the body later respawns. A fully aged-out terminal source drops
+        // every publication so its decoded heightmap Arc is not pinned.
+        if self
+            .terminal_frame
+            .is_some_and(|frame| frame < oldest)
+        {
+            self.terminal_frame = None;
+        }
+        if self
+            .observed_through
+            .is_some_and(|frame| frame < oldest)
+        {
+            self.observed_through = None;
+        }
+        let pending_interval_in_window =
+            self.terminal_frame.is_some() || self.observed_through.is_some();
+        prune_replay_publications(
+            &mut self.publications,
+            oldest,
+            pending_interval_in_window,
+            |event| event.frame,
+        )
+    }
+}
+
+impl PreloadSettlement {
+    fn matches(&self, owner: InstanceId, program_revision: u64, command: &PreloadCommand) -> bool {
+        self.owner == owner
+            && self.program_revision == program_revision
+            && self.kind == command.kind
+            && self.locator == command.locator
+    }
 }
 
 impl Instance {
@@ -86,14 +210,245 @@ impl Instance {
         // evaluated `init`).
         Instance {
             producer,
+            asset_cache: Arc::new(AssetCache::new()),
+            scene_context: SceneContext::new(),
             node,
             keys: HashMap::new(),
             outbox: Vec::new(),
+            preload_outbox: Vec::new(),
+            preload_pending: Vec::new(),
+            preload_deferred: Vec::new(),
         }
     }
 
-    fn tick(&mut self, time: FrameTime) {
+    fn tick(
+        &mut self,
+        time: FrameTime,
+        frame: u64,
+        owner: InstanceId,
+        settlements: &mut HashMap<u64, PreloadSettlement>,
+        terrain_hydrations: &mut HashMap<TerrainHydrationKey, TerrainHydrationTimeline>,
+    ) {
+        self.producer
+            .push_asset_progress(self.asset_cache.progress());
+
+        // Match the interactive shells' frame boundary: preload settlement
+        // folds through `update` BEFORE `tick`, so the producer records the
+        // post-completion model for this frame. Commands produced by that
+        // completion stay attributed to this same instance.
+        let mut commands = std::mem::take(&mut self.preload_outbox);
+        commands.extend(std::mem::take(&mut self.preload_deferred));
+        let mut commands_to_drive = Vec::with_capacity(commands.len());
+        let program_revision = self.producer.scene_program_revision();
+        for command in commands {
+            let recorded_outcome = command
+                .token
+                .and_then(|token| settlements.get(&token))
+                .filter(|settlement| settlement.matches(owner, program_revision, &command));
+            if let Some(recorded) = recorded_outcome {
+                if recorded.frame > frame {
+                    self.preload_deferred.push(command);
+                    continue;
+                }
+                if recorded.outcome == PreloadOutcome::Dropped {
+                    continue;
+                }
+            }
+            let already_pending = self.preload_pending.iter().any(|pending| {
+                command
+                    .token
+                    .zip(pending.token)
+                    .is_some_and(|(token, other)| token == other)
+                    || (command.token.is_none()
+                        && pending.token.is_none()
+                        && command.kind == pending.kind
+                        && command.locator == pending.locator)
+            });
+            if !already_pending {
+                if command.token.is_some()
+                    && self
+                        .preload_pending
+                        .iter()
+                        .filter(|pending| {
+                            pending.token.is_some()
+                                && pending.kind == command.kind
+                                && pending.locator == command.locator
+                        })
+                        .count()
+                        >= TOKENS_PER_TARGET_CAP
+                {
+                    let oldest = self
+                        .preload_pending
+                        .iter()
+                        .position(|pending| {
+                            pending.token.is_some()
+                                && pending.kind == command.kind
+                                && pending.locator == command.locator
+                        })
+                        .expect("the counted target has an oldest token");
+                    let dropped = self.preload_pending.remove(oldest);
+                    if let Some(token) = dropped.token {
+                        settlements.insert(
+                            token,
+                            PreloadSettlement {
+                                owner,
+                                program_revision,
+                                kind: dropped.kind,
+                                locator: dropped.locator,
+                                frame,
+                                outcome: PreloadOutcome::Dropped,
+                            },
+                        );
+                    }
+                }
+                self.preload_pending.push(command.clone());
+            }
+            commands_to_drive.push(command);
+        }
+        self.scene_context.capture_terrain_requests();
+        let terrain_requests = self.scene_context.snapshot_terrain_requests();
+        for source in &terrain_requests {
+            if let Some(timeline) = terrain_hydrations.get(&TerrainHydrationKey {
+                owner,
+                program_revision,
+                source: source.clone(),
+            }) {
+                if let Some(event) = timeline
+                    .publications
+                    .iter()
+                    .rev()
+                    .find(|event| event.frame <= frame)
+                {
+                    self.scene_context
+                        .replay_terrain_publication(&event.publication);
+                }
+            }
+        }
+        let (deferred_terrain, active_terrain): (Vec<_>, Vec<_>) =
+            terrain_requests.into_iter().partition(|source| {
+                terrain_hydrations
+                    .get(&TerrainHydrationKey {
+                        owner,
+                        program_revision,
+                        source: source.clone(),
+                    })
+                    .is_some_and(|timeline| timeline.should_defer(frame))
+            });
+        self.scene_context
+            .restore_terrain_requests(active_terrain.clone());
+        let drive_result = self.scene_context.drive_preloads_deferring_terrain(
+            &self.asset_cache,
+            commands_to_drive,
+            &deferred_terrain,
+        );
+        let mut remaining_terrain = self.scene_context.snapshot_terrain_requests();
+        for source in &active_terrain {
+            let timeline = terrain_hydrations
+                .entry(TerrainHydrationKey {
+                    owner,
+                    program_revision,
+                    source: source.clone(),
+                })
+                .or_default();
+            if remaining_terrain.contains(source) {
+                timeline.observed_through = Some(
+                    timeline
+                        .observed_through
+                        .map_or(frame, |observed| observed.max(frame)),
+                );
+            } else {
+                timeline.terminal_frame.get_or_insert(frame);
+            }
+        }
+        for publication in drive_result.terrain_publications {
+            let revision = publication.revision();
+            let timeline = terrain_hydrations
+                .entry(TerrainHydrationKey {
+                    owner,
+                    program_revision,
+                    source: publication.source.clone(),
+                })
+                .or_default();
+            if timeline
+                .publications
+                .last()
+                .is_none_or(|event| event.publication.revision() != revision)
+            {
+                timeline.publications.push(TerrainPublicationEvent {
+                    frame,
+                    publication,
+                });
+            }
+        }
+        remaining_terrain.extend(deferred_terrain);
+        self.scene_context
+            .restore_terrain_requests(remaining_terrain);
+        for token in drive_result.settled {
+            let command = self
+                .preload_pending
+                .iter()
+                .find(|command| command.token == Some(token))
+                .cloned();
+            self.preload_pending
+                .retain(|command| command.token != Some(token));
+            if let Some(command) = command {
+                settlements.insert(
+                    token,
+                    PreloadSettlement {
+                        owner,
+                        program_revision,
+                        kind: command.kind,
+                        locator: command.locator,
+                        frame,
+                        outcome: PreloadOutcome::Settled,
+                    },
+                );
+            }
+            self.producer.preload_push_settled(token);
+        }
+        let asset_cache = &self.asset_cache;
+        self.preload_pending.retain(|command| {
+            command.token.is_some() || asset_cache.is_unsettled(&command.locator)
+        });
+        self.capture_preload_commands();
+
         self.producer.tick(time);
+        // Physics.heightfield emits a process-global terrain hydration request
+        // during the tick's physics phase. Claim it before another producer
+        // runs; the actual asset polling remains next-frame work.
+        self.scene_context.capture_terrain_requests();
+        self.capture_preload_commands();
+    }
+
+    /// Claim every process-global preload command emitted by the most recent
+    /// callback on this producer. Deferring execution preserves the shell's
+    /// before-tick settlement order while keeping ownership atomic.
+    fn capture_preload_commands(&mut self) {
+        let commands: Vec<PreloadCommand> =
+            serde_json::from_str(&self.producer.preload_drain_commands()).unwrap_or_default();
+        self.preload_outbox.extend(commands);
+    }
+
+    /// Restore the logical preload driver at a whole-environment snapshot.
+    /// In-flight requests are resubmitted against the still-warm asset cache,
+    /// with their opaque completion messages restored beside them.
+    fn restore_preloads(
+        &mut self,
+        mut queued: Vec<PreloadCommand>,
+        pending: Vec<PreloadCommand>,
+        deferred: Vec<PreloadCommand>,
+        completions: Vec<PreloadCompletionSnapshot>,
+        terrain_requests: Vec<functor_runtime_common::terrain::TerrainSource>,
+    ) {
+        self.scene_context.reset_preloads();
+        self.scene_context
+            .restore_terrain_requests(terrain_requests);
+        queued.extend(pending);
+        queued.extend(deferred);
+        restore_preload_completions(completions);
+        self.preload_outbox = queued;
+        self.preload_pending.clear();
+        self.preload_deferred.clear();
     }
 
     fn drain_conn_commands(&self) -> Vec<ConnCommand> {
@@ -137,20 +492,34 @@ impl Instance {
 /// draws: **each producer records and restores its own model** (`SceneRecorder`
 /// runs inside the frame body `tick` executes, and `seek_scene_to` restores it),
 /// so the sim only has to snapshot what lives OUTSIDE the producers — the
-/// network and the routing tables built from it.
+/// virtual network, routing tables, and shell-owned preload queues.
 ///
-/// This is a plain deep copy, unlike the model ring's `Rc` structural sharing:
-/// what keeps it affordable is that the models are not in here at all, and what
-/// remains (in-flight packets and undelivered events) is bounded by the traffic
-/// actually crossing a frame. It is the part to measure first if the ring ever
-/// shows up in a profile.
+/// The network state is a plain deep copy, while pending preload messages use
+/// Functor values' ordinary structural sharing. Models are not duplicated here;
+/// what remains (in-flight packets, undelivered events, and logical asset
+/// requests) is bounded by the traffic actually crossing a frame. It is the
+/// part to measure first if the ring ever shows up in a profile.
 #[derive(Clone)]
 struct SimSnapshot {
     vnet: VirtualNet,
     /// authority -> (server instance, its listen key).
     listeners: HashMap<String, (InstanceId, String)>,
-    /// Per-instance `(keys, outbox)`, positionally indexed by [`InstanceId`].
-    routes: Vec<(HashMap<ConnectionId, String>, Vec<ConnCommand>)>,
+    /// Per-instance shell queues, positionally indexed by [`InstanceId`].
+    routes: Vec<InstanceSnapshot>,
+    /// Process-global token generator at this exact pre-delivery cut.
+    preload_next_token: u64,
+}
+
+#[derive(Clone)]
+struct InstanceSnapshot {
+    keys: HashMap<ConnectionId, String>,
+    net_outbox: Vec<ConnCommand>,
+    preload_outbox: Vec<PreloadCommand>,
+    preload_pending: Vec<PreloadCommand>,
+    preload_deferred: Vec<PreloadCommand>,
+    preload_completions: Vec<PreloadCompletionSnapshot>,
+    terrain_requests: Vec<functor_runtime_common::terrain::TerrainSource>,
+    program_revision: u64,
 }
 
 /// A deterministic in-process multiplayer simulation.
@@ -177,6 +546,15 @@ pub struct NetSim {
     /// The last error [`step`](NetSim::step) swallowed, for drivers that cannot
     /// see stderr. See [`take_last_error`](NetSim::take_last_error).
     last_error: Option<String>,
+    /// Original terminal outcome per token. This is timeline metadata rather
+    /// than point-in-time state: a later settlement teaches earlier snapshots
+    /// how long an untouched replay must keep a now-warm asset pending, while
+    /// an overload tombstone keeps a deliberately evicted token from reviving.
+    preload_settlements: HashMap<u64, PreloadSettlement>,
+    /// Original publication and terminal frames for each instance's terrain
+    /// source. These preserve stand-in → primary collision transitions after
+    /// a seek even though every decoded heightmap is now warm.
+    terrain_hydrations: HashMap<TerrainHydrationKey, TerrainHydrationTimeline>,
 }
 
 /// The source list for one instance of a multi-entry project: `entry` first —
@@ -230,6 +608,8 @@ impl NetSim {
             links: HashMap::new(),
             partitioned: std::collections::HashSet::new(),
             last_error: None,
+            preload_settlements: HashMap::new(),
+            terrain_hydrations: HashMap::new(),
         }
     }
 
@@ -404,8 +784,17 @@ impl NetSim {
         // Tick each instance and drain the commands IT produced ATOMICALLY —
         // so a producer sharing the process-global conn queue (Functor Lang) stays
         // isolated: each drain reads only the instance that just ticked.
-        for inst in &mut self.instances {
-            inst.tick(time.clone());
+        let frame = self.frame;
+        let settlements = &mut self.preload_settlements;
+        let terrain_hydrations = &mut self.terrain_hydrations;
+        for (id, inst) in self.instances.iter_mut().enumerate() {
+            inst.tick(
+                time.clone(),
+                frame,
+                id,
+                settlements,
+                terrain_hydrations,
+            );
             let cmds = inst.drain_conn_commands();
             inst.outbox.extend(cmds);
         }
@@ -453,6 +842,12 @@ impl NetSim {
         // original frame order is reproduced exactly.
         let settled = self.frame - 1;
         self.history.record(settled, &self.snapshot());
+        if let Some((oldest, _)) = self.history.recorded_range() {
+            self.preload_settlements
+                .retain(|_, settlement| settlement.frame >= oldest);
+            self.terrain_hydrations
+                .retain(|_, timeline| timeline.prune_before(oldest));
+        }
 
         self.deliver();
     }
@@ -465,17 +860,56 @@ impl NetSim {
             routes: self
                 .instances
                 .iter()
-                .map(|inst| (inst.keys.clone(), inst.outbox.clone()))
+                .map(|inst| {
+                    let tokens: Vec<u64> = inst
+                        .preload_outbox
+                        .iter()
+                        .chain(&inst.preload_pending)
+                        .chain(&inst.preload_deferred)
+                        .filter_map(|command| command.token)
+                        .collect();
+                    InstanceSnapshot {
+                        keys: inst.keys.clone(),
+                        net_outbox: inst.outbox.clone(),
+                        preload_outbox: inst.preload_outbox.clone(),
+                        preload_pending: inst.preload_pending.clone(),
+                        preload_deferred: inst.preload_deferred.clone(),
+                        preload_completions: snapshot_preload_completions(&tokens),
+                        terrain_requests: inst.scene_context.snapshot_terrain_requests(),
+                        program_revision: inst.producer.scene_program_revision(),
+                    }
+                })
                 .collect(),
+            preload_next_token: next_token_state(),
         }
     }
 
     fn restore(&mut self, snapshot: SimSnapshot) {
         self.vnet = snapshot.vnet;
         self.listeners = snapshot.listeners;
-        for (inst, (keys, outbox)) in self.instances.iter_mut().zip(snapshot.routes) {
-            inst.keys = keys;
-            inst.outbox = outbox;
+        // Completion messages are process-global in the Functor Lang host.
+        // Replace the entire set atomically for this whole-environment
+        // snapshot; abandoned-future tokens must not cross the branch.
+        clear_preload_completions();
+        functor_runtime_common::terrain::clear_hydrated_heightmaps();
+        restore_next_token_state(snapshot.preload_next_token);
+        for (inst, route) in self.instances.iter_mut().zip(snapshot.routes) {
+            inst.keys = route.keys;
+            inst.outbox = route.net_outbox;
+            let completions = if inst.producer.scene_program_revision() == route.program_revision {
+                route.preload_completions
+            } else {
+                // Hot reload invalidates messages that may close over the
+                // old session, matching every interactive producer.
+                Vec::new()
+            };
+            inst.restore_preloads(
+                route.preload_outbox,
+                route.preload_pending,
+                route.preload_deferred,
+                completions,
+                route.terrain_requests,
+            );
         }
         self.reapply_link_config();
     }
@@ -608,6 +1042,7 @@ impl NetSim {
             self.instances[client].push_error(&client_key, 0, "no listener for endpoint");
             let cmds = self.instances[client].drain_conn_commands();
             self.instances[client].outbox.extend(cmds);
+            self.instances[client].capture_preload_commands();
             return;
         };
         let client_node = self.instances[client].node;
@@ -660,6 +1095,7 @@ impl NetSim {
             // frame.
             let cmds = self.instances[id].drain_conn_commands();
             self.instances[id].outbox.extend(cmds);
+            self.instances[id].capture_preload_commands();
         }
     }
 
@@ -674,7 +1110,7 @@ impl NetSim {
 
 #[cfg(test)]
 mod tests {
-    use super::entry_sources;
+    use super::{entry_sources, prune_replay_publications};
 
     fn project() -> Vec<(String, String)> {
         vec![
@@ -718,5 +1154,34 @@ mod tests {
             err.contains("server.fun"),
             "the typo's intended target is listed: {err}"
         );
+    }
+
+    #[test]
+    fn terrain_publication_pruning_keeps_only_a_relevant_pre_window_baseline() {
+        let mut frames = vec![2, 10, 20];
+        assert!(prune_replay_publications(
+            &mut frames,
+            15,
+            false,
+            |frame| *frame
+        ));
+        assert_eq!(frames, vec![10, 20]);
+
+        assert!(!prune_replay_publications(
+            &mut frames,
+            30,
+            false,
+            |frame| *frame
+        ));
+        assert!(frames.is_empty(), "terminal sources must release their Arc");
+
+        let mut pending_frames = vec![2, 10, 20];
+        assert!(prune_replay_publications(
+            &mut pending_frames,
+            30,
+            true,
+            |frame| *frame
+        ));
+        assert_eq!(pending_frames, vec![20]);
     }
 }

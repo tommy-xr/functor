@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::{
     cell::{Cell, RefCell},
     sync::Arc,
@@ -60,6 +60,7 @@ pub struct SceneContext {
     heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
     terrain_decode_residency: RefCell<TerrainDecodeResidency>,
+    terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
     terrain_renderer: RefCell<TerrainRenderer>,
     terrain_frame_serial: Cell<u64>,
     // Render targets persist across frames/hot reloads, keyed by the target's
@@ -101,10 +102,13 @@ enum PreloadHandle {
     Texture(Arc<AssetHandle<Texture2D>>),
 }
 
-/// Waiting-token bound per in-flight entry (spamming `preloadThen` at one
-/// stalled asset): beyond it the OLDEST token drops — its registered message
-/// then expires unclaimed, exactly like a capped [`PENDING_AUDIO`] eviction.
-const PRELOAD_TOKENS_CAP: usize = 1024;
+/// Replay-aware result from the shell asset driver. Ordinary shells consume
+/// only `settled`; whole-environment drivers also retain terrain publications
+/// so warm caches cannot change collision timing after a seek.
+pub struct PreloadDriveResult {
+    pub settled: Vec<u64>,
+    pub terrain_publications: Vec<crate::terrain::TerrainHydrationPublication>,
+}
 
 /// Decoded terrain sources receive one unused shell frame of grace before
 /// eviction. This retains ordinary frame-to-frame reuse without keeping every
@@ -219,6 +223,7 @@ impl SceneContext {
             heightmaps: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
             terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
+            terrain_requests: RefCell::new(BTreeSet::new()),
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
@@ -257,11 +262,45 @@ impl SceneContext {
         asset_cache: &Arc<AssetCache>,
         commands: Vec<crate::asset::preload::PreloadCommand>,
     ) -> Vec<u64> {
-        {
-            let mut residency = self.terrain_decode_residency.borrow_mut();
-            residency.begin_epoch();
-            residency.evict_stale(|locator| self.heightmap_pipeline.evict(locator));
+        self.drive_preloads_internal(asset_cache, commands, &[], false)
+            .settled
+    }
+
+    /// NetSim's replay-aware preload step. Terrain requests named in
+    /// `deferred_terrain` remain resident but are not polled or published this
+    /// frame, preserving the original collision-hydration boundary even when
+    /// the decoded asset cache is warm after a seek.
+    pub fn drive_preloads_deferring_terrain(
+        &self,
+        asset_cache: &Arc<AssetCache>,
+        commands: Vec<crate::asset::preload::PreloadCommand>,
+        deferred_terrain: &[crate::terrain::TerrainSource],
+    ) -> PreloadDriveResult {
+        self.drive_preloads_internal(asset_cache, commands, deferred_terrain, true)
+    }
+
+    fn drive_preloads_internal(
+        &self,
+        asset_cache: &Arc<AssetCache>,
+        commands: Vec<crate::asset::preload::PreloadCommand>,
+        deferred_terrain: &[crate::terrain::TerrainSource],
+        capture_terrain_publications: bool,
+    ) -> PreloadDriveResult {
+        self.terrain_decode_residency.borrow_mut().begin_epoch();
+        for source in deferred_terrain {
+            self.terrain_decode_residency.borrow_mut().mark_source(
+                &source.locator,
+                &source.while_pending,
+                true,
+                |_| true,
+            );
         }
+        self.capture_terrain_requests();
+        let terrain_publications =
+            self.drive_terrain_requests(asset_cache, capture_terrain_publications);
+        self.terrain_decode_residency
+            .borrow_mut()
+            .evict_stale(|locator| self.heightmap_pipeline.evict(locator));
         use crate::asset::preload::PreloadKind;
         let mut preloads = self.preloads.borrow_mut();
         for cmd in commands {
@@ -271,9 +310,11 @@ impl SceneContext {
             {
                 // Already in flight: merge (the cache would hand back the
                 // same handle anyway); just accumulate the completion token.
-                if let Some(token) = cmd.token {
+                if let Some(token) = cmd.token.filter(|token| !entry.tokens.contains(token)) {
                     entry.tokens.push(token);
-                    if entry.tokens.len() > PRELOAD_TOKENS_CAP {
+                    if entry.tokens.len()
+                        > crate::asset::preload::TOKENS_PER_TARGET_CAP
+                    {
                         entry.tokens.remove(0);
                     }
                 }
@@ -312,7 +353,134 @@ impl SceneContext {
             settled.append(&mut entry.tokens);
             false
         });
-        settled
+        PreloadDriveResult {
+            settled,
+            terrain_publications,
+        }
+    }
+
+    /// Claim terrain hydration requests emitted by the producer that just ran.
+    /// Multi-producer shells call this immediately after each producer callback
+    /// so the process-global request queue cannot be attributed to a different
+    /// instance on the next frame. Single-producer shells can rely on
+    /// [`Self::drive_preloads`] calling it for them.
+    pub fn capture_terrain_requests(&self) {
+        self.terrain_requests
+            .borrow_mut()
+            .extend(crate::terrain::take_heightmap_requests());
+    }
+
+    /// Clone the logical terrain hydration queue for a whole-shell snapshot.
+    ///
+    /// Asset handles remain cache-owned and warm across a seek; restoring this
+    /// plain descriptor set prevents requests from an abandoned future from
+    /// leaking into the new branch.
+    pub fn snapshot_terrain_requests(&self) -> Vec<crate::terrain::TerrainSource> {
+        self.terrain_requests.borrow().iter().cloned().collect()
+    }
+
+    /// Replace the logical terrain hydration queue from a whole-shell snapshot.
+    pub fn restore_terrain_requests(&self, requests: Vec<crate::terrain::TerrainSource>) {
+        *self.terrain_requests.borrow_mut() = requests.into_iter().collect();
+    }
+
+    /// Re-publish one opaque terrain surface captured from the original
+    /// timeline. The data stays owned by the common runtime; NetSim only
+    /// schedules this event.
+    pub fn replay_terrain_publication(
+        &self,
+        publication: &crate::terrain::TerrainHydrationPublication,
+    ) {
+        crate::terrain::replay_heightmap_publication(publication);
+    }
+
+    /// Discard only the in-flight preload driver state before restoring a
+    /// whole-shell snapshot. Decoded pipeline handles and terrain hydration
+    /// remain warm; the snapshot's logical preload commands are re-submitted
+    /// on the next frame.
+    pub fn reset_preloads(&self) {
+        self.preloads.borrow_mut().clear();
+    }
+
+    fn drive_terrain_requests(
+        &self,
+        asset_cache: &Arc<AssetCache>,
+        capture_publications: bool,
+    ) -> Vec<crate::terrain::TerrainHydrationPublication> {
+        let mut publications = Vec::new();
+        self.terrain_requests.borrow_mut().retain(|source| {
+            let handle = asset_cache
+                .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &source.locator);
+            self.terrain_decode_residency
+                .borrow_mut()
+                .mark_unsettled(&source.while_pending, |locator| {
+                    asset_cache.is_unsettled(locator)
+                });
+            let resolved = crate::asset::resolve_while_pending_state(
+                asset_cache,
+                &self.heightmap_pipeline,
+                &handle,
+                &source.while_pending,
+            );
+            let primary_is_loading =
+                matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
+            self.terrain_decode_residency.borrow_mut().mark_source(
+                &source.locator,
+                &source.while_pending,
+                primary_is_loading,
+                |locator| asset_cache.is_unsettled(locator),
+            );
+            match resolved {
+                crate::asset::WhilePendingState::Loading(stand_in) => {
+                    if let Some(data) = stand_in {
+                        if capture_publications {
+                            crate::terrain::publish_heightmap(source, data.clone());
+                            publications.push(crate::terrain::TerrainHydrationPublication::new(
+                                source.clone(),
+                                data,
+                            ));
+                        } else {
+                            crate::terrain::publish_heightmap(source, data);
+                        }
+                    }
+                    true
+                }
+                crate::asset::WhilePendingState::Loaded(data) => {
+                    if capture_publications {
+                        crate::terrain::publish_heightmap(source, data.clone());
+                        publications.push(crate::terrain::TerrainHydrationPublication::new(
+                            source.clone(),
+                            data,
+                        ));
+                    } else {
+                        crate::terrain::publish_heightmap(source, data);
+                    }
+                    crate::asset::while_pending_chain_is_unsettled(
+                        asset_cache,
+                        &source.while_pending,
+                    )
+                }
+                crate::asset::WhilePendingState::Failed => {
+                    // Rendering uses the pipeline fallback after terminal
+                    // failure; publish that same flat surface for collision.
+                    let data = handle.fallback();
+                    if capture_publications {
+                        crate::terrain::publish_heightmap(source, data.clone());
+                        publications.push(crate::terrain::TerrainHydrationPublication::new(
+                            source.clone(),
+                            data,
+                        ));
+                    } else {
+                        crate::terrain::publish_heightmap(source, data);
+                    }
+                    crate::asset::while_pending_chain_is_unsettled(
+                        asset_cache,
+                        &source.while_pending,
+                    )
+                }
+            }
+        });
+        publications
     }
 
     fn draw_terrain(
@@ -341,6 +509,7 @@ impl SceneContext {
             &handle,
             &terrain.while_pending,
         );
+        let source_descriptor = terrain.source();
         let primary_is_loading =
             matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
         self.terrain_decode_residency.borrow_mut().mark_source(
@@ -350,12 +519,32 @@ impl SceneContext {
             |locator| render_context.asset_cache.is_unsettled(locator),
         );
         let source = match resolved {
-            crate::asset::WhilePendingState::Loaded(data)
-            | crate::asset::WhilePendingState::Loading(Some(data)) => data,
-            crate::asset::WhilePendingState::Loading(None)
-            | crate::asset::WhilePendingState::Failed => handle.fallback(),
+            crate::asset::WhilePendingState::Loaded(data) => {
+                crate::terrain::publish_heightmap(&source_descriptor, data.clone());
+                data
+            }
+            crate::asset::WhilePendingState::Loading(Some(data)) => {
+                crate::terrain::publish_heightmap(&source_descriptor, data.clone());
+                data
+            }
+            crate::asset::WhilePendingState::Loading(None) => handle.fallback(),
+            crate::asset::WhilePendingState::Failed => {
+                let fallback = handle.fallback();
+                crate::terrain::publish_heightmap(&source_descriptor, fallback.clone());
+                fallback
+            }
         };
-        crate::terrain::publish_heightmap(&terrain.heightmap, source.clone());
+        // Drawing ordinarily polls again next frame. If the node disappears,
+        // retain any source or placeholder already in flight so the shared
+        // asset-progress gate cannot be stranded indefinitely.
+        if primary_is_loading
+            || crate::asset::while_pending_chain_is_unsettled(
+                &render_context.asset_cache,
+                &terrain.while_pending,
+            )
+        {
+            crate::terrain::request_heightmap(source_descriptor);
+        }
         self.terrain_renderer.borrow_mut().draw(
             render_context,
             terrain,
@@ -1387,6 +1576,13 @@ mod preload_tests {
                     locator: missing.clone(),
                     token: Some(42),
                 },
+                // Restoring a whole-shell snapshot may resubmit a token to an
+                // entry that is still alive in the driver. It stays one-shot.
+                PreloadCommand {
+                    kind: PreloadKind::Model,
+                    locator: missing.clone(),
+                    token: Some(42),
+                },
                 PreloadCommand {
                     kind: PreloadKind::Model,
                     locator: missing.clone(),
@@ -1400,8 +1596,32 @@ mod preload_tests {
         sorted.sort();
         assert_eq!(sorted, vec![41, 42]);
         assert_eq!(ctx.preloads_in_flight(), 0);
-        // The path counted once in progress despite three commands.
+        // The path counted once in progress despite repeated commands.
         assert_eq!(cache.progress().total, 1);
+    }
+
+    #[test]
+    fn terrain_request_snapshot_restore_discards_future_requests() {
+        let ctx = SceneContext::new();
+        let earlier = crate::terrain::TerrainSource {
+            locator: "terrain/earlier.png".to_string(),
+            while_pending: Vec::new(),
+        };
+        let future = crate::terrain::TerrainSource {
+            locator: "terrain/future.png".to_string(),
+            while_pending: Vec::new(),
+        };
+
+        crate::terrain::request_heightmap(earlier.clone());
+        ctx.capture_terrain_requests();
+        let snapshot = ctx.snapshot_terrain_requests();
+
+        crate::terrain::request_heightmap(future);
+        ctx.capture_terrain_requests();
+        assert_eq!(ctx.snapshot_terrain_requests().len(), 2);
+
+        ctx.restore_terrain_requests(snapshot);
+        assert_eq!(ctx.snapshot_terrain_requests(), vec![earlier]);
     }
 
     #[test]
