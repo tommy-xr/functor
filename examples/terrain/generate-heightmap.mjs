@@ -5,7 +5,9 @@
 //
 // The checked-in 1024² map keeps the example download compact. For a shipping
 // 4 km world, author a 4096² source (roughly one height sample per metre); the
-// Terrain API and renderer do not change.
+// Terrain API and renderer do not change. Physics still caps collision at
+// 1025 samples per axis (about four-metre spacing across 4 km); see
+// `Physics.heightfield`.
 import { deflateSync } from "node:zlib";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
