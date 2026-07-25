@@ -37,6 +37,12 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
             TextureOptions {
                 wrap: true,
                 linear: true,
+                // Loaded textures are sampled on world geometry, which is
+                // usually minified: without a mip chain a distant surface
+                // samples one texel per fragment and crawls as the camera
+                // moves. The fallback checkerboard below deliberately keeps
+                // level 0 so a missing asset still reads as a flat marker.
+                mipmap: true,
             },
         )
     }
