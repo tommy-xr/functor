@@ -324,6 +324,11 @@ impl SceneContext {
         self.terrain_requests.borrow_mut().retain(|source| {
             let handle = asset_cache
                 .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &source.locator);
+            self.terrain_decode_residency
+                .borrow_mut()
+                .mark_unsettled(&source.while_pending, |locator| {
+                    asset_cache.is_unsettled(locator)
+                });
             let resolved = crate::asset::resolve_while_pending_state(
                 asset_cache,
                 &self.heightmap_pipeline,
