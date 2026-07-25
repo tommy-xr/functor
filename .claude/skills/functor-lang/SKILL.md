@@ -547,7 +547,12 @@ let world =
   Terrain.heightmap(Assets.heightmap, 4000.0, 4000.0, -40.0, 420.0)
   |> Terrain.maxPixelError(2.0)                            // finite XZ heightfield: Asset.Texture,
   |> Terrain.layered(low, high, rock, snow, 340.0)         //   width, depth, min/max Y. Black maps
-  |> Terrain.grass(13.0, 520.0, 5.5, grassColor)           //   to min, white to max. Modifiers are
+  |> Terrain.textured(lowMap, highMap, rockMap, snowMap,   //   to min, white to max. `textured`
+       24.0)                                               //   dresses `layered`'s bands with
+  |> Terrain.grass(13.0, 520.0, 5.5, grassColor)           //   detail albedo (needs `layered`;
+                                                           //   tileSize in world units, sampled
+                                                           //   at two scales, fading to the band
+                                                           //   colors with distance). Modifiers are
 Scene.terrain(world)                                       //   descriptor-last; rendering uses a
                                                            //   camera-relative quadtree, a shared
                                                            //   GPU grid, 16-bit height sampling,

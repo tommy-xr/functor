@@ -110,6 +110,10 @@ pub struct PreloadDriveResult {
     pub terrain_publications: Vec<crate::terrain::TerrainHydrationPublication>,
 }
 
+/// First texture unit for terrain detail maps; must match the terrain
+/// renderer's `DETAIL_TEXTURE_UNIT0` (unit 0 is the height texture).
+const TERRAIN_DETAIL_UNIT0: u32 = 1;
+
 /// Decoded terrain sources receive one unused shell frame of grace before
 /// eviction. This retains ordinary frame-to-frame reuse without keeping every
 /// level/hot-reload heightmap alive for the process lifetime.
@@ -545,6 +549,41 @@ impl SceneContext {
         {
             crate::terrain::request_heightmap(source_descriptor);
         }
+        // Detail maps stream like any other texture. Bind them before the
+        // terrain program runs; a map still loading leaves the whole set
+        // unbound so the terrain shows its flat band colors rather than a
+        // checkerboard smeared across kilometres.
+        let detail_bound = terrain.detail_textures().is_some_and(|maps| {
+            let handles = maps.map(|map| {
+                let asset = render_context
+                    .asset_cache
+                    .load_asset_with_pipeline(self.texture_pipeline.clone(), &map.locator);
+                crate::asset::resolve_while_pending_state(
+                    &render_context.asset_cache,
+                    &self.texture_pipeline,
+                    &asset,
+                    &map.while_pending,
+                )
+            });
+            let ready = handles.iter().all(|state| {
+                matches!(
+                    state,
+                    crate::asset::WhilePendingState::Loaded(_)
+                        | crate::asset::WhilePendingState::Loading(Some(_))
+                )
+            });
+            if ready {
+                for (index, state) in handles.iter().enumerate() {
+                    let texture = match state {
+                        crate::asset::WhilePendingState::Loaded(texture)
+                        | crate::asset::WhilePendingState::Loading(Some(texture)) => texture,
+                        _ => unreachable!("checked above"),
+                    };
+                    texture.bind(TERRAIN_DETAIL_UNIT0 + index as u32, render_context);
+                }
+            }
+            ready
+        });
         self.terrain_renderer.borrow_mut().draw(
             render_context,
             terrain,
@@ -552,6 +591,7 @@ impl SceneContext {
             world,
             projection,
             view,
+            detail_bound,
         );
     }
 

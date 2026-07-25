@@ -155,6 +155,33 @@ pub struct TerrainDescription {
     pub layers: Option<TerrainLayers>,
     #[serde(default)]
     pub grass: Option<TerrainGrass>,
+    #[serde(default)]
+    pub textures: Option<TerrainTextures>,
+}
+
+/// One detail albedo map, carrying its own `Asset.whilePending` chain so a
+/// terrain texture streams in exactly like any other asset.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainDetailTexture {
+    pub locator: String,
+    #[serde(default)]
+    pub while_pending: Vec<String>,
+}
+
+/// Per-band detail albedo for the bands [`TerrainLayers`] defines.
+///
+/// The renderer blends these with the SAME height/slope weights as the layer
+/// colors, so texturing changes what a band looks like without changing where
+/// it falls. Textures need `layers`; without it there are no bands to dress
+/// and the flat `color` is used instead.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainTextures {
+    pub low: TerrainDetailTexture,
+    pub high: TerrainDetailTexture,
+    pub rock: TerrainDetailTexture,
+    pub snow: TerrainDetailTexture,
+    /// World units covered by one tile of each detail map.
+    pub tile_size: f32,
 }
 
 impl TerrainDescription {
@@ -180,6 +207,7 @@ impl TerrainDescription {
             color: Self::DEFAULT_COLOR,
             layers: None,
             grass: None,
+            textures: None,
         }
     }
 
@@ -202,6 +230,19 @@ impl TerrainDescription {
     pub fn with_grass(mut self, grass: TerrainGrass) -> Self {
         self.grass = Some(grass);
         self
+    }
+
+    pub fn with_textures(mut self, textures: TerrainTextures) -> Self {
+        self.textures = Some(textures);
+        self
+    }
+
+    /// Every detail locator plus its pending chain, in binding order — the one
+    /// place the shell iterates terrain textures, so the renderer's sampler
+    /// order and the hydration order cannot drift apart.
+    pub fn detail_textures(&self) -> Option<[&TerrainDetailTexture; 4]> {
+        let t = self.textures.as_ref()?;
+        Some([&t.low, &t.high, &t.rock, &t.snow])
     }
 
     pub fn geometry(&self) -> TerrainGeometry {

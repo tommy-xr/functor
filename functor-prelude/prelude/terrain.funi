@@ -23,6 +23,18 @@ let color : (Color.t, t) => t
 /// piping.
 let layered : (Color.t, Color.t, Color.t, Color.t, float, t) => t
 
+/// Dress the `layered` bands with detail maps.
+///
+/// Each map supplies STRUCTURE, not color: it is divided by its own average, so
+/// it adds surface detail to the band's `layered` color without repainting it.
+/// (A photographic ground albedo averages brown; used directly it would turn a
+/// green hillside to dirt.) The maps blend by the same height and slope weights
+/// as the colors, so texturing changes what a band looks like, not where it
+/// falls. `tileSize` is the world-unit span of one tile; each map is sampled at
+/// two scales to hide the repeat, and detail fades out with distance. Requires
+/// `layered`. The terrain is last for piping.
+let textured : (Asset.Texture, Asset.Texture, Asset.Texture, Asset.Texture, float, t) => t
+
 /// Add camera-local GPU-instanced grass clusters.
 ///
 /// `spacing`, `distance`, and `bladeHeight` are terrain-local world units.
