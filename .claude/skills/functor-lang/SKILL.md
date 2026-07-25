@@ -543,6 +543,16 @@ Scene.model(Assets.shark)                                  // glTF by branded As
                                                            //   Asset.model(…) at a data
                                                            //   boundary); missing file =
                                                            //   logged error + empty fallback
+let world =
+  Terrain.heightmap(Assets.heightmap, 4000.0, 4000.0, -40.0, 420.0)
+  |> Terrain.maxPixelError(2.0)                            // finite XZ heightfield: Asset.Texture,
+  |> Terrain.layered(low, high, rock, snow, 340.0)         //   width, depth, min/max Y. Black maps
+  |> Terrain.grass(13.0, 520.0, 5.5, grassColor)           //   to min, white to max. Modifiers are
+Scene.terrain(world)                                       //   descriptor-last; rendering uses a
+                                                           //   camera-relative quadtree, a shared
+                                                           //   GPU grid, 16-bit height sampling,
+                                                           //   skirts, and bounded instanced grass
+                                                           //   (not thousands of Scene nodes)
 Asset.model("shark.glb") / Asset.texture("wood.png")       // typed asset locators, branded
 Asset.sound("boom.ogg")                                    //   per KIND (types Asset.Model /
                                                            //   Asset.Texture / Asset.Sound)
@@ -679,6 +689,8 @@ Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles f
 Camera.mapTrackedPose(camera, pose)                        // map rig-local Input.pose through
                                                            //   the authored camera; returns
                                                            //   world-space {position,forward,up}
+camera |> Camera.clip(0.5, 6000.0)                         // positive near/far, near < far;
+                                                           //   useful for world-scale terrain
 Camera2D.create(width, height)                             // center-origin, +X right, +Y up;
                                                            //   width/height are visible world
                                                            //   units at zoom 1; the renderer
