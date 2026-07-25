@@ -102,10 +102,19 @@ numbers. Rules:
   notification, then start the next — nearest-to-completion first so results
   land early.
 
-## Phase 1.5 — rolling gap fixers (don't wait for synthesis)
+## Phase 1.5 — gap fixers (sequential, after entries complete)
 
-As friction reports land, triage blockers immediately instead of batching them
-to the end — spawn a fixer/assessor agent (Opus, worktree) per cluster:
+Triage blockers as friction reports land, but run the fixing **sequentially,
+after the jam entries finish** — fixers cold-build Rust worktrees and run
+xreview, exactly the load the concurrency limits exist for. One fixer at a
+time, nearest-to-mergeable first.
+
+**Prefer the game's own agent for low-lift fixes.** If the gap is small and
+blocks that agent's game (a doc wording, a missing signature, a small prelude
+register), resume the entry's agent after its game is committed and have it
+open the fix PR itself — it has the full context and the motivating example.
+Spawn dedicated assessor/fixer agents only for cross-cutting or heavier gaps.
+Per cluster:
 
 - **Doc gaps** are usually same-day: fix in the `.funi` doc comments and/or the
   `site/` manual, verify with `npm run check:docs` + a site build, open a
@@ -150,8 +159,17 @@ it shows (samples should be readable), and asset hygiene.
 3. **File the gap work**: turn the consolidated list into issues or follow-up
    PRs (engine gaps vs doc gaps separately — doc gaps are often same-day
    fixes to `site/` or the generated reference).
-4. Clean up: remove jam worktrees/branches for entries that aren't promoted
-   (after saving their JAM_NOTES content into the synthesis report).
+4. Clean up. Two kinds, and both matter:
+   - **Processes, immediately after any agent stops or is killed**: sweep for
+     orphaned `functor` debug servers, `cargo`/`rustc`/`sccache` trees, and
+     Codex reviewer processes (`ps aux | grep -E 'functor|cargo|rustc|codex'`)
+     — killed agents routinely leave runaway compiles and hung reviewers
+     burning CPU.
+   - **Worktrees, only after synthesis**: first confirm every entry's work is
+     committed to its `jam/<slug>` branch (branches survive worktree removal;
+     staged-but-uncommitted work does not), save JAM_NOTES content into the
+     synthesis report, then remove the worktrees — including their multi-GB
+     `target/` dirs from fixer builds.
 
 ## Backlog — future jam briefs and what each stresses
 
