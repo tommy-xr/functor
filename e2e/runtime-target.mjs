@@ -364,9 +364,7 @@ try {
     const marioAssetUploads = requests
       .slice(cursor)
       .filter((request) => request.path === "/reload-asset");
-    const marioManifest = requests
-      .slice(cursor)
-      .find((request) => request.path === "/sync-assets");
+    const marioManifest = await nextRequest("/sync-assets", cursor);
     check(
       "sandbox example push includes sibling modules",
       marioFiles.map(([path]) => path).join(",") === "game.fun,assets.fun" &&
