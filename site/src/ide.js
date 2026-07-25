@@ -23,6 +23,7 @@ import {
 } from "./lang-intel.js";
 import { ProjectBridge } from "./project-bridge.js";
 import { createStatusBar } from "./status-bar.js";
+import { createRuntimeTarget } from "./runtime-target.js";
 import { zipFiles } from "./zip.js";
 
 const STORAGE_KEY = "functor-ide-project-v1";
@@ -151,6 +152,7 @@ const setStatus = (state, text, detail = "") => {
 // ---------------------------------------------------------------- editor
 
 let programmaticEdit = false;
+let runtimeTarget = null;
 
 const view = new EditorView({
   parent: els.editorHost,
@@ -181,6 +183,11 @@ const langReady = setupLangIntel().then((extensions) => {
 });
 
 const statusBar = createStatusBar({ host: document.getElementById("statusbar") });
+runtimeTarget = createRuntimeTarget({
+  host: document.getElementById("runtime-target"),
+  getProject: () => project.files,
+  onOutput: (level, message) => statusBar.appendOutput(level, message),
+});
 
 // Each lint pass (of the ACTIVE file — the per-document model) refreshes the
 // Problems panel; clicking a problem jumps the editor to it. Positions
@@ -261,6 +268,7 @@ const bridge = new ProjectBridge(els.player, {
 const schedulePush = () => {
   saveProject();
   bridge.setProject(project.files);
+  runtimeTarget.projectChanged();
 };
 
 // ---------------------------------------------------------------- sidebar
@@ -389,6 +397,7 @@ const restart = () => {
   setStatus("busy", "◌ loading…");
   els.player.src = "player.html?project=inline";
   bridge.setProject(project.files);
+  runtimeTarget.restart();
 };
 
 // ---------------------------------------------------------------- boot
@@ -426,6 +435,7 @@ window.__ide = {
     text: els.status.textContent,
     message: els.status.title,
   }),
+  runtimeTarget: () => runtimeTarget.state(),
   // Replace the active buffer, place the cursor, and open the completion popup
   // (explicit trigger) — the sandbox's seam, minus any push (programmaticEdit
   // suppresses the mirror-and-push listener).

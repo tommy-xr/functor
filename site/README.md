@@ -27,6 +27,16 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
   (`src/project-bridge.js`), localStorage persistence, and project download as a
   `.zip` (`src/zip.js`, a store-only writer). Asset (`.glb`/audio) management is a
   follow-up.
+- `src/runtime-target.js` — the shared external-runtime link in both editors.
+  The first explicit push uses `/load-project` (fresh `init`); later edits use
+  `/reload-project` (model preserved), with `/state` telemetry and `/capture`
+  shown in the panel. Sandbox examples also upload their declared local assets
+  before source, then finalize deletions after source is accepted; binary asset
+  management in the multi-file IDE remains a follow-up. To link a Quest, keep
+  its adb forward on `8123` and serve the site on another loopback port:
+  `npm run site:serve -- --port 8124`. The runtime intentionally rejects
+  non-loopback browser origins because its code-push API has no authentication.
+  Current Chromium may ask once for local-network access when the link starts.
 - `src/functor-lang.js` — the Functor Lang CodeMirror language + synthwave theme,
   shared by both editors.
 - `manual/index.html` — getting started, the game contract, language principles,
