@@ -24,6 +24,11 @@ const PATCH_QUADS: u32 = 64;
 const MAX_LEVEL: u32 = 10;
 const MAX_INSTANCES: usize = 8192;
 const MAX_GRASS_INSTANCES: usize = 20_000;
+/// First texture unit for the detail maps. Unit 0 stays the height texture.
+const DETAIL_TEXTURE_UNIT0: i32 = 1;
+/// Detail fade band, as a fraction of the terrain's longest side.
+const DETAIL_FADE_START: f32 = 0.08;
+const DETAIL_FADE_END: f32 = 0.28;
 
 const VERTEX_SHADER_SOURCE: &str = r#"
         // uv.xy plus 1 for a duplicated skirt vertex.
@@ -114,8 +119,40 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform float maxTerrainHeight;
         uniform float snowHeight;
         uniform int debugMode; // 0=lit, 1=normals, 2=tangents
+        uniform int useTextures;
+        uniform sampler2D lowTex;
+        uniform sampler2D highTex;
+        uniform sampler2D rockTex;
+        uniform sampler2D snowTex;
+        uniform float detailTile;
+        uniform float detailFadeStart;
+        uniform float detailFadeEnd;
+        // Explicitly this shader's own: fog owns fogCameraPos and does not set
+        // it when fog is disabled, but the detail fade must work regardless.
+        uniform vec3 detailCameraPos;
 
         out vec4 fragColor;
+
+        // One tile repeat is obvious across kilometres, so sample a second
+        // time at an irrational multiple and average: the two lattices only
+        // re-align at their product, which is far past the fade distance.
+        //
+        // `fade` resolves to the map's own top mip — a 1x1 average — instead
+        // of to an authored color. That makes the distance transition
+        // seamless for ANY map without asking the game to hand-match a band
+        // color to its texture, which is what a fixed far color would require.
+        // Returns STRUCTURE, not color: the sample divided by the map's own
+        // average (its top mip). That average is ~1.0 by construction, so
+        // multiplying a band color by this adds the map's detail without
+        // shifting its hue — a photographic albedo averages brown, and using
+        // it directly would repaint a green hillside as dirt. It also makes
+        // the distance fade exact: as `fade` reaches 0 the ratio is 1.0, i.e.
+        // no change, so there is nothing to seam against.
+        vec3 detail(sampler2D tex, vec2 uv, float fade) {
+            vec3 near = mix(texture(tex, uv).rgb, texture(tex, uv * 0.137).rgb, 0.5);
+            vec3 average = max(textureLod(tex, uv, 32.0).rgb, vec3(1e-3));
+            return mix(vec3(1.0), clamp(near / average, 0.0, 2.5), fade);
+        }
 
         void main() {
             vec3 n = normalize(worldNormal);
@@ -135,15 +172,33 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
             if (useLayers == 1) {
                 float heightRange = max(maxTerrainHeight - minTerrainHeight, 1e-4);
                 float h = clamp((localHeight - minTerrainHeight) / heightRange, 0.0, 1.0);
-                albedo = mix(lowColor, highColor, smoothstep(0.15, 0.72, h));
+                float bandWeight = smoothstep(0.15, 0.72, h);
                 float slope = 1.0 - clamp(n.y, 0.0, 1.0);
                 float rockWeight = smoothstep(0.30, 0.67, slope);
-                albedo = mix(albedo, rockColor, rockWeight);
                 float snowWeight = smoothstep(
                     snowHeight,
                     snowHeight + heightRange * 0.08,
                     localHeight) * (1.0 - rockWeight * 0.72);
+
+                albedo = mix(lowColor, highColor, bandWeight);
+                albedo = mix(albedo, rockColor, rockWeight);
                 albedo = mix(albedo, snowColor, snowWeight);
+
+                if (useTextures == 1) {
+                    // Past the fade the detail is sub-pixel: sampling it only
+                    // buys aliasing, so resolve to the flat band colors that
+                    // the untextured terrain already renders correctly.
+                    float fade = 1.0 - smoothstep(
+                        detailFadeStart, detailFadeEnd, distance(worldPos, detailCameraPos));
+                    // The SAME weights as the colors above: texturing dresses
+                    // the bands, it does not move them.
+                    vec2 uv = worldPos.xz / detailTile;
+                    vec3 structure = mix(
+                        detail(lowTex, uv, fade), detail(highTex, uv, fade), bandWeight);
+                    structure = mix(structure, detail(rockTex, uv, fade), rockWeight);
+                    structure = mix(structure, detail(snowTex, uv, fade), snowWeight);
+                    albedo *= structure;
+                }
             }
             vec3 shaded = albedo * diffuseLight + specularLight;
             fragColor = vec4(applyFog(shaded, worldPos), 1.0);
@@ -267,6 +322,12 @@ struct TerrainUniforms {
     max_terrain_height: UniformLocation,
     snow_height: UniformLocation,
     debug_mode: UniformLocation,
+    use_textures: UniformLocation,
+    detail_textures: [UniformLocation; 4],
+    detail_tile: UniformLocation,
+    detail_fade_start: UniformLocation,
+    detail_fade_end: UniformLocation,
+    detail_camera_pos: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
 }
@@ -431,6 +492,10 @@ impl TerrainRenderer {
         world: &Matrix4<f32>,
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
+        // Whether the shell resolved and bound the four detail maps to units
+        // 1..4 for this draw. Layers without textures — and a textured terrain
+        // whose maps have not streamed in — render the flat band colors.
+        detail_bound: bool,
     ) {
         if source.width < 2 || source.height < 2 {
             return;
@@ -560,6 +625,25 @@ impl TerrainRenderer {
                 DebugRenderMode::Default | DebugRenderMode::Physics => 0,
             };
             p.set_uniform_1i(gl, &u.debug_mode, debug_mode);
+            let detail = description
+                .textures
+                .as_ref()
+                .filter(|_| use_layers == 1 && detail_bound);
+            p.set_uniform_1i(gl, &u.use_textures, detail.is_some() as i32);
+            if let Some(textures) = detail {
+                for (unit, location) in u.detail_textures.iter().enumerate() {
+                    p.set_uniform_1i(gl, location, unit as i32 + DETAIL_TEXTURE_UNIT0);
+                }
+                p.set_uniform_1f(gl, &u.detail_tile, textures.tile_size);
+                // Scale the fade with the terrain, not the tile: what matters
+                // is how far the detail survives relative to the world it
+                // dresses, and the same tile reads very differently on a 200 m
+                // island and a 4 km map.
+                let span = description.width.max(description.depth);
+                p.set_uniform_1f(gl, &u.detail_fade_start, span * DETAIL_FADE_START);
+                p.set_uniform_1f(gl, &u.detail_fade_end, span * DETAIL_FADE_END);
+                p.set_uniform_vec3(gl, &u.detail_camera_pos, &ctx.camera_pos);
+            }
             u.lighting.set(p, ctx, view);
             u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
 
@@ -637,6 +721,17 @@ impl TerrainRenderer {
             max_terrain_height: program.get_uniform_location(ctx.gl, "maxTerrainHeight"),
             snow_height: program.get_uniform_location(ctx.gl, "snowHeight"),
             debug_mode: program.get_uniform_location(ctx.gl, "debugMode"),
+            use_textures: program.get_uniform_location(ctx.gl, "useTextures"),
+            detail_textures: [
+                program.get_uniform_location(ctx.gl, "lowTex"),
+                program.get_uniform_location(ctx.gl, "highTex"),
+                program.get_uniform_location(ctx.gl, "rockTex"),
+                program.get_uniform_location(ctx.gl, "snowTex"),
+            ],
+            detail_tile: program.get_uniform_location(ctx.gl, "detailTile"),
+            detail_fade_start: program.get_uniform_location(ctx.gl, "detailFadeStart"),
+            detail_fade_end: program.get_uniform_location(ctx.gl, "detailFadeEnd"),
+            detail_camera_pos: program.get_uniform_location(ctx.gl, "detailCameraPos"),
             lighting: LightingUniforms::get(&program, ctx.gl),
             fog: FogUniforms::get(&program, ctx.gl),
         };
