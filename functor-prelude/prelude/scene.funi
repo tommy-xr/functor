@@ -21,6 +21,8 @@ let plane : () => t
 let model : (Asset.Model) => t
 /// Create terrain from a rectangular grid of height values.
 let heightmap : (List<List<float>>) => t
+/// Create a scene node from an asset-backed terrain descriptor.
+let terrain : (Terrain.t) => t
 
 /// Group scene nodes under one transform.
 let group : (List<t>) => t

@@ -26,6 +26,6 @@ let layered : (Color.t, Color.t, Color.t, Color.t, float, t) => t
 /// Add camera-local GPU-instanced grass clusters.
 ///
 /// `spacing`, `distance`, and `bladeHeight` are terrain-local world units.
-/// Grass is suppressed on steep, flooded, and snowy samples. The terrain is
+/// Grass is suppressed on steep, low-lying, and snowy samples. The terrain is
 /// last for piping.
 let grass : (float, float, float, Color.t, t) => t

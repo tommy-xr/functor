@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 use glow::HasContext;
 
@@ -9,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     asset::{
         self,
-        pipelines::{ModelPipeline, RawImagePipeline, TexturePipeline},
+        pipelines::{
+            HeightmapData, HeightmapPipeline, ModelPipeline, RawImagePipeline, TexturePipeline,
+        },
         AssetCache, AssetHandle, AssetPollState, BuiltAssetPipeline,
     },
     composite::{
@@ -27,6 +32,7 @@ use crate::{
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
     skybox::{SkyboxDescription, SKYBOX_FRAGMENT_SHADER_SOURCE, SKYBOX_VERTEX_SHADER_SOURCE},
+    terrain_renderer::TerrainRenderer,
     texture::{RuntimeTexture, Texture2D, TextureData},
     DebugRenderMode, RenderContext, RenderPass,
 };
@@ -52,6 +58,10 @@ pub struct SceneContext {
     // GL mesh each frame; static terrain uploads exactly once. Keyed by
     // (rows, cols) — the stable identity of the mesh across frames.
     heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
+    heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
+    terrain_decode_residency: RefCell<TerrainDecodeResidency>,
+    terrain_renderer: RefCell<TerrainRenderer>,
+    terrain_frame_serial: Cell<u64>,
     // Render targets persist across frames/hot reloads, keyed by the target's
     // string id (the cross-frame identity). Buffers for ids a game stops
     // declaring are kept until exit — TODO: evict.
@@ -96,6 +106,71 @@ enum PreloadHandle {
 /// then expires unclaimed, exactly like a capped [`PENDING_AUDIO`] eviction.
 const PRELOAD_TOKENS_CAP: usize = 1024;
 
+/// Decoded terrain sources receive one unused shell frame of grace before
+/// eviction. This retains ordinary frame-to-frame reuse without keeping every
+/// level/hot-reload heightmap alive for the process lifetime.
+#[derive(Default)]
+struct TerrainDecodeResidency {
+    epoch: u64,
+    last_used: HashMap<String, u64>,
+}
+
+impl TerrainDecodeResidency {
+    fn begin_epoch(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    fn mark<'a>(&mut self, locators: impl IntoIterator<Item = &'a str>) {
+        for locator in locators {
+            if let Some(last_used) = self.last_used.get_mut(locator) {
+                *last_used = self.epoch;
+            } else {
+                self.last_used.insert(locator.to_string(), self.epoch);
+            }
+        }
+    }
+
+    fn mark_source(
+        &mut self,
+        primary: &str,
+        while_pending: &[String],
+        primary_is_loading: bool,
+        mut is_unsettled: impl FnMut(&str) -> bool,
+    ) {
+        self.mark(std::iter::once(primary));
+        self.mark(
+            while_pending
+                .iter()
+                .filter(|locator| primary_is_loading || is_unsettled(locator))
+                .map(String::as_str),
+        );
+    }
+
+    fn mark_unsettled(
+        &mut self,
+        locators: &[String],
+        mut is_unsettled: impl FnMut(&str) -> bool,
+    ) {
+        self.mark(
+            locators
+                .iter()
+                .filter(|locator| is_unsettled(locator))
+                .map(String::as_str),
+        );
+    }
+
+    fn evict_stale(&mut self, mut evict: impl FnMut(&str)) {
+        let epoch = self.epoch;
+        self.last_used.retain(|locator, last_used| {
+            let recent = epoch.wrapping_sub(*last_used) <= 1;
+            if !recent {
+                evict(locator);
+            }
+            recent
+        });
+    }
+}
+
 enum SkyboxEntry {
     /// Six pending face loads, in `SkyboxDescription::faces` order.
     Loading(Vec<Arc<AssetHandle<TextureData>>>),
@@ -128,6 +203,7 @@ impl SceneContext {
         self.model_pipeline.evict(path);
         self.texture_pipeline.evict(path);
         self.raw_image_pipeline.evict(path);
+        self.heightmap_pipeline.evict(path);
         self.skyboxes
             .borrow_mut()
             .retain(|faces, _| !faces.split('\n').any(|face| face == path));
@@ -141,6 +217,10 @@ impl SceneContext {
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
             heightmaps: RefCell::new(HashMap::new()),
+            heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
+            terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
+            terrain_renderer: RefCell::new(TerrainRenderer::default()),
+            terrain_frame_serial: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
             render_targets: RefCell::new(HashMap::new()),
@@ -152,6 +232,15 @@ impl SceneContext {
             composite_program: RefCell::new(None),
             preloads: RefCell::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn begin_terrain_frame(&self, gl: &glow::Context, external_frame: Option<u64>) {
+        let frame = external_frame.unwrap_or_else(|| {
+            let next = self.terrain_frame_serial.get().wrapping_add(1);
+            self.terrain_frame_serial.set(next);
+            next
+        });
+        self.terrain_renderer.borrow_mut().begin_frame(gl, frame);
     }
 
     /// The shell's per-frame preload step (B.5): turn this frame's
@@ -168,6 +257,11 @@ impl SceneContext {
         asset_cache: &Arc<AssetCache>,
         commands: Vec<crate::asset::preload::PreloadCommand>,
     ) -> Vec<u64> {
+        {
+            let mut residency = self.terrain_decode_residency.borrow_mut();
+            residency.begin_epoch();
+            residency.evict_stale(|locator| self.heightmap_pipeline.evict(locator));
+        }
         use crate::asset::preload::PreloadKind;
         let mut preloads = self.preloads.borrow_mut();
         for cmd in commands {
@@ -219,6 +313,57 @@ impl SceneContext {
             false
         });
         settled
+    }
+
+    fn draw_terrain(
+        &self,
+        render_context: &RenderContext,
+        terrain: &crate::terrain::TerrainDescription,
+        world: &Matrix4<f32>,
+        projection: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+    ) {
+        let handle = render_context
+            .asset_cache
+            .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &terrain.heightmap);
+        // Snapshot residency before polling. A hot-reloaded stand-in can
+        // decode and settle synchronously inside resolve_while_pending_state;
+        // after that poll is_unsettled() is already false, so a post-poll
+        // mark alone would let the new decoded handle escape eviction.
+        self.terrain_decode_residency
+            .borrow_mut()
+            .mark_unsettled(&terrain.while_pending, |locator| {
+                render_context.asset_cache.is_unsettled(locator)
+            });
+        let resolved = crate::asset::resolve_while_pending_state(
+            &render_context.asset_cache,
+            &self.heightmap_pipeline,
+            &handle,
+            &terrain.while_pending,
+        );
+        let primary_is_loading =
+            matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
+        self.terrain_decode_residency.borrow_mut().mark_source(
+            &terrain.heightmap,
+            &terrain.while_pending,
+            primary_is_loading,
+            |locator| render_context.asset_cache.is_unsettled(locator),
+        );
+        let source = match resolved {
+            crate::asset::WhilePendingState::Loaded(data)
+            | crate::asset::WhilePendingState::Loading(Some(data)) => data,
+            crate::asset::WhilePendingState::Loading(None)
+            | crate::asset::WhilePendingState::Failed => handle.fallback(),
+        };
+        crate::terrain::publish_heightmap(&terrain.heightmap, source.clone());
+        self.terrain_renderer.borrow_mut().draw(
+            render_context,
+            terrain,
+            source,
+            world,
+            projection,
+            view,
+        );
     }
 
     #[cfg(test)]
@@ -606,6 +751,7 @@ pub enum Shape {
 pub enum SceneObject {
     Geometry(Shape),
     Model(ModelDescription),
+    Terrain(Box<crate::terrain::TerrainDescription>),
     Material(MaterialDescription, Vec<Scene3D>),
     Group(Vec<Scene3D>),
 }
@@ -663,6 +809,13 @@ impl Scene3D {
         }
     }
 
+    pub fn terrain(terrain: crate::terrain::TerrainDescription) -> Self {
+        Scene3D {
+            obj: SceneObject::Terrain(Box::new(terrain)),
+            xform: Matrix4::identity(),
+        }
+    }
+
     /// Set the animation expression on every `Model` node in this subtree —
     /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
     /// that one model; applying over a group animates each model in it.
@@ -685,7 +838,7 @@ impl Scene3D {
                     .map(|item| item.with_animation(expr.clone()))
                     .collect(),
             ),
-            geometry @ SceneObject::Geometry(_) => geometry,
+            leaf @ (SceneObject::Geometry(_) | SceneObject::Terrain(_)) => leaf,
         };
         Scene3D { obj, ..self }
     }
@@ -960,6 +1113,23 @@ named \"{name}\" — {hint}"
                 }
             }
 
+            // The dedicated GPU terrain path is initialized and drawn here;
+            // keeping it as its own scene leaf (rather than a giant
+            // `Shape::Heightmap`) lets rendering choose LOD without changing
+            // the pure scene description. Terrain receives the forward
+            // pass's shadows but does not yet render into the shadow map.
+            SceneObject::Terrain(terrain) if !depth_pass => {
+                let xform = world_matrix * self.xform;
+                scene_context.draw_terrain(
+                    render_context,
+                    terrain,
+                    &xform,
+                    projection_matrix,
+                    view_matrix,
+                );
+            }
+            SceneObject::Terrain(_) => {}
+
             SceneObject::Material(material_description, items) => {
                 let material = material_description.get(render_context, scene_context);
                 for item in items.into_iter() {
@@ -1232,5 +1402,136 @@ mod preload_tests {
         assert_eq!(ctx.preloads_in_flight(), 0);
         // The path counted once in progress despite three commands.
         assert_eq!(cache.progress().total, 1);
+    }
+
+    #[test]
+    fn terrain_decode_residency_evicts_sources_after_one_unused_epoch() {
+        let mut residency = TerrainDecodeResidency::default();
+        let mut evicted = Vec::new();
+
+        residency.begin_epoch();
+        residency.mark(["world-a.png", "proxy-a.png"]);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert!(evicted.is_empty());
+
+        residency.begin_epoch();
+        residency.mark(["world-b.png"]);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert!(evicted.is_empty(), "one unused epoch is retained as grace");
+
+        residency.begin_epoch();
+        residency.mark(["world-b.png"]);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        evicted.sort();
+        assert_eq!(evicted, ["proxy-a.png", "world-a.png"]);
+    }
+
+    #[test]
+    fn settled_terrain_stand_ins_expire_while_the_primary_stays_resident() {
+        let mut residency = TerrainDecodeResidency::default();
+        let pending = vec!["world-low.png".to_string()];
+        let mut evicted = Vec::new();
+
+        residency.begin_epoch();
+        residency.mark_source("world.png", &pending, true, |_| false);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+
+        residency.begin_epoch();
+        residency.mark_source("world.png", &pending, false, |_| false);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert!(evicted.is_empty(), "stand-in keeps one epoch of grace");
+
+        residency.begin_epoch();
+        residency.mark_source("world.png", &pending, false, |_| false);
+        residency.evict_stale(|locator| evicted.push(locator.to_string()));
+        assert_eq!(evicted, ["world-low.png"]);
+        assert!(residency.last_used.contains_key("world.png"));
+    }
+
+    #[test]
+    fn synchronously_reloaded_terrain_stand_in_remains_evictable() {
+        let ctx = SceneContext::new();
+        let cache = Arc::new(AssetCache::new());
+        let primary = temp_glb("terrain-residency-primary.png");
+        let stand_in = temp_glb("terrain-residency-stand-in.png");
+        let pending = vec![stand_in.clone()];
+        let primary_handle =
+            cache.load_asset_with_pipeline(ctx.heightmap_pipeline.clone(), &primary);
+        assert!(matches!(
+            primary_handle.poll_state(),
+            AssetPollState::Loaded(_)
+        ));
+        let stand_in_handle =
+            cache.load_asset_with_pipeline(ctx.heightmap_pipeline.clone(), &stand_in);
+        assert!(matches!(
+            stand_in_handle.poll_state(),
+            AssetPollState::Loaded(_)
+        ));
+
+        // Let the original settled stand-in age out of decoded residency.
+        {
+            let mut residency = ctx.terrain_decode_residency.borrow_mut();
+            residency.begin_epoch();
+            residency.mark([primary.as_str(), stand_in.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+        }
+        assert!(ctx.heightmap_pipeline.get_opt(&stand_in).is_none());
+
+        // Hot reload makes the already-started stand-in unsettled. Its local
+        // read then settles synchronously during resolution while the primary
+        // remains loaded.
+        cache.evict(&stand_in);
+        ctx.heightmap_pipeline.evict(&stand_in);
+        assert!(cache.is_unsettled(&stand_in));
+        {
+            let mut residency = ctx.terrain_decode_residency.borrow_mut();
+            residency.mark_unsettled(&pending, |locator| cache.is_unsettled(locator));
+        }
+        assert!(matches!(
+            crate::asset::resolve_while_pending_state(
+                &cache,
+                &ctx.heightmap_pipeline,
+                &primary_handle,
+                &pending,
+            ),
+            crate::asset::WhilePendingState::Loaded(_)
+        ));
+        assert!(!cache.is_unsettled(&stand_in));
+        ctx.terrain_decode_residency.borrow_mut().mark_source(
+            &primary,
+            &pending,
+            false,
+            |locator| cache.is_unsettled(locator),
+        );
+        assert!(
+            ctx.terrain_decode_residency
+                .borrow()
+                .last_used
+                .contains_key(&stand_in),
+            "the pre-poll mark retains a synchronously settled decode"
+        );
+
+        // The refreshed decode still receives one grace epoch, then expires.
+        {
+            let mut residency = ctx.terrain_decode_residency.borrow_mut();
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+            assert!(ctx.heightmap_pipeline.get_opt(&stand_in).is_some());
+            residency.begin_epoch();
+            residency.mark([primary.as_str()]);
+            residency.evict_stale(|locator| ctx.heightmap_pipeline.evict(locator));
+        }
+        assert!(ctx.heightmap_pipeline.get_opt(&stand_in).is_none());
+
+        for path in [primary, stand_in] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }

@@ -920,6 +920,7 @@ pub fn android_main(app: AndroidApp) {
     // model-driven locomotion and physical room-scale motion remain additive.
     let mut tracking_reference: Option<TrackingPose> = None;
     let mut tracking_reference_reset_at: Option<xr::Time> = None;
+    let mut terrain_frame_id = 0_u64;
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
 
@@ -1148,6 +1149,51 @@ pub fn android_main(app: AndroidApp) {
         let mut captured_eyes = capture_due.then(Vec::new);
         let mut capture_error = None;
 
+        // Terrain LOD follows the tracked center pose for distance, while
+        // culling uses the exact union of both displaced/canted eye frusta.
+        // Both eye draws receive the same fixed-size data and pixel scale, so
+        // selection is conservative and byte-identical across the pair.
+        let tracked_center = views.first().and_then(|left| {
+            let left = tracking_pose_from_view(left);
+            views
+                .get(1)
+                .and_then(|right| TrackingPose::midpoint(left, tracking_pose_from_view(right)))
+                .or_else(|| TrackingPose::midpoint(left, left))
+        });
+        let lod_camera = match (tracking_reference, tracked_center) {
+            (Some(reference), Some(center)) => frame.camera.compose_tracked_view(reference, center),
+            _ => frame.camera.clone(),
+        };
+        let fallback_lod_projection = lod_camera.projection_matrix(1.0);
+        let mut lod_view_projections = [fallback_lod_projection * lod_camera.view_matrix(); 2];
+        let mut lod_frustum_count = 0;
+        let mut lod_projection_scale = 0.0_f32;
+        let mut lod_viewport_height = 1.0_f32;
+        for (slot, (eye, view)) in eyes.iter().zip(views.iter()).take(2).enumerate() {
+            let eye_camera = tracking_reference
+                .map(|reference| {
+                    frame
+                        .camera
+                        .compose_tracked_view(reference, tracking_pose_from_view(view))
+                })
+                .unwrap_or_else(|| frame.camera.clone());
+            let eye_projection = eye_camera.projection_matrix_from_fov_angles(
+                view.fov.angle_left,
+                view.fov.angle_right,
+                view.fov.angle_down,
+                view.fov.angle_up,
+            );
+            lod_view_projections[slot] = eye_projection * eye_camera.view_matrix();
+            lod_frustum_count += 1;
+            lod_projection_scale = lod_projection_scale.max(eye_projection.y.y.abs());
+            lod_viewport_height = lod_viewport_height.max(eye.height as f32);
+        }
+        if lod_frustum_count == 0 {
+            lod_frustum_count = 1;
+            lod_projection_scale = fallback_lod_projection.y.y.abs();
+        }
+        terrain_frame_id = terrain_frame_id.wrapping_add(1);
+
         for (eye, view) in eyes.iter_mut().zip(views.iter()) {
             use glow::HasContext;
             let image_index = eye.swapchain.acquire_image().expect("acquire") as usize;
@@ -1181,6 +1227,11 @@ pub fn android_main(app: AndroidApp) {
                 &frame,
                 &camera,
                 &projection,
+                &lod_camera,
+                &lod_view_projections[..lod_frustum_count],
+                lod_projection_scale,
+                lod_viewport_height,
+                terrain_frame_id,
                 frame_time.clone(),
                 Viewport::new(eye.width, eye.height),
                 functor_runtime_common::DebugRenderMode::Default,

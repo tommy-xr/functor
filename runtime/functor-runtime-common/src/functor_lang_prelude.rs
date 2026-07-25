@@ -1510,6 +1510,11 @@ manifest's Assets.<name>, or Asset.model(\"file.glb\")";
             while_pending: path.while_pending,
         }))
     });
+    reg.fn1(
+        "Scene.terrain",
+        "Scene.terrain(terrain)",
+        |terrain: FunctorLangTerrain| FunctorLangScene(Scene3D::terrain(terrain.0)),
+    );
     // A subdivided XZ grid displaced by per-vertex heights — the Functor Lang
     // face of F#'s `Scene3D.heightmap` (the protocol `Heightmap` shape). The
     // surface is a list of ROWS (each an equal-length list of heights):
@@ -7107,6 +7112,33 @@ row 1 has 3"
             run_fail("let main = () => Scene.heightmap([[0.0, 1.0], [2.0, \"x\"]])"),
             "expected a number, got a string"
         );
+    }
+
+    #[test]
+    fn terrain_descriptor_emits_the_protocol_leaf() {
+        let frame = frame_of(
+            "let world =\n\
+               Terrain.heightmap(Asset.texture(\"world.png\"), 4000.0, 4000.0, -80.0, 520.0)\n\
+               |> Terrain.maxPixelError(3.0)\n\
+               |> Terrain.color(Color.rgb(0.2, 0.4, 0.1))\n\
+             let main = () =>\n\
+               Frame.create(\n\
+                 Camera.lookAt(Vec3.make(0.0, 400.0, -900.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+                 Scene.terrain(world))",
+        );
+        let SceneObject::Terrain(terrain) = &frame.scene.obj else {
+            panic!("expected a Terrain node, got {:?}", frame.scene.obj);
+        };
+        assert_eq!(terrain.heightmap, "world.png");
+        assert_eq!((terrain.width, terrain.depth), (4000.0, 4000.0));
+        assert_eq!((terrain.min_height, terrain.max_height), (-80.0, 520.0));
+        assert_eq!(terrain.max_pixel_error, 3.0);
+        assert_eq!(terrain.color, [0.2, 0.4, 0.1]);
+
+        let json = serde_json::to_string(&frame).expect("serialize");
+        assert!(json.contains(r#""Terrain""#), "json: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     #[test]

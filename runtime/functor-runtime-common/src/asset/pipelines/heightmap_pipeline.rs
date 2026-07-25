@@ -10,8 +10,7 @@ pub struct HeightmapData {
     pub(crate) width: u32,
     pub(crate) height: u32,
     /// Deterministic content fingerprint for fast renderer/cache invalidation.
-    /// Semantic equality still includes the samples; `Arc<HeightmapData>`
-    /// takes a pointer fast path for unchanged per-frame declarations.
+    /// Semantic equality still includes the samples.
     pub(crate) revision: u64,
 }
 

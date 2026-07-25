@@ -259,11 +259,27 @@ pub fn resolve_while_pending<T: 'static>(
     primary: &AssetHandle<T>,
     while_pending: &[String],
 ) -> Arc<T> {
-    if while_pending.is_empty() {
-        // The overwhelmingly common case: byte-identical to the old
-        // single-poll `get()` path.
-        return primary.get();
+    match resolve_while_pending_state(cache, pipeline, primary, while_pending) {
+        WhilePendingState::Loaded(asset) | WhilePendingState::Loading(Some(asset)) => asset,
+        WhilePendingState::Loading(None) | WhilePendingState::Failed => primary.fallback(),
     }
+}
+
+/// Explicit state behind [`resolve_while_pending`]. Long-lived shell caches
+/// use this to retain stand-ins only while the primary is actually pending.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WhilePendingState<T> {
+    Loading(Option<Arc<T>>),
+    Loaded(Arc<T>),
+    Failed,
+}
+
+pub fn resolve_while_pending_state<T: 'static>(
+    cache: &Arc<AssetCache>,
+    pipeline: &Arc<super::BuiltAssetPipeline<T>>,
+    primary: &AssetHandle<T>,
+    while_pending: &[String],
+) -> WhilePendingState<T> {
     let primary_state = primary.poll_state();
     let pending = matches!(primary_state, super::AssetPollState::Loading);
     let mut stand_in: Option<Arc<T>> = None;
@@ -278,9 +294,9 @@ pub fn resolve_while_pending<T: 'static>(
         }
     }
     match primary_state {
-        super::AssetPollState::Loaded(asset) => asset,
-        super::AssetPollState::Failed => primary.fallback(),
-        super::AssetPollState::Loading => stand_in.unwrap_or_else(|| primary.fallback()),
+        super::AssetPollState::Loaded(asset) => WhilePendingState::Loaded(asset),
+        super::AssetPollState::Failed => WhilePendingState::Failed,
+        super::AssetPollState::Loading => WhilePendingState::Loading(stand_in),
     }
 }
 
