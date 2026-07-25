@@ -969,7 +969,16 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
         let state = state.clone();
         Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_e: web_sys::CloseEvent| {
             with_live_game(|g| g.net_push_disconnected(key.clone(), iid));
-            // Drop our handle so a still-declared Sub.connect reconnects next frame.
+            // Drop our handle so the key is free to be opened again.
+            //
+            // NB it will not be, today: `reconcile_connections` only emits a
+            // `Connect` for a key ABSENT from the producer's `live_conn_keys`,
+            // and that set is re-seeded from the declared subs every frame — so
+            // a still-declared `Sub.connect` never re-fires and a dropped
+            // connection stays down. (This comment used to claim the reconnect
+            // happened.) Reconnect/backoff is its own change: the shell would
+            // have to retract the key from the producer's live set here.
+            // [xreview]
             let mut s = state.borrow_mut();
             s.conns.remove(&id);
             s.by_key.remove(&key);
@@ -980,8 +989,18 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
 
     let on_error = {
         let key = key.clone();
-        Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |e: web_sys::ErrorEvent| {
-            with_live_game(|g| g.net_push_conn_error(key.clone(), iid, e.message()));
+        // A WebSocket's `error` event is a PLAIN `Event`, not an `ErrorEvent` —
+        // it carries no `message`. Typing it as `ErrorEvent` and calling
+        // `.message()` made the generated glue read `length` off `undefined`,
+        // throwing a JS TypeError and then TRAPPING the wasm module: a game
+        // whose server simply wasn't up took the whole runtime down with it.
+        // The browser withholds the reason for a socket failure by design, so
+        // there is nothing to recover — and the endpoint is already the `key`
+        // this error is reported against. [xreview]
+        Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            with_live_game(|g| {
+                g.net_push_conn_error(key.clone(), iid, "connection failed".to_string())
+            });
         })
     };
     ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
@@ -990,6 +1009,14 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
 
 #[wasm_bindgen(start)]
 pub fn main() {
+    // Report panics to the console with their message and location. Without a
+    // hook a wasm panic reaches the page as a bare `RuntimeError: unreachable`
+    // — no message, no file, no line — which is how the refused-socket trap in
+    // `ws_connect` stayed unexplained. (The job `console_error_panic_hook`
+    // does; two lines here, so we don't take the dependency.)
+    std::panic::set_hook(Box::new(|info| {
+        web_sys::console::error_1(&format!("[functor-lang] panic: {info}").into());
+    }));
     spawn_local(async {
         run_async().await.unwrap_throw();
     })

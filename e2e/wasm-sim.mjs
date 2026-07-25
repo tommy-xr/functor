@@ -26,13 +26,14 @@
 // suite covers that under impaired links, and link impairment is not exposed to
 // JS yet (it arrives with the IDE's latency knobs).
 //
-// Known gap, stated rather than papered over: this does NOT verify that the
-// single game is suspended while the sim runs. Doing that needs a live single
-// game to poke, and booting this project trips the pre-existing refused-socket
-// panic below — which may already have killed it, so a "suspension works"
-// assertion here could pass vacuously. The suspension gates are covered by
-// construction and review; a real test wants a project whose default entry opens
-// no socket, which is worth building when the panic is fixed. [xreview]
+// It also verifies the SUSPENSION invariant the design rests on: while a sim
+// owns the page the single game must stop simulating, or the two contend for the
+// thread's shared command queues. `window.__scrub.frame()` advances only when
+// the single game ticks, so it is the observable — and the test first asserts
+// the single game is genuinely RUNNING, without which "it stopped" would pass
+// vacuously. (That vacuity was real until the refused-socket panic was fixed:
+// booting this project used to trap the runtime, so there was nothing alive to
+// suspend.) [xreview]
 //
 // Run manually (owns its own server on :8080):
 //
@@ -184,6 +185,33 @@ async function main() {
     // Plus a moment for any follow-on connect to land before the snapshot.
     await sleep(1000);
 
+    // The single game must be ALIVE before we claim the sim suspends it —
+    // otherwise every assertion below passes for the wrong reason.
+    const singleFrame = () => page.evaluate(() => window.__scrub?.frame() ?? null);
+    // Wait in RENDER FRAMES, not wall-clock: the thing under test is whether the
+    // game ticks, and a slow runner would make a fixed sleep flaky in both
+    // directions (a false "not advancing", or a suspension "proved" without a
+    // single render opportunity). [xreview]
+    const waitRenderFrames = (n) =>
+      page.evaluate(
+        (count) =>
+          new Promise((resolve) => {
+            let seen = 0;
+            const tick = () => (++seen >= count ? resolve() : requestAnimationFrame(tick));
+            requestAnimationFrame(tick);
+          }),
+        n,
+      );
+
+    const frameA = await singleFrame();
+    await waitRenderFrames(20);
+    const frameB = await singleFrame();
+    check(
+      frameA !== null && frameB !== null && frameB > frameA,
+      "the single game is running before the sim starts",
+      `frames ${frameA} -> ${frameB}`,
+    );
+
     // 1. Start the sim: three producers built from this project's own sources.
     const socketsBefore = await page.evaluate(() => window.__socketsOpened);
     const count = await page.evaluate((entries) => window.__sim.start(entries, 1), ENTRIES);
@@ -270,22 +298,19 @@ async function main() {
     // started" line (console events flush asynchronously, so wall-clock phase
     // tagging in this process is racy).
     //
-    // Boot noise is deliberately excluded, and it is NOT this feature's: the
-    // page first boots the project's default entry as an ordinary single game,
-    // and `examples/mp`'s client immediately opens a REAL WebSocket to its
-    // server — which nothing is serving here, so the connection is refused.
-    //
-    // That refusal trips a wasm panic (`RuntimeError: unreachable`) in the
-    // single-game socket path. It is PRE-EXISTING: booting this project on an
-    // unmodified main produces the byte-identical three errors with no sim
-    // involved at all. Tracked separately; deliberately not fixed here so this
-    // change stays reviewable. Once the sim starts, the single game is
-    // suspended and the sim opens no sockets whatsoever.
+    // Boot is now expected to be CLEAN, which is a regression test in itself:
+    // `examples/mp`'s client opens a real WebSocket to a server nothing is
+    // serving, and that refusal used to trap the whole wasm runtime
+    // (`RuntimeError: unreachable`, preceded by a TypeError from the glue
+    // reading `message` off a plain `Event`). The only line the page may still
+    // print is Chrome's own ERR_CONNECTION_REFUSED, which is the browser
+    // reporting a genuinely absent server and is not ours to silence.
     const startedAt = log.findIndex((m) => m.includes("sim started"));
     check(startedAt >= 0, "the runtime logged the sim starting");
     const simLog = startedAt >= 0 ? log.slice(startedAt) : log;
     const errors = simLog.filter((m) => /error|panic|unreachable/i.test(m));
     check(errors.length === 0, "the sim logs no errors", errors.slice(0, 5).join(" | "));
+
 
     // 6. The sim opened no REAL sockets — the whole session crossed the virtual
     // network only. (Boot-time sockets belong to the single game, before the
@@ -298,7 +323,22 @@ async function main() {
       `${socketsBefore} -> ${socketsAfter}; sockets: ${socketLog.join(", ")}`,
     );
 
-    // 7. Stop tears the sim down and hands the page back.
+    // 7. The single game is SUSPENDED while the sim owns the page: its scene
+    // frame stops advancing, because it no longer ticks. This is the invariant
+    // that keeps the two from contending for the shared command queues.
+    const suspendedA = await singleFrame();
+    await waitRenderFrames(20);
+    const suspendedB = await singleFrame();
+    check(
+      // `!== null` guards the vacuity this check exists to prevent: if the
+      // scrubber seam vanished, `null === null` would report a suspension that
+      // was really an absence. [xreview]
+      suspendedA !== null && suspendedA === suspendedB,
+      "the single game is suspended while the sim runs",
+      `frames ${suspendedA} -> ${suspendedB}`,
+    );
+
+    // 8. Stop tears the sim down and hands the page back.
     await page.evaluate(() => window.__sim.stop());
     check((await page.evaluate(() => window.__sim.len())) === 0, "stop tears the sim down");
     const afterStop = await page.evaluate(() => {
@@ -313,6 +353,28 @@ async function main() {
       afterStop.includes("no simulation is running"),
       "the exports report cleanly once stopped",
       afterStop,
+    );
+
+    // 9. ...and the single game resumes simulating once it has the page back.
+    const resumedA = await singleFrame();
+    await waitRenderFrames(20);
+    const resumedB = await singleFrame();
+    check(
+      resumedA !== null && resumedB > resumedA,
+      "the single game resumes after the sim stops",
+      `frames ${resumedA} -> ${resumedB}`,
+    );
+
+    // 10. LAST, so it covers everything above — boot, the sim, suspension,
+    // stop, and resume. Nothing in the page's life may trap the runtime; a
+    // refused socket used to. Give any straggling error event a turn to be
+    // delivered before reading the log. [xreview]
+    await waitRenderFrames(5);
+    const traps = log.filter((m) => /unreachable|panic|TypeError/i.test(m));
+    check(
+      traps.length === 0,
+      "no wasm trap or JS type error, anywhere in the run",
+      traps.slice(0, 3).join(" | "),
     );
     if (process.env.SIM_DEBUG) {
       console.log("\n--- full page log ---");
