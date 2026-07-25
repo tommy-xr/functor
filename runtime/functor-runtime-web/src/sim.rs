@@ -29,6 +29,7 @@ use std::cell::RefCell;
 
 use functor_netsim::NetSim;
 use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
+use functor_runtime_common::Frame;
 use wasm_bindgen::prelude::*;
 
 use crate::functor_lang_game::WebPlatform;
@@ -39,6 +40,12 @@ thread_local! {
     /// safe to drain per instance here (the native harness has to serialize its
     /// tests for exactly this reason).
     static SIM: RefCell<Option<NetSim>> = const { RefCell::new(None) };
+
+    /// The entry each instance was built from, positionally by id. The sim
+    /// knows an instance's role (it derives server/client from the live routing
+    /// tables) but not which FILE it came from, and a pane labelled only
+    /// "client" is ambiguous the moment two roles share a project.
+    static ENTRIES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 
     /// A `start_sim` is between its first await and installing its sim. Guards
     /// against two overlapping starts clobbering each other.
@@ -174,6 +181,7 @@ pub async fn start_sim(entries: JsValue, seed: f64) -> Result<usize, JsValue> {
     let count = sim.len();
     clear_shared_command_queues();
     SIM.with(|slot| *slot.borrow_mut() = Some(sim));
+    ENTRIES.with(|e| *e.borrow_mut() = entries.clone());
     log::info!(
         "[functor-lang] sim started: {count} instances ({})",
         entries.join(", ")
@@ -270,6 +278,99 @@ pub fn sim_seek(frame: u32) -> Result<String, JsValue> {
     with_sim("seek", |sim| sim.seek(frame as u64)).map_err(|e| JsValue::from_str(&e))
 }
 
+/// Every instance's frame for this render, in instance order — or `None` when no
+/// sim is running, which is the frame loop's signal to render the single game as
+/// usual.
+///
+/// Returns descriptions, not pixels: GL stays in the frame loop, so this module
+/// never touches a context. Takes `&mut` internally because a producer evaluates
+/// its `draw` here.
+pub(crate) fn render_frames(time: &functor_runtime_common::FrameTime) -> Option<Vec<Frame>> {
+    SIM.with(|sim| {
+        let mut slot = sim.try_borrow_mut().ok()?;
+        let sim = slot.as_mut()?;
+        Some((0..sim.len()).map(|i| sim.render(i, time.clone())).collect())
+    })
+}
+
+/// One entry per instance, in pane order: `{id, role, entry, connections,
+/// inboundInFlight}`.
+///
+/// This is what a pane label is drawn from — without it the view is three
+/// unattributed 3D scenes and the reader cannot tell the authoritative world
+/// from a client's copy of it. Rendering the labels is the page's job (DOM text
+/// over the canvas), not the renderer's.
+#[wasm_bindgen(js_name = functorLangSimPanes)]
+pub fn sim_panes() -> Result<JsValue, JsValue> {
+    with_sim("panes", |sim| {
+        let entries = ENTRIES.with(|e| e.borrow().clone());
+        let panes = js_sys::Array::new();
+        for id in 0..sim.len() {
+            let info = sim.client_info(id);
+            let obj = js_sys::Object::new();
+            let set = |key: &str, value: JsValue| {
+                let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(key), &value);
+            };
+            set("id", JsValue::from_f64(id as f64));
+            set("role", JsValue::from_str(info.role.as_str()));
+            set(
+                "entry",
+                JsValue::from_str(entries.get(id).map(String::as_str).unwrap_or("")),
+            );
+            set("connections", JsValue::from_f64(info.connections as f64));
+            set(
+                "inboundInFlight",
+                JsValue::from_f64(info.inbound_in_flight as f64),
+            );
+            panes.push(&obj);
+        }
+        Ok(panes.into())
+    })
+    .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Set the impairment on the link between two instances: `latencyTicks`,
+/// `jitterTicks`, `loss` (0..1), `reorder`.
+///
+/// This is what makes divergence VISIBLE — with a clean link every pane shows the
+/// same world, and the point of watching a server beside its clients is seeing
+/// them disagree. Impairment is configuration rather than recorded state, so it
+/// survives a rewind: dial it in, scrub back, and watch the same moment play out
+/// under the new conditions.
+#[wasm_bindgen(js_name = functorLangSimSetLink)]
+pub fn sim_set_link(
+    a: usize,
+    b: usize,
+    latency_ticks: u32,
+    jitter_ticks: u32,
+    loss: f32,
+    reorder: bool,
+) -> Result<(), JsValue> {
+    with_sim("setLink", |sim| {
+        if a >= sim.len() || b >= sim.len() {
+            return Err(format!(
+                "setLink: no such instance pair ({a}, {b}) — the sim has {}",
+                sim.len()
+            ));
+        }
+        if !(0.0..=1.0).contains(&loss) {
+            return Err(format!("setLink: loss must be in 0..=1, got {loss}"));
+        }
+        sim.set_link(
+            a,
+            b,
+            functor_netsim::Link {
+                latency_ticks,
+                jitter_ticks,
+                loss,
+                reorder,
+            },
+        );
+        Ok(())
+    })
+    .map_err(|e| JsValue::from_str(&e))
+}
+
 /// Tear down the running sim (freeing its producers), if any, and resume the
 /// single game. Every shared queue is cleared with it, so the resumed game
 /// inherits none of the instances' pending commands — otherwise it would perform
@@ -277,5 +378,6 @@ pub fn sim_seek(frame: u32) -> Result<String, JsValue> {
 #[wasm_bindgen(js_name = functorLangStopSim)]
 pub fn stop_sim() {
     SIM.with(|sim| *sim.borrow_mut() = None);
+    ENTRIES.with(|e| e.borrow_mut().clear());
     clear_shared_command_queues();
 }

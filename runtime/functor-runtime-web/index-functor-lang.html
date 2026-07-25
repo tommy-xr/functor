@@ -35,11 +35,72 @@
          isolated document on native. The interior pointer-events rules live
          inside the shadow root (page CSS can't cross the boundary). */
       #webview { position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+      /* Netsim pane labels — one telemetry strip per simulated instance, laid
+         over the canvas so a reader can tell the authoritative world from a
+         client's copy of it. Text only; the panes themselves are GL.
+
+         Deliberately built on the SCRUBBER's tokens (--scrub-*, see
+         scrubber.js) rather than a second palette: these two overlays share the
+         screen, and the runtime should read as one instrument. The plate is
+         translucent + blurred for the same reason the scrubber's popover is —
+         raw text over an arbitrary 3D scene stops being legible the moment the
+         camera finds a bright surface. */
+      #sim-panes {
+        --sp-bg: var(--scrub-bg, rgba(30, 24, 51, 0.82));
+        --sp-line: var(--scrub-line, #2b2542);
+        --sp-text: var(--scrub-text, #e9e6f2);
+        --sp-dim: var(--scrub-dim, #9b94b3);
+        --sp-accent: var(--scrub-accent, #41d8e6);
+        --sp-inflight: var(--scrub-future, #e858b8);
+        --sp-font: var(--scrub-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+        position: fixed; inset: 0; z-index: 6; display: none;
+        pointer-events: none; font: 11px/1.45 var(--sp-font);
+      }
+      #sim-panes.on { display: grid; }
+      /* A hairline between columns so the panes read as separate instruments
+         rather than one wide scene (the GL gap alone is easy to miss). */
+      #sim-panes .pane + .pane { box-shadow: inset 1px 0 0 var(--sp-line); }
+      #sim-panes .plate {
+        display: inline-flex; flex-direction: column; gap: 3px;
+        margin: 10px; padding: 7px 10px 7px 9px;
+        background: var(--sp-bg);
+        border: 1px solid var(--sp-line);
+        border-left: 2px solid var(--sp-dim);
+        border-radius: 5px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+        backdrop-filter: blur(6px);
+        color: var(--sp-text);
+      }
+      #sim-panes .plate.server { border-left-color: var(--sp-accent); }
+      #sim-panes .role {
+        font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--sp-dim);
+      }
+      #sim-panes .plate.server .role { color: var(--sp-accent); }
+      #sim-panes .entry { color: var(--sp-text); }
+      #sim-panes .metrics {
+        display: flex; align-items: center; gap: 6px;
+        color: var(--sp-dim); font-variant-numeric: tabular-nums;
+      }
+      /* In flight is the one accent: packets crossing the wire toward this
+         instance are, precisely, its future arriving — so it borrows the
+         scrubber's `future` hue rather than inventing a warning colour. */
+      #sim-panes .inflight { display: flex; align-items: center; gap: 4px; color: var(--sp-inflight); }
+      #sim-panes .dot {
+        width: 5px; height: 5px; border-radius: 50%;
+        background: var(--sp-inflight);
+        animation: sp-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes sp-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) {
+        #sim-panes .dot { animation: none; opacity: 0.85; }
+      }
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
     <div id="webview"></div>
+    <div id="sim-panes"></div>
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
     <script type="module">
 
@@ -66,6 +127,8 @@
         functorLangSimTimeline,
         functorLangSimSeek,
         functorLangSimLen,
+        functorLangSimSetLink,
+        functorLangSimPanes,
         functorLangStopSim,
       } from "./pkg/functor_runtime_web.js";
       // The time-travel scrubber is the shared component, served next to pkg/
@@ -374,6 +437,60 @@
       // Installed INSIDE init().then() — these wrappers call straight into wasm,
       // so publishing them earlier would let a caller (or a test waiting on
       // `window.__sim`) invoke an uninitialized module.
+      // Keep the pane labels in step with the running sim. Polled on a timer
+      // rather than per frame: the labels change only when the topology or the
+      // connection counts do, and the render loop should not be paying for DOM
+      // work every frame.
+      const simPanesEl = () => document.getElementById("sim-panes");
+      const refreshSimLabels = () => {
+        const host = simPanesEl();
+        let panes = [];
+        try {
+          panes = functorLangSimLen() > 0 ? functorLangSimPanes() : [];
+        } catch {
+          panes = [];
+        }
+        // The mouse-look toggle drives the SINGLE game's camera, which is
+        // suspended while a sim owns the page — so it is not merely overlapping
+        // the first pane's label, it is a control that would do nothing. Hide it
+        // for the duration.
+        const mouselook = document.getElementById("mouselook");
+        if (mouselook) mouselook.style.display = panes.length ? "none" : "";
+        if (!panes.length) {
+          host.className = "";
+          host.replaceChildren();
+          return;
+        }
+        host.className = "on";
+        host.style.gridTemplateColumns = `repeat(${panes.length}, 1fr)`;
+        const el = (tag, className, text) => {
+          const n = document.createElement(tag);
+          if (className) n.className = className;
+          if (text !== undefined) n.textContent = text;
+          return n;
+        };
+        host.replaceChildren(
+          ...panes.map((p) => {
+            const cell = el("div", "pane");
+            const plate = el("div", `plate ${p.role}`);
+            plate.append(
+              el("span", "role", `${p.role} · #${p.id}`),
+              el("span", "entry", p.entry),
+            );
+            const metrics = el("div", "metrics");
+            metrics.append(el("span", null, `${p.connections} conn`));
+            if (p.inboundInFlight > 0) {
+              const inflight = el("span", "inflight");
+              inflight.append(el("span", "dot"), el("span", null, `${p.inboundInFlight} in flight`));
+              metrics.append(inflight);
+            }
+            plate.append(metrics);
+            cell.append(plate);
+            return cell;
+          }),
+        );
+      };
+
       const installSim = () => {
         window.__sim = {
           start: (entries, seed = 1) => functorLangStartSim(entries, seed),
@@ -382,8 +499,21 @@
           timeline: () => functorLangSimTimeline(),
           seek: (frame) => functorLangSimSeek(frame),
           len: () => functorLangSimLen(),
+          // Impair a link so the panes visibly disagree: {latencyTicks,
+          // jitterTicks, loss, reorder}, all optional.
+          setLink: (a, b, opts = {}) =>
+            functorLangSimSetLink(
+              a,
+              b,
+              opts.latencyTicks ?? 1,
+              opts.jitterTicks ?? 0,
+              opts.loss ?? 0,
+              opts.reorder ?? false,
+            ),
+          panes: () => functorLangSimPanes(),
           stop: () => functorLangStopSim(),
         };
+        setInterval(refreshSimLabels, 250);
       };
 
       init().then(() => {

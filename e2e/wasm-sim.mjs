@@ -338,7 +338,62 @@ async function main() {
       `frames ${suspendedA} -> ${suspendedB}`,
     );
 
-    // 8. Stop tears the sim down and hands the page back.
+    // 8. The panes actually RENDERED, and a lagged client's pane genuinely
+    // differs from the server's.
+    //
+    // Compared as raw PNG bytes of two clips — no image library needed, since a
+    // deterministic encoder gives identical bytes for identical pixels. Each
+    // clip excludes the top strip (the pane labels differ by design) and the
+    // bottom strip (page chrome), so only the 3D content is compared.
+    await page.evaluate(() => window.__sim.setLink(0, 2, { latencyTicks: 45, jitterTicks: 5 }));
+    for (let i = 0; i < 120; i++) await page.evaluate(() => window.__sim.step(1));
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    const box = await page.locator("#canvas").boundingBox();
+    const panes = 3;
+    const gap = 2;
+    const paneW = Math.floor((box.width - gap * (panes - 1)) / panes);
+    const clip = (i) => ({
+      x: Math.round(box.x + i * (paneW + gap)) + 4,
+      y: Math.round(box.y) + 60,
+      width: paneW - 8,
+      height: Math.round(box.height) - 120,
+    });
+    const shot = async (i) => page.screenshot({ clip: clip(i) });
+    const [server, clean, lagged] = [await shot(0), await shot(1), await shot(2)];
+
+    check(server.length > 2000, "the panes rendered (non-trivial image)", `${server.length} bytes`);
+    check(
+      !server.equals(lagged),
+      "the lagged client's pane differs from the server's",
+      "identical pixels — the impaired link produced no visible divergence",
+    );
+    // Informational, deliberately NOT asserted: a clean client SHOULD match the
+    // server pixel for pixel, but that depends on the rasterizer producing
+    // identical output at two viewport offsets, which is not a property worth
+    // making CI depend on.
+    console.log(
+      `        (clean client ${clean.equals(server) ? "matches" : "differs from"} the server)`,
+    );
+
+    if (process.env.SIM_CAPTURE) {
+      await page.locator("#canvas").screenshot({ path: process.env.SIM_CAPTURE });
+      console.log(`        captured ${process.env.SIM_CAPTURE}`);
+    }
+    if (process.env.SIM_CAPTURE_FRAMES) {
+      // A frame per step, for assembling a GIF of the lagged pane catching up.
+      for (let i = 0; i < 24; i++) {
+        for (let s = 0; s < 4; s++) await page.evaluate(() => window.__sim.step(1));
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+        await page
+          .locator("#canvas")
+          .screenshot({ path: `${process.env.SIM_CAPTURE_FRAMES}/f${String(i).padStart(2, "0")}.png` });
+      }
+      console.log(`        captured 24 frames to ${process.env.SIM_CAPTURE_FRAMES}`);
+    }
+
+    // 9. Stop tears the sim down and hands the page back.
     await page.evaluate(() => window.__sim.stop());
     check((await page.evaluate(() => window.__sim.len())) === 0, "stop tears the sim down");
     const afterStop = await page.evaluate(() => {
@@ -355,7 +410,7 @@ async function main() {
       afterStop,
     );
 
-    // 9. ...and the single game resumes simulating once it has the page back.
+    // 10. ...and the single game resumes simulating once it has the page back.
     const resumedA = await singleFrame();
     await waitRenderFrames(20);
     const resumedB = await singleFrame();
@@ -365,7 +420,7 @@ async function main() {
       `frames ${resumedA} -> ${resumedB}`,
     );
 
-    // 10. LAST, so it covers everything above — boot, the sim, suspension,
+    // 11. LAST, so it covers everything above — boot, the sim, suspension,
     // stop, and resume. Nothing in the page's life may trap the runtime; a
     // refused socket used to. Give any straggling error event a turn to be
     // delivered before reading the log. [xreview]

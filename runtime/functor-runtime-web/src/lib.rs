@@ -1590,7 +1590,47 @@ async fn run_async() -> Result<(), JsValue> {
             // ghost frame renders at ITS OWN division-boundary time, so
             // render-time animation (the skinned pose) advances through the
             // strobe instead of freezing at the paused pose.
-            if !ghosts.is_empty() {
+            // MULTI-PANE: while a netsim owns the page, the canvas shows one
+            // column per instance — the server's authoritative world beside each
+            // client's (latency-lagged) view of it. The single game's frame is
+            // not drawn at all; it is suspended.
+            //
+            // Same structure as the native `functor-netsim-viz`, including its
+            // scissor discipline: the shadow pass inside `render_frame` must run
+            // UNSCISSORED, and it re-scissors the main pass to the pane, so the
+            // test is disabled before each pane rather than once up front.
+            if let Some(sim_frames) = sim::render_frames(&frame_time) {
+                let (fb_w, fb_h) = (canvas.width() as i32, canvas.height() as i32);
+                let panes = sim_frames.len().max(1) as i32;
+                gl.disable(glow::SCISSOR_TEST);
+                gl.viewport(0, 0, fb_w, fb_h);
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+
+                let gap = 2;
+                let pane_w = ((fb_w - gap * (panes - 1)).max(1)) / panes;
+                for (i, sim_frame) in sim_frames.iter().enumerate() {
+                    let x = i as i32 * (pane_w + gap);
+                    gl.disable(glow::SCISSOR_TEST);
+                    functor_runtime_common::render_frame(
+                        &gl,
+                        shader_version,
+                        asset_cache.clone(),
+                        &scene_context,
+                        &shadow_map,
+                        sim_frame,
+                        &sim_frame.camera,
+                        frame_time.clone(),
+                        functor_runtime_common::Viewport::with_offset(
+                            x.max(0) as u32,
+                            0,
+                            pane_w.max(1) as u32,
+                            fb_h.max(1) as u32,
+                        ),
+                        debug_render_mode,
+                    );
+                }
+            } else if !ghosts.is_empty() {
                 functor_runtime_common::render_composited_frames(
                     &gl,
                     shader_version,
