@@ -72,7 +72,7 @@
 //! by source position — it never stops at the first error.
 
 use crate::ast::{BinOp, TypeBody, TypeName};
-use crate::eval::{builtin, callee_label, Builtin};
+use crate::eval::{builtin, builtin_members, callee_label, Builtin, BUILTIN_NAMESPACES};
 use crate::ir::{
     BindingId, Expr, ExprId, ExprKind, Field, MatchArm, Module, Pattern, PatternKind, StringPart,
 };
@@ -338,6 +338,63 @@ fn free_vars_of(ty: &Type, out: &mut Vec<u32>) {
         }
         Type::Unknown | Type::Float | Type::String | Type::Bool => {}
     }
+}
+
+/// The diagnostic for an external path in a BUILTIN namespace that the
+/// registry has no member for (`List.nth`) — `None` for any other unresolved
+/// external, which stays the gradual host seam. The message mirrors the
+/// interpreter's wording (`eval::unknown_external_error`) so the same typo
+/// reads identically at check and at run time, and adds either the nearest
+/// member name or the namespace's full member list.
+fn unknown_builtin_member(path: &[String]) -> Option<String> {
+    let (head, rest) = path.split_first()?;
+    if rest.is_empty() || !BUILTIN_NAMESPACES.contains(&head.as_str()) {
+        return None;
+    }
+    let member = rest.join(".");
+    let members = builtin_members(head);
+    let hint = match nearest_member(&member, &members) {
+        Some(near) => format!("did you mean `{head}.{near}`?"),
+        None => format!("`{head}` has: {}", members.join(", ")),
+    };
+    Some(format!("`{head}` has no builtin `{member}` — {hint}"))
+}
+
+/// The closest member name to `member`: a prefix relation (`Math.clamp` →
+/// `Math.clamp01`) or a typo-scale edit distance (≤ 2, and never more than a
+/// third of the name), so an honestly-missing function like `nth` suggests
+/// nothing instead of something misleading.
+fn nearest_member(member: &str, members: &[&'static str]) -> Option<&'static str> {
+    if let Some(name) = members
+        .iter()
+        .filter(|name| name.starts_with(member) || member.starts_with(*name))
+        .min_by_key(|name| (name.len(), **name))
+    {
+        return Some(name);
+    }
+    let budget = 2.min(member.chars().count() / 3);
+    members
+        .iter()
+        .map(|name| (edit_distance(member, name), *name))
+        .filter(|(distance, _)| *distance <= budget)
+        .min_by_key(|(distance, name)| (*distance, *name))
+        .map(|(_, name)| name)
+}
+
+/// Levenshtein distance, for [`nearest_member`]'s typo suggestions.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut row = prev.clone();
+    for (i, ca) in a.chars().enumerate() {
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            row[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(row[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut row);
+    }
+    prev[b.len()]
 }
 
 /// The signature of a builtin (kept in sync with [`crate::eval`]'s registry
@@ -1525,9 +1582,12 @@ missing {missing}. Did you forget an argument?"
             },
             // An interface (`.funi`) signature is authoritative when present
             // (the injected `Random` module types its builtins this way);
-            // otherwise a builtin's own scheme applies, and an external
-            // neither declares is the gradual seam (`Unknown` — the module
-            // set may grow at runtime).
+            // otherwise a builtin's own scheme applies. An external neither
+            // declares is the gradual seam (`Unknown` — a HOST's module set
+            // is embedding-specific and may grow at runtime), EXCEPT in a
+            // BUILTIN namespace, whose member set is closed and identical
+            // everywhere Functor Lang runs: there an unknown member is a typo
+            // the checker must catch (it would only fail at `run`).
             ExprKind::External(path) => match self.signatures.get(&path.join(".")).cloned() {
                 Some(scheme) => self.instantiate(&scheme),
                 None => match builtin(path) {
@@ -1537,7 +1597,12 @@ missing {missing}. Did you forget an argument?"
                         free_vars_of(&sig, &mut vars);
                         self.instantiate(&Scheme { vars, ty: sig })
                     }
-                    None => Type::Unknown,
+                    None => {
+                        if let Some(message) = unknown_builtin_member(path) {
+                            self.diag(expr.span, message);
+                        }
+                        Type::Unknown
+                    }
                 },
             },
             // A record literal resolves NOMINALLY, F#-style (B7, user

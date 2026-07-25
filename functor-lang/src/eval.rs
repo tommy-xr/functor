@@ -2546,6 +2546,64 @@ fn unknown_external_error(path: &[String], joined: String, span: Span) -> RunErr
 /// expect gutter's `unrunnable` classification) rests on.
 pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Text", "Math", "Random", "Debug"];
 
+/// The complete builtin registry as a list. Hand-listed because [`Builtin`] is
+/// not iterable — keep in sync with the enum (the `all_builtins_is_exhaustive`
+/// and `all_builtins_round_trip` tests fail otherwise). Lives next to
+/// [`builtin`] so the members the CHECKER knows about (for its
+/// unknown-member diagnostic and its suggestions) and the ones the
+/// interpreter DISPATCHES come from one place.
+pub const ALL_BUILTINS: [Builtin; 37] = [
+    Builtin::ListMap,
+    Builtin::ListFilter,
+    Builtin::ListFold,
+    Builtin::ListRange,
+    Builtin::ListGrid,
+    Builtin::ListMaximum,
+    Builtin::ListLength,
+    Builtin::ListAppend,
+    Builtin::ListFlatten,
+    Builtin::ListAny,
+    Builtin::ListAll,
+    Builtin::ListReverse,
+    Builtin::ListIsEmpty,
+    Builtin::MathSin,
+    Builtin::MathCos,
+    Builtin::MathSqrt,
+    Builtin::MathAbs,
+    Builtin::MathFloor,
+    Builtin::MathAtan2,
+    Builtin::MathMod,
+    Builtin::MathMin,
+    Builtin::MathMax,
+    Builtin::MathPow,
+    Builtin::MathPi,
+    Builtin::TextConcat,
+    Builtin::TextFromFloat,
+    Builtin::TextFixed,
+    Builtin::TextToBullets,
+    Builtin::TextSplit,
+    Builtin::TextJoin,
+    Builtin::TextParseFloat,
+    Builtin::MathClamp01,
+    Builtin::RandomSeed,
+    Builtin::RandomStep,
+    Builtin::RandomRange,
+    Builtin::RandomFork,
+    Builtin::DebugLog,
+];
+
+/// The member names a builtin namespace owns (`List` → `map`, `filter`, …),
+/// sorted, derived from [`ALL_BUILTINS`].
+pub fn builtin_members(namespace: &str) -> Vec<&'static str> {
+    let prefix = format!("{namespace}.");
+    let mut members: Vec<&'static str> = ALL_BUILTINS
+        .iter()
+        .filter_map(|b| builtin_name(*b).strip_prefix(&prefix))
+        .collect();
+    members.sort_unstable();
+    members
+}
+
 pub fn builtin(path: &[String]) -> Option<Builtin> {
     let joined = path.join(".");
     Some(match joined.as_str() {
@@ -2663,6 +2721,46 @@ pub fn render_trace(events: &[TraceEvent]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod builtin_registry_tests {
+    use super::{builtin, builtin_members, builtin_name, ALL_BUILTINS, BUILTIN_NAMESPACES};
+
+    /// The DRIFT LOCK between the interpreter's dispatch table and the member
+    /// set the checker reports (`types::unknown_builtin_member`): every listed
+    /// builtin's name must resolve back through [`builtin`] to itself, and
+    /// must live in a namespace [`BUILTIN_NAMESPACES`] declares — otherwise a
+    /// real builtin could be reported as a typo, or a namespace's member list
+    /// could be incomplete.
+    #[test]
+    fn all_builtins_round_trip_through_dispatch() {
+        for b in ALL_BUILTINS {
+            let name = builtin_name(b);
+            let path: Vec<String> = name.split('.').map(str::to_string).collect();
+            assert_eq!(path.len(), 2, "{name} should be `Namespace.member`");
+            assert_eq!(builtin(&path), Some(b), "{name} does not dispatch to itself");
+            assert!(
+                BUILTIN_NAMESPACES.contains(&path[0].as_str()),
+                "{name}: `{}` is missing from BUILTIN_NAMESPACES",
+                path[0]
+            );
+            assert!(
+                builtin_members(&path[0]).contains(&&name[path[0].len() + 1..]),
+                "{name} is missing from builtin_members"
+            );
+        }
+    }
+
+    #[test]
+    fn every_namespace_has_members() {
+        for namespace in BUILTIN_NAMESPACES {
+            assert!(
+                !builtin_members(namespace).is_empty(),
+                "`{namespace}` is declared a builtin namespace but owns nothing"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
