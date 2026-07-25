@@ -14,6 +14,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES } from "./src/examples.js";
+import { injectHeader } from "./src/header.js";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -111,9 +112,10 @@ for (const page of PAGES) {
   await mkdir(dirname(target), { recursive: true });
   if (page.endsWith(".html")) {
     const html = await readFile(`${site}${page}`, "utf8");
+    // The shared header first (it carries the badge span), then stamp the badge.
     await writeFile(
       target,
-      html.replace(
+      injectHeader(html, page).replace(
         /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
         `$1${badge}$2`
       )
