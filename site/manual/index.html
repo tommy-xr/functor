@@ -467,9 +467,9 @@ let span = (a, b) =>
             <strong>Reads are synchronous, writes are queued.</strong> <code>Physics.position</code>
             returns a value immediately; every mutation returns an <code>Effect.t</code> you hand
             back from an entry point. Queued writes are flushed just before the frame's first
-            fixed substep, so an impulse decided in <code>tick</code> does move the body in time
-            for that same frame's <code>draw</code> (it slips to a later frame only when the
-            accumulator hasn't filled and the frame simulates nothing).
+            fixed substep, and every <code>tick</code> is followed by a substep — so an impulse
+            decided in <code>tick</code> does move the body in time for that same frame's
+            <code>draw</code>.
           </p>
           <p>
             The real one-frame lag is on the <em>read</em> side: <code>tick</code> cannot see the
