@@ -81,15 +81,15 @@ let rangeLength = 46.0
 // `Vec3.t` is an opaque engine value with no arithmetic, so the game keeps its
 // own plain-data vector and converts at the engine boundary.
 
-type V = { x: Float, y: Float, z: Float }
+type V = { x: float, y: float, z: float }
 
-let vec = (x: Float, y: Float, z: Float): V => { x: x, y: y, z: z }
+let vec = (x: float, y: float, z: float): V => { x: x, y: y, z: z }
 let vadd = (a: V, b: V): V => vec(a.x + b.x, a.y + b.y, a.z + b.z)
-let vmul = (k: Float, a: V): V => vec(a.x * k, a.y * k, a.z * k)
-let vlen = (a: V): Float => Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
+let vmul = (k: float, a: V): V => vec(a.x * k, a.y * k, a.z * k)
+let vlen = (a: V): float => Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
 let v3 = (a: V) => Vec3.make(a.x, a.y, a.z)
 
-let clamp = (lo: Float, hi: Float, n: Float): Float => Math.min(hi, Math.max(lo, n))
+let clamp = (lo: float, hi: float, n: float): float => Math.min(hi, Math.max(lo, n))
 
 // -------------------------------------------------------------------- types
 
@@ -101,7 +101,7 @@ type Kind =
 // the first event (the `examples/hello` idiom).
 type Mouse =
   | NoMouse
-  | MouseAt(x: Float, y: Float)
+  | MouseAt(x: float, y: float)
 
 // One message kind: a raycast answer. The payloads stay generic so the
 // engine's `Physics.rayHit` record flows in without an annotation.
@@ -110,7 +110,7 @@ type Msg<'v, 'h> =
 
 // ------------------------------------------------------------- range layout
 
-let target = (id: Float, x0: Float, z: Float, kind: Kind, amp: Float, spd: Float, phase: Float) =>
+let target = (id: float, x0: float, z: float, kind: Kind, amp: float, spd: float, phase: float) =>
   { id: id,
     x0: x0,
     z: z,
@@ -138,7 +138,7 @@ let initialTargets =
 
 // Branded body identities, derived from the target id so a ray hit can be
 // mapped back to the target it struck (tags compare with `==`).
-let targetTag = (id: Float) => Physics.tag(Text.concat("target-", Text.fixed(id, 0.0)))
+let targetTag = (id: float) => Physics.tag(Text.concat("target-", Text.fixed(id, 0.0)))
 let floorTag = Physics.tag("floor")
 let backstopTag = Physics.tag("backstop")
 let leftWallTag = Physics.tag("wall-left")
@@ -200,7 +200,7 @@ let init = {
 // into world space: Ry(yaw) . Rx(-pitch). `Camera.firstPerson` has no
 // camera-space scene node, so the viewmodel and the muzzle are placed by hand.
 
-let camRot = (yaw: Float, pitch: Float, l: V): V =>
+let camRot = (yaw: float, pitch: float, l: V): V =>
   let cp = Math.cos(pitch) in
   let sp = Math.sin(pitch) in
   let y2 = l.y * cp + l.z * sp in
@@ -430,6 +430,37 @@ expect (
   let (fired, _fx) = tick(clicked, 0.016, 0.016) in
   let (again, _fx2) = tick(mouseButton(fired, Mouse.Left, true), 0.016, 0.016) in
   again.shots == 1.0
+)
+
+// The other half of the trigger: HELD fire through `sampledInput`. A snapshot
+// is plain data, so the level path is testable without a window too.
+let snapshotWith = (leftDown) =>
+  { heldKeys: [],
+    mouse: { x: 0.0, y: 0.0,
+             buttons: { left: leftDown, right: false, middle: false } } }
+
+expect sampledInput(init, snapshotWith(true)).held.trigger
+expect not sampledInput(init, snapshotWith(false)).held.trigger
+// Holding the button fires without any edge at all...
+expect (
+  let holding = sampledInput(init, snapshotWith(true)) in
+  let (fired, _fx) = tick(holding, 0.016, 0.016) in
+  fired.shots == 1.0
+)
+// ...but `fireInterval` (0.18 s) still paces it: the very next 16 ms step,
+// still held, must NOT fire a second round.
+expect (
+  let holding = sampledInput(init, snapshotWith(true)) in
+  let (fired, _fx) = tick(holding, 0.016, 0.016) in
+  let (soon, _fx2) = tick(sampledInput(fired, snapshotWith(true)), 0.016, 0.016) in
+  soon.shots == 1.0
+)
+// Releasing stops fire even once the cooldown has expired.
+expect (
+  let holding = sampledInput(init, snapshotWith(true)) in
+  let (fired, _fx) = tick(holding, 0.016, 0.016) in
+  let (released, _fx2) = tick(sampledInput(fired, snapshotWith(false)), 0.5, 0.5) in
+  released.shots == 1.0 && released.cooldown <= 0.0
 )
 
 // -------------------------------------------------------------------- update
