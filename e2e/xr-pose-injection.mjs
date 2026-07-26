@@ -103,22 +103,48 @@ async function stepOneFrame(base, timeoutMs = 10000) {
   throw new Error(`frame never advanced past ${before}`);
 }
 
-/** Read one numeric field out of the model's Rust `Debug` text. */
+// The model arrives as the runtime's `Debug` text, whose record keys are
+// UNQUOTED (`rightGripTracked: false`, `orb: { x: 0, … }`) — so these readers
+// match bare identifiers, and nest by balancing braces rather than by a regex
+// that cannot see into a sub-record.
+
+/** Read one scalar field out of the model's `Debug` text. */
 function field(model, name) {
-  const m = model.match(new RegExp(`"${name}":\\s*([A-Za-z0-9_.+-]+)`));
+  const m = model.match(new RegExp(`\\b${name}:\\s*([A-Za-z0-9_.+-]+)`));
   return m ? m[1] : undefined;
 }
 
-/** Read a `{ x, y, z }` record field out of the model's `Debug` text. */
-function point(model, name) {
-  const m = model.match(
-    new RegExp(
-      `"${name}":\\s*\\{[^{}]*?"x":\\s*(-?[\\d.e+-]+)[^{}]*?"y":\\s*(-?[\\d.e+-]+)[^{}]*?"z":\\s*(-?[\\d.e+-]+)`,
-      "s",
-    ),
+/** The balanced `{…}` block that follows `name:`, so nested records work. */
+function block(text, name) {
+  const m = text.match(new RegExp(`\\b${name}:\\s*\\{`));
+  if (!m) throw new Error(`no ${name} record in:\n${text}`);
+  const open = m.index + m[0].length - 1;
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}" && --depth === 0) return text.slice(open, i + 1);
+  }
+  throw new Error(`unbalanced ${name} record in:\n${text}`);
+}
+
+/** The `{ x, y, z }` immediately inside a block. */
+function xyz(text, what) {
+  const m = text.match(
+    /\bx:\s*(-?[\d.e+-]+),\s*y:\s*(-?[\d.e+-]+),\s*z:\s*(-?[\d.e+-]+)/,
   );
-  if (!m) throw new Error(`no ${name} point in model:\n${model}`);
+  if (!m) throw new Error(`no x/y/z in ${what}:\n${text}`);
   return { x: +m[1], y: +m[2], z: +m[3] };
+}
+
+/** A plain point field, e.g. `orb`. */
+function point(model, name) {
+  return xyz(block(model, name), name);
+}
+
+/** A tracked pose's position — a pose is `{ position, forward, up }`, so the
+ *  point lives one level down and a flat reader would miss it entirely. */
+function posePosition(model, name) {
+  return xyz(block(block(model, name), "position"), `${name}.position`);
 }
 
 /** Run the whole injected sequence against a fresh runtime; return the state. */
@@ -179,7 +205,7 @@ check(field(after.model, "grabbing") === "true", "injected trigger drove `grabbi
 
 console.log("\n▸ the pose sequence drove the simulation");
 const orb = point(after.model, "orb");
-const aim = point(after.model, "rightAim");
+const aim = posePosition(after.model, "rightAim");
 const init = { x: 0.0, y: 1.15, z: -0.7 };
 const moved = Math.hypot(orb.x - init.x, orb.y - init.y, orb.z - init.z);
 const toAim = Math.hypot(orb.x - aim.x, orb.y - aim.y, orb.z - aim.z);
