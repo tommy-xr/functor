@@ -2013,8 +2013,10 @@ most 1000000 cells"
             Builtin::ListZip => match args.as_slice() {
                 [Value::List(other), Value::List(items)] => {
                     let n = items.len().min(other.len());
-                    // Materializes n tuples: charge the output size.
-                    self.charge(n as u64, span)?;
+                    // Materializes n tuples holding 2n cloned cells — charge
+                    // the CELLS, per `List.append`'s "charge what you
+                    // materialize" rule, not the tuple count.
+                    self.charge(2 * n as u64, span)?;
                     let pairs: Vec<Value> = items
                         .iter()
                         .zip(other.iter())
@@ -2032,20 +2034,25 @@ most 1000000 cells"
             // need a guard at every call site.
             Builtin::ListTake | Builtin::ListDrop => match args.as_slice() {
                 [Value::Number(n), Value::List(items)] => {
-                    // NaN has no sensible count; treat it as 0 (the same
-                    // "clamp into range" rule the negative case gets).
-                    let k = if n.is_nan() {
-                        0
+                    // `f64::max` returns the non-NaN side (IEEE maximumNumber),
+                    // so a NaN count folds to 0 here with no special case, and
+                    // `min(len)` bounds ±inf — the `as usize` can never
+                    // saturate to an absurd length.
+                    let k = n.max(0.0).min(items.len() as f64) as usize;
+                    // O(k) copy of already-paid elements (the reverse rule).
+                    // Charge BEFORE cloning: an exhausted budget must stop the
+                    // copy, not merely report it afterwards.
+                    let kept = if b == Builtin::ListTake {
+                        k
                     } else {
-                        n.max(0.0).min(items.len() as f64) as usize
+                        items.len() - k
                     };
+                    self.charge(kept as u64, span)?;
                     let out: Vec<Value> = if b == Builtin::ListTake {
                         items[..k].to_vec()
                     } else {
                         items[k..].to_vec()
                     };
-                    // O(k) copy of already-paid elements (the reverse rule).
-                    self.charge(out.len() as u64, span)?;
                     Ok(Value::List(Rc::new(out)))
                 }
                 _ => err(format!(
@@ -2258,14 +2265,18 @@ most 1000000 cells"
             // uppercases to "SS" — which is correct, not a bug.
             Builtin::TextToUpper | Builtin::TextToLower => match args.as_slice() {
                 [Value::String(s)] => {
-                    // Case mapping can grow the string: charge input bytes
-                    // times the worst-case expansion of 3 (the growth rule).
-                    self.charge(s.len() as u64 * 3, span)?;
+                    // The O(input) scan is charged up front; the mapping can
+                    // GROW the string ("ß" -> "SS"), so the output is charged
+                    // too — but at its EXACT size, not a blanket 3x
+                    // worst-case, which would bill ordinary ASCII text triple
+                    // and exhaust a budget that the real work fits inside.
+                    self.charge(s.len() as u64, span)?;
                     let out = if b == Builtin::TextToUpper {
                         s.to_uppercase()
                     } else {
                         s.to_lowercase()
                     };
+                    self.charge(out.len() as u64, span)?;
                     Ok(Value::String(Rc::from(out.as_str())))
                 }
                 _ => err(format!("{}(s) expects one string", builtin_name(b))),
@@ -2292,11 +2303,25 @@ most 1000000 cells"
                     if from.is_empty() {
                         return err("Text.replace needs a non-empty string to replace".to_string());
                     }
-                    // GROWTH builtin: the output can be larger than the input
-                    // when `to` is longer than `from`, so charge the
-                    // MATERIALIZED size (the Text.concat rule), not the input.
+                    // Charge BEFORE allocating, in two parts, so neither a
+                    // huge scan nor a huge output can be paid for after the
+                    // fact:
+                    //   1. the O(input) scan — even a SHRINKING replacement
+                    //      reads every byte, and charging only the output
+                    //      would let `Text.replace(big, "", s)` scan for
+                    //      free;
+                    //   2. the materialized output, which this GROWTH builtin
+                    //      can make far larger than the input (`"a" -> "aaaa"`
+                    //      quadruples per unit charge under the input-only
+                    //      rule — the `List.append` doubling attack).
+                    // The count is another O(input) pass but no allocation,
+                    // and it makes the output size exact without building it.
+                    self.charge(s.len() as u64, span)?;
+                    let hits = s.matches(from.as_ref()).count();
+                    let out_len = (s.len() + hits.saturating_mul(to.len()))
+                        .saturating_sub(hits.saturating_mul(from.len()));
+                    self.charge(out_len as u64, span)?;
                     let out = s.replace(from.as_ref(), to.as_ref());
-                    self.charge(out.len() as u64, span)?;
                     Ok(Value::String(Rc::from(out.as_str())))
                 }
                 _ => err("Text.replace(from, to, s) expects three strings".to_string()),

@@ -1549,7 +1549,7 @@ apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: '
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized type
 names) and absorbs anything — but a BUILTIN namespace is not such a seam:
-its member set is closed, so `List.nth` / `Math.clamp` are check errors, not
+its member set is closed, so `List.tail` / `Text.padLeft` are check errors, not
 `Unknown` (see "Builtins"). Function TYPES **do** annotate —
 `(f: (float) => float)`, `(f: ('a) => 'b)`, and the parenthesized
 return position `(): ((A) => B) =>` all parse and check (see the Syntax

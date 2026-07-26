@@ -594,7 +594,7 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
               <tr><td><code>List.find(fn, list)</code></td><td>the first element the predicate accepts, short-circuiting; <code>Option.None</code> when none match</td></tr>
             </tbody>
           </table>
-          <pre><code>let hp = enemies |> List.nth(i) |> Option.defaultValue(0.0)
+          <pre><code>let hp = enemies |> List.nth(i) |> Option.map((e) =&gt; e.hp) |> Option.defaultValue(0.0)
 
 match enemies |> List.find((e) =&gt; e.hp &lt;= 0.0) with
 | Option.Some(dead) =&gt; respawn(dead)
@@ -686,10 +686,10 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
             <li>Piping into <code>Text.concat</code> <em>prepends</em>: <code>s |> Text.concat(p)</code> is <code>p</code> then <code>s</code>. And <code>Text.fixed(n, decimals)</code> takes its number first, so it can't be piped on.</li>
-            <li><code>Math</code> is only the twelve entries above — there is no <code>round</code>, <code>ceil</code>, <code>tan</code>, <code>exp</code>, <code>log</code>, <code>sign</code>, or <code>lerp</code>. <code>floor</code> is the only rounding.</li>
+            <li><code>Math</code> is only the entries above — there is still no <code>lerp</code>, <code>sinh</code>, or <code>hypot</code>. <code>Math.round</code> goes half <em>away from zero</em>, not to even.</li>
             <li><code>Math.mod</code> is Euclidean — <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code>, not <code>-1.0</code>.</li>
             <li><code>Math.pi</code> is a value, not a call.</li>
-            <li>No <code>>=</code>, <code>&lt;=</code>, or <code>!=</code> — only <code>&lt;</code>, <code>></code>, <code>==</code>, combined with <code>not</code>.</li>
+            <li>The partial list accessors (<code>nth</code>, <code>head</code>, <code>last</code>, <code>find</code>) hand back an <code>Option</code>, so unwrap with <code>Option.defaultValue</code> or <code>match</code> — but <code>List.maximum</code> is the holdout that still <em>errors</em> on an empty list.</li>
             <li>The primitives take no size arguments — a box is <code>Scene.cube() |> Scene.scaleXYZ(w, h, d)</code>.</li>
             <li>Key repeats arrive as <code>isDown = true</code> — latch for rising edges.</li>
             <li>Physics reads belong in <code>draw</code>; in <code>tick</code> you see last frame's world.</li>

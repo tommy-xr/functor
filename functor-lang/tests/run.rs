@@ -412,11 +412,20 @@ fn list_partial_accessors_return_option() {
     assert_eq!(main_result("let main = () => List.nth(0.0, [])"), "Option.None");
     // A fractional index is a CALLER BUG, not an absence — it errors rather
     // than quietly reading as "not found".
-    let (message, _, _) = run_err("let main = () => List.nth(0.5, [1.0])");
-    assert!(
-        message.contains("whole, finite index"),
-        "unexpected: {message}"
-    );
+    // Fractional AND non-finite indices are rejected — the latter matters
+    // because `inf as usize` saturates rather than erroring in Rust, so
+    // without the guard it would silently read as an out-of-range None.
+    for src in [
+        "let main = () => List.nth(0.5, [1.0])",
+        "let main = () => List.nth(1.0 / 0.0, [1.0])",
+        "let main = () => List.nth(0.0 / 0.0, [1.0])",
+    ] {
+        let (message, _, _) = run_err(src);
+        assert!(
+            message.contains("whole, finite index"),
+            "unexpected for {src}: {message}"
+        );
+    }
 
     // head / last, including on the empty list.
     assert_eq!(
@@ -523,6 +532,17 @@ fn list_sort_by_is_ascending_and_stable() {
         .filter(|line| line.contains("List.sortBy["))
         .count();
     assert_eq!(key_calls, 8, "the key must run once per element, ran {key_calls}");
+    // A NaN key does not corrupt the sort. `total_cmp` is a TOTAL order, so
+    // NaN sorts to one end (positive NaN last) and every non-NaN element
+    // keeps its correct relative position — whereas a `partial_cmp`-with-
+    // fallback comparator is inconsistent and can scramble unrelated pairs.
+    assert_eq!(
+        main_result(
+            "let main = () => [3.0, 0.0 / 0.0, 1.0, 2.0] |> List.sortBy((v) => v) \
+             |> List.take(3.0)"
+        ),
+        "[1, 2, 3]"
+    );
     let (message, _, _) = run_err("let main = () => [1.0] |> List.sortBy((v) => \"s\")");
     assert!(message.contains("must return a number"), "unexpected: {message}");
 }
@@ -570,6 +590,29 @@ fn list_take_and_drop_saturate() {
         "[1]"
     );
     assert_eq!(main_result("let main = () => [] |> List.take(3.0)"), "[]");
+    // Non-finite counts must not panic or ask the allocator for a saturated
+    // length: NaN folds to 0 (IEEE `maximumNumber`) and ±inf is bounded by
+    // the list length.
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.take(0.0 / 0.0)"),
+        "[]"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.drop(0.0 / 0.0)"),
+        "[1, 2]"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.take(1.0 / 0.0)"),
+        "[1, 2]"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.drop(1.0 / 0.0)"),
+        "[]"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.take(0.0 - 1.0 / 0.0)"),
+        "[]"
+    );
     // take(n) ++ drop(n) reconstructs the list, for any n.
     assert_eq!(
         main_result(
@@ -647,6 +690,26 @@ let main = () => List.all(agree, [-2.0, -0.5, 0.0, 0.25, 1.0, 7.0])"
     // An inverted range is a caller bug, not a silent swap.
     let (message, _, _) = run_err("let main = () => Math.clamp(10.0, 0.0, 5.0)");
     assert!(message.contains("low <= high"), "unexpected: {message}");
+    // A NaN BOUND would make `f64::clamp` PANIC — the `low <= high` guard is
+    // false for NaN either side, so it routes to the same teaching error
+    // instead of aborting the interpreter. (This is the guard's real job.)
+    for src in [
+        "let main = () => Math.clamp(0.0 / 0.0, 1.0, 0.5)",
+        "let main = () => Math.clamp(0.0, 0.0 / 0.0, 0.5)",
+    ] {
+        let (message, _, _) = run_err(src);
+        assert!(message.contains("low <= high"), "unexpected for {src}: {message}");
+    }
+    // A NaN VALUE is not an error — it clamps to NaN, as IEEE says.
+    assert_eq!(
+        main_result("let main = () => let n = (0.0 / 0.0) |> Math.clamp(0.0, 1.0) in n != n"),
+        "true"
+    );
+    // Infinite bounds are a legitimate one-sided clamp.
+    assert_eq!(
+        main_result("let main = () => 5.0 |> Math.clamp(0.0, 1.0 / 0.0)"),
+        "5"
+    );
 }
 
 /// `Math.round` is HALF AWAY FROM ZERO, and symmetric about it.
@@ -675,8 +738,17 @@ let main = () => List.all(mirrors, [0.5, 1.5, 2.5, 3.7, 0.0])"
 #[test]
 fn math_sign_is_zero_at_zero() {
     assert_eq!(
-        main_result("let main = () => [5.0, -5.0, 0.0, 0.0 - 0.0] |> List.map(Math.sign)"),
-        "[1, -1, 0, 0]"
+        main_result("let main = () => [5.0, -5.0, 0.0] |> List.map(Math.sign)"),
+        "[1, -1, 0]"
+    );
+    // NEGATIVE zero is the case this builtin exists for: Rust's `signum`
+    // calls -0.0 negative (-1.0) and +0.0 positive (1.0). Both are 0 here.
+    // (`0.0 - 0.0` is +0.0, so it does NOT exercise this — the literal does.)
+    assert_eq!(main_result("let main = () => Math.sign(-0.0)"), "0");
+    // NaN has no sign, so it propagates rather than collapsing to 0.
+    assert_eq!(
+        main_result("let main = () => let n = Math.sign(0.0 / 0.0) in n != n"),
+        "true"
     );
 }
 

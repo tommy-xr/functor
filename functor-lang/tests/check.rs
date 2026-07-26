@@ -1804,9 +1804,15 @@ fn the_jam_reached_for_builtins_exist() {
 }
 
 // THREAD-LAST IS LAW. Every multi-argument addition takes its subject as the
-// FINAL parameter, so the pipeline form means what it reads like. This is
-// the check-time half (the runtime half is in `tests/run.rs`): if any
-// argument order were flipped, the pipeline below would be a type error.
+// FINAL parameter, so the pipeline form means what it reads like.
+//
+// This is the check-time half: it catches any flip that changes the TYPES
+// (`List.nth`, `List.indexedMap`, `List.sortBy`, `List.find`, `List.take`,
+// `List.drop`, `List.concatMap`). It cannot catch a flip between same-typed
+// parameters — `List.zip`, `Text.contains`, `Text.replace`, and `Math.clamp`
+// would still check clean reversed — so those four are pinned by VALUE in
+// `tests/run.rs` instead (e.g. `Text.contains` asserts that "hello" is not
+// inside "ell").
 #[test]
 fn the_additions_are_subject_last() {
     assert_clean(
