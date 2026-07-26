@@ -1213,7 +1213,7 @@ writing a controller. The recipe, and the three traps that are NOT obvious:
 
 **Declare the body `|> Physics.upright`.** This is not optional. A dynamic
 capsule that can rotate picks up angular velocity from any glancing contact and
-topples — measured at ~40° off vertical mid-jump, then creeping sideways along
+topples — measured at 40-80° off vertical mid-jump, then creeping sideways along
 a wall with no input. It also silently corrupts everything below, because a
 tipped capsule's lowest point is `radius + halfHeight·cos θ` below its center,
 not the fixed `feetOffset` the probe and clamp assume.

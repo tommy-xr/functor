@@ -97,14 +97,15 @@ whatever it stands on; the plaza's top face is `y = 0` and the deck's is
 | Wall | **CLEAN, and free** | Held into the wall for 220 frames: stopped at `x = −6.3012` against a predicted −6.3000 (wall face −6.7, capsule radius 0.4) and stayed — `x` and `z` both constant to four decimals from f=260 to f=399. Zero collision code in the game. |
 | Edge / ledge fall-off | **CLEAN, and free** | Walking off the deck's edge simply stops being grounded; gravity and the solver do the rest. |
 | Standing height | **CLEAN, with a caveat** | A constant 0.8988 on the plaza and 2.1462–2.1488 on the deck. Getting here needed a ground clamp, a post-jump lockout, and `Physics.upright` — see below. |
-| Keeping the capsule upright | **WAS IMPOSSIBLE — fixed in this change** | A rotating capsule visibly toppled (~40° off vertical mid-jump) and then crept 0.19 units sideways along the wall with no input. No rotation lock, angular damping, or angular-velocity command existed in the `Physics` API, so this was unfixable in game code. This change adds `Physics.upright`. |
+| Keeping the capsule upright | **WAS IMPOSSIBLE — fixed in this change** | A rotating capsule visibly toppled (40-80° off vertical mid-jump) and then crept 0.19 units sideways along the wall with no input. No rotation lock, angular damping, or angular-velocity command existed in the `Physics` API, so this was unfixable in game code. This change adds `Physics.upright`. |
 
 ### The one thing that was genuinely impossible
 
 **A dynamic capsule could not be kept upright.** Nothing in the `Physics`
 module locked rotation, damped angular velocity, or let a game command it, so a
 character body picked up spin from every glancing contact. Measured: the
-capsule sat ~40° off vertical mid-jump, and once it leaned on the wall it crept
+capsule sat 40–80° off vertical mid-jump (it kept rotating, so the angle
+depends on the frame), and once it leaned on the wall it crept
 0.19 units along `z` over 140 frames with no input, still accelerating. It also
 silently corrupted the controller, because a tipped capsule's lowest point is
 `radius + halfHeight·cos θ` below its center rather than the fixed

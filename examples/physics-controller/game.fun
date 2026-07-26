@@ -99,8 +99,10 @@ let init = {
   // A jump press latched as a rising edge, plus the held state that derives it.
   jumpEdge: false,
   jumpHeld: false,
-  // ENTER's own rising-edge latch (key repeats arrive as `isDown = true`).
+  // ENTER's own rising-edge latch (key repeats arrive as `isDown = true`), and
+  // the respawn request it raises for `tick` to perform.
   enterHeld: false,
+  respawnPending: false,
   clock: 0.0,
   frame: 0.0,
   // Whether the ground probe hit the moving deck, and that surface's velocity —
@@ -182,15 +184,27 @@ let tick = (model, dt, tts) =>
         onDeck: probe.hit && probe.tag == deckTag,
         carryX: carry.x,
       } in
-    // Fell out of the world: put the body back rather than re-declaring its
-    // spawn (a changed declaration would teleport it, but then every later
-    // frame's declaration would be a change back again).
-    if pos.y < World.voidY then
-      ({ next with falls: next.falls + 1.0, ctl: Control.respawned(next.ctl) }, respawn)
+    // Respawn — either because the character fell out of the world, or because
+    // ENTER asked for one. Both go through `tick`, and both return `respawn`
+    // INSTEAD of this frame's velocity command, never alongside it: commands
+    // apply in queue order, so a `setVelocity` issued after the respawn's would
+    // win and hand the body back its pre-teleport fall speed.
+    //
+    // The body is put back with a command rather than by re-declaring its
+    // spawn: a changed declaration would teleport it, but then every later
+    // frame's declaration would be a change back again.
+    let fellOut = pos.y < World.voidY in
+    if fellOut || m.respawnPending then
+      ({ next with
+         falls: if fellOut then next.falls + 1.0 else next.falls,
+         respawnPending: false,
+         ctl: Control.respawned(next.ctl) },
+       respawn)
     else
-      // Built lazily: under the default `traceOn = false` this record — and the
+      // Built lazily: under the default `traceOn = false` the record — and the
       // `Math.cos` inside `World.deckVx` — is never constructed, because `if`
-      // only evaluates the branch it takes.
+      // only evaluates the branch it takes. (The closure itself is still
+      // allocated each frame; only its body is skipped.)
       let row = () => {
         f: next.frame,
         x: pos.x, y: pos.y, z: pos.z, vy: vel.y,
@@ -208,11 +222,12 @@ let input = (model, key, isDown) =>
      | false => { model with enterHeld: false }
      | true =>
        // Rising edge: GLFW delivers key REPEATS as `isDown = true`, so without
-       // the latch holding ENTER would queue a teleport every repeat.
+       // the latch holding ENTER would request a respawn every repeat. The key
+       // only records the INTENT — `tick` performs it, so the respawn is not
+       // immediately undone by that same frame's velocity command.
        (match model.enterHeld with
         | true => model
-        | false =>
-          ({ model with enterHeld: true, ctl: Control.respawned(model.ctl) }, respawn)))
+        | false => { model with enterHeld: true, respawnPending: true }))
   | _ => model
 
 // -- drawing -----------------------------------------------------------------
