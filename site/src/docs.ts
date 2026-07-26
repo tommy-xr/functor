@@ -1,6 +1,6 @@
 // Docs page enhancement: syntax-highlight the <pre class="functor-lang"> blocks and
 // give the runnable ones (class "runnable") a "▶ try it" button that opens
-// the program in the sandbox via the #src= fragment (see sandbox.js).
+// the program in the sandbox via the #src= fragment (see sandbox.ts).
 //
 // The tokenizer mirrors src/functor-lang.ts's CodeMirror StreamLanguage; it's a few
 // regexes, so a static-HTML variant beats dragging CodeMirror onto the docs

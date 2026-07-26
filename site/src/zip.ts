@@ -44,7 +44,7 @@ const concat = (arrs: Bytes[]): Bytes => {
  * One archive member: a path inside the zip and its text content.
  *
  * Structurally the IDE's `ProjectFile`, but deliberately its own type — the
- * caller (ide.js) also zips a synthesised `functor.json` manifest that is not
+ * caller (ide.ts) also zips a synthesised `functor.json` manifest that is not
  * part of the project's module space.
  */
 export interface ZipEntry {

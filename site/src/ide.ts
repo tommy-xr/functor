@@ -24,7 +24,61 @@ import {
 import { ProjectBridge } from "./project-bridge.js";
 import { createStatusBar } from "./status-bar.js";
 import { createRuntimeTarget } from "./runtime-target.js";
+import { asPlayerMessage } from "./protocol.js";
+import type { ProjectFile } from "./protocol.js";
 import { zipFiles } from "./zip.js";
+
+/** The in-memory project: a flat module space plus the open file's path. */
+interface Project {
+  active: string;
+  files: ProjectFile[];
+}
+
+/**
+ * The project as read back from localStorage. This is the shape it is EXPECTED
+ * to have, not one anything guarantees: the store is user-editable, so every
+ * field is optional and `loadProject` re-validates each one at runtime (a
+ * mismatch falls through to the starter). Typing it as `unknown` instead would
+ * only move those same runtime checks behind a wall of casts.
+ */
+interface StoredProject {
+  active?: string;
+  files?: ProjectFile[];
+}
+
+/** The status pill's three states — also its `data-state` attribute value. */
+type PillState = "busy" | "live" | "error";
+
+/** `validName`'s verdict: exactly one of the two fields is ever present. */
+interface NameCheck {
+  path?: string;
+  error?: string;
+}
+
+type RuntimeTarget = ReturnType<typeof createRuntimeTarget>;
+type RuntimeTargetState = ReturnType<RuntimeTarget["state"]>;
+
+/** The IDE's e2e seam (driven by e2e/ide-page.mjs and e2e/ide-project.mjs). */
+interface IdeSeam {
+  setActiveSource(source: string): void;
+  openFile: (path: string) => void;
+  newFile: (path: string, source?: string) => void;
+  files: () => ProjectFile[];
+  status: () => {
+    state: string | undefined;
+    text: string | null;
+    message: string;
+  };
+  runtimeTarget: () => RuntimeTargetState;
+  triggerComplete(source: string, cursor: number): void;
+  acceptCompletion: () => boolean;
+}
+
+/** The readiness seam, shared in NAME (not shape) with the sandbox's. */
+interface LangSeam {
+  ready: Promise<boolean>;
+  expects: () => ReturnType<typeof currentExpects>;
+}
 
 const STORAGE_KEY = "functor-ide-project-v1";
 const ENTRY = "game.fun"; // the program root; every other .fun is a sibling module
@@ -45,7 +99,7 @@ const FILE_ICON =
 // A two-file starter: game.fun draws using constants from palette.fun (a
 // sibling module — file = module, so palette.fun is module `Palette`), to show
 // the multi-file loop the sandbox can't.
-const STARTER = {
+const STARTER: Project = {
   active: ENTRY,
   files: [
     {
@@ -79,23 +133,25 @@ let sky = 0.18
 };
 
 const els = {
-  fileList: document.getElementById("file-list"),
-  newFile: document.getElementById("new-file"),
-  download: document.getElementById("download"),
-  restart: document.getElementById("restart"),
-  status: document.getElementById("status"),
-  activeName: document.getElementById("active-file"),
-  editorHost: document.getElementById("editor"),
-  player: document.getElementById("player"),
+  fileList: document.getElementById("file-list")!,
+  newFile: document.getElementById("new-file")!,
+  download: document.getElementById("download")!,
+  restart: document.getElementById("restart")!,
+  status: document.getElementById("status")!,
+  activeName: document.getElementById("active-file")!,
+  editorHost: document.getElementById("editor")!,
+  player: document.getElementById("player") as HTMLIFrameElement,
 };
 
 // ---------------------------------------------------------------- project
 
 let project = loadProject();
 
-function loadProject() {
+function loadProject(): Project {
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    // A missing key parses as `null` (JSON.parse coerces), which the validation
+    // below rejects — the starter is the fallback either way.
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as StoredProject | null;
     const seen = new Set();
     const valid =
       stored &&
@@ -111,13 +167,16 @@ function loadProject() {
       }) &&
       stored.files.some((f) => f.path === ENTRY);
     if (valid) {
-      const active = stored.files.some((f) => f.path === stored.active) ? stored.active : ENTRY;
+      // The guard proves `active` matched a validated (string) path.
+      const active = stored.files!.some((f) => f.path === stored.active)
+        ? stored.active!
+        : ENTRY;
       // The loader's contract (preview AND language analysis): the ENTRY is
       // files[0] — its module is the program root. Every mutation here keeps
       // that order, but a hand-edited localStorage could reorder.
       const files = [
-        ...stored.files.filter((f) => f.path === ENTRY),
-        ...stored.files.filter((f) => f.path !== ENTRY),
+        ...stored.files!.filter((f) => f.path === ENTRY),
+        ...stored.files!.filter((f) => f.path !== ENTRY),
       ];
       return { files, active };
     }
@@ -140,7 +199,7 @@ const activeFile = () => project.files.find((f) => f.path === project.active);
 
 // ---------------------------------------------------------------- status
 
-const setStatus = (state, text, detail = "") => {
+const setStatus = (state: PillState, text: string, detail = "") => {
   els.status.dataset.state = state;
   els.status.textContent = text;
   // The detail (the reload note, or a parse error) lives in the pill's tooltip
@@ -152,7 +211,7 @@ const setStatus = (state, text, detail = "") => {
 // ---------------------------------------------------------------- editor
 
 let programmaticEdit = false;
-let runtimeTarget = null;
+let runtimeTarget: RuntimeTarget | null = null;
 
 const view = new EditorView({
   parent: els.editorHost,
@@ -182,7 +241,7 @@ const langReady = setupLangIntel().then((extensions) => {
   return extensions.length > 0;
 });
 
-const statusBar = createStatusBar({ host: document.getElementById("statusbar") });
+const statusBar = createStatusBar({ host: document.getElementById("statusbar")! });
 runtimeTarget = createRuntimeTarget({
   host: document.getElementById("runtime-target"),
   getProject: () => project.files,
@@ -221,7 +280,7 @@ onDiagnostics((diags) => {
 // Runtime console traces (Functor Lang `Debug.log` and friends), forwarded by the
 // player page — see the console hook in player.html. Guarded to OUR iframe.
 window.addEventListener("message", (event) => {
-  const data = event.data;
+  const data = asPlayerMessage(event.data);
   if (!data || data.type !== "functor-lang-console") return;
   if (event.source !== els.player.contentWindow) return;
   statusBar.appendOutput(data.level, data.message, data.frame ?? null);
@@ -233,7 +292,7 @@ window.addEventListener("message", (event) => {
 // opened buffer's hash (openFile below calls it after setDoc).
 wireLiveTrace(view, statusBar, els.player, langReady);
 
-const setDoc = (source) => {
+const setDoc = (source: string) => {
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
@@ -268,7 +327,8 @@ const bridge = new ProjectBridge(els.player, {
 const schedulePush = () => {
   saveProject();
   bridge.setProject(project.files);
-  runtimeTarget.projectChanged();
+  // Assigned during boot, before any edit or seam call can reach these.
+  runtimeTarget!.projectChanged();
 };
 
 // ---------------------------------------------------------------- sidebar
@@ -307,7 +367,7 @@ const renderFileList = () => {
   els.activeName.textContent = project.active;
 };
 
-const openFile = (path) => {
+const openFile = (path: string) => {
   if (path === project.active) return;
   // A stale caller (e.g. a problem row outliving a delete) must not point
   // `active` at a file that no longer exists.
@@ -327,7 +387,7 @@ const openFile = (path) => {
 
 // A valid sibling filename: `<name>.fun`, a bare module stem (no path
 // separators — the project is a flat module space), and not already taken.
-const validName = (raw) => {
+const validName = (raw: string): NameCheck => {
   const path = raw.trim();
   if (!MODULE_FILE.test(path)) {
     return { error: "name must be a bare module like `enemy.fun` (letters, digits, _)" };
@@ -346,12 +406,13 @@ const newFile = () => {
     setStatus("error", "✖ error", error);
     return;
   }
-  project.files.push({ path, source: `// ${path}\n` });
-  openFile(path);
+  // `error` was falsy, so validName returned the other arm: `path` is set.
+  project.files.push({ path: path!, source: `// ${path}\n` });
+  openFile(path!);
   schedulePush(); // a new empty module can't break the build; keep the preview in sync
 };
 
-const deleteFile = (path) => {
+const deleteFile = (path: string) => {
   if (path === ENTRY) return;
   if (!window.confirm(`Delete ${path}? This can't be undone.`)) return;
   project.files = project.files.filter((f) => f.path !== path);
@@ -360,7 +421,7 @@ const deleteFile = (path) => {
   resetIntel();
   if (project.active === path) {
     project.active = ENTRY;
-    setDoc(activeFile().source);
+    setDoc(activeFile()!.source);
   } else {
     // Topology changed under an unchanged buffer: without a doc change the
     // linter never reruns, leaving diagnostics/inlays/lenses stale forever.
@@ -397,7 +458,7 @@ const restart = () => {
   setStatus("busy", "◌ loading…");
   els.player.src = "player.html?project=inline";
   bridge.setProject(project.files);
-  runtimeTarget.restart();
+  runtimeTarget!.restart();
 };
 
 // ---------------------------------------------------------------- boot
@@ -407,7 +468,7 @@ els.download.addEventListener("click", download);
 els.restart.addEventListener("click", restart);
 
 renderFileList();
-setDoc(activeFile().source);
+setDoc(activeFile()!.source);
 setStatus("busy", "◌ loading…");
 // Store the file set BEFORE the iframe loads, so the bridge can flush it the
 // moment the player announces it's ready (no lost first push).
@@ -416,7 +477,7 @@ els.player.src = "player.html?project=inline";
 
 // Test seam for the headless e2e (e2e/ide-page.mjs): drive files without
 // synthesizing DOM events, and read status.
-window.__ide = {
+(window as Window & { __ide?: IdeSeam }).__ide = {
   setActiveSource(source) {
     setDoc(source);
     const file = activeFile();
@@ -435,7 +496,7 @@ window.__ide = {
     text: els.status.textContent,
     message: els.status.title,
   }),
-  runtimeTarget: () => runtimeTarget.state(),
+  runtimeTarget: () => runtimeTarget!.state(),
   // Replace the active buffer, place the cursor, and open the completion popup
   // (explicit trigger) — the sandbox's seam, minus any push (programmaticEdit
   // suppresses the mirror-and-push listener).
@@ -455,7 +516,7 @@ window.__ide = {
 
 // Whether language analysis is available (false = degraded, pkg absent) — the
 // same readiness seam the sandbox exposes for e2e.
-window.__lang = {
+(window as Window & { __lang?: LangSeam }).__lang = {
   ready: langReady,
   expects: () => currentExpects(view),
 };

@@ -3,21 +3,37 @@
 // Edit the region and the running grid hot-swaps with the model preserved —
 // the wave keeps rolling — then drag the timeline back through the change.
 //
-// This is the light sibling of sandbox.js: it reuses the same editor↔player
-// seam (player-bridge.ts) but a stripped editor (mini-editor.js — no basicSetup
+// This is the light sibling of sandbox.ts: it reuses the same editor↔player
+// seam (player-bridge.ts) but a stripped editor (mini-editor.ts — no basicSetup
 // or lint) so the landing bundle stays tiny. It NEVER reloads the iframe; every
 // edit is a source push, because state preservation IS the demo.
 
+import type { EditorView } from "@codemirror/view";
 import { createMiniEditor } from "./mini-editor.js";
 import { PlayerBridge } from "./player-bridge.js";
+
+/** The status dot's three states — also its `data-state` attribute value. */
+type HeroState = "busy" | "live" | "error";
+
+interface HeroStatus {
+  state: HeroState;
+  message: string;
+}
+
+/** The landing page's e2e seam (driven by e2e/site-sandbox.mjs). */
+interface HeroSeam {
+  setRegion(src: string): void;
+  region: () => string;
+  status: () => HeroStatus;
+}
 
 const HERO_URL = "examples/hero.fun";
 const OPEN = "// <editable>";
 const CLOSE = "// </editable>";
 
-const frame = document.querySelector(".hero-scene");
-const mount = document.getElementById("hero-editor");
-const card = document.querySelector(".hero-card");
+const frame = document.querySelector<HTMLIFrameElement>(".hero-scene")!;
+const mount = document.getElementById("hero-editor")!;
+const card = document.querySelector(".hero-card")!;
 
 // A small, unobtrusive status dot pinned to the card corner: green when the
 // last edit is live, red on a broken edit (the old program keeps running).
@@ -26,8 +42,8 @@ const dot = document.createElement("div");
 dot.className = "hero-status";
 card.appendChild(dot);
 
-let statusState = { state: "busy", message: "" };
-const setStatus = (state, message = "") => {
+let statusState: HeroStatus = { state: "busy", message: "" };
+const setStatus = (state: HeroState, message = "") => {
   statusState = { state, message };
   dot.dataset.state = state;
   dot.title = message || state;
@@ -52,10 +68,10 @@ const bridge = new PlayerBridge(frame, {
     ok ? setStatus("live", message) : setStatus("error", message),
 });
 
-let editor = null;
+let editor: EditorView | null = null;
 
 const boot = async () => {
-  let source;
+  let source: string;
   try {
     const response = await fetch(HERO_URL);
     if (!response.ok) {
@@ -100,7 +116,7 @@ const boot = async () => {
 boot();
 
 // Test seam for the headless e2e (e2e/site-sandbox.mjs), on the landing window.
-window.__hero = {
+(window as Window & { __hero?: HeroSeam }).__hero = {
   setRegion(src) {
     if (editor) {
       editor.dispatch({

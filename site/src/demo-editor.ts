@@ -1,6 +1,6 @@
 // A standalone, full-featured Functor Lang editor beside a live scene — the
 // hero editor's demo-grade sibling. Unlike the landing hero's mini-editor
-// (mini-editor.js — deliberately stripped to keep the landing bundle tiny),
+// (mini-editor.ts — deliberately stripped to keep the landing bundle tiny),
 // this composes the SAME language intelligence the sandbox uses — completion,
 // codelenses, hover types, diagnostics, and the paused-inspector live-value
 // overlay — plus state-preserving hot reload. It carries none of the sandbox's
@@ -10,7 +10,7 @@
 //
 // This is a lean re-composition of the shared, already-modular seams
 // (setupLangIntel, wireLiveTrace, PlayerBridge) rather than a fork of
-// sandbox.js — the only overlap is constructing the editor view.
+// sandbox.ts — the only overlap is constructing the editor view.
 
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
@@ -20,7 +20,15 @@ import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 import { setupLangIntel, wireLiveTrace } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 
-const frame = document.getElementById("player");
+/** The demo / e2e seam this page exposes (site/demos/ drives it). */
+interface DemoEditorSeam {
+  ready: Promise<boolean>;
+  view: EditorView;
+  frame: HTMLIFrameElement;
+  source: () => string;
+}
+
+const frame = document.getElementById("player") as HTMLIFrameElement;
 const game = new URLSearchParams(location.search).get("game") || "examples/hero.fun";
 
 // wireLiveTrace drives an executions picker through a status bar; the demo has
@@ -41,7 +49,7 @@ const bridge = new PlayerBridge(frame, {
 let programmaticEdit = false;
 
 const view = new EditorView({
-  parent: document.getElementById("editor"),
+  parent: document.getElementById("editor")!,
   extensions: [
     basicSetup,
     keymap.of([indentWithTab]),
@@ -74,7 +82,7 @@ wireLiveTrace(view, noopStatusBar, frame, langReady);
 })();
 
 // Demo / e2e seam.
-window.__demoEditor = {
+(window as Window & { __demoEditor?: DemoEditorSeam }).__demoEditor = {
   ready: langReady,
   view,
   frame,
