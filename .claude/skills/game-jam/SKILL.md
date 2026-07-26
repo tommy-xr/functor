@@ -138,6 +138,11 @@ Per cluster:
 Point fixers at the jam entry's `JAM_NOTES.md` (read-only) as evidence, and
 keep them off the jam worktrees.
 
+**Docs changes are visual changes.** A PR that edits a manual/docs/site page
+embeds before/after screenshots of the rendered page (base ref vs change), the
+same as any rendering PR — reviewers judge the page users will see, not the
+markup diff.
+
 **PR lifecycle:** fixers open PRs as drafts (repo convention), and once
 verification is re-run post-review and every Critical/High is dispositioned in
 the body — plus media embedded for visual changes — the PR gets marked ready
