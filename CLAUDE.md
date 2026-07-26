@@ -153,7 +153,21 @@ language, prelude, and semantics are documented in the **`functor-lang` skill** 
 **Prerequisites:** Rust stable + `wasm32-unknown-unknown` target, Node 22 / npm 10, and
 `wasm-pack`.
 
-**Build the CLI.** Order matters — the CLI embeds the web runtime bundle at compile time via
+**Build everything** — the CLI, both wasm bundles, and the site:
+
+```sh
+npm run build
+```
+
+Reach for this when you don't know which pieces a change touches. The individual
+targets are silently order-dependent, and getting the order wrong fails at
+runtime rather than at build time: a site built against a stale
+`runtime/functor-runtime-web/pkg` looks fine but its sandbox hangs at
+`loading…` with a missing-export error in the console, and without
+`build:lang-wasm` the editor's `/pkg/functor_lang_wasm.js` 404s so its
+"0 problems" indicator isn't checking anything.
+
+**Build just the CLI.** Order matters — the CLI embeds the web runtime bundle at compile time via
 `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
 
 ```sh

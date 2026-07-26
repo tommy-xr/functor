@@ -30,9 +30,15 @@ cargo build --release --bin functor                          # the CLI (embeds t
 Or use the bundled convenience script, which runs both in order:
 
 ```sh
+npm run build              # everything: CLI, both wasm bundles, and the site
 npm run build:cli          # release build → target/release/functor
 npm run build:cli:debug    # debug build   → target/debug/functor
 ```
+
+`npm run build` is the one to reach for when you are unsure which pieces a
+change touches: the individual targets are order-dependent, and the wrong order
+fails at runtime rather than at build time (a site built against a stale runtime
+bundle hangs at `loading…` instead of erroring).
 
 **Prefer the release build (`npm run build:cli`) for interactive use** — the debug
 build's CPU-bound paths (the webview overlay's software raster, rapier physics) are
