@@ -25,10 +25,13 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
 
-    // A migrated .ts importing a still-.js sibling (say hero.ts importing
-    // mini-editor.js) is otherwise TS7016 "could not find a declaration file".
-    // `checkJs` stays off, so the .js files are resolved but never checked.
-    "allowJs": true,
+    // The site runs in a BROWSER. Without this, tsc auto-includes every
+    // @types/* package in node_modules — @types/node among them — so
+    // `process.platform`, `Buffer`, and `require` would all typecheck in code
+    // that can never use them, and `ReturnType<typeof setTimeout>` would
+    // resolve to NodeJS.Timeout instead of number. An empty list means the
+    // `lib` above is the whole ambient world.
+    "types": [],
 
     // NEVER set `useDefineForClassFields: false` here. esbuild honours this
     // file for the plain .js under site/ too, so that key would silently

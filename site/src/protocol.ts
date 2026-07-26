@@ -1,13 +1,20 @@
-// The editor ↔ player postMessage protocol — the seam between an editor page
-// (sandbox, IDE, hero, demo-editor) and the wasm runtime inside its player
-// iframe. Both bridges (player-bridge.ts, project-bridge.ts) speak it, the
-// player implements the other end (site/player.html), and the VSCode
-// live-preview panel speaks the single-source half of it.
+// The SITE's editor ↔ player postMessage protocol — the seam between an editor
+// page (sandbox, IDE, hero, demo-editor) and the wasm runtime inside its
+// player iframe. Both bridges (player-bridge.ts, project-bridge.ts) speak it;
+// site/player.html implements the other end.
 //
 // These messages cross a window boundary, so nothing checks them at runtime
-// beyond the `type` discriminant: a payload typo used to fail silently. The
-// types here are the single written-down description of that contract — keep
-// them in step with site/player.html when the protocol changes.
+// beyond the `type` discriminant: a payload typo used to fail silently. Keep
+// these types in step with site/player.html when the protocol changes.
+//
+// SCOPE — this describes the site's seam, not every speaker of every related
+// message. Two neighbours overlap without being covered here:
+//   • The VSCode live-preview panel sends `set-source`/`set-project` too, but
+//     also a `functor-lang-preview-navigate` of its own, and its preview page
+//     (runtime/functor-runtime-web/index-functor-lang.html) has no `hello`
+//     handler — so the hello/ready handshake below is player.html-specific.
+//   • The Rust web runtime posts `set-source-result` directly
+//     (functor-runtime-web/src/lib.rs), in the same shape as player.html.
 
 /** One file of an in-memory project (the IDE's flat module space). */
 export interface ProjectFile {
@@ -62,8 +69,7 @@ export type EditorMessage = PreviewHello | SetSource | SetProject;
 /**
  * The callback contract both bridges expose: how protocol events map to UI.
  * It lives here rather than in either bridge so the two stay independent
- * siblings — `import type` + `verbatimModuleSyntax` erase it entirely, so
- * neither bundle pulls in the other.
+ * siblings — neither has to import the other just to name its own options.
  */
 export interface BridgeOptions {
   /** a push was sent (busy) */
@@ -94,7 +100,9 @@ export interface ProjectWaiting {
 /**
  * The reply to a `set-source` / `set-project` hot-swap. `id` echoes the push
  * it answers; a result for anything but the latest push is stale. It is
- * optional because an older runtime omits it.
+ * omitted whenever the push carried no id — by older runtimes, but also by
+ * the CURRENT one for an id-less push (the VSCode panel's, or a rejected
+ * malformed project).
  */
 export interface SetSourceResult {
   type: "functor-lang-set-source-result";
@@ -134,7 +142,7 @@ export type PlayerMessage =
   | ConsoleLine
   | InspectorTrace;
 
-const PLAYER_MESSAGE_TYPES = new Set<PlayerMessage["type"]>([
+const PLAYER_MESSAGE_TYPES: ReadonlySet<string> = new Set<PlayerMessage["type"]>([
   "functor-lang-preview-ready",
   "functor-lang-project-waiting",
   "functor-lang-set-source-result",
@@ -158,9 +166,10 @@ const PLAYER_MESSAGE_TYPES = new Set<PlayerMessage["type"]>([
  * behaviour — the old code passed a malformed body straight through to the
  * callbacks — so it is deliberately out of scope for this migration.
  */
-export const asPlayerMessage = (data: unknown): PlayerMessage | null =>
-  typeof data === "object" &&
-  data !== null &&
-  PLAYER_MESSAGE_TYPES.has((data as { type?: PlayerMessage["type"] }).type as PlayerMessage["type"])
+export const asPlayerMessage = (data: unknown): PlayerMessage | null => {
+  if (typeof data !== "object" || data === null) return null;
+  const { type } = data as { type?: unknown };
+  return typeof type === "string" && PLAYER_MESSAGE_TYPES.has(type)
     ? (data as PlayerMessage)
     : null;
+};
