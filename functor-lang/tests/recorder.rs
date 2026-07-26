@@ -65,7 +65,7 @@ fn records_let_bindings_and_params_and_result() {
 
 #[test]
 fn records_match_binders() {
-    let src = "type Shape = | Circle(radius: Float) | Square(side: Float)\n\
+    let src = "type Shape = | Circle(radius: float) | Square(side: float)\n\
                let area = (shape) =>\n  \
                match shape with\n  \
                | Circle(r) => r + 1.0\n  \

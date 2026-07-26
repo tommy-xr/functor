@@ -53,7 +53,7 @@ const GATE_US = BUDGET_US * 0.6;
 const ENTITIES = 100;
 const heavyGame = `let tau = 6.2831853
 
-let entity = (i: Float) => { i: i, phase: i * 0.618 }
+let entity = (i: float) => { i: i, phase: i * 0.618 }
 
 let init = { entities: List.range(${ENTITIES}) |> List.map(entity) }
 
@@ -61,18 +61,18 @@ let init = { entities: List.range(${ENTITIES}) |> List.map(entity) }
 let tick = (m, dt, tts) =>
   { m with entities: m.entities |> List.map((e) => { e with phase: e.phase + dt }) }
 
-let pointPos = (i: Float, tts: Float) =>
+let pointPos = (i: float, tts: float) =>
   let a = tts * 0.6 + i * (tau / 2.0) in
   { x: Math.cos(a) * 4.0, y: 2.4, z: Math.sin(a) * 4.0 }
 
-let marker = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
+let marker = (i: float, tts: float, r: float, g: float, b: float) =>
   let p = pointPos(i, tts) in
   Scene.sphere()
     |> Scene.scale(0.15)
     |> Scene.emissive(Color.rgb(r, g, b))
     |> Scene.translate(Vec3.make(p.x, p.y, p.z))
 
-let pointLight = (i: Float, tts: Float, r: Float, g: Float, b: Float) =>
+let pointLight = (i: float, tts: float, r: float, g: float, b: float) =>
   let p = pointPos(i, tts) in
   Light.point(Vec3.make(p.x, p.y, p.z), Color.rgb(r, g, b), 1.4, 6.0)
 
@@ -86,7 +86,7 @@ let shapeFor = (e) =>
     |> Scene.rotateY(Angle.radians(e.phase))
     |> Scene.translate(Vec3.make(Math.cos(a) * r, 0.4 + Math.sin(e.phase) * 0.2, Math.sin(a) * r))
 
-let draw = (m, tts: Float) =>
+let draw = (m, tts: float) =>
   Frame.createLit(
     Camera.firstPerson(
       Vec3.make(0.0, 9.0, -16.0),

@@ -378,8 +378,11 @@ fn run(
             ("textDocument/didOpen", None) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
                 let text = params["textDocument"]["text"].as_str().unwrap_or("");
-                publish_diagnostics(writer, uri, text);
+                // Insert BEFORE checking: the project loader stands each open
+                // buffer in for its on-disk file, so this document must already
+                // be in the map for its unsaved text to be the one checked.
                 documents.insert(uri.to_string(), text.to_string());
+                publish_diagnostics(writer, uri, text, &documents);
                 if let Some(project) = load_project(uri, &documents) {
                     projects.insert(uri.to_string(), project);
                 }
@@ -409,7 +412,7 @@ fn run(
                         Some(change_tx) => {
                             let _ = change_tx.send(uri.to_string());
                         }
-                        None => publish_diagnostics(writer, uri, text),
+                        None => publish_diagnostics(writer, uri, text, &documents),
                     }
                     if let Some(project) = load_project(uri, &documents) {
                         projects.insert(uri.to_string(), project);
@@ -451,8 +454,8 @@ fn run(
             // expect-evaluation worker for the settled state.
             ("$/functorFlush", None) => {
                 let uri = params["uri"].as_str().unwrap_or("");
-                if let Some(text) = documents.get(uri) {
-                    publish_diagnostics(writer, uri, text);
+                if let Some(text) = documents.get(uri).cloned() {
+                    publish_diagnostics(writer, uri, &text, &documents);
                     if expect_budget > 0 {
                         let generation = *expect_generations.get(uri).unwrap_or(&0);
                         spawn_expect_worker(uri, &documents, generation, expect_budget, &trace_tx);
@@ -591,9 +594,23 @@ fn spawn_expect_worker(
 }
 
 /// Run the Functor Lang front-end over `text` and publish the outcome: one diagnostic
-/// for the first parse/lower failure, every `functor_lang::check` type diagnostic for
-/// a lowered module, or an empty list (clearing squiggles) when clean.
-fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
+/// for the first parse/lower failure, every type diagnostic for a lowered module, or
+/// an empty list (clearing squiggles) when clean.
+///
+/// Parsing and lowering are per-buffer (syntax is a property of one file), but the
+/// TYPE check runs over the whole project when one loads — the engine prelude plus
+/// sibling modules. That is load-bearing now that an unrecognized type name is an
+/// error: checking a game buffer in isolation has no `Scene.t` / `Input.snapshot` /
+/// sibling `Utils.Shape` in scope, so every qualified annotation would squiggle red
+/// in the editor while `functor build` reported the file clean. Project diagnostics
+/// are filtered to the spans this file owns and localized back into it. The
+/// isolated check remains the fallback for a buffer with no loadable project.
+fn publish_diagnostics(
+    writer: &mut impl Write,
+    uri: &str,
+    text: &str,
+    documents: &HashMap<String, String>,
+) {
     let diagnostic = |message: &str, span: functor_lang::Span| {
         json!({
             "range": span_to_range(text, span),
@@ -603,7 +620,7 @@ fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
         })
     };
     // Parse and lowering stop at the first error; a clean module then gets
-    // ALL of the gradual checker's type diagnostics.
+    // ALL of the checker's type diagnostics.
     let parsed = if uri_to_path(uri)
         .and_then(|path| path.extension().map(|extension| extension == "funi"))
         .unwrap_or(false)
@@ -616,13 +633,40 @@ fn publish_diagnostics(writer: &mut impl Write, uri: &str, text: &str) {
         Err(err) => vec![diagnostic(&err.message, err.span)],
         Ok(program) => match functor_lang::lower(program) {
             Err(err) => vec![diagnostic(&err.message, err.span)],
-            Ok(module) => functor_lang::check(&module)
-                .into_iter()
-                .map(|err| diagnostic(&err.message, err.span))
-                .collect(),
+            Ok(module) => project_diagnostics(uri, documents)
+                .unwrap_or_else(|| {
+                    functor_lang::check(&module)
+                        .into_iter()
+                        .map(|err| diagnostic(&err.message, err.span))
+                        .collect()
+                }),
         },
     };
     write_diagnostics(writer, uri, diagnostics);
+}
+
+/// This file's type diagnostics, checked in the context of its whole project
+/// (engine prelude + siblings) and localized back to this buffer. `None` when no
+/// project loads for the URI, so the caller falls back to the isolated check.
+fn project_diagnostics(uri: &str, documents: &HashMap<String, String>) -> Option<Vec<Value>> {
+    let project = load_project(uri, documents)?;
+    let path = uri_to_path(uri)?;
+    let file = project.sources.file_by_path(&path)?;
+    Some(
+        project
+            .check()
+            .into_iter()
+            .filter(|err| owns(file, err.span.start))
+            .map(|err| {
+                json!({
+                    "range": local_range(file, err.span),
+                    "severity": 1, // Error
+                    "source": "functor-lang",
+                    "message": err.message,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Load the Functor Lang program an open document belongs to. With a `functor.json`
@@ -1432,6 +1476,7 @@ mod tests {
             &mut output,
             "file:///project/widget.funi",
             "type Handle\nlet size : (Handle) => float",
+            &HashMap::new(),
         );
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains(r#""diagnostics":[]"#), "{output}");

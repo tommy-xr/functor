@@ -808,3 +808,57 @@ fn expect_statuses_over_real_stdio() {
     server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
     server.child.wait().expect("wait for exit");
 }
+
+/// Editor diagnostics are PROJECT-aware, not per-buffer. Now that an
+/// unrecognized type name is a hard error, checking a game buffer in
+/// isolation — with no engine prelude and no siblings in scope — would
+/// squiggle every qualified annotation (`Scene.t`, `Input.snapshot`) red
+/// while `functor build` reported the same file clean. Regression test for
+/// that divergence: annotations the project resolves must publish NO
+/// diagnostics, while a genuine error in the same buffer still does.
+#[test]
+fn prelude_type_annotations_do_not_squiggle() {
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+
+    let text = "let render = (s: Scene.t): Scene.t => s\n";
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": URI, "languageId": "functor-lang", "version": 1, "text": text,
+        } },
+    }));
+    let published = server.recv();
+    assert_eq!(
+        published["params"]["diagnostics"],
+        json!([]),
+        "`Scene.t` is a real prelude type — it must not be reported unknown: {published}"
+    );
+
+    // …but a genuinely unknown type name in the same buffer still errors.
+    let broken = "let render = (s: Scene.t): Nonsuch => s\n";
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": URI },
+            "contentChanges": [{ "text": broken }],
+        },
+    }));
+    let published = server.recv();
+    let message = published["params"]["diagnostics"][0]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("unknown type name `Nonsuch`"),
+        "a real unknown type must still be diagnosed: {published}"
+    );
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }));
+    server.recv_until("shutdown reply", |message| message["id"] == 2);
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
+}
