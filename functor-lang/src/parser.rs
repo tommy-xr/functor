@@ -147,6 +147,31 @@ impl Parser {
         }
     }
 
+    /// Close a generic argument list (`Box<'a>`, `List<float>`). Because `>=`
+    /// lexes as ONE token, a space-free `type Box<'a>= …` / `let xs:
+    /// List<float>= …` arrives here as `>=` — split it, consuming the `>` and
+    /// leaving an `=` in the stream for the caller.
+    fn expect_generic_close(&mut self) -> Result<Token, ParseError> {
+        if self.peek_kind() == &TokenKind::GtEq {
+            let span = self.peek().span;
+            self.tokens[self.pos] = Token {
+                kind: TokenKind::Eq,
+                span: Span::new(span.start + 1, span.end),
+            };
+            return Ok(Token {
+                kind: TokenKind::Gt,
+                span: Span::new(span.start, span.start + 1),
+            });
+        }
+        self.expect(TokenKind::Gt, "`,` or `>`")
+    }
+
+    /// Whether the cursor sits on a generic close — including the `>=` that a
+    /// space-free `>` + `=` lexes as (see [`Self::expect_generic_close`]).
+    fn at_generic_close(&self) -> bool {
+        matches!(self.peek_kind(), TokenKind::Gt | TokenKind::GtEq)
+    }
+
     fn expect_ident(&mut self, expected: &str) -> Result<(String, Span), ParseError> {
         match self.peek_kind() {
             TokenKind::Ident(name) => {
@@ -297,14 +322,14 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 params.push(param);
                 if self.peek_kind() == &TokenKind::Comma {
                     self.bump();
-                    if self.peek_kind() == &TokenKind::Gt {
+                    if self.at_generic_close() {
                         break; // trailing comma
                     }
                 } else {
                     break;
                 }
             }
-            end_span = self.expect(TokenKind::Gt, "`,` or `>`")?.span;
+            end_span = self.expect_generic_close()?.span;
         }
         // No `= body` → an ABSTRACT type: an opaque nominal (`type SceneNode`),
         // no fields or constructors — host code produces/consumes its values.
@@ -550,14 +575,14 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
                 args.push(self.type_name()?);
                 if self.peek_kind() == &TokenKind::Comma {
                     self.bump();
-                    if self.peek_kind() == &TokenKind::Gt {
+                    if self.at_generic_close() {
                         break; // trailing comma
                     }
                 } else {
                     break;
                 }
             }
-            let close = self.expect(TokenKind::Gt, "`,` or `>`")?;
+            let close = self.expect_generic_close()?;
             span = span.to(close.span);
         }
         Ok(TypeName { name, args, span })
@@ -1061,7 +1086,14 @@ and an `else` branch)",
     fn comparison(&mut self) -> Result<Expr, ParseError> {
         use TokenKind::*;
         self.left_assoc(
-            &[(Lt, BinOp::Lt), (Gt, BinOp::Gt), (EqEq, BinOp::Eq)],
+            &[
+                (Lt, BinOp::Lt),
+                (Gt, BinOp::Gt),
+                (LtEq, BinOp::Le),
+                (GtEq, BinOp::Ge),
+                (EqEq, BinOp::Eq),
+                (BangEq, BinOp::Ne),
+            ],
             Self::additive,
         )
     }

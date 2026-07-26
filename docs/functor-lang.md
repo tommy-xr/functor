@@ -333,6 +333,20 @@ snapshots — no GPU, fully agent-verifiable.
       velocities stored in the model survive hot-reload time travel.
       Component accessors and vector math (`Vec3.add`/`scale`/`length`, and
       Vec2/Vec4) are deliberately deferred until an API returns a Vec3.
+- [x] **`>=` / `<=` / `!=` comparison operators** (2026-07-26; game-jam gap
+      track). Every one of the seven jam entries hit the missing set, and two
+      bugs in the racer traced directly to the `not (a > b)` workaround it
+      forced. The three operators join `<`/`>`/`==` at the SAME precedence
+      level, with no other semantics invented: `<=`/`>=` are ordinary float
+      comparisons (IEEE, so every NaN comparison is false), and `!=` is the
+      exact negation of `==` — the same structural walk, so it rejects
+      functions at check time and host values at run time on exactly the
+      inputs `==` does, with the operator the source wrote named in the
+      message. Deliberately NOT added: F#'s `<>` (inequality is `!=` only;
+      `<>` stays an ordinary parse error) and prefix `!` (negation stays
+      `not`; `!` exists only inside `!=`). Because `>=` lexes as one token,
+      the parser splits it back apart at its two generic-close sites, so a
+      space-free `type Box<'v>= …` / `List<float>= …` still parses.
 - [x] **Prelude go-to-definition + hover docs** (2026-07-18; prelude-infra
       track). Go-to-definition on a host external (`Scene.cube`) jumps into
       its `.funi` interface — the LSP materializes the embedded prelude to a

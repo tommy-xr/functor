@@ -643,6 +643,79 @@ fn bare_ampersand_is_a_lex_error() {
     assert_eq!(message, "unexpected character `&`");
 }
 
+// --- `>=` / `<=` / `!=` ---
+
+#[test]
+fn ordering_and_inequality_operators_parse() {
+    use functor_lang::ast::BinOp;
+    for (src, expected) in [
+        ("let v = a <= b", "<="),
+        ("let v = a >= b", ">="),
+        ("let v = a != b", "!="),
+    ] {
+        let ExprKind::Binary { op, .. } = parsed_value(src) else {
+            panic!("expected a comparison at the root of `{src}`");
+        };
+        assert_eq!(BinOp::symbol(op), expected);
+    }
+}
+
+#[test]
+fn new_comparisons_bind_like_the_old_ones() {
+    // Comparisons are looser than arithmetic and tighter than `&&`, exactly
+    // like `<`/`>`/`==`: `a + b <= c && d != e` is `((a+b) <= c) && (d != e)`.
+    use functor_lang::ast::LogicalOp;
+    let ExprKind::Logical {
+        op: LogicalOp::And,
+        lhs,
+        rhs,
+    } = parsed_value("let v = a + b <= c && d != e")
+    else {
+        panic!("expected an `&&` at the root");
+    };
+    let ExprKind::Binary { lhs: sum, .. } = lhs.kind else {
+        panic!("expected a comparison on the left of `&&`");
+    };
+    assert!(
+        matches!(sum.kind, ExprKind::Binary { .. }),
+        "expected `a + b` under the comparison, got {:?}",
+        sum.kind
+    );
+    assert!(matches!(rhs.kind, ExprKind::Binary { .. }));
+}
+
+#[test]
+fn not_is_looser_than_the_new_comparisons() {
+    // `not a != b` is `not (a != b)` — the same rule `==` has.
+    let ExprKind::Not(inner) = parsed_value("let v = not a != b") else {
+        panic!("expected a `not` at the root");
+    };
+    assert!(matches!(inner.kind, ExprKind::Binary { .. }));
+}
+
+#[test]
+fn generic_close_followed_immediately_by_eq_parses() {
+    // `>=` lexes as ONE token, so a space-free generic close (`Box<'v>=`,
+    // `List<float>=`) must be split back apart by the parser.
+    functor_lang::parse("type Box<'v>= { item: 'v }").unwrap();
+    functor_lang::parse("let xs: List<float>= [1.0]").unwrap();
+}
+
+#[test]
+fn bare_bang_is_a_lex_error() {
+    // `!` exists only as `!=`; prefix negation stays `not`.
+    let (message, _, _) = parse_err("let v = !a");
+    assert_eq!(message, "unexpected character `!`");
+}
+
+#[test]
+fn fsharp_inequality_is_not_an_operator() {
+    // `<>` is deliberately NOT aliased to `!=` — it lexes as `<` then `>`
+    // and fails as an ordinary unknown-operator parse error.
+    let (message, _, _) = parse_err("let v = a <> b");
+    assert_eq!(message, "expected an expression, found `>`");
+}
+
 // --- `if … then … else …` conditional expression ---
 
 #[test]

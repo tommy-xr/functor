@@ -2400,7 +2400,7 @@ is {other}"
                 self.require_float(op, rhs, rhs_span);
                 Type::Float
             }
-            BinOp::Lt | BinOp::Gt => {
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                 self.require_float(op, lhs, lhs_span);
                 self.require_float(op, rhs, rhs_span);
                 Type::Bool
@@ -2410,8 +2410,15 @@ is {other}"
             // known types cannot be equal always yield `false`. Runtime
             // equality is STRUCTURAL, so two same-shaped nominal record types
             // may legitimately compare — only differing declared shapes are
-            // errors.
-            BinOp::Eq => {
+            // errors. `!=` is the exact negation, so it shares every rule
+            // here; only the diagnostics' operator and certain verdict differ.
+            BinOp::Eq | BinOp::Ne => {
+                let sym = op_str(op);
+                let certain = if matches!(op, BinOp::Ne) {
+                    "always true"
+                } else {
+                    "always false"
+                };
                 let (lhs, rhs) = (&self.zonk(lhs), &self.zonk(rhs));
                 // A known function on EITHER side is a certain runtime error
                 // regardless of the other side — check before variables get
@@ -2419,7 +2426,7 @@ is {other}"
                 if contains_fn(lhs) || contains_fn(rhs) {
                     self.diag(
                         node_span,
-                        "functions cannot be compared with `==`".to_string(),
+                        format!("functions cannot be compared with `{sym}`"),
                     );
                     return Type::Bool;
                 }
@@ -2430,7 +2437,7 @@ is {other}"
                 free_vars_of(lhs, &mut vars);
                 free_vars_of(rhs, &mut vars);
                 if !vars.is_empty() {
-                    self.unify(lhs, rhs, node_span, "`==` operands");
+                    self.unify(lhs, rhs, node_span, &format!("`{sym}` operands"));
                     return Type::Bool;
                 }
                 match (lhs, rhs) {
@@ -2443,7 +2450,7 @@ is {other}"
                     _ if contains_fn(lhs) || contains_fn(rhs) => {
                         self.diag(
                             node_span,
-                            "functions cannot be compared with `==`".to_string(),
+                            format!("functions cannot be compared with `{sym}`"),
                         );
                     }
                     (Type::Record(x, xargs), Type::Record(y, yargs)) => {
@@ -2457,8 +2464,8 @@ is {other}"
                             self.diag(
                                 node_span,
                                 format!(
-                                    "`==` compares records with different shapes \
-                                     ({lhs} and {rhs}) — always false"
+                                    "`{sym}` compares records with different shapes \
+                                     ({lhs} and {rhs}) — {certain}"
                                 ),
                             );
                         }
@@ -2466,8 +2473,8 @@ is {other}"
                             self.diag(
                                 node_span,
                                 format!(
-                                    "`==` compares records with different shapes \
-                                     ({x} and {y}) — always false"
+                                    "`{sym}` compares records with different shapes \
+                                     ({x} and {y}) — {certain}"
                                 ),
                             );
                         }
@@ -2477,7 +2484,7 @@ is {other}"
                             self.diag(
                                 node_span,
                                 format!(
-                                    "`==` compares different types {lhs} and {rhs} (always false)"
+                                    "`{sym}` compares different types {lhs} and {rhs} ({certain})"
                                 ),
                             );
                         }
@@ -2568,13 +2575,5 @@ fn is_effect_seam(ty: &Type) -> bool {
 }
 
 fn op_str(op: BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Lt => "<",
-        BinOp::Gt => ">",
-        BinOp::Eq => "==",
-    }
+    op.symbol()
 }

@@ -346,18 +346,27 @@ let span = (a, b) =>
 
           <h3>Operators and equality</h3>
           <p>
-            <code>+ - * /</code>, <code>&lt; > ==</code>, unary <code>-</code>, and the
-            short-circuiting booleans <code>&amp;&amp;</code> / <code>||</code> with prefix
-            <code>not</code>. Precedence, tightest to loosest: comparisons →
+            <code>+ - * /</code>, <code>&lt; > &lt;= >= == !=</code>, unary <code>-</code>,
+            and the short-circuiting booleans <code>&amp;&amp;</code> / <code>||</code> with
+            prefix <code>not</code>. Precedence, tightest to loosest: comparisons →
             <code>not</code> → <code>&amp;&amp;</code> → <code>||</code> → pipelines. So
             <code>not a == b</code> means <code>not (a == b)</code>.
           </p>
           <p>
             <strong>The comparison set is exactly <code>&lt;</code>, <code>></code>,
-            <code>==</code></strong> — there is no <code>>=</code>, <code>&lt;=</code>, or
-            <code>!=</code>, and reaching for one is a parse error. Write
-            <code>not (a &lt; b)</code> for “at least”, and <code>not (a == b)</code> for
-            “differs”.
+            <code>&lt;=</code>, <code>>=</code>, <code>==</code>, <code>!=</code></strong> —
+            all six at the same precedence. Inequality is <code>!=</code>; F#’s
+            <code>&lt;></code> is not an alias, and prefix negation stays <code>not</code>
+            (bare <code>!</code> is not an operator).
+          </p>
+          <pre class="functor-lang">let inRange = (n: float): bool =&gt; n &gt;= 0.0 &amp;&amp; n &lt;= 1.0
+let changed = (a: float, b: float): bool =&gt; a != b</pre>
+          <p>
+            <code>&lt;=</code> and <code>>=</code> are valid wherever <code>&lt;</code> and
+            <code>></code> are; <code>!=</code> is the exact negation of <code>==</code> —
+            the same operands, the same errors. Comparisons follow IEEE, so
+            <code>0.0 / 0.0</code> (NaN) is false against everything including itself, which
+            makes <code>nan != nan</code> true.
           </p>
           <p>
             <code>==</code> is structural (comparing

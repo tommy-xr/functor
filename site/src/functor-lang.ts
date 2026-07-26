@@ -115,7 +115,10 @@ export const functorLangLanguage = StreamLanguage.define<State>({
       stream.match("=>") ||
       stream.match(":=") ||
       stream.match("&&") ||
-      stream.match("||")
+      stream.match("||") ||
+      stream.match("<=") ||
+      stream.match(">=") ||
+      stream.match("!=")
     )
       return "operator";
     if (stream.match(/^[+\-*/<>=|]/)) return "operator";
