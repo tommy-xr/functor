@@ -346,8 +346,27 @@ snapshots — no GPU, fully agent-verifiable.
       keeps floats (scale factors, not a spatial vector). Like Color, a Vec3
       is reload-safe (three module-independent f32s), so spawn points and
       velocities stored in the model survive hot-reload time travel.
-      Component accessors and vector math (`Vec3.add`/`scale`/`length`, and
-      Vec2/Vec4) are deliberately deferred until an API returns a Vec3.
+      Component accessors and vector math were deferred here and landed
+      below; Vec2/Vec4 remain deferred until an API needs them.
+- [x] **`Vec3` accessors and arithmetic** (2026-07-26; game-jam gap track).
+      The deferral above cost every jam entry that needed 3D math its own
+      vector module — four wrote one in parallel and the bow entry shipped a
+      whole `v3.fun`, each re-deriving add/scale/normalize on a plain
+      `{x, y, z}` record and converting back with `Vec3.make` at every
+      prelude boundary (~48 such conversions across the entries; the `toss`
+      example even shadows the prelude name with its own record type). The
+      brand STAYS opaque — the fix is `Vec3.x`/`y`/`z` plus
+      `add`/`sub`/`scale`/`dot`/`cross`/`length`/`normalize`/`distance`/
+      `lerp`, so a game keeps vectors as `Vec3` end-to-end instead of
+      unpacking and rebuilding. Making `Vec3.t` a plain record was the
+      considered alternative and was rejected: it would let a bare `{x, y, z}`
+      coerce at every boundary, retiring the very teaching error the brand
+      exists for. Argument order is thread-last like the rest of the prelude
+      (subject LAST), so `Vec3.sub(b, a)` is `a - b` and
+      `v |> Vec3.sub(origin)` reads "v minus origin". Normalizing the zero
+      vector yields the ZERO vector — not NaN, not an error — because
+      per-frame code normalizes an idle velocity constantly and must not
+      fault the frame or poison a transform.
 - [x] **`>=` / `<=` / `!=` comparison operators** (2026-07-26; game-jam gap
       track). Every one of the seven jam entries hit the missing set, and two
       bugs in the racer traced directly to the `not (a > b)` workaround it

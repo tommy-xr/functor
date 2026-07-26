@@ -154,3 +154,51 @@ fn preload_checks_clean() {
     );
     assert!(diags.is_empty(), "preload should check clean: {diags:?}");
 }
+
+/// The `Vec3` accessors and arithmetic typecheck in both the direct-call and
+/// the thread-last pipeline spelling, and compose with the prelude consumers
+/// with no unpack-and-rebuild at the boundary.
+#[test]
+fn vec3_arithmetic_checks_clean() {
+    let diags = check(
+        "let origin = Vec3.make(0.0, 0.0, 0.0)\n\
+         let a = Vec3.make(1.0, 2.0, 3.0)\n\
+         let b = Vec3.make(4.0, 5.0, 6.0)\n\
+         let sum = a |> Vec3.add(b)\n\
+         let diff = a |> Vec3.sub(origin)\n\
+         let scaled = diff |> Vec3.scale(2.0)\n\
+         let unit = scaled |> Vec3.normalize()\n\
+         let d: float = a |> Vec3.dot(b)\n\
+         let perp = a |> Vec3.cross(b)\n\
+         let len: float = unit |> Vec3.length()\n\
+         let dist: float = a |> Vec3.distance(b)\n\
+         let mid = a |> Vec3.lerp(b, 0.5)\n\
+         let cx: float = Vec3.x(sum)\n\
+         let cy: float = Vec3.y(sum)\n\
+         let cz: float = Vec3.z(sum)\n\
+         let total = cx + cy + cz + d + len + dist\n\
+         let scene = Scene.cube() |> Scene.translate(perp) |> Scene.scale(total)\n\
+         let draw = (m, tts) => Frame.create(Camera.lookAt(mid, unit), scene)",
+    );
+    assert!(diags.is_empty(), "Vec3 arithmetic should check clean: {diags:?}");
+}
+
+/// The brand is still enforced STATICALLY: a bare number or a structural
+/// `{x, y, z}` record where a Vec3 belongs stays a check-time error, so the
+/// arithmetic did not open a coercion hole at the prelude boundary.
+#[test]
+fn vec3_arithmetic_rejects_unbranded_values_at_check_time() {
+    assert!(
+        !check("let bad = Vec3.length(1.0)").is_empty(),
+        "a bare number must not check as a Vec3"
+    );
+    assert!(
+        !check("let bad = Vec3.add({ x: 1.0, y: 2.0, z: 3.0 }, Vec3.make(0.0, 0.0, 0.0))")
+            .is_empty(),
+        "a bare record must not check as a Vec3"
+    );
+    assert!(
+        !check("let bad: float = Vec3.make(1.0, 2.0, 3.0) |> Vec3.normalize()").is_empty(),
+        "normalize returns a Vec3, not a float"
+    );
+}
