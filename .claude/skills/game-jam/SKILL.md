@@ -138,6 +138,13 @@ Per cluster:
 Point fixers at the jam entry's `JAM_NOTES.md` (read-only) as evidence, and
 keep them off the jam worktrees.
 
+**PR lifecycle:** fixers open PRs as drafts (repo convention), and once
+verification is re-run post-review and every Critical/High is dispositioned in
+the body — plus media embedded for visual changes — the PR gets marked ready
+**in the same breath** (`gh pr ready`), by the fixer or the orchestrator.
+Draft is a "review/captures still landing" signal, not a resting state; a
+fully-verified PR parked in draft just hides finished work from reviewers.
+
 ## Phase 2 — judging (orchestrator)
 
 Score each entry yourself — don't take self-assessments at face value; look at

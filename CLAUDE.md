@@ -58,7 +58,10 @@ Open PRs as **drafts** (`gh pr create --draft`) and mark them ready (`gh pr read
 once the PR is actually complete: verification re-run after any review fixes, review findings
 dispositioned in the body, and — for visual changes — the pr-visuals GIF/PNG embedded. Draft
 status is the signal that captures/review are still landing, so an in-flight PR doesn't get
-merged before its media and dispositions do.
+merged before its media and dispositions do. The flip side is equally binding: **marking a PR
+ready is part of finishing it** — once the bar above is met, run `gh pr ready <N>` yourself
+(whoever completes the verification flips it; don't leave a fully-verified PR parked in draft
+waiting for someone else to notice).
 
 ## Architecture
 
