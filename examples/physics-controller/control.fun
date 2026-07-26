@@ -61,6 +61,13 @@ let zero: Ctl = {
   wishZ: 0.0,
 }
 
+// Clear the transient feel state after a respawn, but KEEP `started` — that is
+// the "the physics world has been reconciled" gate, not controller state, and
+// clearing it would make the character free-fall one uncommanded frame. The
+// steering wish is kept too: it belongs to the keys currently held down.
+let respawned = (c) =>
+  { c with grounded: false, coyote: 0.0, buffer: 0.0, squash: 0.0, lock: 0.0, landImpact: 0.0 }
+
 let decay = (dt, t) => Math.max(0.0, t - dt)
 
 // Advance the state machine from one observation.
@@ -88,7 +95,10 @@ let sense = (dt, obs, jumpEdge, c) =>
     buffer: if jumpEdge then bufferTime else decay(dt, c.buffer),
     // The landing response starts on the observed touchdown edge.
     squash: if landed then squashTime else decay(dt, c.squash),
-    landImpact: if landed then -obs.vy else c.landImpact,
+    // Clamped at zero: a touchdown observed while still moving UPWARD (a rising
+    // deck, or a lock expiring under a low ceiling) would otherwise record a
+    // negative impact and turn the squash into a stretch.
+    landImpact: if landed then Math.max(0.0, -obs.vy) else c.landImpact,
   }
 
 // Both windows must be open for a jump to fire.
@@ -154,7 +164,12 @@ let verticalVelocity = (dt, obs, carry, c) =>
   if jumpNow(c) then jumpSpeed + carry.y
   else if c.grounded then
     let error = obs.standHeight - obs.groundDistance in
-    let correction = Math.max(-maxSnapSpeed, Math.min(maxSnapSpeed, error / dt)) in
+    // `dt` is zero on the bootstrap sub-frame and on every frame under
+    // `--fixed-time` (the capture/golden path), where `error / dt` would be
+    // NaN or infinite. No time passing means no correction is owed.
+    let correction =
+      if dt > 0.0 then Math.max(-maxSnapSpeed, Math.min(maxSnapSpeed, error / dt))
+      else 0.0 in
     carry.y + correction
   else obs.vy
 
@@ -172,7 +187,9 @@ let desiredVelocity = (dt, obs, carry, c) =>
 // a hard landing and easing back as the timer drains.
 let squashScale = (c) =>
   let t = c.squash / squashTime in
-  let hardness = Math.min(1.0, c.landImpact / landHardness) in
+  // Bounded on BOTH sides: this must never exceed 1.0, or the "squash" becomes
+  // a stretch and `game.fun` derives an inverted horizontal scale from it.
+  let hardness = Math.max(0.0, Math.min(1.0, c.landImpact / landHardness)) in
   1.0 - 0.35 * hardness * t
 
 // Normalize a steering wish so diagonals are not faster than the axes.
@@ -328,6 +345,23 @@ expect (
   squashScale(hard) < squashScale(soft) && squashScale(soft) < 1.0
 )
 expect squashScale(zero) == 1.0
+
+// An UPWARD touchdown must not invert the squash into a stretch. Without the
+// clamps this returns > 1.0, and `game.fun` then derives an inverted
+// horizontal scale from it. Note the squash timer must be live for this to
+// bite, which is why `expect squashScale(zero) == 1.0` alone cannot catch it.
+expect (
+  let rising = sense(dt, obsAt(true, 0.0, 4.0, 0.9), false, zero) in
+  rising.landImpact == 0.0 && squashScale(rising) == 1.0
+)
+
+// A zero `dt` (the bootstrap sub-frame, and every frame under `--fixed-time`)
+// must not turn the ground clamp into NaN or infinity.
+expect (
+  let sunk = obsAt(true, 0.0, 0.0, 0.5) in
+  let sensed = sense(0.0, sunk, false, zero) in
+  desiredVelocity(0.0, sunk, still, sensed).y == 0.0
+)
 
 // Platform carry: with no steering wish, the commanded velocity converges on
 // the deck's own velocity — that is what riding a moving platform IS.

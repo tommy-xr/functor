@@ -29,7 +29,6 @@ let groundTag = Physics.tag("ground")
 let ledgeTag = Physics.tag("ledge")
 let wallTag = Physics.tag("wall")
 let deckTag = Physics.tag("deck")
-let noTag = Physics.tag("")
 
 // The capsule: half-height 0.5 plus radius 0.4, so the feet sit 0.9 below the
 // body's center. The ground probe's length follows from exactly that number.
@@ -48,8 +47,17 @@ let probeSkin = 0.15
 // `Debug.log` returns its value unchanged, so `trace` is pure with respect to
 // the model: the game runs identically with `traceOn` either way.
 let traceOn = false
+// `row` is a THUNK so the record is only built when tracing is on.
 let trace = (row, m) =>
-  if traceOn then (let logged = Debug.log("row", row) in m) else m
+  if traceOn then (let logged = Debug.log("row", row()) in m) else m
+
+// Put the body back at the spawn, at rest. Used by both the fall-out-of-the-
+// world path and the ENTER key.
+let respawn =
+  Effect.batch([
+    Physics.teleport(playerTag, Vec3.make(World.spawn.x, World.spawn.y, World.spawn.z)),
+    Physics.setVelocity(playerTag, Vec3.make(0.0, 0.0, 0.0)),
+  ])
 
 let slabBody = (tag, s: World.Slab) =>
   Physics.fixed(tag, Physics.box(s.w, s.h, s.d))
@@ -78,7 +86,12 @@ let physics = (model) =>
       |> Physics.at(Vec3.make(World.spawn.x, World.spawn.y, World.spawn.z))
       |> Physics.friction(0.0)
       |> Physics.restitution(0.0)
-      |> Physics.mass(1.0),
+      |> Physics.mass(1.0)
+      // Non-negotiable for a character. Without it the capsule picks up
+      // angular velocity from any glancing contact and topples — and a tipped
+      // capsule's lowest point is no longer `feetOffset` below its center, so
+      // the grounding probe and the ground clamp both start lying.
+      |> Physics.upright,
   ])
 
 let init = {
@@ -86,6 +99,8 @@ let init = {
   // A jump press latched as a rising edge, plus the held state that derives it.
   jumpEdge: false,
   jumpHeld: false,
+  // ENTER's own rising-edge latch (key repeats arrive as `isDown = true`).
+  enterHeld: false,
   clock: 0.0,
   frame: 0.0,
   // Whether the ground probe hit the moving deck, and that surface's velocity —
@@ -171,15 +186,12 @@ let tick = (model, dt, tts) =>
     // spawn (a changed declaration would teleport it, but then every later
     // frame's declaration would be a change back again).
     if pos.y < World.voidY then
-      ({ next with falls: next.falls + 1.0, ctl: Control.zero },
-       Effect.batch([
-         Physics.teleport(playerTag, Vec3.make(World.spawn.x, World.spawn.y, World.spawn.z)),
-         Physics.setVelocity(playerTag, Vec3.make(0.0, 0.0, 0.0)),
-       ]))
+      ({ next with falls: next.falls + 1.0, ctl: Control.respawned(next.ctl) }, respawn)
     else
-      // One row per frame under `traceOn`: everything the headless
-      // verification run in README.md asserts on.
-      let row = {
+      // Built lazily: under the default `traceOn = false` this record — and the
+      // `Math.cos` inside `World.deckVx` — is never constructed, because `if`
+      // only evaluates the branch it takes.
+      let row = () => {
         f: next.frame,
         x: pos.x, y: pos.y, z: pos.z, vy: vel.y,
         g: obs.grounded, deck: next.onDeck,
@@ -193,13 +205,14 @@ let input = (model, key, isDown) =>
   match key with
   | Key.Enter =>
     (match isDown with
-     | false => model
+     | false => { model with enterHeld: false }
      | true =>
-       (model,
-        Effect.batch([
-          Physics.teleport(playerTag, Vec3.make(World.spawn.x, World.spawn.y, World.spawn.z)),
-          Physics.setVelocity(playerTag, Vec3.make(0.0, 0.0, 0.0)),
-        ])))
+       // Rising edge: GLFW delivers key REPEATS as `isDown = true`, so without
+       // the latch holding ENTER would queue a teleport every repeat.
+       (match model.enterHeld with
+        | true => model
+        | false =>
+          ({ model with enterHeld: true, ctl: Control.respawned(model.ctl) }, respawn)))
   | _ => model
 
 // -- drawing -----------------------------------------------------------------
@@ -230,16 +243,9 @@ let deckVisual = () =>
 let playerVisual = (model) =>
   let sy = Control.squashScale(model.ctl) in
   let sxz = 1.0 + (1.0 - sy) * 0.7 in
-  Scene.group([
-    Scene.cylinder()
-      |> Scene.scaleXYZ(capsuleRadius * 2.0 * sxz, feetOffset * 2.0 * sy, capsuleRadius * 2.0 * sxz)
-      |> Scene.lit(bodyColor),
-    // A nose, so facing and motion read at a glance.
-    Scene.sphere()
-      |> Scene.scale(0.22)
-      |> Scene.lit(Color.rgb(0.95, 0.95, 0.98))
-      |> Scene.translate(Vec3.make(0.0, feetOffset * sy * 0.7, -capsuleRadius * 0.9)),
-  ])
+  Scene.cylinder()
+    |> Scene.scaleXYZ(capsuleRadius * 2.0 * sxz, feetOffset * 2.0 * sy, capsuleRadius * 2.0 * sxz)
+    |> Scene.lit(bodyColor)
     |> Scene.translate(Vec3.make(0.0, -feetOffset * (1.0 - sy), 0.0))
     |> Physics.transformed(playerTag)
 

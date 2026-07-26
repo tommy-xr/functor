@@ -1085,6 +1085,14 @@ body |> Physics.at(v)                                      // body-last: pipes
 body |> Physics.velocity(v)
 body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
 body |> Physics.sensor                                     // overlap-only, no forces
+body |> Physics.upright                                    // lock rotation: the body
+                                                           //   translates but never tips.
+                                                           //   REQUIRED for a character
+                                                           //   capsule — otherwise a
+                                                           //   glancing contact spins it,
+                                                           //   and a tipped capsule breaks
+                                                           //   any fixed standing-height
+                                                           //   assumption. Off by default
 Physics.scene(gravity, [body, …])                          // what `physics` returns
 Physics.position(tag)                                      // {x, y, z} of the LIVE body
 Physics.linearVelocity(tag)                                // {x, y, z} velocity of the LIVE body
@@ -1202,6 +1210,13 @@ declaration has been reconciled and stepped — so gate them.
 moving kinematic deck, coyote time, jump buffering, landing squash, walls),
 with its whole feel layer as pure functions under `expect`. Read it before
 writing a controller. The recipe, and the three traps that are NOT obvious:
+
+**Declare the body `|> Physics.upright`.** This is not optional. A dynamic
+capsule that can rotate picks up angular velocity from any glancing contact and
+topples — measured at ~40° off vertical mid-jump, then creeping sideways along
+a wall with no input. It also silently corrupts everything below, because a
+tipped capsule's lowest point is `radius + halfHeight·cos θ` below its center,
+not the fixed `feetOffset` the probe and clamp assume.
 
 **Grounding** is `Physics.castExcluding` from the capsule's center, straight
 down, reaching `feetOffset + skin`. Excluding your own tag is mandatory — a ray

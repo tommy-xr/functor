@@ -70,6 +70,14 @@ let restitution : (float, body) => body
 /// Make a body a non-solid sensor; the body is last for piping.
 let sensor : (body) => body
 
+/// Lock a body's rotation so it translates but never tips.
+///
+/// The character-controller attribute: an upright capsule that lands, scuffs a
+/// ledge, or leans on a wall would otherwise pick up angular velocity and
+/// topple, which also invalidates any fixed standing-height assumption a
+/// grounding probe makes. The body is last for piping.
+let upright : (body) => body
+
 /// Declare a physics world from gravity and bodies.
 let scene : (Vec3.t, List<body>) => world
 

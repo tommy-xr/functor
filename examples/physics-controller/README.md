@@ -9,7 +9,7 @@ interesting comparison is what each one has to write, and what it gets for
 free.
 
 ```sh
-functor -d examples/physics-controller test          # 37 expects over the pure control logic
+functor -d examples/physics-controller test          # 39 expects (32 controller, 7 level data)
 functor -d examples/physics-controller run native    # WASD / arrows, SPACE to jump, ENTER to respawn
 ```
 
@@ -38,6 +38,12 @@ read → decide → step simulation, not a Functor restriction.
 the entire feel layer — coyote time, jump buffering, acceleration, the ground
 clamp, landing response — is covered by `expect` tests that run in
 milliseconds with no GPU, no window, and no rapier world.
+
+The character body **must** be declared `|> Physics.upright`. A dynamic capsule
+that can rotate picks up angular velocity from any glancing contact and topples
+— and a tipped capsule's lowest point is no longer `feetOffset` below its
+center, so the grounding probe and the ground clamp both start lying. (This
+attribute did not exist before this example; adding it is part of this change.)
 
 ### The one idea worth stealing
 
@@ -82,17 +88,36 @@ whatever it stands on; the plaza's top face is `y = 0` and the deck's is
 
 | Mechanic | Verdict | Evidence |
 | --- | --- | --- |
-| Grounded detection (`castExcluding` probe) | **CLEAN** | `grounded` flips exactly at the four expected frames (11, 102, 121, 133, 169). No flicker on any seam across 400 frames. |
-| Jump | **CLEAN** | Apex rise 1.1625 vs. the theoretical `v²/2g` = 1.1782 (98.7%; the deficit is one step of discretization). |
+| Grounded detection (`castExcluding` probe) | **CLEAN** | `grounded` flips at exactly the five expected frames (11, 102, 121, 133, 169). No flicker on any seam across 400 frames. |
+| Jump | **CLEAN** | Apex rise 1.1612 vs. the theoretical `v²/2g` = 1.1782 (98.6%; the deficit is one step of discretization). |
 | Coyote time | **CLEAN** | Walked off the deck at f=102; `coyote` drains 0.1033 → 0.0000 over frames 102–109, i.e. exactly the 0.12 s window. |
 | Jump buffering | **CLEAN** | Pure test: a press while airborne fires on the touchdown frame. |
-| Landing detection / squash | **CLEAN** | Fires once per touchdown as an edge (f=11, 121, 169), never as a level; `landImpact` records 3.67 / 7.10 / 6.73. |
+| Landing detection / squash | **CLEAN** | Fires once per touchdown as an edge (f=11, 121, 169), never as a level; `landImpact` records 3.67 / 6.97 / 6.73. |
 | Riding the moving platform | **CLEAN** | `probe.tag` → `linearVelocity` tracks the deck's analytic velocity to within 0.030 on a 2.4 u/s deck. Relative offset `x − deckX` held at −0.48 ± 0.02 over 80 frames — bounded and oscillatory, not accumulating. |
-| Wall | **CLEAN, and free** | Held into the wall for 220 frames: stopped at `x = −6.2994` against a predicted −6.3000 (wall face −6.7, capsule radius 0.4) and stayed. Zero collision code in the game. |
+| Wall | **CLEAN, and free** | Held into the wall for 220 frames: stopped at `x = −6.3012` against a predicted −6.3000 (wall face −6.7, capsule radius 0.4) and stayed — `x` and `z` both constant to four decimals from f=260 to f=399. Zero collision code in the game. |
 | Edge / ledge fall-off | **CLEAN, and free** | Walking off the deck's edge simply stops being grounded; gravity and the solver do the rest. |
-| Standing height | **AWKWARD-BUT-CORRECT** | Holds 0.8683–0.8995 on the plaza and 2.1462–2.1488 on the deck. Getting here needed a ground clamp and a post-jump lockout — see below. |
+| Standing height | **CLEAN, with a caveat** | A constant 0.8988 on the plaza and 2.1462–2.1488 on the deck. Getting here needed a ground clamp, a post-jump lockout, and `Physics.upright` — see below. |
+| Keeping the capsule upright | **WAS IMPOSSIBLE — fixed in this change** | A rotating capsule visibly toppled (~40° off vertical mid-jump) and then crept 0.19 units sideways along the wall with no input. No rotation lock, angular damping, or angular-velocity command existed in the `Physics` API, so this was unfixable in game code. This change adds `Physics.upright`. |
 
-### The two things that were genuinely awkward
+### The one thing that was genuinely impossible
+
+**A dynamic capsule could not be kept upright.** Nothing in the `Physics`
+module locked rotation, damped angular velocity, or let a game command it, so a
+character body picked up spin from every glancing contact. Measured: the
+capsule sat ~40° off vertical mid-jump, and once it leaned on the wall it crept
+0.19 units along `z` over 140 frames with no input, still accelerating. It also
+silently corrupted the controller, because a tipped capsule's lowest point is
+`radius + halfHeight·cos θ` below its center rather than the fixed
+`feetOffset` the probe and the ground clamp assume — which showed up as a
+±0.031 ripple in the standing height.
+
+This change adds `Physics.upright`, a nullary body attribute in the shape of
+`Physics.sensor`, mapping to rapier's `LockedAxes::ROTATION_LOCKED`. With it,
+the standing height is a **constant 0.8988** and the wall contact is
+**motionless in both `x` and `z`**. It is the smallest surface that fixes the
+problem, and it is off by default so existing bodies tumble exactly as before.
+
+### The two things that were awkward but correct
 
 Both are about `Physics.setVelocity` replacing **all three** velocity
 components — there is no horizontal-only command — so the controller must say
@@ -164,10 +189,17 @@ The remaining arguments do not survive contact with the API either:
   asymmetry), which is *worse* for responsiveness, because input arrives
   pre-step.
 
-The genuine gap this exercise found is not a hook at all. It is that
-`Physics.setVelocity` is all-or-nothing across three axes, which is what forced
-the ground clamp to be written by hand. A per-axis or horizontal-only velocity
-command would have removed the two sinking failure modes above outright. That
-is a much smaller, better-targeted change than a new lifecycle hook — and
-notably, `postTick` would *not* have fixed it either, since the problem is the
-shape of the command, not when it runs.
+The genuine gaps this exercise found are not hooks at all, and neither would
+have been fixed by `postTick`:
+
+1. **No rotation lock** (fixed here as `Physics.upright`). This was the only
+   *impossible* item, and it is a body attribute, not a lifecycle question.
+2. **`Physics.setVelocity` is all-or-nothing across three axes**, which is what
+   forced the ground clamp to be written by hand. A per-axis or
+   horizontal-only velocity command would have removed both sinking failure
+   modes outright. Still open, and a much smaller, better-targeted change than
+   a new hook — the problem is the *shape of the command*, not when it runs.
+
+That both real gaps turned out to be one-line API surface rather than frame
+ordering is itself the argument: the `tick`-plus-synchronous-queries loop was
+never the thing standing in the way.

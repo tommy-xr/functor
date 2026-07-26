@@ -725,6 +725,14 @@ impl World {
         let rb = builder
             .pose(pose_of(body))
             .linvel(vec3(body.velocity))
+            // An upright body translates but never tips (the character-capsule
+            // case). Locking the axes also zeroes any angular velocity rapier
+            // would otherwise integrate from a glancing contact.
+            .locked_axes(if body.rotation_locked {
+                LockedAxes::ROTATION_LOCKED
+            } else {
+                LockedAxes::empty()
+            })
             .build();
 
         collider = collider
@@ -831,6 +839,16 @@ impl World {
         }
         if prev.sensor != next.sensor {
             self.colliders[col_handle].set_sensor(next.sensor);
+        }
+        if prev.rotation_locked != next.rotation_locked {
+            self.bodies[rb_handle].set_locked_axes(
+                if next.rotation_locked {
+                    LockedAxes::ROTATION_LOCKED
+                } else {
+                    LockedAxes::empty()
+                },
+                true,
+            );
         }
         // `authority` is inert in Phase 1: cached (by reconcile) but never
         // written to the live world.
