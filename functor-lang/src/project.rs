@@ -244,6 +244,17 @@ const KEY_MODULE_SRC: &str = "type t =\n\
      | Space | Enter | Escape\n\
      | Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9\n";
 
+/// The built-in `Mouse` module (the mouse twin of `Key`): the variant the
+/// `mouseButton` hook's `button` parameter carries — `Mouse.Left`,
+/// `Mouse.Right`, `Mouse.Middle` — so a typo is a check-time
+/// unknown-constructor error instead of a silently dead arm. The shells build
+/// matching `Mouse.*` values (`functor_runtime_common::MouseButton::ctor_tag`);
+/// `Unknown` is filtered before dispatch and deliberately has no constructor
+/// here. Keep in sync with the `MouseButton` enum in
+/// `functor_runtime_common::input`.
+const MOUSE_MODULE_SRC: &str = "type t =\n\
+     | Left | Right | Middle\n";
+
 const OPTION_MODULE_SRC: &str = include_str!("../stdlib/option.fun");
 const RESULT_MODULE_SRC: &str = include_str!("../stdlib/result.fun");
 
@@ -255,6 +266,7 @@ fn core_modules() -> Vec<BundledModule> {
         BundledModule::builtin("Net", NET_MODULE_SRC, BundledModuleKind::Implementation),
         BundledModule::builtin("Random", RANDOM_MODULE_SRC, BundledModuleKind::Interface),
         BundledModule::builtin("Key", KEY_MODULE_SRC, BundledModuleKind::Implementation),
+        BundledModule::builtin("Mouse", MOUSE_MODULE_SRC, BundledModuleKind::Implementation),
         BundledModule::implementation("Option", OPTION_MODULE_SRC),
         BundledModule::implementation("Result", RESULT_MODULE_SRC),
     ]

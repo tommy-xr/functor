@@ -291,6 +291,21 @@ snapshots — no GPU, fully agent-verifiable.
       server's wire format (`{"type":"key","key":"w"}`) is unchanged.
       Key values are plain data (nullary variants), so a key stored in the
       model snapshots and hot-reloads like any field.
+- [x] **Mouse buttons (`Mouse.t` + the `mouseButton` hook)** (2026-07-26). The
+      `Key.t` design applied to the pointer: an optional
+      `mouseButton(model, button, isDown)` entry point whose `button` is the
+      built-in `Mouse` module's variant (`<builtin>/Mouse.fun`, injected beside
+      `Key`): `Mouse.Left`/`Right`/`Middle`. Buttons reach game logic **while
+      the cursor is captured** — the rule `mouseMove`/`mouseWheel` already
+      followed, and the fix for clicks being eaten by free-look capture — and a
+      held button is swept released on focus loss, Escape, and the console
+      toggle so it cannot fire forever. The held level state rides on the
+      sampled snapshot as `mouse.buttons.{left,right,middle}`, making
+      `mouseButton` the edge and `sampledInput` the level (semi- vs. full-auto).
+      All three producers plus the replay path build the variant from one shared
+      conversion, so live input, forward-step projection, and the journal agree;
+      `POST /input {"type":"mouse_button","button":"left","down":true}` scripts
+      it headlessly as both edge and level.
 - [x] **Branded `Color` values** (2026-07-16; strong-typing track). The Angle
       rule applied to color: `Color.rgb(r, g, b)` makes an opaque `Color.t`,
       and every color parameter — `Scene.color`/`lit`/`emissive`/

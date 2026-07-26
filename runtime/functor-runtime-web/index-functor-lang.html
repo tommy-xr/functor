@@ -47,6 +47,7 @@
         functor_lang_key_event,
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
+        functor_lang_mouse_button,
         functor_lang_ui_pointer,
         functor_lang_ui_pointer_leave,
         functor_lang_ui_key,
@@ -202,6 +203,42 @@
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
         });
 
+        // Mouse buttons reach the game only while pointer-locked — the same
+        // rule mousemove follows above, and the browser twin of the desktop's
+        // "only while the cursor is captured". While the cursor is FREE it
+        // belongs to the scrubber and the `Ui.*` widget path below.
+        // MouseEvent.button (0 left, 1 middle, 2 right) → the runtime's
+        // canonical MouseButton discriminants (1 left, 2 right, 3 middle).
+        const buttonCode = (button) =>
+          button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 3 : 0;
+        const gameButtons = new Set();
+        canvas.addEventListener("mousedown", (e) => {
+          if (document.pointerLockElement !== canvas) return;
+          const code = buttonCode(e.button);
+          if (code === 0) return;
+          e.preventDefault();
+          functor_lang_mouse_button(code, true);
+          gameButtons.add(code);
+        });
+        window.addEventListener("mouseup", (e) => {
+          const code = buttonCode(e.button);
+          // Deliver the release only if the game saw the press, so a button
+          // pressed before locking (or on an overlay) can't leak a phantom up.
+          if (code !== 0 && gameButtons.delete(code)) functor_lang_mouse_button(code, false);
+        });
+        // Right-click while aiming must fire, not open the context menu.
+        canvas.addEventListener("contextmenu", (e) => {
+          if (document.pointerLockElement === canvas) e.preventDefault();
+        });
+        // A button released outside the window (or after the lock drops) may
+        // never emit a mouseup here — synthesize releases so the edge hook and
+        // the next sampled snapshot both recover, mirroring `blur` for keys.
+        const releaseGameButtons = () => {
+          for (const code of gameButtons) functor_lang_mouse_button(code, false);
+          gameButtons.clear();
+        };
+        window.addEventListener("blur", releaseGameButtons);
+
         // Interactive game UI (docs/ui-interaction.md U3): while the pointer
         // is FREE (not look mode), its canvas position + primary button drive
         // the game's `Ui.*` widgets. CSS px — the runtime scales by the
@@ -228,6 +265,7 @@
         });
         document.addEventListener("pointerlockchange", () => {
           if (document.pointerLockElement === canvas) functor_lang_ui_pointer_leave();
+          else releaseGameButtons();
         });
       };
 

@@ -253,6 +253,12 @@ pub trait GameProducer {
     /// Deliver a mouse-wheel event (vertical scroll offset).
     fn mouse_wheel(&mut self, delta: i32);
 
+    /// Deliver a mouse-button edge. `button` is a [`crate::MouseButton`] as
+    /// `i32`. Defaulted (unlike the three above) so producers with no game
+    /// logic to run — replays, netsim — stay untouched; the Functor Lang
+    /// producers call `mouseButton(model, button, isDown)`.
+    fn mouse_button(&mut self, _button: i32, _is_down: bool) {}
+
     /// Deliver an interaction on an interactive UI widget
     /// ([`crate::ui::UiEvent`], slot-addressed — docs/ui-interaction.md). The
     /// default drops it: the honest no-op for producers with no interactive
@@ -649,6 +655,18 @@ mod tests {
         // Serde uses the names (the debug server's held_keys), pinned too.
         assert_wire(&Key::W, r#""W""#);
         assert_wire(&Key::Escape, r#""Escape""#);
+    }
+
+    /// Same contract as the keys above: a mouse button crosses the boundary as
+    /// its i32 discriminant, so the table is pinned here.
+    #[test]
+    fn mouse_button_discriminants_are_pinned() {
+        use crate::MouseButton;
+        assert_eq!(MouseButton::Unknown as i32, 0);
+        assert_eq!(MouseButton::Left as i32, 1);
+        assert_eq!(MouseButton::Right as i32, 2);
+        assert_eq!(MouseButton::Middle as i32, 3);
+        assert_wire(&MouseButton::Left, r#""Left""#);
     }
 
     #[test]
