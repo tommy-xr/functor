@@ -153,6 +153,17 @@ below is retained as the reference design (types/semantics match the Rust
 engine one-for-one); an F# surface would need that data-crossing `DrawContext`
 plumbing and is deferred indefinitely.
 
+Because these are direct reads and not a `draw`-only view, they are valid in
+**any** entry point. In `tick` they answer against the previous step (physics
+runs after `tick`); in `draw`, against this frame's. Alongside `position` the
+same class provides `Physics.linearVelocity(tag)` and the synchronous ray
+queries `Physics.cast` / `Physics.castExcluding` — together the
+read-decide-write triple a character controller needs, all inside one frame:
+`tick` reads, returns a command effect beside the model, the drain queues it,
+and the next step applies it — normally this frame's, though a frame whose 60 Hz
+accumulator is short of a full step does not step at all, and the command lands
+on the following one.
+
 Read semantics worth knowing: physics reads of a missing tag are **loud
 spanned errors** — games read only tags their `physics` hook declares. (An
 Option-shaped variant return is possible now that Functor Lang has `match`; loud
@@ -231,7 +242,21 @@ right after the physics step, their messages folding through a second
 after it" — so results are same-frame **fresh** (the staleness the original
 frame order implied is designed out). Results ride the B6.5 structured effect
 log, so the fake/replay runners can can/replay raycasts — physics-query logic
-is testable without a world. `shapeCast` follows the same seam later. The F#
+is testable without a world. `shapeCast` follows the same seam later.
+
+**Queries — synchronous reads.** `Physics.cast(origin, dir, maxDist)` and
+`Physics.castExcluding(tag, origin, dir, maxDist)` return the same `rayHit`
+record *in place*, as world reads in the `Physics.position` class rather than
+effects: not routed through the `EffectRunner`, not logged, and therefore not
+canned under `FakeEffects`. That is sound because the physics world is
+deterministic state the Timeline reconstructs from recorded declarations and
+commands — a read of it is not an environment read. Use the synchronous form
+when the decision happens where the read happens (a controller in `tick`); use
+the deferred effect when you want this frame's post-step world. `castExcluding`
+skips one body's collider so a probe fired from inside a character's own capsule
+finds the ground instead of itself; excluding an absent tag excludes nothing.
+
+The F#
 sketch (the `Effect.httpGet` shape: token-keyed registry,
 result delivered as a message next drain):
 
