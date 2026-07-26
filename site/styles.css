@@ -101,6 +101,15 @@ a:hover {
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
 }
 
+/* The sandbox/IDE headers get the same lift (no sticky — they're rows in a
+   full-height flex layout), floating the chrome above the editing surface. */
+.sandbox-page .site-header,
+.ide-page .site-header {
+  position: relative;
+  z-index: 20;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+
 .site-nav {
   display: flex;
   align-items: center;
@@ -293,6 +302,8 @@ a:hover {
 
 .hero-editor .cm-editor {
   height: 100%;
+  /* Same density as the sandbox/IDE editors. */
+  font-size: 11.5px;
 }
 
 /* A small status dot pinned to the card corner: green live / red on a broken
@@ -808,12 +819,29 @@ a:hover {
 #download,
 #restart {
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
   color: var(--text);
   background: var(--bg-raised);
   border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 6px 10px;
+  border-radius: 3px;
+  padding: 5px 9px;
+}
+
+/* Selects drop the OS widget chrome for a themed ▾ chip look. */
+#example-picker {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 24px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%239b94b3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+}
+
+#example-picker:hover {
+  border-color: var(--cyan);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%2341d8e6'/%3E%3C/svg%3E");
 }
 
 #reset,
@@ -844,15 +872,20 @@ a:hover {
 .status-pill[data-state="live"] {
   color: var(--green);
   border-color: rgba(111, 220, 146, 0.4);
+  background: rgba(111, 220, 146, 0.08);
+  text-shadow: 0 0 8px rgba(111, 220, 146, 0.55);
 }
 
 .status-pill[data-state="error"] {
   color: var(--red);
   border-color: rgba(242, 99, 127, 0.5);
+  background: rgba(242, 99, 127, 0.08);
+  text-shadow: 0 0 8px rgba(242, 99, 127, 0.55);
 }
 
 .status-pill[data-state="busy"] {
   color: var(--amber);
+  background: rgba(238, 200, 119, 0.07);
 }
 
 /* Shared external-runtime link for the sandbox and multi-file IDE. It stays a
@@ -1177,6 +1210,12 @@ a:hover {
 
 #editor .cm-editor {
   height: 100%;
+  /* A denser code column: more program on screen next to the preview. */
+  font-size: 11.5px;
+}
+
+#editor .cm-content {
+  line-height: 1.65;
 }
 
 .preview-pane {
@@ -1874,6 +1913,7 @@ a:hover {
   border-top: 1px solid var(--line);
   background: var(--bg-panel);
   font-family: var(--font-mono);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
 }
 
 .statusbar-strip {
