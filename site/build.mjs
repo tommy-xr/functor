@@ -257,14 +257,18 @@ if (langPkgPresent) {
 }
 
 await esbuild.build({
+  // Entry points are PATHS, not import specifiers: esbuild only falls back to
+  // a `.ts` sibling when the named `.js` is absent, so a stale leftover
+  // `src/docs.js` would silently win. Name the file that actually exists. The
+  // OUTPUT basenames are unchanged either way (esbuild always emits `.js`).
   entryPoints: [
     `${site}src/sandbox.js`,
     `${site}src/ide.js`,
-    `${site}src/docs.js`,
-    `${site}src/api-docs.js`,
+    `${site}src/docs.ts`,
+    `${site}src/api-docs.ts`,
     `${site}src/hero.js`,
     `${site}src/demo-editor.js`,
-    `${site}src/features.js`,
+    `${site}src/features.ts`,
   ],
   bundle: true,
   minify: true,

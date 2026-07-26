@@ -1,6 +1,9 @@
 {
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "clean": "git clean -fdX",
     "build:cli": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --release --bin functor",

@@ -3,7 +3,8 @@
 // site/build.mjs, so the page is complete without JavaScript (and readable by
 // any plain HTTP fetch). This script only adds the live search/filter.
 
-// Every element below is part of the docs page's own markup (site/docs.html);
+// Every element below is part of the API-reference page's own markup
+// (site/docs/index.html);
 // a missing one is a build-time authoring bug, and asserting rather than
 // guarding keeps the original behaviour (a TypeError on the first use).
 const moduleNav = document.querySelector("#api-module-nav")!;
@@ -45,7 +46,7 @@ document.addEventListener("keydown", (event) => {
   if (
     event.key === "/" &&
     document.activeElement !== search &&
-    !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName!)
+    !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName ?? "")
   ) {
     event.preventDefault();
     search.focus();
