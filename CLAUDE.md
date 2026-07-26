@@ -58,7 +58,10 @@ Open PRs as **drafts** (`gh pr create --draft`) and mark them ready (`gh pr read
 once the PR is actually complete: verification re-run after any review fixes, review findings
 dispositioned in the body, and — for visual changes — the pr-visuals GIF/PNG embedded. Draft
 status is the signal that captures/review are still landing, so an in-flight PR doesn't get
-merged before its media and dispositions do.
+merged before its media and dispositions do. The flip side is equally binding: **marking a PR
+ready is part of finishing it** — once the bar above is met, run `gh pr ready <N>` yourself
+(whoever completes the verification flips it; don't leave a fully-verified PR parked in draft
+waiting for someone else to notice).
 
 ## Architecture
 
@@ -316,7 +319,11 @@ rendering/material/lighting/camera feature, a shader), capture a short looping
 **GIF** *and* a still **PNG** of it and embed them in the PR — this is part of the
 definition of done for visual work, so reviewers (human and LLM) can see the
 result. When the change *modifies* an existing visual, include a **before/after**
-too (capture the base ref at the same fixed time). Use the **`pr-visuals` skill**
+too (capture the base ref at the same fixed time). This includes **docs/site content
+changes**: a manual or docs page is a rendered surface, so a PR that edits it embeds
+before/after screenshots of the affected page(s) (build the site at the base ref and
+at the change; desktop width minimum, mobile too if layout is affected) — not just
+the source diff. Use the **`pr-visuals` skill**
 (`.claude/skills/pr-visuals/`): it drives
 the headless `--capture-frame` / `--fixed-time` path (no screen, deterministic),
 assembles the GIF, hosts the binaries in a gist, and embeds them in the PR body —
