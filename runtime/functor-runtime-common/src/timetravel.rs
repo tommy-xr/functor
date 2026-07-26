@@ -460,11 +460,12 @@ impl SceneRecorder {
         physics: &mut SteppedPhysics,
         physics_frame: &mut u64,
         has_physics: bool,
+        prev_tts: &mut Option<f64>,
     ) -> bool {
         let live_model_is_safe = model.is_reload_safe_snapshot();
         if !self.reload_history_is_safe() || !live_model_is_safe {
             let authoritative_model = model.clone();
-            self.commit_scrub_before_reload(model, physics, physics_frame, has_physics);
+            self.commit_scrub_before_reload(model, physics, physics_frame, has_physics, prev_tts);
             *model = authoritative_model;
         }
         live_model_is_safe
@@ -590,9 +591,10 @@ impl SceneRecorder {
         physics: &mut SteppedPhysics,
         physics_frame: &mut u64,
         has_physics: bool,
+        prev_tts: &mut Option<f64>,
     ) {
         if let Some(frame) = self.scrub_pos {
-            let _ = self.rewind_scene_to(frame, model, physics, physics_frame, has_physics);
+            let _ = self.rewind_scene_to(frame, model, physics, physics_frame, has_physics, prev_tts);
         }
     }
 
@@ -758,9 +760,10 @@ impl SceneRecorder {
         physics: &mut SteppedPhysics,
         physics_frame: &mut u64,
         has_physics: bool,
+        prev_tts: &mut Option<f64>,
     ) -> bool {
         if let Some(k) = self.scrub_pos.take() {
-            let _ = self.rewind_scene_to(k, model, physics, physics_frame, has_physics);
+            let _ = self.rewind_scene_to(k, model, physics, physics_frame, has_physics, prev_tts);
             self.counterfactual_replay = false;
             true
         } else {
@@ -807,6 +810,7 @@ impl SceneRecorder {
         physics: &mut SteppedPhysics,
         physics_frame: &mut u64,
         has_physics: bool,
+        prev_tts: &mut Option<f64>,
     ) -> Result<String, String> {
         let (lo, hi) = self
             .model_history
@@ -819,6 +823,20 @@ impl SceneRecorder {
             let _ = physics.rewind_to_frame(fixed);
             *physics_frame = physics.current_fixed_frame();
         }
+        // Rewind the SUBSCRIPTION-TIMER window with the model, or `Sub.every`
+        // breaks across the branch. Timers fire over `(prev_tts, tts]`; leaving
+        // `prev_tts` at the live tail while the clock rebases to this frame
+        // makes that window empty or negative, so every timer stays silent
+        // until the clock climbs back past where it used to be. (A branch that
+        // moved time FORWARD would fire them as a burst instead, but that is
+        // unreachable here: `frame` is clamped to the newest recorded frame,
+        // which is where `prev_tts` already sits.)
+        //
+        // The forward-step/ghost path already guards this hazard explicitly
+        // (`functor_lang_producer.rs`, "a scrubbed preview must not seed
+        // subscription windows from the old live tail's prev_tts"); this is the
+        // same rule for the destructive path, which never had it. [xreview]
+        *prev_tts = Some(*self.tts_history.seek(frame));
         self.model_history.truncate_from(frame + 1);
         self.world_frame_history.truncate_from(frame + 1);
         self.tts_history.truncate_from(frame + 1);
@@ -1110,12 +1128,71 @@ mod tests {
             .expect("valid replay history")
             .expect("materialized history");
 
-        assert!(rec.commit_scrub_if_resuming(&mut model, &mut physics, &mut physics_frame, false));
+        assert!(rec.commit_scrub_if_resuming(&mut model, &mut physics, &mut physics_frame, false, &mut None));
         assert_eq!(model.to_string(), "12", "Resume adopts the rebuilt anchor");
         assert_eq!(rec.counterfactual_replay_span(), Ok(None));
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));
         assert_eq!(rec.next_frame(), 3);
         assert_ne!(rec.generation(), generation, "Resume commits the branch");
+    }
+
+    /// A branch must rewind the SUBSCRIPTION-TIMER window with the model.
+    ///
+    /// `Sub.every` fires over `(prev_tts, tts]`. Leaving `prev_tts` at the live
+    /// tail across a rewind makes that window empty or negative, so timers stay
+    /// silent until the clock climbs back past where it used to be — the bug
+    /// this pins. The forward-step/ghost path already guarded it; the
+    /// destructive path never did.
+    #[test]
+    fn a_branch_rewinds_the_subscription_timer_window_with_the_model() {
+        let mut rec = SceneRecorder::new();
+        for frame in 0..10u64 {
+            rec.record_inputs(Vec::new());
+            // tts advances a second per frame, so a stale window is unmistakable.
+            rec.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+
+        // The live tail: the game has been running to frame 9 (tts 9.0).
+        let mut prev_tts = Some(9.0);
+        rec.rewind_scene_to(3, &mut model, &mut physics, &mut physics_frame, false, &mut prev_tts)
+            .expect("rewind");
+
+        // The next frame's window is then (3.0, 3.0+dt] — forward and non-empty.
+        // With the bug it was (9.0, 3.0+dt]: negative, so every timer was mute
+        // for six seconds of game time.
+        assert_eq!(
+            prev_tts,
+            Some(3.0),
+            "prev_tts must follow the model back to the branch frame's recorded tts"
+        );
+    }
+
+    /// The same rule on the path a resume actually takes: park, then resume.
+    #[test]
+    fn resuming_from_a_scrub_rewinds_the_timer_window_too() {
+        let mut rec = SceneRecorder::new();
+        for frame in 0..10u64 {
+            rec.record_inputs(Vec::new());
+            rec.record(&Value::Number(frame as f64), 0, frame as f64);
+        }
+        let mut model = Value::Number(0.0);
+        let mut physics = SteppedPhysics::new();
+        let mut physics_frame = 0;
+        rec.seek_scene_to(4, &mut model, &mut physics, &mut physics_frame, false)
+            .expect("seek");
+
+        let mut prev_tts = Some(9.0);
+        assert!(rec.commit_scrub_if_resuming(
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+            &mut prev_tts
+        ));
+        assert_eq!(prev_tts, Some(4.0), "resume commits the branch and its window");
     }
 
     #[test]
@@ -1265,7 +1342,22 @@ mod tests {
         rec.seek_scene_to(2, &mut model, &mut physics, &mut physics_frame, false)
             .expect("seek");
         assert!(!rec.reload_history_is_safe());
-        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false);
+        // The reload-while-scrubbed branch restores the timer window too — the
+        // third path into `rewind_scene_to`, which the dedicated tests above
+        // don't reach. [xreview]
+        let mut prev_tts = Some(4.0);
+        rec.commit_scrub_before_reload(
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+            &mut prev_tts,
+        );
+        assert_eq!(
+            prev_tts,
+            Some(2.0),
+            "an unsafe reload while scrubbed branches, so its timer window rewinds too"
+        );
         let generation = rec.generation();
 
         assert_eq!(
@@ -1304,7 +1396,7 @@ mod tests {
             .expect("seek");
 
         assert!(!rec.reload_history_is_safe());
-        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false);
+        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false, &mut None);
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));
         assert!(rec.reload_history_is_safe());
 
@@ -1334,7 +1426,7 @@ mod tests {
         model = closure_model();
         let live_before = model.to_string();
         let live_model_was_safe =
-            rec.prepare_reload(&mut model, &mut physics, &mut physics_frame, false);
+            rec.prepare_reload(&mut model, &mut physics, &mut physics_frame, false, &mut None);
         assert!(!live_model_was_safe);
         assert_eq!(model.to_string(), live_before);
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));

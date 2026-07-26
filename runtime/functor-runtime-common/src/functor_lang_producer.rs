@@ -381,6 +381,7 @@ impl FrameCtx<'_> {
                 self.physics_rt,
                 self.physics_frame,
                 self.has_physics,
+                self.prev_tts,
             )
         {
             self.deferred_queries.clear();
