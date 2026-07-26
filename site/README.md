@@ -20,14 +20,14 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
   `index-functor-lang.html`, but the `.fun` entry comes from `?game=` (one file) or
   `?project=inline` (the IDE pushes the whole file set by postMessage). Keep its
   input mapping and set-source/set-project seam in sync with that page.
-- `sandbox.html` / `src/sandbox.js` — the single-buffer editor over a served
+- `sandbox.html` / `src/sandbox.ts` — the single-buffer editor over a served
   example (pushes `functor-lang-set-source`).
-- `ide.html` / `src/ide.js` — the multi-file IDE: a file sidebar, per-file
+- `ide.html` / `src/ide.ts` — the multi-file IDE: a file sidebar, per-file
   editing, a live preview fed the whole project via `functor-lang-set-project`
-  (`src/project-bridge.js`), localStorage persistence, and project download as a
+  (`src/project-bridge.ts`), localStorage persistence, and project download as a
   `.zip` (`src/zip.ts`, a store-only writer). Asset (`.glb`/audio) management is a
   follow-up.
-- `src/runtime-target.js` — the shared external-runtime link in both editors.
+- `src/runtime-target.ts` — the shared external-runtime link in both editors.
   The first explicit push uses `/load-project` (fresh `init`); later edits use
   `/reload-project` (model preserved), with `/state` telemetry and `/capture`
   shown in the panel. Sandbox examples also upload their declared local assets
@@ -52,6 +52,6 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
 - `docs.html` — compatibility redirect to the manual, preserving old anchors.
 - `src/examples.ts` is the single source of truth for the sandbox's example set
   (id + dropdown label + repo source path). `build.mjs` copies each entry's
-  `game.fun` at build time and `src/sandbox.js` builds the dropdown from the same
+  `game.fun` at build time and `src/sandbox.ts` builds the dropdown from the same
   list, so the sandbox dropdown always matches what ships in the repo.
 - Deploy: publish `site/dist` to any static host.

@@ -1,4 +1,4 @@
-// The editor ↔ player postMessage protocol, factored out of sandbox.js so the
+// The editor ↔ player postMessage protocol, factored out of sandbox.ts so the
 // landing hero can drive the same live-reload loop. Dependency-free (no
 // CodeMirror): the consumer owns the editor and hands source strings in.
 //
