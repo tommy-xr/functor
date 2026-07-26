@@ -88,6 +88,12 @@ numbers. Rules:
 
 - **Default to sequential, or at most 2–3 concurrent agents**, on a developer
   laptop. The user experiences the whole fleet's load; ask before scaling wider.
+- **Pair one LIGHT agent with one HEAVY one** when running two. Light = works
+  against a prebuilt binary or docs (interpreting game files, captures, site
+  builds, snippet typechecks). Heavy = anything that compiles the toolchain
+  (cold-worktree cargo, wasm-pack). Two lights are also fine; two heavies never
+  are. Classify each agent's *remaining* work before starting it — a "docs"
+  task that needs docgen via cargo counts as heavy.
 - Jam agents are cheap only while writing/interpreting `.fun` (the shared
   prebuilt binary) — but each one's **xreview spawns reviewers**, and finisher
   phases run captures; count those toward the cap.
