@@ -57,8 +57,8 @@
           the same <code>.funi</code> prelude embedded in the engine, so it covers every engine
           module (<code>Scene</code>, <code>Physics</code>, <code>Ui</code>, <code>Input</code>, …).
           The language's own <a href="#builtins">standard library</a> —
-          <code>Math</code>, <code>List</code>, <code>Text</code>, <code>Option</code> — is built
-          into the interpreter rather than declared in the prelude, so it is documented on this
+          <code>Math</code>, <code>List</code>, <code>Text</code>, <code>Option</code> — ships with
+          the language crate rather than being declared in the prelude, so it is documented on this
           page.
         </p>
 
@@ -456,7 +456,7 @@ let span = (a, b) =>
               <tr><td><code>Physics.scene(Vec3.make(gx, gy, gz), [body, …])</code></td><td>what the <code>physics</code> hook returns</td></tr>
               <tr><td><code>Physics.position(tag)</code></td><td><code>{x, y, z}</code> of the live body</td></tr>
               <tr><td><code>scene |> Physics.transformed(tag)</code></td><td>draw a scene at the body's live pose</td></tr>
-              <tr><td><code>Physics.applyImpulse(tag, Vec3.make(x, y, z))</code></td><td rowspan="3">writing to a body is an <a href="#prelude-effects">Effect</a>, so it takes hold on the <em>next</em> step; also <code>applyForce</code></td></tr>
+              <tr><td><code>Physics.applyImpulse(tag, Vec3.make(x, y, z))</code></td><td rowspan="3">writing to a body is an <a href="#prelude-effects">Effect</a>: it is queued and applied at the start of the next physics step — normally still <em>this</em> frame; also <code>applyForce</code></td></tr>
               <tr><td><code>Physics.setVelocity(tag, Vec3.make(x, y, z))</code></td></tr>
               <tr><td><code>Physics.teleport(tag, Vec3.make(x, y, z))</code></td></tr>
               <tr><td><code>Physics.raycast(origin, dir, maxDistance, Tagger)</code></td><td>an Effect; the hit arrives through <code>update</code> — on a miss <code>hit</code> is <code>false</code> and the other fields are zeroed</td></tr>
@@ -464,13 +464,19 @@ let span = (a, b) =>
             </tbody>
           </table>
           <p>
-            <strong>Reads are synchronous, writes are not.</strong> <code>Physics.position</code>
-            returns a value; every mutation returns an <code>Effect.t</code> you hand back from an
-            entry point. Combined with the read-in-<code>draw</code> rule above, that makes the
-            <code>physics</code> hook a good fit for props, debris, and ragdolls — and a poor fit
-            for a character controller that wants to decide and move in the same frame. For those,
-            integrate the character yourself in <code>tick</code> (a pure function of the model)
-            and keep the simulated bodies for everything else.
+            <strong>Reads are synchronous, writes are queued.</strong> <code>Physics.position</code>
+            returns a value immediately; every mutation returns an <code>Effect.t</code> you hand
+            back from an entry point. Queued writes are flushed just before the frame's first
+            fixed substep, so an impulse decided in <code>tick</code> does move the body in time
+            for that same frame's <code>draw</code> (it slips to a later frame only when the
+            accumulator hasn't filled and the frame simulates nothing).
+          </p>
+          <p>
+            The real one-frame lag is on the <em>read</em> side: <code>tick</code> cannot see the
+            result of the write it just issued, because reads there observe the previous frame's
+            world. So a character controller that must decide from its own post-step position is
+            awkward — integrate that character yourself in <code>tick</code> (a pure function of
+            the model) and keep the simulated bodies for props, debris, and ragdolls.
           </p>
           <p>
             The tag is cross-frame identity: same tag = same body; drop a body by not declaring
@@ -513,11 +519,14 @@ let span = (a, b) =>
           <p>
             These modules are part of the <em>language</em>, not the engine — unlike the prelude
             above, they resolve everywhere Functor Lang runs, including the bare
-            <code>functor-lang</code> interpreter. Collection and container functions take their
-            subject <strong>last</strong> so they pipe. The exceptions are the ones that read as
-            ordinary notation instead: <code>Text.concat(a, b)</code>,
-            <code>Text.fixed(n, decimals)</code>, and the two-argument <code>Math</code>
-            functions (<code>pow</code>, <code>atan2</code>, <code>mod</code>).
+            <code>functor-lang</code> interpreter. The collection and container functions
+            (<code>List</code>, <code>Option</code>, <code>Result</code>) take their subject
+            <strong>last</strong>, so they pipe. The numeric and formatting helpers instead read
+            as ordinary notation — <code>Text.fixed(n, decimals)</code> and the two-argument
+            <code>Math</code> functions (<code>pow</code>, <code>atan2</code>, <code>mod</code>,
+            <code>min</code>, <code>max</code>) take their number <em>first</em>, so a pipeline
+            would feed the wrong slot: write <code>Text.fixed(hp, 0.0)</code>, not
+            <code>hp |> Text.fixed(0.0)</code>.
           </p>
 
           <h3 id="stdlib-math">Math</h3>
@@ -529,7 +538,7 @@ let span = (a, b) =>
               <tr><td><code>Math.min(a, b)</code> · <code>Math.max(a, b)</code></td><td></td></tr>
               <tr><td><code>Math.clamp01(n)</code></td><td>clamp into <code>[0, 1]</code></td></tr>
               <tr><td><code>Math.atan2(y, x)</code></td><td>full-circle angle in radians — <strong>y first</strong>, the standard math order</td></tr>
-              <tr><td><code>Math.mod(a, b)</code></td><td><strong>Euclidean</strong>: the result carries the sign of <code>b</code>, so <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code> — the wraparound games want</td></tr>
+              <tr><td><code>Math.mod(a, b)</code></td><td><strong>Euclidean</strong>: the result is never negative — it lands in <code>[0, abs(b))</code> whatever the signs, so <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code> — the wraparound games want</td></tr>
               <tr><td><code>Math.pi</code></td><td>a constant <em>value</em>, not a call — <code>Math.pi()</code> is an error</td></tr>
             </tbody>
           </table>
@@ -538,11 +547,11 @@ let span = (a, b) =>
           <p>There are no loops; iteration lives here.</p>
           <table>
             <tbody>
-              <tr><td><code>List.map(fn, list)</code> · <code>List.filter(fn, list)</code></td><td>the predicate must return a <code>bool</code></td></tr>
+              <tr><td><code>List.map(fn, list)</code> · <code>List.filter(fn, list)</code></td><td><code>map</code>'s callback returns anything; <code>filter</code>'s must return a <code>bool</code></td></tr>
               <tr><td><code>List.fold(fn, init, list)</code></td><td>left fold; the callback is <code>(acc, x) => acc'</code> — <strong>accumulator first</strong></td></tr>
               <tr><td><code>List.any(fn, list)</code> · <code>List.all(fn, list)</code></td><td>short-circuiting; an empty list is <code>false</code> / vacuously <code>true</code></td></tr>
               <tr><td><code>List.length(list)</code> · <code>List.isEmpty(list)</code></td><td></td></tr>
-              <tr><td><code>List.range(n)</code></td><td><code>[0.0 … n-1.0]</code></td></tr>
+              <tr><td><code>List.range(n)</code></td><td><code>[0.0 … n-1.0]</code>. <code>n</code> is a Float and is truncated — <code>List.range(3.7)</code> is <code>[0, 1, 2]</code> — and anything &lt;= 0 gives <code>[]</code></td></tr>
               <tr><td><code>List.grid(fn, rows, cols)</code></td><td>calls <code>fn(row, col)</code> 0-based for every cell → a list of rows</td></tr>
               <tr><td><code>List.append(other, list)</code></td><td>the <em>piped</em> list stays the head: <code>xs |> List.append(ys)</code> is <code>xs</code> then <code>ys</code></td></tr>
               <tr><td><code>List.flatten(list)</code></td><td>one level deep</td></tr>
@@ -554,10 +563,10 @@ let span = (a, b) =>
           <h3 id="stdlib-text">Text</h3>
           <table>
             <tbody>
-              <tr><td><code>Text.concat(a, b)</code></td><td><code>a</code> then <code>b</code> — subject <em>first</em>, so a pipeline supplies the <em>second</em> half: <code>"b" |> Text.concat("a")</code> is <code>"ab"</code>, i.e. <code>|></code> <em>prepends</em> the argument</td></tr>
+              <tr><td><code>Text.concat(a, b)</code></td><td><code>a</code> then <code>b</code>. It threads last like everything else, so the piped text lands in <code>b</code> — which means piping <em>prepends</em>: <code>"SUF" |> Text.concat("PRE")</code> is <code>"PRESUF"</code></td></tr>
               <tr><td><code>Text.fromFloat(n)</code></td><td>shortest round-trip form: <code>1.0</code> renders as <code>"1"</code></td></tr>
               <tr><td><code>Text.fixed(n, decimals)</code></td><td>fixed decimals — <code>Text.fixed(3.14159, 1.0)</code> is <code>"3.1"</code>, <code>Text.fixed(42.0, 0.0)</code> is <code>"42"</code>. This is the one to reach for in a HUD; <code>decimals</code> must be a whole number in <code>[0, 12]</code></td></tr>
-              <tr><td><code>Text.join(sep, list)</code> · <code>Text.split(sep, s)</code></td><td>separator first, subject last; an empty separator is a runtime error</td></tr>
+              <tr><td><code>Text.join(sep, list)</code> · <code>Text.split(sep, s)</code></td><td>separator first, subject last. <code>Text.split</code> needs a <strong>non-empty</strong> separator (an empty one is a runtime error); <code>Text.join("")</code> is fine and just concatenates</td></tr>
               <tr><td><code>Text.toBullets(list)</code></td><td>one <code>- item</code> per line</td></tr>
               <tr><td><code>Text.parseFloat(s)</code></td><td>trims and parses; unparseable or non-finite input <strong>degrades to <code>0.0</code></strong> rather than failing</td></tr>
             </tbody>
@@ -606,7 +615,7 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             <tbody>
               <tr><td><code>Random.seed(n)</code></td><td>make a seed from a number</td></tr>
               <tr><td><code>Random.step(seed)</code></td><td><code>(value in [0, 1), nextSeed)</code></td></tr>
-              <tr><td><code>Random.range(lo, hi, seed)</code></td><td><code>(value in [lo, hi), nextSeed)</code></td></tr>
+              <tr><td><code>Random.range(lo, hi, seed)</code></td><td><code>(value in [lo, hi), nextSeed)</code> for <code>lo &lt;= hi</code>; reversed bounds aren't rejected, they just run the interval backwards</td></tr>
               <tr><td><code>Random.fork(i, seed)</code></td><td>a decorrelated child stream — for per-entity randomness without threading</td></tr>
             </tbody>
           </table>
@@ -614,7 +623,7 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
           <h3 id="stdlib-debug">Debug and Key</h3>
           <table>
             <tbody>
-              <tr><td><code>Debug.log(label, subject)</code></td><td>prints <code>label: subject</code> and returns the subject <em>unchanged</em>, so it drops into a pipeline — <code>model.hp |> Debug.log("hp")</code> — and removing it can't change behavior</td></tr>
+              <tr><td><code>Debug.log(label, subject)</code></td><td>prints <code>label: subject</code> and returns the subject <em>unchanged</em>, so it drops into a pipeline — <code>model.hp |> Debug.log("hp")</code> — and removing it changes nothing but the logging</td></tr>
               <tr><td><code>Key.t</code></td><td><code>Key.A</code>–<code>Key.Z</code>, <code>Key.Num0</code>–<code>Key.Num9</code>, <code>Key.Up/Down/Left/Right</code>, <code>Key.Space</code>, <code>Key.Enter</code>, <code>Key.Escape</code></td></tr>
             </tbody>
           </table>
@@ -629,7 +638,7 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
-            <li><code>Text.concat(a, b)</code> and <code>Text.fixed(n, decimals)</code> take their subject <em>first</em>; the collection functions all thread last.</li>
+            <li>Piping into <code>Text.concat</code> <em>prepends</em>: <code>s |> Text.concat(p)</code> is <code>p</code> then <code>s</code>. And <code>Text.fixed(n, decimals)</code> takes its number first, so it can't be piped on.</li>
             <li><code>Math</code> is only the twelve entries above — there is no <code>round</code>, <code>ceil</code>, <code>tan</code>, <code>exp</code>, <code>log</code>, <code>sign</code>, or <code>lerp</code>. <code>floor</code> is the only rounding.</li>
             <li><code>Math.mod</code> is Euclidean — <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code>, not <code>-1.0</code>.</li>
             <li><code>Math.pi</code> is a value, not a call.</li>
