@@ -160,7 +160,9 @@ same class provides `Physics.linearVelocity(tag)` and the synchronous ray
 queries `Physics.cast` / `Physics.castExcluding` — together the
 read-decide-write triple a character controller needs, all inside one frame:
 `tick` reads, returns a command effect beside the model, the drain queues it,
-and the same frame's step applies it.
+and the next step applies it — normally this frame's, though a frame whose 60 Hz
+accumulator is short of a full step does not step at all, and the command lands
+on the following one.
 
 Read semantics worth knowing: physics reads of a missing tag are **loud
 spanned errors** — games read only tags their `physics` hook declares. (An

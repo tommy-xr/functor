@@ -1042,16 +1042,24 @@ let probe = (p) =>
   Physics.castExcluding(playerTag, Vec3.make(p.x, p.y - 0.9, p.z),
                         Vec3.make(0.0, -1.0, 0.0), 0.2)
 let tick = (m, dt, tts) =>
-  let pos = Physics.position(playerTag)
-  let vel = Physics.linearVelocity(playerTag)
-  let onGround = probe(pos).hit
-  ...   // decide, then return the command beside the model:
-  (m', Physics.setVelocity(playerTag, Vec3.make(vx, vy, vz)))
+  match m.started with          // guard the FIRST frame: nothing has been
+  | false => { m with started: true }   //   reconciled yet, so the reads below
+  | true =>                             //   would raise `no body tagged …`
+    let pos = Physics.position(playerTag) in
+    let vel = Physics.linearVelocity(playerTag) in
+    let onGround = probe(pos).hit in
+    let vy = if onGround && m.jump then 6.0 else vel.y in
+    (m, Physics.setVelocity(playerTag, Vec3.make(vel.x, vy, vel.z)))
 ```
 
 The read happens in `tick`, the command drains immediately after `tick` (no
-`update` hook needed), and this frame's step applies it — reads and writes both
-land inside the frame.
+`update` hook needed), and the next step applies it — normally this frame's
+(when the 60 Hz accumulator is short of a full step, no step runs at all that
+frame and it lands on the next one). Reads and writes both live in `tick`.
+
+Note the two rules this example obeys: local `let` needs `in`, and the
+pre-step readers raise on the first frame, before the `physics` hook's
+declaration has been reconciled and stepped — so gate them.
 
 `Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
 `Sub.batch`; it requires `update`). Every contact begin/end from this

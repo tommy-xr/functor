@@ -4787,10 +4787,28 @@ fn sync_cast(
 ) -> Result<Value, String> {
     let (ox, oy, oz) = origin.0;
     let (dx, dy, dz) = dir.0;
-    if [dx, dy, dz] == [0.0, 0.0, 0.0] {
-        return Err(format!("{what}: the direction must not be zero"));
+    // Validate with the SAME predicate the query itself applies (`World::
+    // raycast_excluding` normalizes and bails when the length is not finite
+    // and positive). Checking the components against exact zero instead would
+    // let three cases through to be silently answered as a MISS: non-finite
+    // components, finite-but-tiny vectors whose f32 norm underflows to zero,
+    // and huge ones whose squares overflow to infinity. For a grounding probe
+    // a silent miss is the worst outcome — `onGround` is false forever and the
+    // character simply never jumps — so these are loud errors instead.
+    let d = [dx as f32, dy as f32, dz as f32];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if !(len.is_finite() && len > 0.0) {
+        return Err(format!(
+            "{what}: the direction must be finite and non-zero, got ({dx}, {dy}, {dz})"
+        ));
     }
-    let max_dist = positive(max_dist, &format!("{what} maxDist"))? as f32;
+    // Formatted inline rather than via `positive(.., &format!(..))`: this is
+    // the per-frame controller path, and that helper's label allocates a
+    // String on every successful cast.
+    if !(max_dist > 0.0) {
+        return Err(format!("{what} maxDist must be positive, got {max_dist}"));
+    }
+    let max_dist = max_dist as f32;
     let hit = physics::with_world(physics::active_world(), |w| {
         w.raycast_excluding([ox, oy, oz], [dx, dy, dz], max_dist, exclude)
     })
@@ -6472,8 +6490,11 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         let vel = eval("let main = () => Physics.linearVelocity(\"ball\")");
         let vy = num(&vel, "y");
         assert!(vy < -1.0, "ball should be falling, vy = {vy}");
-        assert_eq!(num(&vel, "x"), 0.0);
-        assert_eq!(num(&vel, "z"), 0.0);
+        // Tolerance rather than exact equality: free fall under [0,-9.81,0]
+        // happens to leave these bit-zero today, but any contact would make an
+        // exact assertion flake.
+        assert!(num(&vel, "x").abs() < 1e-6);
+        assert!(num(&vel, "z").abs() < 1e-6);
 
         // A downward ray from well above hits the nearest body along it — the
         // still-falling ball, whose top surface faces +Y. Same record shape the
@@ -6625,19 +6646,54 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
                 .contains("no body tagged \"ghost\""),
             "an undeclared tag should be a loud error"
         );
+        // The docs promise an empty world answers a cast as an ordinary miss
+        // rather than erroring — the asymmetry with the read above is
+        // deliberate: a tag read needs an identity that exists, a spatial
+        // query does not, and "nothing there" is what a controller branches on.
+        let empty = eval(
+            "let main = () => Physics.cast(Vec3.make(0.0, 10.0, 0.0), \
+             Vec3.make(0.0, -1.0, 0.0), 100.0)",
+        );
+        assert!(matches!(field(&empty, "hit"), Value::Bool(false)));
         assert_eq!(
             fail_message(
                 "let main = () => Physics.cast(Vec3.make(0.0, 0.0, 0.0), \
                  Vec3.make(0.0, 0.0, 0.0), 10.0)"
             ),
-            "Physics.cast: the direction must not be zero"
+            "Physics.cast: the direction must be finite and non-zero, got (0, 0, 0)"
         );
         assert_eq!(
             fail_message(
                 "let main = () => Physics.castExcluding(Physics.tag(\"a\"), \
                  Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0), 10.0)"
             ),
-            "Physics.castExcluding: the direction must not be zero"
+            "Physics.castExcluding: the direction must be finite and non-zero, got (0, 0, 0)"
+        );
+        // A DEGENERATE but nonzero direction is rejected too, rather than
+        // silently answered as a miss. 1e-27 (built by multiplication —
+        // Functor Lang has no exponent literal) is finite in f64, but its f32
+        // square underflows to zero, so the normalization inside the query
+        // would bail and report `hit: false` — indistinguishable from open
+        // sky, and a grounding probe built on it would never see the floor.
+        assert!(
+            fail_message(
+                "let tiny = 0.000000001 * 0.000000001 * 0.000000001\n\
+                 let main = () => Physics.cast(Vec3.make(0.0, 0.0, 0.0), \
+                 Vec3.make(tiny, 0.0, 0.0), 10.0)"
+            )
+            .contains("must be finite and non-zero"),
+            "a direction whose f32 norm underflows should be a loud error"
+        );
+        // The same at the other end: squaring 1e30 in f32 overflows to
+        // infinity, which the query also treats as unusable.
+        assert!(
+            fail_message(
+                "let huge = 10000000000.0 * 10000000000.0 * 10000000000.0\n\
+                 let main = () => Physics.cast(Vec3.make(0.0, 0.0, 0.0), \
+                 Vec3.make(huge, 0.0, 0.0), 10.0)"
+            )
+            .contains("must be finite and non-zero"),
+            "a direction whose f32 square overflows should be a loud error"
         );
         assert!(
             fail_message(

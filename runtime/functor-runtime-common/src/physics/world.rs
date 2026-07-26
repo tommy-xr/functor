@@ -535,8 +535,14 @@ impl World {
         }
         let ray = rapier3d::prelude::Ray::new(vec3(origin), d / len);
         let mut filter = QueryFilter::default();
-        if let Some((_, collider)) = exclude.and_then(|tag| self.tags.get(tag)) {
-            filter = filter.exclude_collider(*collider);
+        // Exclude the RIGID BODY, not the single collider the tag maps to: a
+        // tagged body owns exactly one collider today, but the moment one
+        // gains a second (a compound shape, or a separate sensor volume) a
+        // collider-level filter would quietly let the self-probe hit the
+        // character again. Excluding the body costs the same and carries no
+        // such invariant.
+        if let Some((body, _)) = exclude.and_then(|tag| self.tags.get(tag)) {
+            filter = filter.exclude_rigid_body(*body);
         }
         let pipeline = self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
