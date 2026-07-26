@@ -93,6 +93,7 @@ pub mod shadow;
 pub mod skybox;
 mod shader_program;
 mod sprite2d;
+pub mod sprite_font;
 pub mod terrain;
 mod terrain_renderer;
 pub mod texture;
