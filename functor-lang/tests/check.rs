@@ -1534,6 +1534,60 @@ fn not_operand_must_be_bool() {
     assert_eq!(message, "`not` needs bool operands, got float");
 }
 
+// --- `>=` / `<=` / `!=` ---
+
+#[test]
+fn new_comparisons_check_clean() {
+    assert_clean(
+        "let atMost = (a: float, b: float): bool => a <= b\n\
+         let atLeast = (a: float, b: float): bool => a >= b\n\
+         let differs = (a: float, b: float): bool => a != b",
+    );
+}
+
+#[test]
+fn ordering_operands_must_be_float() {
+    // Same rule (and same message shape) as `<`/`>`.
+    let (message, _, _) = single_diag("let f = (s: string) => s <= 1.0");
+    assert_eq!(message, "`<=` needs float operands, got string");
+    let (message, _, _) = single_diag("let f = (s: string) => s >= 1.0");
+    assert_eq!(message, "`>=` needs float operands, got string");
+}
+
+#[test]
+fn inequality_rejects_functions_like_equality() {
+    // `==`'s check-time function rejection, inherited verbatim by `!=` —
+    // only the operator named in the message differs.
+    let (message, _, _) = single_diag("let f = (g: (float) => float) => g != g");
+    assert_eq!(message, "functions cannot be compared with `!=`");
+    let (message, _, _) = single_diag("let f = (g: (float) => float) => g == g");
+    assert_eq!(message, "functions cannot be compared with `==`");
+}
+
+#[test]
+fn inequality_on_different_types_is_certainly_true() {
+    // The `==` "always false" diagnostic, with `!=`'s inverted verdict.
+    let (message, _, _) = single_diag("let f = (s: string) => s != 1.0");
+    assert_eq!(
+        message,
+        "`!=` compares different types string and float (always true)"
+    );
+}
+
+#[test]
+fn new_comparisons_result_in_bool() {
+    let (message, _, _) = single_diag("let f = (a: float, b: float): float => a <= b");
+    assert!(
+        message.contains("bool") && message.contains("float"),
+        "unexpected: {message}"
+    );
+    let (message, _, _) = single_diag("let f = (a: float, b: float): float => a != b");
+    assert!(
+        message.contains("bool") && message.contains("float"),
+        "unexpected: {message}"
+    );
+}
+
 #[test]
 fn logical_result_is_bool() {
     // The `&&` result feeds a float context — the mismatch proves it typed

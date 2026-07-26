@@ -1,0 +1,30 @@
+# ride-and-jump.input — the reproducible headless verification run.
+#
+# Deterministic scripted playback: the sim advances by a FIXED --script-dt per
+# rendered frame and each frame's events are fed before that frame's tick, so
+# frame N is always the same sim state. Paths must be ABSOLUTE (the runner makes
+# the project directory its cwd before parsing them).
+#
+#   functor -d examples/physics-controller run native \
+#     --input-script "$PWD/examples/physics-controller/ride-and-jump.input" \
+#     --script-dt 0.0166667 --capture-frame /tmp/f.png --capture-at-frame 60
+#
+# What it proves, with no GPU window and no human at the keyboard — see
+# README.md for the measured numbers:
+#
+#   f 1..~13    FALL: spawned above the moving deck, gravity only, no input.
+#   f ~14       LANDING on the MOVING deck: grounded flips true, the probe
+#               reports the deck, and the squash timer fires on that one frame.
+#   f 14..70    CARRY with ZERO input: the player's x tracks the deck's, so
+#               `carry` equals the deck's analytic velocity every frame.
+#   f 71        walk +Z (S), off the deck's near edge.
+#   f ~95       EDGE: grounded flips false with no ground beneath, coyote time
+#               starts draining, then a second landing on the plaza below.
+#   f 130       JUMP from the plaza (rising edge; the buffer/coyote pair fires).
+#   f 175..     run -X into the wall and stay there: the solver stops the
+#               capsule at the wall face with no collision code in the game.
+71 S down
+100 S up
+130 Space down
+133 Space up
+175 A down

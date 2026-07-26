@@ -97,6 +97,8 @@ let label = $"score: {threshold}; {{ready}}"  // interpolation: `$"…"` with fu
 let flag = true                               // bools
 
 let isHigh = (score: float): bool => score > threshold   // annotations OPTIONAL (gradual)
+let inRange = (n: float): bool => n >= 0.0 && n <= 1.0   // `<=` `>=` `!=` are ordinary
+let changed = (a: float, b: float): bool => a != b       //   comparisons (no `<>`)
 let describe = (score) => $"score: {score}"
 
 let report = (scores) =>
@@ -128,12 +130,17 @@ let sum3 = (a, b, c) =>
 let main = () => report([12.0, 3.5, 40.0])    // zero-param main is run's entry point
 ```
 
-Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
-loosest), unary `-`, and the **short-circuiting booleans** `&&` / `||` plus
-prefix `not`. That list is EXHAUSTIVE — there is **no `>=`, `<=`, `!=`, `<>`,
-`%`, or `^`**. Writing `x >= 0.0` is a parse error (`` expected an
-expression, found `=` ``); spell it `not (x < 0.0)`, and inequality as
-`not (a == b)`.
+Operators: `+ - * /` `< > <= >= == !=` (conventional precedence; pipelines
+bind loosest), unary `-`, and the **short-circuiting booleans** `&&` / `||`
+plus prefix `not`. That list is EXHAUSTIVE — there is **no `<>`, `%`, or
+`^`**. Inequality is `!=` ONLY; F#'s `<>` is not an alias (it lexes as `<`
+then `>` and fails as an ordinary parse error), and bare `!` is not prefix
+negation (that stays `not`) — `!` exists only as part of `!=`.
+`<=`/`>=` are valid wherever `<`/`>` are (both operands must be `float`),
+and `!=` is the exact NEGATION of `==`: same operand rules, same errors on
+the same inputs — comparing functions with `!=` is the same check-time
+rejection (`` functions cannot be compared with `!=` ``), and host/engine
+values are the same runtime error.
 Modulo is `Math.mod(a, b)` and exponentiation `Math.pow(base, exp)`.
 Precedence (tightest→loosest): comparisons > `not` > `&&` > `||`
 > pipelines. So `not a == b` is `not (a == b)`, `a || b && c` is
@@ -222,7 +229,7 @@ let grab = (s) =>
   (they evaluate first); siblings may reference the entry (`Game.foo`) if
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
-  builtin/prelude or bundled-core namespace (Net, Key, Random, Option, Result,
+  builtin/prelude or bundled-core namespace (Net, Key, Mouse, Random, Option, Result,
   List, Text, Math, Debug, Scene,
   Sprite, Anim, Asset, Camera, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
@@ -257,9 +264,17 @@ let grab = (s) =>
   (`key == Key.Enter`); a typo (`Key.Enterr`) is a load-time error — the
   reason keys stopped being strings. `Random` is likewise built-in (the
   abstract `Random.Seed` — see the Random builtins above).
+- **`Mouse` is a built-in module**: `Mouse.t`, the variant the `mouseButton`
+  hook's `button` parameter carries — `Mouse.Left`, `Mouse.Right`,
+  `Mouse.Middle`. The `Key` story exactly: match constructors
+  (`| Mouse.Left =>`) or compare (`button == Mouse.Right`), and a typo is a
+  load-time error. Buttons the platform reports that Functor does not name are
+  never delivered (no `Unknown` variant reaches game logic).
 - **`Input` is the engine's continuously sampled input module.**
   `Input.snapshot` contains `heldKeys: List<Key.t>`, a pixel-space `mouse`
-  record, and `xr: Option.t<Input.xr>`. XR head/grip/aim poses are rig-local
+  record (`{ x, y, buttons: { left, right, middle } }` — `buttons` is the HELD
+  level state, the complement to `mouseButton`'s edges), and
+  `xr: Option.t<Input.xr>`. XR head/grip/aim poses are rig-local
   plain data: position `{x,y,z}` and quaternion `{x,y,z,w}`, with +X right,
   +Y up, and -Z forward. Each controller also carries `active`, analog
   trigger/squeeze/thumbstick state, and named button booleans. Missing XR,
@@ -267,7 +282,7 @@ let grab = (s) =>
   `Option.None`/`active: false`, never stale values. Future gamepad and mobile
   touch domains belong as typed siblings of `xr` on the snapshot.
 - **Bundled modules use the ordinary module semantics.** The language-owned
-  `Net.fun` / `Key.fun` builtins, `Random.funi` interface, and
+  `Net.fun` / `Key.fun` / `Mouse.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory
   sources distributed with every embedding. Engine hosts additionally bundle
   `Animator.fun`, a pure Functor Lang crossfade helper built on the host's
@@ -416,7 +431,12 @@ that's what `functor test` is for.
   a *top-level initializer* may only demand globals defined above it.
 - **Equality `==` is structural**; comparing functions is rejected at
   CHECK time (`` functions cannot be compared with `==` ``), not just at
-  run time.
+  run time. `!=` behaves identically in every respect — it IS `==`
+  negated, so it rejects the same operands with the same (reworded)
+  errors.
+- **Comparisons are IEEE**, so NaN (`0.0 / 0.0`) is false against
+  everything — including itself — under `<`, `>`, `<=`, `>=`, and `==`;
+  `nan != nan` is therefore `true`.
 - **Division is IEEE** (`1.0/0.0` = `inf`); the engine boundary rejects
   non-finite numbers.
 - **Greedy match arms**: arm bodies are full expressions, so a nested
@@ -1127,6 +1147,14 @@ body |> Physics.at(v)                                      // body-last: pipes
 body |> Physics.velocity(v)
 body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
 body |> Physics.sensor                                     // overlap-only, no forces
+body |> Physics.upright                                    // lock rotation: the body
+                                                           //   translates but never tips.
+                                                           //   REQUIRED for a character
+                                                           //   capsule — otherwise a
+                                                           //   glancing contact spins it,
+                                                           //   and a tipped capsule breaks
+                                                           //   any fixed standing-height
+                                                           //   assumption. Off by default
 Physics.scene(gravity, [body, …])                          // what `physics` returns
 Physics.position(tag)                                      // {x, y, z} of the LIVE body
 Physics.linearVelocity(tag)                                // {x, y, z} velocity of the LIVE body
@@ -1235,6 +1263,90 @@ Note the two rules this example obeys: local `let` needs `in`, and the
 pre-step readers raise on the first frame, before the `physics` hook's
 declaration has been reconciled and stepped — so gate them.
 
+⚠️ The sketch above is the LOOP SHAPE, not a usable controller: its
+`else vel.y` is the first of three traps below. See the next section.
+
+### Character controllers on the `physics` hook
+
+`examples/physics-controller` is the worked reference (a dynamic capsule, a
+moving kinematic deck, coyote time, jump buffering, landing squash, walls),
+with its whole feel layer as pure functions under `expect`. Read it before
+writing a controller. The recipe, and the three traps that are NOT obvious:
+
+**Declare the body `|> Physics.upright`.** This is not optional. A dynamic
+capsule that can rotate picks up angular velocity from any glancing contact and
+topples — measured at 40-80° off vertical mid-jump, then creeping sideways along
+a wall with no input. It also silently corrupts everything below, because a
+tipped capsule's lowest point is `radius + halfHeight·cos θ` below its center,
+not the fixed `feetOffset` the probe and clamp assume.
+
+**Grounding** is `Physics.castExcluding` from the capsule's center, straight
+down, reaching `feetOffset + skin`. Excluding your own tag is mandatory — a ray
+starting inside your collider otherwise hits it at distance 0 and reports the
+character standing on itself. Keep `skin` small (~0.15): it is also the knob
+that decides how far AHEAD of physical contact your landing response fires.
+
+**Moving-platform carry needs no platform identity.** The probe reports which
+body it hit, so ask that body for its velocity — one line, no per-platform
+state, no "which deck was I on last frame". Fixed bodies read back zero, so
+static ground needs no special case; a kinematic body whose declared pose is
+re-derived each frame reads back the velocity rapier derived from that motion:
+
+```functor
+let surfaceVelocity = (probe) =>
+  if probe.hit then Physics.linearVelocity(probe.tag) else zeroVelocity
+```
+
+Then steer RELATIVE to that surface (`target = carry.x + wish * speed`), so
+standing still rides along and a jump inherits the deck's motion.
+
+**The three traps.** All three come from `Physics.setVelocity` replacing ALL
+THREE components — there is no horizontal-only command — so the controller must
+say something about `vy` every frame. All three were measured as visible
+artifacts, not theorized:
+
+1. **Do not echo the read back while grounded.** The read is one step stale, so
+   it still carries the downward speed the solver just cancelled at the contact;
+   re-commanding it drives the capsule into the floor. A capsule that should
+   rest 0.90 above the surface rested at 0.40 — and, downstream, stopped against
+   a wall 0.45 units early, because a half-buried capsule catches the wall's
+   corner instead of its face.
+2. **Commanding `0.0` while grounded also sinks, just slower.** Overwriting `vy`
+   destroys the contact's own pushout impulse too, so each step's gravity
+   increment accumulates as penetration (0.98 drifting to 0.40 over 260 frames).
+   Instead, own the standing height with a **ground clamp**: the probe already
+   measured the distance, so correct toward the rest distance, `error / dt`,
+   bounded to a few units/s. This also buys stick-to-a-descending-deck for free.
+3. **The ground clamp will cancel your jump** unless you suppress it. For the
+   first frames after takeoff the feet are still within the probe's reach, so
+   the character reads as grounded and gets clamped back down — it rose 0.12
+   units instead of 1.16, `vy` flipping +6.83 to −6.37 in one frame. Arm a short
+   **post-jump lockout** (~0.1 s) when the jump fires, and treat grounding as
+   false for its duration.
+
+**Keep the decisions pure.** Read the world in `tick`, pass a plain
+`observation` record (grounded, velocity, probe distance, rest height) to
+pure functions, and command the result. The controller's feel then unit-tests
+under `functor test` with no GPU and no world — and the physics drive is
+recorded, so a scripted `--input-script` run is bit-deterministic too
+(verified: 400 frames of identical trace and a byte-identical capture across
+two runs).
+
+**Everything else comes free from the solver**: walls stop you, edges drop you,
+and props can be knocked around — which is the whole reason to put a character
+on the `physics` hook rather than hand-rolling kinematics like
+`examples/platformer`.
+
+**There is no `postTick` hook, and a controller does not want one.** Reads in
+`tick` see the previous step, which is inherent to read → decide → step. A
+post-step hook would read fresher but its commands would wait a full frame (the
+write asymmetry), so total loop latency would not improve — and measured against
+real landings, the grounding probe's `skin` already makes the landing response
+fire 1–3 frames *before* physical contact, so removing a frame of read latency
+pushes it further from contact, not closer. Anything purely visual can already
+read the fresh post-step world in `draw`; post-step events already arrive
+through `Physics.events`.
+
 `Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
 `Sub.batch`; it requires `update`). Every contact begin/end from this
 frame's physics step arrives post-step as `{started: bool, a: Physics.tag,
@@ -1272,6 +1384,12 @@ let sampledInput = (model, snapshot: Input.snapshot) => model'
                                             // before every simulation tick
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
+let mouseButton = (model, button, isDown) => model'
+                                            // OPTIONAL; button: Mouse.t — match
+                                            // | Mouse.Left / Mouse.Right /
+                                            // Mouse.Middle. Delivered while the
+                                            // cursor is captured, so click-to-
+                                            // shoot works under free-look
 let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
                                             // ANY entry point may instead return
                                             // (model', effect) — a 2-tuple whose
@@ -1348,7 +1466,10 @@ debug server's `/time` advance. To *see* colliders, run with
 (collider outlines, contacts, body frames).
 
 `sampledInput` is the level-state complement to the edge-oriented `input` /
-`mouseMove` hooks. Shells sample it once per fixed simulation step; a hook may
+`mouseMove` / `mouseButton` hooks — `mouseButton` tells you a click HAPPENED,
+`snapshot.mouse.buttons.left` tells you it is still held (so a full-auto weapon
+reads the snapshot and a semi-auto one takes the edge). Shells sample it once
+per fixed simulation step; a hook may
 return either a bare model or `(model, effect)` like other model-updating entry
 points. Samples are plain data recorded in the frame input log, so rewind,
 forward ghosting, and counterfactual history replay re-run the same snapshot

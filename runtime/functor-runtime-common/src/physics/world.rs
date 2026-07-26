@@ -722,10 +722,16 @@ impl World {
             BodyKind::Kinematic => RigidBodyBuilder::kinematic_position_based(),
             BodyKind::Fixed => RigidBodyBuilder::fixed(),
         };
-        let rb = builder
-            .pose(pose_of(body))
-            .linvel(vec3(body.velocity))
-            .build();
+        let mut builder = builder.pose(pose_of(body)).linvel(vec3(body.velocity));
+        if body.rotation_locked {
+            // An upright body translates but never tips (the character-capsule
+            // case). This stops the solver from ACCUMULATING spin; a body that
+            // already has angular velocity keeps it, which is why the reconcile
+            // path also cancels the spin when the lock is switched on. At spawn
+            // there is none to cancel — angular velocity is not declarable.
+            builder = builder.locked_axes(LockedAxes::ROTATION_LOCKED);
+        }
+        let rb = builder.build();
 
         collider = collider
             .friction(body.friction)
@@ -791,7 +797,18 @@ impl World {
                     rb.set_linvel(linvel, true);
                 }
                 // Angular velocity is never declarable — always physics-owned.
-                rb.set_angvel(angvel, true);
+                // But an upright body has no angular velocity to preserve:
+                // carrying the pre-rebuild spin over would leave it rotating
+                // forever, since locking the axes only stops inertia from
+                // ACCUMULATING spin, it does not cancel spin already present.
+                rb.set_angvel(
+                    if next.rotation_locked {
+                        Vector::ZERO
+                    } else {
+                        angvel
+                    },
+                    true,
+                );
             }
             return true;
         }
@@ -831,6 +848,25 @@ impl World {
         }
         if prev.sensor != next.sensor {
             self.colliders[col_handle].set_sensor(next.sensor);
+        }
+        if prev.rotation_locked != next.rotation_locked {
+            let rb = &mut self.bodies[rb_handle];
+            rb.set_locked_axes(
+                if next.rotation_locked {
+                    LockedAxes::ROTATION_LOCKED
+                } else {
+                    LockedAxes::empty()
+                },
+                true,
+            );
+            // Locking only zeroes the effective inverse inertia, so an already
+            // spinning body would keep its angular velocity and rotate forever.
+            // Standing a tumbling body up is the whole point of turning the
+            // lock on mid-run (hot-reloading `|> Physics.upright` onto a live
+            // capsule), so cancel the spin too.
+            if next.rotation_locked {
+                rb.set_angvel(Vector::ZERO, true);
+            }
         }
         // `authority` is inert in Phase 1: cached (by reconcile) but never
         // written to the live world.
@@ -1334,6 +1370,66 @@ mod tests {
         assert_eq!(w.step_frame(1.0), MAX_SUBSTEPS_PER_FRAME);
         // Backlog was dropped: a normal frame takes exactly one substep again.
         assert_eq!(w.step_frame(FIXED_DT), 1);
+    }
+
+    // Angular velocity is not declarable and has no command, so these tests
+    // reach into the live body directly.
+    fn spin_up(w: &mut World, tag: &str, angvel: [f32; 3]) {
+        let (rb, _) = w.tags[tag];
+        w.bodies[rb].set_angvel(Vector::new(angvel[0], angvel[1], angvel[2]), true);
+    }
+
+    fn spin_of(w: &World, tag: &str) -> f32 {
+        let (rb, _) = w.tags[tag];
+        w.bodies[rb].angvel().length()
+    }
+
+    // An upright body must not tip. Locking the axes stops the solver from
+    // ACCUMULATING spin, but it does not cancel spin already present -- so
+    // switching the lock on (hot-reloading `|> Physics.upright` onto a live,
+    // tumbling capsule) has to zero the angular velocity too, or the body
+    // rotates forever at a fixed rate.
+    #[test]
+    fn turning_upright_on_cancels_existing_spin() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        spin_up(&mut w, "a", [0.0, 4.0, 0.0]);
+        assert!(spin_of(&w, "a") > 1.0, "spin was not set up");
+
+        // Re-declare the SAME body as upright: the ordinary reconcile path.
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0]).as_upright()]));
+        assert_eq!(spin_of(&w, "a"), 0.0);
+        for _ in 0..30 {
+            w.step_fixed();
+        }
+        assert_eq!(spin_of(&w, "a"), 0.0, "an upright body regained spin");
+    }
+
+    // The same through the STRUCTURAL rebuild path: a mass change despawns and
+    // respawns the body, then restores its live velocities -- which must not
+    // hand the old spin back to a now-locked body.
+    #[test]
+    fn an_upright_body_rebuilt_structurally_does_not_regain_spin() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        spin_up(&mut w, "a", [0.0, 4.0, 0.0]);
+        assert!(spin_of(&w, "a") > 1.0);
+
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])
+            .as_upright()
+            .with_mass(2.0)]));
+        assert_eq!(spin_of(&w, "a"), 0.0);
+    }
+
+    // A body that is NOT upright keeps its spin across a structural rebuild --
+    // the pre-existing behavior the fix above must leave alone.
+    #[test]
+    fn a_free_body_keeps_its_spin_across_a_rebuild() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
+        spin_up(&mut w, "a", [0.0, 4.0, 0.0]);
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0]).with_mass(2.0)]));
+        assert!(spin_of(&w, "a") > 1.0);
     }
 
     #[test]

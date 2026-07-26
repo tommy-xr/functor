@@ -187,6 +187,7 @@ let draw = (m, tts) =>
               <tr><td><code>sampledInput</code></td><td><code>(model, snapshot) => model'</code></td><td>optional; <em>level</em> state (what is held right now) rather than edges — one <code>Input.snapshot</code> immediately before every tick</td></tr>
               <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
               <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
+              <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Delivered while the cursor is captured, so click-to-shoot works under free-look</td></tr>
               <tr><td><code>update</code></td><td><code>(model, msg) => model'</code></td><td>optional; messages are your variant values</td></tr>
               <tr><td><code>subscriptions</code></td><td><code>(model) => Sub</code></td><td>optional (requires <code>update</code>); declarative timers</td></tr>
               <tr><td><code>physics</code></td><td><code>(model) => Physics.scene(…)</code></td><td>optional; declarative bodies, reconciled each frame</td></tr>
@@ -197,7 +198,7 @@ let draw = (m, tts) =>
           <p>
             The model-returning entry points (<code>tick</code>, <code>input</code>,
             <code>sampledInput</code>, <code>mouseMove</code>, <code>mouseWheel</code>,
-            <code>update</code>) may instead
+            <code>mouseButton</code>, <code>update</code>) may instead
             return a 2-tuple <code>(model', effect)</code> to issue one-shot
             <a href="#prelude-effects">effects</a>.
           </p>
@@ -214,7 +215,11 @@ let draw = (m, tts) =>
       dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0) }</pre>
           <p>
             The snapshot is a plain record — <code>heldKeys : List&lt;Key.t&gt;</code>,
-            <code>mouse : { x, y }</code>, and <code>xr : Option.t&lt;…&gt;</code> for headset
+            <code>mouse : { x, y, buttons }</code> (with
+            <code>buttons.left</code> / <code>.right</code> / <code>.middle</code> for the
+            buttons held right now — the level twin of <code>mouseButton</code>'s edges, so a
+            full-auto weapon reads the snapshot while a semi-auto one takes the edge), and
+            <code>xr : Option.t&lt;…&gt;</code> for headset
             head and controller poses (see <code>Input</code> in the
             <a href="../docs/">API reference</a>). Being plain data is what lets sampled input be
             recorded and replayed deterministically.
@@ -346,18 +351,27 @@ let span = (a, b) =>
 
           <h3>Operators and equality</h3>
           <p>
-            <code>+ - * /</code>, <code>&lt; > ==</code>, unary <code>-</code>, and the
-            short-circuiting booleans <code>&amp;&amp;</code> / <code>||</code> with prefix
-            <code>not</code>. Precedence, tightest to loosest: comparisons →
+            <code>+ - * /</code>, <code>&lt; > &lt;= >= == !=</code>, unary <code>-</code>,
+            and the short-circuiting booleans <code>&amp;&amp;</code> / <code>||</code> with
+            prefix <code>not</code>. Precedence, tightest to loosest: comparisons →
             <code>not</code> → <code>&amp;&amp;</code> → <code>||</code> → pipelines. So
             <code>not a == b</code> means <code>not (a == b)</code>.
           </p>
           <p>
             <strong>The comparison set is exactly <code>&lt;</code>, <code>></code>,
-            <code>==</code></strong> — there is no <code>>=</code>, <code>&lt;=</code>, or
-            <code>!=</code>, and reaching for one is a parse error. Write
-            <code>not (a &lt; b)</code> for “at least”, and <code>not (a == b)</code> for
-            “differs”.
+            <code>&lt;=</code>, <code>>=</code>, <code>==</code>, <code>!=</code></strong> —
+            all six at the same precedence. Inequality is <code>!=</code>; F#’s
+            <code>&lt;></code> is not an alias, and prefix negation stays <code>not</code>
+            (bare <code>!</code> is not an operator).
+          </p>
+          <pre class="functor-lang">let inRange = (n: float): bool =&gt; n &gt;= 0.0 &amp;&amp; n &lt;= 1.0
+let changed = (a: float, b: float): bool =&gt; a != b</pre>
+          <p>
+            <code>&lt;=</code> and <code>>=</code> are valid wherever <code>&lt;</code> and
+            <code>></code> are; <code>!=</code> is the exact negation of <code>==</code> —
+            the same operands, the same errors. Comparisons follow IEEE, so
+            <code>0.0 / 0.0</code> (NaN) is false against everything including itself, which
+            makes <code>nan != nan</code> true.
           </p>
           <p>
             <code>==</code> is structural (comparing
@@ -612,11 +626,12 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             </tbody>
           </table>
 
-          <h3 id="stdlib-debug">Debug and Key</h3>
+          <h3 id="stdlib-debug">Debug, Key, and Mouse</h3>
           <table>
             <tbody>
               <tr><td><code>Debug.log(label, subject)</code></td><td>prints <code>label: subject</code> and returns the subject <em>unchanged</em>, so it drops into a pipeline — <code>model.hp |> Debug.log("hp")</code> — and removing it changes nothing but the logging</td></tr>
               <tr><td><code>Key.t</code></td><td><code>Key.A</code>–<code>Key.Z</code>, <code>Key.Num0</code>–<code>Key.Num9</code>, <code>Key.Up/Down/Left/Right</code>, <code>Key.Space</code>, <code>Key.Enter</code>, <code>Key.Escape</code></td></tr>
+              <tr><td><code>Mouse.t</code></td><td><code>Mouse.Left</code>, <code>Mouse.Right</code>, <code>Mouse.Middle</code> — the <code>mouseButton</code> hook's <code>button</code></td></tr>
             </tbody>
           </table>
         </section>
@@ -627,6 +642,7 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             <li><code>x |> f(a)</code> is <code>f(a, x)</code> — pipelines <em>append</em> (thread-last).</li>
             <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
             <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
+            <li>Mouse buttons only reach <code>mouseButton</code> while the cursor is <em>captured</em> — the same rule <code>mouseMove</code> follows. Click the window first (or you will see nothing), and note a held button is force-released on focus loss.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>

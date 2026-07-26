@@ -315,7 +315,31 @@ pub enum BinOp {
     Div,
     Lt,
     Gt,
+    Le,
+    Ge,
     Eq,
+    /// `!=` — the exact negation of [`BinOp::Eq`]: same operand rules, same
+    /// errors on the same inputs.
+    Ne,
+}
+
+impl BinOp {
+    /// The operator's source spelling — the single source of truth for
+    /// diagnostics in the typechecker and the interpreter.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Le => "<=",
+            BinOp::Ge => ">=",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+        }
+    }
 }
 
 /// The short-circuiting boolean operators. `And` binds tighter than `Or`;

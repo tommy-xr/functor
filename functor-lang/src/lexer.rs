@@ -44,6 +44,7 @@ pub enum TokenKind {
     DotDot,
     Eq,
     EqEq,
+    BangEq,
     FatArrow,
     PipeGt,
     PipePipe,
@@ -55,6 +56,8 @@ pub enum TokenKind {
     Slash,
     Lt,
     Gt,
+    LtEq,
+    GtEq,
     Eof,
 }
 
@@ -103,6 +106,7 @@ pub fn describe(kind: &TokenKind) -> String {
         DotDot => "`..`".to_string(),
         Eq => "`=`".to_string(),
         EqEq => "`==`".to_string(),
+        BangEq => "`!=`".to_string(),
         FatArrow => "`=>`".to_string(),
         PipeGt => "`|>`".to_string(),
         PipePipe => "`||`".to_string(),
@@ -114,6 +118,8 @@ pub fn describe(kind: &TokenKind) -> String {
         Slash => "`/`".to_string(),
         Lt => "`<`".to_string(),
         Gt => "`>`".to_string(),
+        LtEq => "`<=`".to_string(),
+        GtEq => "`>=`".to_string(),
         Eof => "end of input".to_string(),
     }
 }
@@ -229,13 +235,34 @@ fn lex_with_interpolation_depth(
                 i += 1;
                 TokenKind::Slash
             }
-            b'<' => {
-                i += 1;
-                TokenKind::Lt
-            }
-            b'>' => {
-                i += 1;
-                TokenKind::Gt
+            // `<=` / `>=` are single tokens. A generic close immediately
+            // followed by `=` (`List<float>= …`) therefore lexes as `>=`; the
+            // parser splits it back apart at its two generic-close sites.
+            b'<' => match bytes.get(i + 1) {
+                Some(b'=') => {
+                    i += 2;
+                    TokenKind::LtEq
+                }
+                _ => {
+                    i += 1;
+                    TokenKind::Lt
+                }
+            },
+            b'>' => match bytes.get(i + 1) {
+                Some(b'=') => {
+                    i += 2;
+                    TokenKind::GtEq
+                }
+                _ => {
+                    i += 1;
+                    TokenKind::Gt
+                }
+            },
+            // `!` exists ONLY as `!=`; bare `!` falls through to the
+            // unexpected-character error (prefix negation is `not`).
+            b'!' if bytes.get(i + 1) == Some(&b'=') => {
+                i += 2;
+                TokenKind::BangEq
             }
             b'=' => match bytes.get(i + 1) {
                 Some(b'=') => {

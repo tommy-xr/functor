@@ -86,6 +86,7 @@ pub enum Provenance {
     SampledInput,
     MouseMove,
     MouseWheel,
+    MouseButton,
     Subscription,
     EffectResult,
     PhysicsQuery,
@@ -135,6 +136,19 @@ impl Provenance {
             Provenance::SampledInput => "sampled input".to_string(),
             Provenance::MouseMove => "mouseMove".to_string(),
             Provenance::MouseWheel => "mouseWheel".to_string(),
+            // Same shape as `input`: the `Mouse.*` variant plus the edge, so a
+            // click is as readable in the trace as a keypress.
+            Provenance::MouseButton => {
+                let button = match args.get(1) {
+                    Some(v @ Value::Variant { .. }) => v.to_string(),
+                    _ => String::new(),
+                };
+                let dir = match args.get(2) {
+                    Some(Value::Bool(false)) => "up",
+                    _ => "down",
+                };
+                format!("mouseButton: {button} {dir}")
+            }
             Provenance::Subscription => format!("subscription: {}", msg()),
             Provenance::EffectResult => format!("effect result: {}", msg()),
             Provenance::PhysicsQuery => format!("physics query: {}", msg()),
@@ -621,8 +635,18 @@ impl FrameCtx<'_> {
                                 }
                             }
                             RecordedInput::MouseMove { x, y } => {
-                                sampled_input.get_or_insert_with(Default::default).mouse =
-                                    crate::MouseSnapshot { x: *x, y: *y };
+                                let sample = sampled_input.get_or_insert_with(Default::default);
+                                sample.mouse.x = *x;
+                                sample.mouse.y = *y;
+                            }
+                            RecordedInput::MouseButton { button, is_down } => {
+                                if let Some(button) = crate::MouseButton::from_i32(*button) {
+                                    sampled_input
+                                        .get_or_insert_with(Default::default)
+                                        .mouse
+                                        .buttons
+                                        .set(button, *is_down);
+                                }
                             }
                             _ => {}
                         }
@@ -713,6 +737,15 @@ impl FrameCtx<'_> {
                 "mouseWheel",
                 vec![self.model.clone(), Value::Number(delta as f64)],
             ),
+            RecordedInput::MouseButton { button, is_down } => {
+                let Some(button_value) = crate::mouse_button_input_value(button) else {
+                    return; // unrecognized code / Unknown — dropped, like live.
+                };
+                (
+                    "mouseButton",
+                    vec![self.model.clone(), button_value, Value::Bool(is_down)],
+                )
+            }
             RecordedInput::Snapshot(snapshot) => {
                 self.deliver_sampled_input(&snapshot, false);
                 return;
@@ -1786,7 +1819,11 @@ mod tests {
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let sample = |x| {
             vec![RecordedInput::Snapshot(Box::new(crate::InputSnapshot {
-                mouse: crate::MouseSnapshot { x, y: 0 },
+                mouse: crate::MouseSnapshot {
+                    x,
+                    y: 0,
+                    ..Default::default()
+                },
                 ..crate::InputSnapshot::default()
             }))]
         };
@@ -1811,7 +1848,11 @@ mod tests {
         assert_eq!(stepped[2].0.to_string(), "20.5");
 
         let carried = crate::InputSnapshot {
-            mouse: crate::MouseSnapshot { x: 30, y: 0 },
+            mouse: crate::MouseSnapshot {
+                x: 30,
+                y: 0,
+                ..Default::default()
+            },
             ..crate::InputSnapshot::default()
         };
         let (from_live_tail, error) = forward_step_scene_with_error(
@@ -1833,6 +1874,59 @@ mod tests {
         assert_eq!(error, None);
         assert_eq!(from_live_tail[0].0.to_string(), "30.5");
         assert_eq!(from_live_tail[1].0.to_string(), "30.5");
+    }
+
+    /// Regression: a replayed `MouseMove` must update only x/y, never replace
+    /// the whole `MouseSnapshot`. Assigning a fresh snapshot resets `buttons`,
+    /// so moving the cursor while holding a button would silently release it on
+    /// replay and diverge from the live run (where the button stays down).
+    #[test]
+    fn replayed_mouse_move_preserves_held_mouse_buttons() {
+        let src = "let init = 0.0\n\
+                   let sampledInput = (m, snapshot) =>\n\
+                   \x20 if snapshot.mouse.buttons.left then snapshot.mouse.x else 0.0 - 1.0\n\
+                   let tick = (m, dt, tts) => m\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+
+        let press = vec![RecordedInput::MouseButton {
+            button: crate::MouseButton::Left as i32,
+            is_down: true,
+        }];
+        let drag = vec![RecordedInput::MouseMove { x: 7, y: 3 }];
+        let release = vec![RecordedInput::MouseButton {
+            button: crate::MouseButton::Left as i32,
+            is_down: false,
+        }];
+
+        let stepped = forward_step_scene(
+            &session,
+            &Value::Number(0.0),
+            false,
+            false,
+            None,
+            0.0,
+            1.0 / 60.0,
+            4,
+            1,
+            &[press, drag, Vec::new(), release],
+        );
+        // Held at press (cursor still at the origin), then still held THROUGH
+        // the move — which is the bug this pins — and across the quiet step.
+        assert_eq!(stepped[0].0.to_string(), "0");
+        assert_eq!(
+            stepped[1].0.to_string(),
+            "7",
+            "a mouse move keeps the held button and applies the new position"
+        );
+        assert_eq!(
+            stepped[2].0.to_string(),
+            "7",
+            "the held button carries through a step with no input"
+        );
+        assert_eq!(stepped[3].0.to_string(), "-1", "the release is honored");
     }
 
     /// Drive one `deliver_ui_event` through a throwaway [`FrameCtx`] (the

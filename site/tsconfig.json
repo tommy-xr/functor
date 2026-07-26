@@ -25,6 +25,15 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
 
+    // esbuild is not the only consumer. site/build.mjs imports modules out of
+    // src/ directly, and a migrated one is imported by its `.ts` specifier
+    // (Node, unlike esbuild, does NOT resolve `./x.js` to `x.ts`) — so it is
+    // executed by NODE's type stripping, which REJECTS non-erasable syntax
+    // (`enum`, `namespace`, parameter properties). Without this, such a
+    // construct would pass `check:site` and then break `site:build`; now the
+    // check fails first.
+    "erasableSyntaxOnly": true,
+
     // The site runs in a BROWSER. Without this, tsc auto-includes every
     // @types/* package in node_modules — @types/node among them — so
     // `process.platform`, `Buffer`, and `require` would all typecheck in code
