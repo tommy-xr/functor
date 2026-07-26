@@ -4,7 +4,9 @@
 //
 // CONTROLS
 //   mouse         look
-//   LEFT MOUSE    fire (hold — the weapon is full-auto at ~5.5 rounds/s)
+//   LEFT MOUSE    fire (hold — the weapon is full-auto at ~5.2 rounds/s:
+//                 `cooldown` is decremented before the fire check, so the
+//                 cadence is ceil(fireInterval / dt) = 12 frames at 60 Hz)
 //   W A S D       move along the firing line
 //   R             reload
 //   SPACE         fire (keyboard fallback — and what the committed
@@ -103,10 +105,10 @@ type Mouse =
   | NoMouse
   | MouseAt(x: float, y: float)
 
-// One message kind: a raycast answer. The payloads stay generic so the
-// engine's `Physics.rayHit` record flows in without an annotation.
-type Msg<'v, 'h> =
-  | Shot(origin: 'v, dir: 'v, hit: 'h)
+// One message kind: a raycast answer, carrying the ray it answers so `update`
+// can draw the tracer without stashing the aim in the model.
+type Msg =
+  | Shot(origin: V, dir: V, hit: Physics.rayHit)
 
 // ------------------------------------------------------------- range layout
 
@@ -258,8 +260,12 @@ let mouseMove = (model, x, y) =>
         lastMouse: MouseAt(x, y) }
 
 // Reload is an EDGE: key repeats arrive as `isDown = true`, so latch.
+// SPACE is the trigger's keyboard fallback, and gets the same rising edge the
+// left mouse button does below — otherwise a tap shorter than one fixed step
+// would fire from the mouse but not from the key.
 let input = (model, key, isDown) =>
   match key with
+  | Key.Space => if isDown then { model with triggerEdge: true } else model
   | Key.R =>
     (match isDown with
      | false => { model with reloadLatch: false }
@@ -415,6 +421,14 @@ let tick = (model, dt, tts) =>
 // that saw it — so one click is exactly one shot.
 expect mouseButton(init, Mouse.Left, true).triggerEdge
 expect not mouseButton(init, Mouse.Right, true).triggerEdge
+// The SPACE fallback latches the SAME edge, so a sub-frame tap fires from the
+// keyboard exactly as it does from the mouse.
+expect input(init, Key.Space, true).triggerEdge
+expect (
+  let tapped = input(init, Key.Space, true) in
+  let (fired, _fx) = tick(tapped, 0.016, 0.016) in
+  fired.shots == 1.0 && not fired.triggerEdge
+)
 expect (
   let clicked = mouseButton(init, Mouse.Left, true) in
   let (fired, _fx) = tick(clicked, 0.016, 0.016) in
@@ -516,20 +530,23 @@ let update = (model, msg) =>
 // simulation leaves it alone. Runners slide, so they are `kinematic` — the
 // game drives their declared position every frame.
 // `Physics.box` takes FULL extents. These match the drawn plate (0.78 x 0.90 at
-// y 0.60-1.50) plus the head sphere above it, so a scoring hit always lands on
-// something the player can actually see — a 0.8 x 1.5 box centred at y = 1.05
-// spans y 0.30-1.80 and scores hits on the empty air beside the thin post.
+// y 0.60-1.50) plus the head sphere above it (radius 0.30 at y 1.70, so it tops
+// out at y 2.00), so a scoring hit always lands on something the player can
+// actually see. Deliberately NOT a taller box: a 0.8 x 1.5 one centred at
+// y = 1.05 spans y 0.30-1.80 and scores hits on the empty air beside the thin
+// post — while a shorter one leaves the visible head unshootable.
 let shellBody = (tag, s) =>
   Physics.fixed(tag, Physics.box(s.w, s.h, s.d))
     |> Physics.at(Vec3.make(s.x, s.y, s.z))
 
 let targetBody = (t) =>
-  let shape = Physics.box(0.80, 1.15, 0.16) in
+  // y 0.575 (just under the plate) to y 2.00 (the top of the head sphere).
+  let shape = Physics.box(0.80, 1.425, 0.16) in
   let tag = targetTag(t.id) in
   (match t.kind with
    | Runner => Physics.kinematic(tag, shape)
    | Popper => Physics.fixed(tag, shape))
-    |> Physics.at(Vec3.make(targetX(t), 1.15, t.z))
+    |> Physics.at(Vec3.make(targetX(t), 1.2875, t.z))
 
 let physics = (model) =>
   Physics.scene(Vec3.make(0.0, 0.0 - 9.81, 0.0),
@@ -787,5 +804,5 @@ let ui = (model) =>
     Ui.text(join(["HITS   ", f0(model.hits), " / ", f0(model.shots),
                   "   (", f0(accuracy(model)), "%)"])),
     Ui.text(if model.reload > 0.0 then "-- RELOADING --" else "READY"),
-    Ui.text("LMB fire   R reload   WASD move   mouse look"),
+    Ui.text("LMB / SPACE fire   R reload   WASD move   mouse look"),
   ]) |> Ui.panel(Ui.topLeft())
