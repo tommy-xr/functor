@@ -2,6 +2,15 @@
 // running Functor debug runtime. The in-page wasm preview stays independent:
 // the first explicit push starts a fresh model on the external runtime, then
 // later edits hot-reload there with the model preserved.
+//
+// The wire types below mirror the runtime's HTTP debug protocol
+// (runtime/functor-runtime-common/src/debug_protocol.rs). As with the
+// postMessage types in protocol.ts, response BODIES are asserted rather than
+// validated: the pre-migration code read these fields straight off
+// `response.json()`, and the few defensive runtime checks it did make (the
+// discovery handshake, `Number.isFinite(state.frame)`) are kept as they were.
+
+import type { ConsoleLevel, ProjectFile } from "./protocol.js";
 
 export const DEFAULT_RUNTIME_ENDPOINT = "http://127.0.0.1:8123";
 
@@ -16,8 +25,55 @@ const LIVE_PUSH_DEBOUNCE_MS = 300;
 const STATE_POLL_MS = 1_000;
 const STORAGE_KEY = "functor-runtime-endpoint-v1";
 
+/** The `GET /` handshake body every runtime target serves. */
+export interface RuntimeDiscovery {
+  service: string;
+  protocol_version: number;
+  endpoints: Record<string, string>;
+}
+
+/** A pixel rectangle in the runtime's output surface. */
+export interface RuntimeViewport {
+  width: number;
+  height: number;
+}
+
+/** One rendered view: desktop reports a single `main`, stereo XR one per eye. */
+export interface RuntimeView {
+  name: string;
+  viewport: RuntimeViewport;
+}
+
+/**
+ * The `GET /state` snapshot. `input` (held keys, mouse, optional XR) is a
+ * runtime-owned payload this client never reads, so it stays `unknown` here.
+ */
+export interface RuntimeState {
+  frame: number;
+  tts: number;
+  pending_steps: number;
+  viewport: RuntimeViewport;
+  views: RuntimeView[];
+  model: string;
+  input: unknown;
+}
+
+/** One project file as a caller may hand it over: a pair, or an IDE file. */
+export type ProjectFileInput = [string, string] | ProjectFile;
+
+/** Asset bytes as a caller may hand them over, alongside their path. */
+export type ProjectAssetBytes = Uint8Array | ArrayBuffer | ArrayBufferView | Blob;
+export type ProjectAssetInput =
+  | [string, ProjectAssetBytes]
+  | { path: string; bytes: ProjectAssetBytes };
+
 export class RuntimeHttpError extends Error {
-  constructor(method, url, status, body) {
+  readonly method: string;
+  readonly url: string;
+  readonly status: number;
+  readonly body: string;
+
+  constructor(method: string, url: string, status: number, body: string) {
     super(`${method} ${url} failed with status ${status}: ${body}`);
     this.name = "RuntimeHttpError";
     this.method = method;
@@ -31,14 +87,24 @@ export class RuntimeHttpError extends Error {
 // fetch client intentionally keeps the browser response as a Blob while using
 // the same canonical protocol routes and JSON bodies.
 export class BrowserRuntimeClient {
-  constructor(endpoint, { fetchImpl = fetch, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  readonly endpoint: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
+
+  constructor(
+    endpoint: unknown,
+    {
+      fetchImpl = fetch,
+      timeoutMs = REQUEST_TIMEOUT_MS,
+    }: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  ) {
     this.endpoint = normalizeEndpoint(endpoint);
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
   }
 
-  async discover() {
-    const discovery = await this.#json("GET", "/");
+  async discover(): Promise<RuntimeDiscovery> {
+    const discovery = await this.#json<RuntimeDiscovery>("GET", "/");
     if (
       discovery?.service !== SERVICE ||
       !Number.isInteger(discovery?.protocol_version) ||
@@ -51,19 +117,19 @@ export class BrowserRuntimeClient {
     return discovery;
   }
 
-  state() {
-    return this.#json("GET", "/state");
+  state(): Promise<RuntimeState> {
+    return this.#json<RuntimeState>("GET", "/state");
   }
 
-  loadProject(files) {
+  loadProject(files: [string, string][]): Promise<string> {
     return this.#text("POST", "/load-project", files);
   }
 
-  reloadProject(files) {
+  reloadProject(files: [string, string][]): Promise<string> {
     return this.#text("POST", "/reload-project", files);
   }
 
-  reloadAsset(path, bytes) {
+  reloadAsset(path: string, bytes: Uint8Array): Promise<string> {
     const pathBytes = new TextEncoder().encode(path);
     if (pathBytes.byteLength > 0xffff_ffff) throw new Error("asset path is too long");
     const body = new Uint8Array(4 + pathBytes.byteLength + bytes.byteLength);
@@ -79,25 +145,31 @@ export class BrowserRuntimeClient {
     ).then((response) => response.text());
   }
 
-  syncAssets(paths) {
+  syncAssets(paths: string[]): Promise<string> {
     return this.#text("POST", "/sync-assets", paths);
   }
 
-  capture() {
+  capture(): Promise<Blob> {
     return this.#request("POST", "/capture", undefined, CAPTURE_TIMEOUT_MS).then((response) =>
       response.blob()
     );
   }
 
-  async #json(method, path, body) {
-    return (await this.#request(method, path, body)).json();
+  async #json<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return (await this.#request(method, path, body)).json() as Promise<T>;
   }
 
-  async #text(method, path, body) {
+  async #text(method: string, path: string, body?: unknown): Promise<string> {
     return (await this.#request(method, path, body)).text();
   }
 
-  async #request(method, path, body, timeoutMs = this.timeoutMs, contentType = null) {
+  async #request(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs: number = this.timeoutMs,
+    contentType: string | null = null
+  ): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const url = `${this.endpoint}${path}`;
@@ -106,16 +178,26 @@ export class BrowserRuntimeClient {
       // `this.fetchImpl(...)` supplies the client as the Web API receiver,
       // which some browsers reject as an illegal invocation before networking.
       const fetchRequest = this.fetchImpl;
+      // `exactOptionalPropertyTypes` rejects an explicit `undefined` body even
+      // though fetch treats it exactly like an absent one, so the init is
+      // asserted rather than restructured — the request is unchanged.
       const response = await fetchRequest(url, {
         method,
         headers:
           body === undefined
             ? undefined
             : { "Content-Type": contentType ?? "application/json" },
+        // An explicit `contentType` is only ever passed with binary bytes (the
+        // asset envelope); every other body goes out as JSON text. The types
+        // cannot express that correlation, hence the assertion.
         body:
-          body === undefined ? undefined : contentType === null ? JSON.stringify(body) : body,
+          body === undefined
+            ? undefined
+            : contentType === null
+              ? JSON.stringify(body)
+              : (body as BodyInit),
         signal: controller.signal,
-      });
+      } as RequestInit);
       if (!response.ok) {
         throw new RuntimeHttpError(method, url, response.status, await response.text());
       }
@@ -126,7 +208,7 @@ export class BrowserRuntimeClient {
   }
 }
 
-export function normalizeEndpoint(raw) {
+export function normalizeEndpoint(raw: unknown): string {
   let value = String(raw ?? "").trim();
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) value = `http://${value}`;
   const url = new URL(value);
@@ -140,7 +222,7 @@ export function normalizeEndpoint(raw) {
   return url.toString().replace(/\/$/, "");
 }
 
-const isLoopbackHost = (host) =>
+const isLoopbackHost = (host: string) =>
   host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 
 const storedEndpoint = () => {
@@ -151,7 +233,7 @@ const storedEndpoint = () => {
   }
 };
 
-const rememberEndpoint = (endpoint) => {
+const rememberEndpoint = (endpoint: string) => {
   try {
     localStorage.setItem(STORAGE_KEY, endpoint);
   } catch {
@@ -159,12 +241,15 @@ const rememberEndpoint = (endpoint) => {
   }
 };
 
-const projectPairs = (files) => {
+// The producers are still JavaScript, so the shape checks in both normalizers
+// below stay exactly as they were: the input types are the contract, not a
+// guarantee, and the assertions keep the checks meaningful to the checker.
+const projectPairs = (files: ProjectFileInput[]): [string, string][] => {
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error("the editor has no project files to push");
   }
   return files.map((file, index) => {
-    const pair = Array.isArray(file) ? file : [file?.path, file?.source];
+    const pair = (Array.isArray(file) ? file : [file?.path, file?.source]) as [string, string];
     if (
       pair.length !== 2 ||
       typeof pair[0] !== "string" ||
@@ -177,15 +262,20 @@ const projectPairs = (files) => {
   });
 };
 
-const projectAssets = async (files) => {
+const projectAssets = async (
+  files: ProjectAssetInput[] | null
+): Promise<[string, Uint8Array][]> => {
   if (!Array.isArray(files)) throw new Error("project assets must be an array");
   return Promise.all(
-    files.map(async (file, index) => {
-      const pair = Array.isArray(file) ? file : [file?.path, file?.bytes];
+    files.map(async (file, index): Promise<[string, Uint8Array]> => {
+      const pair = (Array.isArray(file) ? file : [file?.path, file?.bytes]) as [
+        string,
+        ProjectAssetBytes,
+      ];
       if (pair.length !== 2 || typeof pair[0] !== "string" || pair[0].length === 0) {
         throw new Error(`project asset ${index + 1} is not a [path, bytes] pair`);
       }
-      let bytes;
+      let bytes: Uint8Array;
       if (pair[1] instanceof Uint8Array) {
         bytes = pair[1];
       } else if (pair[1] instanceof ArrayBuffer) {
@@ -202,7 +292,7 @@ const projectAssets = async (files) => {
   );
 };
 
-const errorMessage = (error, endpoint, action) => {
+const errorMessage = (error: unknown, endpoint: string, action: string): string => {
   if (error instanceof RuntimeHttpError) {
     const detail = error.body.trim();
     if (error.status === 503 && action === "capture") {
@@ -210,7 +300,9 @@ const errorMessage = (error, endpoint, action) => {
     }
     return detail || `${action} failed with HTTP ${error.status}`;
   }
-  if (error?.name === "AbortError") {
+  // Read `name` off whatever was thrown, exactly as before: an aborted fetch
+  // rejects with a DOMException, but an injected fetch may throw anything.
+  if ((error as { name?: unknown } | null | undefined)?.name === "AbortError") {
     return `${action} timed out at ${endpoint}`;
   }
   if (error instanceof TypeError) {
@@ -220,10 +312,22 @@ const errorMessage = (error, endpoint, action) => {
   return error instanceof Error ? error.message : String(error);
 };
 
+export interface RuntimeTargetOptions {
+  host: HTMLElement;
+  getProject: () => ProjectFileInput[];
+  getAssets?: (() => ProjectAssetInput[] | Promise<ProjectAssetInput[]>) | null;
+  onOutput?: (level: ConsoleLevel, message: string) => void;
+}
+
 // Mount the same device-link control in the multi-file IDE and the single-file
 // sandbox. `getProject` is evaluated at push time, so queued edits always send
 // the latest complete source set.
-export function createRuntimeTarget({ host, getProject, getAssets = null, onOutput = () => {} }) {
+export function createRuntimeTarget({
+  host,
+  getProject,
+  getAssets = null,
+  onOutput = () => {},
+}: RuntimeTargetOptions) {
   if (!host) throw new Error("runtime target host is required");
 
   host.classList.add("runtime-target-host");
@@ -276,48 +380,52 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     </details>
   `;
 
-  const details = host.querySelector(".runtime-target");
-  const summary = host.querySelector("[data-runtime-summary]");
-  const summaryState = host.querySelector("[data-runtime-summary-state]");
-  const endpointInput = host.querySelector("[data-runtime-endpoint]");
-  const pushButton = host.querySelector("[data-runtime-push]");
-  const captureButton = host.querySelector("[data-runtime-capture]");
-  const closeButton = host.querySelector("[data-runtime-close]");
-  const status = host.querySelector("[data-runtime-status]");
-  const telemetry = host.querySelector("[data-runtime-telemetry]");
-  const frameValue = host.querySelector("[data-runtime-frame]");
-  const timeValue = host.querySelector("[data-runtime-time]");
-  const viewsValue = host.querySelector("[data-runtime-views]");
-  const modelValue = host.querySelector("[data-runtime-model]");
-  const captureFrame = host.querySelector("[data-runtime-capture-frame]");
-  const captureImage = host.querySelector("[data-runtime-image]");
+  // Every query below targets the markup this function just wrote, so each
+  // element is present by construction.
+  const details = host.querySelector<HTMLDetailsElement>(".runtime-target")!;
+  const summary = host.querySelector<HTMLElement>("[data-runtime-summary]")!;
+  const summaryState = host.querySelector<HTMLElement>("[data-runtime-summary-state]")!;
+  const endpointInput = host.querySelector<HTMLInputElement>("[data-runtime-endpoint]")!;
+  const pushButton = host.querySelector<HTMLButtonElement>("[data-runtime-push]")!;
+  const captureButton = host.querySelector<HTMLButtonElement>("[data-runtime-capture]")!;
+  const closeButton = host.querySelector<HTMLButtonElement>("[data-runtime-close]")!;
+  const status = host.querySelector<HTMLElement>("[data-runtime-status]")!;
+  const telemetry = host.querySelector<HTMLElement>("[data-runtime-telemetry]")!;
+  const frameValue = host.querySelector<HTMLElement>("[data-runtime-frame]")!;
+  const timeValue = host.querySelector<HTMLElement>("[data-runtime-time]")!;
+  const viewsValue = host.querySelector<HTMLElement>("[data-runtime-views]")!;
+  const modelValue = host.querySelector<HTMLElement>("[data-runtime-model]")!;
+  const captureFrame = host.querySelector<HTMLElement>("[data-runtime-capture-frame]")!;
+  const captureImage = host.querySelector<HTMLImageElement>("[data-runtime-image]")!;
 
   endpointInput.value = storedEndpoint();
   const localEditorOrigin = isLoopbackHost(window.location.hostname);
 
-  let client = null;
+  let client: BrowserRuntimeClient | null = null;
   let connected = false;
   let live = false;
   let projectRevision = 0;
   let syncedRevision = -1;
   let freshRequiredRevision = 0;
   let freshSatisfiedRevision = -1;
-  let pushTimer = null;
-  let pollTimer = null;
-  let pollingGeneration = null;
+  // `clearTimeout` does not take null, so every clear below passes
+  // `?? undefined`; the stored handles are unchanged by the migration.
+  let pushTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollingGeneration: number | null = null;
   let pushing = false;
   let pushQueued = false;
   let capturing = false;
   let captureQueued = false;
   let generation = 0;
-  let captureUrl = null;
-  let syncError = null;
-  let transportError = null;
-  let lastSyncedAssetSource = null;
-  let lastSyncedAssets = [];
+  let captureUrl: string | null = null;
+  let syncError: string | null = null;
+  let transportError: string | null = null;
+  let lastSyncedAssetSource: ProjectAssetInput[] | null = null;
+  let lastSyncedAssets: [string, Uint8Array][] = [];
   let assetSyncPending = false;
 
-  const renderStatus = (state, summaryText, message) => {
+  const renderStatus = (state: string, summaryText: string, message: string) => {
     details.dataset.state = state;
     summary.dataset.state = state;
     summaryState.textContent = summaryText;
@@ -325,7 +433,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     status.textContent = message;
   };
 
-  const renderState = (state) => {
+  const renderState = (state: RuntimeState) => {
     if (!state || !Number.isFinite(state.frame)) return;
     const views = Array.isArray(state.views) ? state.views.map((view) => view.name).join(" + ") : "—";
     frameValue.textContent = String(state.frame);
@@ -345,8 +453,8 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
 
   const disconnect = () => {
     generation += 1;
-    clearTimeout(pushTimer);
-    clearTimeout(pollTimer);
+    clearTimeout(pushTimer ?? undefined);
+    clearTimeout(pollTimer ?? undefined);
     client = null;
     connected = false;
     live = false;
@@ -374,7 +482,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
   };
 
   const pollState = async () => {
-    clearTimeout(pollTimer);
+    clearTimeout(pollTimer ?? undefined);
     pollTimer = null;
     if (!connected || !client || capturing || pushing) return;
     const ownGeneration = generation;
@@ -401,7 +509,9 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     } catch (error) {
       if (ownGeneration !== generation) return;
       if (capturing || pushing) return;
-      transportError = errorMessage(error, client.endpoint, "state poll");
+      // `client` was non-null on entry; only `disconnect()` clears it, and that
+      // bumps the generation the guard above already returned on.
+      transportError = errorMessage(error, client!.endpoint, "state poll");
       renderStatus(
         "error",
         syncError ? "sync error" : "retrying",
@@ -410,13 +520,13 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     } finally {
       if (pollingGeneration === ownGeneration) pollingGeneration = null;
       if (ownGeneration === generation && connected && !capturing && !pushing) {
-        clearTimeout(pollTimer);
+        clearTimeout(pollTimer ?? undefined);
         pollTimer = setTimeout(pollState, STATE_POLL_MS);
       }
     }
   };
 
-  const ensureConnection = async () => {
+  const ensureConnection = async (): Promise<BrowserRuntimeClient | null> => {
     const endpoint = currentEndpoint();
     if (!client || client.endpoint !== endpoint) {
       client = new BrowserRuntimeClient(endpoint);
@@ -447,10 +557,10 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     const sourceNeedsSync = syncedRevision < requestRevision || fresh;
     let endpoint = endpointInput.value;
     let assetCount = 0;
-    let resolvedAssetsSource = null;
-    let assets = [];
-    let sourceResult = null;
-    let runtime = null;
+    let resolvedAssetsSource: ProjectAssetInput[] | null = null;
+    let assets: [string, Uint8Array][] = [];
+    let sourceResult: string | null = null;
+    let runtime: BrowserRuntimeClient | null = null;
     let assetsMutated = false;
     let sourceAccepted = false;
     const priorAssetsKnown = lastSyncedAssetSource !== null;
@@ -559,7 +669,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
       return;
     }
     pushing = true;
-    clearTimeout(pollTimer);
+    clearTimeout(pollTimer ?? undefined);
     do {
       pushQueued = false;
       await pushOnce();
@@ -573,8 +683,8 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     }
   };
 
-  const queuePush = ({ immediate = false } = {}) => {
-    clearTimeout(pushTimer);
+  const queuePush = ({ immediate = false }: { immediate?: boolean } = {}) => {
+    clearTimeout(pushTimer ?? undefined);
     // The initial load snapshots source before its first await. Edits that land
     // while that load is in flight must queue even though `live` is still false.
     if (pushing) {
@@ -593,7 +703,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     }
   };
 
-  const projectChanged = ({ fresh = false } = {}) => {
+  const projectChanged = ({ fresh = false }: { fresh?: boolean } = {}) => {
     projectRevision += 1;
     if (fresh) freshRequiredRevision = projectRevision;
     syncError = null;
@@ -610,7 +720,7 @@ export function createRuntimeTarget({ host, getProject, getAssets = null, onOutp
     const ownGeneration = generation;
     let endpoint = endpointInput.value;
     capturing = true;
-    clearTimeout(pollTimer);
+    clearTimeout(pollTimer ?? undefined);
     captureButton.disabled = true;
     renderStatus("busy", "capture", "Waiting for the next rendered frame…");
     try {
