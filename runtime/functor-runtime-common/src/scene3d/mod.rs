@@ -48,6 +48,9 @@ pub use texture_description::*;
 pub struct SceneContext {
     model_pipeline: Arc<BuiltAssetPipeline<Model>>,
     texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+    /// Terrain detail maps decode through their own pipeline so their reduced
+    /// anisotropy and mean-color scan stay scoped to them.
+    terrain_detail_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     cube: RefCell<Box<dyn Geometry>>,
     cylinder: RefCell<Box<dyn Geometry>>,
     sphere: RefCell<Box<dyn Geometry>>,
@@ -210,6 +213,7 @@ impl SceneContext {
     pub fn evict_asset(&self, path: &str) {
         self.model_pipeline.evict(path);
         self.texture_pipeline.evict(path);
+        self.terrain_detail_pipeline.evict(path);
         self.raw_image_pipeline.evict(path);
         self.heightmap_pipeline.evict(path);
         self.skyboxes
@@ -231,6 +235,9 @@ impl SceneContext {
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
+            terrain_detail_pipeline: asset::build_pipeline(Box::new(
+                crate::asset::pipelines::TerrainDetailPipeline,
+            )),
             model_pipeline: asset::build_pipeline(Box::new(ModelPipeline)),
             render_targets: RefCell::new(HashMap::new()),
             render_target_warned: RefCell::new(HashSet::new()),
@@ -553,14 +560,14 @@ impl SceneContext {
         // terrain program runs; a map still loading leaves the whole set
         // unbound so the terrain shows its flat band colors rather than a
         // checkerboard smeared across kilometres.
-        let detail_bound = terrain.detail_textures().is_some_and(|maps| {
+        let detail_bound = terrain.detail_textures().and_then(|maps| {
             let handles = maps.map(|map| {
                 let asset = render_context
                     .asset_cache
-                    .load_asset_with_pipeline(self.texture_pipeline.clone(), &map.locator);
+                    .load_asset_with_pipeline(self.terrain_detail_pipeline.clone(), &map.locator);
                 crate::asset::resolve_while_pending_state(
                     &render_context.asset_cache,
-                    &self.texture_pipeline,
+                    &self.terrain_detail_pipeline,
                     &asset,
                     &map.while_pending,
                 )
@@ -572,17 +579,20 @@ impl SceneContext {
                         | crate::asset::WhilePendingState::Loading(Some(_))
                 )
             });
-            if ready {
-                for (index, state) in handles.iter().enumerate() {
-                    let texture = match state {
-                        crate::asset::WhilePendingState::Loaded(texture)
-                        | crate::asset::WhilePendingState::Loading(Some(texture)) => texture,
-                        _ => unreachable!("checked above"),
-                    };
-                    texture.bind(TERRAIN_DETAIL_UNIT0 + index as u32, render_context);
-                }
+            if !ready {
+                return None;
             }
-            ready
+            let mut averages = [[1.0f32; 3]; 4];
+            for (index, state) in handles.iter().enumerate() {
+                let texture = match state {
+                    crate::asset::WhilePendingState::Loaded(texture)
+                    | crate::asset::WhilePendingState::Loading(Some(texture)) => texture,
+                    _ => unreachable!("checked above"),
+                };
+                texture.bind(TERRAIN_DETAIL_UNIT0 + index as u32, render_context);
+                averages[index] = texture.average_color();
+            }
+            Some(averages)
         });
         self.terrain_renderer.borrow_mut().draw(
             render_context,
