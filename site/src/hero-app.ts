@@ -9,16 +9,20 @@
 // state preservation IS the demo.
 //
 // It is NOT on the landing page's critical path: src/hero.ts is the eager entry
-// and dynamic-imports this module, so all of it — CodeMirror, the bridge,
-// React — downloads after the static shell has painted.
+// and dynamic-imports this module, so all of it — CodeMirror, the bridge —
+// downloads after the static shell has painted.
 
 import type { EditorView } from "@codemirror/view";
-import { createRoot } from "react-dom/client";
 import { createMiniEditor } from "./mini-editor.js";
 import { PlayerBridge } from "./player-bridge.js";
-import { createStore } from "./store.js";
-import { HeroStatusDot } from "./components/HeroStatusDot.js";
-import type { HeroState, HeroStatus } from "./components/HeroStatusDot.js";
+
+/** The status dot's three states — also its `data-state` attribute value. */
+type HeroState = "busy" | "live" | "error";
+
+interface HeroStatus {
+  state: HeroState;
+  message: string;
+}
 
 /** The landing page's e2e seam (driven by e2e/site-sandbox.mjs). */
 interface HeroSeam {
@@ -35,26 +39,39 @@ const frame = document.querySelector<HTMLIFrameElement>(".hero-scene")!;
 const mount = document.getElementById("hero-editor")!;
 const card = document.querySelector(".hero-card")!;
 
-// A small, unobtrusive status dot pinned to the card corner — the hero's only
-// chrome, rendered as a React island over this store. The store is also what
-// the __hero.status() seam reads, so the seam never waits on a render.
-// The slot is an empty block whose only child is absolutely positioned, so it
-// adds no layout to the card (same DOM shape as the hand-built dot).
-const statusStore = createStore<HeroStatus>({ state: "busy", message: "" });
-const statusSlot = document.createElement("div");
-card.appendChild(statusSlot);
-createRoot(statusSlot).render(<HeroStatusDot store={statusStore} />);
+// A small, unobtrusive status dot pinned to the card corner: green when the
+// last edit is live, red on a broken edit (the old program keeps running).
+// The full message lives in its tooltip and the __hero.status() seam.
+const dot = document.createElement("div");
+dot.className = "hero-status";
+card.appendChild(dot);
 
+let statusState: HeroStatus = { state: "busy", message: "" };
 const setStatus = (state: HeroState, message = "") => {
-  statusStore.set({ state, message });
+  statusState = { state, message };
+  dot.dataset.state = state;
+  dot.title = message || state;
 };
 
-// The boot loader (static markup in index.html) evaporates when the PLAYER
-// reports in — never on any other status change, since a failure to fetch the
-// editable region says nothing about whether the card has pixels yet. One
-// class toggle; the 620ms evaporate is all CSS.
-const dismissBootLoader = () =>
+// The boot loader (static markup in index.html) evaporates only once the card
+// has BOTH its pixels and its final shape: the player's ready handshake AND a
+// settled editor panel, which grows the card by its own 172px.
+//
+// Both conditions, not just the player, because this module is now lazy. At
+// base it was eager, so the panel had always mounted (a same-origin fetch)
+// long before the player's handshake — the ordering styles.css relies on to
+// keep the panel out of the hit region while it is occluded. Deferred, the
+// player is often ready FIRST, and dismissing on that alone would lift the
+// overlay and only then pop the panel in: a layout shift in full view instead
+// of one hidden behind the loader. `editorSettled` is set on every exit path
+// of boot(), including its failures, so a missing hero.fun can only cost the
+// panel, never leave the loader spinning over a scene that is already running.
+let playerReady = false;
+let editorSettled = false;
+const dismissBootLoader = () => {
+  if (!playerReady || !editorSettled) return;
   document.querySelector("[data-fn-boot]")?.classList.add("is-done");
+};
 // Busy until the player's ready handshake: the bridge's onLive (or a
 // successful onResult) is what turns the dot green, never the mount itself.
 setStatus("busy", "loading…");
@@ -71,10 +88,12 @@ const fullProgram = () => prefix + region + suffix;
 const bridge = new PlayerBridge(frame, {
   onReloading: () => setStatus("busy"),
   onLive: () => {
+    playerReady = true;
     dismissBootLoader();
     setStatus("live", "live");
   },
   onResult: (ok, message) => {
+    playerReady = true;
     dismissBootLoader();
     ok ? setStatus("live", message) : setStatus("error", message);
   },
@@ -125,7 +144,14 @@ const boot = async () => {
   // (bridge onLive) or the first push result comes back.
 };
 
-boot();
+// Settled means "the card will not change shape again", which every exit path
+// of boot() reaches — including its failures, where the panel simply never
+// appears. Finalizing here rather than at each `return` is what makes that
+// exhaustive.
+void boot().finally(() => {
+  editorSettled = true;
+  dismissBootLoader();
+});
 
 // Test seam for the headless e2e (e2e/site-sandbox.mjs), on the landing window.
 (window as Window & { __hero?: HeroSeam }).__hero = {
@@ -140,5 +166,5 @@ boot();
     }
   },
   region: () => region,
-  status: () => ({ ...statusStore.getSnapshot() }),
+  status: () => ({ ...statusState }),
 };

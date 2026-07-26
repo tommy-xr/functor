@@ -271,6 +271,7 @@ const bundle = {
 };
 
 await esbuild.build({
+  ...bundle,
   // Entry points are PATHS, not import specifiers: esbuild only falls back to
   // a `.ts` sibling when the named `.js` is absent, so a stale leftover
   // `src/docs.js` would silently win. Name the file that actually exists. The
@@ -283,7 +284,6 @@ await esbuild.build({
     `${site}src/demo-editor.ts`,
     `${site}src/features.ts`,
   ],
-  ...bundle,
 });
 
 // The hero is built SEPARATELY, with code splitting on, because it is the only
@@ -299,11 +299,35 @@ await esbuild.build({
 // exactly the hero. `chunkNames` is namespaced for the same reason — the two
 // calls share an outdir, so a chunk must not be able to collide with another
 // call's entry output.
-await esbuild.build({
+//
+// The chunk name is deliberately UNHASHED, like every other output here. A
+// hash would make the (unhashed, therefore cacheable-stale) hero.js point at a
+// filename that no longer exists after a redeploy — a 404 instead of merely
+// old-but-working code — and index.html could not name it in a static
+// modulepreload. `...bundle` goes FIRST in both calls so a key added to the
+// shared options can never silently override the hero's splitting settings.
+const heroBuild = await esbuild.build({
+  ...bundle,
   entryPoints: [`${site}src/hero.ts`],
   splitting: true,
-  chunkNames: "hero-[name]-[hash]",
-  ...bundle,
+  chunkNames: "hero-[name]",
+  metafile: true,
 });
+
+// index.html preloads the island by name, which is the only reason the split
+// costs no extra round-trip. Nothing else ties the two together, so assert it:
+// a rename here would otherwise just stop preloading, silently and invisibly.
+const heroOutputs = Object.keys(heroBuild.metafile.outputs).map((p) => p.split("/").pop());
+const landing = await readFile(`${dist}/index.html`, "utf8");
+const preloaded = [...landing.matchAll(/<link rel="modulepreload" href="assets\/([^"]+)"/g)].map(
+  (m) => m[1]
+);
+if (preloaded.length !== 1 || !heroOutputs.includes(preloaded[0])) {
+  console.error(
+    `index.html preloads ${JSON.stringify(preloaded)}, but the hero build emitted ` +
+      `${JSON.stringify(heroOutputs)} — update the <link rel="modulepreload"> href`
+  );
+  process.exit(1);
+}
 
 console.log(`site built at ${dist}`);
