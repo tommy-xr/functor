@@ -164,6 +164,31 @@ the captures and read the code:
 Also weigh: does it *still work* (re-run captures yourself), code size vs what
 it shows (samples should be readable), and asset hygiene.
 
+### Gallery — play the entries
+
+Judging is ultimately a *human* call, and a human judge should **play** the
+games, not just read reports and stare at stills. Wasm bundles come free —
+`functor build wasm` exports a self-contained static bundle per project — so
+put every entry behind one URL and hand it over:
+
+```sh
+node .claude/skills/game-jam/scripts/build-gallery.mjs \
+  platformer=<worktree>/examples/platformer racer=<worktree>/examples/racer \
+  --out /tmp/jam-gallery --serve 8321
+```
+
+It builds each project, copies the bundles, and generates a card index —
+thumbnail (newest PNG in the project's `.captures/`), description, and
+controls. Metadata comes from a `// gallery:` / `// gallery-controls:` header
+comment in `game.fun`; a `--manifest <file>.json` adds titles and scores and
+overrides the header fields. **Get the controls right** — an entry that fires
+with `SPACE` described as "click to shoot" reads as broken.
+
+Two things to know: `--out` is **wiped on every run** (it refuses to delete a
+directory it didn't create, so don't point it at anything you care about), and
+it needs a **release** binary — `target/release/functor`, or `--functor <path>`.
+The gallery output is scratch: build it under `/tmp`, don't commit it.
+
 ## Phase 3 — synthesis
 
 1. **Consolidate friction logs** across entries: dedupe, keep per-gap evidence
