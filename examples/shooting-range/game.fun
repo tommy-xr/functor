@@ -6,12 +6,13 @@
 //   mouse         look
 //   LEFT MOUSE    fire (hold — the weapon is full-auto at ~5.2 rounds/s:
 //                 `cooldown` is decremented before the fire check, so the
-//                 cadence is ceil(fireInterval / dt) = 12 frames at 60 Hz)
+//                 cadence is ceil(fireInterval / dt) = 11 frames at 60 Hz,
+//                 12 at the replay script's 0.016 s timestep).
+//                 This is also what the committed `firing.input` replay
+//                 script drives, as `0 Mouse.Left down`
 //   W A S D       move along the firing line
 //   R             reload
-//   SPACE         fire (keyboard fallback — and what the committed
-//                 `firing.input` replay script drives, since `--input-script`
-//                 is keyboard-only)
+//   SPACE         fire (keyboard fallback)
 //
 // WHAT THIS DEMONSTRATES (that no other example does)
 //   * hitscan shooting through `Physics.raycast` — a QUERY effect issued from

@@ -181,6 +181,31 @@ fn release_held_mouse_buttons(
     }
 }
 
+/// Apply one mouse-button edge with the held-state discipline every *injected*
+/// path shares (`POST /input` and `--input-script`): a press enters the held
+/// set and is delivered; a release is delivered only if the game saw the press,
+/// so no phantom release edge can reach the game. Maintaining `held_buttons` is
+/// also what makes the press visible to a later `sampledInput` as
+/// `mouse.buttons.*` — the level twin of the edge.
+///
+/// The GLFW window arm deliberately does NOT use this: it must clear the held
+/// state even when it suppresses delivery (`ignore_user_input`), so a button
+/// held across a pin transition can't stick.
+fn apply_mouse_button_edge(
+    game: &mut dyn Game,
+    held_buttons: &mut MouseButtons,
+    button: functor_runtime_common::MouseButton,
+    is_down: bool,
+) {
+    if is_down {
+        held_buttons.set(button, true);
+        game.mouse_button(button as i32, true);
+    } else if held_buttons.is_down(button) {
+        held_buttons.set(button, false);
+        game.mouse_button(button as i32, false);
+    }
+}
+
 fn refresh_fixed_input_levels(
     snapshot: &mut InputSnapshot,
     held_keys: &BTreeSet<InputKey>,
@@ -209,28 +234,64 @@ fn refresh_fixed_input_levels(
 fn apply_scripted_events(
     game: &mut dyn Game,
     held_keys: &mut BTreeSet<InputKey>,
+    held_buttons: &mut MouseButtons,
     events: &[RecordedInput],
 ) {
     for event in events {
-        if let RecordedInput::Key { code, is_down } = event {
-            game.key_event(*code, *is_down);
-            if let Some(key) = InputKey::from_i32(*code) {
-                if *is_down {
-                    held_keys.insert(key);
-                } else {
-                    held_keys.remove(&key);
+        match event {
+            RecordedInput::Key { code, is_down } => {
+                game.key_event(*code, *is_down);
+                if let Some(key) = InputKey::from_i32(*code) {
+                    if *is_down {
+                        held_keys.insert(key);
+                    } else {
+                        held_keys.remove(&key);
+                    }
                 }
             }
+            // Same edge + level discipline as an injected button — see
+            // `apply_mouse_button_edge`. `parse_input_script` only ever emits
+            // resolvable buttons, so `from_i32` cannot fail here.
+            RecordedInput::MouseButton { button, is_down } => {
+                if let Some(b) = functor_runtime_common::MouseButton::from_i32(*button) {
+                    apply_mouse_button_edge(game, held_buttons, b, *is_down);
+                }
+            }
+            // Listed rather than `_`, so adding a scriptable line shape (e.g.
+            // pointer motion) has to be wired here instead of compiling to a
+            // silent no-op.
+            RecordedInput::MouseMove { .. }
+            | RecordedInput::MouseWheel { .. }
+            | RecordedInput::Snapshot(_)
+            | RecordedInput::UiEvent(_)
+            | RecordedInput::WebviewEvent(_) => {}
         }
     }
 }
 
 /// Parse an `--input-script` file into a frame → events map for deterministic
 /// scripted playback (docs/time-travel.md T6b). Each non-blank, non-comment
-/// line is `<frame:int> <KeyName> <down|up>` — e.g. `0 Right down`, `18 Up down`.
-/// `#` starts a comment (to end of line); the key name goes through the same
-/// [`InputKey::from_name`] map the debug server's POST /input uses. Events are stored as
-/// raw `RecordedInput::Key` so playback re-runs the identical live input path.
+/// line is `<frame:int> <control> <down|up>` — e.g. `0 Right down`,
+/// `18 Up down`, `4 Mouse.Left down`. `#` starts a comment (to end of line).
+///
+/// A `<control>` is either a KEY name, which goes through the same
+/// [`InputKey::from_name`] map the debug server's POST /input uses, or a MOUSE
+/// BUTTON written with an explicit `Mouse.` prefix (`Mouse.Left`,
+/// `Mouse.Right`, `Mouse.Middle`, case-insensitive), resolved through
+/// [`functor_runtime_common::MouseButton::from_name`].
+///
+/// The prefix is REQUIRED, and is why buttons are not spelled bare: `Left`,
+/// `Right` and `Middle` are all valid *key* names too, so a bare button name
+/// would silently script the arrow key instead. `Mouse.Left` is also exactly
+/// the spelling a game's `mouseButton` hook receives
+/// (`MouseButton::ctor_tag`), and no key name contains a `.`, so the two
+/// namespaces cannot collide.
+///
+/// Events are stored as raw `RecordedInput::Key` / `RecordedInput::MouseButton`
+/// so playback re-runs the identical live input path.
+///
+/// Pointer MOTION (`RecordedInput::MouseMove`) is not scriptable yet — it needs
+/// a two-coordinate line shape rather than this `<control> <down|up>` triple.
 fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read input script {path}: {e}"))?;
@@ -244,14 +305,12 @@ fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, St
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() != 3 {
             return Err(format!(
-                "{path}:{lineno}: expected `<frame> <Key> <down|up>`, got `{raw}`"
+                "{path}:{lineno}: expected `<frame> <Key|Mouse.Button> <down|up>`, got `{raw}`"
             ));
         }
         let frame: u64 = parts[0]
             .parse()
             .map_err(|_| format!("{path}:{lineno}: bad frame number `{}`", parts[0]))?;
-        let key = InputKey::from_name(parts[1])
-            .ok_or_else(|| format!("{path}:{lineno}: unknown key `{}`", parts[1]))?;
         let is_down = match parts[2].to_ascii_lowercase().as_str() {
             "down" => true,
             "up" => false,
@@ -261,12 +320,77 @@ fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, St
                 ))
             }
         };
-        map.entry(frame).or_default().push(RecordedInput::Key {
-            code: key as i32,
-            is_down,
-        });
+        // A `Mouse.` prefix selects the button namespace. Without it the name
+        // must be a key — `Left`/`Right`/`Middle` are key names too, so the
+        // prefix is the only thing that disambiguates them.
+        let event = match parts[1].split_once('.') {
+            Some((module, button)) if module.eq_ignore_ascii_case("mouse") => {
+                let button = functor_runtime_common::MouseButton::from_name(button).ok_or_else(
+                    || {
+                        format!(
+                            "{path}:{lineno}: unknown mouse button `{}` \
+                             (expected `Mouse.Left`, `Mouse.Right`, or `Mouse.Middle`)",
+                            parts[1]
+                        )
+                    },
+                )?;
+                RecordedInput::MouseButton {
+                    button: button as i32,
+                    is_down,
+                }
+            }
+            _ => {
+                let key = InputKey::from_name(parts[1]).ok_or_else(|| {
+                    format!(
+                        "{path}:{lineno}: unknown key `{}` \
+                         (mouse buttons need the `Mouse.` prefix, e.g. `Mouse.Left`)",
+                        parts[1]
+                    )
+                })?;
+                RecordedInput::Key {
+                    code: key as i32,
+                    is_down,
+                }
+            }
+        };
+        map.entry(frame).or_default().push(event);
     }
+    reject_unmatched_button_releases(path, &map)?;
     Ok(map)
+}
+
+/// Reject a `Mouse.* up` with no preceding press.
+///
+/// This is a real inconsistency, not a style rule. Live playback applies the
+/// held-state discipline (`apply_mouse_button_edge`) and SUPPRESSES such a
+/// release, but the `--ghost` / trail forward-step preview replays the script's
+/// events unconditionally — so a malformed script would preview a future the
+/// real run never plays. Failing the parse keeps the two paths honest by
+/// construction, and a stray release is an authoring mistake either way.
+fn reject_unmatched_button_releases(
+    path: &str,
+    map: &HashMap<u64, Vec<RecordedInput>>,
+) -> Result<(), String> {
+    let mut frames: Vec<u64> = map.keys().copied().collect();
+    frames.sort_unstable();
+    let mut held = MouseButtons::default();
+    for frame in frames {
+        for event in &map[&frame] {
+            let RecordedInput::MouseButton { button, is_down } = event else {
+                continue;
+            };
+            let Some(button) = functor_runtime_common::MouseButton::from_i32(*button) else {
+                continue;
+            };
+            if !is_down && !held.is_down(button) {
+                return Err(format!(
+                    "{path}: frame {frame} releases `Mouse.{button:?}` that was never pressed"
+                ));
+            }
+            held.set(button, *is_down);
+        }
+    }
+    Ok(())
 }
 
 use clap::Parser;
@@ -385,8 +509,11 @@ pub struct Args {
 
     /// Drive the game deterministically from a scripted input file instead of
     /// live window input (docs/time-travel.md T6b). Each line is
-    /// `<frame:int> <KeyName> <down|up>` (KeyName like `Right`, `Up`, `A`,
-    /// `Space`); `#` starts a comment. The sim advances by a FIXED `--script-dt`
+    /// `<frame:int> <control> <down|up>` — a KeyName like `Right`, `Up`, `A`,
+    /// `Space`, or a mouse button with an explicit `Mouse.` prefix
+    /// (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`; the prefix is required
+    /// because `Left`/`Right`/`Middle` are also key names).
+    /// `#` starts a comment. The sim advances by a FIXED `--script-dt`
     /// per rendered frame (not wall-clock), and each frame's scripted events are
     /// fed before that frame's tick, so frame N is always the same sim state —
     /// combine with `--capture-frame`/`--capture-at-frame` for reproducible
@@ -807,20 +934,13 @@ fn service_debug_request(
                     Ok(())
                 }
                 debug_server::InputCommand::MouseButton { button, down } => {
-                    // Edge + level, with the same held-state discipline as an
-                    // injected key: a release is delivered only if the game saw
-                    // the press. Unlike window buttons this ignores cursor
-                    // capture — a headless/hidden session has no capture to
-                    // acquire, and scripted clicks are the whole point.
+                    // Edge + level (see `apply_mouse_button_edge`). Unlike
+                    // window buttons this ignores cursor capture — a
+                    // headless/hidden session has no capture to acquire, and
+                    // scripted clicks are the whole point.
                     match functor_runtime_common::MouseButton::from_name(&button) {
                         Some(b) => {
-                            if down {
-                                held_buttons.set(b, true);
-                                game.mouse_button(b as i32, true);
-                            } else if held_buttons.is_down(b) {
-                                held_buttons.set(b, false);
-                                game.mouse_button(b as i32, false);
-                            }
+                            apply_mouse_button_edge(game, held_buttons, b, down);
                             Ok(())
                         }
                         None => Err(format!("unknown mouse button: {}", button)),
@@ -938,7 +1058,7 @@ fn run_headless(
                 .as_ref()
                 .and_then(|script| script.get(&frame_count))
             {
-                apply_scripted_events(&mut *game, &mut held_keys, events);
+                apply_scripted_events(&mut *game, &mut held_keys, &mut held_buttons, events);
             }
             if game.samples_input() {
                 let snapshot = desktop_input_snapshot(
@@ -1851,7 +1971,7 @@ Escape again to quit"
             for sub in &sub_frames {
                 if let Some(script) = input_script.as_ref().filter(|_| !args.ghost) {
                     if let Some(events) = script.get(&frame_count) {
-                        apply_scripted_events(&mut *game, &mut held_keys, events);
+                        apply_scripted_events(&mut *game, &mut held_keys, &mut held_buttons, events);
                     }
                 }
                 if game.samples_input() {
@@ -2770,6 +2890,117 @@ mod tests {
         assert!(parse_input_script(bad_key.to_str().unwrap()).is_err());
         let bad_dir = write_tmp("functor-test-baddir.script", "0 Right sideways\n");
         assert!(parse_input_script(bad_dir.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn parse_input_script_maps_mouse_buttons() {
+        use functor_runtime_common::MouseButton as Btn;
+
+        let path = write_tmp(
+            "functor-test-mouse.script",
+            "0 Mouse.Left down\n4 mouse.MIDDLE down\n7 Mouse.Right down\n9 Mouse.Right up  # case-insensitive\n",
+        );
+        let map = parse_input_script(path.to_str().unwrap()).unwrap();
+
+        assert!(matches!(
+            map[&0][0],
+            RecordedInput::MouseButton { button, is_down: true } if button == Btn::Left as i32
+        ));
+        // The `Mouse.` prefix and the button name are both case-insensitive,
+        // matching `MouseButton::from_name`'s wire spelling.
+        assert!(matches!(
+            map[&4][0],
+            RecordedInput::MouseButton { button, is_down: true } if button == Btn::Middle as i32
+        ));
+        assert!(matches!(
+            map[&9][0],
+            RecordedInput::MouseButton { button, is_down: false } if button == Btn::Right as i32
+        ));
+    }
+
+    /// `Left`/`Right`/`Middle` name a KEY and a MOUSE BUTTON. The `Mouse.`
+    /// prefix is the whole disambiguation, so pin both readings: bare stays a
+    /// key (no silent behavior change for existing scripts), prefixed is the
+    /// button.
+    #[test]
+    fn parse_input_script_disambiguates_mouse_from_key_names() {
+        use functor_runtime_common::MouseButton as Btn;
+
+        let path = write_tmp(
+            "functor-test-ambiguous.script",
+            "0 Right down\n1 Mouse.Right down\n",
+        );
+        let map = parse_input_script(path.to_str().unwrap()).unwrap();
+
+        assert!(
+            matches!(
+                map[&0][0],
+                RecordedInput::Key { code, .. } if code == InputKey::Right as i32
+            ),
+            "a bare `Right` must remain the arrow key"
+        );
+        assert!(
+            matches!(
+                map[&1][0],
+                RecordedInput::MouseButton { button, .. } if button == Btn::Right as i32
+            ),
+            "`Mouse.Right` must be the mouse button"
+        );
+    }
+
+    /// A release the live path would suppress must not parse at all: the ghost
+    /// forward-step preview replays script events unconditionally, so allowing
+    /// one would let the preview and the real run disagree.
+    #[test]
+    fn parse_input_script_rejects_unmatched_button_releases() {
+        let stray = write_tmp("functor-test-strayup.script", "0 Mouse.Left down\n9 Mouse.Right up\n");
+        let err = parse_input_script(stray.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("never pressed") && err.contains("Mouse.Right"),
+            "the error must name the unmatched button: {err}"
+        );
+
+        // Ordering is by FRAME, not by line: a press written after its release
+        // is still unmatched at the frame the release happens.
+        let reordered = write_tmp(
+            "functor-test-reordered.script",
+            "9 Mouse.Left down\n0 Mouse.Left up\n",
+        );
+        assert!(parse_input_script(reordered.to_str().unwrap()).is_err());
+
+        // A properly paired press/release round-trips, including re-pressing.
+        let paired = write_tmp(
+            "functor-test-paired.script",
+            "0 Mouse.Left down\n5 Mouse.Left up\n8 Mouse.Left down\n12 Mouse.Left up\n",
+        );
+        assert!(parse_input_script(paired.to_str().unwrap()).is_ok());
+
+        // Key releases are unaffected — keys have never had a held gate here.
+        let key_up = write_tmp("functor-test-keyup.script", "0 Space up\n");
+        assert!(parse_input_script(key_up.to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn parse_input_script_rejects_unknown_mouse_buttons() {
+        let bad = write_tmp("functor-test-badbutton.script", "0 Mouse.Thumb down\n");
+        let err = parse_input_script(bad.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("unknown mouse button") && err.contains("Mouse.Left"),
+            "the error must name the button and list the valid ones: {err}"
+        );
+
+        // `Mouse.Unknown` is the never-delivered sentinel, not a scriptable
+        // button — `from_name` rejects it and so must the script.
+        let sentinel = write_tmp("functor-test-unknownbtn.script", "0 Mouse.Unknown down\n");
+        assert!(parse_input_script(sentinel.to_str().unwrap()).is_err());
+
+        // A non-mouse dotted name is still a key lookup, and fails as one.
+        let dotted = write_tmp("functor-test-dotted.script", "0 Key.Left down\n");
+        let err = parse_input_script(dotted.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("unknown key") && err.contains("Mouse."),
+            "the key error must hint at the mouse prefix: {err}"
+        );
     }
 
     #[test]

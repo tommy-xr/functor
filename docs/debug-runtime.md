@@ -186,6 +186,40 @@ curl -s $H/state | jq -r .model
 The device runtime rejects this command with **400**: Quest resamples the domain
 from live OpenXR tracking every frame, so an injected sample could never be seen.
 
+### `--input-script` — deterministic offline input
+
+`POST /input` needs a live driver. For a *reproducible* run — a golden still, a
+regression capture — use `--input-script <file>` instead: the runner replays the
+file against a fixed `--script-dt` per frame, so frame N is always the same sim
+state, and `--capture-at-frame N` grabs a byte-identical still every time.
+
+Each non-blank line is `<frame> <control> <down|up>`; `#` starts a comment.
+A `<control>` is either a KEY name (`Right`, `Up`, `A`, `Space` — the same
+`Key::from_name` spelling `POST /input` uses) or a MOUSE BUTTON written with an
+explicit `Mouse.` prefix:
+
+```
+0  Right       down     # hold the right arrow key from frame 0
+4  Mouse.Left  down     # press and hold the left mouse button
+28 Mouse.Left  up
+```
+
+The `Mouse.` prefix is **required**, and is the whole disambiguation: `Left`,
+`Right` and `Middle` are valid *key* names too, so a bare button name would
+silently script the arrow key. `Mouse.Left` is also exactly the spelling the
+game's `mouseButton` hook receives. Buttons carry the same edge + level
+semantics as injected ones — the `mouseButton` hook fires AND `mouse.buttons`
+updates for later `sampledInput` steps, so holding one scripts full-auto fire
+(`examples/shooting-range/firing.input` is the worked example).
+
+A `Mouse.* up` with no preceding press is a **parse error**, not a silently
+dropped line: live playback would suppress it while the `--ghost` forward-step
+preview would replay it, so a stray release is rejected rather than allowed to
+make the preview and the real run disagree.
+
+Pointer MOTION is not scriptable yet — `mouse_move` is injection-only, since it
+needs a two-coordinate line shape rather than this `<control> <down|up>` triple.
+
 ### Sampled input in `GET /state`
 
 `input` is runtime-owned data sampled for one simulation frame. Keyboard and
