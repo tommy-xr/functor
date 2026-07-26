@@ -51,9 +51,14 @@ use openxr as xr;
 /// target, so a headset advertising fewer options still gets a sane choice.
 ///
 /// Raising this raises the frame budget's difficulty in exact proportion —
-/// 13.8 ms at 72 Hz, 11.1 ms at 90, 8.3 ms at 120 — so it is a measured
+/// 13.8 ms at 72 Hz, 12.5 at 80, 11.1 at 90, 8.3 at 120 — so it is a measured
 /// decision, not a preference. See the `oculus-profiling` skill.
-const TARGET_REFRESH_RATE: f32 = 72.0;
+///
+/// 80 Hz measured clean on a Quest 3 running `examples/terrain` once foveation
+/// was enabled (10.6 ms of a 12.5 ms budget, zero stale frames). 90 Hz did not
+/// hold: the mean looks close, but p5 collapses to 45-70 fps and 670-998 frames
+/// go stale in 30 s, which is visible judder rather than a rounding error.
+const TARGET_REFRESH_RATE: f32 = 80.0;
 
 const GLES_MAJOR: i32 = 3;
 const GLES_MINOR: i32 = 2;
@@ -161,6 +166,44 @@ fn init_egl() -> EglContext {
         config,
         context,
         _pbuffer: pbuffer,
+    }
+}
+
+
+/// Foveation level to request. `HIGH` shades the far periphery at the lowest
+/// rate and is the usual choice for content whose edges are ground texture
+/// rather than text or thin geometry — which is exactly a terrain vista.
+const FOVEATION_LEVEL: xr::sys::FoveationLevelFB = xr::sys::FoveationLevelFB::HIGH;
+
+/// Attach a fixed-foveation profile to one swapchain.
+///
+/// `xrUpdateSwapchainFB` has no safe wrapper in the `openxr` crate — only the
+/// raw function pointer — so the state struct is built and passed by hand. The
+/// call is per swapchain, and we render one per eye.
+///
+/// Failure is logged and ignored: foveation is an optimisation, and a headset
+/// that refuses it should still render.
+fn attach_foveation(
+    instance: &xr::Instance,
+    swapchain: &xr::Swapchain<xr::OpenGlEs>,
+    profile: &xr::FoveationProfileFB,
+    eye: &str,
+) {
+    let Some(ext) = instance.exts().fb_swapchain_update_state.as_ref() else {
+        return;
+    };
+    let mut state = xr::sys::SwapchainStateFoveationFB {
+        ty: xr::sys::SwapchainStateFoveationFB::TYPE,
+        next: std::ptr::null_mut(),
+        flags: xr::sys::SwapchainStateFoveationFlagsFB::EMPTY,
+        profile: profile.as_raw(),
+    };
+    // The state structs are a tagged union discriminated by `ty`; the API takes
+    // the base header and reads the concrete struct behind it.
+    let header = &mut state as *mut _ as *mut xr::sys::SwapchainStateBaseHeaderFB;
+    let result = unsafe { (ext.update_swapchain)(swapchain.as_raw(), header) };
+    if result != xr::sys::Result::SUCCESS {
+        log::warn!("foveation not applied to the {eye} swapchain: {result:?}");
     }
 }
 
@@ -841,6 +884,18 @@ pub fn android_main(app: AndroidApp) {
     // Without this the runtime picks the display rate and the app has no say —
     // Quest defaults to 72 Hz no matter how much headroom the frame has.
     extensions.fb_display_refresh_rate = available.fb_display_refresh_rate;
+    // Fixed foveated rendering: shade the eye-buffer periphery at reduced
+    // resolution. All three are needed together — the profile comes from
+    // `fb_foveation`, and attaching it to a swapchain goes through
+    // `fb_swapchain_update_state` (plus its GLES variant for a GLES swapchain).
+    let foveation_available = available.fb_foveation
+        && available.fb_foveation_configuration
+        && available.fb_swapchain_update_state
+        && available.fb_swapchain_update_state_opengl_es;
+    extensions.fb_foveation = foveation_available;
+    extensions.fb_foveation_configuration = foveation_available;
+    extensions.fb_swapchain_update_state = foveation_available;
+    extensions.fb_swapchain_update_state_opengl_es = foveation_available;
     // Required on Android: openxr only chains the activity/JVM context into
     // xrCreateInstance (XrInstanceCreateInfoAndroidKHR) when this is set —
     // without it the runtime can reject instance creation.
@@ -956,6 +1011,27 @@ pub fn android_main(app: AndroidApp) {
         .iter()
         .map(|v| create_eye_target(&gl, &session, v))
         .collect();
+    // Foveation attaches per swapchain, so it has to happen after the eye
+    // targets exist. A dynamic profile lets the runtime scale the level with
+    // GPU load rather than pinning the worst case all the time.
+    if foveation_available {
+        match session.create_foveation_profile(Some(xr::FoveationLevelProfile {
+            level: FOVEATION_LEVEL,
+            vertical_offset: 0.0,
+            dynamic: xr::sys::FoveationDynamicFB::LEVEL_ENABLED,
+        })) {
+            Ok(profile) => {
+                for (eye, target) in ["left", "right"].iter().zip(eyes.iter()) {
+                    attach_foveation(&instance, &target.swapchain, &profile, eye);
+                }
+                log::info!("fixed foveated rendering enabled ({FOVEATION_LEVEL:?}, dynamic)");
+            }
+            Err(e) => log::warn!("cannot create a foveation profile: {e}"),
+        }
+    } else {
+        log::info!("fixed foveated rendering unavailable on this runtime");
+    }
+
     log::info!(
         "swapchains ready: {}x{} per eye",
         eyes[0].width,
