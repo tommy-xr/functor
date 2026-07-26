@@ -532,7 +532,9 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
             <code>Math</code> functions (<code>pow</code>, <code>atan2</code>, <code>mod</code>,
             <code>min</code>, <code>max</code>) take their number <em>first</em>, so a pipeline
             would feed the wrong slot: write <code>Text.fixed(hp, 0.0)</code>, not
-            <code>hp |> Text.fixed(0.0)</code>.
+            <code>hp |> Text.fixed(0.0)</code>. <code>Math.clamp(low, high, n)</code> is the
+            deliberate exception — its bounds are configuration and its number is the subject,
+            so it threads last and pipes.
           </p>
 
           <h3 id="stdlib-math">Math</h3>
@@ -542,7 +544,13 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
               <tr><td><code>Math.sqrt(n)</code> · <code>Math.abs(n)</code> · <code>Math.floor(n)</code></td><td></td></tr>
               <tr><td><code>Math.pow(base, exp)</code></td><td><code>base</code> raised to <code>exp</code></td></tr>
               <tr><td><code>Math.min(a, b)</code> · <code>Math.max(a, b)</code></td><td></td></tr>
-              <tr><td><code>Math.clamp01(n)</code></td><td>clamp into <code>[0, 1]</code></td></tr>
+              <tr><td><code>Math.clamp(low, high, n)</code></td><td>the general clamp, and the one exception to "<code>Math</code> takes its number first" — it threads <strong>last</strong>, so <code>n |> Math.clamp(0.0, 10.0)</code> reads the way it sounds. <code>low &gt; high</code> is a runtime error, not a silent swap</td></tr>
+              <tr><td><code>Math.clamp01(n)</code></td><td>clamp into <code>[0, 1]</code> — the shorthand for <code>Math.clamp(0.0, 1.0, n)</code></td></tr>
+              <tr><td><code>Math.tan(n)</code> · <code>Math.atan(n)</code></td><td>radians</td></tr>
+              <tr><td><code>Math.asin(n)</code> · <code>Math.acos(n)</code></td><td>radians. Outside <code>[-1, 1]</code> they are <strong>NaN</strong> rather than clamping — so a dot product that float error nudged past <code>1.0</code> needs <code>dot |> Math.clamp(-1.0, 1.0) |> Math.acos</code></td></tr>
+              <tr><td><code>Math.round(n)</code> · <code>Math.ceil(n)</code></td><td><code>round</code> goes <strong>half away from zero</strong>, not to even: <code>0.5</code> → <code>1</code>, <code>2.5</code> → <code>3</code>, <code>-2.5</code> → <code>-3</code></td></tr>
+              <tr><td><code>Math.log(n)</code> · <code>Math.exp(n)</code></td><td><code>log</code> is the <strong>natural</strong> logarithm (base e), the inverse of <code>exp</code></td></tr>
+              <tr><td><code>Math.sign(n)</code></td><td><code>-1</code> / <code>0</code> / <code>1</code> — and <strong>0 at zero</strong>, so "which way is this moving?" answers "neither" for something at rest</td></tr>
               <tr><td><code>Math.atan2(y, x)</code></td><td>full-circle angle in radians — <strong>y first</strong>, the standard math order</td></tr>
               <tr><td><code>Math.mod(a, b)</code></td><td><strong>Euclidean</strong>: the result is never negative — it lands in <code>[0, abs(b))</code> whatever the signs, so <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code> — the wraparound games want</td></tr>
               <tr><td><code>Math.pi</code></td><td>a constant <em>value</em>, not a call — <code>Math.pi()</code> is an error</td></tr>
@@ -562,9 +570,35 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
               <tr><td><code>List.append(other, list)</code></td><td>the <em>piped</em> list stays the head: <code>xs |> List.append(ys)</code> is <code>xs</code> then <code>ys</code></td></tr>
               <tr><td><code>List.flatten(list)</code></td><td>one level deep</td></tr>
               <tr><td><code>List.reverse(list)</code></td><td></td></tr>
-              <tr><td><code>List.maximum(list)</code></td><td>numbers only; an <strong>empty list is a runtime error</strong></td></tr>
+              <tr><td><code>List.indexedMap(fn, list)</code></td><td>like <code>map</code>, but the callback is <code>fn(index, x)</code> — <strong>index first</strong>, 0-based. Reach for this instead of folding while counting</td></tr>
+              <tr><td><code>List.concatMap(fn, list)</code></td><td>map then flatten one level; <code>fn</code> returns a list per element, and returning <code>[]</code> drops it</td></tr>
+              <tr><td><code>List.sortBy(fn, list)</code></td><td>ascending by the number <code>fn</code> returns, and <strong>stable</strong> — equal keys keep their input order, so a sort does not shimmer frame to frame. Descending is a negated key. The key runs exactly once per element</td></tr>
+              <tr><td><code>List.zip(other, list)</code></td><td>pairs into a list of tuples, stopping at the <strong>shorter</strong> one. The piped list is the first slot: <code>xs |> List.zip(ys)</code> gives <code>(x, y)</code></td></tr>
+              <tr><td><code>List.take(count, list)</code> · <code>List.drop(count, list)</code></td><td>they <strong>saturate</strong> instead of failing at the edges: past the end is the whole list / <code>[]</code>, and a negative count acts as <code>0</code>. <code>take(n)</code> then <code>drop(n)</code> always reconstructs the list</td></tr>
+              <tr><td><code>List.sum(list)</code></td><td>numbers only; an empty list is <code>0.0</code></td></tr>
+              <tr><td><code>List.maximum(list)</code></td><td>numbers only; an <strong>empty list is a runtime error</strong>. (It predates <code>Option</code> — the accessors below are the modern shape)</td></tr>
             </tbody>
           </table>
+
+          <p>
+            These four are <strong>partial</strong> — there may be no such element — so they answer
+            with an <a href="#stdlib-option"><code>Option</code></a> rather than a made-up
+            sentinel like <code>-1.0</code>. That is the point: a sentinel typechecks as the very
+            thing it stands in for, so it flows onward silently, whereas an <code>Option</code>
+            makes the compiler ask what happens when nothing is there.
+          </p>
+          <table>
+            <tbody>
+              <tr><td><code>List.head(list)</code> · <code>List.last(list)</code></td><td><code>Option.Some(x)</code>, or <code>Option.None</code> for an empty list</td></tr>
+              <tr><td><code>List.nth(index, list)</code></td><td>0-based. Out of range (including negative) is <code>Option.None</code> — but a <em>fractional</em> index is a runtime error, since that is a bug rather than an absence</td></tr>
+              <tr><td><code>List.find(fn, list)</code></td><td>the first element the predicate accepts, short-circuiting; <code>Option.None</code> when none match</td></tr>
+            </tbody>
+          </table>
+          <pre><code>let hp = enemies |> List.nth(i) |> Option.defaultValue(0.0)
+
+match enemies |> List.find((e) =&gt; e.hp &lt;= 0.0) with
+| Option.Some(dead) =&gt; respawn(dead)
+| Option.None =&gt; model</code></pre>
 
           <h3 id="stdlib-text">Text</h3>
           <table>
@@ -575,6 +609,11 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
               <tr><td><code>Text.join(sep, list)</code> · <code>Text.split(sep, s)</code></td><td>separator first, subject last. <code>Text.split</code> needs a <strong>non-empty</strong> separator (an empty one is a runtime error); <code>Text.join("")</code> is fine and just concatenates</td></tr>
               <tr><td><code>Text.toBullets(list)</code></td><td>one <code>- item</code> per line</td></tr>
               <tr><td><code>Text.parseFloat(s)</code></td><td>trims and parses; unparseable or non-finite input <strong>degrades to <code>0.0</code></strong> rather than failing</td></tr>
+              <tr><td><code>Text.length(s)</code> · <code>Text.chars(s)</code></td><td>both count <strong>Unicode scalar values</strong> — not bytes, and not grapheme clusters. So <code>"日本"</code> is <code>2</code>, but an <code>"e"</code> followed by a combining accent is <code>2</code> as well. There is no char type, so <code>chars</code> hands back one-character <em>strings</em> ready for <code>List.map</code>. <code>Text.length(s)</code> always equals <code>List.length(Text.chars(s))</code></td></tr>
+              <tr><td><code>Text.toUpper(s)</code> · <code>Text.toLower(s)</code></td><td>Unicode-aware, so the length may <em>change</em>: <code>"ß" |> Text.toUpper</code> is <code>"SS"</code></td></tr>
+              <tr><td><code>Text.trim(s)</code></td><td>whitespace off both ends; the interior is untouched</td></tr>
+              <tr><td><code>Text.contains(needle, s)</code></td><td>needle first, subject last — <code>s |> Text.contains("ab")</code>. Every string contains the empty needle</td></tr>
+              <tr><td><code>Text.replace(from, to, s)</code></td><td>replaces <strong>every</strong> occurrence, left to right, never re-scanning what it just wrote (so <code>Text.replace("a", "aa", s)</code> terminates). An empty <code>from</code> is a runtime error</td></tr>
             </tbody>
           </table>
 
