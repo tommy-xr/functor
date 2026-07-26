@@ -25,6 +25,12 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
 
+    // The sandbox chrome renders as React islands (site/src/components/*.tsx).
+    // esbuild reads this key too, so the automatic runtime is configured once
+    // here for both the checker and the bundler — no per-file JSX pragma and
+    // no `import React` needed.
+    "jsx": "react-jsx",
+
     // esbuild is not the only consumer. site/build.mjs imports modules out of
     // src/ directly, and a migrated one is imported by its `.ts` specifier
     // (Node, unlike esbuild, does NOT resolve `./x.js` to `x.ts`) — so it is
@@ -49,5 +55,8 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"]
+  // `.tsx` joins the checked set alongside `.ts` — the React islands in
+  // src/components/ are checked directly, not merely transitively via their
+  // importer.
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

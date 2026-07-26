@@ -3,7 +3,14 @@
 // VSCode live-preview panel uses). Edits are debounced and pushed as
 // `functor-lang-set-source`; the runtime hot-swaps the program with the model
 // preserved and replies `functor-lang-set-source-result`.
+//
+// The page shell is static HTML; the CHROME around the editor (the picker, the
+// pill, the external-runtime panel, the status bar) renders as React islands
+// mounted into that shell's containers. The editor itself is not React —
+// CodeMirror owns `#editor`'s subtree — and all the load/push logic below
+// stays plain imperative code that publishes to small stores.
 
+import { createRoot } from "react-dom/client";
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
 import { StateEffect } from "@codemirror/state";
@@ -22,23 +29,21 @@ import {
   currentExpects,
 } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
-import { createStatusBar } from "./status-bar.js";
-import { createRuntimeTarget } from "./runtime-target.js";
+import { createStatusBarStore } from "./status-bar-store.js";
+import { createRuntimeTargetCore } from "./runtime-target-core.js";
+import type { RuntimeTargetState } from "./runtime-target-core.js";
+import { createStore } from "./store.js";
+import { SandboxControls } from "./components/SandboxControls.js";
+import type { PickerState, PillState } from "./components/SandboxControls.js";
+import { StatusBar } from "./components/StatusBar.js";
 import { asPlayerMessage } from "./protocol.js";
 import { EXAMPLES } from "./examples.js";
-
-/** The preview pill's three states — also its `data-state` attribute value. */
-type PillState = "busy" | "live" | "error";
 
 /** The sandbox's e2e seam (driven by e2e/site-sandbox.mjs). */
 interface SandboxSeam {
   setSource(source: string): void;
   source: () => string;
-  status: () => {
-    state: string | undefined;
-    text: string | null;
-    message: string;
-  };
+  status: () => { state: string; text: string; message: string };
   runtimeTarget: () => RuntimeTargetState;
   getSource: () => string;
   triggerComplete(source: string, cursor: number): void;
@@ -58,25 +63,28 @@ interface LangSeam {
   expects: () => ReturnType<typeof currentExpects>;
 }
 
-type RuntimeTarget = ReturnType<typeof createRuntimeTarget>;
-type RuntimeTargetState = ReturnType<RuntimeTarget["state"]>;
-
 const frame = document.getElementById("player") as HTMLIFrameElement;
-const statusPill = document.getElementById("status")!;
-const picker = document.getElementById("example-picker") as HTMLSelectElement;
-const resetButton = document.getElementById("reset")!;
 
-const setStatus = (state: PillState, text: string, detail = "") => {
-  statusPill.dataset.state = state;
-  statusPill.textContent = text;
+// An inline program from the URL fragment (the docs' "try it" buttons):
+// #src=<base64url> becomes the editor buffer and the player's ?src= data:
+// URL, so it starts with a fresh init — no served file involved.
+const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
+const requested = new URLSearchParams(window.location.search).get("example");
+const initialExample = EXAMPLES.some((e) => e.id === requested) ? requested! : EXAMPLES[0].id;
+
+const picker = createStore<PickerState>({
+  options: EXAMPLES.map((example) => ({ value: example.id, label: example.label })),
+  selected: initialExample,
+});
+const pill = createStore<PillState>({ state: "busy", text: "◌ loading…", detail: "" });
+
+const setStatus = (state: PillState["state"], text: string, detail = "") =>
   // The detail (the reload note, or a parse error) lives in the pill's tooltip
   // and — for errors — the Output panel. No separate error banner under the
   // editor: the preview pill is the single live indicator.
-  statusPill.title = detail;
-};
+  pill.set({ state, text, detail });
 
-const statusBar = createStatusBar({ host: document.getElementById("statusbar")! });
-let runtimeTarget: RuntimeTarget | null = null;
+const statusBar = createStatusBarStore();
 // The sandbox edits only the entry buffer, but some examples also load sibling
 // modules (for example Mario's generated assets.fun manifest). Keep those
 // fetched sources so an external runtime receives the same complete project as
@@ -127,14 +135,15 @@ const view = new EditorView({
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !programmaticEdit) {
         bridge.push(view.state.doc.toString());
-        runtimeTarget?.projectChanged();
+        runtimeTarget.projectChanged();
       }
     }),
   ],
 });
 
-runtimeTarget = createRuntimeTarget({
-  host: document.getElementById("runtime-target"),
+// Created once, outside React: this controller carries the live link's queued
+// pushes and its `/state` poll chain, so a re-render must never restart it.
+const runtimeTarget = createRuntimeTargetCore({
   getProject: () => [["game.fun", view.state.doc.toString()], ...siblingSources],
   getAssets: () => assetSources,
   onOutput: (level, message) => statusBar.appendOutput(level, message),
@@ -201,12 +210,9 @@ const setDoc = (
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
-  runtimeTarget?.projectChanged({ fresh: true });
+  runtimeTarget.projectChanged({ fresh: true });
 };
 
-// An inline program from the URL fragment (the docs' "try it" buttons):
-// #src=<base64url> becomes the editor buffer and the player's ?src= data:
-// URL, so it starts with a fresh init — no served file involved.
 const fromBase64Url = (b64u: string) =>
   new TextDecoder().decode(
     Uint8Array.from(atob(b64u.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))
@@ -230,13 +236,13 @@ const loadInline = (b64u: string) => {
   inlineB64 = b64u;
   // Reflect the inline program in the picker so it (and Reset) don't lie
   // about what's loaded.
-  if (!picker.querySelector('option[value="__inline"]')) {
-    const option = document.createElement("option");
-    option.value = "__inline";
-    option.textContent = "docs snippet";
-    picker.appendChild(option);
-  }
-  picker.value = "__inline";
+  const options = picker.getSnapshot().options;
+  picker.set({
+    options: options.some((option) => option.value === "__inline")
+      ? options
+      : [...options, { value: "__inline", label: "docs snippet" }],
+    selected: "__inline",
+  });
   loadToken += 1; // supersede any in-flight example fetch
   setDoc(source);
   setStatus("busy", "◌ loading…");
@@ -293,35 +299,43 @@ const loadExample = async (id: string) => {
   frame.src = `player.html?${params}`;
 };
 
-for (const example of EXAMPLES) {
-  const option = document.createElement("option");
-  option.value = example.id;
-  option.textContent = example.label;
-  picker.appendChild(option);
-}
-
-picker.addEventListener("change", () => {
-  if (picker.value === "__inline") {
+const selectExample = (value: string) => {
+  picker.set({ ...picker.getSnapshot(), selected: value });
+  if (value === "__inline") {
     // The `__inline` option only exists once loadInline has stored its source.
     loadInline(inlineB64!);
     return;
   }
   const url = new URL(window.location.href);
-  url.searchParams.set("example", picker.value);
+  url.searchParams.set("example", value);
   url.hash = "";
   window.history.replaceState(null, "", url);
-  loadExample(picker.value);
-});
+  loadExample(value);
+};
 
-resetButton.addEventListener("click", () =>
-  picker.value === "__inline" ? loadInline(inlineB64!) : loadExample(picker.value)
+const resetExample = () => {
+  const selected = picker.getSnapshot().selected;
+  if (selected === "__inline") loadInline(inlineB64!);
+  else loadExample(selected);
+};
+
+// Mount the islands into the static shell's containers. Both keep their
+// element ids and class names, so styles.css and every e2e selector match the
+// rendered DOM exactly as they matched the hand-built one.
+createRoot(document.querySelector(".sandbox-controls")!).render(
+  <SandboxControls
+    picker={picker}
+    pill={pill}
+    runtimeTarget={runtimeTarget}
+    onSelect={selectExample}
+    onReset={resetExample}
+  />
 );
+const statusBarHost = document.getElementById("statusbar")!;
+statusBarHost.className = "statusbar";
+createRoot(statusBarHost).render(<StatusBar store={statusBar} />);
 
-const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
-const requested = new URLSearchParams(window.location.search).get("example");
-const initial = EXAMPLES.some((e) => e.id === requested) ? requested! : EXAMPLES[0].id;
-picker.value = initial;
-if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initial);
+if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initialExample);
 
 // Test seam for the headless e2e (e2e/site-sandbox.mjs): set the buffer and
 // observe results without synthesizing keyboard events.
@@ -330,13 +344,14 @@ if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initial);
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   },
   source: () => view.state.doc.toString(),
-  status: () => ({
-    state: statusPill.dataset.state,
-    text: statusPill.textContent,
-    message: statusPill.title,
-  }),
-  // Assigned during boot, long before any e2e call can reach this seam.
-  runtimeTarget: () => runtimeTarget!.state(),
+  // Read the pill's store, which the rendered pill mirrors exactly: the seam
+  // stays synchronous with the page's own state rather than racing a React
+  // commit. The fields are the pre-migration ones (`title` was the detail).
+  status: () => {
+    const { state, text, detail } = pill.getSnapshot();
+    return { state, text, message: detail };
+  },
+  runtimeTarget: () => runtimeTarget.state(),
   getSource: () => view.state.doc.toString(),
   // Replace the buffer, place the cursor, and open the completion popup
   // (explicit trigger). Guarded so it does NOT push to the runtime — completion
