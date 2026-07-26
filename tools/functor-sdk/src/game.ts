@@ -181,11 +181,32 @@ export class FunctorClient {
     await this.http.postText("/time", { type: "advance", dts });
   }
 
-  /** Advance `n` steps, one frame at a time. */
+  /** Advance `n` steps, then hold — resolving once all `n` have actually run.
+   *
+   * Sent as ONE batched `advance` (`frames: n`) rather than `n` round trips;
+   * the runtime queues the steps and drains them at up to 8 per rendered
+   * frame, so this both costs less and finishes sooner than stepping in a
+   * loop. Completion is read from `state.pending_steps` reaching 0, which is
+   * exact — no frame-target arithmetic to race.
+   *
+   * That speed comes from running up to 8 ticks inside ONE rendered frame, so
+   * a batch also has ~n/8 of the per-rendered-frame I/O points a loop of
+   * {@link step} calls would give it: network delivery, effect results, and
+   * rendering happen once per rendered frame, not once per tick. Use `step` in
+   * a loop when the game needs to observe input, I/O, or the model between
+   * steps; use this to skip ahead. */
   async stepFrames(n: number, dts: number = DEFAULT_STEP_DT): Promise<void> {
-    for (let i = 0; i < n; i++) {
-      await this.step(dts);
-    }
+    if (n <= 0) return;
+    await this.http.postText("/time", { type: "advance", dts, frames: n });
+    await waitFor(
+      () => this.state(),
+      (s) => s.pending_steps === 0,
+      {
+        timeoutMs: 1000 + n * 100,
+        intervalMs: 5,
+        description: `${n} queued clock steps to run`,
+      },
+    );
   }
 
   /** Resume following the wall clock. */

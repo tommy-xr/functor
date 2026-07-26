@@ -321,7 +321,14 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 return runtime_gone(&mut stream, cors_origin);
             }
             match recv(resp_rx) {
-                Ok(()) => respond_text(&mut stream, cors_origin, 200, "OK", "ok"),
+                Ok(Ok(())) => respond_text(&mut stream, cors_origin, 200, "OK", "ok"),
+                // The runtime CANNOT honor this command in its current mode
+                // (a `--fixed-time` pin). Silently answering `ok` to a no-op is
+                // the bug this replaces: a stepping harness then waits forever
+                // for a frame that will never come.
+                Ok(Err(message)) => {
+                    respond_text(&mut stream, cors_origin, 409, "Conflict", &message)
+                }
                 Err(_) => respond_text(
                     &mut stream,
                     cors_origin,
@@ -716,6 +723,43 @@ mod tests {
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("loaded project"));
+    }
+
+    /// A clock command the runtime cannot honor must be a LOUD 409, not a `200
+    /// ok` that did nothing — the silence a stepping harness cannot detect.
+    #[test]
+    fn a_time_command_the_runtime_refuses_is_a_conflict_not_an_ok() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let body = r#"{"type":"advance","dts":0.016,"frames":4}"#;
+        let request = format!(
+            "POST /time HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let client = connect(&listener, request);
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+
+        match rx.recv().unwrap() {
+            DebugRequest::Time(command, response) => {
+                assert_eq!(
+                    command,
+                    TimeCommand::Advance {
+                        dts: 0.016,
+                        frames: 4
+                    }
+                );
+                response.send(Err("pinned by --fixed-time".into())).unwrap();
+            }
+            _ => panic!("expected time request"),
+        }
+
+        assert_eq!(server.join().unwrap(), Some(()));
+        let response = client.join().unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 409 Conflict\r\n"),
+            "{response}"
+        );
+        assert!(response.ends_with("pinned by --fixed-time"));
     }
 
     #[test]

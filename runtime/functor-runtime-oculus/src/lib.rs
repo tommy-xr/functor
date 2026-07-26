@@ -33,7 +33,6 @@ use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::debug_protocol::{
     CaptureError, DebugRequest, InputCommand, RuntimeState, RuntimeView, RuntimeViewport,
-    TimeCommand,
 };
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
@@ -581,6 +580,7 @@ fn service_debug_request(
             let _ = response.send(RuntimeState {
                 frame: debug.frame_count,
                 tts: clock.current_tts(),
+                pending_steps: clock.pending_steps(),
                 viewport: RuntimeViewport::new(width, height),
                 views,
                 model: game.state_debug(),
@@ -659,12 +659,7 @@ tracking); use the desktop runtime's --headless/--debug-port path"
             let _ = response.send(result);
         }
         DebugRequest::Time(command, response) => {
-            match command {
-                TimeCommand::Set { tts } => clock.set(tts),
-                TimeCommand::Advance { dts } => clock.advance(dts),
-                TimeCommand::Resume => clock.resume(),
-            }
-            let _ = response.send(());
+            let _ = response.send(clock.apply(command));
         }
         DebugRequest::ReloadSource(source, response) => {
             let _ = response.send(game.reload_source(&source));

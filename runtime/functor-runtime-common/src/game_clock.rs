@@ -19,6 +19,8 @@
 //! This is the deterministic-capture / golden-image path and MUST stay
 //! byte-identical, so it is checked first, ahead of every other control.
 
+use std::collections::VecDeque;
+
 use crate::FrameTime;
 
 /// The fixed model timestep, in seconds — the interval `tick` advances by under
@@ -36,6 +38,12 @@ pub const FIXED_DT: f32 = 1.0 / 60.0;
 /// physics' `MAX_SUBSTEPS_PER_FRAME`.
 const MAX_SUBSTEPS: usize = 8;
 
+/// Most steps `POST /time` `advance` may leave queued at once. They drain at
+/// [`MAX_SUBSTEPS`] per rendered frame, so this is ~3.5 hours of stepping at
+/// 60fps — far past any real harness, and short of a request that would wedge
+/// the clock indefinitely (or grow the queue without bound).
+const MAX_QUEUED_STEPS: u32 = 1_000_000;
+
 /// A frame-time source shared by the desktop and web shells. Constructed once
 /// per session (seeded with the shell's fixed-time option) and called each
 /// rendered frame via [`GameClock::fixed_frames`] (the fixed-timestep model
@@ -52,9 +60,21 @@ pub struct GameClock {
     /// Scrubber / debug pause. While paused, `dts = 0` and `game_time` is
     /// frozen. A queued [`GameClock::step`] also sets this.
     paused: bool,
-    /// A one-shot step (seconds) that advances `game_time` on the next frame,
-    /// then holds. Set by Step / debug Advance (both imply pause).
-    pending_step: Option<f32>,
+    /// Queued one-shot steps that advance `game_time`, then hold. Queued by
+    /// Step / debug Advance (both imply pause), and drained in order at up to
+    /// [`MAX_SUBSTEPS`] per rendered frame.
+    ///
+    /// It is a QUEUE, not a single slot: steps ACCUMULATE, so N advances always
+    /// run N steps. A single slot silently collapsed two advances that landed
+    /// between one frame's consumption into one step — unreachable through the
+    /// synchronous debug-HTTP transport (one in-flight request at a time), but
+    /// a live trap for any caller that can queue two commands before a frame
+    /// runs, and the reason a batch advance can mean anything at all.
+    ///
+    /// Consecutive steps of the same `dts` coalesce into one `(dts, count)`
+    /// run, so a 10,000-frame batch — or a per-frame `step` caller under a
+    /// fixed-time pin — costs one entry, not one per step.
+    pending_steps: VecDeque<(f32, u32)>,
     /// Queued FIXED-frame steps (the scrubber's drag-into-the-future
     /// catch-up): consumed up to [`MAX_SUBSTEPS`] whole `FIXED_DT` sub-frames
     /// per rendered frame — never one fat tick, preserving the fixed-timestep
@@ -82,11 +102,22 @@ impl GameClock {
             game_time: 0.0,
             accumulator: 0.0,
             paused: false,
-            pending_step: None,
+            pending_steps: VecDeque::new(),
             pending_frames: 0,
             fixed_time,
             started: false,
         }
+    }
+
+    /// Take the next queued step's `dts`, if any.
+    fn take_step(&mut self) -> Option<f32> {
+        let (dts, count) = self.pending_steps.front_mut()?;
+        let dts = *dts;
+        *count -= 1;
+        if *count == 0 {
+            self.pending_steps.pop_front();
+        }
+        Some(dts)
     }
 
     /// This frame's [`FrameTime`], given the real wall-clock delta since the last
@@ -97,7 +128,7 @@ impl GameClock {
         if let Some(t) = self.fixed_time {
             return FrameTime { dts: 0.0, tts: t };
         }
-        if let Some(step) = self.pending_step.take() {
+        if let Some(step) = self.take_step() {
             self.game_time += step;
             return FrameTime {
                 dts: step,
@@ -128,7 +159,10 @@ impl GameClock {
     /// - **Fixed-time** pins unconditionally (checked first): a single
     ///   `{ dts: 0, tts: <const> }` — the golden-capture path runs the body once
     ///   with `dts = 0`, byte-identical to [`Self::frame`].
-    /// - **Pending step** (Step / debug Advance): a single `{ dts: step, … }`.
+    /// - **Pending steps** (Step / debug Advance): the queued steps, in order,
+    ///   at most [`MAX_SUBSTEPS`] per rendered frame. One queued step — all a
+    ///   single advance can be — is one `{ dts: step, … }`, so one advance is
+    ///   one observable stepped frame.
     /// - **Paused**: EMPTY — no model advance. The shell still renders the frozen
     ///   (or scrubbed) pose once at the held `tts`.
     /// - **Live**: accumulate `real_delta` and emit one frame per whole
@@ -140,12 +174,22 @@ impl GameClock {
         if let Some(t) = self.fixed_time {
             return vec![FrameTime { dts: 0.0, tts: t }];
         }
-        if let Some(step) = self.pending_step.take() {
-            self.game_time += step;
-            return vec![FrameTime {
-                dts: step,
-                tts: self.game_time,
-            }];
+        if !self.pending_steps.is_empty() {
+            // Up to MAX_SUBSTEPS queued steps per rendered frame — the same
+            // clamp `pending_frames` uses. One advance at a time (all the
+            // synchronous debug transport can deliver) is therefore exactly one
+            // stepped frame, observable on its own; a `frames: n` batch
+            // fast-forwards without one round trip and one render per step.
+            let mut frames = Vec::new();
+            while frames.len() < MAX_SUBSTEPS {
+                let Some(step) = self.take_step() else { break };
+                self.game_time += step;
+                frames.push(FrameTime {
+                    dts: step,
+                    tts: self.game_time,
+                });
+            }
+            return frames;
         }
         if self.pending_frames > 0 {
             // Catch-up: whole FIXED_DT sub-frames, at most MAX_SUBSTEPS per
@@ -226,7 +270,7 @@ impl GameClock {
     /// clock) — this is what kills the pause→resume jump.
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
-        self.pending_step = None;
+        self.pending_steps.clear();
         self.pending_frames = 0;
     }
 
@@ -234,7 +278,7 @@ impl GameClock {
     /// scrubber's seek/step controls, which park on a frame.
     pub fn pause(&mut self) {
         self.paused = true;
-        self.pending_step = None;
+        self.pending_steps.clear();
         self.pending_frames = 0;
     }
 
@@ -242,7 +286,7 @@ impl GameClock {
     /// `game_time` (debug `POST /time` Resume).
     pub fn resume(&mut self) {
         self.paused = false;
-        self.pending_step = None;
+        self.pending_steps.clear();
         self.pending_frames = 0;
     }
 
@@ -252,23 +296,58 @@ impl GameClock {
         self.game_time = 0.0;
         self.accumulator = 0.0;
         self.paused = false;
-        self.pending_step = None;
+        self.pending_steps.clear();
         self.pending_frames = 0;
         self.started = false;
     }
 
     /// Pause and queue a one-frame step of `dt` seconds (Step / debug Advance).
     pub fn step(&mut self, dt: f32) {
+        self.step_n(dt, 1);
+    }
+
+    /// Pause and queue `count` steps of `dt` seconds each — [`Self::step`]'s
+    /// batch form (debug `POST /time` `{"type":"advance","dts":d,"frames":n}`).
+    ///
+    /// Steps ACCUMULATE onto whatever is already queued, so `n` advances always
+    /// run `n` model steps regardless of when they arrive relative to a frame.
+    /// They drain at up to [`MAX_SUBSTEPS`] per rendered frame, so a batch
+    /// fast-forwards instead of costing one rendered frame per step.
+    ///
+    /// A `--fixed-time` pin swallows the request (`count` is dropped, not
+    /// queued): the pin is unconditional, so a queued step could never run, and
+    /// a per-frame caller would otherwise grow the queue forever. Shells report
+    /// that conflict to the operator at the transport, not here.
+    pub fn step_n(&mut self, dt: f32, count: u32) {
         self.paused = true;
-        self.pending_step = Some(dt);
+        if count == 0 || self.fixed_time.is_some() {
+            return;
+        }
+        match self.pending_steps.back_mut() {
+            Some((queued_dt, queued)) if *queued_dt == dt => {
+                *queued = queued.saturating_add(count)
+            }
+            _ => self.pending_steps.push_back((dt, count)),
+        }
+    }
+
+    /// Steps still queued from [`Self::step`] / [`Self::step_n`].
+    pub fn pending_steps(&self) -> u32 {
+        self.pending_steps
+            .iter()
+            .fold(0u32, |total, (_, count)| total.saturating_add(*count))
     }
 
     /// Pause and queue `n` whole FIXED-frame steps — the scrubber's
     /// drag-into-the-future catch-up. Consumed at most [`MAX_SUBSTEPS`] per
     /// rendered frame (see [`Self::fixed_frames`]), so long drags animate.
-    /// Queuing again REPLACES the backlog (the newest drag wins).
+    /// Queuing again REPLACES the backlog (the newest drag wins) — including
+    /// any debug `advance` steps still queued, which would otherwise run FIRST
+    /// (they have priority in [`Self::fixed_frames`]) and overshoot the frame
+    /// the drag selected.
     pub fn step_frames(&mut self, n: u32) {
         self.paused = true;
+        self.pending_steps.clear();
         self.pending_frames = n;
     }
 
@@ -280,14 +359,49 @@ impl GameClock {
     /// Debug `POST /time` Set: pin the clock to `tts` (pause + rebase).
     pub fn set(&mut self, tts: f32) {
         self.paused = true;
-        self.pending_step = None;
+        self.pending_steps.clear();
         self.pending_frames = 0;
         self.game_time = tts;
     }
 
-    /// Debug `POST /time` Advance: step one frame by `dts` (implies pause).
-    pub fn advance(&mut self, dts: f32) {
-        self.step(dts);
+    /// Apply one debug `POST /time` command, shared by every shell that hosts
+    /// the debug server so the contract cannot drift between them.
+    ///
+    /// `Err` is a CONFLICT, surfaced to the operator as `409`: under a
+    /// `--fixed-time` pin no clock command can do anything, and answering `ok`
+    /// to a no-op strands a stepping harness. The pin stays unconditional (the
+    /// golden-capture path must not become network-dependent), so the fix is to
+    /// relaunch without it.
+    pub fn apply(&mut self, command: crate::debug_protocol::TimeCommand) -> Result<(), String> {
+        use crate::debug_protocol::TimeCommand;
+        if let Some(pinned) = self.fixed_time {
+            return Err(format!(
+                "the clock is pinned at tts = {pinned} by --fixed-time, which is an \
+unconditional capture pin: /time cannot set, advance, or resume it. Relaunch without \
+--fixed-time and POST {{\"type\":\"set\",\"tts\":{pinned}}} to start pinned at the same \
+time, then advance from there."
+            ));
+        }
+        match command {
+            TimeCommand::Set { tts } => self.set(tts),
+            TimeCommand::Advance { dts, frames } => {
+                // Bounded so one request cannot park the clock for weeks: the
+                // queue drains at MAX_SUBSTEPS per rendered frame, so the cap
+                // is ~3.5 hours of stepping at 60fps. Refuse loudly rather
+                // than accept a number we will not honor in any useful time.
+                let queued = self.pending_steps();
+                if queued.saturating_add(frames) > MAX_QUEUED_STEPS {
+                    return Err(format!(
+                        "advance would queue {frames} steps on top of {queued} already queued, \
+past the {MAX_QUEUED_STEPS} step cap. Advance in smaller batches, or POST \
+{{\"type\":\"set\",\"tts\":<t>}} to jump the clock instead of stepping to it."
+                    ));
+                }
+                self.step_n(dts, frames)
+            }
+            TimeCommand::Resume => self.resume(),
+        }
+        Ok(())
     }
 
     /// Rebase the clock so play continues from `tts` — used when a time-travel
@@ -506,6 +620,189 @@ mod tests {
         assert_eq!(frames[0].dts, 0.0);
         assert_eq!(frames[0].tts, 2.0);
         assert_eq!(clock.current_tts(), 2.0);
+    }
+
+    #[test]
+    fn advances_accumulate_instead_of_collapsing() {
+        // Two advances queued before ANY frame consumes them must run TWO
+        // steps. With a single `pending_step` slot the second overwrote the
+        // first and the pose between them was never sampled.
+        let mut clock = GameClock::new(None);
+        clock.step_n(FIXED_DT, 1);
+        clock.step_n(FIXED_DT, 1);
+        assert_eq!(clock.pending_steps(), 2);
+        let frames = clock.fixed_frames(0.0);
+        assert_eq!(frames.len(), 2, "both advances ran");
+        assert!((clock.current_tts() - 2.0 * FIXED_DT).abs() < 1e-6);
+        assert!(clock.fixed_frames(0.0).is_empty(), "then holds paused");
+    }
+
+    #[test]
+    fn one_advance_is_exactly_one_stepped_frame() {
+        // The property a stepping harness needs: post one advance, observe one
+        // frame. Queue-and-drain must not run ahead of what was asked for.
+        let mut clock = GameClock::new(None);
+        for i in 1..=5 {
+            clock.step_n(FIXED_DT, 1);
+            let frames = clock.fixed_frames(0.0);
+            assert_eq!(frames.len(), 1, "advance {i} stepped once");
+            assert!((frames[0].dts - FIXED_DT).abs() < 1e-6);
+            assert!(clock.fixed_frames(0.0).is_empty(), "and holds after {i}");
+        }
+    }
+
+    #[test]
+    fn a_batch_advance_runs_every_step_capped_per_rendered_frame() {
+        let mut clock = GameClock::new(None);
+        clock.step_n(FIXED_DT, 20);
+        assert_eq!(clock.pending_steps(), 20);
+        let a = clock.fixed_frames(0.0);
+        assert_eq!(a.len(), MAX_SUBSTEPS, "capped like the scrubber catch-up");
+        let b = clock.fixed_frames(0.0);
+        assert_eq!(b.len(), MAX_SUBSTEPS);
+        let c = clock.fixed_frames(0.0);
+        assert_eq!(c.len(), 20 - 2 * MAX_SUBSTEPS, "remainder drains");
+        assert!(clock.fixed_frames(0.0).is_empty());
+        // Every requested step ran, in order, at the requested dt.
+        assert!((clock.current_tts() - 20.0 * FIXED_DT).abs() < 1e-5);
+        // A zero-frame batch queues nothing (it still parks the clock).
+        clock.step_n(FIXED_DT, 0);
+        assert_eq!(clock.pending_steps(), 0);
+        assert!(clock.is_paused());
+    }
+
+    #[test]
+    fn queued_steps_keep_heterogeneous_dts_in_order() {
+        let mut clock = GameClock::new(None);
+        clock.step_n(0.5, 1);
+        clock.step_n(0.25, 2);
+        clock.step_n(0.5, 1);
+        let frames = clock.fixed_frames(0.0);
+        let dts: Vec<f32> = frames.iter().map(|f| f.dts).collect();
+        assert_eq!(dts, vec![0.5, 0.25, 0.25, 0.5]);
+        assert!((clock.current_tts() - 1.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_legacy_frame_path_consumes_one_queued_step_per_call() {
+        let mut clock = GameClock::new(None);
+        clock.step_n(0.25, 3);
+        for i in 1..=3 {
+            let f = clock.frame(1.0);
+            assert!((f.dts - 0.25).abs() < 1e-6, "call {i} stepped");
+        }
+        assert_eq!(clock.frame(1.0).dts, 0.0, "drained → holds paused");
+    }
+
+    #[test]
+    fn a_pause_transition_drops_every_queued_step() {
+        for (name, transition) in [
+            ("pause", GameClock::pause as fn(&mut GameClock)),
+            ("resume", GameClock::resume),
+            ("toggle", GameClock::toggle_pause),
+            ("restart", GameClock::restart),
+        ] {
+            let mut clock = GameClock::new(None);
+            clock.step_n(FIXED_DT, 40);
+            transition(&mut clock);
+            assert_eq!(clock.pending_steps(), 0, "{name} cleared the queue");
+        }
+        let mut clock = GameClock::new(None);
+        clock.step_n(FIXED_DT, 40);
+        clock.set(4.0);
+        assert_eq!(clock.pending_steps(), 0, "set cleared the queue");
+
+        // A scrubber drag supersedes a debug batch: queued steps have priority
+        // in fixed_frames, so keeping them would overshoot the dragged-to frame.
+        let mut clock = GameClock::new(None);
+        clock.step_n(FIXED_DT, 40);
+        clock.step_frames(3);
+        assert_eq!(clock.pending_steps(), 0, "the drag dropped the batch");
+        assert_eq!(clock.pending_frames(), 3);
+    }
+
+    #[test]
+    fn fixed_time_swallows_queued_steps_rather_than_hoarding_them() {
+        // The pin is unconditional, so a queued step could never run. Dropping
+        // it keeps a per-frame `step` caller (the --input-script driver) from
+        // growing the queue forever under `--fixed-time`.
+        let mut clock = GameClock::new(Some(2.0));
+        for _ in 0..1000 {
+            clock.step_n(FIXED_DT, 8);
+            let frames = clock.fixed_frames(0.016);
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].tts, 2.0);
+            assert_eq!(frames[0].dts, 0.0);
+        }
+        assert_eq!(clock.pending_steps(), 0);
+        assert_eq!(clock.current_tts(), 2.0);
+    }
+
+    #[test]
+    fn apply_refuses_every_time_command_under_a_fixed_time_pin() {
+        use crate::debug_protocol::TimeCommand;
+        // Silently accepting these was the bug: the clock cannot move, but the
+        // pinned path still emits a frame each iteration, so even a harness
+        // waiting for /state.frame to increment saw a FALSE success.
+        let mut pinned = GameClock::new(Some(1.5));
+        for command in [
+            TimeCommand::Advance {
+                dts: FIXED_DT,
+                frames: 1,
+            },
+            TimeCommand::Set { tts: 9.0 },
+            TimeCommand::Resume,
+        ] {
+            let error = pinned.apply(command).expect_err("must be a conflict");
+            assert!(error.contains("--fixed-time"), "teaching message: {error}");
+            assert!(error.contains("1.5"), "names the pinned time: {error}");
+        }
+        assert_eq!(pinned.current_tts(), 1.5, "the pin never moved");
+
+        // Live, the same commands apply.
+        let mut clock = GameClock::new(None);
+        assert!(clock
+            .apply(TimeCommand::Advance {
+                dts: FIXED_DT,
+                frames: 3
+            })
+            .is_ok());
+        assert_eq!(clock.pending_steps(), 3);
+        assert!(clock.apply(TimeCommand::Set { tts: 4.0 }).is_ok());
+        assert_eq!(clock.pending_steps(), 0, "set drops the queue");
+        assert_eq!(clock.current_tts(), 4.0);
+        assert!(clock.apply(TimeCommand::Resume).is_ok());
+        assert!(!clock.is_paused());
+    }
+
+    #[test]
+    fn apply_refuses_a_batch_past_the_queue_cap() {
+        use crate::debug_protocol::TimeCommand;
+        let mut clock = GameClock::new(None);
+        let over = TimeCommand::Advance {
+            dts: FIXED_DT,
+            frames: MAX_QUEUED_STEPS + 1,
+        };
+        let error = clock.apply(over).expect_err("past the cap");
+        assert!(error.contains("cap"), "teaching message: {error}");
+        assert_eq!(clock.pending_steps(), 0, "nothing was queued");
+
+        // At the cap is fine; one more on top is not (the cap counts what is
+        // ALREADY queued, so a caller cannot walk past it in small batches).
+        assert!(clock
+            .apply(TimeCommand::Advance {
+                dts: FIXED_DT,
+                frames: MAX_QUEUED_STEPS
+            })
+            .is_ok());
+        assert_eq!(clock.pending_steps(), MAX_QUEUED_STEPS);
+        assert!(clock
+            .apply(TimeCommand::Advance {
+                dts: FIXED_DT,
+                frames: 1
+            })
+            .is_err());
+        assert_eq!(clock.pending_steps(), MAX_QUEUED_STEPS);
     }
 
     #[test]
