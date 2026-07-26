@@ -531,6 +531,21 @@ browser console on wasm. Not rate-limited: a `Debug.log` in `tick`/`draw` fires
 every frame (~60/s), so prefer an event path (`input`/`update`), or remove it
 when done.
 
+**The list above is the WHOLE registry, and it is CLOSED.** A builtin
+namespace (`List`, `Text`, `Math`, `Random`, `Debug`) owns exactly these
+members in every embedding, so anything else is a **check-time error** —
+`functor-lang check` (and `functor build`) reject `List.nth` / `Text.length` /
+`Math.clamp` with `` `List` has no builtin `nth` `` plus the nearest name or
+the namespace's full member list. Do NOT assume an F#/Elm stdlib function
+exists: there is no `nth`/`head`/`take`/`zip`/`sortBy`/`indexedMap`/`find`/
+`sum` on `List`, no `length`/`toUpper` on `Text`, and `Math` has `clamp01`
+(0–1 only), not a general `clamp`. Build what you need from `List.fold` /
+`List.filter` / `List.range` / `Math.min` + `Math.max`. (`Scene.*` and the
+rest of the engine prelude are host-provided, so under plain
+`functor-lang check` — no host — they stay the gradual `Unknown` seam and
+only resolve under the runner, where the prelude's `.funi` interfaces make an
+unknown member a load error.)
+
 ## Functor prelude (only under the engine host — `FunctorHost`)
 
 Available in runner-hosted Functor Lang (and tests via
@@ -1185,7 +1200,9 @@ every use, element types flow through `List.map`/`filter`/`fold`, and
 apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: 'b): List<'b>`). Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized type
-names) and absorbs anything. (Function TYPES cannot be written in
+names) and absorbs anything — but a BUILTIN namespace is not such a seam:
+its member set is closed, so `List.nth` / `Math.clamp` are check errors, not
+`Unknown` (see "Builtins"). (Function TYPES cannot be written in
 annotations yet — `f: ('a) => 'b` does not parse; leave higher-order
 parameters unannotated and let inference type them.) Generic declarations (`type Pair<'x, 'y> = { first: 'x, second: 'y }`)
 instantiate fresh per use; an UNDECLARED type variable in a declaration is
