@@ -2725,8 +2725,33 @@ mod tests {
 
         let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
         let source = std::fs::read_to_string(mario).expect("read mario source");
-        let weak_jump = source.replacen("let jumpVelocity = 12.0", "let jumpVelocity = 6.0", 1);
-        assert_ne!(weak_jump, source, "test must rewrite the jump constant");
+        // `jumpVelocity` is the example's tuning knob, so read the CURRENT value
+        // out of the source and weaken it, rather than hardcoding the literal:
+        // a hardcoded needle silently stops matching the moment the example is
+        // retuned, turning the whole regression into a no-op.
+        const JUMP_BINDING: &str = "let jumpVelocity = ";
+        let jump_line = source
+            .lines()
+            .find(|line| line.starts_with(JUMP_BINDING))
+            .expect("mario source must define `let jumpVelocity = <number>`");
+        let tuned_jump: f64 = jump_line[JUMP_BINDING.len()..]
+            .split_whitespace()
+            .next()
+            .and_then(|literal| literal.parse().ok())
+            .expect("`let jumpVelocity` must be followed by a number literal");
+        // Half the tuned launch speed falls short of the chasm; the downstream
+        // "weak jump should fall and respawn" assertion is the check that this
+        // is still true if the example's other tunables move. `{:?}` (not `{}`)
+        // so an integral half still prints as a float literal.
+        let weak_jump = source.replacen(
+            jump_line,
+            &format!("{JUMP_BINDING}{:?}", tuned_jump / 2.0),
+            1,
+        );
+        assert_ne!(
+            weak_jump, source,
+            "test must rewrite the jump constant (looked for {jump_line:?})"
+        );
 
         let mut game = FunctorLangGame::create(mario);
         const SUB_DT: f32 = 1.0 / 60.0;
