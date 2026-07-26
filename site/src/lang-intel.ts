@@ -17,6 +17,7 @@
 // and cheaper than a second scheduler) instead of re-analyzing on every key.
 
 import { forceLinting, linter } from "@codemirror/lint";
+import type { Diagnostic } from "@codemirror/lint";
 import {
   Decoration,
   EditorView,
@@ -26,25 +27,116 @@ import {
   gutter,
   hoverTooltip,
 } from "@codemirror/view";
+import type { DecorationSet, ViewUpdate } from "@codemirror/view";
 import { RangeSet, StateEffect, StateField } from "@codemirror/state";
+import type { EditorState, Extension, Range, Text } from "@codemirror/state";
+import type { CompletionContext } from "@codemirror/autocomplete";
 import { functorLangLanguage } from "./functor-lang.js";
+import type { ProjectFile } from "./protocol.js";
+import type { StatusBar } from "./status-bar.js";
+
+// --- The analysis wasm's boundary ----------------------------------------------
+// The glue module is fetched at runtime (not bundled), so nothing here is
+// checked against the generated .d.ts; these signatures mirror
+// tools/functor-lang-wasm/src/lib.rs. Every entry point returns a JSON STRING
+// (hover returns "" — not JSON — when there is nothing to show) and never
+// throws for ordinary failures.
+
+type AnalyzeFn = (src: string) => string;
+type AnalyzeProjectFn = (filesJson: string, active: string) => string;
+type HoverFn = (src: string, offset: number) => string;
+type HoverProjectFn = (filesJson: string, active: string, offset: number) => string;
+type CompleteFn = (src: string, offset: number) => string;
+type CompleteProjectFn = (filesJson: string, active: string, offset: number) => string;
+type ExpectsProjectFn = (filesJson: string, active: string, budget: number) => string;
+type ResetFn = () => void;
+
+/**
+ * The wasm-bindgen glue's exports, as this module uses them. Everything but
+ * `default` (the init) is OPTIONAL: an older or partial bundle can be missing
+ * an export, which the setup below detects — a missing `default` is not
+ * separately checked, its call simply throws into the same catch.
+ */
+interface LangWasm {
+  default: () => Promise<unknown>;
+  functor_lang_analyze?: AnalyzeFn;
+  functor_lang_analyze_project?: AnalyzeProjectFn;
+  functor_lang_hover?: HoverFn;
+  functor_lang_hover_project?: HoverProjectFn;
+  functor_lang_complete?: CompleteFn;
+  functor_lang_complete_project?: CompleteProjectFn;
+  functor_lang_expects_project?: ExpectsProjectFn;
+  functor_lang_reset?: ResetFn;
+}
+
+/** One `analyze` diagnostic. The wasm only ever emits `"error"`. */
+interface AnalyzeDiagnostic {
+  from: number;
+  to: number;
+  message: string;
+  severity: "error";
+}
+
+/** The parsed `analyze` / `analyze_project` payload; all three are present. */
+interface AnalyzeResult {
+  diagnostics: AnalyzeDiagnostic[];
+  inlays: { pos: number; label: string }[];
+  lenses: { from: number; text: string }[];
+}
+
+/** The parsed `hover` payload (the empty string means "nothing to show"). */
+interface HoverInfo {
+  from: number;
+  to: number;
+  text: string;
+}
+
+/** The wasm's completion kinds (`kind_str` in the wasm crate). */
+type CompletionKind = "function" | "value" | "module" | "keyword" | "constructor" | "field";
+
+/** One `complete` candidate; `detail` is emitted as `null`, not omitted. */
+interface CompletionItem {
+  label: string;
+  detail: string | null;
+  kind: CompletionKind;
+}
+
+/** The parsed `complete` payload. */
+interface CompletionResponse {
+  items: CompletionItem[];
+}
+
+/** The states `expects_project` reports; `running` is this module's own. */
+type ExpectState = "pass" | "fail" | "error" | "unrunnable";
+type MarkerState = ExpectState | "running";
+
+/** One `expects_project` row; `detail` is emitted as `null`, not omitted. */
+interface ExpectRow {
+  from: number;
+  state: ExpectState;
+  detail: string | null;
+}
 
 // The runtime import specifier resolves to the glue esbuild leaves external
 // (see build.mjs `external`), copied to /pkg/ at build time — NOT bundled.
 const PKG_URL = "/pkg/functor_lang_wasm.js";
 
-let analyzeFn = null; // (src) => JSON string, set once the wasm is ready
-let hoverFn = null; // (src, offset) => JSON string ("" when nothing to show)
-let completeFn = null; // (src, offset) => JSON string, set once the wasm is ready
-let analyzeProjectFn = null; // (filesJson, active) => JSON string
-let hoverProjectFn = null; // (filesJson, active, offset) => JSON string
-let completeProjectFn = null; // (filesJson, active, offset) => JSON string
-let resetFn = null; // () => void, clears the wasm completion cache
-let expectsProjectFn = null; // (filesJson, active, budget) => JSON string — optional export
-let lastKey = null;
-let lastResult = null;
-let lastExpectKey = null;
-let lastExpectRows = null;
+// The six required entry points are installed as a UNIT by setupLangIntel (a
+// bundle missing any one of them degrades wholesale), so a null check on the
+// single-file half proves the `*_project` half — hence the `!` at those three
+// call sites. The two optional exports are each checked on their own.
+let analyzeFn: AnalyzeFn | null = null; // (src) => JSON string, set once the wasm is ready
+let hoverFn: HoverFn | null = null; // (src, offset) => JSON string ("" when nothing to show)
+let completeFn: CompleteFn | null = null; // (src, offset) => JSON string, set once the wasm is ready
+let analyzeProjectFn: AnalyzeProjectFn | null = null; // (filesJson, active) => JSON string
+let hoverProjectFn: HoverProjectFn | null = null; // (filesJson, active, offset) => JSON string
+let completeProjectFn: CompleteProjectFn | null = null; // (filesJson, active, offset) => JSON string
+let resetFn: ResetFn | null = null; // () => void, clears the wasm completion cache
+let expectsProjectFn: ExpectsProjectFn | null = null; // (filesJson, active, budget) => JSON string — optional export
+let lastKey: string | null = null;
+let lastResult: AnalyzeResult | null = null;
+let lastExpectKey: string | null = null;
+let lastExpectRows: ExpectRow[] | null = null;
 
 // The browser's per-lint-pass step budget for inline `expect` tests: bounds
 // main-thread work (see run_expects_budgeted — total interpreter work is
@@ -56,17 +148,34 @@ const EXPECT_BUDGET = 200_000;
 // every analysis then runs project-wide — sibling modules resolve — with the
 // active file's source swapped for the live editor doc. Null (the sandbox
 // default) keeps the single-file calls.
-let contextFn = null;
+let contextFn: LangContextProvider | null = null;
 
-export const setLangContext = (fn) => {
+/** The whole file set plus the active path, as the host reports them. */
+interface LangContext {
+  active: string;
+  files: ProjectFile[];
+}
+
+// Read defensively (hence `Partial`): a provider mid-teardown can answer with
+// neither field, which falls back to single-file mode.
+type LangContextProvider = () => Partial<LangContext> | null | undefined;
+
+export const setLangContext = (fn: LangContextProvider | null) => {
   contextFn = fn;
 };
 
+/** The `*_project` call arguments for one analysis pass. */
+interface ProjectArgs {
+  filesJson: string;
+  active: string;
+}
+
 // The `*_project` call args for the live `docString`, or null in single-file
 // mode (no provider, or a provider mid-teardown returning junk).
-const projectArgs = (docString) => {
+const projectArgs = (docString: string): ProjectArgs | null => {
   if (!contextFn) return null;
-  const { active, files } = contextFn() ?? {};
+  // The `{}` fallback is typed so its (absent) fields still destructure.
+  const { active, files } = contextFn() ?? ({} as Partial<LangContext>);
   if (!active || !Array.isArray(files)) return null;
   const withLive = files.map((f) => ({
     path: f.path,
@@ -78,7 +187,8 @@ const projectArgs = (docString) => {
 // The memo key covers everything an analysis depends on: in project mode the
 // serialized file set + active path (so a file switch or sibling edit is a
 // fresh analysis), in single-file mode just the doc.
-const cacheKey = (docString, args) => (args ? `${args.active}\x00${args.filesJson}` : docString);
+const cacheKey = (docString: string, args: ProjectArgs | null) =>
+  args ? `${args.active}\x00${args.filesJson}` : docString;
 
 // Clear the wasm completion last-good cache — called by the sandbox when the
 // editor document is wholly replaced (example switch, inline load, reset) so
@@ -90,15 +200,15 @@ export const resetIntel = () => {
 
 // Run analyze at most once per distinct (doc, context) key. Returns the parsed
 // `{ diagnostics, inlays, lenses }`, or null when the wasm isn't loaded.
-export const analyzeCached = (docString) => {
+export const analyzeCached = (docString: string): AnalyzeResult | null => {
   if (!analyzeFn) return null;
   const args = projectArgs(docString);
   const key = cacheKey(docString, args);
   if (key === lastKey) return lastResult;
-  let result;
+  let result: AnalyzeResult;
   try {
     result = JSON.parse(
-      args ? analyzeProjectFn(args.filesJson, args.active) : analyzeFn(docString)
+      args ? analyzeProjectFn!(args.filesJson, args.active) : analyzeFn(docString)
     );
   } catch {
     result = { diagnostics: [], inlays: [], lenses: [] };
@@ -111,7 +221,7 @@ export const analyzeCached = (docString) => {
 // Raw completion at a UTF-16 offset — the test/introspection seam
 // (window.__lang.complete). Returns the parsed `{ items }`, or null when the
 // wasm isn't loaded.
-export const completeAt = (src, offset) => {
+export const completeAt = (src: string, offset: number): CompletionResponse | null => {
   if (!completeFn) return null;
   try {
     return JSON.parse(completeFn(src, offset));
@@ -124,19 +234,21 @@ export const completeAt = (src, offset) => {
 // already current for `docString`, else null. The decoration field uses this so
 // it never triggers an analyze of its own (the lint source is the sole caller
 // that fills the cache).
-const peekCached = (docString) =>
+const peekCached = (docString: string): AnalyzeResult | null =>
   analyzeFn && cacheKey(docString, projectArgs(docString)) === lastKey ? lastResult : null;
 
 // The host page can observe each lint pass's diagnostics (the status bar's
 // Problems panel) — called with the same clamped list the linter gets.
-let diagnosticsListener = null;
-export const onDiagnostics = (fn) => {
+type DiagnosticsListener = (diagnostics: Diagnostic[]) => void;
+
+let diagnosticsListener: DiagnosticsListener | null = null;
+export const onDiagnostics = (fn: DiagnosticsListener) => {
   diagnosticsListener = fn;
 };
 
 // analyze offsets are whole-document UTF-16 — CodeMirror's native unit — so
 // they map straight across; clamp defensively to the current doc length.
-const toDiagnostics = (view) => {
+const toDiagnostics = (view: EditorView): Diagnostic[] => {
   const doc = view.state.doc;
   const result = analyzeCached(doc.toString());
   // The lint pass just refreshed the cache for this doc; nudge the decoration
@@ -144,7 +256,7 @@ const toDiagnostics = (view) => {
   // on load — not only after the first edit).
   scheduleRefresh(view);
   const len = doc.length;
-  const diagnostics =
+  const diagnostics: Diagnostic[] =
     !result || !Array.isArray(result.diagnostics)
       ? []
       : result.diagnostics.map((d) => {
@@ -206,12 +318,12 @@ const hoverTypes = hoverTooltip((view, pos) => {
         nameEnd: hit.nameEnd,
       }
     : null;
-  let info;
+  let info: HoverInfo | null;
   try {
     const doc = view.state.doc.toString();
     const args = projectArgs(doc);
     info = JSON.parse(
-      (args ? hoverProjectFn(args.filesJson, args.active, pos) : hoverFn(doc, pos)) || ""
+      (args ? hoverProjectFn!(args.filesJson, args.active, pos) : hoverFn(doc, pos)) || ""
     );
   } catch {
     info = null;
@@ -220,10 +332,11 @@ const hoverTypes = hoverTooltip((view, pos) => {
   // Clamp to the current doc, exactly like toDiagnostics/buildDecorations: the
   // wasm offsets can lag the live buffer by a keystroke.
   const len = view.state.doc.length;
+  // Without a live hit the guard above proved `info.text`, so `info` is set.
   const from = live
     ? live.nameStart
-    : Math.max(0, Math.min(info.from | 0, len));
-  const to = live ? live.nameEnd : Math.max(from, Math.min(info.to | 0, len));
+    : Math.max(0, Math.min(info!.from | 0, len));
+  const to = live ? live.nameEnd : Math.max(from, Math.min(info!.to | 0, len));
   return {
     pos: from,
     end: to,
@@ -257,7 +370,7 @@ const hoverTypes = hoverTooltip((view, pos) => {
 
 // Map the wasm's completion kind to a CodeMirror `type`, so the built-in icons
 // render (function/variable/namespace/keyword/enum/property all have glyphs).
-const KIND_TO_TYPE = {
+const KIND_TO_TYPE: Record<CompletionKind, string> = {
   function: "function",
   value: "variable",
   module: "namespace",
@@ -269,18 +382,23 @@ const KIND_TO_TYPE = {
 // Fires on explicit trigger (Ctrl-Space), after a `.`, or while typing a word.
 // Returns `validFor` so CodeMirror filters the list client-side as more word
 // chars are typed — one wasm call per token, not per keystroke.
-const functorCompletions = (context) => {
+//
+// The result is left structurally typed rather than annotated `CompletionResult`:
+// `type`/`detail` are written as an explicit `undefined` (which CodeMirror reads
+// as absent), and `exactOptionalPropertyTypes` rejects that against the optional
+// fields of `Completion` — annotating would mean changing the emitted object.
+const functorCompletions = (context: CompletionContext) => {
   if (!completeFn) return null;
   const word = context.matchBefore(/[A-Za-z_]\w*/);
   const afterDot = context.pos > 0 && context.state.sliceDoc(context.pos - 1, context.pos) === ".";
   if (!context.explicit && !afterDot && !word) return null;
-  let items;
+  let items: CompletionItem[];
   try {
     const doc = context.state.doc.toString();
     const args = projectArgs(doc);
     items = JSON.parse(
       args
-        ? completeProjectFn(args.filesJson, args.active, context.pos)
+        ? completeProjectFn!(args.filesJson, args.active, context.pos)
         : completeFn(doc, context.pos)
     ).items;
   } catch {
@@ -304,11 +422,13 @@ const functorCompletions = (context) => {
 // along in the same field so both share the one cache-driven refresh.
 
 class InlayWidget extends WidgetType {
-  constructor(label) {
+  declare readonly label: string;
+
+  constructor(label: string) {
     super();
     this.label = label;
   }
-  eq(other) {
+  eq(other: InlayWidget) {
     return other.label === this.label;
   }
   toDOM() {
@@ -323,12 +443,15 @@ class InlayWidget extends WidgetType {
 }
 
 class LensWidget extends WidgetType {
-  constructor(text, indent) {
+  declare readonly text: string;
+  declare readonly indent: number;
+
+  constructor(text: string, indent: number) {
     super();
     this.text = text;
     this.indent = indent;
   }
-  eq(other) {
+  eq(other: LensWidget) {
     return other.text === this.text && other.indent === this.indent;
   }
   toDOM() {
@@ -345,12 +468,12 @@ class LensWidget extends WidgetType {
 
 // Build the combined decoration set from the CACHED analysis for this doc, or
 // null when the cache is stale/empty (the field then keeps what it has).
-const buildDecorations = (state) => {
+const buildDecorations = (state: EditorState): DecorationSet | null => {
   const result = peekCached(state.doc.toString());
   if (!result) return null;
   const doc = state.doc;
   const len = doc.length;
-  const ranges = [];
+  const ranges: Range<Decoration>[] = [];
   for (const it of result.inlays || []) {
     const pos = Math.max(0, Math.min(it.pos | 0, len));
     ranges.push(
@@ -372,13 +495,13 @@ const buildDecorations = (state) => {
 };
 
 // A signal to re-derive decorations from the (freshly filled) cache.
-const refreshDecorations = StateEffect.define();
+const refreshDecorations = StateEffect.define<null>();
 
 // A signal to drop all decorations NOW (file switch / topology change): the
 // current set belongs to the outgoing context, and the keep-on-stale rule
 // below would otherwise show it against the incoming doc until the debounced
 // lint pass lands.
-const clearDecorations = StateEffect.define();
+const clearDecorations = StateEffect.define<null>();
 
 // The editor now shows a different document or file-set shape (IDE file
 // switch, file create/delete): drop the outgoing decorations immediately and
@@ -386,20 +509,20 @@ const clearDecorations = StateEffect.define();
 // so the linter would otherwise never rerun. The effect trips the linter's
 // `needsRefresh` (forceLinting alone only flushes an already-pending query);
 // safe before setup resolves (the effect is simply unhandled without it).
-export const refreshIntel = (view) => {
+export const refreshIntel = (view: EditorView) => {
   view.dispatch({ effects: clearDecorations.of(null) });
   forceLinting(view);
 };
 
 // True when a transaction carries the clear signal — the linter must re-query
 // even though the doc is unchanged (the analysis context changed under it).
-const contextChanged = (update) =>
+const contextChanged = (update: ViewUpdate) =>
   update.transactions.some((tr) => tr.effects.some((e) => e.is(clearDecorations)));
 
 // Fired from the lint source after it fills the cache; a rAF avoids dispatching
 // mid-update. Only refreshes when the cache is current, so a keystroke landing
 // in the same frame doesn't clear the decorations.
-const scheduleRefresh = (view) =>
+const scheduleRefresh = (view: EditorView) =>
   requestAnimationFrame(() => view.dispatch({ effects: refreshDecorations.of(null) }));
 
 // Decorate the INITIAL doc once, without waiting for an edit: the linter's
@@ -408,7 +531,7 @@ const scheduleRefresh = (view) =>
 // (scheduleRefresh), so this fires exactly once.
 const initialRefresh = ViewPlugin.fromClass(
   class {
-    constructor(view) {
+    constructor(view: EditorView) {
       requestAnimationFrame(() => {
         analyzeCached(view.state.doc.toString());
         view.dispatch({ effects: refreshDecorations.of(null) });
@@ -417,7 +540,7 @@ const initialRefresh = ViewPlugin.fromClass(
   }
 );
 
-const decorationField = StateField.define({
+const decorationField = StateField.define<DecorationSet>({
   create: (state) => buildDecorations(state) || Decoration.none,
   update(value, tr) {
     let decos = value;
@@ -445,12 +568,92 @@ const decorationField = StateField.define({
 // the overlay instantly (the hash no longer matches; the IDE's push loop
 // delivers a fresh trace after the hot reload).
 
+// --- The paused trace's wire shape ---------------------------------------------
+// Built by `serde_json::json!` in runtime/functor-runtime-common/src/inspector.rs
+// and relayed VERBATIM by site/player.html, so these mirror that producer: the
+// frame-scoped keys exist only in the paused document, and a binding's
+// `min`/`max` are omitted (never null) and always travel together. Offsets are
+// file-local UTF-8 BYTE offsets — unlike the wasm's UTF-16 ones.
+//
+// Nothing validates the payload beyond its `type` and source window, so the
+// module keeps reading it defensively even where the producer is unconditional.
+
+interface TraceSource {
+  file: string;
+  hash: string;
+}
+
+interface TraceBinding {
+  name: string;
+  file: string;
+  start: number;
+  end: number;
+  value: string;
+  preview: string;
+  kind: "primitive" | "composite";
+  site: "binder" | "ref";
+  count: number;
+  min?: number;
+  max?: number;
+}
+
+interface TraceInvocation {
+  entry: string;
+  index: number;
+  count: number;
+  provenance: string;
+  ghost: boolean;
+  result: string;
+  result_preview: string;
+  truncated: boolean;
+  bindings: TraceBinding[];
+}
+
+interface CoverageSite {
+  start: number;
+  /** Signed frame offsets from the paused frame (negative = earlier). */
+  frames: number[];
+}
+
+interface InspectorTraceDoc {
+  paused: boolean;
+  sources: TraceSource[];
+  invocations: TraceInvocation[];
+  /** Paused-only keys — absent entirely from the unpaused document. */
+  frame?: number;
+  tts?: number;
+  coverage?: Record<string, CoverageSite[]>;
+  runnable?: Record<string, number[]>;
+}
+
+/** A recorded site, with its span converted to UTF-16 and its name located. */
+interface LiveSite {
+  b: TraceBinding;
+  offset: number;
+  nameStart: number;
+  nameEnd: number;
+}
+
+/** One inline overlay hint (also the `window.__lang.liveHints` e2e seam). */
+interface LiveHint {
+  offset: number;
+  label: string;
+  name: string;
+  value: string;
+  count: number;
+  range: string | null;
+  nameStart: number;
+  nameEnd: number;
+}
+
 class LiveValueWidget extends WidgetType {
-  constructor(label) {
+  declare readonly label: string;
+
+  constructor(label: string) {
     super();
     this.label = label;
   }
-  eq(other) {
+  eq(other: LiveValueWidget) {
     return other.label === this.label;
   }
   toDOM() {
@@ -464,16 +667,16 @@ class LiveValueWidget extends WidgetType {
   }
 }
 
-const setLiveOverlay = StateEffect.define();
+const setLiveOverlay = StateEffect.define<LiveHint[]>();
 
 // The current overlay's hint data, kept in lockstep with the decoration
 // field below — plus ALL recorded sites for the buffer (hover searches every
 // site, not just the per-line dedup winners: the second `x` in `x + x` still
 // hovers to its value).
-let liveHints = [];
-let liveSites = [];
+let liveHints: LiveHint[] = [];
+let liveSites: LiveSite[] = [];
 
-const liveField = StateField.define({
+const liveField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(value, tr) {
     // Any edit invalidates the overlay wholesale — the trace's source hash no
@@ -506,12 +709,12 @@ const liveField = StateField.define({
 });
 
 // The trace + selection state, module-level like the analysis caches.
-let liveTrace = null; // the last paused trace doc (null while playing)
-let selectedExec = new Map(); // entry name → selected execution index
+let liveTrace: InspectorTraceDoc | null = null; // the last paused trace doc (null while playing)
+let selectedExec = new Map<string, number>(); // entry name → selected execution index
 let liveRefreshToken = 0; // supersedes in-flight async hash checks
 
 // The 0-based line of `offset` in `source`.
-const lineOf = (source, offset) => {
+const lineOf = (source: string, offset: number) => {
   let line = 0;
   for (let i = 0; i < offset && i < source.length; i++) {
     if (source.charCodeAt(i) === 10) line += 1;
@@ -522,7 +725,7 @@ const lineOf = (source, offset) => {
 // Trace spans are UTF-8 BYTE offsets into the file text; JS strings and
 // CodeMirror positions count UTF-16 code units. Returns a byte→UTF-16 lookup
 // array, or null for pure-ASCII sources (identity — the common case).
-const byteToUtf16 = (source) => {
+const byteToUtf16 = (source: string): number[] | null => {
   let ascii = true;
   for (let i = 0; i < source.length; i++) {
     if (source.charCodeAt(i) > 127) {
@@ -531,11 +734,12 @@ const byteToUtf16 = (source) => {
     }
   }
   if (ascii) return null;
-  const map = [];
+  const map: number[] = [];
   let bytes = 0;
   let units = 0;
   for (const ch of source) {
-    const cp = ch.codePointAt(0);
+    // `for…of` over a string yields whole code points, so this is never empty.
+    const cp = ch.codePointAt(0)!;
     const width = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
     for (let k = 0; k < width; k++) map[bytes + k] = units;
     bytes += width;
@@ -549,9 +753,9 @@ const byteToUtf16 = (source) => {
 // name-precise except `let [mut] name =` regions, where we scan FORWARD past
 // the keywords (a type annotation or comment inside the region can contain
 // the name too). Returns the offset just after the name, or span end.
-const hintOffset = (source, b) => {
+const hintOffset = (source: string, b: { name: string; start: number; end: number }) => {
   const region = source.slice(b.start, b.end);
-  const atName = (i) => {
+  const atName = (i: number) => {
     if (!region.startsWith(b.name, i)) return false;
     const next = region[i + b.name.length];
     return !(next && /[A-Za-z0-9_]/.test(next));
@@ -576,7 +780,7 @@ const hintOffset = (source, b) => {
 // would yield multiple sources here and the overlay stays hidden — the
 // sandbox is a one-buffer editor by design, so there is nothing to overlay
 // the siblings on anyway.
-const liveFileName = (docString) => {
+const liveFileName = (docString: string): string | null => {
   const args = projectArgs(docString);
   if (args) return args.active;
   const sources = liveTrace?.sources || [];
@@ -587,10 +791,13 @@ const liveFileName = (docString) => {
 // CONVERTED to UTF-16 (`byteToUtf16`) and name-located (`hintOffset`) —
 // `[{ b, offset, nameStart, nameEnd }]` for every site (hover searches all
 // of them; the inline dedup happens in liveHintsFor).
-const liveSitesFor = (fileName, source) => {
+// `liveTrace` is non-null here and in coverageSetFor: both are reached only
+// through refreshLive's paused guard, and a trace arriving during its await
+// supersedes the token before either runs.
+const liveSitesFor = (fileName: string, source: string): LiveSite[] => {
   const conv = byteToUtf16(source);
-  const invs = (liveTrace.invocations || []).filter((i) => !i.ghost);
-  const sites = [];
+  const invs = (liveTrace!.invocations || []).filter((i) => !i.ghost);
+  const sites: LiveSite[] = [];
   for (const entry of new Set(invs.map((i) => i.entry))) {
     const group = invs.filter((i) => i.entry === entry);
     const count = Math.max(1, ...group.map((i) => i.count || 1));
@@ -610,8 +817,8 @@ const liveSitesFor = (fileName, source) => {
 // Compute the overlay hints for the CURRENT buffer from the selected
 // execution of each entry — the LSP's policy, ported: previews inline, one
 // hint per (line, name), a binder site beats a reference, earliest read wins.
-const liveHintsFor = (sites, source) => {
-  const chosen = new Map(); // `${line}\x00${name}` → { b, offset, … }
+const liveHintsFor = (sites: LiveSite[], source: string): LiveHint[] => {
+  const chosen = new Map<string, LiveSite>(); // `${line}\x00${name}` → { b, offset, … }
   for (const site of sites) {
     const key = `${lineOf(source, site.offset)}\x00${site.b.name}`;
     const cur = chosen.get(key);
@@ -649,7 +856,7 @@ const liveHintsFor = (sites, source) => {
 // precision noise makes dense lines unreadable; hover keeps the exact value.
 // Quoted segments pass through untouched: a STRING value containing
 // number-like text ("lat: 37.7749295") must never be rewritten.
-const shortNumbers = (text) =>
+const shortNumbers = (text: string | null | undefined) =>
   String(text ?? "")
     .split(/("(?:[^"\\]|\\.)*")/)
     .map((part, i) =>
@@ -659,7 +866,7 @@ const shortNumbers = (text) =>
     )
     .join("");
 
-const sha256Hex = async (text) => {
+const sha256Hex = async (text: string): Promise<string> => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 };
@@ -675,12 +882,17 @@ const sha256Hex = async (text) => {
 // that ran both before and after (never now) takes the NEAREST frame's color,
 // tie → before.
 
+/** How recently a line last executed, relative to the paused frame. */
+type CovState = "now" | "before" | "after" | "dark";
+
 class CovMarker extends GutterMarker {
-  constructor(state) {
+  declare readonly state: CovState;
+
+  constructor(state: CovState) {
     super();
     this.state = state;
   }
-  eq(other) {
+  eq(other: CovMarker) {
     return other.state === this.state;
   }
   toDOM() {
@@ -690,16 +902,16 @@ class CovMarker extends GutterMarker {
   }
 }
 
-const COV_MARKERS = {
+const COV_MARKERS: Record<CovState, CovMarker> = {
   now: new CovMarker("now"),
   before: new CovMarker("before"),
   after: new CovMarker("after"),
   dark: new CovMarker("dark"),
 };
 
-const setCoverage = StateEffect.define();
+const setCoverage = StateEffect.define<RangeSet<CovMarker>>();
 
-const coverageField = StateField.define({
+const coverageField = StateField.define<RangeSet<CovMarker>>({
   create: () => RangeSet.empty,
   update(value, tr) {
     // Same honesty rule as the value overlay: any edit clears wholesale.
@@ -720,15 +932,18 @@ const coverageGutter = gutter({
 // The per-line recency state for the current buffer, as a marker RangeSet.
 // Coverage/runnable starts are UTF-8 byte offsets (the wire) — converted
 // through the same byte→UTF-16 map as the value overlay before line lookup.
-const coverageSetFor = (fileName, source, doc) => {
+const coverageSetFor = (fileName: string, source: string, doc: Text): RangeSet<CovMarker> => {
   const conv = byteToUtf16(source);
-  const at = (byte) => {
+  const at = (byte: number) => {
     const off = conv ? conv[byte] ?? source.length : byte;
     return Math.min(off, doc.length);
   };
   // line number → { now, before: minDistance, after: minDistance, runnable }
-  const lines = new Map();
-  const lineState = (offset) => {
+  const lines = new Map<
+    number,
+    { now: boolean; before: number; after: number; runnable: boolean }
+  >();
+  const lineState = (offset: number) => {
     const line = doc.lineAt(offset).number;
     let s = lines.get(line);
     if (!s) {
@@ -737,10 +952,10 @@ const coverageSetFor = (fileName, source, doc) => {
     }
     return s;
   };
-  for (const start of (liveTrace.runnable || {})[fileName] || []) {
+  for (const start of (liveTrace!.runnable || {})[fileName] || []) {
     lineState(at(start)).runnable = true;
   }
-  for (const site of (liveTrace.coverage || {})[fileName] || []) {
+  for (const site of (liveTrace!.coverage || {})[fileName] || []) {
     const s = lineState(at(site.start));
     for (const frame of site.frames || []) {
       if (frame === 0) s.now = true;
@@ -748,9 +963,9 @@ const coverageSetFor = (fileName, source, doc) => {
       else s.after = s.after ? Math.min(s.after, frame) : frame;
     }
   }
-  const ranges = [];
+  const ranges: Range<CovMarker>[] = [];
   for (const [line, s] of lines) {
-    const state = s.now
+    const state: CovState | null = s.now
       ? "now"
       : s.before && s.after
         ? (-s.before <= s.after ? "before" : "after")
@@ -775,15 +990,18 @@ const coverageSetFor = (fileName, source, doc) => {
 // An edit DEMOTES existing markers to running in place (positions mapped
 // through the change) — the "show when they are re-running" state.
 
-const EXPECT_STATES = ["running", "pass", "fail", "error", "unrunnable"];
+const EXPECT_STATES: readonly MarkerState[] = ["running", "pass", "fail", "error", "unrunnable"];
 
 class ExpectMarker extends GutterMarker {
-  constructor(state, detail) {
+  declare readonly state: MarkerState;
+  declare readonly detail: string;
+
+  constructor(state: MarkerState, detail: string | null) {
     super();
     this.state = state;
     this.detail = detail || "";
   }
-  eq(other) {
+  eq(other: ExpectMarker) {
     return other.state === this.state && other.detail === this.detail;
   }
   toDOM() {
@@ -797,9 +1015,9 @@ class ExpectMarker extends GutterMarker {
   }
 }
 
-const setExpects = StateEffect.define();
+const setExpects = StateEffect.define<RangeSet<ExpectMarker>>();
 
-const expectField = StateField.define({
+const expectField = StateField.define<RangeSet<ExpectMarker>>({
   create: () => RangeSet.empty,
   update(value, tr) {
     for (const effect of tr.effects) {
@@ -809,7 +1027,7 @@ const expectField = StateField.define({
     if (tr.docChanged) {
       // Keep the gutter through the edit, demoted to `running`: map each
       // marker's position and swap in the in-flight marker.
-      const ranges = [];
+      const ranges: Range<ExpectMarker>[] = [];
       const cursor = value.iter();
       while (cursor.value) {
         const from = tr.changes.mapPos(cursor.from, 1);
@@ -818,7 +1036,7 @@ const expectField = StateField.define({
       }
       // Dedup positions (two expects collapsing onto one line after a
       // deletion) — RangeSet.of requires sorted, and duplicates are noise.
-      const seen = new Set();
+      const seen = new Set<number>();
       const unique = ranges
         .sort((a, z) => a.from - z.from)
         .filter((r) => !seen.has(r.from) && seen.add(r.from));
@@ -836,12 +1054,12 @@ const expectGutter = gutter({
 // Evaluate the active file's expects, memoized per (doc, context) key like
 // analyzeCached. Returns rows ([{from, state, detail}]), null when the
 // project didn't load (keep the current gutter), or null when unavailable.
-const expectRowsCached = (docString) => {
+const expectRowsCached = (docString: string): ExpectRow[] | null => {
   if (!expectsProjectFn) return null;
   const args = projectArgs(docString);
   const key = cacheKey(docString, args);
   if (key === lastExpectKey) return lastExpectRows;
-  let rows = null;
+  let rows: ExpectRow[] | null = null;
   try {
     const filesJson = args
       ? args.filesJson
@@ -863,9 +1081,9 @@ const expectRowsCached = (docString) => {
 
 // Rows → a marker set against the current doc (one marker per line; the
 // first row wins a shared line).
-const expectSetFor = (rows, doc) => {
-  const ranges = [];
-  const seen = new Set();
+const expectSetFor = (rows: ExpectRow[] | null, doc: Text): RangeSet<ExpectMarker> => {
+  const ranges: Range<ExpectMarker>[] = [];
+  const seen = new Set<number>();
   for (const row of rows || []) {
     if (!EXPECT_STATES.includes(row.state)) continue;
     const at = doc.lineAt(Math.min(Math.max(row.from | 0, 0), doc.length)).from;
@@ -879,10 +1097,17 @@ const expectSetFor = (rows, doc) => {
 
 // The introspection/e2e seam (window.__lang.expects): the current gutter as
 // plain rows.
-export const currentExpects = (view) => {
+/** One `window.__lang.expects()` row: the gutter, as plain data. */
+interface ExpectGutterRow {
+  line: number;
+  state: MarkerState;
+  detail: string;
+}
+
+export const currentExpects = (view: EditorView): ExpectGutterRow[] => {
   const set = view.state.field(expectField, false);
   if (!set) return [];
-  const rows = [];
+  const rows: ExpectGutterRow[] = [];
   const cursor = set.iter();
   while (cursor.value) {
     rows.push({
@@ -897,7 +1122,7 @@ export const currentExpects = (view) => {
 
 // Rebuild the overlay for the current buffer: async (the hash check), token-
 // guarded so a stale completion can't clobber a newer state.
-const refreshLive = async (view) => {
+const refreshLive = async (view: EditorView): Promise<void> => {
   const token = ++liveRefreshToken;
   const clear = () =>
     view.dispatch({ effects: [setLiveOverlay.of([]), setCoverage.of(RangeSet.empty)] });
@@ -932,7 +1157,10 @@ const refreshLive = async (view) => {
 
 // A new trace arrived (or the game resumed: pass an unpaused doc/null).
 // Resets the execution selection — the frame changed under it.
-export const setLiveTrace = (view, trace) => {
+export const setLiveTrace = (
+  view: EditorView,
+  trace: InspectorTraceDoc | null | undefined
+) => {
   liveTrace = trace && trace.paused ? trace : null;
   selectedExec = new Map();
   refreshLive(view);
@@ -941,13 +1169,13 @@ export const setLiveTrace = (view, trace) => {
 // The current overlay's hints — the e2e position-invariant seam (every
 // hint's [nameStart, nameEnd) must slice to exactly its name in the doc,
 // which fails loudly if byte offsets ever leak through unconverted).
-export const currentLiveHints = () => liveHints;
+export const currentLiveHints = (): LiveHint[] => liveHints;
 
 // The rendered gutter states as `{ lineNumber: state }` — the e2e seam (DOM
 // gutter elements only exist for the viewport; this reads the full set).
-export const currentCoverage = (view) => {
+export const currentCoverage = (view: EditorView): Record<number, CovState> => {
   const set = view.state.field(coverageField, false);
-  const out = {};
+  const out: Record<number, CovState> = {};
   if (!set) return out;
   const iter = set.iter();
   while (iter.value) {
@@ -959,7 +1187,16 @@ export const currentCoverage = (view) => {
 
 // The frame's executions in order, for the host's picker UI:
 // `[{ entry, index, count, provenance, selected }]`. Empty while playing.
-export const liveExecutions = () => {
+/** One row of the host's execution picker. */
+interface LiveExecution {
+  entry: string;
+  index: number;
+  count: number;
+  provenance: string;
+  selected: boolean;
+}
+
+export const liveExecutions = (): LiveExecution[] => {
   if (!liveTrace) return [];
   return (liveTrace.invocations || [])
     .filter((i) => !i.ghost)
@@ -973,7 +1210,7 @@ export const liveExecutions = () => {
 };
 
 // Select which execution of `entry` overlays (the picker's click).
-export const selectExecution = (view, entry, index) => {
+export const selectExecution = (view: EditorView, entry: string, index: number) => {
   selectedExec.set(entry, index);
   refreshLive(view);
 };
@@ -981,13 +1218,19 @@ export const selectExecution = (view, entry, index) => {
 // Re-verify the overlay after a context change the doc didn't see (the IDE's
 // file switch re-uses setDoc, whose doc change already clears; this is for
 // hosts that need an explicit nudge, e.g. after a reload result).
-export const refreshLiveValues = (view) => refreshLive(view);
+export const refreshLiveValues = (view: EditorView) => refreshLive(view);
 
 // The whole host-side wiring, shared by the sandbox and the IDE: listen for
 // the player's `functor-inspector-trace` relay (guarded to OUR iframe),
 // hand traces to the overlay, and keep the status bar's executions picker in
 // sync (rows select which execution's values render).
-export const wireLiveTrace = (view, statusBar, playerIframe, ready) => {
+export const wireLiveTrace = (
+  view: EditorView,
+  // Only the picker is used — the demo editor passes a stub with just this.
+  statusBar: Pick<StatusBar, "setExecutions">,
+  playerIframe: HTMLIFrameElement,
+  ready?: Promise<unknown>
+) => {
   const renderExecutions = () => {
     statusBar.setExecutions(
       liveExecutions().map((e) => ({
@@ -1017,7 +1260,7 @@ export const wireLiveTrace = (view, statusBar, playerIframe, ready) => {
 // --- Theme (editor chrome) ----------------------------------------------------
 // Recolor lint's wavy underline to the calm theme's red (--red: #f2637f)
 // instead of its default bright #f11. Mirrors @codemirror/lint's own helper.
-const wavyUnderline = (color) =>
+const wavyUnderline = (color: string) =>
   `url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="6" height="3">` +
   encodeURIComponent(
     `<path d="m0 2.5 l2 -1.5 l1 0 l2 1.5 l1 0" stroke="${color}" fill="none" stroke-width=".7"/>`
@@ -1133,9 +1376,9 @@ const intelTheme = EditorView.theme({
 
 // Async setup: resolve to the full intel extension set, or [] on any failure so
 // the editor degrades to no-analysis silently.
-export const setupLangIntel = async () => {
+export const setupLangIntel = async (): Promise<Extension[]> => {
   try {
-    const mod = await import(PKG_URL);
+    const mod: LangWasm = await import(PKG_URL);
     await mod.default(); // init the wasm
     // A partial/mismatched bundle (missing an expected export) degrades fully
     // rather than installing half the intel — the catch below is the one seam.
