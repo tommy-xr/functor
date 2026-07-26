@@ -18,8 +18,8 @@ const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
 const game = `type Msg =
-  | Rolled(n: Float)
-  | Stamped(t: Float)
+  | Rolled(n: float)
+  | Stamped(t: float)
 let init = { roll: -1.0, at: -1.0 }
 let tick = (m, dt, tts) => m
 let update = (m, msg) =>

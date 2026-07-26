@@ -69,7 +69,7 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
           <p>And the game itself — here is the smallest interesting one:</p>
           <pre class="functor-lang runnable">let init = {}
 let tick = (m, dt, tts) => m
-let draw = (m, tts: Float) =>
+let draw = (m, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube()
@@ -102,7 +102,7 @@ type Msg = | Beat
 
 let init = { spin: 0.0, beat: 0.0 }
 
-let tick = (model, dt: Float, tts: Float) =>
+let tick = (model, dt: float, tts: float) =>
   { model with spin: model.spin + dt }
 
 let update = (model, msg) =>
@@ -111,7 +111,7 @@ let update = (model, msg) =>
 
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
 
-let draw = (model, tts: Float) =>
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere()
@@ -238,7 +238,7 @@ let draw = (m, tts) =>
           <h2>The language</h2>
 
           <h3>Values and bindings</h3>
-          <pre class="functor-lang">let threshold = 10          // every number is a Float (f64)
+          <pre class="functor-lang">let threshold = 10          // every number is a float (f64)
 let name = "neon\n"         // strings: \" \\ \n \t
 let on = true
 let origin = { x: 0.0, y: 0.0 }
@@ -250,32 +250,39 @@ let scores = [1.0, 2.0, 3.0]</pre>
           </p>
 
           <h3>Functions</h3>
-          <pre class="functor-lang">let area = (w: Float, h: Float): Float => w * h   // annotations optional
+          <pre class="functor-lang">let area = (w: float, h: float): float => w * h   // annotations optional
 let describe = (score) => Text.concat("score: ", Text.fromFloat(score))</pre>
           <p>
             Typing uses Hindley–Milner inference with let-polymorphism: unannotated code still
-            gets full types, and bad calls or mixed-element lists are errors. <em>Gradual</em>
-            <code>Unknown</code> values remain only at genuinely dynamic seams. Annotations make
+            gets full types, and bad calls or mixed-element lists are errors. Annotations make
             intent explicit; <code>functor build</code> reports all diagnostics. Evaluation depth
             is capped at 128 — deep iteration belongs in <code>List.*</code>.
           </p>
+          <p>
+            <strong>Type names are lowercase</strong> — <code>float</code>, <code>string</code>,
+            <code>bool</code>. Writing <code>Float</code> is an error with a did-you-mean, as is
+            <code>Int</code> or <code>Number</code> (there is one number type,
+            <code>float</code>). The one <em>gradual</em> annotation is <code>unknown</code>,
+            which is compatible with everything — write it where a value is genuinely dynamic
+            (a host payload only the two ends can type), and nowhere else.
+          </p>
 
           <h3>Records</h3>
-          <pre class="functor-lang">type Position = { x: Float, y: Float }        // nominal in annotations
+          <pre class="functor-lang">type Position = { x: float, y: float }        // nominal in annotations
 
 let p = { x: 0.0, y: 1.0 }
 let nudged = { p with x: p.x + 1.0 }          // update: fields must exist</pre>
 
           <h3>Variants and match</h3>
           <pre class="functor-lang">type Shape =
-  | Circle(radius: Float)     // leading | required — first alternative too
-  | Rect(w: Float, h: Float)
+  | Circle(radius: float)     // leading | required — first alternative too
+  | Rect(w: float, h: float)
   | Point                     // nullary: no parens, ever
 
 let c = Circle(2.0)           // constructors are CALLED positionally
 let shapes = [c, Rect(3.0, 4.0), Point]
 
-let area = (s: Shape): Float =>
+let area = (s: Shape): float =>
   match s with
   | Circle(r) => 3.14 * r * r // ctor patterns bind positionally
   | Rect(w, _) => w * w       // sub-patterns: names or _ only (no nesting)
@@ -303,7 +310,7 @@ let area = (s: Shape): Float =>
             <code>else if</code>; there is no <code>elif</code> keyword. A bool-literal
             <code>match</code> is equally valid.
           </p>
-          <pre class="functor-lang">let sizeOf = (n: Float): String =>
+          <pre class="functor-lang">let sizeOf = (n: float): string =>
   if n > 100.0 then "huge"
   else if n > 10.0 then "big"
   else "small"</pre>
@@ -324,7 +331,7 @@ let report = (scores) =>
     |> Text.toBullets</pre>
 
           <h3>Tuples</h3>
-          <pre class="functor-lang">let minMax = (a: Float, b: Float): Float * Float =>
+          <pre class="functor-lang">let minMax = (a: float, b: float): float * float =>
   match a &lt; b with
   | true => (a, b)            // (e) is grouping, not a 1-tuple
   | false => (b, a)
@@ -459,7 +466,7 @@ let pos = model.pos |> Vec3.add(step)</pre>
             each axis independently. The primitives have no size arguments, so
             <code>scaleXYZ</code> is how you get a <em>box</em> — a platform, a wall, a slab:
           </p>
-          <pre class="functor-lang">let platform = (w: Float, h: Float, d: Float) =>
+          <pre class="functor-lang">let platform = (w: float, h: float, d: float) =>
   Scene.cube() |> Scene.scaleXYZ(w, h, d)   // Scene.cube() is 1×1×1, centered</pre>
 
           <h3>Camera, lights, frames</h3>

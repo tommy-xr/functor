@@ -33,10 +33,10 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 // The model shape hello-cubes's init establishes: { spin, beat }. Every push
 // keeps `tick` accumulating spin at 0.5/s so the survival probes have a
 // value that only time-across-reloads can produce.
-const TICK = `let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt * 0.5 }`;
+const TICK = `let tick = (model, dt: float, tts: float) => { model with spin: model.spin + dt * 0.5 }`;
 // A static, unmistakably green frame — draw ignores the model, so the pixel
 // assertion can't be confused by animation phase.
-const GREEN_DRAW = `let draw = (model, tts: Float) =>
+const GREEN_DRAW = `let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)) |> Scene.scale(2.0))`;
@@ -50,7 +50,7 @@ ${GREEN_DRAW}
 // access is a spanned runtime error; a fresh init has spin = 0.0).
 const probe = (cond) => `let probeBoom = (m) => m.thisFieldDoesNotExist
 let init = { spin: 0.0, beat: 0.0 }
-let tick = (model, dt: Float, tts: Float) =>
+let tick = (model, dt: float, tts: float) =>
   match ${cond} with
   | true => { model with spin: model.spin + dt * 0.5 }
   | false => probeBoom(model)

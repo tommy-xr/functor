@@ -226,7 +226,7 @@ try {
     await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n === 0);
     await page.evaluate(
       (src) => window.__ide.setActiveSource(src),
-      `${gameSource}let oops = (x: Float) => x + "type error"\n`
+      `${gameSource}let oops = (x: float) => x + "type error"\n`
     );
     const underlined = await poll(() => page.locator(".cm-lintRange-error").count(), (n) => n > 0);
     if (underlined > 0) console.log("type error draws a lint underline ✓");

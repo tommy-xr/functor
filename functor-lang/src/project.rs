@@ -201,20 +201,21 @@ impl Project {
 /// completed request (any HTTP status), `Failure` for a transport error.
 ///
 /// `Data(id, value)` is an `Effect.sendMsg` payload decoded back into a
-/// plain-data value. Its field is deliberately typed with the UNDECLARED name
-/// `NetData`, which the checker resolves to `Unknown` — the gradual seam: the
-/// payload's real type is whatever ADT the two ends share (the same
-/// shared-module declaration on both sides), so games match it directly
-/// against their own constructors.
+/// plain-data value. Its field is deliberately typed `unknown` — the EXPLICIT
+/// gradual seam: the payload's real type is whatever ADT the two ends share
+/// (the same shared-module declaration on both sides), so games match it
+/// directly against their own constructors. (It used to say `NetData`, an
+/// undeclared name that fell through to `Unknown` implicitly; that fall-through
+/// is now a check error, so the seam has to be spelled.)
 const NET_MODULE_SRC: &str = "type NetEvent =\n\
-     | Connected(id: Float)\n\
-     | Message(id: Float, text: String)\n\
-     | Data(id: Float, value: NetData)\n\
-     | Disconnected(id: Float)\n\
-     | Error(id: Float, text: String)\n\
+     | Connected(id: float)\n\
+     | Message(id: float, text: string)\n\
+     | Data(id: float, value: unknown)\n\
+     | Disconnected(id: float)\n\
+     | Error(id: float, text: string)\n\
      type HttpResponse =\n\
-     | Response(status: Float, body: String)\n\
-     | Failure(error: String)\n";
+     | Response(status: float, body: string)\n\
+     | Failure(error: string)\n";
 
 /// The built-in `Random` interface module (injected beside `Net` in [`link`]).
 /// `Seed` is an abstract type — the brand that keeps PRNG seeds out of

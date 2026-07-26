@@ -101,8 +101,8 @@ pub struct Signature {
     pub span: Span,
 }
 
-/// `type Position = { x: Float, y: Float }` or
-/// `type Shape = | Circle(radius: Float) | Point` — the body ([`TypeBody`])
+/// `type Position = { x: float, y: float }` or
+/// `type Shape = | Circle(radius: float) | Point` — the body ([`TypeBody`])
 /// is carried through from the AST verbatim, fields keeping their symbolic
 /// [`TypeName`]s; other types reference this one by name. Constructor names
 /// live in the *value* namespace (see [`crate::lower`]).
