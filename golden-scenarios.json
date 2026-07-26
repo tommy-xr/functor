@@ -6,49 +6,92 @@
       "sample": "primitives",
       "fixedTime": 2.0,
       "debugRender": null,
-      "targets": ["native", "wasm"]
+      "targets": [
+        "native",
+        "wasm"
+      ]
     },
     {
       "name": "hello-t2",
       "sample": "hello",
       "fixedTime": 2.0,
       "debugRender": null,
-      "targets": ["native"]
+      "targets": [
+        "native"
+      ]
     },
     {
       "name": "hello-normals-t2",
       "sample": "hello",
       "fixedTime": 2.0,
       "debugRender": "normals",
-      "targets": ["native"]
+      "targets": [
+        "native"
+      ]
     },
     {
       "name": "hello-tangents-t2",
       "sample": "hello",
       "fixedTime": 2.0,
       "debugRender": "tangents",
-      "targets": ["native"]
+      "targets": [
+        "native"
+      ]
     },
     {
       "name": "lighting-t2",
       "sample": "lighting",
       "fixedTime": 2.0,
       "debugRender": null,
-      "targets": ["native", "wasm"]
+      "targets": [
+        "native",
+        "wasm"
+      ]
     },
     {
       "name": "synthwave-t0",
       "sample": "synthwave",
       "fixedTime": 0.0,
       "debugRender": null,
-      "targets": ["native"]
+      "targets": [
+        "native"
+      ]
     },
     {
       "name": "synthwave-t2",
       "sample": "synthwave",
       "fixedTime": 2.0,
       "debugRender": null,
-      "targets": ["native"]
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "terrain-t2",
+      "sample": "terrain",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "terrain-normals-t2",
+      "sample": "terrain",
+      "fixedTime": 2.0,
+      "debugRender": "normals",
+      "targets": [
+        "native"
+      ]
+    },
+    {
+      "name": "terrain-tangents-t2",
+      "sample": "terrain",
+      "fixedTime": 2.0,
+      "debugRender": "tangents",
+      "targets": [
+        "native"
+      ]
     }
   ]
 }
