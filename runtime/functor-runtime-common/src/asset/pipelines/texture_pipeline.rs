@@ -2,8 +2,31 @@ use image::ImageFormat;
 
 use crate::{
     asset::{AssetCache, AssetPipeline},
-    texture::{Texture2D, TextureData, TextureFormat, TextureOptions, JPEG, PNG},
+    texture::{
+        Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, JPEG, PNG,
+    },
 };
+
+/// Decode an image, or `None` if the bytes are not one we handle.
+///
+/// Unhandled formats and corrupt bytes both fall back to the checkerboard,
+/// never a panic: asset hot-reload can catch a file mid-write, and the render
+/// thread polls asset futures (a panic aborts the runtime). The next save
+/// reloads it again.
+fn decode(bytes: &Vec<u8>) -> Option<TextureData> {
+    let decoded = match image::guess_format(bytes) {
+        Ok(ImageFormat::Png) => PNG.load(bytes),
+        Ok(ImageFormat::Jpeg) => JPEG.load(bytes),
+        other => Err(format!("unhandled format: {:?}", other)),
+    };
+    match decoded {
+        Ok(data) => Some(data),
+        Err(e) => {
+            eprintln!("[texture] cannot decode image: {e}");
+            None
+        }
+    }
+}
 
 pub struct TexturePipeline;
 
@@ -14,21 +37,8 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
         _asset_cache: &AssetCache,
         context: crate::asset::AssetPipelineContext,
     ) -> Texture2D {
-        // Unhandled formats and corrupt bytes both fall back to the
-        // checkerboard, never a panic: asset hot-reload can catch a file
-        // mid-write, and the render thread polls asset futures (a panic
-        // aborts the runtime). The next save reloads it again.
-        let decoded = match image::guess_format(&bytes) {
-            Ok(ImageFormat::Png) => PNG.load(&bytes),
-            Ok(ImageFormat::Jpeg) => JPEG.load(&bytes),
-            other => Err(format!("unhandled format: {:?}", other)),
-        };
-        let texture_data = match decoded {
-            Ok(data) => data,
-            Err(e) => {
-                eprintln!("[texture] cannot decode image: {e}");
-                return self.unloaded_asset(context);
-            }
+        let Some(texture_data) = decode(&bytes) else {
+            return self.unloaded_asset(context);
         };
         Texture2D::init_from_data(
             texture_data,
@@ -43,6 +53,7 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
                 // moves. The fallback checkerboard below deliberately keeps
                 // level 0 so a missing asset still reads as a flat marker.
                 mipmap: true,
+                ..TextureOptions::default()
             },
         )
     }
@@ -50,6 +61,51 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
         let texture_data = TextureData::checkerboard_pattern(8, 8, [0, 255, 0, 255]);
         Texture2D::init_from_data(texture_data, TextureOptions::default())
+    }
+}
+
+/// Terrain detail maps: tiled, sampled almost entirely at grazing angles, and
+/// normalized in the shader against their own mean.
+///
+/// A separate pipeline rather than a flag on the shared one, so the anisotropy
+/// reduction and the mean scan apply to exactly the four maps that need them
+/// and to nothing else in the engine. The asset cache keys decoded assets per
+/// pipeline (bytes are still shared), so this costs no extra download.
+pub struct TerrainDetailPipeline;
+
+impl AssetPipeline<Texture2D> for TerrainDetailPipeline {
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        _asset_cache: &AssetCache,
+        context: crate::asset::AssetPipelineContext,
+    ) -> Texture2D {
+        let Some(texture_data) = decode(&bytes) else {
+            return self.unloaded_asset(context);
+        };
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                wrap: true,
+                linear: true,
+                mipmap: true,
+                anisotropy: TERRAIN_DETAIL_ANISOTROPY,
+                compute_average: true,
+            },
+        )
+    }
+
+    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
+        // White: the shader divides by the average, so a neutral stand-in
+        // leaves the band color untouched while the real map streams in.
+        let texture_data = TextureData::solid_color([255, 255, 255, 255]);
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                compute_average: true,
+                ..TextureOptions::default()
+            },
+        )
     }
 }
 

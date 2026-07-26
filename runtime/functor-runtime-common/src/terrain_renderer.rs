@@ -26,9 +26,20 @@ const MAX_INSTANCES: usize = 8192;
 const MAX_GRASS_INSTANCES: usize = 20_000;
 /// First texture unit for the detail maps. Unit 0 stays the height texture.
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
-/// Detail fade band, as a fraction of the terrain's longest side.
-const DETAIL_FADE_START: f32 = 0.08;
-const DETAIL_FADE_END: f32 = 0.28;
+/// Furthest the detail band may reach, in metres from the camera.
+///
+/// A cap, not a flat value. Detail stops being resolvable at a distance that
+/// depends on the surface, not on how large the world is, so a 4 km map gains
+/// nothing from carrying tiled detail out to a kilometre — that is fill rate
+/// spent below a pixel. But the band must still shrink with the terrain: on a
+/// 200 m island an absolute 400 m would put the entire world at full detail
+/// permanently, which is why the fraction below also applies.
+const DETAIL_FADE_MAX_END: f32 = 400.0;
+/// The band is also bounded by a fraction of the terrain's longest side, which
+/// is what governs on anything smaller than ~1.4 km.
+const DETAIL_FADE_END_FRACTION: f32 = 0.28;
+/// Detail holds at full strength within this fraction of the band's end.
+const DETAIL_FADE_START_FRACTION: f32 = 0.15;
 
 const VERTEX_SHADER_SOURCE: &str = r#"
         // uv.xy plus 1 for a duplicated skirt vertex.
@@ -130,6 +141,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         // Explicitly this shader's own: fog owns fogCameraPos and does not set
         // it when fog is disabled, but the detail fade must work regardless.
         uniform vec3 detailCameraPos;
+        // Each map's mean RGB, computed once on the CPU at load. Sampling the
+        // top mip per fragment cost one fetch per map to recover a constant.
+        uniform vec3 detailAverage[4];
 
         out vec4 fragColor;
 
@@ -142,16 +156,15 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         // seamless for ANY map without asking the game to hand-match a band
         // color to its texture, which is what a fixed far color would require.
         // Returns STRUCTURE, not color: the sample divided by the map's own
-        // average (its top mip). That average is ~1.0 by construction, so
+        // average, supplied as a uniform. The ratio is ~1.0 on average, so
         // multiplying a band color by this adds the map's detail without
         // shifting its hue — a photographic albedo averages brown, and using
         // it directly would repaint a green hillside as dirt. It also makes
-        // the distance fade exact: as `fade` reaches 0 the ratio is 1.0, i.e.
+        // the distance fade exact: as `fade` reaches 0 the result is 1.0, i.e.
         // no change, so there is nothing to seam against.
-        vec3 detail(sampler2D tex, vec2 uv, float fade) {
+        vec3 detail(sampler2D tex, vec2 uv, float fade, vec3 average) {
             vec3 near = mix(texture(tex, uv).rgb, texture(tex, uv * 0.137).rgb, 0.5);
-            vec3 average = max(textureLod(tex, uv, 32.0).rgb, vec3(1e-3));
-            return mix(vec3(1.0), clamp(near / average, 0.0, 2.5), fade);
+            return mix(vec3(1.0), clamp(near / max(average, vec3(1e-3)), 0.0, 2.5), fade);
         }
 
         void main() {
@@ -190,14 +203,30 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     // the untextured terrain already renders correctly.
                     float fade = 1.0 - smoothstep(
                         detailFadeStart, detailFadeEnd, distance(worldPos, detailCameraPos));
-                    // The SAME weights as the colors above: texturing dresses
-                    // the bands, it does not move them.
-                    vec2 uv = worldPos.xz / detailTile;
-                    vec3 structure = mix(
-                        detail(lowTex, uv, fade), detail(highTex, uv, fade), bandWeight);
-                    structure = mix(structure, detail(rockTex, uv, fade), rockWeight);
-                    structure = mix(structure, detail(snowTex, uv, fade), snowWeight);
-                    albedo *= structure;
+                    // Past the band every detail() is exactly vec3(1.0), so
+                    // the 8 fetches it takes to compute that are pure waste —
+                    // and on a terrain vista most of the screen is past it.
+                    // The branch is coherent (it tracks distance), which is
+                    // what a tile-based GPU wants.
+                    // Safe despite `texture()`'s implicit derivatives inside
+                    // non-uniform control flow: the only quads that straddle
+                    // this branch are ones where fade ~ 0, so a bad sample is
+                    // multiplied by ~0 and clamped. Moving this threshold off
+                    // zero would make that no longer true.
+                    if (fade > 0.0) {
+                        // The SAME weights as the colors above: texturing
+                        // dresses the bands, it does not move them.
+                        vec2 uv = worldPos.xz / detailTile;
+                        vec3 structure = mix(
+                            detail(lowTex, uv, fade, detailAverage[0]),
+                            detail(highTex, uv, fade, detailAverage[1]),
+                            bandWeight);
+                        structure = mix(
+                            structure, detail(rockTex, uv, fade, detailAverage[2]), rockWeight);
+                        structure = mix(
+                            structure, detail(snowTex, uv, fade, detailAverage[3]), snowWeight);
+                        albedo *= structure;
+                    }
                 }
             }
             vec3 shaded = albedo * diffuseLight + specularLight;
@@ -328,6 +357,7 @@ struct TerrainUniforms {
     detail_fade_start: UniformLocation,
     detail_fade_end: UniformLocation,
     detail_camera_pos: UniformLocation,
+    detail_averages: [UniformLocation; 4],
     lighting: LightingUniforms,
     fog: FogUniforms,
 }
@@ -492,10 +522,11 @@ impl TerrainRenderer {
         world: &Matrix4<f32>,
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
-        // Whether the shell resolved and bound the four detail maps to units
-        // 1..4 for this draw. Layers without textures — and a textured terrain
-        // whose maps have not streamed in — render the flat band colors.
-        detail_bound: bool,
+        // The four detail maps' mean colors when the shell bound them to units
+        // 1..4 for this draw, else `None`. Layers without textures — and a
+        // textured terrain whose maps have not streamed in — render the flat
+        // band colors.
+        detail_bound: Option<[[f32; 3]; 4]>,
     ) {
         if source.width < 2 || source.height < 2 {
             return;
@@ -628,21 +659,26 @@ impl TerrainRenderer {
             let detail = description
                 .textures
                 .as_ref()
-                .filter(|_| use_layers == 1 && detail_bound);
+                .filter(|_| use_layers == 1 && detail_bound.is_some());
             p.set_uniform_1i(gl, &u.use_textures, detail.is_some() as i32);
             if let Some(textures) = detail {
                 for (unit, location) in u.detail_textures.iter().enumerate() {
                     p.set_uniform_1i(gl, location, unit as i32 + DETAIL_TEXTURE_UNIT0);
                 }
                 p.set_uniform_1f(gl, &u.detail_tile, textures.tile_size);
-                // Scale the fade with the terrain, not the tile: what matters
-                // is how far the detail survives relative to the world it
-                // dresses, and the same tile reads very differently on a 200 m
-                // island and a 4 km map.
                 let span = description.width.max(description.depth);
-                p.set_uniform_1f(gl, &u.detail_fade_start, span * DETAIL_FADE_START);
-                p.set_uniform_1f(gl, &u.detail_fade_end, span * DETAIL_FADE_END);
+                let fade_end = DETAIL_FADE_MAX_END.min(span * DETAIL_FADE_END_FRACTION);
+                p.set_uniform_1f(gl, &u.detail_fade_start, fade_end * DETAIL_FADE_START_FRACTION);
+                p.set_uniform_1f(gl, &u.detail_fade_end, fade_end);
                 p.set_uniform_vec3(gl, &u.detail_camera_pos, &ctx.camera_pos);
+                let averages = detail_bound.expect("checked by the filter above");
+                for (location, average) in u.detail_averages.iter().zip(averages) {
+                    p.set_uniform_vec3(
+                        gl,
+                        location,
+                        &Vector3::new(average[0], average[1], average[2]),
+                    );
+                }
             }
             u.lighting.set(p, ctx, view);
             u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
@@ -732,6 +768,9 @@ impl TerrainRenderer {
             detail_fade_start: program.get_uniform_location(ctx.gl, "detailFadeStart"),
             detail_fade_end: program.get_uniform_location(ctx.gl, "detailFadeEnd"),
             detail_camera_pos: program.get_uniform_location(ctx.gl, "detailCameraPos"),
+            detail_averages: std::array::from_fn(|i| {
+                program.get_uniform_location(ctx.gl, &format!("detailAverage[{i}]"))
+            }),
             lighting: LightingUniforms::get(&program, ctx.gl),
             fog: FogUniforms::get(&program, ctx.gl),
         };
