@@ -5462,6 +5462,40 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
                 "Sprite.rectangle width and height must be positive",
             ),
             (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), 0.0, \"HI\")",
+                "Sprite.text size must be a positive number",
+            ),
+            // NaN never reaches the size check — the registry's numeric
+            // conversion rejects non-finite arguments first.
+            (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), 0.0 / 0.0, \"HI\")",
+                "expected a finite number, got NaN",
+            ),
+            // A finite f64 that OVERFLOWS f32 (1e40) is already refused by the
+            // registry's numeric conversion, which requires f32-finiteness.
+            (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), \
+                 100000000000000000000.0 * 100000000000000000000.0, \"HI\")",
+                "expected a finite number",
+            ),
+            // ...and one that UNDERFLOWS f32 to zero (1e-60), which would
+            // otherwise let measure report a positive box while text drew
+            // degenerate quads.
+            (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), 1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0), \"HI\")",
+                "Sprite.text size must be a positive number",
+            ),
+            (
+                "Sprite.measure(-1.0, \"HI\")",
+                "Sprite.measure size must be a positive number",
+            ),
+            (
+                "Sprite.measure(1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0), \"HI\")",
+                "Sprite.measure size must be a positive number",
+            ),
+            (
                 "Sprite.image(-1.0, 2.0, Asset.texture(\"hero.png\"))",
                 "Sprite.image width and height must be positive",
             ),

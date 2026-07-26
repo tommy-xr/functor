@@ -67,6 +67,15 @@
       ]
     },
     {
+      "name": "text2d-t9",
+      "sample": "text2d",
+      "fixedTime": 9.12,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
       "name": "terrain-t2",
       "sample": "terrain",
       "fixedTime": 2.0,

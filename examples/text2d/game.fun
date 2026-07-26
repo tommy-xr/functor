@@ -12,7 +12,9 @@ let white = Color.rgb(1.0, 1.0, 1.0)
 let panelFill = Color.rgb(0.1, 0.07, 0.19)
 
 // Text is centered on its own box, so alignment is a half-width shift. These
-// two helpers are the whole recipe — worth copying into any 2D game.
+// two helpers are the whole recipe — worth copying into any 2D game. They align
+// the BLOCK: for a multi-line string only the widest line reaches the edge,
+// because interior lines stay centered.
 let leftAligned = (x, y, size, color, s) =>
   Sprite.text(color, size, s)
     |> Sprite.move(x + Sprite.measure(size, s).width * 0.5, y)

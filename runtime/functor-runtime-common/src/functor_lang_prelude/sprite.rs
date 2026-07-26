@@ -102,8 +102,16 @@ impl crate::host_registry::FromArg for FunctorLangSpriteRegion {
 /// the built-in font is monospace with self-spacing cells) also the advance per
 /// character. Rejects NaN as well as zero/negative, since a NaN size would
 /// otherwise silently place every glyph nowhere.
+///
+/// The check is applied to the NARROWED `f32` the layout actually uses, not just
+/// the incoming `f64`. The registry's numeric conversion already rejects a value
+/// that overflows `f32`, but a tiny positive `f64` (say 1e-60) narrows to
+/// exactly `0.0` and passes it — which would let `Sprite.measure` report a
+/// positive box while `Sprite.text` laid out zero-sized quads. Both entry points
+/// go through here, so they cannot disagree about which sizes are legal.
 fn text_size(size: f64, path: &str) -> Result<f64, String> {
-    if !size.is_finite() || size <= 0.0 {
+    let narrowed = size as f32;
+    if !narrowed.is_finite() || narrowed <= 0.0 {
         return Err(format!("{path} size must be a positive number, got {size}"));
     }
     Ok(size)

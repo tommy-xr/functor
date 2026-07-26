@@ -42,7 +42,9 @@ let square : (Color.t, float) => t
 ///
 /// Text is centered, so align it by shifting half its measured width —
 /// `Sprite.moveX(Sprite.measure(size, s).width * 0.5, …)` puts its LEFT edge at
-/// the origin, and negating that puts its right edge there.
+/// the origin, and negating that puts its right edge there. That aligns the
+/// BLOCK: with several lines only the widest reaches the edge, since each line
+/// stays centered until a left-aligning text block exists.
 ///
 /// Glyphs are sampled like any other sprite image, so `nearest` gives crisp
 /// pixel edges and the default `linear` gives smoother ones at large sizes.

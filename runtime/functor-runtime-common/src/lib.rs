@@ -93,7 +93,9 @@ pub mod shadow;
 pub mod skybox;
 mod shader_program;
 mod sprite2d;
-pub mod sprite_font;
+// The built-in font is an implementation detail of `Sprite.text`, not public
+// API — nothing outside this crate should depend on its atlas layout.
+mod sprite_font;
 pub mod terrain;
 mod terrain_renderer;
 pub mod texture;

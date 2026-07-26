@@ -13,6 +13,24 @@
 //! obligation (it embeds GNU Unifont); the 8x8 variant used here does not.
 //! U+007F is included as a blank cell so the atlas is a full 16x6 grid.
 //!
+//! The table is the `U+0020`..`U+007F` rows of upstream `unscii-8.hex`
+//! verbatim, one 8-byte glyph per row. To re-derive or audit it, each line of
+//! that file is `<codepoint>:<16 hex digits>`, so the entry for a character is
+//! reproducible directly:
+//!
+//! ```text
+//! $ curl -s http://viznut.fi/unscii/unscii-8.hex | grep '^00041:'
+//! 00041:183C66667E666600          # == GLYPHS[0x41 - 0x20], the 'A' row below
+//! ```
+//!
+//! Note for anyone comparing against other public-domain 8x8 fonts: unscii is
+//! explicitly "based on classic system fonts", so its ASCII coincides with the
+//! classic IBM-lineage 8x8 bitmaps (e.g. `font8x8_basic`) up to a one-bit
+//! horizontal shift — unscii left-aligns glyphs in the cell, leaving the
+//! rightmost column as spacing. The resemblance is shared ancestry, not a
+//! different source; `the_table_matches_upstream_unscii_8` pins specific rows
+//! so a future edit or font swap cannot quietly drift from the attribution.
+//!
 //! # Layout
 //!
 //! Every glyph is an 8x8 cell whose rightmost column and (for characters
@@ -256,6 +274,24 @@ mod tests {
             assert_eq!(y.fract(), 0.0);
             assert!(x + width <= ATLAS_WIDTH as f32);
             assert!(y + height <= ATLAS_HEIGHT as f32);
+        }
+    }
+
+    #[test]
+    fn the_table_matches_upstream_unscii_8() {
+        // Rows copied from upstream `unscii-8.hex` (see the provenance note).
+        // These pin the attribution AND the cell alignment the metrics assume:
+        // 'A' and 'E' leave the rightmost column blank, '_' deliberately fills
+        // it, and 'g' is the descender case that uses the bottom row.
+        for (character, expected) in [
+            ('A', [0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x00]),
+            ('E', [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00]),
+            ('_', [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF]),
+            ('g', [0x00, 0x00, 0x3E, 0x66, 0x66, 0x3E, 0x06, 0x7C]),
+            (' ', [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        ] {
+            let index = (character as u32 - FIRST_CHAR) as usize;
+            assert_eq!(GLYPHS[index], expected, "{character:?}");
         }
     }
 
