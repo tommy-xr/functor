@@ -235,7 +235,7 @@ export function normalizeEndpoint(raw: unknown): string {
 const isLoopbackHost = (host: string) =>
   host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 
-export const storedEndpoint = (): string => {
+const storedEndpoint = (): string => {
   try {
     return localStorage.getItem(STORAGE_KEY) || DEFAULT_RUNTIME_ENDPOINT;
   } catch {
@@ -328,12 +328,15 @@ export interface RuntimeTargetCoreOptions {
   onOutput?: (level: ConsoleLevel, message: string) => void;
 }
 
+/** The link's four display states; each is a `data-state` CSS selector. */
+export type RuntimeLinkState = "off" | "busy" | "live" | "error";
+
 /** Everything a view renders. One object, replaced on every change. */
 export interface RuntimeTargetSnapshot {
   /** The raw endpoint text, as typed — normalized only at request time. */
   endpoint: string;
-  /** `data-state` on the details/summary/status trio: off | busy | live | error. */
-  state: string;
+  /** `data-state` on the details/summary/status trio. */
+  state: RuntimeLinkState;
   /** The collapsed summary's trailing word ("off", "live", "sync error", …). */
   summaryText: string;
   /** The panel's status sentence. */
@@ -426,7 +429,7 @@ export function createRuntimeTargetCore({
   let lastSyncedAssets: [string, Uint8Array][] = [];
   let assetSyncPending = false;
 
-  const renderStatus = (state: string, summaryText: string, message: string) =>
+  const renderStatus = (state: RuntimeLinkState, summaryText: string, message: string) =>
     update({ state, summaryText, message });
 
   const renderState = (state: RuntimeState) => {
@@ -470,14 +473,17 @@ export function createRuntimeTargetCore({
       URL.revokeObjectURL(captureUrl);
       captureUrl = null;
     }
+    // One notification: every field the disconnect resets, at once.
     update({
       pushDisabled: !localEditorOrigin,
       captureDisabled: true,
       telemetry: null,
       model: "",
       captureUrl: null,
+      state: "off",
+      summaryText: "off",
+      message: "Endpoint changed. Push to start a fresh model.",
     });
-    renderStatus("off", "off", "Endpoint changed. Push to start a fresh model.");
   };
 
   const pollState = async () => {

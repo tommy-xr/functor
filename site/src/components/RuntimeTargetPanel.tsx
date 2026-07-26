@@ -6,7 +6,7 @@
 // The markup mirrors `runtime-target.ts`'s (the IDE's imperative view) element
 // for element, class for class, data-attribute for data-attribute.
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { RuntimeTargetCore } from "../runtime-target-core.js";
 
 export const RuntimeTargetPanel = ({ core }: { core: RuntimeTargetCore }) => {
@@ -21,7 +21,10 @@ export const RuntimeTargetPanel = ({ core }: { core: RuntimeTargetCore }) => {
   // tracker) would see.
   const [initialEndpoint] = useState(() => core.getSnapshot().endpoint);
 
-  useEffect(() => {
+  // A LAYOUT effect, so the listeners are installed during the commit rather
+  // than after paint: the field is reachable the moment it is in the document,
+  // and an endpoint written in a passive-effect window would be lost.
+  useLayoutEffect(() => {
     const input = endpoint.current;
     if (!input) return;
     const onInput = () => core.setEndpoint(input.value);

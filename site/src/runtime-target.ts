@@ -4,7 +4,7 @@
 // renders the same core through `components/RuntimeTargetPanel.tsx`; this file
 // goes away when the IDE converts too.)
 
-import { createRuntimeTargetCore, storedEndpoint } from "./runtime-target-core.js";
+import { createRuntimeTargetCore } from "./runtime-target-core.js";
 import type {
   ProjectAssetInput,
   ProjectFileInput,
@@ -98,9 +98,10 @@ export function createRuntimeTarget({
   const captureFrame = host.querySelector<HTMLElement>("[data-runtime-capture-frame]")!;
   const captureImage = host.querySelector<HTMLImageElement>("[data-runtime-image]")!;
 
-  endpointInput.value = storedEndpoint();
-
   const core = createRuntimeTargetCore({ getProject, getAssets, onOutput });
+  // The core read the persisted endpoint; seed the field from it rather than
+  // reading storage a second time, so the two can never disagree.
+  endpointInput.value = core.getSnapshot().endpoint;
 
   // The endpoint field is the one input the core does not own: it is written
   // by the user (and, in the e2e, assigned directly and given a bare `change`),

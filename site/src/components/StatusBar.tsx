@@ -7,7 +7,7 @@
 // styles.css and the e2e selectors are untouched — including keeping all three
 // lists MOUNTED and toggled with `display`, exactly as before.
 
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { outputPreamble } from "../status-bar-store.js";
 import type { StatusBarStore } from "../status-bar-store.js";
 
@@ -23,11 +23,17 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
   const { problems, output, executions } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [open, setOpen] = useState<TabName | null>(null);
   const outputList = useRef<HTMLDivElement>(null);
-  // Stick to the bottom only while the user is already there (don't yank the
-  // scroll out from under them mid-read). Tracked from scroll events rather
-  // than measured mid-update: by the time a layout effect runs, the new lines
-  // are already in the DOM and the pre-append position is gone.
+  // Stick to the bottom only if the user is already there (don't yank the
+  // scroll out from under them mid-read). Measured HERE, during the render
+  // that carries new lines: the DOM still holds the previous ones, so this is
+  // the same pre-append reading the imperative bar took just before appending.
   const stick = useRef(true);
+  const rendered = useRef(output);
+  if (rendered.current !== output) {
+    rendered.current = output;
+    const list = outputList.current;
+    if (list) stick.current = list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
+  }
 
   // The tab goes loud (red ✖) only for errors — a warnings-only file keeps the
   // calm glyph.
@@ -35,19 +41,16 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
 
   useLayoutEffect(() => {
     const list = outputList.current;
-    // Lines appended while the panel was hidden couldn't stick to the bottom
-    // (a display:none subtree measures 0) — land on the newest, not the oldest.
     if (list && open === "output" && stick.current) list.scrollTop = list.scrollHeight;
-  }, [output, open]);
+    // Only new lines: an `open` change is the other effect's job.
+  }, [output]);
 
-  // Opening the panel is the one moment a hidden list must be re-pinned even
-  // if the user had scrolled away inside it earlier.
-  useEffect(() => {
+  // Lines appended while the panel was hidden couldn't stick to the bottom (a
+  // display:none subtree measures 0) — on open, land on the newest, not the
+  // oldest, exactly as the imperative bar's tab handler did.
+  useLayoutEffect(() => {
     const list = outputList.current;
-    if (list && open === "output") {
-      stick.current = true;
-      list.scrollTop = list.scrollHeight;
-    }
+    if (list && open === "output") list.scrollTop = list.scrollHeight;
   }, [open]);
 
   const panel = (name: TabName) => ({
@@ -87,14 +90,7 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
             })
           )}
         </div>
-        <div
-          {...panel("output")}
-          ref={outputList}
-          onScroll={(event) => {
-            const list = event.currentTarget;
-            stick.current = list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
-          }}
-        >
+        <div {...panel("output")} ref={outputList}>
           {output.map((line) => (
             <div className={`output-line output-${line.level}`} key={line.id}>
               <span className="output-preamble">{outputPreamble(line.frame, line.time)}</span>

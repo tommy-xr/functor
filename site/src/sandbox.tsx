@@ -120,6 +120,14 @@ window.addEventListener("message", (event) => {
 });
 
 
+// Created once, outside React: this controller carries the live link's queued
+// pushes and its `/state` poll chain, so a re-render must never restart it.
+const runtimeTarget = createRuntimeTargetCore({
+  getProject: () => [["game.fun", view.state.doc.toString()], ...siblingSources],
+  getAssets: () => assetSources,
+  onOutput: (level, message) => statusBar.appendOutput(level, message),
+});
+
 // Set while loadExample replaces the buffer programmatically: that content is
 // exactly what the fresh iframe is about to fetch, so pushing it back would
 // be a redundant reload (and would mislabel a fresh load as a hot reload).
@@ -139,14 +147,6 @@ const view = new EditorView({
       }
     }),
   ],
-});
-
-// Created once, outside React: this controller carries the live link's queued
-// pushes and its `/state` poll chain, so a re-render must never restart it.
-const runtimeTarget = createRuntimeTargetCore({
-  getProject: () => [["game.fun", view.state.doc.toString()], ...siblingSources],
-  getAssets: () => assetSources,
-  onOutput: (level, message) => statusBar.appendOutput(level, message),
 });
 
 // Live type diagnostics: load the analysis wasm lazily and, once ready, append

@@ -11,7 +11,7 @@
 import type { ConsoleLevel } from "./protocol.js";
 import type { Execution, Problem, StatusBar } from "./status-bar.js";
 
-export const MAX_OUTPUT_LINES = 500;
+const MAX_OUTPUT_LINES = 500;
 
 /** One rendered output row. `time` is stamped at append, not at flush. */
 export interface OutputLine {
@@ -44,13 +44,7 @@ const clock = (date: Date): string => {
 export const outputPreamble = (frame: number | null, time: string): string =>
   frame == null ? `[${time}]` : `[Frame ${frame} | ${time}]`;
 
-export const createStatusBarStore = (
-  // Injectable so a test can drive the flush deterministically; the page uses
-  // the real rAF.
-  schedule: (flush: () => void) => void = (flush) => {
-    requestAnimationFrame(flush);
-  }
-): StatusBarStore => {
+export const createStatusBarStore = (): StatusBarStore => {
   let snapshot: StatusBarSnapshot = { problems: [], output: [], executions: [] };
   const listeners = new Set<() => void>();
 
@@ -92,7 +86,7 @@ export const createStatusBarStore = (
       pending.push({ level, text, frame, time: clock(new Date()), id: nextId++ });
       if (!flushScheduled) {
         flushScheduled = true;
-        schedule(flushOutput);
+        requestAnimationFrame(flushOutput);
       }
     },
 
