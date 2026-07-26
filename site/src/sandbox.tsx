@@ -35,7 +35,7 @@ import type { RuntimeTargetState } from "./runtime-target-core.js";
 import { createStore } from "./store.js";
 import { SandboxControls } from "./components/SandboxControls.js";
 import type { PickerState, ClientsState } from "./components/SandboxControls.js";
-import { initMultiplayerPanes } from "./mp-panes.js";
+import { initMultiplayerPanes, MAX_CLIENTS } from "./mp-panes.js";
 import type { MultiplayerPanes } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
 import { StatusBar } from "./components/StatusBar.js";
@@ -88,7 +88,7 @@ const pill = createStore<PillState>({ state: "busy", text: "◌ loading…", det
 const hashClients = () =>
   Number(new URLSearchParams(window.location.hash.slice(1)).get("clients")) || 0;
 const requestedClients = Math.min(
-  4,
+  MAX_CLIENTS,
   Math.max(
     1,
     hashClients() || Number(new URLSearchParams(window.location.search).get("clients")) || 1
@@ -116,11 +116,11 @@ const dismissBootLoader = () =>
 
 const statusBar = createStatusBarStore();
 
-// One scrubber regardless of client count: the chrono bar mounts even for a
-// single client (tiled/tabs disabled, no pane chrome) so the instrument is in
-// the same place with the same look at every N. `getSource` lets a mirror
-// added mid-session catch up to the edited buffer (`view` exists by the time
-// any pane is added).
+// The pane system mounts at every count, but its chrome is dark at one
+// client — no chrono bar, no pane frame, the stock in-frame scrubber. The
+// single-client chrono unification follows separately with the a11y parity
+// it requires. `getSource` lets a mirror added mid-session catch up to the
+// edited buffer (`view` exists by the time any pane is added).
 mp = initMultiplayerPanes({
   frame,
   count: requestedClients,
@@ -135,9 +135,12 @@ mp = initMultiplayerPanes({
 // back to 1; the hash keeps working everywhere as the dev seam.
 const updateClientsStore = () => {
   const example = EXAMPLES.find((candidate) => candidate.id === picker.getSnapshot().selected);
+  // Latched: once the control has appeared (a flagged sample, or a forcing
+  // hash), shrinking back to 1 must not remove the only way to grow again.
   clients.set({
     count: mp!.count(),
-    visible: Boolean(example?.multiplayer) || mp!.count() > 1,
+    visible:
+      clients.getSnapshot().visible || Boolean(example?.multiplayer) || mp!.count() > 1,
   });
 };
 updateClientsStore();
@@ -150,6 +153,9 @@ const writeClientsHash = (n: number) => {
   else hash.delete("clients");
   const url = new URL(window.location.href);
   url.hash = hash.toString();
+  // Also retire the legacy ?clients= fallback — leaving it would resurrect
+  // the old count on the next reload after an explicit shrink.
+  url.searchParams.delete("clients");
   window.history.replaceState(null, "", url);
 };
 

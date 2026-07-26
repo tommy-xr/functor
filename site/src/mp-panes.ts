@@ -45,9 +45,7 @@ interface ScrubSeam {
   seek(frame: number): void;
   togglePause(): void;
   step(): void;
-  model(): { preview: { enabled: boolean; seconds: number; rate: number } };
   view(): TimelineView | null;
-  setPreview(preview: { enabled?: boolean; seconds?: number; rate?: number }): void;
 }
 
 /** The slice of timeline-model's derived view the chrono bar renders. */
@@ -56,9 +54,6 @@ interface TimelineView {
   playheadUnit: number;
   recordedStartUnit: number;
   recordedEndUnit: number;
-  previewEndUnit: number;
-  previewFrames: number;
-  previewClippedFrames: number;
   selectedFrame: number;
   paused: boolean;
   eventMarkers: {
@@ -83,6 +78,8 @@ type PaneState = PillState["state"];
 
 interface Pane {
   index: number;
+  /** Aborts every listener this pane registered outside its own subtree. */
+  scope: AbortController;
   iframe: HTMLIFrameElement;
   shell: HTMLElement;
   tab: HTMLButtonElement;
@@ -114,6 +111,9 @@ export interface MultiplayerPanes {
 }
 
 const PLAYER_COLORS = ["var(--scrub-p1)", "var(--scrub-p2)", "var(--scrub-p3)", "var(--scrub-p4)"];
+
+/** One clamp for every entry point (the select offers the same range). */
+export const MAX_CLIENTS = 3;
 
 const LINK_PRESETS: LinkProfile[] = [
   { name: "LAN", ms: 8, jitter: 2, loss: 0 },
@@ -183,29 +183,12 @@ export function initMultiplayerPanes({
       <span class="mp-track"></span>
       <span class="mp-recorded" id="mp-recorded"></span>
       <span class="mp-played" id="mp-played"></span>
-      <span class="mp-future" id="mp-future"></span>
       <span class="mp-ticks" id="mp-ticks"></span>
       <span class="mp-markers" id="mp-markers"></span>
       <span class="mp-playhead" id="mp-playhead"></span>
-      <span class="mp-preview-handle" id="mp-preview-handle" title="Drag to stretch the extrapolation window"></span>
-      <span class="mp-overflow" id="mp-overflow"></span>
       <span class="mp-evt-tip" id="mp-evt-tip" role="status"></span>
       <span class="mp-rail-label"><b>#f</b> <span id="mp-frame">—</span></span>
     </span>
-    <button class="mp-sbtn" id="mp-extrap" title="Extrapolate: speculatively simulate forward from the parked frame">🔮</button>
-    <details class="mp-adv" id="mp-adv">
-      <summary title="Extrapolation settings">⚙</summary>
-      <div class="mp-adv-pop">
-        <label>show
-          <select id="mp-adv-mode">
-            <option value="1">trail</option><option value="2">strobe</option>
-            <option value="3" selected>both</option><option value="4">ghost</option>
-          </select>
-        </label>
-        <label>window <input id="mp-adv-win" type="number" step="0.5" min="0.5" max="5" value="2" />s</label>
-        <label>rate <input id="mp-adv-rate" type="number" min="1" max="30" value="5" />/s</label>
-      </div>
-    </details>
     <span class="mp-viewseg" role="group" aria-label="Pane layout">
       <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every client visible">⊞ tiled</button>
       <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one client full-size (f)">▤ tabs</button>
@@ -225,7 +208,6 @@ export function initMultiplayerPanes({
 
   const $ = (id: string) => chrono.querySelector(`#${id}`) as HTMLElement;
   const $btn = (id: string) => chrono.querySelector(`#${id}`) as HTMLButtonElement;
-  const $input = (id: string) => chrono.querySelector(`#${id}`) as HTMLInputElement;
 
   const panes: Pane[] = [];
   const makePane = (index: number, iframe: HTMLIFrameElement): Pane => {
@@ -265,6 +247,7 @@ export function initMultiplayerPanes({
       iframe,
       shell,
       tab,
+      scope: new AbortController(),
       state: "busy",
       link: { ...LINK_PRESETS[1] },
       frameLabels: [
@@ -281,7 +264,7 @@ export function initMultiplayerPanes({
     iframe.addEventListener("load", () => syncInnerScrubber());
     shell.querySelector(".mp-pane-hd")!.addEventListener("mousedown", () => focusPane(index));
     tab.addEventListener("click", () => focusPane(index));
-    buildLinkMenu(pane, shell.querySelector(".mp-link-host") as HTMLElement);
+    buildLinkMenu(pane, shell.querySelector(".mp-link-host") as HTMLElement, pane.scope.signal);
     panes.push(pane);
     return pane;
   };
@@ -312,15 +295,20 @@ export function initMultiplayerPanes({
         setPaneState(pane, ok ? "live" : "error", message);
         if (!ok) statusBar.appendOutput("error", `[${label}] ${message}`);
       },
+      signal: pane.scope.signal,
     });
     mirrors.push({ pane, bridge });
     // Runtime console lines from this mirror, prefixed with its identity.
-    window.addEventListener("message", (event) => {
-      const data = asPlayerMessage(event.data);
-      if (!data || data.type !== "functor-lang-console") return;
-      if (event.source !== iframe.contentWindow) return;
-      statusBar.appendOutput(data.level, `[${label}] ${data.message}`, data.frame ?? null);
-    });
+    window.addEventListener(
+      "message",
+      (event) => {
+        const data = asPlayerMessage(event.data);
+        if (!data || data.type !== "functor-lang-console") return;
+        if (event.source !== iframe.contentWindow) return;
+        statusBar.appendOutput(data.level, `[${label}] ${data.message}`, data.frame ?? null);
+      },
+      { signal: pane.scope.signal }
+    );
     // A mirror added mid-session boots the served program, then catches up to
     // the (possibly edited) buffer; the bridge holds the push until ready.
     if (frame.getAttribute("src")) {
@@ -333,6 +321,7 @@ export function initMultiplayerPanes({
     const removed = mirrors.pop();
     if (!removed) return;
     removed.bridge.reset();
+    removed.pane.scope.abort(); // window/document/bridge listeners
     removed.pane.shell.remove();
     removed.pane.tab.remove();
     panes.pop();
@@ -359,8 +348,9 @@ export function initMultiplayerPanes({
     for (const menu of document.querySelectorAll<HTMLElement>(".mp-link-menu")) {
       menu.hidden = true;
     }
-    (chrono.querySelector("#mp-adv") as HTMLDetailsElement).open = false;
   };
+
+  const moduleScope = new AbortController();
 
   // Clicking into a pane's iframe gives it the real keyboard; follow that
   // with the focus chrome so "who has my keys" never lies. The blur doubles
@@ -371,14 +361,8 @@ export function initMultiplayerPanes({
     const active = document.activeElement;
     const pane = panes.find((candidate) => candidate.iframe === active);
     if (pane) focusPane(pane.index);
-  });
+  }, { signal: moduleScope.signal });
 
-  // Click-away anywhere in the page dismisses too (each link menu already
-  // guards its own host; the ⚙ popover gets the same rule here).
-  document.addEventListener("mousedown", (event) => {
-    const adv = chrono.querySelector("#mp-adv") as HTMLDetailsElement;
-    if (adv.open && !adv.contains(event.target as Node)) adv.open = false;
-  });
 
   // Digits jump panes, [ ] cycle, f toggles tiled/tabs — but never while the
   // caret is in an editor or input (digits are text there, no exceptions).
@@ -398,7 +382,7 @@ export function initMultiplayerPanes({
     } else if (event.key === "f") {
       setView(grid.dataset.view === "tiled" ? "tabs" : "tiled");
     }
-  });
+  }, { signal: moduleScope.signal });
 
   // ------------------------------------------------------- tiled / tabs view
   const setView = (view: "tiled" | "tabs", force = false) => {
@@ -425,7 +409,7 @@ export function initMultiplayerPanes({
   // Live client-count change: grow or shrink the mirror set in place. Pane 1
   // is untouched, so its model (and the editor session) survive.
   const setCount = (n: number) => {
-    const target = Math.max(1, Math.min(PLAYER_COLORS.length, Math.floor(n) || 1));
+    const target = Math.max(1, Math.min(MAX_CLIENTS, Math.floor(n) || 1));
     while (panes.length < target) addMirror(true);
     while (panes.length > target) removeMirror();
     if (focused >= panes.length) focusPane(0);
@@ -435,7 +419,7 @@ export function initMultiplayerPanes({
   updateChrome();
 
   // -------------------------------------------------------------- link menu
-  function buildLinkMenu(pane: Pane, host: HTMLElement) {
+  function buildLinkMenu(pane: Pane, host: HTMLElement, signal: AbortSignal) {
     const chip = host.querySelector(".mp-link-chip") as HTMLButtonElement;
     const menu = document.createElement("div");
     menu.className = "mp-link-menu";
@@ -476,9 +460,13 @@ export function initMultiplayerPanes({
       }
       menu.hidden = !open;
     });
-    document.addEventListener("mousedown", (event) => {
-      if (!host.contains(event.target as Node)) menu.hidden = true;
-    });
+    document.addEventListener(
+      "mousedown",
+      (event) => {
+        if (!host.contains(event.target as Node)) menu.hidden = true;
+      },
+      { signal }
+    );
     for (const button of menu.querySelectorAll<HTMLButtonElement>(".mp-link-presets button")) {
       button.addEventListener("click", () => {
         const preset = LINK_PRESETS.find((candidate) => candidate.name === button.dataset.name);
@@ -506,9 +494,11 @@ export function initMultiplayerPanes({
   // shrink back to one client restore the page's own wording.
   let mainState: PaneState = "busy";
   let mainDetail = "";
+  const paneDetails = new Map<Pane, string>();
   let lastMain: { state: PaneState; text: string; detail: string } | null = null;
   const setPaneState = (pane: Pane, state: PaneState, detail = "") => {
     pane.state = state;
+    paneDetails.set(pane, detail);
     for (const dot of pane.dots) dot.dataset.state = state;
     pane.errStrip.hidden = state !== "error";
     if (state === "error") pane.errStrip.textContent = `✕ ${detail}`;
@@ -521,7 +511,8 @@ export function initMultiplayerPanes({
     }
     const states = [mainState, ...panes.slice(1).map((pane) => pane.state)];
     if (states.includes("error")) {
-      setPill("error", "✕ build error", mainDetail);
+      const failing = panes.find((pane) => pane.state === "error");
+      setPill("error", "✕ build error", (failing && paneDetails.get(failing)) || mainDetail);
     } else if (states.includes("busy")) {
       setPill("busy", "◐ reloading…", "");
     } else {
@@ -542,75 +533,6 @@ export function initMultiplayerPanes({
   $btn("mp-step").addEventListener("click", () => {
     for (const seam of seams()) seam.step();
   });
-  // The speculative preview (🔮): each pane simulates forward from its parked
-  // frame under the current code, replaying recorded input. Broadcast like
-  // pause — every pane extrapolates its own sim.
-  $btn("mp-extrap").addEventListener("click", () => {
-    const primary = primarySeam();
-    if (!primary) return;
-    const enabled = !primary.model().preview.enabled;
-    for (const seam of seams()) seam.setPreview({ enabled });
-  });
-
-  // ⚙ advanced: window/rate broadcast through the seam. The ghost-mode select
-  // isn't in the seam's model, so it reaches into each pane's own (hidden)
-  // scrubber select — a prototype-only shortcut, like the CSS injection.
-  const advWin = $input("mp-adv-win");
-  const advRate = $input("mp-adv-rate");
-  const advMode = chrono.querySelector("#mp-adv-mode") as HTMLSelectElement;
-  const pushAdv = () => {
-    if (!advWin.validity.valid || !advRate.validity.valid) return;
-    for (const seam of seams()) {
-      seam.setPreview({ seconds: advWin.valueAsNumber, rate: advRate.valueAsNumber });
-    }
-  };
-  advWin.addEventListener("input", pushAdv);
-  advRate.addEventListener("input", pushAdv);
-  advMode.addEventListener("change", () => {
-    for (const pane of panes) {
-      try {
-        const select = pane.iframe.contentDocument?.getElementById(
-          "scrub-mode"
-        ) as HTMLSelectElement | null;
-        if (select) {
-          select.value = advMode.value;
-          select.dispatchEvent(new Event("change"));
-        }
-      } catch {
-        // a pane mid-navigation has no reachable document
-      }
-    }
-  });
-
-  // The pink preview handle: drag to stretch the extrapolation window, exactly
-  // like the old in-frame scrubber's second slider.
-  const previewHandle = $("mp-preview-handle");
-  let previewDrag: { x: number; seconds: number } | null = null;
-  previewHandle.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    previewHandle.setPointerCapture(event.pointerId);
-    previewDrag = { x: event.clientX, seconds: primarySeam()?.model().preview.seconds ?? 2 };
-  });
-  previewHandle.addEventListener("pointermove", (event) => {
-    if (!previewDrag || !previewHandle.hasPointerCapture(event.pointerId)) return;
-    const current = primarySeam()?.view();
-    const width = rail.getBoundingClientRect().width;
-    const span = current ? current.viewport.hi - current.viewport.lo : 0;
-    if (width <= 0 || span <= 0) return;
-    const deltaFrames = ((event.clientX - previewDrag.x) / width) * span;
-    for (const seam of seams()) {
-      seam.setPreview({ seconds: previewDrag.seconds + deltaFrames / 60 });
-    }
-    const settled = primarySeam()?.model().preview.seconds;
-    if (settled !== undefined) advWin.value = String(settled);
-  });
-  const endPreviewDrag = () => {
-    previewDrag = null;
-  };
-  previewHandle.addEventListener("pointerup", endPreviewDrag);
-  previewHandle.addEventListener("pointercancel", endPreviewDrag);
-
   const tip = $("mp-evt-tip");
   const showTip = (unit: number, text: string) => {
     tip.style.display = "block";
@@ -661,29 +583,18 @@ export function initMultiplayerPanes({
       $("mp-recorded").style.width =
         `${Math.max(current.recordedEndUnit - current.recordedStartUnit, 0) * 100}%`;
       $("mp-playhead").style.left = `${current.playheadUnit * 100}%`;
-      const previewOn = primary.model().preview.enabled;
-      const future = $("mp-future");
-      future.style.left = `${current.playheadUnit * 100}%`;
-      future.style.width = previewOn
-        ? `${Math.max(current.previewEndUnit - current.playheadUnit, 0) * 100}%`
-        : "0";
-      previewHandle.style.display = previewOn ? "block" : "none";
-      previewHandle.style.left = `${current.previewEndUnit * 100}%`;
-      previewHandle.classList.toggle("clipped", current.previewClippedFrames > 0);
-      const overflow = $("mp-overflow");
-      overflow.style.display = previewOn && current.previewClippedFrames > 0 ? "block" : "none";
-      overflow.textContent = `+${current.previewClippedFrames}`;
-      $btn("mp-extrap").classList.toggle("on", previewOn);
-      $btn("mp-extrap").setAttribute("aria-pressed", String(previewOn));
-      const labelHtml =
-        `${current.selectedFrame}` +
-        (previewOn ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
-        ` / ${Math.round(current.viewport.hi)}`;
-      if (labelHtml !== lastLabel) {
-        lastLabel = labelHtml;
-        $("mp-frame").innerHTML = labelHtml;
+      const labelText = `${current.selectedFrame} / ${Math.round(current.viewport.hi)}`;
+      if (labelText !== lastLabel) {
+        lastLabel = labelText;
+        $("mp-frame").textContent = labelText;
       }
       $btn("mp-pause").textContent = current.paused ? "▶" : "⏸";
+      // A pane that boots while the session is parked must not run off on its
+      // own: keep every seam's pause state converged on the focused pane's.
+      // Idempotent, so this costs one boolean read per pane per frame.
+      for (const seam of seams()) {
+        if (seam !== primary && seam.paused() !== current.paused) seam.togglePause();
+      }
       // Second ticks (60 frames), heavier every 5s. Positions track the moving
       // viewport each frame; nodes are recycled, only count changes touch DOM.
       const lo = current.viewport.lo;
@@ -701,9 +612,15 @@ export function initMultiplayerPanes({
       });
       // Event markers (input / reload / reload-error): the reload ticks are the
       // "source changes on the timeline" — every hot-swap is already recorded.
-      const key = current.eventMarkers
-        .map((marker) => `${marker.id}:${marker.unit.toFixed(4)}:${marker.kind}`)
-        .join("|");
+      const key =
+        `${focused}|` +
+        current.eventMarkers
+          .map(
+            (marker) =>
+              `${marker.id}@${marker.frame}:${marker.unit.toFixed(4)}:${marker.kind}:` +
+              `${marker.category}:${marker.count}`
+          )
+          .join("|");
       if (key !== markerKey) {
         markerKey = key;
         hideTip();
@@ -739,11 +656,12 @@ export function initMultiplayerPanes({
   };
   // rAF, not a timer: while dragging the rail the playhead/label must track
   // the pointer at frame rate — a slow poll here reads as a sluggish sim.
-  // All DOM writes above are change-guarded, so the steady-state cost is
-  // reads only (same shape as the in-frame scrubber's own rAF loop).
+  // The label and marker writes are change-guarded; the geometry writes are
+  // plain style assignments (same shape as the in-frame scrubber's loop).
+  // At one client the chrono bar is display:none, so painting is skipped.
   let raf = 0;
   const tickLoop = () => {
-    paint();
+    if (panes.length > 1) paint();
     raf = requestAnimationFrame(tickLoop);
   };
   raf = requestAnimationFrame(tickLoop);
@@ -777,6 +695,8 @@ export function initMultiplayerPanes({
     count: () => panes.length,
     destroy() {
       cancelAnimationFrame(raf);
+      moduleScope.abort();
+      while (mirrors.length) removeMirror();
     },
   };
 }

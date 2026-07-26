@@ -2498,7 +2498,7 @@ a:hover {
 }
 
 .mp-chrono.dormant .mp-rail,
-.mp-chrono.dormant .mp-frame-lbl {
+.mp-chrono.dormant .mp-rail-label {
   opacity: 0.35;
 }
 
@@ -2597,16 +2597,6 @@ a:hover {
   border: 1px solid #b9f8ff;
   box-shadow: 0 0 12px rgba(65, 216, 230, 0.6);
   pointer-events: none;
-}
-
-.mp-frame-lbl {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.mp-frame-lbl b {
-  color: var(--text-dim);
-  font-weight: 400;
 }
 
 .mp-viewseg {
@@ -2711,7 +2701,9 @@ a:hover {
      border, real separation from depth. */
   border: 1px solid color-mix(in srgb, var(--pc) 12%, rgba(43, 37, 66, 0.6));
   border-radius: 5px;
-  overflow: hidden;
+  /* NOT overflow:hidden — the link menu must escape the pane. The children
+     carry the rounding: the header clips its top corners, the body clips the
+     iframe's bottom corners (unless the error strip is the last row). */
   background: #0b0817;
   box-shadow:
     0 2px 6px rgba(0, 0, 0, 0.45),
@@ -2730,6 +2722,7 @@ a:hover {
 .mp-pane-hd {
   position: relative;
   z-index: 6; /* the link menu must paint above the pane's iframe */
+  border-radius: 4px 4px 0 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2809,6 +2802,11 @@ a:hover {
   flex: 1;
   min-height: 0;
   position: relative;
+  overflow: hidden;
+}
+
+.mp-pane-body:last-child {
+  border-radius: 0 0 4px 4px;
 }
 
 .mp-pane-body iframe {
@@ -2820,6 +2818,7 @@ a:hover {
 }
 
 .mp-pane-err {
+  border-radius: 0 0 4px 4px;
   padding: 4px 9px;
   font: 10.5px/1.4 var(--font-mono);
   color: var(--red);
@@ -2960,25 +2959,6 @@ a:hover {
   opacity: 0.7;
 }
 
-.mp-rail-label .fut {
-  color: var(--pink);
-}
-
-.mp-future {
-  position: absolute;
-  top: 11px;
-  height: 8px;
-  border-radius: 3px;
-  background: var(--pink);
-  opacity: 0.9;
-  box-shadow: 0 0 10px rgba(232, 88, 184, 0.5);
-}
-
-#mp-extrap.on {
-  border-color: var(--pink);
-  box-shadow: 0 0 0 1px var(--pink), 0 2px 10px rgba(232, 88, 184, 0.4);
-}
-
 .mp-viewseg button:disabled {
   opacity: 0.35;
   cursor: default;
@@ -3014,10 +2994,8 @@ a:hover {
 }
 
 .preview-pane.mp[data-count="1"] .mp-pane.focus {
-  border-color: color-mix(in srgb, var(--pc) 12%, rgba(43, 37, 66, 0.6));
-  box-shadow:
-    0 2px 6px rgba(0, 0, 0, 0.45),
-    0 12px 36px rgba(0, 0, 0, 0.55);
+  border: 0;
+  box-shadow: none;
 }
 
 /* ---- restored scrubber polish: handles, tooltip, overflow chip, ⚙ ---- */
@@ -3041,41 +3019,6 @@ a:hover {
   outline-offset: 1px;
 }
 
-.mp-preview-handle {
-  display: none;
-  position: absolute;
-  top: 15px;
-  z-index: 3;
-  width: 14px;
-  height: 20px;
-  border-radius: 4px;
-  transform: translate(-50%, -50%);
-  background: var(--pink);
-  border: 1px solid #ffd0ee;
-  box-shadow: 0 0 12px rgba(232, 88, 184, 0.6);
-  cursor: ew-resize;
-  touch-action: none;
-}
-
-.mp-preview-handle.clipped {
-  border-radius: 4px 0 0 4px;
-}
-
-.mp-overflow {
-  display: none;
-  position: absolute;
-  right: 0;
-  top: -6px;
-  z-index: 4;
-  padding: 2px 4px;
-  border: 1px solid var(--pink);
-  border-radius: 5px;
-  color: #ffd0ee;
-  background: rgba(30, 24, 51, 0.96);
-  font-size: 9px;
-  pointer-events: none;
-}
-
 .mp-evt-tip {
   display: none;
   position: absolute;
@@ -3097,94 +3040,10 @@ a:hover {
   pointer-events: none;
 }
 
-.mp-adv {
-  position: relative;
-}
-
-.mp-adv > summary {
-  list-style: none;
-  user-select: none;
-  font: 13px/1 var(--font-mono);
-  color: var(--text);
-  cursor: pointer;
-  background: rgba(65, 216, 230, 0.1);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 5px 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-}
-
-.mp-adv > summary::-webkit-details-marker {
-  display: none;
-}
-
-.mp-adv > summary:hover,
-.mp-adv[open] > summary {
-  border-color: var(--cyan);
-}
-
-.mp-adv-pop {
-  position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  background: rgba(30, 24, 51, 0.98);
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.mp-adv-pop label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  justify-content: space-between;
-}
-
-.mp-adv-pop select,
-.mp-adv-pop input[type="number"] {
-  font: 12px/1 var(--font-mono);
-  color: var(--text);
-  background: rgba(65, 216, 230, 0.1);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 4px 5px;
-}
-
-.mp-adv-pop select {
-  appearance: none;
-  -webkit-appearance: none;
-  padding-right: 20px;
-  cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%239b94b3'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 7px center;
-}
-
-.mp-adv-pop input[type="number"] {
-  width: 46px;
-}
-
-/* ---- 🔮 is single-client only; multiplayer gets tiled/tabs in its place ---- */
-
-/* Whole-session forward extrapolation means N speculative re-simulations —
-   not v1, and a greyed magic wand invites bug reports. Hidden, not disabled
-   (design-multiplayer-ide-frontend.md §1); the view toggle takes the slot.
-   With one client the toggle is meaningless and the 🔮/⚙ pair returns. */
-.preview-pane.mp:not([data-count="1"]) #mp-extrap,
-.preview-pane.mp:not([data-count="1"]) .mp-adv {
-  display: none;
-}
-
-.preview-pane.mp[data-count="1"] .mp-viewseg {
-  display: none;
-}
+/* The 🔮 extrapolation surface ships with the single-client chrono
+   unification (it is single-client-only by design: whole-session forward
+   extrapolation means N speculative re-simulations). Until then the chrono
+   bar carries the view toggle alone. */
 
 /* ---- second ticks along the rail (every 60 frames; heavier each 5s) ---- */
 
@@ -3207,16 +3066,13 @@ a:hover {
 /* Numeric fields are raw text entry — the native spinner arrows fight the
    theme and are unusably small; type=number keeps validation and keyboard
    arrows working. */
-.mp-link-menu input[type="number"],
-.mp-adv-pop input[type="number"] {
+.mp-link-menu input[type="number"] {
   appearance: textfield;
   -moz-appearance: textfield;
 }
 
 .mp-link-menu input[type="number"]::-webkit-inner-spin-button,
-.mp-link-menu input[type="number"]::-webkit-outer-spin-button,
-.mp-adv-pop input[type="number"]::-webkit-inner-spin-button,
-.mp-adv-pop input[type="number"]::-webkit-outer-spin-button {
+.mp-link-menu input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
