@@ -36,9 +36,12 @@ let square : (Color.t, float) => t
 /// The font is a monospace 8x8 bitmap, so each character advances by exactly
 /// `size` — ask `measure` for a run's size rather than assuming it. `\n` starts
 /// a new line, stacked at exactly one `size` of line height, and each line is
-/// centered within the block. Characters outside printable ASCII occupy their
-/// cell but draw nothing, so unsupported text leaves gaps instead of shifting
-/// the rest of the line.
+/// centered within the block. That stride is the glyph cell, so lines never
+/// overlap but sit tight — a descender nearly meets the next line's capitals,
+/// as in a terminal. For airier text, draw the lines yourself and space them by
+/// more than `size` with `group` and `moveY`. Characters outside printable ASCII
+/// occupy their cell but draw nothing, so unsupported text leaves gaps instead
+/// of shifting the rest of the line.
 ///
 /// Text is centered, so align it by shifting half its measured width —
 /// `Sprite.moveX(Sprite.measure(size, s).width * 0.5, …)` puts its LEFT edge at

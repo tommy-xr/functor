@@ -90,6 +90,13 @@ that had shipped with a hole. `measure` and `text` route through one layout
 function, so they cannot disagree — width is the widest line's, height is
 `size` per line.
 
+The stride being exactly the glyph cell means lines cannot overlap but do sit
+tight: a descender nearly meets the next line's capitals, as in a terminal. That
+is the deliberate trade for making `size` a single self-consistent metric —
+looser leading is available by drawing lines individually and spacing them more
+than `size` apart, and an explicit line-height parameter belongs to the
+follow-up `textBlock`.
+
 **Unsupported characters occupy their cell and draw nothing.** Skip, not a tofu
 box: there is no atlas cell to spare for tofu, and a monospace gap already
 localizes the problem legibly. Because the decision is made in shared lowering
