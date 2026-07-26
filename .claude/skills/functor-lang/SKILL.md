@@ -1172,6 +1172,11 @@ scene |> Physics.transformed(tag)                          // scene at the body'
 Physics.applyImpulse(tag, v)                               // -> Effect (fire-and-forget)
 Physics.applyForce(tag, v)                                 //   force lasts ONE stepped frame
 Physics.setVelocity(tag, v) / Physics.teleport(tag, v)
+Physics.setVelocityXZ(tag, x, z)                           // write ONLY the horizontal plane;
+                                                           //   the solver keeps y (the
+                                                           //   character-controller command)
+Physics.setVelocityY(tag, v)                                // write ONLY the vertical axis;
+                                                           //   a jump that keeps the run
 Physics.raycast(origin, dir, maxDist, tagger)              // -> Effect (QUERY): tagger gets
                                                            //   {hit, x, y, z, nx, ny, nz,
                                                            //    distance, tag} — hit: false
@@ -1254,8 +1259,11 @@ let tick = (m, dt, tts) =>
     let pos = Physics.position(playerTag) in
     let vel = Physics.linearVelocity(playerTag) in
     let onGround = probe(pos).hit in
-    let vy = if onGround && m.jump then 6.0 else vel.y in
-    (m, Physics.setVelocity(playerTag, Vec3.make(vel.x, vy, vel.z)))
+    // Steer the horizontal plane only — the solver owns `y`.
+    (m, if onGround && m.jump then
+          Effect.batch([Physics.setVelocityXZ(playerTag, vel.x, vel.z),
+                        Physics.setVelocityY(playerTag, 6.0)])
+        else Physics.setVelocityXZ(playerTag, vel.x, vel.z))
 ```
 
 The read happens in `tick`, the command drains immediately after `tick` (no
@@ -1267,15 +1275,15 @@ Note the two rules this example obeys: local `let` needs `in`, and the
 pre-step readers raise on the first frame, before the `physics` hook's
 declaration has been reconciled and stepped — so gate them.
 
-⚠️ The sketch above is the LOOP SHAPE, not a usable controller: its
-`else vel.y` is the first of three traps below. See the next section.
+⚠️ The sketch above is the LOOP SHAPE, not a usable controller — it has no
+coyote time, jump buffering, or post-jump lockout. See the next section.
 
 ### Character controllers on the `physics` hook
 
 `examples/physics-controller` is the worked reference (a dynamic capsule, a
 moving kinematic deck, coyote time, jump buffering, landing squash, walls),
 with its whole feel layer as pure functions under `expect`. Read it before
-writing a controller. The recipe, and the three traps that are NOT obvious:
+writing a controller. The recipe, and the parts that are NOT obvious:
 
 **Declare the body `|> Physics.upright`.** This is not optional. A dynamic
 capsule that can rotate picks up angular velocity from any glancing contact and
@@ -1304,29 +1312,52 @@ let surfaceVelocity = (probe) =>
 Then steer RELATIVE to that surface (`target = carry.x + wish * speed`), so
 standing still rides along and a jump inherits the deck's motion.
 
-**The three traps.** All three come from `Physics.setVelocity` replacing ALL
-THREE components — there is no horizontal-only command — so the controller must
-say something about `vy` every frame. All three were measured as visible
-artifacts, not theorized:
+**Steer with `Physics.setVelocityXZ`, and never write `vy` while grounded.**
+This is the single most important rule, and it is what the per-axis command
+exists for. `Physics.setVelocity` replaces all three components, so a
+controller using it has to invent a vertical velocity every frame — and the
+only values available are a stale read or a guess. `setVelocityXZ` writes the
+horizontal plane and leaves `y` exactly as the solver left it, so the ground
+contact, the landing impulse, and gravity all stay where they belong:
 
-1. **Do not echo the read back while grounded.** The read is one step stale, so
-   it still carries the downward speed the solver just cancelled at the contact;
-   re-commanding it drives the capsule into the floor. A capsule that should
-   rest 0.90 above the surface rested at 0.40 — and, downstream, stopped against
-   a wall 0.45 units early, because a half-buried capsule catches the wall's
-   corner instead of its face.
-2. **Commanding `0.0` while grounded also sinks, just slower.** Overwriting `vy`
-   destroys the contact's own pushout impulse too, so each step's gravity
-   increment accumulates as penetration (0.98 drifting to 0.40 over 260 frames).
-   Instead, own the standing height with a **ground clamp**: the probe already
-   measured the distance, so correct toward the rest distance, `error / dt`,
-   bounded to a few units/s. This also buys stick-to-a-descending-deck for free.
-3. **The ground clamp will cancel your jump** unless you suppress it. For the
-   first frames after takeoff the feet are still within the probe's reach, so
-   the character reads as grounded and gets clamped back down — it rose 0.12
-   units instead of 1.16, `vy` flipping +6.83 to −6.37 in one frame. Arm a short
-   **post-jump lockout** (~0.1 s) when the jump fires, and treat grounding as
-   false for its duration.
+```functor
+(next, Physics.setVelocityXZ(playerTag, want.x, want.z))
+```
+
+The one frame that *should* write the vertical axis is the jump, and
+`Physics.setVelocityY` writes only that — so it keeps the run's horizontal
+momentum, and (unlike `applyImpulse`) does not scale with the body's mass:
+
+```functor
+Effect.batch([
+  Physics.setVelocityXZ(playerTag, want.x, want.z),
+  Physics.setVelocityY(playerTag, jumpSpeed + carry.y),
+])
+```
+
+The two masks are disjoint, so that pair applies as one whole-vector write.
+More generally, velocity commands in the same frame compose as **last-write-
+wins per axis**, against the live body at apply time.
+
+Doing this deleted the hand-written **ground clamp** the example used to
+carry — a `error / dt` correction toward the standing height, plus the `dt = 0`
+NaN guard it needed. Measured across a 400-frame scripted run, dropping the
+clamp for `setVelocityXZ` left the resting height (0.8987 vs 0.8988), the wall
+stop (`x = −6.3012`), the jump rise (`+0.9363`), and the platform ride (91
+frames on the deck) all unchanged; the only difference is a transient 0.04 dip
+during a hard landing that the clamp used to correct away instantly.
+
+⚠️ A clamp is still the answer for one thing the solver will not do:
+**sticking to a surface that drops away**. Without it a character on a
+descending platform goes briefly ballistic. Add it back only if you have
+descending platforms, and only for that.
+
+**Still arm a post-jump lockout** (~0.1 s) when the jump fires, and treat
+grounding as false for its duration. For the first frames after takeoff the
+feet are still within the probe's reach, so the character reads as grounded
+while it is physically leaving the ground: coyote time refills, a second tap
+gets a free second jump, and steering uses the ground acceleration rate in
+mid-air.
 
 **Keep the decisions pure.** Read the world in `tick`, pass a plain
 `observation` record (grounded, velocity, probe distance, rest height) to

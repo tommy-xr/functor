@@ -9,7 +9,7 @@ interesting comparison is what each one has to write, and what it gets for
 free.
 
 ```sh
-functor -d examples/physics-controller test          # 39 expects (32 controller, 7 level data)
+functor -d examples/physics-controller test          # 34 expects (27 controller, 7 level data)
 functor -d examples/physics-controller run native    # WASD / arrows, SPACE to jump, ENTER to respawn
 ```
 
@@ -26,7 +26,7 @@ let tick = (model, dt, tts) =>
   let carry = surfaceVelocity(probe) in
   let sensed = Control.sense(dt, obs, m.jumpEdge, m.ctl) in   // decide (pure)
   let want   = Control.desiredVelocity(dt, obs, carry, sensed) in
-  (next, Physics.setVelocity(playerTag, Vec3.make(want.x, want.y, want.z)))  // write
+  (next, Physics.setVelocityXZ(playerTag, want.x, want.z))    // write (horizontal only)
 ```
 
 The reads see the previous step (physics runs after `tick`) and the command
@@ -35,14 +35,14 @@ within one frame. That one step of read latency is inherent to any
 read → decide → step simulation, not a Functor restriction.
 
 `control.fun` holds every decision as a pure function of an *observation*, so
-the entire feel layer — coyote time, jump buffering, acceleration, the ground
-clamp, landing response — is covered by `expect` tests that run in
-milliseconds with no GPU, no window, and no rapier world.
+the entire feel layer — coyote time, jump buffering, acceleration, landing
+response — is covered by `expect` tests that run in milliseconds with no GPU,
+no window, and no rapier world.
 
 The character body **must** be declared `|> Physics.upright`. A dynamic capsule
 that can rotate picks up angular velocity from any glancing contact and topples
 — and a tipped capsule's lowest point is no longer `feetOffset` below its
-center, so the grounding probe and the ground clamp both start lying. (This
+center, so the grounding probe starts lying. (This
 attribute did not exist before this example; adding it is part of this change.)
 
 ### The one idea worth stealing
@@ -96,7 +96,7 @@ whatever it stands on; the plaza's top face is `y = 0` and the deck's is
 | Riding the moving platform | **CLEAN** | `probe.tag` → `linearVelocity` tracks the deck's analytic velocity to within 0.030 on a 2.4 u/s deck. Relative offset `x − deckX` held at −0.48 ± 0.02 over 80 frames — bounded and oscillatory, not accumulating. |
 | Wall | **CLEAN, and free** | Held into the wall for 220 frames: stopped at `x = −6.3012` against a predicted −6.3000 (wall face −6.7, capsule radius 0.4) and stayed — `x` and `z` both constant to four decimals from f=260 to f=399. Zero collision code in the game. |
 | Edge / ledge fall-off | **CLEAN, and free** | Walking off the deck's edge simply stops being grounded; gravity and the solver do the rest. |
-| Standing height | **CLEAN, with a caveat** | A constant 0.8988 on the plaza and 2.1462–2.1488 on the deck. Getting here needed a ground clamp, a post-jump lockout, and `Physics.upright` — see below. |
+| Standing height | **CLEAN** | A constant 0.8987 on the plaza and 2.1462–2.1487 on the deck, owned entirely by the solver: the controller never writes the vertical axis. Needs `Physics.setVelocityXZ`, a post-jump lockout, and `Physics.upright` — see below. |
 | Keeping the capsule upright | **WAS IMPOSSIBLE — fixed in this change** | A rotating capsule visibly toppled (40-80° off vertical mid-jump) and then crept 0.19 units sideways along the wall with no input. No rotation lock, angular damping, or angular-velocity command existed in the `Physics` API, so this was unfixable in game code. This change adds `Physics.upright`. |
 
 ### The one thing that was genuinely impossible
@@ -109,8 +109,8 @@ depends on the frame), and once it leaned on the wall it crept
 0.19 units along `z` over 140 frames with no input, still accelerating. It also
 silently corrupted the controller, because a tipped capsule's lowest point is
 `radius + halfHeight·cos θ` below its center rather than the fixed
-`feetOffset` the probe and the ground clamp assume — which showed up as a
-±0.031 ripple in the standing height.
+`feetOffset` the probe assumes — which showed up as a ±0.031 ripple in the
+standing height.
 
 This change adds `Physics.upright`, a nullary body attribute in the shape of
 `Physics.sensor`, mapping to rapier's `LockedAxes::ROTATION_LOCKED`. With it,
@@ -118,42 +118,61 @@ the standing height is a **constant 0.8988** and the wall contact is
 **motionless in both `x` and `z`**. It is the smallest surface that fixes the
 problem, and it is off by default so existing bodies tumble exactly as before.
 
-### The two things that were awkward but correct
+### The vertical axis, and the workaround that is now gone
 
-Both are about `Physics.setVelocity` replacing **all three** velocity
-components — there is no horizontal-only command — so the controller must say
-something about `vy` every single frame. Two plausible answers are wrong, and
-both failures were *observable*, not theoretical:
+This example was originally written against `Physics.setVelocity`, which
+replaces **all three** components. A controller steering with it must say
+something about `vy` every single frame, and the only values available are a
+stale read or a guess. To keep the capsule at its standing height the example
+carried a hand-written **ground clamp**: while grounded, correct toward the
+rest distance the probe measured, `error / dt`, bounded — plus a `dt = 0`
+guard so the `--fixed-time` capture path did not divide by zero.
 
-1. **Echoing the read back sank the character half a unit into the floor.**
-   The read is one step stale, so while grounded it still carries the downward
-   speed the solver just cancelled at the contact. Re-commanding it drives the
-   capsule in. Measured: it rested at `y = 0.40` instead of 0.90. A downstream
-   symptom was that the wall stop landed at `x = −5.85` instead of −6.30,
-   because a half-buried capsule contacts the wall's corner rather than its
-   face.
+`Physics.setVelocityXZ` deletes all of that. It writes only the horizontal
+plane, so the solver keeps the `y` it is using to resolve the ground contact,
+and the controller simply has no vertical opinion to get wrong. The jump — the
+one frame that *should* drive the vertical axis — uses `Physics.setVelocityY`,
+which keeps the run's horizontal momentum and does not scale with mass.
 
-2. **Commanding `0` while grounded still sank it, slowly.** Overwriting `vy`
-   every frame also destroys the contact's own pushout impulse, so each step's
-   gravity increment accumulates as penetration: `y = 0.98` drifting to 0.40
-   over 260 frames.
+Measured over the 400-frame scripted run above, before and after:
 
-The fix is the standard character-controller **ground clamp**: while grounded,
-own the standing height explicitly by correcting toward the rest distance the
-probe already measured, `error / dt`, bounded. It also buys stick-to-a-
-descending-deck for free.
+| | ground clamp | `setVelocityXZ` |
+| --- | --- | --- |
+| resting height | 0.8988 | 0.8987 |
+| wall stop `x` | −6.3012 | −6.3012 |
+| jump rise | +0.9363 | +0.9363 |
+| frames on the deck | 91 | 91 |
+| lowest `y` | 0.8962 | 0.8554 |
 
-That fix then exposed a third, equally classic problem: **the ground clamp
-cancelled the jump.** For the first frames after takeoff the feet are still
-within the probe's reach, so the character read as grounded and the clamp
-yanked it back down — it rose 0.12 units instead of 1.16, with `vy` flipping
-+6.83 → −6.37 in one frame. The fix is a short post-jump lockout during which
-grounding is ignored (`jumpLockTime = 0.1`).
+Everything that matters is unchanged. The one difference is the last row: a
+transient ~0.04 dip at the hardest landing, where the solver briefly resolves
+its own penetration instead of the clamp erasing it in a single frame. It is
+not visible in motion.
 
-None of these three are Functor-specific; every engine's character controller
-carries the same three counter-measures. They are called out here because they
-are exactly the traps an author hits on day one, and all three are now pinned
-by regression `expect`s in `control.fun`.
+**One thing the clamp did that the solver will not**: stick to a surface that
+is dropping away. This level's deck only slides along `x`, so nothing here
+exercises it — but a character on a *descending* platform goes briefly
+ballistic without a clamp. Add one back for that case, and only for that case.
+
+**The post-jump lockout is still needed** (`jumpLockTime = 0.1`). For the first
+frames after takeoff the feet are still within the probe's reach, so the
+character reads as grounded while it is physically leaving the ground: coyote
+time refills, a second tap of SPACE gets a free second jump, and steering uses
+the ground acceleration rate in mid-air.
+
+**A note on the earlier measurements.** The two sinking failures this section
+used to report (a capsule resting at 0.40 instead of 0.90, from echoing the
+read back or from commanding `0` while grounded) were re-tested at the command
+layer while adding `setVelocityXZ`, and **neither reproduces**. Echoing the
+read back is bit-identical to issuing no command at all — the read and the
+command's apply point observe the same world state — and commanding `y = 0`
+while grounded recovers to the same resting height, because rapier resolves a
+landing's penetration positionally rather than through the velocity the game
+overwrites. Both were checked after a real drop-and-land, under a fixed frame
+time and a jittered one; see `masked_writes_are_transparent_on_the_untouched_axis`
+in `runtime/functor-runtime-common/src/physics/world.rs`. The case for the
+per-axis command is therefore ergonomic and architectural — a game should not
+have to author an axis the solver owns — not a sinking fix.
 
 ## Does this want a `postTick` hook?
 
@@ -195,11 +214,12 @@ have been fixed by `postTick`:
 
 1. **No rotation lock** (fixed here as `Physics.upright`). This was the only
    *impossible* item, and it is a body attribute, not a lifecycle question.
-2. **`Physics.setVelocity` is all-or-nothing across three axes**, which is what
-   forced the ground clamp to be written by hand. A per-axis or
-   horizontal-only velocity command would have removed both sinking failure
-   modes outright. Still open, and a much smaller, better-targeted change than
-   a new hook — the problem is the *shape of the command*, not when it runs.
+2. **`Physics.setVelocity` was all-or-nothing across three axes**, which is
+   what forced the ground clamp to be written by hand. **Now fixed**:
+   `Physics.setVelocityXZ` / `Physics.setVelocityY` write only the axes they
+   name, and this example's clamp is deleted. It was a much smaller,
+   better-targeted change than a new hook — the problem was the *shape of the
+   command*, not when it runs.
 
 That both real gaps turned out to be one-line API surface rather than frame
 ordering is itself the argument: the `tick`-plus-synchronous-queries loop was

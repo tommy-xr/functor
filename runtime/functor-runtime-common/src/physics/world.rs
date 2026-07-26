@@ -45,6 +45,23 @@ pub enum PhysicsCommand {
     /// a recorded frame, so a force lasts exactly one fixed step.
     ApplyForce { tag: String, force: [f32; 3] },
     SetVelocity { tag: String, velocity: [f32; 3] },
+    /// Replace only the axes flagged in `axes` (x, y, z), leaving the rest of
+    /// the body's linear velocity exactly as the world holds it at apply time.
+    ///
+    /// The character-controller case: steering owns the horizontal plane while
+    /// the solver keeps the vertical axis it is using to resolve the ground
+    /// contact. Writing all three every frame destroys that contact impulse,
+    /// so each step's gravity increment accumulates as penetration — see
+    /// `masked_writes_do_not_sink_a_grounded_capsule`.
+    ///
+    /// Unmasked axes are read from the live body, so several commands in one
+    /// frame compose: they apply in queue order, and the LAST write to a given
+    /// axis wins while every axis nobody wrote is untouched.
+    SetVelocityAxes {
+        tag: String,
+        velocity: [f32; 3],
+        axes: [bool; 3],
+    },
     /// Move the live body without touching its declaration (the declared
     /// cache is unchanged, so the next frame's unchanged declaration does not
     /// snap it back).
@@ -58,6 +75,7 @@ impl PhysicsCommand {
             PhysicsCommand::ApplyImpulse { tag, .. } => (tag, "applyImpulse"),
             PhysicsCommand::ApplyForce { tag, .. } => (tag, "applyForce"),
             PhysicsCommand::SetVelocity { tag, .. } => (tag, "setVelocity"),
+            PhysicsCommand::SetVelocityAxes { tag, .. } => (tag, "setVelocity"),
             PhysicsCommand::Teleport { tag, .. } => (tag, "teleport"),
         }
     }
@@ -693,6 +711,22 @@ impl World {
                 }
                 PhysicsCommand::SetVelocity { velocity, .. } => {
                     rb.set_linvel(vec3(*velocity), true);
+                }
+                PhysicsCommand::SetVelocityAxes { velocity, axes, .. } => {
+                    // Unmasked axes are read from the LIVE body here, not from
+                    // whatever the game read in `tick` — so this composes with
+                    // reconcile and with any command already applied from this
+                    // same frame's queue.
+                    let live = rb.linvel();
+                    let keep = [live.x, live.y, live.z];
+                    let next = std::array::from_fn(|i| {
+                        if axes[i] {
+                            velocity[i]
+                        } else {
+                            keep[i]
+                        }
+                    });
+                    rb.set_linvel(vec3(next), true);
                 }
                 PhysicsCommand::Teleport { position, .. } => {
                     let rotation = *rb.rotation();
@@ -1486,6 +1520,254 @@ mod tests {
         w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])]));
         let (after, _) = w.body_transform("a").unwrap();
         assert_eq!(after[0], 3.0);
+    }
+
+    // ── per-axis velocity writes ────────────────────────────────────────
+
+    fn set_xz(tag: &str, x: f32, z: f32) -> PhysicsCommand {
+        PhysicsCommand::SetVelocityAxes {
+            tag: tag.to_string(),
+            velocity: [x, 0.0, z],
+            axes: [true, false, true],
+        }
+    }
+
+    fn set_y(tag: &str, y: f32) -> PhysicsCommand {
+        PhysicsCommand::SetVelocityAxes {
+            tag: tag.to_string(),
+            velocity: [0.0, y, 0.0],
+            axes: [false, true, false],
+        }
+    }
+
+    /// A body in a gravity-free world with a known starting velocity, for the
+    /// composition tests: with no gravity and no contacts the velocity after
+    /// one step is exactly what the command queue left behind.
+    fn drifting(velocity: [f32; 3]) -> World {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&PhysicsScene::create(
+            [0.0, 0.0, 0.0],
+            vec![crate_at("a", [0.0, 0.0, 0.0]).with_velocity(velocity)],
+        ));
+        w
+    }
+
+    #[test]
+    fn set_velocity_xz_leaves_the_vertical_axis_alone() {
+        let mut w = drifting([1.0, -5.0, 2.0]);
+        w.queue_command(set_xz("a", 7.0, -7.0));
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_velocity("a").unwrap(), [7.0, -5.0, -7.0]);
+        assert!(w.take_command_warnings().is_empty());
+    }
+
+    #[test]
+    fn set_velocity_y_leaves_the_horizontal_plane_alone() {
+        let mut w = drifting([1.0, -5.0, 2.0]);
+        w.queue_command(set_y("a", 7.2));
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_velocity("a").unwrap(), [1.0, 7.2, 2.0]);
+    }
+
+    /// The composition rule: commands apply in queue order against the LIVE
+    /// body, so the last write to a given axis wins and an axis nobody wrote
+    /// is untouched. The two masks partition all three axes, so issuing both
+    /// in one frame is exactly a whole-vector `SetVelocity`.
+    #[test]
+    fn same_frame_masked_writes_compose_per_axis() {
+        // Disjoint masks: together they equal the full write.
+        let mut w = drifting([1.0, -5.0, 2.0]);
+        w.queue_command(set_xz("a", 3.0, 4.0));
+        w.queue_command(set_y("a", 9.0));
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_velocity("a").unwrap(), [3.0, 9.0, 4.0]);
+
+        // Order-independent, because the masks do not overlap.
+        let mut w = drifting([1.0, -5.0, 2.0]);
+        w.queue_command(set_y("a", 9.0));
+        w.queue_command(set_xz("a", 3.0, 4.0));
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_velocity("a").unwrap(), [3.0, 9.0, 4.0]);
+
+        // Overlapping masks: last wins, per axis.
+        let mut w = drifting([1.0, -5.0, 2.0]);
+        w.queue_command(set_xz("a", 3.0, 4.0));
+        w.queue_command(set_xz("a", 6.0, 8.0));
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_velocity("a").unwrap(), [6.0, -5.0, 8.0]);
+
+        // A masked write reads the axis it preserves from the live body, so a
+        // whole-vector write queued EARLIER in the same frame is visible to it
+        // — not the stale value the game read in `tick`.
+        let mut w = drifting([1.0, -5.0, 2.0]);
+        w.queue_command(PhysicsCommand::SetVelocity {
+            tag: "a".to_string(),
+            velocity: [0.0, 11.0, 0.0],
+        });
+        w.queue_command(set_xz("a", 3.0, 4.0));
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_velocity("a").unwrap(), [3.0, 11.0, 4.0]);
+
+        // And the reverse order lets the full write clobber the masked one —
+        // "last wins per axis" with the full mask covering everything.
+        let mut w = drifting([1.0, -5.0, 2.0]);
+        w.queue_command(set_xz("a", 3.0, 4.0));
+        w.queue_command(PhysicsCommand::SetVelocity {
+            tag: "a".to_string(),
+            velocity: [0.0, 11.0, 0.0],
+        });
+        w.step_frame(FIXED_DT);
+        assert_eq!(w.body_velocity("a").unwrap(), [0.0, 11.0, 0.0]);
+    }
+
+    #[test]
+    fn masked_writes_share_the_unknown_and_non_dynamic_warnings() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![ground(), crate_at("a", [0.0, 5.0, 0.0])]));
+        w.queue_command(set_xz("nobody", 1.0, 1.0));
+        w.queue_command(set_y("ground", 1.0));
+        w.step_frame(FIXED_DT);
+        let warnings = w.take_command_warnings();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("unknown tag"), "{warnings:?}");
+        assert!(warnings[1].contains("non-dynamic"), "{warnings:?}");
+    }
+
+    /// The capsule's feet offset (half-height + radius) and the grounding
+    /// probe's skin, from `examples/physics-controller`.
+    const FEET: f32 = 0.9;
+    const PROBE_SKIN: f32 = 0.15;
+
+    /// What the character-controller harness observes each frame.
+    #[derive(Clone, Copy)]
+    struct Obs {
+        vy: f32,
+        grounded: bool,
+    }
+
+    /// Drive a character capsule for `frames` fixed steps under `policy`,
+    /// which is handed the body's live velocity each frame and queues whatever
+    /// it wants. Returns the body's final Y.
+    ///
+    /// Mirrors `examples/physics-controller`: gravity -22, an upright
+    /// frictionless capsule (half-height 0.5 + radius 0.4, so the feet sit
+    /// 0.9 below the center) standing on a fixed slab whose top is y = 0. The
+    /// correct resting height is therefore y = 0.90.
+    fn rest_height_dt(
+        spawn_y: f32,
+        frames: u32,
+        dt: impl Fn(u32) -> f32,
+        policy: impl Fn(&mut World, Obs),
+    ) -> f32 {
+        const GRAVITY: [f32; 3] = [0.0, -22.0, 0.0];
+        let declared = PhysicsScene::create(
+            GRAVITY,
+            vec![
+                Body::fixed(
+                    "ground".to_string(),
+                    Shape::Cuboid {
+                        extents: [40.0, 1.0, 40.0],
+                    },
+                )
+                .at([0.0, -0.5, 0.0])
+                .with_friction(0.8),
+                Body::dynamic(
+                    "player".to_string(),
+                    Shape::Capsule {
+                        half_height: 0.5,
+                        radius: 0.4,
+                    },
+                )
+                .at([0.0, spawn_y, 0.0])
+                .with_friction(0.0)
+                .with_restitution(0.0)
+                .with_mass(1.0)
+                .as_upright(),
+            ],
+        );
+        let mut w = World::new(GRAVITY);
+        for frame in 0..frames {
+            // Re-declared unchanged every frame, exactly as a `physics` hook
+            // does: an unchanged declaration means the simulation owns the
+            // body, so this is not a per-frame snap back to the spawn.
+            w.reconcile(&declared);
+            let y = w.body_transform("player").unwrap().0[1];
+            let vy = w.body_velocity("player").unwrap()[1];
+            // The same grounding probe the example uses: a ray from the
+            // capsule's center down past the feet by a 0.15 skin.
+            policy(
+                &mut w,
+                Obs {
+                    vy,
+                    grounded: y - FEET <= PROBE_SKIN,
+                },
+            );
+            w.step_frame(dt(frame));
+        }
+        w.body_transform("player").unwrap().0[1]
+    }
+
+    fn rest_height(spawn_y: f32, frames: u32, policy: impl Fn(&mut World, Obs)) -> f32 {
+        rest_height_dt(spawn_y, frames, |_| FIXED_DT, policy)
+    }
+
+    /// A masked write is EXACTLY transparent on the axes it does not name:
+    /// the body ends where the solver alone would have put it, so a game can
+    /// steer the horizontal plane without having any opinion about the
+    /// vertical one.
+    ///
+    /// That is the property the character-controller case needs, and it is
+    /// what `Physics.setVelocity` cannot offer — a controller steering with
+    /// the whole-vector command must author a `y` every frame, and the only
+    /// values available to it are a stale read or a guess.
+    ///
+    /// Investigated while adding this: the two sinking failures reported in
+    /// #503 (a capsule resting at 0.40 instead of 0.90) do NOT reproduce at
+    /// this layer. Echoing the read back is bit-identical to issuing no
+    /// command at all — the read and the command's apply point observe the
+    /// same world state — and commanding `y = 0` while grounded recovers to
+    /// the same resting height, because rapier resolves the landing's
+    /// penetration positionally rather than through the velocity the game
+    /// overwrites. Both were checked here after a real drop-and-land, under a
+    /// fixed frame time and under a jittered one (0- and 2-substep frames).
+    /// So this command's case is ergonomic and architectural, not a sinking
+    /// fix; whatever sank in #503 lived in the example, not in the surface.
+    #[test]
+    fn masked_writes_are_transparent_on_the_untouched_axis() {
+        // Dropped from a height, so it lands with real impact speed and the
+        // solver has actual penetration to recover from.
+        const SPAWN: f32 = 3.0;
+        let frames = 260;
+        let steer = |w: &mut World, _o: Obs| w.queue_command(set_xz("player", 0.0, 0.0));
+
+        let untouched = rest_height(SPAWN, frames, |_, _| {});
+        let masked = rest_height(SPAWN, frames, steer);
+        assert_eq!(
+            masked, untouched,
+            "a masked write moved the axis it does not name"
+        );
+        assert!(
+            (masked - FEET).abs() < 0.02,
+            "the capsule did not rest at its standing height: {masked}"
+        );
+
+        // Again under a JITTERED frame time, the way the real runtime drives
+        // it: some frames take no substep and some take two, so a command can
+        // sit pending across a frame and two can land before one substep.
+        let jitter = |f: u32| FIXED_DT * (0.6 + 0.9 * ((f % 7) as f32 / 6.0));
+        let untouched = rest_height_dt(SPAWN, frames, jitter, |_, _| {});
+        let masked = rest_height_dt(SPAWN, frames, jitter, steer);
+        assert_eq!(
+            masked, untouched,
+            "a masked write moved the untouched axis under a jittered frame time"
+        );
+
+        // The steered axes really are driven, so the test above is not just
+        // observing a command that did nothing at all.
+        let ran = rest_height(SPAWN, 60, |w, _| {
+            w.queue_command(set_xz("player", 4.0, 0.0));
+        });
+        assert!((ran - FEET).abs() < 0.02, "steering changed the height: {ran}");
     }
 
     #[test]

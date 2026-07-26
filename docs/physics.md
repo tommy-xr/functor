@@ -231,7 +231,19 @@ module Physics =
     let applyForce   (tag: string) (force: Vector3)   : effect<'msg>
     let setVelocity  (tag: string) (v: Vector3)       : effect<'msg>
     let teleport     (tag: string) (pos: Vector3)     : effect<'msg>
+    // Per-axis writes: the Y-up engine's natural partition, so a game can
+    // steer one part of the velocity and leave the rest to the solver.
+    let setVelocityXZ (tag: string) (x: float) (z: float) : effect<'msg>
+    let setVelocityY  (tag: string) (v: float)            : effect<'msg>
 ```
+
+`setVelocityXZ` / `setVelocityY` write only the axes they name and read the
+rest from the live body **at apply time** — after reconcile, and after any
+command already applied from the same frame's queue. Several velocity commands
+in one frame therefore compose as **last-write-wins per axis**, with every
+axis nobody wrote left exactly as the solver left it. The two masks partition
+all three axes, so issuing both in one frame equals a whole-vector
+`setVelocity`.
 
 **Queries — tagger effects.** *Shipped (Phase 4) on the Functor Lang surface*:
 `Physics.raycast(Vec3.make(ox, oy, oz), Vec3.make(dx, dy, dz), maxDist, tagger)` — the tagger

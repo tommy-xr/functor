@@ -2278,6 +2278,38 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
         "Physics.teleport(tag, v)",
         physics_command(|tag, position| physics::PhysicsCommand::Teleport { tag, position }),
     );
+    // Per-axis velocity writes. `setVelocity` replaces all three components,
+    // which forces a character controller to say something about the vertical
+    // axis every frame even when the solver is the one that should own it —
+    // and every available answer sinks the body (see the world tests). These
+    // two split the Y-up engine's natural partition: the horizontal plane the
+    // game steers, and the vertical axis a jump owns for one frame.
+    reg.fn3(
+        "Physics.setVelocityXZ",
+        "Physics.setVelocityXZ(tag, x, z)",
+        |tag: std::rc::Rc<str>, x: f64, z: f64| {
+            FunctorLangEffect(EffectTree::Physics(
+                physics::PhysicsCommand::SetVelocityAxes {
+                    tag: tag.to_string(),
+                    velocity: [x as f32, 0.0, z as f32],
+                    axes: [true, false, true],
+                },
+            ))
+        },
+    );
+    reg.fn2(
+        "Physics.setVelocityY",
+        "Physics.setVelocityY(tag, v)",
+        |tag: std::rc::Rc<str>, v: f64| {
+            FunctorLangEffect(EffectTree::Physics(
+                physics::PhysicsCommand::SetVelocityAxes {
+                    tag: tag.to_string(),
+                    velocity: [0.0, v as f32, 0.0],
+                    axes: [false, true, false],
+                },
+            ))
+        },
+    );
     // Query EFFECT (docs/physics.md Phase 4): deferred until after the
     // frame's physics step, then the tagger receives the result record
     // `{hit, x, y, z, nx, ny, nz, distance, tag}` (hit: false with zeroed
@@ -4320,6 +4352,11 @@ dropping the rest"
                     physics::PhysicsCommand::ApplyImpulse { .. } => "physics.applyImpulse",
                     physics::PhysicsCommand::ApplyForce { .. } => "physics.applyForce",
                     physics::PhysicsCommand::SetVelocity { .. } => "physics.setVelocity",
+                    physics::PhysicsCommand::SetVelocityAxes { axes, .. } => match axes {
+                        [true, false, true] => "physics.setVelocityXZ",
+                        [false, true, false] => "physics.setVelocityY",
+                        _ => "physics.setVelocity",
+                    },
                     physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
                 };
                 let tag = command.tag_and_kind().0.to_string();

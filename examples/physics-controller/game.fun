@@ -16,7 +16,7 @@
 //
 //   read   Physics.position / linearVelocity / castExcluding   (synchronous)
 //   decide Control.sense / desiredVelocity                     (pure)
-//   write  Physics.setVelocity                                 (same-frame)
+//   write  Physics.setVelocityXZ (+ setVelocityY on a jump)     (same-frame)
 //
 // The reads see the PREVIOUS step (physics runs after `tick`) and the command
 // applies at the step that immediately follows this `tick`, so the loop closes
@@ -164,14 +164,13 @@ let tick = (model, dt, tts) =>
     let pos = Physics.position(playerTag) in
     let vel = Physics.linearVelocity(playerTag) in
     let probe = groundProbe(pos) in
-    // The observation handed to the pure controller. `groundDistance` is what
-    // the probe measured and `standHeight` is where the feet belong, so the
-    // controller can hold its standing height itself (see `verticalVelocity`).
+    // The observation handed to the pure controller. It needs no probe
+    // distance and no rest height: the controller never writes the vertical
+    // axis, so it has no standing height to hold. `vy` is here only so a
+    // landing's impact can scale the squash.
     let obs = {
       grounded: probe.hit,
       vx: vel.x, vy: vel.y, vz: vel.z,
-      standHeight: feetOffset,
-      groundDistance: probe.distance,
     } in
     let carry = surfaceVelocity(probe) in
     let sensed = Control.sense(dt, obs, m.jumpEdge, m.ctl) in
@@ -212,8 +211,18 @@ let tick = (model, dt, tts) =>
         carry: carry.x, deckVx: World.deckVx(m.clock),
         coy: ctl.coyote, sq: ctl.squash, impact: ctl.landImpact,
       } in
+      // Steer the horizontal plane and leave the vertical axis to the solver,
+      // which owns the ground contact, the landing impulse, and gravity. The
+      // ONLY frame that writes vy is the one a jump fires on — and because
+      // the two masks are disjoint, the pair applies as one whole-vector
+      // write without either clobbering the other.
       (trace(row, next),
-       Physics.setVelocity(playerTag, Vec3.make(want.x, want.y, want.z)))
+       if Control.jumpNow(sensed) then
+         Effect.batch([
+           Physics.setVelocityXZ(playerTag, want.x, want.z),
+           Physics.setVelocityY(playerTag, Control.jumpVelocity(carry)),
+         ])
+       else Physics.setVelocityXZ(playerTag, want.x, want.z))
 
 let input = (model, key, isDown) =>
   match key with
