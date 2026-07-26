@@ -1,5 +1,5 @@
 // The sandbox page: a CodeMirror editor wired to the runtime iframe over the
-// editor↔player postMessage seam (player-bridge.js — the same protocol the
+// editor↔player postMessage seam (player-bridge.ts — the same protocol the
 // VSCode live-preview panel uses). Edits are debounced and pushed as
 // `functor-lang-set-source`; the runtime hot-swaps the program with the model
 // preserved and replies `functor-lang-set-source-result`.
