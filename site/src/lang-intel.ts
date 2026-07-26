@@ -125,14 +125,14 @@ const PKG_URL = "/pkg/functor_lang_wasm.js";
 // bundle missing any one of them degrades wholesale), so a null check on the
 // single-file half proves the `*_project` half — hence the `!` at those three
 // call sites. The two optional exports are each checked on their own.
-let analyzeFn: AnalyzeFn | null = null; // (src) => JSON string, set once the wasm is ready
-let hoverFn: HoverFn | null = null; // (src, offset) => JSON string ("" when nothing to show)
-let completeFn: CompleteFn | null = null; // (src, offset) => JSON string, set once the wasm is ready
-let analyzeProjectFn: AnalyzeProjectFn | null = null; // (filesJson, active) => JSON string
-let hoverProjectFn: HoverProjectFn | null = null; // (filesJson, active, offset) => JSON string
-let completeProjectFn: CompleteProjectFn | null = null; // (filesJson, active, offset) => JSON string
-let resetFn: ResetFn | null = null; // () => void, clears the wasm completion cache
-let expectsProjectFn: ExpectsProjectFn | null = null; // (filesJson, active, budget) => JSON string — optional export
+let analyzeFn: AnalyzeFn | null = null; // set once the wasm is ready
+let hoverFn: HoverFn | null = null;
+let completeFn: CompleteFn | null = null;
+let analyzeProjectFn: AnalyzeProjectFn | null = null;
+let hoverProjectFn: HoverProjectFn | null = null;
+let completeProjectFn: CompleteProjectFn | null = null;
+let resetFn: ResetFn | null = null; // clears the wasm completion cache — optional export
+let expectsProjectFn: ExpectsProjectFn | null = null; // optional export
 let lastKey: string | null = null;
 let lastResult: AnalyzeResult | null = null;
 let lastExpectKey: string | null = null;
@@ -160,7 +160,7 @@ interface LangContext {
 // neither field, which falls back to single-file mode.
 type LangContextProvider = () => Partial<LangContext> | null | undefined;
 
-export const setLangContext = (fn: LangContextProvider | null) => {
+export const setLangContext = (fn: LangContextProvider) => {
   contextFn = fn;
 };
 
@@ -370,7 +370,7 @@ const hoverTypes = hoverTooltip((view, pos) => {
 
 // Map the wasm's completion kind to a CodeMirror `type`, so the built-in icons
 // render (function/variable/namespace/keyword/enum/property all have glyphs).
-const KIND_TO_TYPE: Record<CompletionKind, string> = {
+const KIND_TO_TYPE: Partial<Record<CompletionKind, string>> = {
   function: "function",
   value: "variable",
   module: "namespace",
@@ -593,8 +593,11 @@ interface TraceBinding {
   kind: "primitive" | "composite";
   site: "binder" | "ref";
   count: number;
-  min?: number;
-  max?: number;
+  // Omitted unless BOTH are recorded; a non-finite observation (NaN/±∞) has no
+  // JSON number, so serde writes it as null — hence the `typeof … === "number"`
+  // guards at both read sites.
+  min?: number | null;
+  max?: number | null;
 }
 
 interface TraceInvocation {

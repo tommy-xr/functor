@@ -128,7 +128,10 @@ export interface ConsoleLine {
 /**
  * The paused inspector's trace — live values and entry-point executions for
  * the paused frame. The payload is the interpreter's own shape, consumed only
- * by lang-intel; it stays `unknown` here until that module migrates.
+ * by lang-intel, which models it (`InspectorTraceDoc`) and reads it
+ * defensively. It stays `unknown` HERE on purpose: nothing validates a
+ * cross-window payload, so naming a shape at this seam would assert a
+ * guarantee the boundary cannot make.
  */
 export interface InspectorTrace {
   type: "functor-inspector-trace";
