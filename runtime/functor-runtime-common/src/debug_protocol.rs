@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ui::UiEventKind, InputSnapshot};
+use crate::{ui::UiEventKind, InputSnapshot, XrInputSnapshot};
 
 /// Stable name returned by the discovery endpoint on every runtime target.
 pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
@@ -80,7 +80,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/input",
-        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"}",
+        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device)",
     },
     DebugRoute {
         method: "POST",
@@ -195,6 +195,23 @@ pub enum InputCommand {
     MouseWheel { delta: i32 },
     UiEvent { slot: u32, kind: UiEventKind },
     WebviewEvent { slot: u32, kind: UiEventKind },
+    /// Set the XR device sample the next fixed step's `sampledInput` sees, so
+    /// tracked poses, grips, and buttons are scriptable without a headset.
+    ///
+    /// Level state, not an edge event: the injected sample stays in force until
+    /// the next `xr` command replaces it, exactly like a held key. It is a
+    /// WHOLE-sample replacement — a field the body omits takes its default
+    /// (inactive hand, no pose, `0.0`), so a driver sends both hands each step.
+    /// Boxed: the sample is an order of magnitude larger than the other
+    /// commands, and would otherwise inflate every one of them.
+    Xr(Box<XrInputSnapshot>),
+    /// Drop an injected sample, restoring whatever the runtime would sample on
+    /// its own — the `--emulate-xr` rig, or no `xr` domain at all.
+    ///
+    /// The release half of `Xr`'s held-key contract. Without it injection is a
+    /// one-way door: the first `xr` command would disable the emulator and make
+    /// a game's "no XR device" branch unreachable for the rest of the process.
+    XrClear,
 }
 
 /// A clock command sent through `POST /time`.
@@ -324,7 +341,7 @@ pub enum DebugRequest {
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::Key;
+    use crate::{Key, TrackingPose};
     use serde_json::{json, Value};
 
     use super::*;
@@ -423,6 +440,76 @@ mod tests {
             serde_json::from_str::<RewindCommand>(r#"{"frame":42}"#).unwrap(),
             RewindCommand { frame: 42 }
         );
+    }
+
+    #[test]
+    fn an_xr_command_decodes_a_whole_sample_and_defaults_what_it_omits() {
+        let command = serde_json::from_str::<InputCommand>(
+            r#"{"type":"xr",
+                "head": { "position": [0.0, 0.1, 0.0] },
+                "left": { "active": true,
+                          "grip": { "position": [-0.3, -0.1, -0.6],
+                                    "orientation": [0.0, 0.38, 0.0, 0.92] } },
+                "right": { "active": true,
+                           "grip": { "position": [-0.05, -0.05, 0.12] },
+                           "trigger": 1.0 }}"#,
+        )
+        .expect("xr command decodes");
+        let InputCommand::Xr(sample) = command else {
+            panic!("expected an xr command");
+        };
+
+        // An omitted `orientation` is IDENTITY, not an all-zero quaternion
+        // (which is not a rotation at all).
+        assert_eq!(
+            sample.head,
+            Some(TrackingPose::new([0.0, 0.1, 0.0], [0.0, 0.0, 0.0, 1.0]))
+        );
+        assert_eq!(
+            sample.left.grip,
+            Some(TrackingPose::new([-0.3, -0.1, -0.6], [0.0, 0.38, 0.0, 0.92]))
+        );
+        // Omitted controller fields take their defaults: no `aim` pose, and the
+        // left hand's trigger is released even though the right hand's is held.
+        assert_eq!(sample.left.aim, None);
+        assert_eq!(sample.left.trigger, 0.0);
+        assert_eq!(sample.right.trigger, 1.0);
+        assert_eq!(sample.right.thumbstick, [0.0, 0.0]);
+        assert!(!sample.right.primary_pressed);
+
+        // The minimal body is a fully-default sample: both hands inactive,
+        // no head pose — i.e. "XR present, nothing tracked".
+        let bare = serde_json::from_str::<InputCommand>(r#"{"type":"xr"}"#).unwrap();
+        assert_eq!(bare, InputCommand::Xr(Box::default()));
+    }
+
+    /// Every field of an `xr` body is optional, so WITHOUT `deny_unknown_fields`
+    /// a typo is not a no-op — it is worse: the command still succeeds and
+    /// installs an all-default sample, flipping the game from "no XR device" to
+    /// "XR present, nothing tracked" and pinning it there. For a driver an agent
+    /// writes blind, that silent success is the expensive failure, so a
+    /// misspelling must be a 400 like every other malformed command.
+    #[test]
+    fn a_misspelled_xr_field_is_rejected_rather_than_silently_defaulted() {
+        for body in [
+            r#"{"type":"xr","lft":{"active":true}}"#,          // misspelled hand
+            r#"{"type":"xr","right":{"triger":1.0}}"#,         // misspelled control
+            r#"{"type":"xr","right":{"grip":{"pos":[0.0,0.0,0.0]}}}"#, // misspelled pose field
+        ] {
+            let err = serde_json::from_str::<InputCommand>(body)
+                .expect_err(&format!("{body} must be rejected"));
+            assert!(
+                err.to_string().contains("unknown field"),
+                "{body} rejected for the wrong reason: {err}"
+            );
+        }
+
+        // The tag itself must NOT count as an unknown field: `Xr` is an
+        // internally-tagged NEWTYPE variant, so `type` travels in the same map
+        // as the sample's own fields and a naive `deny_unknown_fields` would
+        // reject every valid body.
+        serde_json::from_str::<InputCommand>(r#"{"type":"xr","right":{"trigger":1.0}}"#)
+            .expect("a well-formed body still decodes");
     }
 
     #[test]
