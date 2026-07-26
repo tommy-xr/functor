@@ -31,7 +31,7 @@
         <a href="#contract">The game contract</a>
         <a href="#language">The language</a>
         <a href="#prelude">The prelude</a>
-        <a href="#builtins">Builtins</a>
+        <a href="#builtins">Standard library</a>
         <a href="#sharp-edges">Sharp edges</a>
       </nav>
 
@@ -46,7 +46,12 @@
         </p>
         <p class="docs-callout">
           Need an exact signature? The <a href="../docs/">API reference</a> is generated from
-          the same <code>.funi</code> prelude embedded in the engine.
+          the same <code>.funi</code> prelude embedded in the engine, so it covers every engine
+          module (<code>Scene</code>, <code>Physics</code>, <code>Ui</code>, <code>Input</code>, …).
+          The language's own <a href="#builtins">standard library</a> —
+          <code>Math</code>, <code>List</code>, <code>Text</code>, <code>Option</code> — ships with
+          the language crate rather than being declared in the prelude, so it is documented on this
+          page.
         </p>
 
         <section id="get-started">
@@ -179,21 +184,44 @@ let draw = (m, tts) =>
               <tr><td><code>tick</code></td><td><code>(model, dt, tts) => model'</code></td><td>per-frame step; <code>dt</code> seconds since last frame, <code>tts</code> total time</td></tr>
               <tr><td><code>draw</code></td><td><code>(model, tts) => Frame</code></td><td>pure frame description</td></tr>
               <tr><td><code>input</code></td><td><code>(model, key, isDown) => model'</code></td><td>optional; <code>key</code> is a <code>Key.t</code> variant such as <code>Key.W</code>, <code>Key.Up</code>, or <code>Key.Space</code> — key <em>repeats</em> arrive as <code>isDown = true</code>, so latch if you need edges</td></tr>
+              <tr><td><code>sampledInput</code></td><td><code>(model, snapshot) => model'</code></td><td>optional; <em>level</em> state (what is held right now) rather than edges — one <code>Input.snapshot</code> immediately before every tick</td></tr>
               <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
               <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
               <tr><td><code>update</code></td><td><code>(model, msg) => model'</code></td><td>optional; messages are your variant values</td></tr>
               <tr><td><code>subscriptions</code></td><td><code>(model) => Sub</code></td><td>optional (requires <code>update</code>); declarative timers</td></tr>
               <tr><td><code>physics</code></td><td><code>(model) => Physics.scene(…)</code></td><td>optional; declarative bodies, reconciled each frame</td></tr>
+              <tr><td><code>ui</code></td><td><code>(model) => Ui.view</code></td><td>optional; a screen-space HUD drawn over the frame — see <a href="#prelude-ui">UI</a></td></tr>
+              <tr><td><code>soundScape</code></td><td><code>(model) => AudioScene.create(…)</code></td><td>optional; declarative positional audio, reconciled like physics</td></tr>
             </tbody>
           </table>
           <p>
             The model-returning entry points (<code>tick</code>, <code>input</code>,
-            <code>mouseMove</code>, <code>mouseWheel</code>, <code>update</code>) may instead
+            <code>sampledInput</code>, <code>mouseMove</code>, <code>mouseWheel</code>,
+            <code>update</code>) may instead
             return a 2-tuple <code>(model', effect)</code> to issue one-shot
             <a href="#prelude-effects">effects</a>.
           </p>
+          <h3>Held input: <code>sampledInput</code></h3>
           <p>
-            <strong>Frame order:</strong> subscriptions → <code>update</code> → <code>tick</code>
+            <code>input</code> is edge-oriented (a key went down, a key came up).
+            <code>sampledInput</code> is its complement: the runtime hands you a snapshot of what
+            is <em>currently</em> held, once per tick, so continuous movement doesn't need you to
+            latch key state into the model yourself.
+          </p>
+          <pre class="functor-lang">let sampledInput = (model, snapshot: Input.snapshot) =>
+  let held = (k) => snapshot.heldKeys |> List.any((key) => key == k) in
+  { model with
+      dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0) }</pre>
+          <p>
+            The snapshot is a plain record — <code>heldKeys : List&lt;Key.t&gt;</code>,
+            <code>mouse : { x, y }</code>, and <code>xr : Option.t&lt;…&gt;</code> for headset
+            head and controller poses (see <code>Input</code> in the
+            <a href="../docs/">API reference</a>). Being plain data is what lets sampled input be
+            recorded and replayed deterministically.
+          </p>
+          <p>
+            <strong>Frame order:</strong> <code>sampledInput</code> → subscriptions →
+            <code>update</code> → <code>tick</code>
             → physics (fixed-step 60&nbsp;Hz) → <code>draw</code>. Physics reads in
             <code>draw</code> see <em>this</em> frame's stepped world; reads in <code>tick</code>
             see the previous frame's — so on the very first frame declared bodies don't exist
@@ -250,7 +278,9 @@ let area = (s: Shape): Float =>
           <p>
             Constructors resolve <em>bare</em> and live in the value namespace
             (<code>Shape.Circle</code> does <strong>not</strong> work), so constructor names must
-            be unique across all variant types in the file. Unapplied constructors are
+            be unique across all variant types in the file. Variants from a <em>module</em> are the
+            other way around — <code>Option.Some</code>, never bare <code>Some</code> (see
+            <a href="#stdlib-option">Option and Result</a>). Unapplied constructors are
             first-class: <code>xs |> List.map(Circle)</code>. When the scrutinee's type is known,
             exhaustiveness is checked. Patterns are minimal: <code>Ctor(x, _)</code>,
             <code>Ctor</code>, tuple <code>(x, _)</code> (matched by exact arity), bare names,
@@ -316,8 +346,21 @@ let span = (a, b) =>
 
           <h3>Operators and equality</h3>
           <p>
-            <code>+ - * /</code>, <code>&lt; > ==</code>, unary <code>-</code>; conventional
-            precedence, pipelines bind loosest. <code>==</code> is structural (comparing
+            <code>+ - * /</code>, <code>&lt; > ==</code>, unary <code>-</code>, and the
+            short-circuiting booleans <code>&amp;&amp;</code> / <code>||</code> with prefix
+            <code>not</code>. Precedence, tightest to loosest: comparisons →
+            <code>not</code> → <code>&amp;&amp;</code> → <code>||</code> → pipelines. So
+            <code>not a == b</code> means <code>not (a == b)</code>.
+          </p>
+          <p>
+            <strong>The comparison set is exactly <code>&lt;</code>, <code>></code>,
+            <code>==</code></strong> — there is no <code>>=</code>, <code>&lt;=</code>, or
+            <code>!=</code>, and reaching for one is a parse error. Write
+            <code>not (a &lt; b)</code> for “at least”, and <code>not (a == b)</code> for
+            “differs”.
+          </p>
+          <p>
+            <code>==</code> is structural (comparing
             functions is a runtime error). Division is IEEE (<code>1.0/0.0</code> is
             <code>inf</code>); the engine boundary rejects non-finite numbers. There are no
             loops — iteration is <code>List.map/filter/fold</code>.
@@ -339,9 +382,10 @@ let span = (a, b) =>
               <tr><td><code>scene |> Scene.color(Color.rgb(r, g, b))</code></td><td>flat unlit color</td></tr>
               <tr><td><code>scene |> Scene.lit(Color.rgb(r, g, b))</code></td><td>diffuse + specular (needs lights)</td></tr>
               <tr><td><code>scene |> Scene.emissive(Color.rgb(r, g, b))</code></td><td>unlit glow</td></tr>
-              <tr><td><code>scene |> Scene.translate(Vec3.make(x, y, z))</code></td><td rowspan="3">transforms wrap outward: the <em>outer</em> call applies last in world space — <code>s |> rotateY(r) |> translate(Vec3.make(x, 0.0, 0.0))</code> rotates in place, then moves</td></tr>
+              <tr><td><code>scene |> Scene.translate(Vec3.make(x, y, z))</code></td><td rowspan="4">transforms wrap outward: the <em>outer</em> call applies last in world space — <code>s |> rotateY(r) |> translate(Vec3.make(x, 0.0, 0.0))</code> rotates in place, then moves</td></tr>
               <tr><td><code>scene |> Scene.rotateX/Y/Z(angle)</code></td></tr>
               <tr><td><code>scene |> Scene.scale(k)</code></td></tr>
+              <tr><td><code>scene |> Scene.scaleXYZ(sx, sy, sz)</code></td></tr>
             </tbody>
           </table>
           <p>
@@ -349,6 +393,13 @@ let span = (a, b) =>
             Angles are branded values: <code>Angle.degrees(60.0)</code> /
             <code>Angle.radians(1.57)</code> — never bare numbers.
           </p>
+          <p>
+            <code>Scene.scale(k)</code> is uniform; <code>Scene.scaleXYZ(sx, sy, sz)</code> scales
+            each axis independently. The primitives have no size arguments, so
+            <code>scaleXYZ</code> is how you get a <em>box</em> — a platform, a wall, a slab:
+          </p>
+          <pre class="functor-lang">let platform = (w: Float, h: Float, d: Float) =>
+  Scene.cube() |> Scene.scaleXYZ(w, h, d)   // Scene.cube() is 1×1×1, centered</pre>
 
           <h3>Camera, lights, frames</h3>
           <table>
@@ -397,26 +448,175 @@ let span = (a, b) =>
               <tr><td><code>Physics.scene(Vec3.make(gx, gy, gz), [body, …])</code></td><td>what the <code>physics</code> hook returns</td></tr>
               <tr><td><code>Physics.position(tag)</code></td><td><code>{x, y, z}</code> of the live body</td></tr>
               <tr><td><code>scene |> Physics.transformed(tag)</code></td><td>draw a scene at the body's live pose</td></tr>
+              <tr><td><code>Physics.applyImpulse(tag, Vec3.make(x, y, z))</code></td><td rowspan="3">writing to a body is an <a href="#prelude-effects">Effect</a>: it is queued and applied at the start of the next physics step — normally still <em>this</em> frame; also <code>applyForce</code></td></tr>
+              <tr><td><code>Physics.setVelocity(tag, Vec3.make(x, y, z))</code></td></tr>
+              <tr><td><code>Physics.teleport(tag, Vec3.make(x, y, z))</code></td></tr>
+              <tr><td><code>Physics.raycast(origin, dir, maxDistance, Tagger)</code></td><td>an Effect; the hit arrives through <code>update</code> — on a miss <code>hit</code> is <code>false</code> and the other fields are zeroed</td></tr>
+              <tr><td><code>Physics.events(Tagger)</code></td><td>a <code>Sub</code> of contact begin/end, delivered as messages</td></tr>
             </tbody>
           </table>
+          <p>
+            <strong>Reads are synchronous, writes are queued.</strong> <code>Physics.position</code>
+            returns a value immediately; every mutation returns an <code>Effect.t</code> you hand
+            back from an entry point. Queued writes are flushed just before the frame's first
+            fixed substep, and every <code>tick</code> is followed by a substep — so an impulse
+            decided in <code>tick</code> does move the body in time for that same frame's
+            <code>draw</code>.
+          </p>
+          <p>
+            The real one-frame lag is on the <em>read</em> side: <code>tick</code> cannot see the
+            result of the write it just issued, because reads there observe the previous frame's
+            world. So a character controller that must decide from its own post-step position is
+            awkward — integrate that character yourself in <code>tick</code> (a pure function of
+            the model) and keep the simulated bodies for props, debris, and ragdolls.
+          </p>
           <p>
             The tag is cross-frame identity: same tag = same body; drop a body by not declaring
             it. Re-declaring an unchanged body leaves the simulation alone; changing its declared
             position teleports it. Reading a tag your <code>physics</code> hook doesn't declare
             is a runtime error. The physics world survives hot reload, like the model.
           </p>
+
+          <h3 id="prelude-ui">UI</h3>
+          <p>
+            The optional <code>ui</code> hook returns a screen-space view drawn over the frame —
+            a HUD, a menu, a debug readout. Like <code>draw</code>, it is a pure function of the
+            model. Compose text and widgets into a <code>row</code> or <code>column</code>, then
+            pin the result to a screen anchor with <code>Ui.panel</code>:
+          </p>
+          <pre class="functor-lang">let ui = (model) =>
+  Ui.column([
+    Ui.textColor(Color.rgb(1.0, 0.9, 0.3), Text.concat("SCORE  ", Text.fixed(model.score, 0.0))),
+    Ui.text(Text.concat("COINS  ", Text.fixed(model.coins, 0.0))),
+  ]) |> Ui.panel(Ui.topLeft())</pre>
+          <table>
+            <tbody>
+              <tr><td><code>Ui.text(s)</code> · <code>Ui.textColor(Color.rgb(r, g, b), s)</code></td><td>text views</td></tr>
+              <tr><td><code>Ui.column([view, …])</code> · <code>Ui.row([view, …])</code></td><td>stack vertically / horizontally</td></tr>
+              <tr><td><code>view |> Ui.panel(anchor)</code></td><td>pin to a screen anchor (the view is last, so it pipes)</td></tr>
+              <tr><td><code>Ui.topLeft() / topRight() / bottomLeft() / bottomRight() / center()</code></td><td>the anchors</td></tr>
+              <tr><td><code>Ui.button(label, Msg)</code></td><td>delivers <code>Msg</code> through <code>update</code> when clicked</td></tr>
+              <tr><td><code>Ui.slider(min, max, value, Tagger)</code> · <code>Ui.textInput(value, Tagger)</code></td><td>controlled widgets; the tagger builds the message from the new value</td></tr>
+            </tbody>
+          </table>
+          <p>
+            Widgets are <em>controlled</em>: the view shows what the model says, and interaction
+            sends a message — the model is still the only state. Interactive UI therefore needs an
+            <code>update</code>.
+          </p>
         </section>
 
         <section id="builtins">
-          <h2>Builtins</h2>
+          <h2>The standard library</h2>
+          <p>
+            These modules are part of the <em>language</em>, not the engine — unlike the prelude
+            above, they resolve everywhere Functor Lang runs, including the bare
+            <code>functor-lang</code> interpreter. The collection and container functions
+            (<code>List</code>, <code>Option</code>, <code>Result</code>) take their subject
+            <strong>last</strong>, so they pipe. The numeric and formatting helpers instead read
+            as ordinary notation — <code>Text.fixed(n, decimals)</code> and the two-argument
+            <code>Math</code> functions (<code>pow</code>, <code>atan2</code>, <code>mod</code>,
+            <code>min</code>, <code>max</code>) take their number <em>first</em>, so a pipeline
+            would feed the wrong slot: write <code>Text.fixed(hp, 0.0)</code>, not
+            <code>hp |> Text.fixed(0.0)</code>.
+          </p>
+
+          <h3 id="stdlib-math">Math</h3>
           <table>
             <tbody>
-              <tr><td><code>List.map(fn, list)</code> · <code>List.filter(fn, list)</code></td><td rowspan="2">data comes last — pipeline-friendly (F#/Elm-style)</td></tr>
-              <tr><td><code>List.fold(fn, init, list)</code> — callback is <code>(acc, x) => …</code></td></tr>
-              <tr><td><code>List.range(n)</code></td><td><code>[0 … n-1]</code></td></tr>
-              <tr><td><code>List.maximum(list)</code></td><td></td></tr>
-              <tr><td><code>Text.concat(a, b)</code> · <code>Text.fromFloat(n)</code> · <code>Text.toBullets(list)</code></td><td></td></tr>
-              <tr><td><code>Math.sin(n)</code> · <code>Math.cos(n)</code> · <code>Math.clamp01(n)</code></td><td></td></tr>
+              <tr><td><code>Math.sin(n)</code> · <code>Math.cos(n)</code></td><td>radians</td></tr>
+              <tr><td><code>Math.sqrt(n)</code> · <code>Math.abs(n)</code> · <code>Math.floor(n)</code></td><td></td></tr>
+              <tr><td><code>Math.pow(base, exp)</code></td><td><code>base</code> raised to <code>exp</code></td></tr>
+              <tr><td><code>Math.min(a, b)</code> · <code>Math.max(a, b)</code></td><td></td></tr>
+              <tr><td><code>Math.clamp01(n)</code></td><td>clamp into <code>[0, 1]</code></td></tr>
+              <tr><td><code>Math.atan2(y, x)</code></td><td>full-circle angle in radians — <strong>y first</strong>, the standard math order</td></tr>
+              <tr><td><code>Math.mod(a, b)</code></td><td><strong>Euclidean</strong>: the result is never negative — it lands in <code>[0, abs(b))</code> whatever the signs, so <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code> — the wraparound games want</td></tr>
+              <tr><td><code>Math.pi</code></td><td>a constant <em>value</em>, not a call — <code>Math.pi()</code> is an error</td></tr>
+            </tbody>
+          </table>
+
+          <h3 id="stdlib-list">List</h3>
+          <p>There are no loops; iteration lives here.</p>
+          <table>
+            <tbody>
+              <tr><td><code>List.map(fn, list)</code> · <code>List.filter(fn, list)</code></td><td><code>map</code>'s callback returns anything; <code>filter</code>'s must return a <code>bool</code></td></tr>
+              <tr><td><code>List.fold(fn, init, list)</code></td><td>left fold; the callback is <code>(acc, x) => acc'</code> — <strong>accumulator first</strong></td></tr>
+              <tr><td><code>List.any(fn, list)</code> · <code>List.all(fn, list)</code></td><td>short-circuiting; an empty list is <code>false</code> / vacuously <code>true</code></td></tr>
+              <tr><td><code>List.length(list)</code> · <code>List.isEmpty(list)</code></td><td></td></tr>
+              <tr><td><code>List.range(n)</code></td><td><code>[0.0 … n-1.0]</code>. <code>n</code> is a Float and is truncated — <code>List.range(3.7)</code> is <code>[0, 1, 2]</code> — and anything &lt;= 0 gives <code>[]</code></td></tr>
+              <tr><td><code>List.grid(fn, rows, cols)</code></td><td>calls <code>fn(row, col)</code> 0-based for every cell → a list of rows</td></tr>
+              <tr><td><code>List.append(other, list)</code></td><td>the <em>piped</em> list stays the head: <code>xs |> List.append(ys)</code> is <code>xs</code> then <code>ys</code></td></tr>
+              <tr><td><code>List.flatten(list)</code></td><td>one level deep</td></tr>
+              <tr><td><code>List.reverse(list)</code></td><td></td></tr>
+              <tr><td><code>List.maximum(list)</code></td><td>numbers only; an <strong>empty list is a runtime error</strong></td></tr>
+            </tbody>
+          </table>
+
+          <h3 id="stdlib-text">Text</h3>
+          <table>
+            <tbody>
+              <tr><td><code>Text.concat(a, b)</code></td><td><code>a</code> then <code>b</code>. It threads last like everything else, so the piped text lands in <code>b</code> — which means piping <em>prepends</em>: <code>"SUF" |> Text.concat("PRE")</code> is <code>"PRESUF"</code></td></tr>
+              <tr><td><code>Text.fromFloat(n)</code></td><td>shortest round-trip form: <code>1.0</code> renders as <code>"1"</code></td></tr>
+              <tr><td><code>Text.fixed(n, decimals)</code></td><td>fixed decimals — <code>Text.fixed(3.14159, 1.0)</code> is <code>"3.1"</code>, <code>Text.fixed(42.0, 0.0)</code> is <code>"42"</code>. This is the one to reach for in a HUD; <code>decimals</code> must be a whole number in <code>[0, 12]</code></td></tr>
+              <tr><td><code>Text.join(sep, list)</code> · <code>Text.split(sep, s)</code></td><td>separator first, subject last. <code>Text.split</code> needs a <strong>non-empty</strong> separator (an empty one is a runtime error); <code>Text.join("")</code> is fine and just concatenates</td></tr>
+              <tr><td><code>Text.toBullets(list)</code></td><td>one <code>- item</code> per line</td></tr>
+              <tr><td><code>Text.parseFloat(s)</code></td><td>trims and parses; unparseable or non-finite input <strong>degrades to <code>0.0</code></strong> rather than failing</td></tr>
+            </tbody>
+          </table>
+
+          <h3 id="stdlib-option">Option and Result</h3>
+          <p>
+            Two variant types with helpers, written in Functor Lang itself. Match them like any
+            other variant, or thread them through the combinators.
+          </p>
+          <pre class="functor-lang">type t&lt;'value> = | Some(value: 'value) | None            // Option
+type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Result</pre>
+          <p>
+            <strong>These constructors are module-qualified</strong> — an exception to the bare
+            rule above, which applies to variants declared in <em>your own</em> file. Write
+            <code>Option.Some(x)</code> and <code>Option.None</code>, in expressions
+            <em>and</em> in patterns; a bare <code>Some</code> does not resolve — it is an unknown
+            name in an expression and an unknown constructor in a pattern.
+          </p>
+          <pre class="functor-lang">let describe = (o) =>
+  match o with
+  | Option.Some(v) => Text.fixed(v, 1.0)
+  | Option.None => "nothing"</pre>
+          <table>
+            <tbody>
+              <tr><td><code>Option.map(fn, o)</code> · <code>Option.bind(fn, o)</code> · <code>Option.filter(pred, o)</code></td><td><code>None</code> passes through untouched</td></tr>
+              <tr><td><code>Option.defaultValue(fallback, o)</code></td><td>eager fallback</td></tr>
+              <tr><td><code>Option.defaultWith(thunk, o)</code></td><td>the thunk runs only for <code>None</code></td></tr>
+              <tr><td><code>Option.isSome(o)</code> · <code>Option.isNone(o)</code> · <code>Option.toList(o)</code></td><td></td></tr>
+              <tr><td><code>Result.map(fn, r)</code> · <code>Result.mapError(fn, r)</code> · <code>Result.bind(fn, r)</code></td><td></td></tr>
+              <tr><td><code>Result.defaultValue(fallback, r)</code> · <code>Result.defaultWith(fn, r)</code></td><td><code>defaultWith</code>'s fallback receives the error</td></tr>
+              <tr><td><code>Result.isOk(r)</code> · <code>Result.isError(r)</code> · <code>Result.toOption(r)</code></td><td></td></tr>
+            </tbody>
+          </table>
+
+          <h3 id="stdlib-random">Random</h3>
+          <p>
+            Deterministic and explicit: a seed goes in, a value <em>and the next seed</em> come
+            out. Thread the new seed through the model — that is what keeps a run reproducible and
+            replayable.
+          </p>
+          <pre class="functor-lang">let roll = (model) =>
+  let (n, seed) = Random.range(1.0, 7.0, model.seed) in
+  { model with roll: Math.floor(n), seed: seed }</pre>
+          <table>
+            <tbody>
+              <tr><td><code>Random.seed(n)</code></td><td>make a seed from a number</td></tr>
+              <tr><td><code>Random.step(seed)</code></td><td><code>(value in [0, 1), nextSeed)</code></td></tr>
+              <tr><td><code>Random.range(lo, hi, seed)</code></td><td><code>(value in [lo, hi), nextSeed)</code> for <code>lo &lt;= hi</code>; reversed bounds aren't rejected, they just run the interval backwards</td></tr>
+              <tr><td><code>Random.fork(i, seed)</code></td><td>a decorrelated child stream — for per-entity randomness without threading</td></tr>
+            </tbody>
+          </table>
+
+          <h3 id="stdlib-debug">Debug and Key</h3>
+          <table>
+            <tbody>
+              <tr><td><code>Debug.log(label, subject)</code></td><td>prints <code>label: subject</code> and returns the subject <em>unchanged</em>, so it drops into a pipeline — <code>model.hp |> Debug.log("hp")</code> — and removing it changes nothing but the logging</td></tr>
+              <tr><td><code>Key.t</code></td><td><code>Key.A</code>–<code>Key.Z</code>, <code>Key.Num0</code>–<code>Key.Num9</code>, <code>Key.Up/Down/Left/Right</code>, <code>Key.Space</code>, <code>Key.Enter</code>, <code>Key.Escape</code></td></tr>
             </tbody>
           </table>
         </section>
@@ -429,7 +629,13 @@ let span = (a, b) =>
             <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
-            <li>Constructor names are global to the file's value namespace; nullary constructors never take parens.</li>
+            <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
+            <li>Piping into <code>Text.concat</code> <em>prepends</em>: <code>s |> Text.concat(p)</code> is <code>p</code> then <code>s</code>. And <code>Text.fixed(n, decimals)</code> takes its number first, so it can't be piped on.</li>
+            <li><code>Math</code> is only the twelve entries above — there is no <code>round</code>, <code>ceil</code>, <code>tan</code>, <code>exp</code>, <code>log</code>, <code>sign</code>, or <code>lerp</code>. <code>floor</code> is the only rounding.</li>
+            <li><code>Math.mod</code> is Euclidean — <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code>, not <code>-1.0</code>.</li>
+            <li><code>Math.pi</code> is a value, not a call.</li>
+            <li>No <code>>=</code>, <code>&lt;=</code>, or <code>!=</code> — only <code>&lt;</code>, <code>></code>, <code>==</code>, combined with <code>not</code>.</li>
+            <li>The primitives take no size arguments — a box is <code>Scene.cube() |> Scene.scaleXYZ(w, h, d)</code>.</li>
             <li>Key repeats arrive as <code>isDown = true</code> — latch for rising edges.</li>
             <li>Physics reads belong in <code>draw</code>; in <code>tick</code> you see last frame's world.</li>
             <li>Engine values (<code>&lt;Scene></code>, <code>&lt;Frame></code>, …) are opaque: pass them around, don't compare or inspect them.</li>
