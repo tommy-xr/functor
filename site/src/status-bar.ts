@@ -11,9 +11,42 @@
 // Problems entries carry their own `jump` (the host closes over its editor),
 // so the component stays editor-agnostic.
 
+import type { ConsoleLevel } from "./protocol.js";
+
 const MAX_OUTPUT_LINES = 500;
 
-export const createStatusBar = ({ host }) => {
+/** Which panel a tab opens; also the tab's `data-tab` and the panel it shows. */
+type TabName = "problems" | "output" | "executions";
+
+/**
+ * One Problems row. `severity` is the producer's own (both call sites pass a
+ * CodeMirror lint `Diagnostic.severity`), and the bar only ever distinguishes
+ * "error" from everything else — so it stays a plain string rather than
+ * coupling this editor-agnostic component to CodeMirror's union.
+ */
+export interface Problem {
+  severity?: string;
+  message: string;
+  /** Pre-formatted location, e.g. `game.fun 12:5`. */
+  loc: string;
+  /** Jumping is the host's job (it closes over its editor). */
+  jump?: () => void;
+}
+
+/** One row of the paused inspector's entry-point picker. */
+export interface Execution {
+  label: string;
+  selected: boolean;
+  onPick?: () => void;
+}
+
+export interface StatusBar {
+  setProblems: (items: Problem[]) => void;
+  appendOutput: (level: ConsoleLevel, text: string, frame?: number | null) => void;
+  setExecutions: (items: Execution[]) => void;
+}
+
+export const createStatusBar = ({ host }: { host: HTMLElement }): StatusBar => {
   host.className = "statusbar";
 
   const panel = document.createElement("div");
@@ -30,10 +63,10 @@ export const createStatusBar = ({ host }) => {
   const strip = document.createElement("div");
   strip.className = "statusbar-strip";
 
-  const tabs = {};
-  let open = null; // "problems" | "output" | null
+  const tabs: Partial<Record<TabName, HTMLButtonElement>> = {};
+  let open: TabName | null = null;
 
-  const show = (name) => {
+  const show = (name: TabName | null): void => {
     open = name;
     panel.hidden = open === null;
     problemsList.style.display = open === "problems" ? "" : "none";
@@ -47,7 +80,7 @@ export const createStatusBar = ({ host }) => {
     if (open === "output") outputList.scrollTop = outputList.scrollHeight;
   };
 
-  const makeTab = (name, label) => {
+  const makeTab = (name: TabName, label: string): HTMLButtonElement => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "statusbar-tab";
@@ -69,7 +102,7 @@ export const createStatusBar = ({ host }) => {
   host.appendChild(panel);
   host.appendChild(strip);
 
-  const setProblems = (items) => {
+  const setProblems = (items: Problem[]): void => {
     // The tab goes loud (red ✖) only for errors — a warnings-only file keeps
     // the calm glyph.
     const errors = items.filter((item) => (item.severity || "error") === "error").length;
@@ -111,21 +144,28 @@ export const createStatusBar = ({ host }) => {
   // was emitted on (when the runtime had one) and the wall clock. The clock is
   // stamped at append time, not at the rAF flush, so a coalesced burst keeps
   // each line's true arrival time.
-  const clock = (date) => {
-    const two = (n) => String(n).padStart(2, "0");
+  const clock = (date: Date): string => {
+    const two = (n: number): string => String(n).padStart(2, "0");
     return `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
   };
-  const preamble = (frame, time) =>
+  const preamble = (frame: number | null, time: string): string =>
     frame == null ? `[${time}]` : `[Frame ${frame} | ${time}]`;
 
   // Appends are rAF-coalesced: a per-frame `Debug.log` in tick/draw arrives
   // ~60/sec, and appending each line individually would force a layout read
   // (scrollHeight) per message while the panel is open. One DOM flush per
   // frame keeps the panel usable under a logging loop.
-  let pending = [];
+  interface OutputLine {
+    level: ConsoleLevel;
+    text: string;
+    frame: number | null;
+    time: string;
+  }
+
+  let pending: OutputLine[] = [];
   let flushScheduled = false;
 
-  const flushOutput = () => {
+  const flushOutput = (): void => {
     flushScheduled = false;
     if (pending.length === 0) return;
     // Stick to the bottom only if the user is already there (don't yank the
@@ -145,14 +185,14 @@ export const createStatusBar = ({ host }) => {
       outputList.appendChild(line);
     }
     while (outputList.childElementCount > MAX_OUTPUT_LINES) {
-      outputList.firstElementChild.remove();
+      outputList.firstElementChild!.remove();
     }
     if (atBottom) outputList.scrollTop = outputList.scrollHeight;
   };
 
   // `frame` is the game frame the line belongs to (null when the runtime had
   // none to offer — boot lines, host-side reload errors).
-  const appendOutput = (level, text, frame = null) => {
+  const appendOutput = (level: ConsoleLevel, text: string, frame: number | null = null): void => {
     pending.push({ level, text, frame, time: clock(new Date()) });
     if (!flushScheduled) {
       flushScheduled = true;
@@ -163,7 +203,7 @@ export const createStatusBar = ({ host }) => {
   // The paused frame's entry-point executions (the inspector's picker):
   // `items` is `[{ label, selected, onPick }]` in frame order. Empty while
   // the game plays.
-  const setExecutions = (items) => {
+  const setExecutions = (items: Execution[]): void => {
     executionsTab.textContent = items.length ? `⏸ ${items.length} executions` : "executions";
     executionsList.textContent = "";
     if (items.length === 0) {

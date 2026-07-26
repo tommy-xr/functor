@@ -7,8 +7,19 @@ import { EditorView, keymap } from "@codemirror/view";
 import { history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 
-// onChange(source) fires on every document edit (undo/redo included).
-export const createMiniEditor = ({ parent, doc = "", onChange }) => {
+export interface MiniEditorOptions {
+  /** Where the editor mounts — the same slot `EditorView` takes. */
+  parent: Element | DocumentFragment;
+  doc?: string;
+  /** Fires on every document edit (undo/redo included). */
+  onChange?: (source: string) => void;
+}
+
+export const createMiniEditor = ({
+  parent,
+  doc = "",
+  onChange,
+}: MiniEditorOptions): EditorView => {
   const extensions = [
     history(),
     keymap.of([indentWithTab, ...historyKeymap]),

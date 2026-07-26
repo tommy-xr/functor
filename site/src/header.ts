@@ -43,13 +43,24 @@ const NAV = [
 
 const GITHUB = "https://github.com/tommy-xr/functor";
 
-const KEYS = new Set(["prefix", "suffix", "active"]);
+/** The attributes a page may set on its `<!--@header-->` marker. */
+type HeaderKey = "prefix" | "suffix" | "active";
+
+const KEYS: ReadonlySet<string> = new Set<HeaderKey>(["prefix", "suffix", "active"]);
+const isHeaderKey = (key: string): key is HeaderKey => KEYS.has(key);
 const NAV_IDS = new Set(NAV.map(({ id }) => id));
+
+type HeaderOptions = Partial<Record<HeaderKey, string>> & { controls?: string };
 
 // The badge ships as the literal "alpha"; build.mjs stamps the release tag
 // over it afterwards (one regex, unchanged by this module — which is why a
 // page may carry only ONE header block; injectHeader enforces that).
-const renderHeader = ({ prefix = "", suffix = "", active = "", controls = "" }) => {
+const renderHeader = ({
+  prefix = "",
+  suffix = "",
+  active = "",
+  controls = "",
+}: HeaderOptions): string => {
   const nav = [
     ...NAV.map(
       ({ id, href, label }) =>
@@ -86,18 +97,18 @@ const ATTR = /([a-z]+)="([^"]*)"/g;
 // mistyped marker would otherwise ship a page with NO header, and a mistyped
 // attribute (`prefx="../"`) would ship silently-broken relative links — both
 // with a green build.
-export const injectHeader = (html, page = "page") => {
+export const injectHeader = (html: string, page = "page"): string => {
   let blocks = 0;
 
-  const out = html.replace(BLOCK, (_match, rawAttrs, controls) => {
+  const out = html.replace(BLOCK, (_match: string, rawAttrs: string, controls: string) => {
     blocks += 1;
-    const options = {};
+    const options: Partial<Record<HeaderKey, string>> = {};
     // Consume the recognised attributes; anything left over is a typo (an
     // unknown key, or a form this parser does not accept such as single
     // quotes) and must fail the build rather than be ignored.
     const rest = rawAttrs
-      .replace(ATTR, (_attr, key, value) => {
-        if (!KEYS.has(key)) {
+      .replace(ATTR, (_attr: string, key: string, value: string) => {
+        if (!isHeaderKey(key)) {
           throw new Error(`${page}: unknown @header attribute "${key}"`);
         }
         options[key] = value;

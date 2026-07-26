@@ -2,7 +2,7 @@
 // give the runnable ones (class "runnable") a "▶ try it" button that opens
 // the program in the sandbox via the #src= fragment (see sandbox.js).
 //
-// The tokenizer mirrors src/functor-lang.js's CodeMirror StreamLanguage; it's a few
+// The tokenizer mirrors src/functor-lang.ts's CodeMirror StreamLanguage; it's a few
 // regexes, so a static-HTML variant beats dragging CodeMirror onto the docs
 // page. Keep the two classifications in sync.
 
@@ -23,10 +23,11 @@ const ATOMS = new Set(["true", "false"]);
 const CODE_TOKEN =
   /^(?:\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|&&|\|\||[+\-*/<>=|])/;
 
-const escapeHtml = (s) =>
+const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-const classify = (token) => {
+/** The token's highlight class, or null for a plain identifier (no span). */
+const classify = (token: string): string | null => {
   if (token.startsWith("//")) return "tok-c";
   if (/^\d/.test(token)) return "tok-n";
   if (/^[A-Z]/.test(token)) return "tok-t";
@@ -36,15 +37,19 @@ const classify = (token) => {
   return "tok-o";
 };
 
-const highlight = (source) => {
+// The nesting stack, mirroring functor-lang.ts's StreamLanguage contexts: an
+// interpolated string, and a `{…}` hole inside one that counts its own braces.
+type Context = { kind: "interpolated" } | { kind: "hole"; braces: number };
+
+const highlight = (source: string): string => {
   let html = "";
-  const contexts = [];
+  const contexts: Context[] = [];
   let i = 0;
-  const emit = (text, cls = null) => {
+  const emit = (text: string, cls: string | null = null): void => {
     const escaped = escapeHtml(text);
     html += cls ? `<span class="${cls}">${escaped}</span>` : escaped;
   };
-  const emitString = () => {
+  const emitString = (): void => {
     const start = i++;
     while (i < source.length) {
       if (source[i] === "\\") i += Math.min(2, source.length - i);
@@ -118,14 +123,14 @@ const highlight = (source) => {
   return html;
 };
 
-const toBase64Url = (s) =>
+const toBase64Url = (s: string): string =>
   btoa(String.fromCharCode(...new TextEncoder().encode(s)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
 for (const pre of document.querySelectorAll("pre.functor-lang")) {
-  const source = pre.textContent;
+  const source = pre.textContent!;
   pre.innerHTML = highlight(source);
   if (pre.classList.contains("runnable")) {
     const link = document.createElement("a");

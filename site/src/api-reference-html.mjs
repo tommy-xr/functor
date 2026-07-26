@@ -4,7 +4,7 @@
 // meant a plain (no-JS) GET of /docs/ returned only the page shell — invisible
 // to the LLM agents Functor is meant to be readable by. This module is the
 // single renderer: `build.mjs` calls it to bake the real markup into
-// `dist/docs/index.html`, and `src/api-docs.js` only enhances that markup
+// `dist/docs/index.html`, and `src/api-docs.ts` only enhances that markup
 // (search/filter). The emitted class names, ids and `data-search` attributes
 // are what the client script and `styles.css` expect.
 
