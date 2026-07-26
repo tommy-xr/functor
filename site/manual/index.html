@@ -513,9 +513,11 @@ let span = (a, b) =>
           <p>
             These modules are part of the <em>language</em>, not the engine — unlike the prelude
             above, they resolve everywhere Functor Lang runs, including the bare
-            <code>functor-lang</code> interpreter. Every function takes its subject
-            <strong>last</strong> so it pipes, with the exception noted under
-            <a href="#stdlib-text">Text</a>.
+            <code>functor-lang</code> interpreter. Collection and container functions take their
+            subject <strong>last</strong> so they pipe. The exceptions are the ones that read as
+            ordinary notation instead: <code>Text.concat(a, b)</code>,
+            <code>Text.fixed(n, decimals)</code>, and the two-argument <code>Math</code>
+            functions (<code>pow</code>, <code>atan2</code>, <code>mod</code>).
           </p>
 
           <h3 id="stdlib-math">Math</h3>
@@ -552,7 +554,7 @@ let span = (a, b) =>
           <h3 id="stdlib-text">Text</h3>
           <table>
             <tbody>
-              <tr><td><code>Text.concat(a, b)</code></td><td><code>a</code> then <code>b</code> — the one function whose subject is <em>first</em>, so <code>|></code> appends the <em>suffix</em></td></tr>
+              <tr><td><code>Text.concat(a, b)</code></td><td><code>a</code> then <code>b</code> — subject <em>first</em>, so a pipeline supplies the <em>second</em> half: <code>"b" |> Text.concat("a")</code> is <code>"ab"</code>, i.e. <code>|></code> <em>prepends</em> the argument</td></tr>
               <tr><td><code>Text.fromFloat(n)</code></td><td>shortest round-trip form: <code>1.0</code> renders as <code>"1"</code></td></tr>
               <tr><td><code>Text.fixed(n, decimals)</code></td><td>fixed decimals — <code>Text.fixed(3.14159, 1.0)</code> is <code>"3.1"</code>, <code>Text.fixed(42.0, 0.0)</code> is <code>"42"</code>. This is the one to reach for in a HUD; <code>decimals</code> must be a whole number in <code>[0, 12]</code></td></tr>
               <tr><td><code>Text.join(sep, list)</code> · <code>Text.split(sep, s)</code></td><td>separator first, subject last; an empty separator is a runtime error</td></tr>
@@ -572,7 +574,8 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             <strong>These constructors are module-qualified</strong> — an exception to the bare
             rule above, which applies to variants declared in <em>your own</em> file. Write
             <code>Option.Some(x)</code> and <code>Option.None</code>, in expressions
-            <em>and</em> in patterns; a bare <code>Some</code> is an unknown constructor.
+            <em>and</em> in patterns; a bare <code>Some</code> does not resolve — it is an unknown
+            name in an expression and an unknown constructor in a pattern.
           </p>
           <pre class="functor-lang">let describe = (o) =>
   match o with
@@ -626,7 +629,8 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
-            <li><code>Text.concat(a, b)</code> is the one stdlib function whose subject comes <em>first</em>; everything else threads last.</li>
+            <li><code>Text.concat(a, b)</code> and <code>Text.fixed(n, decimals)</code> take their subject <em>first</em>; the collection functions all thread last.</li>
+            <li><code>Math</code> is only the twelve entries above — there is no <code>round</code>, <code>ceil</code>, <code>tan</code>, <code>exp</code>, <code>log</code>, <code>sign</code>, or <code>lerp</code>. <code>floor</code> is the only rounding.</li>
             <li><code>Math.mod</code> is Euclidean — <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code>, not <code>-1.0</code>.</li>
             <li><code>Math.pi</code> is a value, not a call.</li>
             <li>No <code>>=</code>, <code>&lt;=</code>, or <code>!=</code> — only <code>&lt;</code>, <code>></code>, <code>==</code>, combined with <code>not</code>.</li>
