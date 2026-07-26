@@ -38,6 +38,18 @@ export const EXAMPLES: Example[] = [
   // Single-file + a CORS-friendly CDN model (jsDelivr mirror of BabylonJS/Assets),
   // so the rigged character streams and animates in the single-buffer sandbox.
   { id: "batteries", label: "Animation", source: "site/examples/batteries.fun" },
+  // The stress test: quadtree terrain, four tiled detail maps, instanced grass,
+  // a physics heightfield and a walker. Detail maps are absolute Poly Haven
+  // URLs because the desktop sample gitignores its fetched copies, so there is
+  // nothing in the repo for the build to copy; the heightmap IS checked in.
+  {
+    id: "terrain",
+    label: "Terrain (stress test)",
+    source: "site/examples/terrain.fun",
+    assets: [
+      { source: "examples/terrain/heightmap.png", output: "heightmap.png" },
+    ],
+  },
   { id: "counter", label: "Counter", source: "examples/counter/game.fun" },
   { id: "primitives", label: "Primitives", source: "examples/primitives/game.fun" },
   { id: "ui", label: "UI widgets", source: "examples/ui/game.fun" },

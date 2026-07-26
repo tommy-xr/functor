@@ -1,17 +1,14 @@
-// A finite 4 km × 4 km terrain rendered from a 16-bit heightmap, walked on
-// foot as a real physics body.
+// The sandbox's stress test: the full 4 km terrain, on the web.
 //
-// The runtime chooses a quadtree LOD from the stable center camera and draws
-// every visible patch as an instance of one 64×64 grid. Both VR eyes therefore
-// see the same geometry, and changing detail uploads only the compact patch
-// list—not a world-sized mesh.
+// A copy of `examples/terrain/game.fun` with the detail maps pointed at Poly
+// Haven's CDN instead of local files. The desktop sample fetches those with
+// `npm run fetch:assets` and gitignores them, so they are not in the repo for
+// the site build to copy — and the runtime resolves URL locators natively.
+// `batteries.fun` is here for the same reason (a CORS-friendly CDN model).
 //
-// The walker is a dynamic capsule steered from `tick`, standing on the SAME
-// heightfield the renderer draws: `Scene.terrain` and `Physics.heightfield`
-// take one descriptor, so the ground you see is the ground you collide with.
-//
-//   node examples/terrain/generate-heightmap.mjs
-//   functor -d examples/terrain run native
+// This is deliberately the heaviest scene in the picker: quadtree terrain, four
+// tiled detail maps, instanced grass, a physics heightfield and a dynamic
+// walker. If the web runtime regresses, this is where it shows first.
 
 let worldSize = 4000.0
 let walkSpeed = 34.0
@@ -52,10 +49,10 @@ let world =
        Color.rgb(0.86, 0.90, 0.91),
        340.0)
   |> Terrain.textured(
-       Asset.texture("detail-low.jpg"),
-       Asset.texture("detail-high.jpg"),
-       Asset.texture("detail-rock.jpg"),
-       Asset.texture("detail-snow.jpg"),
+       Asset.texture("https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/forest_ground_04/forest_ground_04_diff_1k.jpg"),
+       Asset.texture("https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/aerial_grass_rock/aerial_grass_rock_diff_1k.jpg"),
+       Asset.texture("https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/rock_face/rock_face_diff_1k.jpg"),
+       Asset.texture("https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/snow_02/snow_02_diff_1k.jpg"),
        8.0)
   |> Terrain.grass(2.2, 140.0, 1.1, Color.rgb(0.25, 0.46, 0.10))
 
