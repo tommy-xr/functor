@@ -450,6 +450,65 @@ impl EffectValue {
     }
 }
 
+/// Depth bound for [`value_to_json`]. Value nesting is user-controlled (see
+/// the `Value` `Display` doc — a fold wrapping `[acc]` per step builds depth
+/// past any recursion limit), and this walker recurses; past the bound a node
+/// becomes `{"$truncated": "max depth"}` instead of risking the host's stack.
+/// Far deeper than any real model, so truncation marks pathology, not data.
+const VALUE_JSON_MAX_DEPTH: usize = 128;
+
+/// A total, LOSSY JSON view of a [`Value`], for observation surfaces (the
+/// debug server's `GET /state` `model_json`). Unlike
+/// [`effect_value_from_value`] it never fails: plain data maps structurally
+/// (numbers, strings, bools; lists as arrays; records as objects — field
+/// order is the serde_json map's, not construction order), and everything
+/// else becomes a sigil-keyed object no record field can collide with (`$` is
+/// not a Functor Lang identifier character):
+///
+/// - tuples: `{"$tuple": [...]}` (so they stay distinct from lists)
+/// - variants: `{"$ctor": "Some", "args": [...]}`
+/// - callables: `{"$fn": "<fn(dt)>"}` — the `Display` form
+/// - host values: `{"$host": "SceneNode"}` — the `type_name`
+/// - non-finite numbers: `{"$number": "NaN"}` (JSON numbers can't carry them)
+///
+/// A one-way observation format: there is deliberately no parser back.
+pub fn value_to_json(value: &Value) -> serde_json::Value {
+    value_to_json_at(value, 0)
+}
+
+fn value_to_json_at(value: &Value, depth: usize) -> serde_json::Value {
+    use serde_json::{json, Value as Json};
+    if depth > VALUE_JSON_MAX_DEPTH {
+        return json!({ "$truncated": "max depth" });
+    }
+    let items_json = |items: &[Value]| -> Vec<Json> {
+        items.iter().map(|v| value_to_json_at(v, depth + 1)).collect()
+    };
+    match value {
+        Value::Number(n) if n.is_finite() => json!(n),
+        Value::Number(n) => json!({ "$number": n.to_string() }),
+        Value::String(s) => json!(s.as_ref()),
+        Value::Bool(b) => json!(b),
+        Value::List(items) => Json::Array(items_json(items)),
+        Value::Tuple(items) => json!({ "$tuple": items_json(items) }),
+        Value::Record(fields) => Json::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json_at(v, depth + 1)))
+                .collect(),
+        ),
+        Value::Variant { ctor, args } => {
+            json!({ "$ctor": ctor.as_ref(), "args": items_json(args) })
+        }
+        Value::Ctor { .. }
+        | Value::Closure(_)
+        | Value::Partial(_)
+        | Value::Builtin(_)
+        | Value::HostFn(_) => json!({ "$fn": value.to_string() }),
+        Value::HostData(host) => json!({ "$host": host.type_name() }),
+    }
+}
+
 /// The inverse of [`EffectValue::to_functor_lang`]: the plain-data subset of
 /// [`Value`], for payloads the GAME hands the host (`Effect.sendMsg`). A
 /// non-data value — a closure, an unapplied constructor, a host handle — is a
@@ -7867,6 +7926,75 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         let json = serde_json::to_string(&value).expect("serialize");
         let back: EffectValue = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, value);
+    }
+
+    /// The lossy model-JSON walker (`GET /state` `model_json`): plain data
+    /// maps structurally; callables, host values, and non-finite numbers
+    /// become sigil placeholders instead of failing.
+    #[test]
+    fn value_to_json_is_total_and_lossy() {
+        struct TestHost;
+        impl HostData for TestHost {
+            fn type_name(&self) -> &'static str {
+                "TestHost"
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        let model = Value::Record(Rc::new(vec![
+            ("count".to_string(), Value::Number(3.0)),
+            ("name".to_string(), Value::String(Rc::from("hello"))),
+            ("alive".to_string(), Value::Bool(true)),
+            (
+                "items".to_string(),
+                Value::List(Rc::new(vec![Value::Number(1.0), Value::Number(2.0)])),
+            ),
+            (
+                "pos".to_string(),
+                Value::Tuple(Rc::new(vec![Value::Number(1.0), Value::Number(2.0)])),
+            ),
+            (
+                "state".to_string(),
+                Value::Variant {
+                    ctor: Rc::from("Playing"),
+                    args: Rc::new(vec![Value::Number(7.0)]),
+                },
+            ),
+            ("spawn".to_string(), Value::HostFn(Rc::from("Scene.cube"))),
+            ("handle".to_string(), Value::HostData(Rc::new(TestHost))),
+            ("bad".to_string(), Value::Number(f64::NAN)),
+        ]));
+        assert_eq!(
+            value_to_json(&model),
+            serde_json::json!({
+                "count": 3.0,
+                "name": "hello",
+                "alive": true,
+                "items": [1.0, 2.0],
+                "pos": { "$tuple": [1.0, 2.0] },
+                "state": { "$ctor": "Playing", "args": [7.0] },
+                "spawn": { "$fn": "<host Scene.cube>" },
+                "handle": { "$host": "TestHost" },
+                "bad": { "$number": "NaN" },
+            })
+        );
+    }
+
+    /// Nesting past the bound truncates with a marker instead of risking the
+    /// host's stack (nesting depth is user-controlled — see `Value`'s
+    /// `Display` doc).
+    #[test]
+    fn value_to_json_bounds_depth() {
+        let mut value = Value::Number(0.0);
+        for _ in 0..(VALUE_JSON_MAX_DEPTH + 10) {
+            value = Value::List(Rc::new(vec![value]));
+        }
+        let mut node = &value_to_json(&value);
+        while let Some(items) = node.as_array() {
+            node = &items[0];
+        }
+        assert_eq!(node, &serde_json::json!({ "$truncated": "max depth" }));
     }
 
     /// A diverged replay fails loud with the position, not silently wrong.

@@ -638,6 +638,7 @@ fn service_debug_request(
                 viewport: RuntimeViewport::new(width, height),
                 views,
                 model: game.state_debug(),
+                model_json: game.state_json(),
                 input: debug.input.clone(),
             });
         }

@@ -185,6 +185,13 @@ pub struct RuntimeState {
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
     pub model: String,
+    /// A structured JSON view of the model
+    /// ([`crate::protocol::GameProducer::state_json`]):
+    /// parseable, total, lossy (callables/host values are sigil placeholders).
+    /// `Null` for producers without a structured model. `default` so payloads
+    /// from runtimes predating the field still deserialize.
+    #[serde(default)]
+    pub model_json: serde_json::Value,
     pub input: InputSnapshot,
 }
 
@@ -385,6 +392,7 @@ mod tests {
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: "Model {\n  label: \"hello\"\n}".into(),
+            model_json: json!({ "label": "hello" }),
             input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
                 mouse: crate::MouseSnapshot {
@@ -409,6 +417,7 @@ mod tests {
                     "viewport": { "width": 1920, "height": 1080 }
                 }],
                 "model": "Model {\n  label: \"hello\"\n}",
+                "model_json": { "label": "hello" },
                 "input": {
                     "held_keys": ["W", "Up"],
                     "mouse": {

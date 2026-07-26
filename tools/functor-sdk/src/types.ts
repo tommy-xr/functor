@@ -75,9 +75,24 @@ export interface RuntimeView {
   viewport: RuntimeViewport;
 }
 
+/** A structured JSON view of a Functor Lang value: plain data maps structurally
+ * (records as objects, lists as arrays), and everything else is a sigil-keyed
+ * object no record field can collide with — `{"$tuple": [...]}`,
+ * `{"$ctor": "Some", "args": [...]}`, `{"$fn": "<fn(dt)>"}`,
+ * `{"$host": "SceneNode"}`, `{"$number": "NaN"}`, and
+ * `{"$truncated": "max depth"}` past the nesting bound. */
+export type ModelJson =
+  | number
+  | string
+  | boolean
+  | null
+  | ModelJson[]
+  | { [key: string]: ModelJson };
+
 /** Runtime state from `GET /state`. `input` is structured and game-agnostic;
  * `model` is the game model rendered with Rust's pretty-`Debug` (not structured
- * JSON), so reading fields from it is best-effort string matching. */
+ * JSON), so reading fields from it is best-effort string matching —
+ * `model_json` is the structured sibling to read fields from. */
 export interface RuntimeState {
   frame: number;
   tts: number;
@@ -89,6 +104,9 @@ export interface RuntimeState {
   views: RuntimeView[];
   input: InputSnapshot;
   model: string;
+  /** Structured, lossy JSON view of the model (`null` for producers without
+   * a structured model, e.g. replay). */
+  model_json: ModelJson;
 }
 
 /** Camera block from `GET /scene`. */

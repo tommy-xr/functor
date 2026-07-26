@@ -806,6 +806,7 @@ fn service_debug_request(
                 viewport: debug_server::RuntimeViewport::new(width, height),
                 views: vec![debug_server::RuntimeView::new("main", width, height)],
                 model: game.state_debug(),
+                model_json: game.state_json(),
                 input: state_input,
             });
         }
