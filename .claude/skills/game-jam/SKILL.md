@@ -107,6 +107,14 @@ numbers. Rules:
 - Sequencing mechanic: resume/spawn one agent, wait for its completion
   notification, then start the next — nearest-to-completion first so results
   land early.
+- **Disk hygiene between fixers (learned mid-run: a full disk killed a fixer
+  mid-build).** Every heavy fixer leaves a multi-GB `target/` cache in its
+  worktree; a long fixer queue fills the drive. Once a fixer's PR is pushed,
+  its `target/` is pure rebuildable cache — sweep finished fixers' caches
+  BEFORE starting the next heavy agent (`rm -rf .claude/worktrees/agent-*/target`
+  for done agents only; never the running one's), and check free space
+  (`df -h`) as part of each heavy launch. Don't wait for end-of-jam cleanup;
+  by then the drive may already be full.
 
 ## Phase 1.5 — gap fixers (sequential, after entries complete)
 
