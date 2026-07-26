@@ -20,7 +20,9 @@ const inlineProse = (prose) =>
   prose
     .split(/(`[^`\n]+`)/)
     .map((part) =>
-      part.startsWith("`") && part.endsWith("`") && part.length > 1
+      // Shape-tested, not just delimiter-tested: a bare ``` `` ``` in prose is
+      // literal backticks, not an empty code span.
+      /^`[^`\n]+`$/.test(part)
         ? `<code>${escapeText(part.slice(1, -1))}</code>`
         : escapeText(part),
     )

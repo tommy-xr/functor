@@ -42,15 +42,6 @@ const docs = spawnSync(
 );
 if (docs.status !== 0) process.exit(docs.status ?? 1);
 
-// The same reference as plain Markdown. Published next to the JSON so an agent
-// (or a `curl`) can read the whole API without running the page's JavaScript.
-const apiMarkdown = spawnSync(
-  "cargo",
-  ["run", "-q", "-p", "functor-docgen", "--", "--deny-undocumented", "--format", "markdown"],
-  { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
-);
-if (apiMarkdown.status !== 0) process.exit(apiMarkdown.status ?? 1);
-
 const PAGES = [
   "index.html",
   "sandbox.html",
@@ -120,6 +111,15 @@ try {
 // a no-JS fetch of /docs/ must return the real signatures and docs, not a shell.
 const reference = JSON.parse(await readFile(apiReference, "utf8"));
 const rendered = renderApiReference(reference);
+// An empty reference would prerender an empty page that still "builds" — the
+// exact silent failure this prerender exists to prevent. Refuse it.
+if (rendered.moduleCount === 0 || rendered.itemCount === 0) {
+  console.error(
+    `the generated API reference is empty (${rendered.moduleCount} modules, ` +
+      `${rendered.itemCount} declarations) — refusing to ship a blank reference`
+  );
+  process.exit(1);
+}
 const PRERENDER = {
   "api-module-nav": rendered.nav,
   "api-reference": rendered.sections,
@@ -138,11 +138,23 @@ for (const page of PAGES) {
     );
     if (page === "docs/index.html") {
       for (const [marker, markup] of Object.entries(PRERENDER)) {
-        if (!html.includes(`<!--${marker}-->`)) {
-          console.error(`docs/index.html is missing the <!--${marker}--> prerender marker`);
+        const token = `<!--${marker}-->`;
+        // Exactly one slot each: a second occurrence (say, in a comment above
+        // the real slot) would take the markup and leave the slot empty, since
+        // a string `replace` only rewrites the first match.
+        const occurrences = html.split(token).length - 1;
+        if (occurrences !== 1) {
+          console.error(
+            `docs/index.html has ${occurrences} ${token} prerender markers — expected exactly 1`
+          );
           process.exit(1);
         }
-        html = html.replace(`<!--${marker}-->`, () => markup);
+        html = html.replace(token, () => markup);
+      }
+      const leftover = html.match(/<!--api-[a-z-]+-->/);
+      if (leftover) {
+        console.error(`docs/index.html still has an unfilled prerender marker: ${leftover[0]}`);
+        process.exit(1);
       }
     }
     await writeFile(target, html);
@@ -151,9 +163,27 @@ for (const page of PAGES) {
   }
 }
 
-// Machine-readable mirrors of the reference, at stable URLs.
-await writeFile(`${dist}/docs/api.json`, JSON.stringify(reference, null, 2));
-await writeFile(`${dist}/docs/api.md`, apiMarkdown.stdout);
+// Machine-readable mirrors of the reference, at stable URLs. The JSON is the
+// exact artifact the page was rendered from; the Markdown is written straight
+// to disk by the generator (no piping, so no output-size ceiling).
+await cp(apiReference, `${dist}/docs/api.json`);
+const apiMarkdown = spawnSync(
+  "cargo",
+  [
+    "run",
+    "-q",
+    "-p",
+    "functor-docgen",
+    "--",
+    "--deny-undocumented",
+    "--format",
+    "markdown",
+    "--output",
+    `${dist}/docs/api.md`,
+  ],
+  { cwd: root, stdio: "inherit" },
+);
+if (apiMarkdown.status !== 0) process.exit(apiMarkdown.status ?? 1);
 // llms.txt (llmstxt.org): the entry point an agent fetches to find the rest.
 await writeFile(
   `${dist}/llms.txt`,

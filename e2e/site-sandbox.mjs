@@ -455,6 +455,15 @@ for (const example of examples) {
 // HTTP GET. These use `fetch`, not the browser, so they fail if the reference
 // ever regresses to being assembled client-side.
 {
+  // An absolute floor first: the count assertions below compare the page
+  // against the same JSON it was rendered from, so an empty reference would
+  // satisfy them (0 === 0) while shipping a blank page.
+  check(
+    "the generated reference is non-trivial",
+    API_MODULE_COUNT > 10 && API_ITEM_COUNT > 50,
+    `${API_MODULE_COUNT} modules, ${API_ITEM_COUNT} declarations`
+  );
+
   const docsHtml = await (await fetch(`${BASE}/docs/`)).text();
   const staticModules = docsHtml.match(/class="api-module"/g)?.length ?? 0;
   const staticItems = docsHtml.match(/class="api-declaration"/g)?.length ?? 0;
